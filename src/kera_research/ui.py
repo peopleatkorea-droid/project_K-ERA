@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,7 @@ def _init_session_state() -> None:
     st.session_state.setdefault("wiz_patient", None)
     st.session_state.setdefault("wiz_visit", None)
     st.session_state.setdefault("wiz_images", [])
+    st.session_state.setdefault("wiz_roi_preview", None)
     st.session_state.setdefault("wiz_validation", None)
     st.session_state.setdefault("wiz_contributed", False)
     st.session_state.setdefault("wiz_update_metadata", None)
@@ -94,6 +96,7 @@ def _reset_wizard(keep_site: bool = True) -> None:
     st.session_state["wiz_patient"] = None
     st.session_state["wiz_visit"] = None
     st.session_state["wiz_images"] = []
+    st.session_state["wiz_roi_preview"] = None
     st.session_state["wiz_validation"] = None
     st.session_state["wiz_contributed"] = False
     st.session_state["wiz_update_metadata"] = None
@@ -123,6 +126,50 @@ def _get_execution_device(mode: str) -> str:
     return resolve_execution_mode(mode, hw)
 
 
+def _project_id_for_site(cp: ControlPlaneStore, site_id: str | None) -> str:
+    if not site_id:
+        return "default"
+    site = next((item for item in cp.list_sites() if item["site_id"] == site_id), None)
+    if site:
+        return site.get("project_id", "default")
+    projects = cp.list_projects()
+    return projects[0]["project_id"] if projects else "default"
+
+
+def _site_display_name(cp: ControlPlaneStore, site_id: str | None) -> str:
+    if not site_id:
+        return "No Site Selected"
+    site = next((item for item in cp.list_sites() if item["site_id"] == site_id), None)
+    if not site:
+        return site_id
+    return site.get("display_name") or site.get("hospital_name") or site_id
+
+
+def _render_page_header(
+    eyebrow: str,
+    title: str,
+    subtitle: str,
+    meta_items: list[str] | None = None,
+) -> None:
+    chips = "".join(
+        f"<span class='kera-meta-chip'>{escape(item)}</span>"
+        for item in (meta_items or [])
+        if item
+    )
+    meta_html = f"<div class='kera-meta-strip'>{chips}</div>" if chips else ""
+    st.markdown(
+        f"""
+<section class="kera-page-header">
+  <div class="kera-eyebrow">{escape(eyebrow)}</div>
+  <h1 class="kera-page-title">{escape(title)}</h1>
+  <p class="kera-page-subtitle">{escape(subtitle)}</p>
+  {meta_html}
+</section>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 # ──────────────────────────────────────────────
 # Sidebar
 # ──────────────────────────────────────────────
@@ -134,21 +181,26 @@ def _render_sidebar(
     lang: str,
 ) -> dict[str, Any] | None:
     with st.sidebar:
-        # ── App name
         st.markdown(
-            f"<div style='font-size:1.3rem;font-weight:800;color:var(--kera-accent);margin-bottom:0.2rem'>"
-            f"🔬 {APP_NAME}</div>",
+            f"""
+<section class="kera-brand-block">
+  <div class="kera-eyebrow">Culture-Proven Workflow</div>
+  <div class="kera-brand-title">{escape(APP_NAME)}</div>
+  <p class="kera-brand-copy">
+    Structured intake, ROI evidence review, and contribution-ready training in one clinician workflow.
+  </p>
+</section>
+""",
             unsafe_allow_html=True,
         )
 
-        # ── Language toggle
         col_l, col_r = st.columns(2)
         with col_l:
-            if st.button("🇰🇷 한국어", use_container_width=True, key="btn_ko"):
+            if st.button("한국어", use_container_width=True, key="btn_ko"):
                 st.session_state["lang"] = "ko"
                 st.rerun()
         with col_r:
-            if st.button("🇬🇧 English", use_container_width=True, key="btn_en"):
+            if st.button("English", use_container_width=True, key="btn_en"):
                 st.session_state["lang"] = "en"
                 st.rerun()
 
@@ -158,22 +210,24 @@ def _render_sidebar(
         if not user:
             return None
 
-        # ── User info
         st.markdown(
-            f"<div class='kera-sidebar-user'>"
-            f"<h4>{user.get('full_name', user['username'])}</h4>"
-            f"<p>{user['role'].capitalize()} · {user['username']}</p>"
-            f"</div>",
+            f"""
+<div class="kera-sidebar-user">
+  <div class="kera-sidebar-label">Signed In</div>
+  <h4>{escape(user.get('full_name', user['username']))}</h4>
+  <p>{escape(user['role'].capitalize())} · {escape(user['username'])}</p>
+</div>
+""",
             unsafe_allow_html=True,
         )
 
-        # ── Site selector
         sites = cp.list_sites()
         if sites:
             site_options = {s["site_id"]: f"{s['display_name']} ({s['site_id']})" for s in sites}
             current_site = st.session_state.get("wiz_site_id") or sites[0]["site_id"]
             if current_site not in site_options:
                 current_site = sites[0]["site_id"]
+            st.caption(t(lang, "현재 병원 사이트", "Current Hospital Site"))
             selected_site = st.selectbox(
                 t(lang, "병원 사이트", "Hospital Site"),
                 options=list(site_options.keys()),
@@ -190,10 +244,10 @@ def _render_sidebar(
 
         st.divider()
 
-        # ── Navigation buttons
         if st.button(
-            t(lang, "➕  새 케이스 입력", "➕  New Case"),
+            t(lang, "새 케이스 입력", "New Case"),
             use_container_width=True,
+            type="primary",
             key="btn_new_case",
         ):
             _reset_wizard()
@@ -201,7 +255,7 @@ def _render_sidebar(
             st.rerun()
 
         if st.button(
-            t(lang, "📊  대시보드", "📊  Dashboard"),
+            t(lang, "대시보드", "Dashboard"),
             use_container_width=True,
             key="btn_dashboard",
         ):
@@ -210,7 +264,7 @@ def _render_sidebar(
 
         if user.get("role") == "admin":
             if st.button(
-                t(lang, "⚙️  관리자", "⚙️  Admin"),
+                t(lang, "관리자", "Admin"),
                 use_container_width=True,
                 key="btn_admin",
             ):
@@ -219,12 +273,22 @@ def _render_sidebar(
 
         st.divider()
 
-        # ── Hardware status
         hw = detect_hardware()
-        hw_label = "GPU ✅" if hw["cuda_available"] else "CPU only"
-        st.caption(f"🖥 {hw_label}  ·  AI: {'✅' if runtime_status['ai_engine_ready'] else '⚠️ 준비 필요'}")
+        hw_label = "GPU Ready" if hw["gpu_available"] else "CPU Only"
+        ai_label = "AI Engine Online" if runtime_status["ai_engine_ready"] else "AI Setup Needed"
+        node_label = hw.get("gpu_name") or hw.get("cpu_name", "Local Node")
+        st.markdown(
+            f"""
+<div class="kera-status-panel">
+  <div class="kera-sidebar-label">Local Node</div>
+  <div class="kera-status-title">{escape(hw_label)}</div>
+  <div class="kera-status-copy">{escape(node_label)}</div>
+  <div class="kera-status-foot">{escape(ai_label)}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-        # ── Logout
         if st.button(t(lang, "로그아웃", "Log out"), use_container_width=True, key="btn_logout"):
             st.session_state["user"] = None
             st.rerun()
@@ -237,17 +301,39 @@ def _render_sidebar(
 # ──────────────────────────────────────────────
 
 def _render_login(cp: ControlPlaneStore, lang: str) -> None:
-    col_a, col_b, col_c = st.columns([1, 1.6, 1])
-    with col_b:
-        st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("<div class='kera-login-spacer'></div>", unsafe_allow_html=True)
+    hero_col, form_col = st.columns([1.35, 0.95], gap="large")
+
+    with hero_col:
         st.markdown(
-            f"<div style='text-align:center;font-size:2rem;font-weight:900;color:var(--kera-accent)'>"
-            f"🔬 {APP_NAME}</div>",
+            f"""
+<section class="kera-login-hero">
+  <div class="kera-eyebrow">Clinician Research Console</div>
+  <h1>{escape(APP_NAME)}</h1>
+  <p>
+    External validation, MedSAM ROI review, Grad-CAM evidence, and contribution-ready
+    training in one evening workflow for culture-proven keratitis.
+  </p>
+  <div class="kera-login-highlights">
+    <span>External Validation</span>
+    <span>MedSAM ROI</span>
+    <span>Contribution Tracking</span>
+    <span>Federated Updates</span>
+  </div>
+</section>
+""",
             unsafe_allow_html=True,
         )
+
+    with form_col:
         st.markdown(
-            f"<div style='text-align:center;color:var(--kera-muted);margin-bottom:2rem'>"
-            f"{t(lang, '감염성 각막염 연구 플랫폼', 'Infectious Keratitis Research Platform')}</div>",
+            f"""
+<section class="kera-login-panel">
+  <div class="kera-sidebar-label">{escape(t(lang, '보안 로그인', 'Secure Sign In'))}</div>
+  <h3>{escape(t(lang, '연구 워크플로우 시작', 'Enter the Research Workflow'))}</h3>
+  <p>{escape(t(lang, '등록된 계정으로 로그인해 병원별 케이스를 관리하세요.', 'Use your registered account to manage site-specific cases.'))}</p>
+</section>
+""",
             unsafe_allow_html=True,
         )
         with st.form("login_form"):
@@ -273,18 +359,15 @@ def _render_step_indicator(current_step: str, lang: str) -> None:
     for i, s in enumerate(steps):
         label = STEP_LABELS[s][lang]
         if i < current_idx:
-            parts.append(f"<span style='color:var(--kera-accent);font-weight:700'>✓ {label}</span>")
-        elif i == current_idx:
             parts.append(
-                f"<span style='background:var(--kera-accent);color:white;padding:0.2rem 0.6rem;"
-                f"border-radius:999px;font-weight:700'>{label}</span>"
+                f"<span class='kera-step is-complete'><span class='kera-step-index'>{i + 1:02d}</span>{escape(label)}</span>"
             )
+        elif i == current_idx:
+            parts.append(f"<span class='kera-step is-active'><span class='kera-step-index'>{i + 1:02d}</span>{escape(label)}</span>")
         else:
-            parts.append(f"<span style='color:var(--kera-muted)'>{label}</span>")
+            parts.append(f"<span class='kera-step'><span class='kera-step-index'>{i + 1:02d}</span>{escape(label)}</span>")
     st.markdown(
-        "<div style='display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-bottom:1.2rem'>"
-        + " <span style='color:var(--kera-muted)'>›</span> ".join(parts)
-        + "</div>",
+        "<div class='kera-stepper'>" + "".join(parts) + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -303,6 +386,27 @@ def _render_wizard(
 ) -> None:
     site_id = st.session_state.get("wiz_site_id")
     site_store = _get_site_store(site_id)
+    step = st.session_state.get("wiz_step", "patient")
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+
+    meta_items = [t(lang, f"Site: {_site_display_name(cp, site_id)}", f"Site: {_site_display_name(cp, site_id)}")]
+    if patient:
+        meta_items.append(f"Patient {patient['patient_id']}")
+    if visit:
+        meta_items.append(f"Visit {visit['visit_date']}")
+        meta_items.append(visit.get("culture_category", "").capitalize())
+
+    _render_page_header(
+        eyebrow=t(lang, "Clinician Case Wizard", "Clinician Case Wizard"),
+        title=t(lang, "Keratitis Case Workspace", "Keratitis Case Workspace"),
+        subtitle=t(
+            lang,
+            "환자 등록부터 ROI 확인, external validation, 학습 기여 결정까지 한 흐름으로 진행합니다.",
+            "Move from patient intake to ROI review, external validation, and contribution in one focused workflow.",
+        ),
+        meta_items=meta_items,
+    )
 
     if workflow_error and not runtime_status["ai_engine_ready"]:
         st.warning(
@@ -313,7 +417,6 @@ def _render_wizard(
             )
         )
 
-    step = st.session_state.get("wiz_step", "patient")
     _render_step_indicator(step, lang)
 
     if not site_store:
@@ -325,7 +428,7 @@ def _render_wizard(
     elif step == "visit":
         _step_visit(cp, site_store, lang)
     elif step == "images":
-        _step_images(site_store, lang)
+        _step_images(workflow, site_store, runtime_status, lang)
     elif step == "validation":
         _step_validation(cp, workflow, site_store, user, runtime_status, lang)
     elif step == "visualization":
@@ -341,41 +444,58 @@ def _render_wizard(
 # ──────────────────────────────────────────────
 
 def _step_patient(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "👤 환자 선택 또는 신규 등록", "👤 Select or Register Patient"))
+    st.subheader(t(lang, "환자 선택 또는 신규 등록", "Select or Register Patient"))
+    st.markdown(
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '기존 환자를 다시 선택하거나 새 환자를 등록하세요.', 'Select a returning patient or register a new one.'))}</strong>
+  <span>{escape(t(lang, 'follow-up 방문은 기존 환자를 선택해 이어서 기록하고, 새 환자는 여기서 바로 등록합니다.', 'Use existing patients for follow-up visits and register new patients here for first-time entry.'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     patients = site_store.list_patients()
+    left_col, right_col = st.columns([1.2, 0.95], gap="large")
 
-    # ── 기존 환자 검색
-    if patients:
-        st.markdown(f"**{t(lang, '기존 환자 검색', 'Search Existing Patient')}**")
-        search = st.text_input(t(lang, "환자 ID 또는 이름 검색", "Search by Patient ID"), key="patient_search", placeholder="P001")
-        filtered = [p for p in patients if search.lower() in p["patient_id"].lower()] if search else patients
+    with left_col:
+        st.markdown(f"**{t(lang, '복귀 환자 선택', 'Returning Patient')}**")
+        if patients:
+            search = st.text_input(
+                t(lang, "환자 ID 검색", "Search by Patient ID"),
+                key="patient_search",
+                placeholder="P001",
+            )
+            filtered = [p for p in patients if search.lower() in p["patient_id"].lower()] if search else patients
 
-        for p in filtered[:20]:
-            visits = site_store.list_visits_for_patient(p["patient_id"])
-            visit_summary = f"{len(visits)}{t(lang, '회 방문', ' visit(s)')}"
-            last_visit = visits[-1]["visit_date"] if visits else t(lang, "없음", "None")
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.markdown(
-                    f"<div class='kera-card' style='padding:0.7rem 1rem'>"
-                    f"<strong>{p['patient_id']}</strong> · "
-                    f"{p['sex']} · {p['age']}{t(lang, '세', 'y')} · "
-                    f"{visit_summary} · {t(lang, '최근', 'Last')}: {last_visit}"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            with col2:
-                if st.button(t(lang, "선택", "Select"), key=f"sel_{p['patient_id']}"):
-                    st.session_state["wiz_patient"] = p
-                    st.session_state["wiz_step"] = "visit"
-                    st.rerun()
+            for p in filtered[:20]:
+                visits = site_store.list_visits_for_patient(p["patient_id"])
+                visit_summary = f"{len(visits)}{t(lang, '회 방문', ' visit(s)')}"
+                last_visit = visits[-1]["visit_date"] if visits else t(lang, "없음", "None")
+                col1, col2 = st.columns([3, 1], gap="small")
+                with col1:
+                    st.markdown(
+                        f"<div class='kera-card'>"
+                        f"<strong>{p['patient_id']}</strong><br>"
+                        f"<span style='color:var(--kera-muted)'>{p['sex']} · {p['age']}{t(lang, '세', 'y')} · {visit_summary}</span><br>"
+                        f"<span style='color:var(--kera-muted)'>{t(lang, '최근 방문', 'Last visit')}: {last_visit}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with col2:
+                    if st.button(t(lang, "선택", "Select"), key=f"sel_{p['patient_id']}"):
+                        st.session_state["wiz_patient"] = p
+                        st.session_state["wiz_visit"] = None
+                        st.session_state["wiz_images"] = []
+                        st.session_state["wiz_roi_preview"] = None
+                        st.session_state["wiz_validation"] = None
+                        st.session_state["wiz_step"] = "visit"
+                        st.rerun()
+        else:
+            st.info(t(lang, "아직 등록된 환자가 없습니다.", "No patients have been registered yet."))
 
-        if filtered:
-            st.divider()
-
-    # ── 신규 환자 등록
-    with st.expander(t(lang, "➕ 신규 환자 등록", "➕ Register New Patient"), expanded=not patients):
+    with right_col:
+        st.markdown(f"**{t(lang, '새 환자 등록', 'Register New Patient')}**")
         with st.form("new_patient_form"):
             pid = st.text_input(t(lang, "환자 ID *", "Patient ID *"), placeholder="P001")
             col_s, col_a = st.columns(2)
@@ -383,10 +503,15 @@ def _step_patient(site_store: SiteStore, lang: str) -> None:
                 sex = st.selectbox(t(lang, "성별 *", "Sex *"), SEX_OPTIONS)
             with col_a:
                 age = st.number_input(t(lang, "나이 *", "Age *"), min_value=1, max_value=120, value=50)
+            st.caption(t(lang, "신규 등록 후 바로 방문 정보 입력 단계로 이동합니다.", "After registration, you will move directly to visit details."))
             if st.form_submit_button(t(lang, "등록 후 다음 단계", "Register & Continue"), use_container_width=True):
                 try:
                     patient = site_store.create_patient(pid.strip(), sex, int(age))
                     st.session_state["wiz_patient"] = patient
+                    st.session_state["wiz_visit"] = None
+                    st.session_state["wiz_images"] = []
+                    st.session_state["wiz_roi_preview"] = None
+                    st.session_state["wiz_validation"] = None
                     st.session_state["wiz_step"] = "visit"
                     st.rerun()
                 except ValueError as exc:
@@ -404,9 +529,18 @@ def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None
         st.rerun()
         return
 
-    st.subheader(t(lang, "📋 방문 정보 입력", "📋 Enter Visit Details"))
+    st.subheader(t(lang, "방문 정보 입력", "Enter Visit Details"))
     st.markdown(
-        f"<div class='kera-chip complete'>👤 {patient['patient_id']} · {patient['sex']} · {patient['age']}{t(lang, '세', 'y')}</div>",
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '이번 방문의 미생물 정보와 임상 맥락을 함께 정리하세요.', 'Capture the microbiology and clinical context for this visit.'))}</strong>
+  <span>{escape(t(lang, 'follow-up 방문이면 이전 이력을 참고해 active stage 여부와 이번 방문의 사진 세트를 준비하면 됩니다.', 'For follow-up visits, use the prior timeline to decide active stage and prepare the new image set.'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div class='kera-chip complete'>Patient {patient['patient_id']} · {patient['sex']} · {patient['age']}{t(lang, '세', 'y')}</div>",
         unsafe_allow_html=True,
     )
 
@@ -428,6 +562,7 @@ def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None
     fungal_list = organisms.get("fungal", []) if isinstance(organisms, dict) else []
 
     with st.form("visit_form"):
+        st.markdown(f"**{t(lang, 'Visit Core', 'Visit Core')}**")
         visit_date = st.date_input(t(lang, "방문 날짜 *", "Visit Date *"))
         culture_confirmed = st.checkbox(t(lang, "Culture-proven 확인 (필수)", "Culture-proven confirmed (required)"), value=True)
 
@@ -443,12 +578,14 @@ def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None
             species_list = bacterial_list if culture_category == "bacterial" else fungal_list
             culture_species = st.selectbox(t(lang, "균종 *", "Species *"), species_list or ["Other"])
 
+        st.markdown(f"**{t(lang, 'Clinical Context', 'Clinical Context')}**")
         col_cl, col_pf = st.columns(2)
         with col_cl:
             contact_lens_use = st.selectbox(t(lang, "콘택트렌즈 사용", "Contact Lens Use"), CONTACT_LENS_OPTIONS)
         with col_pf:
             predisposing_factor = st.multiselect(t(lang, "위험인자", "Predisposing Factors"), PREDISPOSING_FACTORS)
 
+        st.markdown(f"**{t(lang, 'Stage and Notes', 'Stage and Notes')}**")
         active_stage = st.toggle(
             t(lang, "🔴 현재 활성기 (Active stage)", "🔴 Currently active stage"),
             value=True,
@@ -483,6 +620,9 @@ def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None
                     active_stage=active_stage,
                 )
                 st.session_state["wiz_visit"] = visit
+                st.session_state["wiz_images"] = []
+                st.session_state["wiz_roi_preview"] = None
+                st.session_state["wiz_validation"] = None
                 st.session_state["wiz_step"] = "images"
                 st.rerun()
             except ValueError as exc:
@@ -493,7 +633,12 @@ def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None
 # Step 3: Images
 # ──────────────────────────────────────────────
 
-def _step_images(site_store: SiteStore, lang: str) -> None:
+def _step_images(
+    workflow: ResearchWorkflowService | None,
+    site_store: SiteStore,
+    runtime_status: dict[str, Any],
+    lang: str,
+) -> None:
     patient = st.session_state.get("wiz_patient")
     visit = st.session_state.get("wiz_visit")
     if not patient or not visit:
@@ -501,22 +646,23 @@ def _step_images(site_store: SiteStore, lang: str) -> None:
         st.rerun()
         return
 
-    st.subheader(t(lang, "🖼 슬릿램프 이미지 업로드", "🖼 Upload Slit-lamp Images"))
+    st.subheader(t(lang, "이미지 세트 구성", "Build the Visit Image Set"))
     st.markdown(
-        f"<div class='kera-chip-row'>"
-        f"<span class='kera-chip complete'>👤 {patient['patient_id']}</span>"
-        f"<span class='kera-chip complete'>📅 {visit['visit_date']}</span>"
-        f"<span class='kera-chip complete'>🦠 {visit['culture_category'].capitalize()} · {visit['culture_species']}</span>"
-        f"</div>",
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '이번 방문의 이미지 세트를 구성하세요.', 'Build the image set for this visit.'))}</strong>
+  <span>{escape(t(lang, 'white, slit, fluorescein을 섞어서 올릴 수 있고, 대표 이미지를 한 장 지정하면 ROI preview와 validation의 기준 이미지로 사용됩니다.', 'You can mix white, slit, and fluorescein views. Mark one representative image to anchor ROI preview and validation.'))}</span>
+</div>
+""",
         unsafe_allow_html=True,
     )
-
-    st.info(
-        t(
-            lang,
-            "white / slit / fluorescein 각 뷰를 여러 장 올릴 수 있습니다. view를 지정한 뒤 '업로드' 버튼을 누르세요.",
-            "You can upload multiple images per view (white, slit, fluorescein). Assign views and press Upload.",
-        )
+    st.markdown(
+        f"<div class='kera-chip-row'>"
+        f"<span class='kera-chip complete'>Patient {patient['patient_id']}</span>"
+        f"<span class='kera-chip complete'>Visit {visit['visit_date']}</span>"
+        f"<span class='kera-chip complete'>{visit['culture_category'].capitalize()} · {visit['culture_species']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
     uploaded_files = st.file_uploader(
@@ -526,13 +672,15 @@ def _step_images(site_store: SiteStore, lang: str) -> None:
         key="image_uploader",
     )
 
-    saved_images = st.session_state.get("wiz_images", [])
+    saved_images = st.session_state.get("wiz_images") or site_store.list_images_for_visit(patient["patient_id"], visit["visit_date"])
+    st.session_state["wiz_images"] = saved_images
+    roi_preview = st.session_state.get("wiz_roi_preview")
 
     if uploaded_files:
-        st.markdown(f"**{t(lang, 'View 지정', 'Assign View')}**")
+        st.markdown(f"**{t(lang, '업로드 전 뷰 배정', 'Assign Views Before Upload')}**")
         pending: list[dict[str, Any]] = []
         for i, f in enumerate(uploaded_files):
-            col_img, col_view, col_rep = st.columns([2, 2, 1])
+            col_img, col_view, col_rep = st.columns([1.5, 1, 0.7], gap="large")
             with col_img:
                 st.image(f, use_container_width=True, caption=f.name)
             with col_view:
@@ -564,12 +712,32 @@ def _step_images(site_store: SiteStore, lang: str) -> None:
                 except Exception as exc:
                     st.error(f"{item['file'].name}: {exc}")
             st.session_state["wiz_images"] = saved_images
+            st.session_state["wiz_roi_preview"] = None
+            st.session_state["wiz_validation"] = None
+            if workflow is not None and runtime_status["ai_engine_ready"]:
+                try:
+                    st.session_state["wiz_roi_preview"] = workflow.preview_case_roi(
+                        site_store=site_store,
+                        patient_id=patient["patient_id"],
+                        visit_date=visit["visit_date"],
+                    )
+                except Exception:
+                    st.session_state["wiz_roi_preview"] = None
             st.success(t(lang, f"{len(pending)}장 업로드 완료!", f"{len(pending)} image(s) uploaded!"))
             st.rerun()
 
-    # 업로드된 이미지 목록
     if saved_images:
-        st.markdown(f"**{t(lang, f'업로드 완료: {len(saved_images)}장', f'Uploaded: {len(saved_images)} image(s)')}**")
+        view_counts = pd.Series([img.get("view", "unknown") for img in saved_images]).value_counts()
+        rep_count = sum(1 for img in saved_images if img.get("is_representative"))
+        st.markdown(f"**{t(lang, '이번 방문에 저장된 이미지', 'Saved Images for This Visit')}**")
+        st.markdown(
+            "<div class='kera-stat-grid'>"
+            f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '전체 이미지', 'Total Images')}</div><div class='kera-stat-value'>{len(saved_images)}</div></div>"
+            f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '대표 이미지', 'Representative')}</div><div class='kera-stat-value'>{rep_count}</div></div>"
+            f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '등록된 View', 'Views Used')}</div><div class='kera-stat-value'>{len(view_counts)}</div></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         cols = st.columns(min(len(saved_images), 4))
         for i, img in enumerate(saved_images):
             with cols[i % 4]:
@@ -579,11 +747,57 @@ def _step_images(site_store: SiteStore, lang: str) -> None:
                 except Exception:
                     st.caption(img["image_path"])
 
-    col_back, col_next = st.columns(2)
+    if saved_images and workflow is not None and runtime_status["ai_engine_ready"]:
+        control_cols = st.columns([1, 1, 1.2], gap="large")
+        with control_cols[1]:
+            if st.button(t(lang, "ROI 미리보기", "Preview ROI"), use_container_width=True, key="btn_preview_roi"):
+                try:
+                    with st.spinner(t(lang, "MedSAM ROI 생성 중...", "Generating MedSAM ROI preview...")):
+                        previews = workflow.preview_case_roi(
+                            site_store=site_store,
+                            patient_id=patient["patient_id"],
+                            visit_date=visit["visit_date"],
+                        )
+                    st.session_state["wiz_roi_preview"] = previews
+                    st.success(t(lang, "ROI 미리보기를 생성했습니다.", "ROI preview is ready."))
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"{t(lang, 'ROI 생성 오류:', 'ROI preview error:')} {exc}")
+    elif saved_images:
+        st.info(
+            t(
+                lang,
+                "이미지는 저장되었습니다. ROI 미리보기와 validation은 로컬 AI 엔진이 준비되면 사용할 수 있습니다.",
+                "Images are saved. ROI preview and validation are available once the local AI engine is ready.",
+            )
+        )
+
+    if roi_preview:
+        st.markdown(f"**{t(lang, 'MedSAM ROI 미리보기', 'MedSAM ROI Preview')}**")
+        for preview in roi_preview:
+            st.markdown(
+                f"<div class='kera-chip-row'>"
+                f"<span class='kera-chip complete'>{preview['view']}</span>"
+                f"<span class='kera-chip {'complete' if preview['is_representative'] else 'pending'}'>{t(lang, '대표 이미지', 'Representative') if preview['is_representative'] else t(lang, '보조 이미지', 'Supporting image')}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            col_original, col_roi = st.columns([1.15, 1], gap="large")
+            with col_original:
+                st.markdown(f"<div class='kera-image-label'>{escape(t(lang, '원본', 'Original'))}</div>", unsafe_allow_html=True)
+                st.image(preview["source_image_path"], use_container_width=True)
+            with col_roi:
+                st.markdown(f"<div class='kera-image-label'>{escape(t(lang, 'MedSAM ROI', 'MedSAM ROI'))}</div>", unsafe_allow_html=True)
+                st.image(preview["roi_crop_path"], use_container_width=True)
+
+    col_back, col_preview, col_next = st.columns([1, 1, 1.2], gap="large")
     with col_back:
         if st.button(t(lang, "← 이전", "← Back"), use_container_width=True):
             st.session_state["wiz_step"] = "visit"
             st.rerun()
+    with col_preview:
+        if not saved_images or workflow is None or not runtime_status["ai_engine_ready"]:
+            st.button(t(lang, "ROI 미리보기", "Preview ROI"), disabled=True, use_container_width=True, key="btn_preview_roi_disabled")
     with col_next:
         if saved_images:
             if st.button(t(lang, "검증 실행 →", "Run Validation →"), use_container_width=True, type="primary"):
@@ -634,14 +848,19 @@ def _step_validation(
     # 모델 선택
     models = [m for m in cp.list_model_versions() if m.get("ready", True)]
     if not models:
-        st.error(t(lang, "등록된 글로벌 모델이 없습니다.", "No global model registered."))
+        st.error(t(lang, "등록된 글로벌 모델이 없습니다. 먼저 초기 글로벌 학습을 실행하세요.", "No global model registered. Run initial global training first."))
+        st.info(t(lang, "이미지 단계에서는 MedSAM ROI 미리보기만 먼저 사용할 수 있습니다.", "You can still use MedSAM ROI preview from the image step first."))
         return
 
     model_options = {m["version_id"]: f"{m['version_name']} ({m['architecture']})" for m in models}
+    current_model = cp.current_global_model()
+    default_model_id = current_model["version_id"] if current_model and current_model.get("ready", True) else models[0]["version_id"]
+    default_index = next((index for index, item in enumerate(models) if item["version_id"] == default_model_id), 0)
     selected_model_id = st.selectbox(
         t(lang, "글로벌 모델 선택", "Select Global Model"),
         options=list(model_options.keys()),
         format_func=lambda x: model_options[x],
+        index=default_index,
     )
     selected_model = next((m for m in models if m["version_id"] == selected_model_id), models[0])
 
@@ -668,9 +887,8 @@ def _step_validation(
     if run_btn:
         with st.spinner(t(lang, "추론 중... 잠시만요 ☕", "Running inference... please wait ☕")):
             try:
-                project_id = cp.list_projects()[0]["project_id"] if cp.list_projects() else "default"
                 summary, case_preds = workflow.run_case_validation(
-                    project_id=project_id,
+                    project_id=_project_id_for_site(cp, site_store.site_id),
                     site_store=site_store,
                     patient_id=patient["patient_id"],
                     visit_date=visit["visit_date"],
@@ -696,32 +914,55 @@ def _render_validation_result(validation: dict[str, Any], lang: str) -> None:
     true_label = summary.get("true_label", "")
     prob = summary.get("prediction_probability", 0.0)
     is_correct = summary.get("is_correct", False)
+    pred_label_ko = "세균성" if pred_label == "bacterial" else "진균성"
+    pred_label_en = pred_label.capitalize() if pred_label else "Unknown"
+    agreement_label = t(lang, "Culture 일치" if is_correct else "Culture 불일치", "Matches Culture" if is_correct else "Differs from Culture")
+    agreement_tone = "is-good" if is_correct else "is-caution"
+    dominant_pct = prob * 100 if pred_label == "bacterial" else (1 - prob) * 100
+    model_name = validation.get("model_version", {}).get("version_name", "Global model")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        label_ko = "세균성" if pred_label == "bacterial" else "진균성"
-        label_en = pred_label.capitalize()
-        st.metric(
-            t(lang, "AI 예측", "AI Prediction"),
-            t(lang, label_ko, label_en),
-        )
-    with col2:
-        st.metric(t(lang, "신뢰도", "Confidence"), f"{prob * 100:.1f}%")
-    with col3:
-        result_ko = "✅ 일치" if is_correct else "❌ 불일치"
-        result_en = "✅ Correct" if is_correct else "❌ Incorrect"
-        st.metric(t(lang, "Culture 결과와", "vs Culture"), t(lang, result_ko, result_en))
-
-    # 확률 바
-    bar_color = "#0d8f8a" if pred_label == "bacterial" else "#d6b468"
     st.markdown(
-        f"<div style='background:#e8f6f5;border-radius:999px;height:12px;margin:0.5rem 0'>"
-        f"<div style='background:{bar_color};width:{prob*100:.1f}%;height:100%;border-radius:999px'></div>"
-        f"</div>"
-        f"<div style='display:flex;justify-content:space-between;font-size:0.8rem;color:var(--kera-muted)'>"
-        f"<span>Bacterial</span><span>Fungal</span></div>",
+        f"""
+<section class="kera-result-hero">
+  <div class="kera-result-topline">
+    <span class="kera-result-kicker">{escape(t(lang, 'External Validation Result', 'External Validation Result'))}</span>
+    <span class="kera-result-badge {agreement_tone}">{escape(agreement_label)}</span>
+  </div>
+  <div class="kera-result-main">
+    <div>
+      <div class="kera-result-label">{escape(t(lang, 'Predicted Organism', 'Predicted Organism'))}</div>
+      <div class="kera-result-value">{escape(t(lang, pred_label_ko, pred_label_en))}</div>
+      <div class="kera-result-caption">{escape(t(lang, '선택된 글로벌 모델 기준 결과', 'Based on the selected global model'))}</div>
+    </div>
+    <div class="kera-result-number">
+      <span>{dominant_pct:.1f}%</span>
+      <small>{escape(t(lang, 'dominant confidence', 'dominant confidence'))}</small>
+    </div>
+  </div>
+  <div class="kera-prob-track">
+    <div class="kera-prob-fill" style="width:{prob*100:.1f}%"></div>
+  </div>
+  <div class="kera-prob-labels">
+    <span>Bacterial</span>
+    <span>Fungal</span>
+  </div>
+</section>
+""",
         unsafe_allow_html=True,
     )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        _stat_card(t(lang, "AI 예측", "AI Prediction"), t(lang, pred_label_ko, pred_label_en), model_name, lang)
+    with c2:
+        _stat_card(t(lang, "신뢰도", "Confidence"), f"{prob * 100:.1f}%", t(lang, "모델 점수", "model score"), lang)
+    with c3:
+        _stat_card(
+            t(lang, "Culture 비교", "Culture Check"),
+            t(lang, "일치" if is_correct else "검토 필요", "Match" if is_correct else "Needs Review"),
+            agreement_label,
+            lang,
+        )
 
 
 # ──────────────────────────────────────────────
@@ -735,7 +976,16 @@ def _step_visualization(site_store: SiteStore, lang: str) -> None:
         st.rerun()
         return
 
-    st.subheader(t(lang, "🧠 시각화 결과", "🧠 Visualization"))
+    st.subheader(t(lang, "시각화 결과", "Visualization Review"))
+    st.markdown(
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '대표 이미지와 모델 근거를 함께 확인하세요.', 'Review the representative image and the model evidence together.'))}</strong>
+  <span>{escape(t(lang, '원본, MedSAM ROI, Grad-CAM을 같은 맥락에서 비교하도록 정리했습니다.', 'Original image, MedSAM ROI, and Grad-CAM are arranged for comparison in one view.'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     case_preds = validation.get("case_predictions", [])
     pred = case_preds[0] if case_preds else {}
@@ -753,16 +1003,16 @@ def _step_visualization(site_store: SiteStore, lang: str) -> None:
     if not rep_path and rep_images:
         rep_path = rep_images[0]["image_path"]
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns([1.4, 1, 1], gap="large")
     with col1:
-        st.markdown(f"**{t(lang, '원본 대표 이미지', 'Original (Representative)')}**")
+        st.markdown(f"<div class='kera-image-label'>{escape(t(lang, '원본 대표 이미지', 'Original Representative'))}</div>", unsafe_allow_html=True)
         if rep_path and Path(rep_path).exists():
             st.image(rep_path, use_container_width=True)
         else:
             st.info(t(lang, "이미지를 불러올 수 없습니다.", "Image not available."))
 
     with col2:
-        st.markdown(f"**{t(lang, 'MedSAM ROI Crop', 'MedSAM ROI Crop')}**")
+        st.markdown(f"<div class='kera-image-label'>{escape(t(lang, 'MedSAM ROI Crop', 'MedSAM ROI Crop'))}</div>", unsafe_allow_html=True)
         if roi_crop_path and Path(roi_crop_path).exists():
             st.image(roi_crop_path, use_container_width=True)
             st.caption(t(lang, "각막 ROI 자동 크롭", "Auto-cropped corneal ROI"))
@@ -770,12 +1020,16 @@ def _step_visualization(site_store: SiteStore, lang: str) -> None:
             st.info(t(lang, "ROI 크롭 결과 없음", "No ROI crop available"))
 
     with col3:
-        st.markdown(f"**{t(lang, 'Grad-CAM 히트맵', 'Grad-CAM Heatmap')}**")
+        st.markdown(f"<div class='kera-image-label'>{escape(t(lang, 'Grad-CAM 히트맵', 'Grad-CAM Heatmap'))}</div>", unsafe_allow_html=True)
         if gradcam_path and Path(gradcam_path).exists():
             st.image(gradcam_path, use_container_width=True)
             st.caption(t(lang, "모델이 주목한 영역 (빨강 = 고영향)", "Model attention (red = high impact)"))
         else:
             st.info(t(lang, "Grad-CAM 결과 없음", "No Grad-CAM available"))
+
+    if medsam_mask_path and Path(medsam_mask_path).exists():
+        with st.expander(t(lang, "MedSAM 마스크 보기", "View MedSAM Mask"), expanded=False):
+            st.image(medsam_mask_path, use_container_width=True)
 
     # 검증 결과 요약도 표시
     st.markdown("---")
@@ -840,6 +1094,7 @@ def _step_contribution(
             """
 **What happens when you contribute?**
 - Your images never leave this hospital
+- Training uses MedSAM ROI crops only to keep the learning input policy consistent
 - Only the **weight delta** (model update) is uploaded to the central server
 - Multiple sites' updates are aggregated to improve the global model (Federated Learning)
 """,
@@ -910,27 +1165,27 @@ def _step_thankyou(cp: ControlPlaneStore, user: dict[str, Any], lang: str) -> No
     if contributed:
         st.markdown(
             f"""
-<div style='text-align:center;padding:2rem 0'>
-  <div style='font-size:3rem'>🎉</div>
-  <div style='font-size:1.6rem;font-weight:900;color:var(--kera-accent);margin:0.5rem 0'>
+<section class='kera-closure-card is-positive'>
+  <div class='kera-sidebar-label'>{escape(t(lang, 'Contribution Recorded', 'Contribution Recorded'))}</div>
+  <div class='kera-closure-title'>
     {t(lang, f'감사합니다, {name} 선생님!', f'Thank you, Dr. {name}!')}
   </div>
-  <div style='color:var(--kera-muted);font-size:1rem'>
+  <div class='kera-closure-copy'>
     {t(lang, '이 케이스가 글로벌 모델 개선에 기여됩니다.', 'This case will contribute to improving the global model.')}
   </div>
-</div>
+</section>
 """,
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
             f"""
-<div style='text-align:center;padding:2rem 0'>
-  <div style='font-size:3rem'>✅</div>
-  <div style='font-size:1.6rem;font-weight:900;color:var(--kera-ink);margin:0.5rem 0'>
+<section class='kera-closure-card'>
+  <div class='kera-sidebar-label'>{escape(t(lang, 'Case Saved', 'Case Saved'))}</div>
+  <div class='kera-closure-title'>
     {t(lang, '케이스가 저장되었습니다', 'Case Saved')}
   </div>
-</div>
+</section>
 """,
             unsafe_allow_html=True,
         )
@@ -980,12 +1235,23 @@ def _stat_card(label: str, value: str, note: str, lang: str) -> None:
 # ──────────────────────────────────────────────
 
 def _render_dashboard(cp: ControlPlaneStore, user: dict[str, Any], lang: str) -> None:
-    st.title(t(lang, "📊 대시보드", "📊 Dashboard"))
-
     site_id = st.session_state.get("wiz_site_id")
     site_store = _get_site_store(site_id)
-
     stats = cp.get_contribution_stats(user_id=user["user_id"])
+    _render_page_header(
+        eyebrow=t(lang, "Research Overview", "Research Overview"),
+        title=t(lang, "연구 대시보드", "Research Dashboard"),
+        subtitle=t(
+            lang,
+            "사이트 현황, 최근 검증, 기여 추적을 한 화면에서 확인합니다.",
+            "Review site activity, recent validations, and contribution tracking in one overview.",
+        ),
+        meta_items=[
+            f"User {user.get('full_name', user['username'])}",
+            f"Site {_site_display_name(cp, site_id)}",
+            f"Model {stats['current_model_version']}",
+        ],
+    )
 
     # 전체 통계
     st.markdown(f"### {t(lang, '연구 현황', 'Research Overview')}")
@@ -1050,14 +1316,14 @@ def _render_dashboard(cp: ControlPlaneStore, user: dict[str, Any], lang: str) ->
 def _render_admin_import(cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str) -> None:
     """기존 원본 이미지 + CSV 메타데이터를 일괄 임포트합니다."""
     st.markdown(f"### {t(lang, '기존 데이터 일괄 임포트', 'Bulk Data Import')}")
-    st.info(
-        t(
-            lang,
-            "원본 이미지와 CSV 메타데이터를 함께 업로드하면 환자/방문/이미지를 자동 등록합니다.\n\n"
-            "① CSV 템플릿 다운로드 → ② Excel에서 메타데이터 입력 → ③ CSV + 이미지 ZIP 업로드",
-            "Upload raw images with a CSV metadata file to auto-register patients, visits, and images.\n\n"
-            "① Download CSV template → ② Fill in metadata in Excel → ③ Upload CSV + image ZIP",
-        )
+    st.markdown(
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '과거 데이터를 한 번에 운영 시스템으로 옮기는 화면입니다.', 'Use this view to migrate legacy cases into the operational workflow.'))}</strong>
+  <span>{escape(t(lang, 'CSV는 과거 데이터 이관용입니다. 일상적인 새 케이스 입력에는 더 이상 필요하지 않습니다.', 'CSV is only for backfilling legacy data. Daily case entry no longer needs manual CSV creation.'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
     )
 
     sites = cp.list_sites()
@@ -1071,6 +1337,30 @@ def _render_admin_import(cp: ControlPlaneStore, workflow: ResearchWorkflowServic
         options=list(site_options.keys()),
         format_func=lambda x: site_options[x],
         key="import_site_select",
+    )
+    site_store = SiteStore(import_site_id)
+    site_patients = site_store.list_patients()
+    site_visits = site_store.list_visits()
+    site_images = site_store.list_images()
+
+    st.markdown(
+        "<div class='kera-stat-grid'>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '대상 사이트', 'Target Site')}</div><div class='kera-stat-value'>{escape(_site_display_name(cp, import_site_id))}</div><div class='kera-stat-note'>{import_site_id}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '등록 환자', 'Patients')}</div><div class='kera-stat-value'>{len(site_patients)}</div><div class='kera-stat-note'>{t(lang, '현재 저장됨', 'currently stored')}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '총 방문', 'Visits')}</div><div class='kera-stat-value'>{len(site_visits)}</div><div class='kera-stat-note'>{t(lang, '누적 방문 수', 'recorded visits')}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '총 이미지', 'Images')}</div><div class='kera-stat-value'>{len(site_images)}</div><div class='kera-stat-note'>{t(lang, '업로드 완료', 'uploaded so far')}</div></div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '권장 순서', 'Recommended Flow'))}</strong>
+  <span>{escape(t(lang, '1) CSV 템플릿 다운로드  2) 이미지 파일명과 CSV를 맞춤  3) CSV와 ZIP 업로드  4) 먼저 2~3명만 시험 임포트', '1) Download the CSV template  2) match image filenames  3) upload CSV and ZIP  4) test-import 2-3 patients first'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
     )
 
     # CSV 템플릿 다운로드
@@ -1125,8 +1415,6 @@ def _render_admin_import(cp: ControlPlaneStore, workflow: ResearchWorkflowServic
                 st.caption(t(lang, f"총 {len(df)}행 미리보기 (처음 5행)", f"Preview of {len(df)} rows (first 5)"))
 
                 if st.button(t(lang, "✅ 임포트 실행", "✅ Run Import"), type="primary", key="btn_run_import"):
-                    site_store = SiteStore(import_site_id)
-
                     # 이미지 파일 추출 (ZIP이면 압축 해제, 개별 파일이면 그대로)
                     image_bytes: dict[str, bytes] = {}
                     for uploaded in zip_file:
@@ -1197,8 +1485,17 @@ def _render_admin_import(cp: ControlPlaneStore, workflow: ResearchWorkflowServic
 def _render_admin_initial_training(
     cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str
 ) -> None:
-    """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다."""
-    st.markdown(f"### {t(lang, '초기 학습 (Train from Scratch)', 'Initial Training (from Scratch)')}")
+    """사이트 전체 데이터로 DenseNet 글로벌 학습을 수행합니다."""
+    st.markdown(f"### {t(lang, '초기 글로벌 학습', 'Initial Global Training')}")
+    st.markdown(
+        f"""
+<div class="kera-panel-note">
+  <strong>{escape(t(lang, '이 화면은 첫 글로벌 모델을 만드는 관리자용 학습 컨트롤룸입니다.', 'This screen is the admin training control room for the first global model.'))}</strong>
+  <span>{escape(t(lang, '입력 데이터는 MedSAM ROI crop만 사용하고, 환자 단위로 train/validation이 나뉩니다.', 'Training uses MedSAM ROI crops only, and the split is performed at the patient level.'))}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     if workflow is None:
         st.error(t(lang, "AI 모듈이 준비되지 않았습니다.", "AI module not ready."))
@@ -1220,6 +1517,12 @@ def _render_admin_initial_training(
     manifest_df = site_store.load_manifest()
     n_total = len(manifest_df)
     n_patients = manifest_df["patient_id"].nunique() if not manifest_df.empty else 0
+    n_active = int(manifest_df["active_stage"].fillna(False).astype(bool).sum()) if "active_stage" in manifest_df.columns else 0
+    culture_mix = (
+        manifest_df["culture_category"].value_counts().to_dict()
+        if "culture_category" in manifest_df.columns and not manifest_df.empty
+        else {}
+    )
 
     st.markdown(
         f"<div class='kera-stat-grid'>"
@@ -1227,16 +1530,35 @@ def _render_admin_initial_training(
         f"<div class='kera-stat-value'>{n_total}</div></div>"
         f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '환자 수', 'Patients')}</div>"
         f"<div class='kera-stat-value'>{n_patients}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '활성기 이미지', 'Active Stage Images')}</div>"
+        f"<div class='kera-stat-value'>{n_active}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '균종 분포', 'Culture Mix')}</div>"
+        f"<div class='kera-stat-value'>{culture_mix.get('bacterial', 0)} / {culture_mix.get('fungal', 0)}</div>"
+        f"<div class='kera-stat-note'>BK / FK</div></div>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
-    if n_total < 4:
-        st.warning(t(lang, "학습에 최소 4개 이미지가 필요합니다. 먼저 데이터를 임포트하세요.", "At least 4 images required. Import data first."))
+    if n_patients < 4:
+        st.warning(t(lang, "학습에 최소 4명의 환자가 필요합니다. 먼저 데이터를 임포트하세요.", "At least 4 patients are required. Import data first."))
         return
 
     st.divider()
     st.markdown(f"**{t(lang, '학습 설정', 'Training Configuration')}**")
+    st.info(
+        t(
+            lang,
+            "학습 입력은 MedSAM ROI crop만 사용합니다. 원본 전체 이미지는 초기 학습 입력으로 사용하지 않습니다.",
+            "Training uses MedSAM ROI crops only. Full raw images are not used as training inputs.",
+        )
+    )
+    st.caption(
+        t(
+            lang,
+            "처음에는 기본값으로 시작하고, 성능을 본 뒤 epoch/learning rate를 미세 조정하는 것을 권장합니다.",
+            "Start with the defaults first, then tune epochs and learning rate after you review the first model.",
+        )
+    )
 
     from kera_research.domain import DENSENET_VARIANTS
     col1, col2 = st.columns(2)
@@ -1254,11 +1576,6 @@ def _render_admin_initial_training(
             t(lang, "ImageNet 초기화 사용 (권장)", "Use ImageNet pretrained weights (recommended)"),
             value=True,
         )
-        use_medsam = st.toggle(
-            t(lang, "MedSAM crop 이미지로 학습", "Train on MedSAM crop images"),
-            value=True,
-            help=t(lang, "추론 시와 동일한 전처리 사용 (권장)", "Use same preprocessing as inference (recommended)"),
-        )
         lr = st.select_slider(
             t(lang, "학습률", "Learning Rate"),
             options=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3],
@@ -1271,7 +1588,7 @@ def _render_admin_initial_training(
     exec_mode = st.radio(t(lang, "실행 모드", "Execution Mode"), EXECUTION_MODES, horizontal=True)
     device = resolve_execution_mode(exec_mode, hw)
 
-    if not hw["cuda_available"] and batch_size > 8:
+    if not hw["gpu_available"] and batch_size > 8:
         st.warning(t(lang, "CPU 환경에서는 배치 크기 8 이하를 권장합니다.", "Batch size ≤ 8 recommended on CPU."))
 
     from kera_research.config import MODEL_DIR
@@ -1313,7 +1630,7 @@ def _render_admin_initial_training(
                 batch_size=batch_size,
                 val_split=val_split,
                 use_pretrained=use_pretrained,
-                use_medsam_crops=use_medsam,
+                use_medsam_crops=True,
                 progress_callback=on_progress,
             )
             progress_bar.progress(1.0)
@@ -1322,12 +1639,14 @@ def _render_admin_initial_training(
                     lang,
                     f"✅ 학습 완료!\n\n"
                     f"- 모델명: **{result['version_name']}**\n"
-                    f"- Train: {result['n_train']}건 / Val: {result['n_val']}건\n"
+                    f"- Train: {result['n_train_patients']}명 / {result['n_train']}장\n"
+                    f"- Val: {result['n_val_patients']}명 / {result['n_val']}장\n"
                     f"- 최고 Val Accuracy: **{result['best_val_acc']*100:.1f}%**\n"
                     f"- 저장 경로: `{result['output_model_path']}`",
                     f"✅ Training complete!\n\n"
                     f"- Model: **{result['version_name']}**\n"
-                    f"- Train: {result['n_train']} / Val: {result['n_val']}\n"
+                    f"- Train: {result['n_train_patients']} patients / {result['n_train']} images\n"
+                    f"- Val: {result['n_val_patients']} patients / {result['n_val']} images\n"
                     f"- Best Val Accuracy: **{result['best_val_acc']*100:.1f}%**\n"
                     f"- Saved to: `{result['output_model_path']}`",
                 )
@@ -1337,7 +1656,20 @@ def _render_admin_initial_training(
 
 
 def _render_admin(cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str) -> None:
-    st.title(t(lang, "⚙️ 관리자 패널", "⚙️ Admin Panel"))
+    _render_page_header(
+        eyebrow=t(lang, "Control Plane", "Control Plane"),
+        title=t(lang, "관리자 패널", "Admin Panel"),
+        subtitle=t(
+            lang,
+            "데이터 임포트, 초기 학습, 모델 레지스트리, 기관 운영, federated aggregation을 관리합니다.",
+            "Manage import, initial training, model registry, site operations, and federated aggregation.",
+        ),
+        meta_items=[
+            f"Sites {len(cp.list_sites())}",
+            f"Models {len(cp.list_model_versions())}",
+            f"Pending Updates {len([u for u in cp.list_model_updates() if u.get('status') == 'pending_upload'])}",
+        ],
+    )
 
     tab_import, tab_train, tab_model, tab_sites, tab_organisms, tab_federated = st.tabs([
         t(lang, "📥 데이터 임포트", "📥 Import Data"),
@@ -1456,8 +1788,16 @@ def _render_admin(cp: ControlPlaneStore, workflow: ResearchWorkflowService | Non
                     from kera_research.config import MODEL_DIR
                     from kera_research.domain import make_id
                     out_path = MODEL_DIR / f"global_{arch}_{make_id('agg')}.pth"
-                    workflow.model_manager.aggregate_weight_deltas(delta_paths, out_path)
-                    site_weights = {u["site_id"]: u.get("n_cases", 1) for u in pending_deltas}
+                    delta_weights = [u.get("n_cases", 1) for u in pending_deltas]
+                    site_weights: dict[str, int] = {}
+                    for update in pending_deltas:
+                        site_weights[update["site_id"]] = site_weights.get(update["site_id"], 0) + int(update.get("n_cases", 1))
+                    workflow.model_manager.aggregate_weight_deltas(
+                        delta_paths,
+                        out_path,
+                        weights=delta_weights,
+                        base_model_path=base_model["model_path"],
+                    )
                     new_version_name = f"global-{arch}-fedavg-{make_id('v')[:6]}"
                     cp.register_aggregation(
                         base_model_version_id=base_model["version_id"],
@@ -1465,6 +1805,7 @@ def _render_admin(cp: ControlPlaneStore, workflow: ResearchWorkflowService | Non
                         new_version_name=new_version_name,
                         architecture=arch,
                         site_weights=site_weights,
+                        requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
                     )
                     # 집계된 업데이트 상태 변경
                     for u in pending_deltas:
@@ -1495,41 +1836,45 @@ def _inject_css(theme: str) -> None:
     if theme == "dark":
         theme_vars = """
         :root {
-            --kera-ink: #e8eff7;
-            --kera-muted: #bfd0df;
-            --kera-accent: #59d0c9;
-            --kera-accent-soft: rgba(89, 208, 201, 0.12);
-            --kera-warm: #1f2a35;
-            --kera-card: rgba(19, 29, 40, 0.92);
-            --kera-border: rgba(232, 239, 247, 0.10);
-            --kera-bg-top: #121a23;
-            --kera-bg-bottom: #0d131a;
-            --kera-shadow: rgba(0, 0, 0, 0.28);
-            --kera-input: rgba(18, 26, 35, 0.92);
-            --kera-sidebar: rgba(11, 18, 26, 0.92);
-            --kera-footer: rgba(14, 22, 32, 0.96);
-            --kera-danger-bg: rgba(96, 28, 28, 0.18);
-            --kera-danger-ink: #ffd3d3;
+            --kera-ink: #eef5f7;
+            --kera-muted: #b7cad4;
+            --kera-accent: #62c8bc;
+            --kera-accent-soft: rgba(98, 200, 188, 0.12);
+            --kera-accent-strong: #d18a5c;
+            --kera-card: rgba(18, 27, 36, 0.82);
+            --kera-card-strong: rgba(12, 19, 27, 0.92);
+            --kera-border: rgba(238, 245, 247, 0.08);
+            --kera-bg-top: #0e151d;
+            --kera-bg-bottom: #16212a;
+            --kera-shadow: rgba(0, 0, 0, 0.30);
+            --kera-input: rgba(11, 19, 28, 0.88);
+            --kera-sidebar: rgba(8, 14, 20, 0.96);
+            --kera-sidebar-ink: #f3f8fa;
+            --kera-footer: rgba(10, 17, 24, 0.94);
+            --kera-danger-bg: rgba(111, 33, 33, 0.24);
+            --kera-danger-ink: #ffd4d4;
         }
         """
     else:
         theme_vars = """
         :root {
-            --kera-ink: #17324d;
-            --kera-muted: #4d6277;
-            --kera-accent: #0d8f8a;
-            --kera-accent-soft: #e8f6f5;
-            --kera-warm: #f6f1e8;
-            --kera-card: rgba(255, 255, 255, 0.90);
-            --kera-border: rgba(23, 50, 77, 0.10);
-            --kera-bg-top: #f4f7fb;
-            --kera-bg-bottom: #eef4f2;
-            --kera-shadow: rgba(23, 50, 77, 0.06);
-            --kera-input: rgba(255, 255, 255, 0.95);
-            --kera-sidebar: rgba(245, 249, 252, 0.94);
-            --kera-footer: rgba(255, 255, 255, 0.96);
-            --kera-danger-bg: #f7dede;
-            --kera-danger-ink: #8a2f2f;
+            --kera-ink: #1b2732;
+            --kera-muted: #63717c;
+            --kera-accent: #0b7a72;
+            --kera-accent-soft: rgba(11, 122, 114, 0.12);
+            --kera-accent-strong: #b86d43;
+            --kera-card: rgba(255, 250, 244, 0.82);
+            --kera-card-strong: rgba(255, 255, 255, 0.88);
+            --kera-border: rgba(27, 39, 50, 0.08);
+            --kera-bg-top: #f6efe5;
+            --kera-bg-bottom: #edf3f0;
+            --kera-shadow: rgba(27, 39, 50, 0.08);
+            --kera-input: rgba(255, 255, 255, 0.84);
+            --kera-sidebar: rgba(16, 31, 43, 0.97);
+            --kera-sidebar-ink: #f3f8fb;
+            --kera-footer: rgba(16, 31, 43, 0.88);
+            --kera-danger-bg: #f8dfdc;
+            --kera-danger-ink: #8a3932;
         }
         """
 
@@ -1537,20 +1882,40 @@ def _inject_css(theme: str) -> None:
         "<style>"
         + theme_vars
         + """
+        html, body, [class*="css"]  {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
         .stApp {
             background:
-                radial-gradient(circle at top right, rgba(13, 143, 138, 0.10), transparent 26%),
-                radial-gradient(circle at top left, rgba(214, 180, 104, 0.12), transparent 24%),
+                radial-gradient(circle at 12% 12%, rgba(184, 109, 67, 0.12), transparent 24%),
+                radial-gradient(circle at 86% 9%, rgba(11, 122, 114, 0.16), transparent 26%),
+                linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.02) 45%, transparent 100%),
                 linear-gradient(180deg, var(--kera-bg-top) 0%, var(--kera-bg-bottom) 100%);
             color: var(--kera-ink);
             font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
         }
-        [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, var(--kera-sidebar), rgba(255,255,255,0.02));
-            border-right: 1px solid var(--kera-border);
+        .block-container {
+            max-width: 1220px;
+            padding-top: 1.4rem;
+            padding-bottom: 3.5rem;
         }
-        [data-testid="stSidebar"] * { color: var(--kera-ink) !important; }
-        .stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp h5,.stApp h6,
+        [data-testid="stSidebar"] {
+            background:
+                radial-gradient(circle at top, rgba(98, 200, 188, 0.10), transparent 28%),
+                linear-gradient(180deg, var(--kera-sidebar), rgba(0,0,0,0.12));
+            border-right: 1px solid rgba(255,255,255,0.07);
+        }
+        [data-testid="stSidebar"] * { color: var(--kera-sidebar-ink) !important; }
+        .stApp h1,.stApp h2,.stApp h3,
+        .kera-page-title,
+        .kera-brand-title,
+        .kera-result-value,
+        .kera-closure-title {
+            font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+            letter-spacing: -0.03em;
+        }
+        .stApp h4,.stApp h5,.stApp h6,
         .stApp p,.stApp label,.stApp span,
         .stApp div[data-testid="stMarkdownContainer"],
         .stApp div[data-testid="stMarkdownContainer"] p,
@@ -1559,22 +1924,46 @@ def _inject_css(theme: str) -> None:
         .stApp [data-testid="stAlertContainer"],
         .stApp [data-testid="stRadio"] p { color: var(--kera-ink) !important; }
         .stApp [data-testid="stCaptionContainer"] { color: var(--kera-muted) !important; }
-        [data-testid="stMetric"] {
-            background: var(--kera-card);
+        [data-testid="stImage"] img {
+            border-radius: 22px;
             border: 1px solid var(--kera-border);
-            border-radius: 18px;
-            padding: 0.8rem 0.9rem;
-            box-shadow: 0 10px 24px var(--kera-shadow);
+            box-shadow: 0 18px 40px var(--kera-shadow);
+        }
+        [data-testid="stMetric"] {
+            background: linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
+            border: 1px solid var(--kera-border);
+            border-radius: 22px;
+            padding: 1rem 1rem;
+            box-shadow: 0 18px 36px var(--kera-shadow);
         }
         .stButton > button {
+            min-height: 2.95rem;
             border-radius: 999px;
             border: 1px solid var(--kera-border);
-            background: linear-gradient(135deg, var(--kera-accent), #2fa9a3);
-            color: white;
+            background: rgba(255,255,255,0.24);
+            color: var(--kera-ink);
             font-weight: 700;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.04);
         }
-        .stButton > button:hover { filter: brightness(1.04); color: white; }
+        .stButton > button:hover {
+            filter: brightness(1.02);
+            border-color: rgba(11, 122, 114, 0.35);
+            color: var(--kera-ink);
+        }
+        .stButton > button[kind="primary"],
+        .stDownloadButton > button {
+            background: linear-gradient(135deg, var(--kera-accent), #0f9a8e 56%, var(--kera-accent-strong));
+            color: white !important;
+            border-color: transparent;
+            box-shadow: 0 16px 32px rgba(11, 122, 114, 0.20);
+        }
+        .stButton > button[kind="primary"]:hover,
+        .stDownloadButton > button:hover {
+            color: white !important;
+            filter: brightness(1.05);
+        }
         .stSelectbox > div > div,
+        .stSelectbox div[data-baseweb="select"],
         .stTextInput > div > div > input,
         .stTextArea textarea,
         .stDateInput > div > div input,
@@ -1582,51 +1971,411 @@ def _inject_css(theme: str) -> None:
         .stMultiSelect > div > div {
             background: var(--kera-input);
             color: var(--kera-ink);
+            border-radius: 16px !important;
+            border: 1px solid var(--kera-border) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.22);
+            backdrop-filter: blur(10px);
+        }
+        [data-baseweb="tab-list"] {
+            gap: 0.45rem;
+            background: transparent;
+        }
+        [data-baseweb="tab"] {
+            height: 2.6rem;
+            border-radius: 999px;
+            padding: 0 1rem;
+            background: rgba(255,255,255,0.3);
+            border: 1px solid var(--kera-border);
+        }
+        [data-baseweb="tab"][aria-selected="true"] {
+            background: linear-gradient(135deg, var(--kera-accent), rgba(11, 122, 114, 0.72));
+            color: white !important;
+            border-color: transparent;
+        }
+        [data-testid="stDataFrame"], .stPlotlyChart {
+            border-radius: 22px;
+            overflow: hidden;
+            border: 1px solid var(--kera-border);
+            box-shadow: 0 14px 30px var(--kera-shadow);
         }
         .kera-card {
-            background: var(--kera-card);
+            background: linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
             border: 1px solid var(--kera-border);
-            border-radius: 18px;
-            padding: 0.95rem 1rem;
-            box-shadow: 0 10px 28px var(--kera-shadow);
-            margin-bottom: 0.5rem;
+            border-radius: 22px;
+            padding: 1rem 1.05rem;
+            box-shadow: 0 18px 40px var(--kera-shadow);
+            margin-bottom: 0.65rem;
+            backdrop-filter: blur(14px);
         }
         .kera-stat-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 0.75rem;
-            margin: 0.4rem 0 0.8rem 0;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.9rem;
+            margin: 0.75rem 0 1.1rem 0;
         }
         .kera-stat-card {
-            background: var(--kera-card);
+            background: linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
             border: 1px solid var(--kera-border);
-            border-radius: 18px;
-            padding: 0.9rem 1rem;
-            box-shadow: 0 10px 24px var(--kera-shadow);
+            border-radius: 22px;
+            padding: 1rem 1.05rem;
+            box-shadow: 0 18px 32px var(--kera-shadow);
+            backdrop-filter: blur(14px);
         }
-        .kera-stat-label { color: var(--kera-muted); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-        .kera-stat-value { color: var(--kera-ink); font-size: 1.45rem; font-weight: 800; margin-top: 0.25rem; }
-        .kera-stat-note { color: var(--kera-muted); font-size: 0.82rem; margin-top: 0.2rem; }
-        .kera-chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.4rem 0 0.8rem 0; }
+        .kera-stat-label {
+            color: var(--kera-muted);
+            font-size: 0.74rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .kera-stat-value { color: var(--kera-ink); font-size: 1.6rem; font-weight: 800; margin-top: 0.28rem; }
+        .kera-stat-note { color: var(--kera-muted); font-size: 0.84rem; margin-top: 0.25rem; line-height: 1.45; }
+        .kera-chip-row { display: flex; flex-wrap: wrap; gap: 0.55rem; margin: 0.55rem 0 0.9rem 0; }
         .kera-chip {
             display: inline-flex; align-items: center; gap: 0.35rem;
-            border-radius: 999px; padding: 0.35rem 0.7rem;
-            background: rgba(255,255,255,0.72);
+            border-radius: 999px; padding: 0.45rem 0.82rem;
+            background: rgba(255,255,255,0.55);
             border: 1px solid var(--kera-border);
-            color: var(--kera-ink); font-size: 0.88rem; font-weight: 600;
+            color: var(--kera-ink); font-size: 0.86rem; font-weight: 700;
         }
         .kera-chip.complete { background: rgba(13, 143, 138, 0.12); color: #0b6c68; }
-        .kera-chip.pending { background: rgba(214, 180, 104, 0.16); color: #8a6531; }
+        .kera-chip.pending { background: rgba(184, 109, 67, 0.14); color: #8c5731; }
+        .kera-brand-block,
         .kera-sidebar-user {
-            background: var(--kera-footer); border: 1px solid var(--kera-border);
-            border-radius: 16px; padding: 0.9rem 1rem; margin-bottom: 0.8rem;
-            box-shadow: 0 10px 24px var(--kera-shadow);
+            background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 22px;
+            padding: 1rem 1.05rem;
+            margin-bottom: 0.9rem;
+            box-shadow: 0 20px 36px rgba(0,0,0,0.16);
         }
-        .kera-sidebar-user h4 { margin: 0 0 0.2rem 0; color: var(--kera-ink); font-size: 0.98rem; }
-        .kera-sidebar-user p { margin: 0; color: var(--kera-muted); font-size: 0.88rem; }
-        .stAlert { color: var(--kera-ink); }
+        .kera-brand-title {
+            font-size: 1.48rem;
+            font-weight: 800;
+            color: var(--kera-sidebar-ink);
+            margin-top: 0.2rem;
+        }
+        .kera-brand-copy {
+            color: rgba(243, 248, 251, 0.74);
+            font-size: 0.88rem;
+            line-height: 1.55;
+            margin: 0.55rem 0 0 0;
+        }
+        .kera-sidebar-user h4 { margin: 0.1rem 0 0.2rem 0; color: var(--kera-sidebar-ink); font-size: 1.02rem; }
+        .kera-sidebar-user p { margin: 0; color: rgba(243, 248, 251, 0.72); font-size: 0.88rem; }
+        .kera-sidebar-label {
+            color: rgba(243, 248, 251, 0.58);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.10em;
+            font-weight: 800;
+        }
+        .kera-status-panel {
+            background: linear-gradient(160deg, rgba(98, 200, 188, 0.16), rgba(255,255,255,0.06));
+            border-radius: 22px;
+            border: 1px solid rgba(255,255,255,0.10);
+            padding: 1rem 1.05rem;
+            box-shadow: 0 20px 36px rgba(0,0,0,0.18);
+        }
+        .kera-status-title { color: var(--kera-sidebar-ink); font-weight: 800; font-size: 1.05rem; margin-top: 0.35rem; }
+        .kera-status-copy { color: rgba(243, 248, 251, 0.82); font-size: 0.86rem; margin-top: 0.25rem; }
+        .kera-status-foot { color: rgba(243, 248, 251, 0.60); font-size: 0.78rem; margin-top: 0.55rem; }
+        .kera-page-header {
+            position: relative;
+            overflow: hidden;
+            padding: 1.35rem 1.35rem 1.1rem 1.35rem;
+            margin-bottom: 1.1rem;
+            border-radius: 28px;
+            border: 1px solid var(--kera-border);
+            background:
+                radial-gradient(circle at top right, rgba(11, 122, 114, 0.13), transparent 28%),
+                radial-gradient(circle at left center, rgba(184, 109, 67, 0.10), transparent 26%),
+                linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
+            box-shadow: 0 24px 44px var(--kera-shadow);
+            backdrop-filter: blur(14px);
+        }
+        .kera-eyebrow {
+            color: var(--kera-accent);
+            text-transform: uppercase;
+            letter-spacing: 0.13em;
+            font-size: 0.72rem;
+            font-weight: 800;
+        }
+        .kera-page-title {
+            margin: 0.4rem 0 0 0;
+            font-size: clamp(2rem, 4vw, 3rem);
+            line-height: 0.98;
+        }
+        .kera-page-subtitle {
+            max-width: 760px;
+            margin: 0.7rem 0 0 0;
+            color: var(--kera-muted);
+            font-size: 0.98rem;
+            line-height: 1.65;
+        }
+        .kera-meta-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 0.95rem;
+        }
+        .kera-meta-chip {
+            display: inline-flex;
+            align-items: center;
+            min-height: 2rem;
+            padding: 0.32rem 0.78rem;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.56);
+            border: 1px solid var(--kera-border);
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--kera-ink);
+        }
+        .kera-stepper {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+            gap: 0.7rem;
+            margin: 0 0 1.25rem 0;
+        }
+        .kera-step {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-height: 4rem;
+            padding: 0.8rem 0.95rem;
+            border-radius: 22px;
+            border: 1px solid var(--kera-border);
+            background: rgba(255,255,255,0.38);
+            color: var(--kera-muted);
+            font-weight: 700;
+            box-shadow: 0 12px 24px var(--kera-shadow);
+        }
+        .kera-step-index {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.6);
+            border: 1px solid var(--kera-border);
+            font-size: 0.76rem;
+            font-weight: 800;
+            color: var(--kera-muted);
+        }
+        .kera-step.is-active {
+            background: linear-gradient(135deg, rgba(11, 122, 114, 0.92), rgba(184, 109, 67, 0.85));
+            color: white;
+            border-color: transparent;
+        }
+        .kera-step.is-active .kera-step-index {
+            background: rgba(255,255,255,0.18);
+            border-color: rgba(255,255,255,0.18);
+            color: white;
+        }
+        .kera-step.is-complete {
+            color: var(--kera-ink);
+            background: linear-gradient(180deg, rgba(255,255,255,0.66), rgba(255,255,255,0.38));
+        }
+        .kera-login-spacer { height: 0.6rem; }
+        .kera-login-hero,
+        .kera-login-panel,
+        .kera-result-hero,
+        .kera-panel-note,
+        .kera-closure-card {
+            border-radius: 28px;
+            border: 1px solid var(--kera-border);
+            background: linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
+            box-shadow: 0 22px 46px var(--kera-shadow);
+            backdrop-filter: blur(16px);
+        }
+        .kera-login-hero {
+            padding: 1.6rem;
+            min-height: 26rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+        }
+        .kera-login-hero h1 {
+            margin: 0.5rem 0 0 0;
+            font-size: clamp(2.2rem, 5vw, 4rem);
+            line-height: 0.94;
+        }
+        .kera-login-hero p {
+            max-width: 620px;
+            margin: 1rem 0 0 0;
+            color: var(--kera-muted);
+            font-size: 1rem;
+            line-height: 1.72;
+        }
+        .kera-login-highlights {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin-top: 1.3rem;
+        }
+        .kera-login-highlights span {
+            display: inline-flex;
+            padding: 0.42rem 0.82rem;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.45);
+            border: 1px solid var(--kera-border);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        .kera-login-panel {
+            padding: 1.35rem;
+            margin-top: 3rem;
+            margin-bottom: 0.9rem;
+        }
+        .kera-login-panel h3 {
+            margin: 0.45rem 0 0 0;
+            font-size: 1.48rem;
+        }
+        .kera-login-panel p {
+            margin-top: 0.55rem;
+            color: var(--kera-muted);
+            line-height: 1.6;
+        }
+        .kera-result-hero {
+            padding: 1.25rem 1.25rem 1.15rem 1.25rem;
+            margin-bottom: 0.9rem;
+        }
+        .kera-result-topline {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            align-items: center;
+        }
+        .kera-result-kicker {
+            font-size: 0.74rem;
+            font-weight: 800;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--kera-muted);
+        }
+        .kera-result-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.36rem 0.78rem;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            font-weight: 800;
+        }
+        .kera-result-badge.is-good {
+            color: #0b6c68;
+            background: rgba(11, 122, 114, 0.14);
+        }
+        .kera-result-badge.is-caution {
+            color: #8f5d36;
+            background: rgba(184, 109, 67, 0.14);
+        }
+        .kera-result-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .kera-result-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            font-weight: 800;
+            color: var(--kera-muted);
+        }
+        .kera-result-value {
+            font-size: clamp(2rem, 4vw, 3rem);
+            line-height: 0.95;
+            margin-top: 0.35rem;
+        }
+        .kera-result-caption {
+            margin-top: 0.45rem;
+            color: var(--kera-muted);
+        }
+        .kera-result-number {
+            text-align: right;
+        }
+        .kera-result-number span {
+            display: block;
+            font-size: 2.4rem;
+            font-weight: 800;
+            line-height: 0.95;
+        }
+        .kera-result-number small {
+            color: var(--kera-muted);
+            font-size: 0.8rem;
+        }
+        .kera-prob-track {
+            width: 100%;
+            height: 16px;
+            border-radius: 999px;
+            margin-top: 1rem;
+            background: linear-gradient(90deg, rgba(11, 122, 114, 0.12), rgba(184, 109, 67, 0.14));
+            overflow: hidden;
+        }
+        .kera-prob-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--kera-accent), #20a298);
+        }
+        .kera-prob-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.5rem;
+            color: var(--kera-muted);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+        .kera-panel-note {
+            display: flex;
+            flex-direction: column;
+            gap: 0.28rem;
+            padding: 1rem 1.05rem;
+            margin-bottom: 1rem;
+        }
+        .kera-panel-note strong { font-size: 0.96rem; }
+        .kera-panel-note span { color: var(--kera-muted); line-height: 1.55; }
+        .kera-image-label {
+            margin: 0 0 0.7rem 0;
+            font-size: 0.78rem;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            font-weight: 800;
+            color: var(--kera-muted);
+        }
+        .kera-closure-card {
+            padding: 1.35rem;
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+        .kera-closure-card.is-positive {
+            background:
+                radial-gradient(circle at top center, rgba(11, 122, 114, 0.16), transparent 30%),
+                linear-gradient(180deg, var(--kera-card-strong), var(--kera-card));
+        }
+        .kera-closure-title {
+            margin-top: 0.45rem;
+            font-size: clamp(1.7rem, 3vw, 2.4rem);
+        }
+        .kera-closure-copy {
+            max-width: 680px;
+            margin: 0.7rem auto 0 auto;
+            color: var(--kera-muted);
+            line-height: 1.65;
+        }
+        .stAlert { color: var(--kera-ink); border-radius: 18px; }
         @media (max-width: 640px) {
-            .kera-stat-value { font-size: 1.25rem; }
+            .block-container { padding-top: 1rem; }
+            .kera-page-header,
+            .kera-login-hero,
+            .kera-login-panel,
+            .kera-result-hero,
+            .kera-closure-card { padding: 1rem; }
+            .kera-stepper { grid-template-columns: 1fr; }
+            .kera-result-main { flex-direction: column; align-items: flex-start; }
+            .kera-result-number { text-align: left; }
+            .kera-stat-value { font-size: 1.24rem; }
         }
         </style>"""
     )

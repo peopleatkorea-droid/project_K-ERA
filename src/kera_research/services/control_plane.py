@@ -208,17 +208,38 @@ class ControlPlaneStore:
 
     def ensure_model_version(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
         versions = read_json(self.model_registry_path, [])
-        for item in versions:
+        for index, item in enumerate(versions):
             if item["version_id"] == model_metadata["version_id"]:
-                return item
+                merged = {**item, **model_metadata}
+                versions[index] = merged
+                if merged.get("stage") == "global" and merged.get("ready", True) and merged.get("is_current"):
+                    for other_index, other in enumerate(versions):
+                        if other_index == index:
+                            continue
+                        if other.get("stage") == "global":
+                            versions[other_index] = {**other, "is_current": False}
+                write_json(self.model_registry_path, versions)
+                return merged
+        if model_metadata.get("stage") == "global" and model_metadata.get("ready", True) and model_metadata.get("is_current"):
+            versions = [
+                {**item, "is_current": False} if item.get("stage") == "global" else item
+                for item in versions
+            ]
         versions.append(model_metadata)
         write_json(self.model_registry_path, versions)
         return model_metadata
 
     def current_global_model(self) -> dict[str, Any] | None:
-        versions = [item for item in self.list_model_versions() if item.get("stage") == "global"]
+        versions = [
+            item
+            for item in self.list_model_versions()
+            if item.get("stage") == "global" and item.get("ready", True)
+        ]
         if not versions:
             return None
+        current_versions = [item for item in versions if item.get("is_current")]
+        if current_versions:
+            return sorted(current_versions, key=lambda item: item["created_at"])[-1]
         return sorted(versions, key=lambda item: item["created_at"])[-1]
 
     def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
@@ -264,6 +285,7 @@ class ControlPlaneStore:
         new_version_name: str,
         architecture: str,
         site_weights: dict[str, int],
+        requires_medsam_crop: bool = False,
     ) -> dict[str, Any]:
         from kera_research.domain import make_id, utc_now
         agg_id = make_id("agg")
@@ -286,6 +308,10 @@ class ControlPlaneStore:
             "model_path": new_model_path,
             "created_at": utc_now(),
             "aggregation_id": agg_id,
+            "requires_medsam_crop": bool(requires_medsam_crop),
+            "training_input_policy": "medsam_roi_crop_only" if requires_medsam_crop else "raw_or_model_defined",
+            "is_current": True,
+            "ready": True,
             "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
             "notes_ko": f"{len(site_weights)}개 기관, {sum(site_weights.values())}케이스 federated 집계 모델.",
             "notes_en": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",

@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import train_test_split
 
 from kera_research.config import DEFAULT_GLOBAL_MODELS
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
@@ -379,6 +380,10 @@ class ModelManager:
                             "base_version_id": None,
                             "model_path": str(model_path),
                             "requires_medsam_crop": template.get("requires_medsam_crop", False),
+                            "training_input_policy": (
+                                "medsam_roi_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
+                            ),
+                            "is_current": template.get("is_current", False),
                             "created_at": utc_now(),
                             "notes": template["notes"],
                             "notes_ko": template.get("notes_ko", template["notes"]),
@@ -404,6 +409,10 @@ class ModelManager:
                     "base_version_id": None,
                     "model_path": str(model_path),
                     "requires_medsam_crop": template.get("requires_medsam_crop", False),
+                    "training_input_policy": (
+                        "medsam_roi_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
+                    ),
+                    "is_current": template.get("is_current", False),
                     "created_at": utc_now(),
                     "notes": template["notes"],
                     "notes_ko": template.get("notes_ko", template["notes"]),
@@ -418,65 +427,46 @@ class ModelManager:
         architecture = model_reference.get("architecture", "cnn")
         model_path = model_reference["model_path"]
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-
-        if architecture in DENSENET_VARIANTS:
-            return self._load_densenet_flexible(checkpoint, architecture, device)
-
-        arch_from_ckpt = checkpoint.get("architecture") if isinstance(checkpoint, dict) else None
-        architecture = arch_from_ckpt or architecture
         model = self.build_model(architecture).to(device)
-        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-        model.load_state_dict(state_dict)
+        state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
+        strict = architecture not in DENSENET_VARIANTS
+        model.load_state_dict(state_dict, strict=strict)
         model.eval()
         return model
 
-    def _load_densenet_flexible(self, checkpoint: Any, architecture: str, device: str) -> nn.Module:
-        """사용자의 .pth 파일을 유연하게 로드합니다.
-
-        지원하는 checkpoint 구조:
-        1. {"architecture": ..., "state_dict": {...}}  ← K-ERA 표준 형식
-        2. {"model": {...}, ...}                       ← 커스텀 학습 checkpoint
-        3. {"state_dict": {...}, "epoch": ...}         ← 학습 중간 저장본
-        4. OrderedDict([...])                          ← state_dict 직접 저장
-        5. DenseNet 전체 모델 객체 (torch.save(model, path))
-        """
-        require_torch()
-        model = self.build_model(architecture).to(device)
-
+    def _extract_state_dict_from_checkpoint(self, checkpoint: Any, architecture: str) -> dict[str, Any]:
+        """Load various checkpoint shapes into the model's expected key format."""
         if not isinstance(checkpoint, dict):
-            # 전체 모델 객체로 저장된 경우
             try:
-                model.load_state_dict(checkpoint.state_dict())
+                state_dict = checkpoint.state_dict()
             except AttributeError:
-                model.load_state_dict(checkpoint)
-            model.eval()
-            return model
+                state_dict = checkpoint
+        else:
+            state_dict = None
+            for key in ("state_dict", "model", "model_state_dict", "weights"):
+                if key in checkpoint:
+                    state_dict = checkpoint[key]
+                    break
+            if state_dict is None:
+                state_dict = checkpoint
 
-        # dict 형식 - 키 탐색
-        state_dict = None
-        for key in ("state_dict", "model", "model_state_dict", "weights"):
-            if key in checkpoint:
-                state_dict = checkpoint[key]
-                break
+        if hasattr(state_dict, "items"):
+            state_dict = dict(state_dict)
         if state_dict is None:
-            # dict 자체가 state_dict인 경우
-            state_dict = checkpoint
+            raise ValueError("Checkpoint did not contain a readable state_dict.")
 
-        # "module." prefix 제거 (DataParallel 학습 시 생성)
         if any(k.startswith("module.") for k in state_dict):
             state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
-        # "model." prefix 처리 (DenseNetKeratitis wrapper)
-        has_model_prefix = any(k.startswith("model.") for k in state_dict)
+        model = self.build_model(architecture)
         model_expects_prefix = any(k.startswith("model.") for k in model.state_dict())
+        has_model_prefix = any(k.startswith("model.") for k in state_dict)
         if has_model_prefix and not model_expects_prefix:
             state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
         elif not has_model_prefix and model_expects_prefix:
             state_dict = {f"model.{k}": v for k, v in state_dict.items()}
 
-        model.load_state_dict(state_dict, strict=False)
-        model.eval()
-        return model
+        return state_dict
 
     def predict_image(self, model: nn.Module, image_path: str | Path, device: str) -> Prediction:
         require_torch()
@@ -754,16 +744,37 @@ class ModelManager:
         if len(records) < 4:
             raise ValueError(f"최소 4개 케이스가 필요합니다 (현재 {len(records)}개).")
 
-        # Train / Val 분리
         seed_everything(42)
-        indices = list(range(len(records)))
-        random.shuffle(indices)
-        val_n = max(1, int(len(indices) * val_split))
-        val_idx = indices[:val_n]
-        train_idx = indices[val_n:]
+        patient_to_records: dict[str, list[dict[str, Any]]] = {}
+        patient_to_label: dict[str, str] = {}
+        for record in records:
+            patient_id = str(record["patient_id"])
+            patient_to_records.setdefault(patient_id, []).append(record)
+            patient_to_label.setdefault(patient_id, str(record["culture_category"]))
 
-        train_records = [records[i] for i in train_idx]
-        val_records = [records[i] for i in val_idx]
+        patient_ids = list(patient_to_records)
+        if len(patient_ids) < 4:
+            raise ValueError(f"최소 4명의 환자가 필요합니다 (현재 {len(patient_ids)}명).")
+
+        patient_labels = [patient_to_label[patient_id] for patient_id in patient_ids]
+        stratify_labels = patient_labels if len(set(patient_labels)) > 1 else None
+        test_size = max(1, int(round(len(patient_ids) * val_split)))
+        if test_size >= len(patient_ids):
+            test_size = len(patient_ids) - 1
+        try:
+            train_patient_ids, val_patient_ids = train_test_split(
+                patient_ids,
+                test_size=test_size,
+                random_state=42,
+                stratify=stratify_labels,
+            )
+        except ValueError:
+            random.shuffle(patient_ids)
+            val_patient_ids = patient_ids[:test_size]
+            train_patient_ids = patient_ids[test_size:]
+
+        train_records = [record for patient_id in train_patient_ids for record in patient_to_records[patient_id]]
+        val_records = [record for patient_id in val_patient_ids for record in patient_to_records[patient_id]]
 
         train_ds = ManifestImageDataset(train_records, augment=True)
         val_ds = ManifestImageDataset(val_records, augment=False)
@@ -779,7 +790,15 @@ class ModelManager:
 
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-        loss_fn = nn.CrossEntropyLoss()
+        class_counts = np.bincount(
+            [LABEL_TO_INDEX[item["culture_category"]] for item in train_records],
+            minlength=len(LABEL_TO_INDEX),
+        )
+        class_weights = np.array(
+            [0.0 if count == 0 else len(train_records) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+            dtype=np.float32,
+        )
+        loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
 
         best_val_acc = 0.0
         best_state: dict[str, Any] = {}
@@ -833,6 +852,8 @@ class ModelManager:
             "epochs": epochs,
             "n_train": len(train_records),
             "n_val": len(val_records),
+            "n_train_patients": len(train_patient_ids),
+            "n_val_patients": len(val_patient_ids),
             "best_val_acc": round(best_val_acc, 4),
             "use_pretrained": use_pretrained,
             "history": history,
@@ -845,39 +866,66 @@ class ModelManager:
         output_delta_path: str | Path,
     ) -> str:
         require_torch()
-        base_checkpoint = torch.load(base_model_path, map_location="cpu")
-        tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu")
-        base_state = base_checkpoint["state_dict"]
-        tuned_state = tuned_checkpoint["state_dict"]
+        tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu", weights_only=False)
+        architecture = tuned_checkpoint.get("architecture", "cnn") if isinstance(tuned_checkpoint, dict) else "cnn"
+        base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=False)
+        base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
+        tuned_state = self._extract_state_dict_from_checkpoint(tuned_checkpoint, architecture)
         delta_state = {key: tuned_state[key] - base_state[key] for key in base_state}
         output = Path(output_delta_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "architecture": tuned_checkpoint.get("architecture", base_checkpoint.get("architecture", "cnn")),
+                "architecture": architecture,
                 "state_dict": delta_state,
             },
             output,
         )
         return str(output)
 
-    def aggregate_weight_deltas(self, delta_paths: list[str | Path], output_path: str | Path) -> str:
+    def aggregate_weight_deltas(
+        self,
+        delta_paths: list[str | Path],
+        output_path: str | Path,
+        weights: list[float] | None = None,
+        base_model_path: str | Path | None = None,
+    ) -> str:
         require_torch()
         if not delta_paths:
             raise ValueError("At least one delta path is required.")
-        delta_checkpoints = [torch.load(path, map_location="cpu") for path in delta_paths]
+        delta_checkpoints = [torch.load(path, map_location="cpu", weights_only=False) for path in delta_paths]
         deltas = [checkpoint["state_dict"] for checkpoint in delta_checkpoints]
         keys = deltas[0].keys()
+        if weights is None:
+            weights_tensor = torch.full((len(deltas),), 1.0 / len(deltas), dtype=torch.float32)
+        else:
+            if len(weights) != len(deltas):
+                raise ValueError("weights length must match delta_paths length.")
+            weights_tensor = torch.tensor(weights, dtype=torch.float32)
+            weights_tensor = weights_tensor / weights_tensor.sum()
+
         aggregated = {}
         for key in keys:
             stacked = torch.stack([delta[key] for delta in deltas], dim=0)
-            aggregated[key] = stacked.mean(dim=0)
+            view_shape = [len(deltas)] + [1] * (stacked.ndim - 1)
+            aggregated[key] = (stacked * weights_tensor.view(*view_shape)).sum(dim=0)
+
+        architecture = delta_checkpoints[0].get("architecture", "cnn")
+        state_dict_to_save = aggregated
+        if base_model_path is not None:
+            base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=False)
+            base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
+            state_dict_to_save = {
+                key: base_state[key] + aggregated[key]
+                for key in base_state
+            }
+
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "architecture": delta_checkpoints[0].get("architecture", "cnn"),
-                "state_dict": aggregated,
+                "architecture": architecture,
+                "state_dict": state_dict_to_save,
             },
             output,
         )

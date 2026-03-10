@@ -21,6 +21,38 @@ class ResearchWorkflowService:
         for baseline in self.model_manager.ensure_baseline_models():
             self.control_plane.ensure_model_version(baseline)
 
+    def _ensure_roi_crop(self, site_store: SiteStore, image_path: str) -> dict[str, str]:
+        artifact_name = Path(image_path).stem
+        mask_path = site_store.medsam_mask_dir / f"{artifact_name}_mask.png"
+        crop_path = site_store.roi_crop_dir / f"{artifact_name}_crop.png"
+        if crop_path.exists() and mask_path.exists():
+            return {
+                "medsam_mask_path": str(mask_path),
+                "roi_crop_path": str(crop_path),
+            }
+        result = self.medsam_service.generate_roi(image_path, mask_path, crop_path)
+        return {
+            "medsam_mask_path": result["medsam_mask_path"],
+            "roi_crop_path": result["roi_crop_path"],
+        }
+
+    def _prepare_records_for_model(
+        self,
+        site_store: SiteStore,
+        records: list[dict[str, Any]],
+        requires_crop: bool,
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for record in records:
+            item = {**record, "source_image_path": record["image_path"]}
+            if requires_crop:
+                roi = self._ensure_roi_crop(site_store, record["image_path"])
+                item["medsam_mask_path"] = roi["medsam_mask_path"]
+                item["roi_crop_path"] = roi["roi_crop_path"]
+                item["image_path"] = roi["roi_crop_path"]
+            prepared.append(item)
+        return prepared
+
     def run_external_validation(
         self,
         project_id: str,
@@ -34,14 +66,20 @@ class ResearchWorkflowService:
         if manifest_df.empty:
             raise ValueError("No uploaded images are available for validation.")
 
+        requires_crop = model_version.get("requires_medsam_crop", False)
         model = self.model_manager.load_model(model_version, execution_device)
-        grouped = manifest_df.groupby("patient_id")
+        grouped = manifest_df.groupby(["patient_id", "visit_date"], sort=False)
         case_predictions: list[dict[str, Any]] = []
         summary_targets: list[int] = []
         summary_predictions: list[int] = []
         summary_probabilities: list[float] = []
 
-        for patient_id, patient_frame in grouped:
+        for (patient_id, visit_date), patient_frame in grouped:
+            prepared_records = self._prepare_records_for_model(
+                site_store,
+                patient_frame.to_dict("records"),
+                requires_crop=requires_crop,
+            )
             image_probabilities: list[float] = []
             artifact_refs: dict[str, Any] = {
                 "gradcam_path": None,
@@ -50,10 +88,18 @@ class ResearchWorkflowService:
             }
 
             representative_rows = patient_frame[patient_frame["is_representative"] == True]
-            artifact_row = representative_rows.iloc[0] if not representative_rows.empty else patient_frame.iloc[0]
+            artifact_row = representative_rows.iloc[0].to_dict() if not representative_rows.empty else patient_frame.iloc[0].to_dict()
+            prepared_artifact = next(
+                (
+                    record
+                    for record in prepared_records
+                    if record["source_image_path"] == artifact_row["image_path"]
+                ),
+                prepared_records[0],
+            )
 
-            for _, row in patient_frame.iterrows():
-                prediction = self.model_manager.predict_image(model, row["image_path"], execution_device)
+            for record in prepared_records:
+                prediction = self.model_manager.predict_image(model, record["image_path"], execution_device)
                 image_probabilities.append(prediction.probability)
 
             predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
@@ -62,20 +108,15 @@ class ResearchWorkflowService:
 
             should_run_artifacts = bool(artifact_row["is_representative"]) or execution_device == "cuda"
             if should_run_artifacts and generate_medsam:
-                artifact_name = Path(artifact_row["image_path"]).stem
-                medsam_result = self.medsam_service.generate_roi(
-                    artifact_row["image_path"],
-                    site_store.medsam_mask_dir / f"{artifact_name}_mask.png",
-                    site_store.roi_crop_dir / f"{artifact_name}_crop.png",
-                )
-                artifact_refs["medsam_mask_path"] = medsam_result["medsam_mask_path"]
-                artifact_refs["roi_crop_path"] = medsam_result["roi_crop_path"]
+                roi = self._ensure_roi_crop(site_store, artifact_row["image_path"])
+                artifact_refs["medsam_mask_path"] = roi["medsam_mask_path"]
+                artifact_refs["roi_crop_path"] = roi["roi_crop_path"]
             if should_run_artifacts and generate_gradcam:
                 artifact_name = Path(artifact_row["image_path"]).stem
                 gradcam_path = self.model_manager.generate_explanation(
                     model,
                     model_version,
-                    artifact_row["image_path"],
+                    prepared_artifact["image_path"],
                     execution_device,
                     site_store.gradcam_dir / f"{artifact_name}_gradcam.png",
                     target_class=predicted_index,
@@ -86,6 +127,7 @@ class ResearchWorkflowService:
                 {
                     "validation_id": "",
                     "patient_id": patient_id,
+                    "visit_date": visit_date,
                     "true_label": INDEX_TO_LABEL[true_index],
                     "predicted_label": INDEX_TO_LABEL[predicted_index],
                     "prediction_probability": predicted_probability,
@@ -115,6 +157,7 @@ class ResearchWorkflowService:
             "model_architecture": model_version.get("architecture", "cnn"),
             "run_date": utc_now(),
             "n_patients": int(manifest_df["patient_id"].nunique()),
+            "n_cases": int(manifest_df[["patient_id", "visit_date"]].drop_duplicates().shape[0]),
             "n_images": int(len(manifest_df)),
             "AUROC": metrics["AUROC"],
             "accuracy": metrics["accuracy"],
@@ -147,33 +190,36 @@ class ResearchWorkflowService:
 
         requires_crop = model_version.get("requires_medsam_crop", False)
         model = self.model_manager.load_model(model_version, execution_device)
+        prepared_records = self._prepare_records_for_model(
+            site_store,
+            case_df.to_dict("records"),
+            requires_crop=requires_crop,
+        )
 
         rep_rows = case_df[case_df["is_representative"] == True]
-        artifact_row = rep_rows.iloc[0] if not rep_rows.empty else case_df.iloc[0]
+        artifact_row = rep_rows.iloc[0].to_dict() if not rep_rows.empty else case_df.iloc[0].to_dict()
+        prepared_artifact = next(
+            (
+                record
+                for record in prepared_records
+                if record["source_image_path"] == artifact_row["image_path"]
+            ),
+            prepared_records[0],
+        )
 
-        # MedSAM crop이 필요한 모델(DenseNet)은 대표 이미지 crop 먼저 생성
         artifact_refs: dict[str, Any] = {
             "gradcam_path": None,
             "medsam_mask_path": None,
             "roi_crop_path": None,
         }
         if generate_medsam or requires_crop:
-            artifact_name = Path(artifact_row["image_path"]).stem
-            medsam_result = self.medsam_service.generate_roi(
-                artifact_row["image_path"],
-                site_store.medsam_mask_dir / f"{artifact_name}_mask.png",
-                site_store.roi_crop_dir / f"{artifact_name}_crop.png",
-            )
-            artifact_refs["medsam_mask_path"] = medsam_result["medsam_mask_path"]
-            artifact_refs["roi_crop_path"] = medsam_result["roi_crop_path"]
+            roi = self._ensure_roi_crop(site_store, artifact_row["image_path"])
+            artifact_refs["medsam_mask_path"] = roi["medsam_mask_path"]
+            artifact_refs["roi_crop_path"] = roi["roi_crop_path"]
 
-        # 추론: DenseNet은 crop 이미지로, 나머지는 원본으로
         image_probabilities: list[float] = []
-        for _, row in case_df.iterrows():
-            infer_path = row["image_path"]
-            if requires_crop and artifact_refs["roi_crop_path"]:
-                infer_path = artifact_refs["roi_crop_path"]
-            prediction = self.model_manager.predict_image(model, infer_path, execution_device)
+        for record in prepared_records:
+            prediction = self.model_manager.predict_image(model, record["image_path"], execution_device)
             image_probabilities.append(prediction.probability)
 
         predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
@@ -182,11 +228,10 @@ class ResearchWorkflowService:
 
         if generate_gradcam:
             artifact_name = Path(artifact_row["image_path"]).stem
-            gradcam_input = artifact_refs["roi_crop_path"] or artifact_row["image_path"]
             gradcam_path = self.model_manager.generate_explanation(
                 model,
                 model_version,
-                gradcam_input,
+                prepared_artifact["image_path"],
                 execution_device,
                 site_store.gradcam_dir / f"{artifact_name}_gradcam.png",
                 target_class=predicted_index,
@@ -197,6 +242,7 @@ class ResearchWorkflowService:
         case_prediction: dict[str, Any] = {
             "validation_id": validation_id,
             "patient_id": patient_id,
+            "visit_date": visit_date,
             "true_label": INDEX_TO_LABEL[true_index],
             "predicted_label": INDEX_TO_LABEL[predicted_index],
             "prediction_probability": predicted_probability,
@@ -223,6 +269,44 @@ class ResearchWorkflowService:
         saved_summary = self.control_plane.save_validation_run(summary, [case_prediction])
         return saved_summary, [case_prediction]
 
+    def preview_case_roi(
+        self,
+        site_store: SiteStore,
+        patient_id: str,
+        visit_date: str,
+    ) -> list[dict[str, Any]]:
+        """Generate MedSAM ROI previews for a single visit without requiring a model."""
+        manifest_df = site_store.generate_manifest()
+        case_df = manifest_df[
+            (manifest_df["patient_id"] == patient_id)
+            & (manifest_df["visit_date"] == visit_date)
+        ]
+        if case_df.empty:
+            raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
+
+        previews: list[dict[str, Any]] = []
+        for record in case_df.to_dict("records"):
+            roi = self._ensure_roi_crop(site_store, record["image_path"])
+            previews.append(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "view": record.get("view", "unknown"),
+                    "is_representative": bool(record.get("is_representative")),
+                    "source_image_path": record["image_path"],
+                    "medsam_mask_path": roi["medsam_mask_path"],
+                    "roi_crop_path": roi["roi_crop_path"],
+                }
+            )
+        previews.sort(
+            key=lambda item: (
+                not item["is_representative"],
+                item["view"],
+                item["source_image_path"],
+            )
+        )
+        return previews
+
     def contribute_case(
         self,
         site_store: SiteStore,
@@ -241,20 +325,14 @@ class ResearchWorkflowService:
         if case_df.empty:
             raise ValueError(f"No data found for patient {patient_id} / {visit_date}.")
 
-        # DenseNet은 crop 이미지 경로를 사용해야 합니다
-        records = case_df.to_dict("records")
-        requires_crop = model_version.get("requires_medsam_crop", False)
-        if requires_crop:
-            updated_records = []
-            for rec in records:
-                crop_candidates = list(site_store.roi_crop_dir.glob(f"{Path(rec['image_path']).stem}_crop.png"))
-                if crop_candidates:
-                    rec = {**rec, "image_path": str(crop_candidates[0])}
-                updated_records.append(rec)
-            records = updated_records
+        records = self._prepare_records_for_model(
+            site_store,
+            case_df.to_dict("records"),
+            requires_crop=True,
+        )
 
         full_finetune = execution_device == "cuda"
-        epochs = min(3, 1) if execution_device == "cpu" else 3
+        epochs = 1 if execution_device == "cpu" else 3
         architecture = model_version.get("architecture", "densenet121")
         output_model_path = site_store.update_dir / f"{make_id(architecture)}_weights.pth"
 
@@ -287,6 +365,7 @@ class ResearchWorkflowService:
             "patient_id": patient_id,
             "visit_date": visit_date,
             "created_at": utc_now(),
+            "training_input_policy": "medsam_roi_crop_only",
             "training_summary": result,
             "status": "pending_upload",
         }
@@ -318,26 +397,18 @@ class ResearchWorkflowService:
         use_medsam_crops: bool = True,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
-        """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다.
-
-        use_medsam_crops=True이면 이미 생성된 ROI crop 이미지를 우선 사용합니다.
-        crop이 없는 이미지는 원본을 사용합니다.
-        """
+        """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다."""
         manifest_df = site_store.generate_manifest()
         if manifest_df.empty:
             raise ValueError("학습 데이터가 없습니다. 먼저 이미지를 등록하세요.")
+        if not use_medsam_crops:
+            raise ValueError("Initial training is MedSAM crop-only.")
 
-        records = manifest_df.to_dict("records")
-
-        if use_medsam_crops:
-            updated: list[dict[str, Any]] = []
-            for rec in records:
-                stem = Path(rec["image_path"]).stem
-                crops = list(site_store.roi_crop_dir.glob(f"{stem}_crop.png"))
-                if crops:
-                    rec = {**rec, "image_path": str(crops[0])}
-                updated.append(rec)
-            records = updated
+        records = self._prepare_records_for_model(
+            site_store,
+            manifest_df.to_dict("records"),
+            requires_crop=True,
+        )
 
         result = self.model_manager.initial_train(
             records=records,
@@ -361,10 +432,12 @@ class ResearchWorkflowService:
             "base_version_id": None,
             "model_path": output_model_path,
             "requires_medsam_crop": use_medsam_crops,
+            "training_input_policy": "medsam_roi_crop_only",
             "created_at": utc_now(),
-            "notes": f"Initial training: {result['n_train']} train / {result['n_val']} val, best val_acc={result['best_val_acc']:.3f}",
-            "notes_ko": f"초기 학습 모델: train {result['n_train']}건 / val {result['n_val']}건, 최고 val_acc={result['best_val_acc']:.3f}",
-            "notes_en": f"Initial training: {result['n_train']} train / {result['n_val']} val, best val_acc={result['best_val_acc']:.3f}",
+            "is_current": True,
+            "notes": f"Initial training with MedSAM crops: {result['n_train_patients']} train patients / {result['n_val_patients']} val patients, best val_acc={result['best_val_acc']:.3f}",
+            "notes_ko": f"MedSAM crop 기반 초기 학습 모델: train {result['n_train_patients']}명 / val {result['n_val_patients']}명, 최고 val_acc={result['best_val_acc']:.3f}",
+            "notes_en": f"Initial training with MedSAM crops: {result['n_train_patients']} train patients / {result['n_val_patients']} val patients, best val_acc={result['best_val_acc']:.3f}",
             "ready": True,
         }
         self.control_plane.ensure_model_version(new_version)
@@ -383,6 +456,11 @@ class ResearchWorkflowService:
         manifest_df = site_store.generate_manifest()
         if manifest_df.empty:
             raise ValueError("No manifest records are available for fine-tuning.")
+        records = self._prepare_records_for_model(
+            site_store,
+            manifest_df.to_dict("records"),
+            requires_crop=True,
+        )
 
         full_finetune = execution_device == "cuda"
         if execution_device == "cpu":
@@ -391,7 +469,7 @@ class ResearchWorkflowService:
         architecture = model_version.get("architecture", "cnn")
         output_model_path = site_store.update_dir / f"{make_id(architecture)}_weights.pt"
         result = self.model_manager.fine_tune(
-            records=manifest_df.to_dict("records"),
+            records=records,
             base_model_reference=model_version,
             output_model_path=output_model_path,
             device=execution_device,
@@ -424,6 +502,7 @@ class ResearchWorkflowService:
             "execution_device": execution_device,
             "artifact_path": str(upload_path),
             "created_at": utc_now(),
+            "training_input_policy": "medsam_roi_crop_only",
             "training_summary": result,
         }
         self.control_plane.register_model_update(update_metadata)
