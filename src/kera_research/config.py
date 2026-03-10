@@ -10,6 +10,8 @@ CONTROL_PLANE_CASE_DIR = CONTROL_PLANE_DIR / "validation_cases"
 SITE_ROOT_DIR = STORAGE_DIR / "sites"
 MODEL_DIR = BASE_DIR / "models"
 DOCS_DIR = BASE_DIR / "docs"
+SCRIPTS_DIR = BASE_DIR / "scripts"
+LOCAL_MEDSAM_ROOT = BASE_DIR / "MedSAM-main"
 
 APP_NAME = "K-ERA Research Platform"
 
@@ -60,8 +62,33 @@ DEFAULT_GLOBAL_MODELS = [
     },
 ]
 
-MEDSAM_SCRIPT = os.getenv("MEDSAM_SCRIPT", "").strip()
-MEDSAM_CHECKPOINT = os.getenv("MEDSAM_CHECKPOINT", "").strip()
+
+def _resolve_existing_path(*candidates: Path) -> str:
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+def _resolve_medsam_script() -> str:
+    configured = os.getenv("MEDSAM_SCRIPT", "").strip()
+    if configured:
+        return configured
+    return _resolve_existing_path(SCRIPTS_DIR / "medsam_auto_roi.py")
+
+
+def _resolve_medsam_checkpoint() -> str:
+    configured = os.getenv("MEDSAM_CHECKPOINT", "").strip()
+    if configured:
+        return configured
+    return _resolve_existing_path(
+        LOCAL_MEDSAM_ROOT / "work_dir" / "MedSAM" / "medsam_vit_b.pth",
+        BASE_DIR / "work_dir" / "MedSAM" / "medsam_vit_b.pth",
+    )
+
+
+MEDSAM_SCRIPT = _resolve_medsam_script()
+MEDSAM_CHECKPOINT = _resolve_medsam_checkpoint()
 
 DEFAULT_USERS = [
     {

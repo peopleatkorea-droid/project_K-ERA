@@ -23,11 +23,26 @@ class MedSAMService:
         crop_output_path: str | Path,
     ) -> dict[str, Any]:
         if self._can_run_external_medsam():
-            return self._run_external_medsam(image_path, mask_output_path, crop_output_path)
+            try:
+                return self._run_external_medsam(image_path, mask_output_path, crop_output_path)
+            except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError) as exc:
+                fallback_result = self._fallback_center_cornea_mask(
+                    image_path,
+                    mask_output_path,
+                    crop_output_path,
+                )
+                fallback_result["backend"] = "fallback_after_medsam_error"
+                fallback_result["medsam_error"] = str(exc)
+                return fallback_result
         return self._fallback_center_cornea_mask(image_path, mask_output_path, crop_output_path)
 
     def _can_run_external_medsam(self) -> bool:
-        return bool(self.medsam_script and self.medsam_checkpoint and Path(self.medsam_script).exists())
+        return bool(
+            self.medsam_script
+            and self.medsam_checkpoint
+            and Path(self.medsam_script).exists()
+            and Path(self.medsam_checkpoint).exists()
+        )
 
     def _run_external_medsam(
         self,

@@ -6,6 +6,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from kera_research.config import MEDSAM_CHECKPOINT, MEDSAM_SCRIPT
 from kera_research.services.hardware import detect_hardware
 
 REQUIRED_PACKAGES = {
@@ -34,9 +35,14 @@ def detect_local_node_status() -> dict[str, Any]:
     package_versions = {name: package_version(name) for name in REQUIRED_PACKAGES}
     missing_packages = [name for name, item in package_versions.items() if item is None]
     hardware = detect_hardware()
-    medsam_script = os.getenv("MEDSAM_SCRIPT")
-    medsam_checkpoint = os.getenv("MEDSAM_CHECKPOINT")
-    medsam_ready = bool(medsam_script and medsam_checkpoint)
+    medsam_script = MEDSAM_SCRIPT or ""
+    medsam_checkpoint = MEDSAM_CHECKPOINT or ""
+    medsam_ready = bool(
+        medsam_script
+        and medsam_checkpoint
+        and Path(medsam_script).exists()
+        and Path(medsam_checkpoint).exists()
+    )
     ai_engine_ready = hardware["torch_available"]
 
     return {
