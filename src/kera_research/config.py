@@ -15,6 +15,16 @@ APP_NAME = "K-ERA Research Platform"
 
 DEFAULT_GLOBAL_MODELS = [
     {
+        "version_id": "model_global_densenet_v1",
+        "version_name": "global-densenet-v1.0",
+        "architecture": "densenet121",
+        "model_path": MODEL_DIR / "global_densenet_v1.pth",
+        "notes": "DenseNet121 trained on manually cropped slit-lamp ROIs. Primary global model.",
+        "notes_ko": "수동 크롭 슬릿램프 ROI로 학습된 DenseNet121 글로벌 모델입니다.",
+        "notes_en": "DenseNet121 trained on manually cropped slit-lamp ROIs. Primary global model.",
+        "requires_medsam_crop": True,
+    },
+    {
         "version_id": "model_global_cnn_baseline",
         "version_name": "global-cnn-baseline-v0.1",
         "architecture": "cnn",
@@ -22,6 +32,7 @@ DEFAULT_GLOBAL_MODELS = [
         "notes": "Lightweight CNN baseline for workflow validation.",
         "notes_ko": "워크플로우 검증용 경량 CNN baseline입니다.",
         "notes_en": "Lightweight CNN baseline for workflow validation.",
+        "requires_medsam_crop": False,
     },
     {
         "version_id": "model_global_vit_baseline",
@@ -31,6 +42,7 @@ DEFAULT_GLOBAL_MODELS = [
         "notes": "Lightweight ViT baseline for workflow validation.",
         "notes_ko": "워크플로우 검증용 경량 ViT baseline입니다.",
         "notes_en": "Lightweight ViT baseline for workflow validation.",
+        "requires_medsam_crop": False,
     },
     {
         "version_id": "model_global_swin_baseline",
@@ -40,6 +52,7 @@ DEFAULT_GLOBAL_MODELS = [
         "notes": "Lightweight Swin-like baseline for workflow validation.",
         "notes_ko": "워크플로우 검증용 경량 Swin-like baseline입니다.",
         "notes_en": "Lightweight Swin-like baseline for workflow validation.",
+        "requires_medsam_crop": False,
     },
 ]
 

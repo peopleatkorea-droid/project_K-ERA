@@ -30,6 +30,7 @@ class ControlPlaneStore:
         self.model_registry_path = self.root / "model_registry.json"
         self.model_updates_path = self.root / "model_updates.json"
         self.aggregations_path = self.root / "aggregations.json"
+        self.contributions_path = self.root / "contributions.json"
 
         self._seed_defaults()
 
@@ -52,6 +53,8 @@ class ControlPlaneStore:
             write_json(self.model_updates_path, [])
         if not self.aggregations_path.exists():
             write_json(self.aggregations_path, [])
+        if not self.contributions_path.exists():
+            write_json(self.contributions_path, [])
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
         for user in read_json(self.users_path, []):
@@ -227,3 +230,65 @@ class ControlPlaneStore:
         if site_id:
             return [item for item in updates if item.get("site_id") == site_id]
         return updates
+
+    def register_contribution(self, contribution: dict[str, Any]) -> dict[str, Any]:
+        append_json_record(self.contributions_path, contribution)
+        return contribution
+
+    def list_contributions(self, user_id: str | None = None, site_id: str | None = None) -> list[dict[str, Any]]:
+        contribs = read_json(self.contributions_path, [])
+        if user_id:
+            contribs = [c for c in contribs if c.get("user_id") == user_id]
+        if site_id:
+            contribs = [c for c in contribs if c.get("site_id") == site_id]
+        return contribs
+
+    def get_contribution_stats(self, user_id: str | None = None) -> dict[str, Any]:
+        all_contribs = read_json(self.contributions_path, [])
+        total = len(all_contribs)
+        user_contribs = [c for c in all_contribs if c.get("user_id") == user_id] if user_id else []
+        user_total = len(user_contribs)
+        pct = round(user_total / total * 100, 1) if total > 0 else 0.0
+        current_model = self.current_global_model()
+        return {
+            "total_contributions": total,
+            "user_contributions": user_total,
+            "user_contribution_pct": pct,
+            "current_model_version": current_model["version_name"] if current_model else "—",
+        }
+
+    def register_aggregation(
+        self,
+        base_model_version_id: str,
+        new_model_path: str,
+        new_version_name: str,
+        architecture: str,
+        site_weights: dict[str, int],
+    ) -> dict[str, Any]:
+        from kera_research.domain import make_id, utc_now
+        agg_id = make_id("agg")
+        record = {
+            "aggregation_id": agg_id,
+            "base_model_version_id": base_model_version_id,
+            "new_version_name": new_version_name,
+            "architecture": architecture,
+            "site_weights": site_weights,
+            "total_cases": sum(site_weights.values()),
+            "created_at": utc_now(),
+        }
+        append_json_record(self.aggregations_path, record)
+        new_version = {
+            "version_id": make_id("model"),
+            "version_name": new_version_name,
+            "architecture": architecture,
+            "stage": "global",
+            "base_version_id": base_model_version_id,
+            "model_path": new_model_path,
+            "created_at": utc_now(),
+            "aggregation_id": agg_id,
+            "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
+            "notes_ko": f"{len(site_weights)}개 기관, {sum(site_weights.values())}케이스 federated 집계 모델.",
+            "notes_en": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
+        }
+        self.ensure_model_version(new_version)
+        return record

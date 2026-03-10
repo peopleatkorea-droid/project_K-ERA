@@ -11,7 +11,7 @@ from PIL import Image
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 from kera_research.config import DEFAULT_GLOBAL_MODELS
-from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 
 try:
     import torch
@@ -24,6 +24,13 @@ except ImportError:  # pragma: no cover - dependency guard
     nn = None
     DataLoader = None
     Dataset = object
+
+try:
+    import torchvision.models as _torchvision_models
+    _TORCHVISION_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _torchvision_models = None
+    _TORCHVISION_AVAILABLE = False
 
 
 def require_torch() -> None:
@@ -245,16 +252,48 @@ if nn is not None:
             x = self.stage3(x)
             x = self.pool(x).flatten(1)
             return self.head(x)
+    class DenseNetKeratitis(nn.Module):
+        """Wrapper for torchvision DenseNet variants (121/169/201).
+
+        Replaces the classifier head with a 2-class output.
+        When loading the user's pre-trained .pth, call load_densenet_checkpoint()
+        which handles the flexible key-mapping needed for custom checkpoints.
+        """
+
+        def __init__(self, variant: str = "densenet121", num_classes: int = 2) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for DenseNet. Run: pip install torchvision")
+            builder = getattr(_torchvision_models, variant, None)
+            if builder is None:
+                raise ValueError(f"Unknown DenseNet variant: {variant}")
+            backbone = builder(weights=None)
+            in_features = backbone.classifier.in_features
+            backbone.classifier = nn.Linear(in_features, num_classes)
+            self.model = backbone
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            return self.model(inputs)
+
+        @property
+        def features(self) -> nn.Module:
+            return self.model.features
+
+        @property
+        def classifier(self) -> nn.Module:
+            return self.model.classifier
+
 else:  # pragma: no cover - dependency guard
     class TinyKeratitisCNN:  # type: ignore[override]
         pass
 
-
     class TinyPatchViT:  # type: ignore[override]
         pass
 
-
     class TinySwinLike:  # type: ignore[override]
+        pass
+
+    class DenseNetKeratitis:  # type: ignore[override]
         pass
 
 
@@ -299,6 +338,8 @@ class ModelManager:
             return TinyPatchViT()
         if architecture == "swin":
             return TinySwinLike()
+        if architecture in DENSENET_VARIANTS:
+            return DenseNetKeratitis(variant=architecture)
         raise ValueError(f"Unsupported architecture: {architecture}")
 
     def ensure_baseline_models(self) -> list[dict[str, Any]]:
@@ -306,7 +347,28 @@ class ModelManager:
         baselines: list[dict[str, Any]] = []
         for template in DEFAULT_GLOBAL_MODELS:
             model_path = Path(template["model_path"])
+            # DenseNet 글로벌 모델은 .pth 파일로 제공됩니다.
+            # 파일이 없으면 등록은 하되, 랜덤 초기화 모델을 자동 생성하지 않습니다.
+            # (사용자가 직접 .pth 파일을 models/ 폴더에 넣어야 합니다.)
             if not model_path.exists():
+                if template["architecture"] in DENSENET_VARIANTS:
+                    baselines.append(
+                        {
+                            "version_id": template["version_id"],
+                            "version_name": template["version_name"],
+                            "architecture": template["architecture"],
+                            "stage": "global",
+                            "base_version_id": None,
+                            "model_path": str(model_path),
+                            "requires_medsam_crop": template.get("requires_medsam_crop", False),
+                            "created_at": utc_now(),
+                            "notes": template["notes"],
+                            "notes_ko": template.get("notes_ko", template["notes"]),
+                            "notes_en": template.get("notes_en", template["notes"]),
+                            "ready": False,
+                        }
+                    )
+                    continue
                 model = self.build_model(template["architecture"])
                 torch.save(
                     {
@@ -323,20 +385,78 @@ class ModelManager:
                     "stage": "global",
                     "base_version_id": None,
                     "model_path": str(model_path),
+                    "requires_medsam_crop": template.get("requires_medsam_crop", False),
                     "created_at": utc_now(),
                     "notes": template["notes"],
                     "notes_ko": template.get("notes_ko", template["notes"]),
                     "notes_en": template.get("notes_en", template["notes"]),
+                    "ready": True,
                 },
             )
         return baselines
 
     def load_model(self, model_reference: dict[str, Any], device: str) -> nn.Module:
         require_torch()
-        checkpoint = torch.load(model_reference["model_path"], map_location=device)
-        architecture = checkpoint.get("architecture") or model_reference.get("architecture", "cnn")
+        architecture = model_reference.get("architecture", "cnn")
+        model_path = model_reference["model_path"]
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
+        if architecture in DENSENET_VARIANTS:
+            return self._load_densenet_flexible(checkpoint, architecture, device)
+
+        arch_from_ckpt = checkpoint.get("architecture") if isinstance(checkpoint, dict) else None
+        architecture = arch_from_ckpt or architecture
         model = self.build_model(architecture).to(device)
-        model.load_state_dict(checkpoint["state_dict"])
+        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict)
+        model.eval()
+        return model
+
+    def _load_densenet_flexible(self, checkpoint: Any, architecture: str, device: str) -> nn.Module:
+        """사용자의 .pth 파일을 유연하게 로드합니다.
+
+        지원하는 checkpoint 구조:
+        1. {"architecture": ..., "state_dict": {...}}  ← K-ERA 표준 형식
+        2. {"model": {...}, ...}                       ← 커스텀 학습 checkpoint
+        3. {"state_dict": {...}, "epoch": ...}         ← 학습 중간 저장본
+        4. OrderedDict([...])                          ← state_dict 직접 저장
+        5. DenseNet 전체 모델 객체 (torch.save(model, path))
+        """
+        require_torch()
+        model = self.build_model(architecture).to(device)
+
+        if not isinstance(checkpoint, dict):
+            # 전체 모델 객체로 저장된 경우
+            try:
+                model.load_state_dict(checkpoint.state_dict())
+            except AttributeError:
+                model.load_state_dict(checkpoint)
+            model.eval()
+            return model
+
+        # dict 형식 - 키 탐색
+        state_dict = None
+        for key in ("state_dict", "model", "model_state_dict", "weights"):
+            if key in checkpoint:
+                state_dict = checkpoint[key]
+                break
+        if state_dict is None:
+            # dict 자체가 state_dict인 경우
+            state_dict = checkpoint
+
+        # "module." prefix 제거 (DataParallel 학습 시 생성)
+        if any(k.startswith("module.") for k in state_dict):
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+
+        # "model." prefix 처리 (DenseNetKeratitis wrapper)
+        has_model_prefix = any(k.startswith("model.") for k in state_dict)
+        model_expects_prefix = any(k.startswith("model.") for k in model.state_dict())
+        if has_model_prefix and not model_expects_prefix:
+            state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
+        elif not has_model_prefix and model_expects_prefix:
+            state_dict = {f"model.{k}": v for k, v in state_dict.items()}
+
+        model.load_state_dict(state_dict, strict=False)
         model.eval()
         return model
 
@@ -390,6 +510,17 @@ class ModelManager:
                 device=device,
                 output_path=output_path,
                 target_layer=model.stage3[-1],
+                target_class=target_class,
+            )
+        if architecture in DENSENET_VARIANTS:
+            # DenseNet: 마지막 denseblock의 마지막 레이어를 CAM 타겟으로 사용
+            target_layer = model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
+            return self._generate_cam_from_layer(
+                model=model,
+                image_path=image_path,
+                device=device,
+                output_path=output_path,
+                target_layer=target_layer,
                 target_class=target_class,
             )
         raise ValueError(f"Unsupported architecture: {architecture}")

@@ -22,7 +22,8 @@ PREDISPOSING_FACTORS = [
 ]
 VIEW_OPTIONS = ["white", "slit", "fluorescein"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
-MODEL_ARCHITECTURES = ["cnn", "vit", "swin"]
+MODEL_ARCHITECTURES = ["cnn", "vit", "swin", "densenet121", "densenet169", "densenet201"]
+DENSENET_VARIANTS = ["densenet121", "densenet169", "densenet201"]
 
 CULTURE_SPECIES = {
     "bacterial": [
@@ -57,6 +58,7 @@ MANIFEST_COLUMNS = [
     "culture_species",
     "contact_lens_use",
     "predisposing_factor",
+    "active_stage",
     "view",
     "image_path",
     "is_representative",

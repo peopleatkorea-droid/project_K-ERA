@@ -23,169 +23,1178 @@ from kera_research.services.hardware import detect_hardware, resolve_execution_m
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.runtime import detect_local_node_status
 
-PAGE_META = {
-    "dashboard": {
-        "ko": "프로젝트 대시보드",
-        "en": "Project Dashboard",
-        "description_ko": "프로젝트, 병원 사이트, 모델 버전, 검증 이력을 한눈에 확인하고 초기 설정을 시작합니다.",
-        "description_en": "Review projects, sites, model versions, and validation history before starting the workflow.",
-        "phase": "setup",
-    },
-    "patient_registration": {
-        "ko": "환자 등록",
-        "en": "Patient Registration",
-        "description_ko": "환자 기본 정보만 먼저 간단히 등록합니다.",
-        "description_en": "Register only the essential patient information first.",
-        "phase": "data_entry",
-    },
-    "visit_entry": {
-        "ko": "방문 정보 입력",
-        "en": "Visit Entry",
-        "description_ko": "culture-proven 각막염 방문 정보를 구조화하여 입력합니다.",
-        "description_en": "Enter structured visit information for culture-proven keratitis cases.",
-        "phase": "data_entry",
-    },
-    "image_upload": {
-        "ko": "이미지 업로드 및 view 지정",
-        "en": "Image Upload and View Assignment",
-        "description_ko": "슬릿램프 이미지를 업로드하고 view를 직접 지정합니다.",
-        "description_en": "Upload slit-lamp images and manually assign the view type.",
-        "phase": "data_entry",
-    },
-    "representative_selection": {
-        "ko": "대표 이미지 선택",
-        "en": "Representative Image Selection",
-        "description_ko": "대표 이미지를 선택해 CPU 환경에서도 효율적으로 처리할 수 있게 합니다.",
-        "description_en": "Select representative images for efficient processing, especially in CPU mode.",
-        "phase": "data_entry",
-    },
-    "dataset_review": {
-        "ko": "데이터셋 검토",
-        "en": "Dataset Review",
-        "description_ko": "현재까지 입력된 데이터가 manifest로 어떻게 구성되는지 검토합니다.",
-        "description_en": "Review how the entered records are organized into the dataset manifest.",
-        "phase": "data_entry",
-    },
-    "validation_run": {
-        "ko": "외부 검증 실행",
-        "en": "Run External Validation",
-        "description_ko": "현재 글로벌 모델로 우선 외부 검증을 수행합니다.",
-        "description_en": "Run external validation with the selected global model before local training.",
-        "phase": "validation",
-    },
-    "validation_dashboard": {
-        "ko": "검증 결과 대시보드",
-        "en": "Validation Results Dashboard",
-        "description_ko": "검증 요약 통계와 증례별 예측 결과를 검토합니다.",
-        "description_en": "Review validation summaries and case-level predictions.",
-        "phase": "review",
-    },
-    "gradcam_viewer": {
-        "ko": "설명 시각화 뷰어",
-        "en": "Explanation Viewer",
-        "description_ko": "모델이 주목한 영역을 시각적으로 확인합니다.",
-        "description_en": "Inspect model attention and explanation overlays.",
-        "phase": "review",
-    },
-    "medsam_viewer": {
-        "ko": "MedSAM ROI 뷰어",
-        "en": "MedSAM ROI Viewer",
-        "description_ko": "각막 ROI 마스크와 crop 결과를 확인합니다.",
-        "description_en": "Inspect corneal ROI masks and cropped outputs.",
-        "phase": "review",
-    },
+# ──────────────────────────────────────────────
+# Wizard step definitions
+# ──────────────────────────────────────────────
+WIZARD_STEPS = ["patient", "visit", "images", "validation", "visualization", "contribution", "thankyou"]
+
+STEP_LABELS = {
+    "patient":       {"ko": "환자 선택",    "en": "Patient"},
+    "visit":         {"ko": "방문 정보",    "en": "Visit"},
+    "images":        {"ko": "이미지 업로드", "en": "Images"},
+    "validation":    {"ko": "검증",         "en": "Validate"},
+    "visualization": {"ko": "시각화",       "en": "Visualize"},
+    "contribution":  {"ko": "기여 결정",    "en": "Contribute"},
+    "thankyou":      {"ko": "완료",         "en": "Done"},
 }
 
-PAGES = list(PAGE_META.keys())
 
-PHASE_META = {
-    "setup": {"ko": "시작", "en": "Setup"},
-    "data_entry": {"ko": "데이터 입력", "en": "Data Entry"},
-    "validation": {"ko": "검증", "en": "Validation"},
-    "review": {"ko": "결과 확인", "en": "Review"},
-}
-
+# ──────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────
 
 def run_app() -> None:
-    st.set_page_config(page_title=APP_NAME, page_icon="K", layout="wide")
-    init_session_state()
-    inject_custom_css(st.session_state.get("theme", "light"))
+    st.set_page_config(page_title=APP_NAME, page_icon="🔬", layout="wide")
+    _init_session_state()
+    _inject_css(st.session_state.get("theme", "light"))
 
     lang = st.session_state.get("lang", "ko")
     runtime_status = detect_local_node_status()
-    control_plane = ControlPlaneStore()
-    workflow, workflow_error = bootstrap_workflow(control_plane)
+    cp = ControlPlaneStore()
+    workflow, workflow_error = _bootstrap_workflow(cp)
 
-    render_sidebar_header(control_plane, lang)
-    user = st.session_state.get("user")
+    user = _render_sidebar(cp, workflow, runtime_status, lang)
     if not user:
-        render_sidebar_footer(lang, None)
-        render_login_screen(lang)
+        _render_login(cp, lang)
         return
 
-    context = resolve_context(control_plane)
-    render_sidebar_footer(lang, user)
-    render_primary_navigation(lang)
-    page_id = st.session_state.get("page_id", PAGES[0])
-    site_store = SiteStore(context["site"]["site_id"]) if context["site"] else None
+    page = st.session_state.get("page", "wizard")
+    if page == "wizard":
+        _render_wizard(cp, workflow, workflow_error, user, runtime_status, lang)
+    elif page == "dashboard":
+        _render_dashboard(cp, user, lang)
+    elif page == "admin":
+        _render_admin(cp, workflow, lang)
 
-    st.title(APP_NAME)
-    st.caption(
-        t(
-            lang,
-            "병원 로컬 이미지를 중앙으로 올리지 않고, 감염성 각막염 연구 데이터셋 정리와 외부 검증, 선택적 로컬 파인튜닝을 수행하는 연구 플랫폼입니다.",
-            "A research platform for infectious keratitis dataset curation, external validation, and optional local fine-tuning without uploading raw local images.",
-        ),
+
+# ──────────────────────────────────────────────
+# Session state
+# ──────────────────────────────────────────────
+
+def _init_session_state() -> None:
+    st.session_state.setdefault("user", None)
+    st.session_state.setdefault("page", "wizard")
+    st.session_state.setdefault("lang", "ko")
+    st.session_state.setdefault("theme", "light")
+    # wizard state
+    st.session_state.setdefault("wiz_step", "patient")
+    st.session_state.setdefault("wiz_site_id", None)
+    st.session_state.setdefault("wiz_patient", None)
+    st.session_state.setdefault("wiz_visit", None)
+    st.session_state.setdefault("wiz_images", [])
+    st.session_state.setdefault("wiz_validation", None)
+    st.session_state.setdefault("wiz_contributed", False)
+    st.session_state.setdefault("wiz_update_metadata", None)
+
+
+def _reset_wizard(keep_site: bool = True) -> None:
+    site_id = st.session_state.get("wiz_site_id")
+    _init_session_state()
+    st.session_state["wiz_step"] = "patient"
+    st.session_state["wiz_patient"] = None
+    st.session_state["wiz_visit"] = None
+    st.session_state["wiz_images"] = []
+    st.session_state["wiz_validation"] = None
+    st.session_state["wiz_contributed"] = False
+    st.session_state["wiz_update_metadata"] = None
+    if keep_site:
+        st.session_state["wiz_site_id"] = site_id
+
+
+# ──────────────────────────────────────────────
+# Bootstrap
+# ──────────────────────────────────────────────
+
+def _bootstrap_workflow(cp: ControlPlaneStore) -> tuple[ResearchWorkflowService | None, str | None]:
+    try:
+        return ResearchWorkflowService(cp), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _get_site_store(site_id: str | None) -> SiteStore | None:
+    if not site_id:
+        return None
+    return SiteStore(site_id)
+
+
+def _get_execution_device(mode: str) -> str:
+    hw = detect_hardware()
+    return resolve_execution_mode(mode, hw)
+
+
+# ──────────────────────────────────────────────
+# Sidebar
+# ──────────────────────────────────────────────
+
+def _render_sidebar(
+    cp: ControlPlaneStore,
+    workflow: ResearchWorkflowService | None,
+    runtime_status: dict[str, Any],
+    lang: str,
+) -> dict[str, Any] | None:
+    with st.sidebar:
+        # ── App name
+        st.markdown(
+            f"<div style='font-size:1.3rem;font-weight:800;color:var(--kera-accent);margin-bottom:0.2rem'>"
+            f"🔬 {APP_NAME}</div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Language toggle
+        col_l, col_r = st.columns(2)
+        with col_l:
+            if st.button("🇰🇷 한국어", use_container_width=True, key="btn_ko"):
+                st.session_state["lang"] = "ko"
+                st.rerun()
+        with col_r:
+            if st.button("🇬🇧 English", use_container_width=True, key="btn_en"):
+                st.session_state["lang"] = "en"
+                st.rerun()
+
+        st.divider()
+
+        user = st.session_state.get("user")
+        if not user:
+            return None
+
+        # ── User info
+        st.markdown(
+            f"<div class='kera-sidebar-user'>"
+            f"<h4>{user.get('full_name', user['username'])}</h4>"
+            f"<p>{user['role'].capitalize()} · {user['username']}</p>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Site selector
+        sites = cp.list_sites()
+        if sites:
+            site_options = {s["site_id"]: f"{s['display_name']} ({s['site_id']})" for s in sites}
+            current_site = st.session_state.get("wiz_site_id") or sites[0]["site_id"]
+            if current_site not in site_options:
+                current_site = sites[0]["site_id"]
+            selected_site = st.selectbox(
+                t(lang, "병원 사이트", "Hospital Site"),
+                options=list(site_options.keys()),
+                format_func=lambda x: site_options[x],
+                index=list(site_options.keys()).index(current_site),
+                key="sidebar_site_select",
+            )
+            if selected_site != st.session_state.get("wiz_site_id"):
+                st.session_state["wiz_site_id"] = selected_site
+                _reset_wizard()
+                st.rerun()
+        else:
+            st.info(t(lang, "사이트를 먼저 등록하세요.", "Register a site first."))
+
+        st.divider()
+
+        # ── Navigation buttons
+        if st.button(
+            t(lang, "➕  새 케이스 입력", "➕  New Case"),
+            use_container_width=True,
+            key="btn_new_case",
+        ):
+            _reset_wizard()
+            st.session_state["page"] = "wizard"
+            st.rerun()
+
+        if st.button(
+            t(lang, "📊  대시보드", "📊  Dashboard"),
+            use_container_width=True,
+            key="btn_dashboard",
+        ):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if user.get("role") == "admin":
+            if st.button(
+                t(lang, "⚙️  관리자", "⚙️  Admin"),
+                use_container_width=True,
+                key="btn_admin",
+            ):
+                st.session_state["page"] = "admin"
+                st.rerun()
+
+        st.divider()
+
+        # ── Hardware status
+        hw = detect_hardware()
+        hw_label = "GPU ✅" if hw["cuda_available"] else "CPU only"
+        st.caption(f"🖥 {hw_label}  ·  AI: {'✅' if runtime_status['ai_engine_ready'] else '⚠️ 준비 필요'}")
+
+        # ── Logout
+        if st.button(t(lang, "로그아웃", "Log out"), use_container_width=True, key="btn_logout"):
+            st.session_state["user"] = None
+            st.rerun()
+
+    return user
+
+
+# ──────────────────────────────────────────────
+# Login
+# ──────────────────────────────────────────────
+
+def _render_login(cp: ControlPlaneStore, lang: str) -> None:
+    col_a, col_b, col_c = st.columns([1, 1.6, 1])
+    with col_b:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:center;font-size:2rem;font-weight:900;color:var(--kera-accent)'>"
+            f"🔬 {APP_NAME}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='text-align:center;color:var(--kera-muted);margin-bottom:2rem'>"
+            f"{t(lang, '감염성 각막염 연구 플랫폼', 'Infectious Keratitis Research Platform')}</div>",
+            unsafe_allow_html=True,
+        )
+        with st.form("login_form"):
+            username = st.text_input(t(lang, "사용자 이름", "Username"))
+            password = st.text_input(t(lang, "비밀번호", "Password"), type="password")
+            if st.form_submit_button(t(lang, "로그인", "Login"), use_container_width=True):
+                user = cp.authenticate(username, password)
+                if user:
+                    st.session_state["user"] = user
+                    st.rerun()
+                else:
+                    st.error(t(lang, "사용자 이름 또는 비밀번호가 올바르지 않습니다.", "Invalid credentials."))
+
+
+# ──────────────────────────────────────────────
+# Wizard step indicator
+# ──────────────────────────────────────────────
+
+def _render_step_indicator(current_step: str, lang: str) -> None:
+    steps = WIZARD_STEPS
+    current_idx = steps.index(current_step) if current_step in steps else 0
+    parts = []
+    for i, s in enumerate(steps):
+        label = STEP_LABELS[s][lang]
+        if i < current_idx:
+            parts.append(f"<span style='color:var(--kera-accent);font-weight:700'>✓ {label}</span>")
+        elif i == current_idx:
+            parts.append(
+                f"<span style='background:var(--kera-accent);color:white;padding:0.2rem 0.6rem;"
+                f"border-radius:999px;font-weight:700'>{label}</span>"
+            )
+        else:
+            parts.append(f"<span style='color:var(--kera-muted)'>{label}</span>")
+    st.markdown(
+        "<div style='display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-bottom:1.2rem'>"
+        + " <span style='color:var(--kera-muted)'>›</span> ".join(parts)
+        + "</div>",
+        unsafe_allow_html=True,
     )
-    render_page_intro(page_id, lang)
-    if workflow_error:
-        render_runtime_banner(runtime_status, workflow_error, lang)
 
-    if site_store is not None:
-        render_workflow_status(control_plane, context, site_store, lang)
 
-    if page_id == "dashboard":
-        render_project_dashboard(control_plane, context, workflow, runtime_status, lang)
-        return
+# ──────────────────────────────────────────────
+# Wizard router
+# ──────────────────────────────────────────────
 
-    if not context["project"] or not context["site"]:
+def _render_wizard(
+    cp: ControlPlaneStore,
+    workflow: ResearchWorkflowService | None,
+    workflow_error: str | None,
+    user: dict[str, Any],
+    runtime_status: dict[str, Any],
+    lang: str,
+) -> None:
+    site_id = st.session_state.get("wiz_site_id")
+    site_store = _get_site_store(site_id)
+
+    if workflow_error and not runtime_status["ai_engine_ready"]:
         st.warning(
             t(
                 lang,
-                "데이터 입력과 검증을 사용하려면 먼저 대시보드에서 프로젝트와 사이트를 생성하세요.",
-                "Create a project and a site from the dashboard before using the local data workflows.",
-            ),
+                "⚠️ AI 모듈이 준비되지 않았습니다. 데이터 입력은 가능하나 검증·학습 기능은 로컬 노드 설치 후 사용하세요.",
+                "⚠️ AI module not ready. Data entry is available, but validation/training requires local node setup.",
+            )
         )
+
+    step = st.session_state.get("wiz_step", "patient")
+    _render_step_indicator(step, lang)
+
+    if not site_store:
+        st.warning(t(lang, "먼저 사이드바에서 병원 사이트를 선택하거나 관리자에게 사이트 등록을 요청하세요.", "Select a hospital site from the sidebar or ask an admin to register one."))
         return
 
-    if page_id == "patient_registration":
-        render_patient_registration(site_store, lang)
-    elif page_id == "visit_entry":
-        render_visit_entry(control_plane, site_store, user, lang)
-    elif page_id == "image_upload":
-        render_image_upload(site_store, lang)
-    elif page_id == "representative_selection":
-        render_representative_selection(site_store, lang)
-    elif page_id == "dataset_review":
-        render_dataset_review(site_store, lang)
-    elif page_id == "validation_run":
-        render_external_validation(control_plane, workflow, context, site_store, runtime_status, lang)
-    elif page_id == "validation_dashboard":
-        render_validation_dashboard(control_plane, context, lang)
-    elif page_id == "gradcam_viewer":
-        render_gradcam_viewer(site_store, lang)
-    elif page_id == "medsam_viewer":
-        render_medsam_viewer(site_store, lang)
+    if step == "patient":
+        _step_patient(site_store, lang)
+    elif step == "visit":
+        _step_visit(cp, site_store, lang)
+    elif step == "images":
+        _step_images(site_store, lang)
+    elif step == "validation":
+        _step_validation(cp, workflow, site_store, user, runtime_status, lang)
+    elif step == "visualization":
+        _step_visualization(site_store, lang)
+    elif step == "contribution":
+        _step_contribution(cp, workflow, site_store, user, runtime_status, lang)
+    elif step == "thankyou":
+        _step_thankyou(cp, user, lang)
 
 
-def init_session_state() -> None:
-    st.session_state.setdefault("user", None)
-    st.session_state.setdefault("page_id", PAGES[0])
-    st.session_state.setdefault("lang", "ko")
-    st.session_state.setdefault("theme", "light")
+# ──────────────────────────────────────────────
+# Step 1: Patient
+# ──────────────────────────────────────────────
+
+def _step_patient(site_store: SiteStore, lang: str) -> None:
+    st.subheader(t(lang, "👤 환자 선택 또는 신규 등록", "👤 Select or Register Patient"))
+
+    patients = site_store.list_patients()
+
+    # ── 기존 환자 검색
+    if patients:
+        st.markdown(f"**{t(lang, '기존 환자 검색', 'Search Existing Patient')}**")
+        search = st.text_input(t(lang, "환자 ID 또는 이름 검색", "Search by Patient ID"), key="patient_search", placeholder="P001")
+        filtered = [p for p in patients if search.lower() in p["patient_id"].lower()] if search else patients
+
+        for p in filtered[:20]:
+            visits = site_store.list_visits_for_patient(p["patient_id"])
+            visit_summary = f"{len(visits)}{t(lang, '회 방문', ' visit(s)')}"
+            last_visit = visits[-1]["visit_date"] if visits else t(lang, "없음", "None")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(
+                    f"<div class='kera-card' style='padding:0.7rem 1rem'>"
+                    f"<strong>{p['patient_id']}</strong> · "
+                    f"{p['sex']} · {p['age']}{t(lang, '세', 'y')} · "
+                    f"{visit_summary} · {t(lang, '최근', 'Last')}: {last_visit}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col2:
+                if st.button(t(lang, "선택", "Select"), key=f"sel_{p['patient_id']}"):
+                    st.session_state["wiz_patient"] = p
+                    st.session_state["wiz_step"] = "visit"
+                    st.rerun()
+
+        if filtered:
+            st.divider()
+
+    # ── 신규 환자 등록
+    with st.expander(t(lang, "➕ 신규 환자 등록", "➕ Register New Patient"), expanded=not patients):
+        with st.form("new_patient_form"):
+            pid = st.text_input(t(lang, "환자 ID *", "Patient ID *"), placeholder="P001")
+            col_s, col_a = st.columns(2)
+            with col_s:
+                sex = st.selectbox(t(lang, "성별 *", "Sex *"), SEX_OPTIONS)
+            with col_a:
+                age = st.number_input(t(lang, "나이 *", "Age *"), min_value=1, max_value=120, value=50)
+            if st.form_submit_button(t(lang, "등록 후 다음 단계", "Register & Continue"), use_container_width=True):
+                try:
+                    patient = site_store.create_patient(pid.strip(), sex, int(age))
+                    st.session_state["wiz_patient"] = patient
+                    st.session_state["wiz_step"] = "visit"
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
 
 
-def inject_custom_css(theme: str) -> None:
+# ──────────────────────────────────────────────
+# Step 2: Visit
+# ──────────────────────────────────────────────
+
+def _step_visit(cp: ControlPlaneStore, site_store: SiteStore, lang: str) -> None:
+    patient = st.session_state.get("wiz_patient")
+    if not patient:
+        st.session_state["wiz_step"] = "patient"
+        st.rerun()
+        return
+
+    st.subheader(t(lang, "📋 방문 정보 입력", "📋 Enter Visit Details"))
+    st.markdown(
+        f"<div class='kera-chip complete'>👤 {patient['patient_id']} · {patient['sex']} · {patient['age']}{t(lang, '세', 'y')}</div>",
+        unsafe_allow_html=True,
+    )
+
+    # 이전 방문 타임라인
+    prev_visits = site_store.list_visits_for_patient(patient["patient_id"])
+    if prev_visits:
+        st.markdown(f"**{t(lang, '이전 방문 이력', 'Previous Visits')}**")
+        timeline_html = "<div class='kera-chip-row'>"
+        for v in sorted(prev_visits, key=lambda x: x["visit_date"]):
+            cat_label = "🦠 " + v.get("culture_category", "").capitalize()
+            stage = "🔴 " + t(lang, "활성기", "Active") if v.get("active_stage") else "🟢 " + t(lang, "회복", "Resolved")
+            timeline_html += f"<span class='kera-chip'>{v['visit_date']} {cat_label} {stage}</span>"
+        timeline_html += "</div>"
+        st.markdown(timeline_html, unsafe_allow_html=True)
+        st.markdown("")
+
+    organisms = cp.list_organisms()
+    bacterial_list = organisms.get("bacterial", []) if isinstance(organisms, dict) else []
+    fungal_list = organisms.get("fungal", []) if isinstance(organisms, dict) else []
+
+    with st.form("visit_form"):
+        visit_date = st.date_input(t(lang, "방문 날짜 *", "Visit Date *"))
+        culture_confirmed = st.checkbox(t(lang, "Culture-proven 확인 (필수)", "Culture-proven confirmed (required)"), value=True)
+
+        col_cat, col_sp = st.columns(2)
+        with col_cat:
+            culture_category = st.radio(
+                t(lang, "감염 종류 *", "Culture Category *"),
+                options=["bacterial", "fungal"],
+                format_func=lambda x: t(lang, "세균성" if x == "bacterial" else "진균성", x.capitalize()),
+                horizontal=True,
+            )
+        with col_sp:
+            species_list = bacterial_list if culture_category == "bacterial" else fungal_list
+            culture_species = st.selectbox(t(lang, "균종 *", "Species *"), species_list or ["Other"])
+
+        col_cl, col_pf = st.columns(2)
+        with col_cl:
+            contact_lens_use = st.selectbox(t(lang, "콘택트렌즈 사용", "Contact Lens Use"), CONTACT_LENS_OPTIONS)
+        with col_pf:
+            predisposing_factor = st.multiselect(t(lang, "위험인자", "Predisposing Factors"), PREDISPOSING_FACTORS)
+
+        active_stage = st.toggle(
+            t(lang, "🔴 현재 활성기 (Active stage)", "🔴 Currently active stage"),
+            value=True,
+            help=t(lang, "활성기 케이스는 모델 학습 기여 대상입니다.", "Active stage cases are eligible for model training contribution."),
+        )
+        other_history = st.text_area(t(lang, "기타 병력 (선택)", "Other History (optional)"), height=80)
+
+        col_back, col_next = st.columns(2)
+        with col_back:
+            back = st.form_submit_button(t(lang, "← 이전", "← Back"), use_container_width=True)
+        with col_next:
+            submitted = st.form_submit_button(t(lang, "다음 →", "Next →"), use_container_width=True, type="primary")
+
+    if back:
+        st.session_state["wiz_step"] = "patient"
+        st.rerun()
+
+    if submitted:
+        if not culture_confirmed:
+            st.error(t(lang, "Culture-proven 케이스만 입력 가능합니다.", "Only culture-proven cases are allowed."))
+        else:
+            try:
+                visit = site_store.create_visit(
+                    patient_id=patient["patient_id"],
+                    visit_date=str(visit_date),
+                    culture_confirmed=culture_confirmed,
+                    culture_category=culture_category,
+                    culture_species=culture_species,
+                    contact_lens_use=contact_lens_use,
+                    predisposing_factor=predisposing_factor,
+                    other_history=other_history,
+                    active_stage=active_stage,
+                )
+                st.session_state["wiz_visit"] = visit
+                st.session_state["wiz_step"] = "images"
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+
+# ──────────────────────────────────────────────
+# Step 3: Images
+# ──────────────────────────────────────────────
+
+def _step_images(site_store: SiteStore, lang: str) -> None:
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+    if not patient or not visit:
+        st.session_state["wiz_step"] = "patient"
+        st.rerun()
+        return
+
+    st.subheader(t(lang, "🖼 슬릿램프 이미지 업로드", "🖼 Upload Slit-lamp Images"))
+    st.markdown(
+        f"<div class='kera-chip-row'>"
+        f"<span class='kera-chip complete'>👤 {patient['patient_id']}</span>"
+        f"<span class='kera-chip complete'>📅 {visit['visit_date']}</span>"
+        f"<span class='kera-chip complete'>🦠 {visit['culture_category'].capitalize()} · {visit['culture_species']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        t(
+            lang,
+            "white / slit / fluorescein 각 뷰를 여러 장 올릴 수 있습니다. view를 지정한 뒤 '업로드' 버튼을 누르세요.",
+            "You can upload multiple images per view (white, slit, fluorescein). Assign views and press Upload.",
+        )
+    )
+
+    uploaded_files = st.file_uploader(
+        t(lang, "이미지 선택 (여러 장 가능)", "Select images (multiple allowed)"),
+        accept_multiple_files=True,
+        type=["jpg", "jpeg", "png", "bmp", "tiff"],
+        key="image_uploader",
+    )
+
+    saved_images = st.session_state.get("wiz_images", [])
+
+    if uploaded_files:
+        st.markdown(f"**{t(lang, 'View 지정', 'Assign View')}**")
+        pending: list[dict[str, Any]] = []
+        for i, f in enumerate(uploaded_files):
+            col_img, col_view, col_rep = st.columns([2, 2, 1])
+            with col_img:
+                st.image(f, use_container_width=True, caption=f.name)
+            with col_view:
+                view = st.selectbox(
+                    t(lang, "View", "View"),
+                    VIEW_OPTIONS,
+                    key=f"view_{i}_{f.name}",
+                )
+            with col_rep:
+                is_rep = st.checkbox(
+                    t(lang, "대표", "Rep."),
+                    key=f"rep_{i}_{f.name}",
+                    value=(i == 0 and not saved_images),
+                )
+            pending.append({"file": f, "view": view, "is_representative": is_rep})
+
+        if st.button(t(lang, "✅ 업로드 확정", "✅ Confirm Upload"), type="primary"):
+            for item in pending:
+                try:
+                    record = site_store.add_image(
+                        patient_id=patient["patient_id"],
+                        visit_date=visit["visit_date"],
+                        view=item["view"],
+                        is_representative=item["is_representative"],
+                        file_name=item["file"].name,
+                        content=item["file"].read(),
+                    )
+                    saved_images.append(record)
+                except Exception as exc:
+                    st.error(f"{item['file'].name}: {exc}")
+            st.session_state["wiz_images"] = saved_images
+            st.success(t(lang, f"{len(pending)}장 업로드 완료!", f"{len(pending)} image(s) uploaded!"))
+            st.rerun()
+
+    # 업로드된 이미지 목록
+    if saved_images:
+        st.markdown(f"**{t(lang, f'업로드 완료: {len(saved_images)}장', f'Uploaded: {len(saved_images)} image(s)')}**")
+        cols = st.columns(min(len(saved_images), 4))
+        for i, img in enumerate(saved_images):
+            with cols[i % 4]:
+                try:
+                    st.image(img["image_path"], use_container_width=True)
+                    st.caption(f"{img['view']} {'⭐' if img['is_representative'] else ''}")
+                except Exception:
+                    st.caption(img["image_path"])
+
+    col_back, col_next = st.columns(2)
+    with col_back:
+        if st.button(t(lang, "← 이전", "← Back"), use_container_width=True):
+            st.session_state["wiz_step"] = "visit"
+            st.rerun()
+    with col_next:
+        if saved_images:
+            if st.button(t(lang, "검증 실행 →", "Run Validation →"), use_container_width=True, type="primary"):
+                st.session_state["wiz_step"] = "validation"
+                st.rerun()
+        else:
+            st.button(t(lang, "검증 실행 →", "Run Validation →"), disabled=True, use_container_width=True)
+
+
+# ──────────────────────────────────────────────
+# Step 4: Validation
+# ──────────────────────────────────────────────
+
+def _step_validation(
+    cp: ControlPlaneStore,
+    workflow: ResearchWorkflowService | None,
+    site_store: SiteStore,
+    user: dict[str, Any],
+    runtime_status: dict[str, Any],
+    lang: str,
+) -> None:
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+    validation = st.session_state.get("wiz_validation")
+
+    st.subheader(t(lang, "🔬 외부 검증 (External Validation)", "🔬 External Validation"))
+
+    if validation:
+        _render_validation_result(validation, lang)
+        col_back, col_next = st.columns(2)
+        with col_back:
+            if st.button(t(lang, "← 이전", "← Back"), use_container_width=True):
+                st.session_state["wiz_step"] = "images"
+                st.rerun()
+        with col_next:
+            if st.button(t(lang, "시각화 보기 →", "View Visualization →"), use_container_width=True, type="primary"):
+                st.session_state["wiz_step"] = "visualization"
+                st.rerun()
+        return
+
+    if not runtime_status["ai_engine_ready"] or workflow is None:
+        st.error(t(lang, "AI 모듈이 준비되지 않아 검증을 실행할 수 없습니다. 로컬 노드 설치를 확인하세요.", "AI module not ready. Check local node installation."))
+        if st.button(t(lang, "← 이전", "← Back"), use_container_width=True):
+            st.session_state["wiz_step"] = "images"
+            st.rerun()
+        return
+
+    # 모델 선택
+    models = [m for m in cp.list_model_versions() if m.get("ready", True)]
+    if not models:
+        st.error(t(lang, "등록된 글로벌 모델이 없습니다.", "No global model registered."))
+        return
+
+    model_options = {m["version_id"]: f"{m['version_name']} ({m['architecture']})" for m in models}
+    selected_model_id = st.selectbox(
+        t(lang, "글로벌 모델 선택", "Select Global Model"),
+        options=list(model_options.keys()),
+        format_func=lambda x: model_options[x],
+    )
+    selected_model = next((m for m in models if m["version_id"] == selected_model_id), models[0])
+
+    hw = detect_hardware()
+    exec_mode = st.radio(
+        t(lang, "실행 모드", "Execution Mode"),
+        EXECUTION_MODES,
+        horizontal=True,
+        index=0,
+    )
+    device = resolve_execution_mode(exec_mode, hw)
+
+    if selected_model.get("requires_medsam_crop"):
+        st.info(t(lang, "📌 이 모델은 MedSAM ROI 크롭 후 추론합니다 (DenseNet 학습 조건과 동일).", "📌 This model uses MedSAM ROI crop before inference (matches DenseNet training)."))
+
+    col_back, col_run = st.columns(2)
+    with col_back:
+        if st.button(t(lang, "← 이전", "← Back"), use_container_width=True):
+            st.session_state["wiz_step"] = "images"
+            st.rerun()
+    with col_run:
+        run_btn = st.button(t(lang, "🔬 검증 실행", "🔬 Run Validation"), use_container_width=True, type="primary")
+
+    if run_btn:
+        with st.spinner(t(lang, "추론 중... 잠시만요 ☕", "Running inference... please wait ☕")):
+            try:
+                project_id = cp.list_projects()[0]["project_id"] if cp.list_projects() else "default"
+                summary, case_preds = workflow.run_case_validation(
+                    project_id=project_id,
+                    site_store=site_store,
+                    patient_id=patient["patient_id"],
+                    visit_date=visit["visit_date"],
+                    model_version=selected_model,
+                    execution_device=device,
+                    generate_gradcam=True,
+                    generate_medsam=True,
+                )
+                st.session_state["wiz_validation"] = {
+                    "summary": summary,
+                    "case_predictions": case_preds,
+                    "model_version": selected_model,
+                    "device": device,
+                }
+                st.rerun()
+            except Exception as exc:
+                st.error(f"{t(lang, '검증 오류:', 'Validation error:')} {exc}")
+
+
+def _render_validation_result(validation: dict[str, Any], lang: str) -> None:
+    summary = validation["summary"]
+    pred_label = summary.get("predicted_label", "")
+    true_label = summary.get("true_label", "")
+    prob = summary.get("prediction_probability", 0.0)
+    is_correct = summary.get("is_correct", False)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        label_ko = "세균성" if pred_label == "bacterial" else "진균성"
+        label_en = pred_label.capitalize()
+        st.metric(
+            t(lang, "AI 예측", "AI Prediction"),
+            t(lang, label_ko, label_en),
+        )
+    with col2:
+        st.metric(t(lang, "신뢰도", "Confidence"), f"{prob * 100:.1f}%")
+    with col3:
+        result_ko = "✅ 일치" if is_correct else "❌ 불일치"
+        result_en = "✅ Correct" if is_correct else "❌ Incorrect"
+        st.metric(t(lang, "Culture 결과와", "vs Culture"), t(lang, result_ko, result_en))
+
+    # 확률 바
+    bar_color = "#0d8f8a" if pred_label == "bacterial" else "#d6b468"
+    st.markdown(
+        f"<div style='background:#e8f6f5;border-radius:999px;height:12px;margin:0.5rem 0'>"
+        f"<div style='background:{bar_color};width:{prob*100:.1f}%;height:100%;border-radius:999px'></div>"
+        f"</div>"
+        f"<div style='display:flex;justify-content:space-between;font-size:0.8rem;color:var(--kera-muted)'>"
+        f"<span>Bacterial</span><span>Fungal</span></div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ──────────────────────────────────────────────
+# Step 5: Visualization
+# ──────────────────────────────────────────────
+
+def _step_visualization(site_store: SiteStore, lang: str) -> None:
+    validation = st.session_state.get("wiz_validation")
+    if not validation:
+        st.session_state["wiz_step"] = "validation"
+        st.rerun()
+        return
+
+    st.subheader(t(lang, "🧠 시각화 결과", "🧠 Visualization"))
+
+    case_preds = validation.get("case_predictions", [])
+    pred = case_preds[0] if case_preds else {}
+
+    gradcam_path = pred.get("gradcam_path")
+    roi_crop_path = pred.get("roi_crop_path")
+    medsam_mask_path = pred.get("medsam_mask_path")
+
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+
+    # 대표 이미지 원본
+    rep_images = site_store.list_images_for_visit(patient["patient_id"], visit["visit_date"])
+    rep_path = next((img["image_path"] for img in rep_images if img.get("is_representative")), None)
+    if not rep_path and rep_images:
+        rep_path = rep_images[0]["image_path"]
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f"**{t(lang, '원본 대표 이미지', 'Original (Representative)')}**")
+        if rep_path and Path(rep_path).exists():
+            st.image(rep_path, use_container_width=True)
+        else:
+            st.info(t(lang, "이미지를 불러올 수 없습니다.", "Image not available."))
+
+    with col2:
+        st.markdown(f"**{t(lang, 'MedSAM ROI Crop', 'MedSAM ROI Crop')}**")
+        if roi_crop_path and Path(roi_crop_path).exists():
+            st.image(roi_crop_path, use_container_width=True)
+            st.caption(t(lang, "각막 ROI 자동 크롭", "Auto-cropped corneal ROI"))
+        else:
+            st.info(t(lang, "ROI 크롭 결과 없음", "No ROI crop available"))
+
+    with col3:
+        st.markdown(f"**{t(lang, 'Grad-CAM 히트맵', 'Grad-CAM Heatmap')}**")
+        if gradcam_path and Path(gradcam_path).exists():
+            st.image(gradcam_path, use_container_width=True)
+            st.caption(t(lang, "모델이 주목한 영역 (빨강 = 고영향)", "Model attention (red = high impact)"))
+        else:
+            st.info(t(lang, "Grad-CAM 결과 없음", "No Grad-CAM available"))
+
+    # 검증 결과 요약도 표시
+    st.markdown("---")
+    _render_validation_result(validation, lang)
+
+    col_back, col_next = st.columns(2)
+    with col_back:
+        if st.button(t(lang, "← 검증 결과로", "← Back to Validation"), use_container_width=True):
+            st.session_state["wiz_step"] = "validation"
+            st.rerun()
+    with col_next:
+        if st.button(t(lang, "기여 결정 →", "Contribution →"), use_container_width=True, type="primary"):
+            st.session_state["wiz_step"] = "contribution"
+            st.rerun()
+
+
+# ──────────────────────────────────────────────
+# Step 6: Contribution
+# ──────────────────────────────────────────────
+
+def _step_contribution(
+    cp: ControlPlaneStore,
+    workflow: ResearchWorkflowService | None,
+    site_store: SiteStore,
+    user: dict[str, Any],
+    runtime_status: dict[str, Any],
+    lang: str,
+) -> None:
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+    validation = st.session_state.get("wiz_validation")
+
+    st.subheader(t(lang, "🤝 학습 기여 결정", "🤝 Contribute to Training"))
+
+    is_active = visit.get("active_stage", False) if visit else False
+    if is_active:
+        st.success(
+            t(
+                lang,
+                "🔴 이 케이스는 **활성기(active stage)**로 표시되어 있습니다. 학습 기여 시 모델 개선에 직접 반영됩니다.",
+                "🔴 This case is marked as **active stage**. Your contribution will directly improve the model.",
+            )
+        )
+    else:
+        st.info(
+            t(
+                lang,
+                "이 케이스는 회복기로 표시되어 있습니다. 학습에 기여하셔도 좋습니다.",
+                "This case is marked as resolved. You can still contribute it to training.",
+            )
+        )
+
+    st.markdown(
+        t(
+            lang,
+            """
+**기여하면 어떻게 되나요?**
+- 이미지는 병원 밖으로 전송되지 않습니다
+- 로컬에서 학습 후 **가중치 차분(weight delta)**만 중앙 서버에 업로드됩니다
+- 여러 기관의 가중치를 집계해 글로벌 모델이 개선됩니다 (Federated Learning)
+""",
+            """
+**What happens when you contribute?**
+- Your images never leave this hospital
+- Only the **weight delta** (model update) is uploaded to the central server
+- Multiple sites' updates are aggregated to improve the global model (Federated Learning)
+""",
+        )
+    )
+
+    if validation:
+        st.markdown("---")
+        _render_validation_result(validation, lang)
+        st.markdown("---")
+
+    col_yes, col_no = st.columns(2)
+    with col_yes:
+        contribute_btn = st.button(
+            t(lang, "✅ 기여하기", "✅ Contribute"),
+            use_container_width=True,
+            type="primary",
+            key="btn_contribute_yes",
+        )
+    with col_no:
+        skip_btn = st.button(
+            t(lang, "➡ 기여 없이 저장", "➡ Save without Contributing"),
+            use_container_width=True,
+            key="btn_contribute_no",
+        )
+
+    if col_yes and contribute_btn:
+        if not runtime_status["ai_engine_ready"] or workflow is None:
+            st.error(t(lang, "AI 모듈이 준비되지 않아 학습을 실행할 수 없습니다.", "AI module not ready for training."))
+        else:
+            model_version = validation["model_version"] if validation else cp.current_global_model()
+            device = validation.get("device", "cpu") if validation else "cpu"
+            with st.spinner(t(lang, "로컬 학습 중... 잠시만요 ☕", "Running local fine-tuning... ☕")):
+                try:
+                    update_metadata = workflow.contribute_case(
+                        site_store=site_store,
+                        patient_id=patient["patient_id"],
+                        visit_date=visit["visit_date"],
+                        model_version=model_version,
+                        execution_device=device,
+                        user_id=user["user_id"],
+                    )
+                    st.session_state["wiz_contributed"] = True
+                    st.session_state["wiz_update_metadata"] = update_metadata
+                    st.session_state["wiz_step"] = "thankyou"
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"{t(lang, '학습 오류:', 'Training error:')} {exc}")
+
+    if skip_btn:
+        st.session_state["wiz_contributed"] = False
+        st.session_state["wiz_step"] = "thankyou"
+        st.rerun()
+
+
+# ──────────────────────────────────────────────
+# Step 7: Thank you
+# ──────────────────────────────────────────────
+
+def _step_thankyou(cp: ControlPlaneStore, user: dict[str, Any], lang: str) -> None:
+    contributed = st.session_state.get("wiz_contributed", False)
+    patient = st.session_state.get("wiz_patient")
+    visit = st.session_state.get("wiz_visit")
+
+    stats = cp.get_contribution_stats(user_id=user["user_id"])
+    name = user.get("full_name", user["username"])
+
+    if contributed:
+        st.markdown(
+            f"""
+<div style='text-align:center;padding:2rem 0'>
+  <div style='font-size:3rem'>🎉</div>
+  <div style='font-size:1.6rem;font-weight:900;color:var(--kera-accent);margin:0.5rem 0'>
+    {t(lang, f'감사합니다, {name} 선생님!', f'Thank you, Dr. {name}!')}
+  </div>
+  <div style='color:var(--kera-muted);font-size:1rem'>
+    {t(lang, '이 케이스가 글로벌 모델 개선에 기여됩니다.', 'This case will contribute to improving the global model.')}
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"""
+<div style='text-align:center;padding:2rem 0'>
+  <div style='font-size:3rem'>✅</div>
+  <div style='font-size:1.6rem;font-weight:900;color:var(--kera-ink);margin:0.5rem 0'>
+    {t(lang, '케이스가 저장되었습니다', 'Case Saved')}
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    # 기여 통계 카드
+    st.markdown("<div class='kera-stat-grid'>", unsafe_allow_html=True)
+    _stat_card(t(lang, "내 누적 기여", "My Contributions"), str(stats["user_contributions"]), t(lang, "케이스", "cases"), lang)
+    _stat_card(t(lang, "전체 기여 케이스", "Total Contributions"), str(stats["total_contributions"]), t(lang, "전체", "total"), lang)
+    _stat_card(t(lang, "내 기여 비율", "My Share"), f"{stats['user_contribution_pct']}%", t(lang, "학습 데이터 기여", "of training data"), lang)
+    _stat_card(t(lang, "현재 글로벌 모델", "Current Global Model"), stats["current_model_version"], "", lang)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if patient and visit:
+        st.markdown("---")
+        st.markdown(
+            f"**{t(lang, '저장된 케이스', 'Saved Case')}:** "
+            f"{patient['patient_id']} · {visit['visit_date']} · "
+            f"{visit.get('culture_category','').capitalize()} · {visit.get('culture_species','')}"
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button(t(lang, "➕ 다음 케이스 입력", "➕ Enter Next Case"), use_container_width=True, type="primary"):
+            _reset_wizard()
+            st.session_state["page"] = "wizard"
+            st.rerun()
+    with col2:
+        if st.button(t(lang, "📊 대시보드 보기", "📊 View Dashboard"), use_container_width=True):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+
+def _stat_card(label: str, value: str, note: str, lang: str) -> None:
+    st.markdown(
+        f"<div class='kera-stat-card'>"
+        f"<div class='kera-stat-label'>{label}</div>"
+        f"<div class='kera-stat-value'>{value}</div>"
+        f"<div class='kera-stat-note'>{note}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ──────────────────────────────────────────────
+# Dashboard
+# ──────────────────────────────────────────────
+
+def _render_dashboard(cp: ControlPlaneStore, user: dict[str, Any], lang: str) -> None:
+    st.title(t(lang, "📊 대시보드", "📊 Dashboard"))
+
+    site_id = st.session_state.get("wiz_site_id")
+    site_store = _get_site_store(site_id)
+
+    stats = cp.get_contribution_stats(user_id=user["user_id"])
+
+    # 전체 통계
+    st.markdown(f"### {t(lang, '연구 현황', 'Research Overview')}")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(t(lang, "전체 기여 케이스", "Total Contributions"), stats["total_contributions"])
+    with c2:
+        st.metric(t(lang, "내 기여", "My Contributions"), stats["user_contributions"])
+    with c3:
+        pending_updates = len([u for u in cp.list_model_updates() if u.get("status") == "pending_upload"])
+        st.metric(t(lang, "업로드 대기 업데이트", "Pending Uploads"), pending_updates)
+    with c4:
+        st.metric(t(lang, "현재 모델", "Current Model"), stats["current_model_version"])
+
+    if site_store:
+        patients = site_store.list_patients()
+        visits = site_store.list_visits()
+
+        st.markdown(f"### {t(lang, '사이트 데이터 현황', 'Site Data')}")
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            st.metric(t(lang, "등록 환자", "Patients"), len(patients))
+        with sc2:
+            st.metric(t(lang, "총 방문", "Visits"), len(visits))
+        with sc3:
+            active = sum(1 for v in visits if v.get("active_stage"))
+            st.metric(t(lang, "활성기 방문", "Active Stage Visits"), active)
+
+        # 최근 검증 이력
+        validation_runs = cp.list_validation_runs(site_id=site_id)
+        if validation_runs:
+            st.markdown(f"### {t(lang, '최근 검증 이력', 'Recent Validations')}")
+            df = pd.DataFrame(validation_runs[-20:][::-1])
+            display_cols = ["run_date", "patient_id", "visit_date", "predicted_label", "true_label", "is_correct", "model_version"]
+            existing_cols = [c for c in display_cols if c in df.columns]
+            st.dataframe(df[existing_cols], use_container_width=True, hide_index=True)
+
+        # Culture 분포
+        if visits:
+            st.markdown(f"### {t(lang, '균종 분포', 'Culture Distribution')}")
+            cat_counts = pd.Series([v.get("culture_category", "unknown") for v in visits]).value_counts()
+            fig = px.pie(
+                names=cat_counts.index,
+                values=cat_counts.values,
+                color_discrete_sequence=["#0d8f8a", "#d6b468"],
+            )
+            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+    # 내 기여 이력
+    my_contribs = cp.list_contributions(user_id=user["user_id"])
+    if my_contribs:
+        st.markdown(f"### {t(lang, '내 기여 이력', 'My Contribution History')}")
+        df_c = pd.DataFrame(my_contribs[-10:][::-1])
+        st.dataframe(df_c[["created_at", "patient_id", "visit_date", "site_id"]], use_container_width=True, hide_index=True)
+
+
+# ──────────────────────────────────────────────
+# Admin panel
+# ──────────────────────────────────────────────
+
+def _render_admin(cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str) -> None:
+    st.title(t(lang, "⚙️ 관리자 패널", "⚙️ Admin Panel"))
+
+    tab_model, tab_sites, tab_organisms, tab_federated = st.tabs([
+        t(lang, "모델 관리", "Models"),
+        t(lang, "사이트 관리", "Sites"),
+        t(lang, "균종 관리", "Organisms"),
+        t(lang, "Federated 집계", "Federated Aggregation"),
+    ])
+
+    with tab_model:
+        st.markdown(f"#### {t(lang, '등록된 모델 버전', 'Registered Model Versions')}")
+        versions = cp.list_model_versions()
+        if versions:
+            df = pd.DataFrame(versions)
+            cols = [c for c in ["version_name", "architecture", "stage", "ready", "created_at", "notes_ko"] if c in df.columns]
+            st.dataframe(df[cols], use_container_width=True, hide_index=True)
+
+        st.markdown(f"#### {t(lang, '대기 중 업데이트', 'Pending Updates')}")
+        pending = [u for u in cp.list_model_updates() if u.get("status") == "pending_upload"]
+        if pending:
+            df_p = pd.DataFrame(pending)
+            st.dataframe(df_p[["update_id", "site_id", "architecture", "created_at", "n_cases"]], use_container_width=True, hide_index=True)
+        else:
+            st.info(t(lang, "대기 중인 업데이트가 없습니다.", "No pending updates."))
+
+    with tab_sites:
+        st.markdown(f"#### {t(lang, '등록된 사이트', 'Registered Sites')}")
+        sites = cp.list_sites()
+        if sites:
+            st.dataframe(pd.DataFrame(sites), use_container_width=True, hide_index=True)
+
+        st.markdown(f"#### {t(lang, '새 사이트 등록', 'Register New Site')}")
+        projects = cp.list_projects()
+        if not projects:
+            st.warning(t(lang, "프로젝트를 먼저 생성하세요.", "Create a project first."))
+        else:
+            with st.form("site_form"):
+                proj_id = st.selectbox(
+                    t(lang, "프로젝트", "Project"),
+                    [p["project_id"] for p in projects],
+                    format_func=lambda x: next((p["name"] for p in projects if p["project_id"] == x), x),
+                )
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    site_code = st.text_input(t(lang, "사이트 코드 (영문)", "Site Code"), placeholder="SNUH")
+                with col_b:
+                    display_name = st.text_input(t(lang, "표시 이름", "Display Name"), placeholder="서울대학교병원")
+                hospital_name = st.text_input(t(lang, "병원명", "Hospital Name"))
+                if st.form_submit_button(t(lang, "등록", "Register"), use_container_width=True):
+                    try:
+                        cp.create_site(proj_id, site_code, display_name, hospital_name)
+                        st.success(t(lang, "사이트 등록 완료!", "Site registered!"))
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+        st.markdown(f"#### {t(lang, '프로젝트 생성', 'Create Project')}")
+        with st.form("project_form"):
+            pname = st.text_input(t(lang, "프로젝트 이름", "Project Name"))
+            pdesc = st.text_area(t(lang, "설명", "Description"), height=60)
+            if st.form_submit_button(t(lang, "생성", "Create"), use_container_width=True):
+                try:
+                    cp.create_project(pname, pdesc, "user_admin")
+                    st.success(t(lang, "프로젝트 생성 완료!", "Project created!"))
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+
+    with tab_organisms:
+        st.markdown(f"#### {t(lang, '균종 승인 대기', 'Pending Organism Requests')}")
+        pending_orgs = cp.list_organism_requests(status="pending")
+        if pending_orgs:
+            for req in pending_orgs:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{req['culture_category']}** · {req['requested_species']} (by {req['requested_by']})")
+                with col2:
+                    if st.button(t(lang, "승인", "Approve"), key=f"approve_{req['request_id']}"):
+                        cp.approve_organism(req["request_id"], "user_admin")
+                        st.rerun()
+        else:
+            st.info(t(lang, "대기 중인 요청 없음", "No pending requests"))
+
+    with tab_federated:
+        st.markdown(f"#### {t(lang, 'Federated Learning 집계', 'Federated Aggregation')}")
+        st.info(
+            t(
+                lang,
+                "각 병원의 weight delta를 수집해 weighted FedAvg로 글로벌 모델을 업데이트합니다.\n\n"
+                "현재: 각 병원에서 delta 파일을 업로드하면 여기서 집계 후 새 글로벌 모델을 등록합니다.",
+                "Collect weight deltas from each site and run weighted FedAvg to update the global model.\n\n"
+                "Currently: sites upload delta files, admin aggregates here and registers new global model.",
+            )
+        )
+        all_updates = cp.list_model_updates()
+        pending_deltas = [u for u in all_updates if u.get("status") == "pending_upload"]
+        if pending_deltas:
+            st.markdown(f"**{t(lang, f'집계 가능 업데이트: {len(pending_deltas)}개', f'Aggregatable updates: {len(pending_deltas)}')}**")
+            df_d = pd.DataFrame(pending_deltas)
+            st.dataframe(df_d[["update_id", "site_id", "architecture", "n_cases", "created_at"]], use_container_width=True, hide_index=True)
+            if workflow and st.button(t(lang, "🔗 FedAvg 집계 실행", "🔗 Run FedAvg Aggregation"), type="primary"):
+                try:
+                    delta_paths = [u["artifact_path"] for u in pending_deltas]
+                    arch = pending_deltas[0]["architecture"]
+                    base_model = next(
+                        (m for m in cp.list_model_versions() if m["version_id"] == pending_deltas[0]["base_model_version_id"]),
+                        cp.current_global_model(),
+                    )
+                    from kera_research.config import MODEL_DIR
+                    from kera_research.domain import make_id
+                    out_path = MODEL_DIR / f"global_{arch}_{make_id('agg')}.pth"
+                    workflow.model_manager.aggregate_weight_deltas(delta_paths, out_path)
+                    site_weights = {u["site_id"]: u.get("n_cases", 1) for u in pending_deltas}
+                    new_version_name = f"global-{arch}-fedavg-{make_id('v')[:6]}"
+                    cp.register_aggregation(
+                        base_model_version_id=base_model["version_id"],
+                        new_model_path=str(out_path),
+                        new_version_name=new_version_name,
+                        architecture=arch,
+                        site_weights=site_weights,
+                    )
+                    # 집계된 업데이트 상태 변경
+                    for u in pending_deltas:
+                        u["status"] = "aggregated"
+                    import json
+                    (cp.root / "model_updates.json").write_text(
+                        json.dumps(all_updates, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    st.success(t(lang, f"✅ 집계 완료! 새 모델: {new_version_name}", f"✅ Aggregation done! New model: {new_version_name}"))
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+        else:
+            st.info(t(lang, "집계할 업데이트가 없습니다.", "No updates available for aggregation."))
+
+        st.markdown(f"#### {t(lang, '집계 이력', 'Aggregation History')}")
+        from kera_research.storage import read_json
+        aggs = read_json(cp.aggregations_path, [])
+        if aggs:
+            st.dataframe(pd.DataFrame(aggs), use_container_width=True, hide_index=True)
+
+
+# ──────────────────────────────────────────────
+# CSS
+# ──────────────────────────────────────────────
+
+def _inject_css(theme: str) -> None:
     if theme == "dark":
         theme_vars = """
         :root {
@@ -228,12 +1237,9 @@ def inject_custom_css(theme: str) -> None:
         """
 
     css = (
-        """
-        <style>
-        """
+        "<style>"
         + theme_vars
         + """
-
         .stApp {
             background:
                 radial-gradient(circle at top right, rgba(13, 143, 138, 0.10), transparent 26%),
@@ -242,66 +1248,20 @@ def inject_custom_css(theme: str) -> None:
             color: var(--kera-ink);
             font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
         }
-
-        [data-testid="stAppViewContainer"] {
-            color: var(--kera-ink);
-        }
-
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, var(--kera-sidebar), rgba(255,255,255,0.02));
             border-right: 1px solid var(--kera-border);
         }
-
-        [data-testid="stSidebar"] * {
-            color: var(--kera-ink) !important;
-        }
-
-        .stApp h1,
-        .stApp h2,
-        .stApp h3,
-        .stApp h4,
-        .stApp h5,
-        .stApp h6,
-        .stApp p,
-        .stApp label,
-        .stApp span,
+        [data-testid="stSidebar"] * { color: var(--kera-ink) !important; }
+        .stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp h5,.stApp h6,
+        .stApp p,.stApp label,.stApp span,
         .stApp div[data-testid="stMarkdownContainer"],
         .stApp div[data-testid="stMarkdownContainer"] p,
         .stApp div[data-testid="stMarkdownContainer"] li,
         .stApp div[data-testid="stWidgetLabel"],
         .stApp [data-testid="stAlertContainer"],
-        .stApp [data-testid="stRadio"] p {
-            color: var(--kera-ink) !important;
-        }
-
-        .stApp [data-testid="stCaptionContainer"] {
-            color: var(--kera-muted) !important;
-        }
-
-        .stApp [data-testid="stRadio"] > div[role="radiogroup"] {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.65rem;
-            margin-top: 0.25rem;
-        }
-
-        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label {
-            background: var(--kera-card);
-            border: 1px solid var(--kera-border);
-            border-radius: 999px;
-            padding: 0.45rem 0.85rem;
-            box-shadow: 0 8px 22px var(--kera-shadow);
-        }
-
-        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label * {
-            color: var(--kera-ink) !important;
-        }
-
-        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
-            background: var(--kera-accent-soft);
-            border-color: rgba(13, 143, 138, 0.28);
-        }
-
+        .stApp [data-testid="stRadio"] p { color: var(--kera-ink) !important; }
+        .stApp [data-testid="stCaptionContainer"] { color: var(--kera-muted) !important; }
         [data-testid="stMetric"] {
             background: var(--kera-card);
             border: 1px solid var(--kera-border);
@@ -309,23 +1269,6 @@ def inject_custom_css(theme: str) -> None:
             padding: 0.8rem 0.9rem;
             box-shadow: 0 10px 24px var(--kera-shadow);
         }
-
-        [data-testid="stMetricLabel"] p,
-        [data-testid="stMetricValue"] {
-            color: var(--kera-ink);
-        }
-
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.35rem;
-        }
-
-        .stTabs [data-baseweb="tab"] {
-            background: var(--kera-card);
-            border-radius: 999px;
-            border: 1px solid var(--kera-border);
-            padding: 0.45rem 0.9rem;
-        }
-
         .stButton > button {
             border-radius: 999px;
             border: 1px solid var(--kera-border);
@@ -333,19 +1276,7 @@ def inject_custom_css(theme: str) -> None:
             color: white;
             font-weight: 700;
         }
-
-        .stToggle label[data-testid="stWidgetLabel"] p,
-        .stCheckbox label[data-testid="stWidgetLabel"] p {
-            color: var(--kera-ink) !important;
-            font-weight: 600;
-        }
-
-        .stButton > button:hover {
-            border: 1px solid var(--kera-border);
-            filter: brightness(1.04);
-            color: white;
-        }
-
+        .stButton > button:hover { filter: brightness(1.04); color: white; }
         .stSelectbox > div > div,
         .stTextInput > div > div > input,
         .stTextArea textarea,
@@ -355,66 +1286,20 @@ def inject_custom_css(theme: str) -> None:
             background: var(--kera-input);
             color: var(--kera-ink);
         }
-
-        .kera-hero {
-            background: linear-gradient(135deg, var(--kera-card), var(--kera-accent-soft));
-            border: 1px solid var(--kera-border);
-            border-radius: 22px;
-            padding: 1.1rem 1.25rem 1rem 1.25rem;
-            margin: 0.35rem 0 1rem 0;
-            box-shadow: 0 18px 40px var(--kera-shadow);
-        }
-
-        .kera-eyebrow {
-            font-size: 0.78rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: var(--kera-accent);
-            margin-bottom: 0.35rem;
-        }
-
-        .kera-hero h3 {
-            margin: 0 0 0.25rem 0;
-            color: var(--kera-ink);
-            font-size: 1.35rem;
-        }
-
-        .kera-hero p {
-            margin: 0;
-            color: var(--kera-muted);
-            font-size: 0.95rem;
-            line-height: 1.5;
-        }
-
         .kera-card {
             background: var(--kera-card);
             border: 1px solid var(--kera-border);
             border-radius: 18px;
             padding: 0.95rem 1rem;
             box-shadow: 0 10px 28px var(--kera-shadow);
+            margin-bottom: 0.5rem;
         }
-
-        .kera-card h4 {
-            margin: 0 0 0.4rem 0;
-            color: var(--kera-ink);
-            font-size: 1rem;
-        }
-
-        .kera-card p {
-            margin: 0;
-            color: var(--kera-muted);
-            line-height: 1.5;
-            font-size: 0.92rem;
-        }
-
         .kera-stat-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 0.75rem;
-            margin: 0.2rem 0 0.8rem 0;
+            margin: 0.4rem 0 0.8rem 0;
         }
-
         .kera-stat-card {
             background: var(--kera-card);
             border: 1px solid var(--kera-border);
@@ -422,1120 +1307,30 @@ def inject_custom_css(theme: str) -> None:
             padding: 0.9rem 1rem;
             box-shadow: 0 10px 24px var(--kera-shadow);
         }
-
-        .kera-stat-label {
-            color: var(--kera-muted);
-            font-size: 0.8rem;
-            font-weight: 700;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
-        }
-
-        .kera-stat-value {
-            color: var(--kera-ink);
-            font-size: 1.45rem;
-            font-weight: 800;
-            margin-top: 0.25rem;
-        }
-
-        .kera-stat-note {
-            color: var(--kera-muted);
-            font-size: 0.82rem;
-            margin-top: 0.2rem;
-            line-height: 1.4;
-        }
-
-        .kera-chip-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-top: 0.6rem;
-        }
-
+        .kera-stat-label { color: var(--kera-muted); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+        .kera-stat-value { color: var(--kera-ink); font-size: 1.45rem; font-weight: 800; margin-top: 0.25rem; }
+        .kera-stat-note { color: var(--kera-muted); font-size: 0.82rem; margin-top: 0.2rem; }
+        .kera-chip-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.4rem 0 0.8rem 0; }
         .kera-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            border-radius: 999px;
-            padding: 0.35rem 0.7rem;
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            border-radius: 999px; padding: 0.35rem 0.7rem;
             background: rgba(255,255,255,0.72);
             border: 1px solid var(--kera-border);
-            color: var(--kera-ink);
-            font-size: 0.88rem;
-            font-weight: 600;
+            color: var(--kera-ink); font-size: 0.88rem; font-weight: 600;
         }
-
-        .kera-chip.complete {
-            background: rgba(13, 143, 138, 0.12);
-            color: #0b6c68;
-        }
-
-        .kera-chip.pending {
-            background: rgba(214, 180, 104, 0.16);
-            color: #8a6531;
-        }
-
-        .kera-tip {
-            background: rgba(13, 143, 138, 0.08);
-            border: 1px solid rgba(13, 143, 138, 0.18);
-            color: #185754;
-            border-radius: 16px;
-            padding: 0.85rem 1rem;
-            margin: 0.4rem 0 1rem 0;
-        }
-
-        .kera-sidebar-footer {
-            margin-top: 1.25rem;
-            padding: 1rem 0 0.25rem 0;
-            border-top: 1px solid var(--kera-border);
-        }
-
+        .kera-chip.complete { background: rgba(13, 143, 138, 0.12); color: #0b6c68; }
+        .kera-chip.pending { background: rgba(214, 180, 104, 0.16); color: #8a6531; }
         .kera-sidebar-user {
-            background: var(--kera-footer);
-            border: 1px solid var(--kera-border);
-            border-radius: 16px;
-            padding: 0.9rem 1rem;
-            margin-bottom: 0.8rem;
+            background: var(--kera-footer); border: 1px solid var(--kera-border);
+            border-radius: 16px; padding: 0.9rem 1rem; margin-bottom: 0.8rem;
             box-shadow: 0 10px 24px var(--kera-shadow);
         }
-
-        .kera-sidebar-user h4 {
-            margin: 0 0 0.2rem 0;
-            color: var(--kera-ink);
-            font-size: 0.98rem;
-        }
-
-        .kera-sidebar-user p {
-            margin: 0;
-            color: var(--kera-muted);
-            line-height: 1.45;
-            font-size: 0.88rem;
-        }
-
-        .stAlert {
-            color: var(--kera-ink);
-        }
-
-        .stAlert[data-baseweb="notification"] {
-            border-radius: 16px;
-        }
-
-        div[data-testid="stAlertContainer"] div[role="alert"] {
-            color: var(--kera-ink);
-        }
-
-        div[data-testid="stAlertContainer"] div[role="alert"][kind="error"] {
-            background: var(--kera-danger-bg);
-            color: var(--kera-danger-ink);
-        }
-
+        .kera-sidebar-user h4 { margin: 0 0 0.2rem 0; color: var(--kera-ink); font-size: 0.98rem; }
+        .kera-sidebar-user p { margin: 0; color: var(--kera-muted); font-size: 0.88rem; }
+        .stAlert { color: var(--kera-ink); }
         @media (max-width: 640px) {
-            .kera-hero {
-                border-radius: 18px;
-                padding: 0.95rem 1rem;
-            }
-
-            .kera-stat-value {
-                font-size: 1.25rem;
-            }
+            .kera-stat-value { font-size: 1.25rem; }
         }
-        </style>
-        """
+        </style>"""
     )
     st.markdown(css, unsafe_allow_html=True)
-
-
-def bootstrap_workflow(control_plane: ControlPlaneStore) -> tuple[ResearchWorkflowService | None, str | None]:
-    try:
-        return ResearchWorkflowService(control_plane), None
-    except Exception as exc:  # pragma: no cover - UI guard
-        return None, f"Workflow services are unavailable: {exc}"
-
-
-def format_workflow_error(message: str, lang: str) -> str:
-    if "PyTorch is required" in message:
-        return t(
-            lang,
-            "이 병원 환경의 AI 실행 모듈이 아직 준비되지 않았습니다. 데이터 입력은 계속 가능하며, 외부 검증과 학습 기능은 설치 담당자가 로컬 노드를 준비한 뒤 사용할 수 있습니다.",
-            "The AI runtime for this hospital environment is not ready yet. Data entry can continue, and validation or training will become available after the local node is prepared by an installer.",
-        )
-    return t(
-        lang,
-        f"AI 실행 모듈 상태를 확인해야 합니다. 세부 내용: {message}",
-        f"The AI runtime needs attention. Details: {message}",
-    )
-
-
-def render_runtime_banner(runtime_status: dict[str, Any], workflow_error: str, lang: str) -> None:
-    if runtime_status["ai_engine_ready"]:
-        return
-
-    st.warning(format_workflow_error(workflow_error, lang))
-    st.caption(
-        t(
-            lang,
-            "연구 데이터 입력과 프로젝트 관리는 계속 사용할 수 있습니다. AI 검증 기능은 로컬 노드 준비 후 자동으로 활성화됩니다.",
-            "Project setup and data entry remain available. AI validation features will activate automatically after the local node is prepared.",
-        ),
-    )
-
-
-def render_local_node_status_panel(runtime_status: dict[str, Any], lang: str, show_installer_help: bool = True) -> None:
-    readiness_label = t(lang, "준비 완료", "Ready") if runtime_status["ai_engine_ready"] else t(lang, "설정 필요", "Setup needed")
-    medsam_label = t(lang, "연결됨", "Connected") if runtime_status["medsam_ready"] else t(lang, "선택 사항", "Optional")
-
-    render_stat_grid(
-        [
-            {"label": t(lang, "데이터 입력", "Data entry"), "value": t(lang, "사용 가능", "Available"), "note": t(lang, "환자/방문/이미지 등록 가능", "Patient, visit, and image entry is available")},
-            {"label": t(lang, "AI 엔진", "AI engine"), "value": readiness_label, "note": t(lang, "외부 검증 및 학습 실행 상태", "External validation and training runtime")},
-            {"label": "GPU", "value": t(lang, "사용 가능", "Available") if runtime_status["gpu_ready"] else t(lang, "선택 사항", "Optional"), "note": runtime_status["gpu_name"] or runtime_status["cpu_name"]},
-            {"label": "MedSAM", "value": medsam_label, "note": t(lang, "ROI 자동 생성 연결 상태", "ROI generation connector status")},
-        ],
-    )
-
-    if runtime_status["ai_engine_ready"]:
-        st.success(
-            t(
-                lang,
-                "이 로컬 노드는 AI 검증과 선택적 로컬 파인튜닝을 실행할 준비가 되었습니다.",
-                "This local node is ready for AI validation and optional local fine-tuning.",
-            ),
-        )
-    else:
-        missing_label = ", ".join(runtime_status["missing_packages"]) if runtime_status["missing_packages"] else t(lang, "알 수 없음", "Unknown")
-        st.info(
-            t(
-                lang,
-                "현재는 프로젝트 관리와 데이터 입력만 바로 사용할 수 있습니다. AI 검증 기능은 설치 담당자가 로컬 노드를 준비한 뒤 활성화됩니다.",
-                "Project management and data entry are available now. AI validation features will activate after an installer prepares the local node.",
-            ),
-        )
-        if show_installer_help:
-            with st.expander(t(lang, "설치 담당자용 안내", "Installer guidance")):
-                st.markdown(
-                    t(
-                        lang,
-                        "연구자나 임상의가 직접 `pip` 명령을 입력할 필요는 없습니다. 병원 내부 서버 또는 워크스테이션에서 아래 스크립트를 한 번 실행해 로컬 노드를 준비하면 됩니다.",
-                        "Researchers or clinicians should not need to type `pip` commands. Prepare the local node once on the hospital server or workstation with the script below.",
-                    ),
-                )
-                st.code(f".\\scripts\\setup_local_node.ps1\n.\\scripts\\run_local_node.ps1", language="powershell")
-                st.caption(
-                    t(
-                        lang,
-                        f"현재 확인된 미설치 패키지: {missing_label}",
-                        f"Currently missing packages: {missing_label}",
-                    ),
-                )
-
-
-def page_label(page_id: str, lang: str) -> str:
-    return PAGE_META[page_id]["ko"] if lang == "ko" else PAGE_META[page_id]["en"]
-
-
-def phase_label(phase_id: str, lang: str) -> str:
-    return PHASE_META[phase_id]["ko"] if lang == "ko" else PHASE_META[phase_id]["en"]
-
-
-def render_primary_navigation(lang: str) -> None:
-    current_page_id = st.session_state.get("page_id", PAGES[0])
-    current_phase = PAGE_META[current_page_id]["phase"]
-    phase_options = list(PHASE_META.keys())
-    selected_phase = st.radio(
-        t(lang, "연구 단계", "Workflow Stage"),
-        phase_options,
-        index=phase_options.index(current_phase),
-        horizontal=True,
-        format_func=lambda value: phase_label(value, lang),
-    )
-
-    phase_pages = [page_id for page_id in PAGES if PAGE_META[page_id]["phase"] == selected_phase]
-    selected_page = st.radio(
-        t(lang, "화면 선택", "Screen"),
-        phase_pages,
-        index=phase_pages.index(current_page_id) if current_page_id in phase_pages else 0,
-        horizontal=True,
-        label_visibility="collapsed",
-        format_func=lambda value: page_label(value, lang),
-    )
-    st.session_state["page_id"] = selected_page
-
-
-def render_page_intro(page_id: str, lang: str) -> None:
-    description = PAGE_META[page_id]["description_ko"] if lang == "ko" else PAGE_META[page_id]["description_en"]
-    st.markdown(
-        f"""
-        <div class="kera-hero">
-            <div class="kera-eyebrow">Research Workflow</div>
-            <h3>{page_label(page_id, lang)}</h3>
-            <p>{description}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_stat_grid(cards: list[dict[str, str]]) -> None:
-    if not cards:
-        return
-
-    columns_per_row = 4 if len(cards) > 4 else len(cards)
-    for start in range(0, len(cards), columns_per_row):
-        row_cards = cards[start:start + columns_per_row]
-        columns = st.columns(columns_per_row)
-        for column, card in zip(columns, row_cards):
-            with column:
-                st.metric(card["label"], card["value"])
-                if card.get("note"):
-                    st.caption(card["note"])
-
-
-def workflow_snapshot(
-    control_plane: ControlPlaneStore,
-    context: dict[str, Any],
-    site_store: SiteStore,
-    lang: str,
-) -> dict[str, Any]:
-    patient_count = len(site_store.list_patients())
-    visit_count = len(site_store.list_visits())
-    image_count = len(site_store.list_images())
-    manifest_count = len(site_store.dataset_records())
-    validation_count = len(
-        control_plane.list_validation_runs(
-            context["project"]["project_id"],
-            context["site"]["site_id"],
-        ),
-    )
-
-    step_state = {
-        t(lang, "프로젝트", "Project"): bool(context["project"]),
-        t(lang, "사이트", "Site"): bool(context["site"]),
-        t(lang, "환자", "Patients"): patient_count > 0,
-        t(lang, "방문", "Visits"): visit_count > 0,
-        t(lang, "이미지", "Images"): image_count > 0,
-        "Manifest": manifest_count > 0,
-        t(lang, "검증", "Validation"): validation_count > 0,
-    }
-
-    if patient_count == 0:
-        next_action = t(lang, "다음 권장 단계: 환자 등록부터 시작하세요.", "Recommended next step: start with patient registration.")
-    elif visit_count == 0:
-        next_action = t(lang, "다음 권장 단계: 방문 정보를 입력하세요.", "Recommended next step: enter visit information.")
-    elif image_count == 0:
-        next_action = t(lang, "다음 권장 단계: 업로드할 슬릿램프 이미지를 추가하세요.", "Recommended next step: upload slit-lamp images.")
-    elif manifest_count == 0:
-        next_action = t(lang, "다음 권장 단계: manifest를 생성하세요.", "Recommended next step: generate the manifest.")
-    elif validation_count == 0:
-        next_action = t(lang, "다음 권장 단계: external validation을 먼저 실행하세요.", "Recommended next step: run external validation first.")
-    else:
-        next_action = t(
-            lang,
-            "검증이 완료되었습니다. 결과를 검토하거나 선택적으로 로컬 fine-tuning을 진행할 수 있습니다.",
-            "Validation is complete. Review the results or proceed with optional local fine-tuning.",
-        )
-
-    return {
-        "patients": patient_count,
-        "visits": visit_count,
-        "images": image_count,
-        "manifest_rows": manifest_count,
-        "validations": validation_count,
-        "step_state": step_state,
-        "next_action": next_action,
-    }
-
-
-def render_workflow_status(
-    control_plane: ControlPlaneStore,
-    context: dict[str, Any],
-    site_store: SiteStore,
-    lang: str,
-) -> None:
-    snapshot = workflow_snapshot(control_plane, context, site_store, lang)
-    completed = sum(1 for done in snapshot["step_state"].values() if done)
-    progress_ratio = completed / len(snapshot["step_state"])
-
-    render_stat_grid(
-        [
-            {"label": t(lang, "환자", "Patients"), "value": str(snapshot["patients"]), "note": t(lang, "등록 완료 환자 수", "Registered patients")},
-            {"label": t(lang, "방문", "Visits"), "value": str(snapshot["visits"]), "note": t(lang, "입력된 방문 수", "Recorded visits")},
-            {"label": t(lang, "이미지", "Images"), "value": str(snapshot["images"]), "note": t(lang, "업로드된 이미지 수", "Uploaded images")},
-            {"label": t(lang, "검증", "Validations"), "value": str(snapshot["validations"]), "note": t(lang, "완료된 검증 수", "Completed validations")},
-        ],
-    )
-    st.markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "현재 작업 위치", "Current workspace")}</h4>
-            <p><strong>{context['project']['name']}</strong> / {context['site']['display_name']}</p>
-            <p>{snapshot['next_action']}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.progress(
-        progress_ratio,
-        text=t(
-            lang,
-            f"연구 워크플로우 진행률 {completed}/{len(snapshot['step_state'])}",
-            f"Workflow progress {completed}/{len(snapshot['step_state'])}",
-        ),
-    )
-    chip_html = "".join(
-        f"<div class='kera-chip {'complete' if done else 'pending'}'>{t(lang, '완료', 'Done') if done else t(lang, '대기', 'Pending')} {label}</div>"
-        for label, done in snapshot["step_state"].items()
-    )
-    st.markdown(f"<div class='kera-chip-row'>{chip_html}</div>", unsafe_allow_html=True)
-
-
-def render_sidebar_header(control_plane: ControlPlaneStore, lang: str) -> None:
-    st.sidebar.title(t(lang, "탐색", "Navigation"))
-    st.sidebar.caption(
-        t(
-            lang,
-            "권장 순서: 대시보드 -> 환자 -> 방문 -> 이미지 -> 검증",
-            "Suggested order: Dashboard -> Patient -> Visit -> Image -> Validation",
-        ),
-    )
-
-    user = st.session_state.get("user")
-    if not user:
-        with st.sidebar.form("login_form"):
-            username = st.text_input(t(lang, "사용자 이름", "Username"))
-            password = st.text_input(t(lang, "비밀번호", "Password"), type="password")
-            submitted = st.form_submit_button(t(lang, "로그인", "Log in"))
-        if submitted:
-            user = control_plane.authenticate(username, password)
-            if user:
-                st.session_state["user"] = user
-                st.rerun()
-            st.sidebar.error(t(lang, "사용자 이름 또는 비밀번호가 올바르지 않습니다.", "Invalid username or password."))
-
-
-def render_sidebar_footer(lang: str, user: dict[str, Any] | None) -> None:
-    st.sidebar.divider()
-    if user:
-        role_map = {
-            "admin": t(lang, "관리자", "Administrator"),
-            "researcher": t(lang, "연구자", "Researcher"),
-        }
-        role_label = role_map.get(user["role"], user["role"].replace("_", " ").title())
-        st.sidebar.markdown(
-            f"""
-            <div class="kera-sidebar-user">
-                <h4>{user['full_name']}</h4>
-                <p>{t(lang, "로그인 역할", "Signed-in role")}: {role_label}<br/>{user['username']}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    english_enabled = st.sidebar.toggle(
-        t(lang, "English 전환", "Switch to Korean"),
-        value=lang == "en",
-        help=t(lang, "끄면 한국어, 켜면 영어 UI로 바뀝니다.", "Off uses Korean, on uses English."),
-    )
-    next_lang = "en" if english_enabled else "ko"
-    if next_lang != lang:
-        st.session_state["lang"] = next_lang
-        st.rerun()
-
-    dark_mode_enabled = st.sidebar.toggle(
-        t(lang, "다크 모드", "Dark mode"),
-        value=st.session_state.get("theme", "light") == "dark",
-        help=t(lang, "기본값은 라이트 모드입니다.", "Light mode is the default."),
-    )
-    next_theme = "dark" if dark_mode_enabled else "light"
-    if next_theme != st.session_state.get("theme", "light"):
-        st.session_state["theme"] = next_theme
-        st.rerun()
-
-    if user and st.sidebar.button(t(lang, "로그아웃", "Log out"), use_container_width=True):
-        st.session_state["user"] = None
-        st.rerun()
-
-
-def render_login_screen(lang: str) -> None:
-    st.markdown(
-        f"""
-        <div class="kera-hero">
-            <div class="kera-eyebrow">Welcome</div>
-            <h3>{t(lang, "연구 시작 전 로그인", "Sign in to start the research workflow")}</h3>
-            <p>{t(lang, "좌측 사이드바에서 로그인하면 프로젝트 생성, 병원 사이트 등록, 데이터 입력, 외부 검증까지 순서대로 진행할 수 있습니다.", "Use the left sidebar to sign in, then proceed through project setup, site registration, data entry, and external validation.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    guide_columns = st.columns(3)
-    guide_columns[0].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "1. 프로젝트 생성", "1. Create a project")}</h4>
-            <p>{t(lang, "연구명과 설명만 입력하면 바로 시작할 수 있습니다.", "You can start immediately with only a project name and short description.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    guide_columns[1].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "2. 병원별 로컬 입력", "2. Site-local data entry")}</h4>
-            <p>{t(lang, "환자, 방문, 이미지 정보는 병원 로컬 폴더에만 저장됩니다.", "Patient, visit, and image records remain in the hospital-local folder.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    guide_columns[2].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "3. 외부 검증 우선", "3. Validate first")}</h4>
-            <p>{t(lang, "새 데이터는 먼저 검증하고, 필요할 때만 로컬 fine-tuning을 진행합니다.", "New data should be externally validated first, then locally fine-tuned only when needed.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="kera-tip">
-            {t(lang, "기본 계정", "Default accounts")}: <strong>admin / admin123</strong>, <strong>researcher / research123</strong><br/>
-            {t(lang, "로그인 입력창은 좌측 사이드바에 있습니다.", "The sign-in form is located in the left sidebar.")}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def resolve_context(control_plane: ControlPlaneStore) -> dict[str, Any]:
-    lang = st.session_state.get("lang", "ko")
-    projects = control_plane.list_projects()
-    project = None
-    site = None
-
-    if projects:
-        project_lookup = {
-            f"{item['name']} ({item['project_id']})": item
-            for item in projects
-        }
-        project_label = st.sidebar.selectbox(t(lang, "프로젝트", "Project"), list(project_lookup.keys()))
-        project = project_lookup[project_label]
-
-        sites = control_plane.list_sites(project["project_id"])
-        if sites:
-            site_lookup = {
-                f"{item['display_name']} ({item['site_id']})": item
-                for item in sites
-            }
-            site_label = st.sidebar.selectbox(t(lang, "사이트", "Site"), list(site_lookup.keys()))
-            site = site_lookup[site_label]
-        else:
-            st.sidebar.info(t(lang, "이 프로젝트에는 아직 등록된 사이트가 없습니다.", "No site is registered for this project yet."))
-    else:
-        st.sidebar.info(t(lang, "아직 생성된 프로젝트가 없습니다.", "No project exists yet."))
-
-    return {"project": project, "site": site}
-
-
-def render_project_dashboard(
-    control_plane: ControlPlaneStore,
-    context: dict[str, Any],
-    workflow: ResearchWorkflowService | None,
-    runtime_status: dict[str, Any],
-    lang: str,
-) -> None:
-    projects = control_plane.list_projects()
-    sites = control_plane.list_sites()
-    validations = control_plane.list_validation_runs()
-    model_versions = control_plane.list_model_versions()
-    updates = control_plane.list_model_updates()
-    requests_df = pd.DataFrame(control_plane.list_organism_requests())
-
-    render_stat_grid(
-        [
-            {"label": t(lang, "프로젝트", "Projects"), "value": str(len(projects)), "note": t(lang, "활성 연구 프로젝트", "Active research projects")},
-            {"label": t(lang, "사이트", "Sites"), "value": str(len(sites)), "note": t(lang, "등록된 병원 사이트", "Registered hospital sites")},
-            {"label": t(lang, "검증", "Validations"), "value": str(len(validations)), "note": t(lang, "전체 검증 실행 수", "Total validation runs")},
-            {"label": t(lang, "모델", "Models"), "value": str(len(model_versions)), "note": t(lang, "사용 가능한 모델 버전", "Available model versions")},
-            {"label": t(lang, "균종 요청", "Organism Requests"), "value": str(int((requests_df["status"] == "pending").sum()) if not requests_df.empty else 0), "note": t(lang, "대기 중 승인 요청", "Pending approvals")},
-        ],
-    )
-
-    quick_columns = st.columns(3)
-    quick_columns[0].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "연구 시작", "Start the study")}</h4>
-            <p>{t(lang, "프로젝트를 만들고 병원 site를 등록하면 바로 로컬 데이터 입력을 시작할 수 있습니다.", "Create a project and register a hospital site to start local data entry immediately.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    quick_columns[1].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "데이터 보안", "Data security")}</h4>
-            <p>{t(lang, "원본 이미지는 site 로컬 경로에만 저장되고 중앙에는 올라가지 않습니다.", "Raw images remain in the site-local folder and are not uploaded centrally.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    quick_columns[2].markdown(
-        f"""
-        <div class="kera-card">
-            <h4>{t(lang, "권장 흐름", "Recommended flow")}</h4>
-            <p>{t(lang, "입력 후 바로 학습하지 말고 먼저 external validation을 수행하도록 설계되어 있습니다.", "The platform is intentionally designed so that external validation comes before local training.")}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    overview_tab, project_tab, catalog_tab = st.tabs(
-        [
-            t(lang, "개요", "Overview"),
-            t(lang, "프로젝트 설정", "Project Setup"),
-            t(lang, "균종 관리", "Organisms"),
-        ],
-    )
-
-    with overview_tab:
-        st.subheader(t(lang, "중앙 관리 현황", "Control plane overview"))
-        st.markdown(f"#### {t(lang, '로컬 AI 노드 준비 상태', 'Local AI node status')}")
-        render_local_node_status_panel(runtime_status, lang)
-        global_models = [item for item in model_versions if item.get("stage") == "global"]
-        if global_models:
-            model_labels = ", ".join(
-                f"{item['version_name']} [{item.get('architecture', 'cnn')}]"
-                for item in global_models
-            )
-            st.info(t(lang, f"사용 가능한 글로벌 모델: {model_labels}", f"Available global models: {model_labels}"))
-        else:
-            st.warning(t(lang, "아직 등록된 글로벌 모델이 없습니다.", "No global model is registered yet."))
-
-        if projects:
-            st.dataframe(pd.DataFrame(projects), use_container_width=True)
-        if sites:
-            st.dataframe(pd.DataFrame(sites), use_container_width=True)
-        if model_versions:
-            st.dataframe(pd.DataFrame(model_versions), use_container_width=True)
-        if updates:
-            st.dataframe(pd.DataFrame(updates), use_container_width=True)
-
-    with project_tab:
-        st.subheader(t(lang, "프로젝트 생성", "Create project"))
-        with st.form("create_project_form"):
-            project_name = st.text_input(t(lang, "프로젝트 이름", "Project name"))
-            description = st.text_area(t(lang, "프로젝트 설명", "Project description"))
-            submitted = st.form_submit_button(t(lang, "프로젝트 생성", "Create project"))
-        if submitted:
-            if not project_name.strip():
-                st.error(t(lang, "프로젝트 이름이 필요합니다.", "Project name is required."))
-            else:
-                control_plane.create_project(project_name.strip(), description.strip(), st.session_state["user"]["user_id"])
-                st.success(t(lang, "프로젝트가 생성되었습니다.", "Project created."))
-
-        if context["project"]:
-            st.subheader(t(lang, "로컬 사이트 등록", "Register local site"))
-            with st.form("create_site_form"):
-                site_code = st.text_input(t(lang, "사이트 코드", "Site code"), help=t(lang, "병원 내부에서 안정적으로 사용할 수 있는 site 식별자를 사용하세요.", "Use a stable hospital-local site identifier."))
-                display_name = st.text_input(t(lang, "사이트 표시 이름", "Site display name"))
-                hospital_name = st.text_input(t(lang, "병원명", "Hospital name"))
-                submitted = st.form_submit_button(t(lang, "사이트 등록", "Register site"))
-            if submitted:
-                try:
-                    control_plane.create_site(
-                        context["project"]["project_id"],
-                        site_code.strip(),
-                        display_name.strip(),
-                        hospital_name.strip(),
-                    )
-                    st.success(t(lang, "사이트가 등록되었습니다.", "Site registered."))
-                except Exception as exc:
-                    st.error(str(exc))
-        else:
-            st.info(t(lang, "사이트를 등록하기 전에 먼저 프로젝트를 생성하세요.", "Create a project before registering a site."))
-
-        if workflow is None:
-            render_local_node_status_panel(runtime_status, lang)
-
-    with catalog_tab:
-        catalog = control_plane.list_organisms()
-        st.subheader(t(lang, "배양 균종 목록", "Culture species catalog"))
-        catalog_columns = st.columns(2)
-        catalog_columns[0].dataframe(pd.DataFrame({"bacterial": catalog["bacterial"]}), use_container_width=True)
-        catalog_columns[1].dataframe(pd.DataFrame({"fungal": catalog["fungal"]}), use_container_width=True)
-
-        st.subheader(t(lang, "신규 균종 요청", "Organism requests"))
-        if requests_df.empty:
-            st.info(t(lang, "아직 요청된 신규 균종이 없습니다.", "No organism requests yet."))
-        else:
-            st.dataframe(requests_df, use_container_width=True)
-            pending_requests = [item for item in control_plane.list_organism_requests("pending")]
-            if st.session_state["user"]["role"] == "admin" and pending_requests:
-                request_lookup = {
-                    f"{item['requested_species']} ({item['culture_category']}) [{item['request_id']}]": item
-                    for item in pending_requests
-                }
-                selected_label = st.selectbox(t(lang, "대기 중 요청", "Pending request"), list(request_lookup.keys()))
-                if st.button(t(lang, "선택한 균종 승인", "Approve selected organism")):
-                    control_plane.approve_organism(
-                        request_lookup[selected_label]["request_id"],
-                        st.session_state["user"]["user_id"],
-                    )
-                    st.success(t(lang, "균종이 승인되어 목록에 추가되었습니다.", "Organism approved and added to the dropdown list."))
-            elif st.session_state["user"]["role"] != "admin":
-                st.info(t(lang, "신규 균종 승인 권한은 관리자에게만 있습니다.", "Only administrators can approve organism requests."))
-
-
-def render_patient_registration(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "환자 등록", "Patient registration"))
-    st.caption(t(lang, "환자 기본 정보만 먼저 간단하게 입력합니다. 방문 정보와 이미지는 다음 단계에서 입력합니다.", "Enter only essential patient details here. Visit and image information come next."))
-    with st.form("patient_form"):
-        form_columns = st.columns(3)
-        patient_id = form_columns[0].text_input("Patient ID", placeholder=t(lang, "예: P001", "e.g. P001"))
-        sex = form_columns[1].selectbox(t(lang, "성별", "Sex"), SEX_OPTIONS)
-        age = form_columns[2].number_input(t(lang, "나이", "Age"), min_value=0, max_value=120, value=50)
-        submitted = st.form_submit_button(t(lang, "환자 저장", "Save patient"))
-    if submitted:
-        try:
-            site_store.create_patient(patient_id.strip(), sex, int(age))
-            st.success(t(lang, "환자 정보가 로컬에 저장되었습니다.", "Patient record saved locally."))
-        except Exception as exc:
-            st.error(str(exc))
-
-    patients = site_store.list_patients()
-    if patients:
-        st.dataframe(pd.DataFrame(patients), use_container_width=True)
-    else:
-        st.info(t(lang, "아직 등록된 환자가 없습니다.", "No patient records yet."))
-
-
-def render_visit_entry(control_plane: ControlPlaneStore, site_store: SiteStore, user: dict[str, Any], lang: str) -> None:
-    st.subheader(t(lang, "방문 정보 입력", "Visit entry"))
-    st.caption(t(lang, "이 화면은 culture-proven keratitis case만 입력할 수 있습니다.", "Only culture-proven keratitis cases can be entered on this screen."))
-    patients = site_store.list_patients()
-    if not patients:
-        st.warning(t(lang, "먼저 환자를 등록하세요.", "Register a patient first."))
-        return
-
-    patient_options = {item["patient_id"]: item for item in patients}
-    with st.form("visit_form"):
-        top_columns = st.columns(3)
-        patient_id = top_columns[0].selectbox(t(lang, "환자", "Patient"), list(patient_options.keys()))
-        visit_date = top_columns[1].date_input(t(lang, "방문일", "Visit date"))
-        culture_confirmed = top_columns[2].checkbox(t(lang, "배양 확인", "Culture confirmed"), value=True)
-
-        middle_columns = st.columns(3)
-        culture_category = middle_columns[0].selectbox(t(lang, "배양 범주", "Culture category"), list(CULTURE_SPECIES.keys()))
-        species_options = control_plane.list_organisms(culture_category)
-        culture_species = middle_columns[1].selectbox(t(lang, "배양 균종", "Culture species"), species_options)
-        contact_lens_use = middle_columns[2].selectbox(t(lang, "콘택트렌즈 사용", "Contact lens use"), CONTACT_LENS_OPTIONS)
-
-        predisposing_factor = st.multiselect(t(lang, "선행 위험인자", "Predisposing factors"), PREDISPOSING_FACTORS)
-        other_history = st.text_area(t(lang, "기타 병력", "Other history"), placeholder=t(lang, "필요한 경우에만 간단히 입력", "Optional short note"))
-        submitted = st.form_submit_button(t(lang, "방문 저장", "Save visit"))
-    if submitted:
-        try:
-            site_store.create_visit(
-                patient_id=patient_id,
-                visit_date=str(visit_date),
-                culture_confirmed=culture_confirmed,
-                culture_category=culture_category,
-                culture_species=culture_species,
-                contact_lens_use=contact_lens_use,
-                predisposing_factor=predisposing_factor,
-                other_history=other_history.strip(),
-            )
-            st.success(t(lang, "방문 정보가 로컬에 저장되었습니다.", "Visit saved locally."))
-        except Exception as exc:
-            st.error(str(exc))
-
-    with st.expander(t(lang, "신규 균종 요청", "Request a new organism entry")):
-        requested_species = st.text_input(t(lang, "요청 균종명", "Requested species"))
-        if st.button(t(lang, "균종 요청 제출", "Submit organism request")):
-            if not requested_species.strip():
-                st.error(t(lang, "균종명을 입력한 뒤 제출하세요.", "Enter a species name before submitting."))
-            else:
-                control_plane.request_new_organism(culture_category, requested_species.strip(), user["user_id"])
-                st.success(t(lang, "균종 요청이 관리자에게 전달되었습니다.", "Organism request submitted to administrators."))
-
-    visits = site_store.list_visits()
-    if visits:
-        st.dataframe(pd.DataFrame(visits), use_container_width=True)
-    else:
-        st.info(t(lang, "아직 입력된 방문 정보가 없습니다.", "No visits yet."))
-
-
-def render_image_upload(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "이미지 업로드 및 view 지정", "Image upload and view assignment"))
-    st.caption(t(lang, "각 이미지에 대해 사용자가 직접 view를 지정합니다. 자동 분류는 하지 않습니다.", "Users assign the image view manually. No automatic view classification is performed."))
-    visits = site_store.list_visits()
-    if not visits:
-        st.warning(t(lang, "이미지를 업로드하기 전에 먼저 방문 정보를 생성하세요.", "Create a visit before uploading images."))
-        return
-
-    visit_lookup = {
-        f"{item['patient_id']} | {item['visit_date']} | {item['culture_species']}": item
-        for item in visits
-    }
-    selected_label = st.selectbox("Visit", list(visit_lookup.keys()))
-    selected_visit = visit_lookup[selected_label]
-
-    uploaded_files = st.file_uploader(
-        t(lang, "슬릿램프 이미지 업로드", "Upload slit-lamp images"),
-        accept_multiple_files=True,
-        type=["png", "jpg", "jpeg"],
-    )
-    if uploaded_files:
-        st.markdown(
-            f"""
-            <div class="kera-tip">
-                {t(lang, "업로드 후 각 이미지에서 <strong>view</strong>와 <strong>대표 이미지 여부</strong>를 직접 지정하세요.", "After upload, manually assign the <strong>view</strong> and whether it is a <strong>representative image</strong>.")}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        for index, uploaded_file in enumerate(uploaded_files):
-            preview_col, input_col = st.columns([1, 1.2])
-            with preview_col:
-                st.image(uploaded_file, width=220, caption=uploaded_file.name)
-            with input_col:
-                st.selectbox("View", VIEW_OPTIONS, key=f"view_{index}_{uploaded_file.name}")
-                st.checkbox(t(lang, "대표 이미지", "Representative image"), key=f"representative_{index}_{uploaded_file.name}")
-
-        if st.button(t(lang, "업로드 이미지 저장", "Save uploaded images")):
-            saved = 0
-            for index, uploaded_file in enumerate(uploaded_files):
-                site_store.add_image(
-                    patient_id=selected_visit["patient_id"],
-                    visit_date=selected_visit["visit_date"],
-                    view=st.session_state[f"view_{index}_{uploaded_file.name}"],
-                    is_representative=st.session_state[f"representative_{index}_{uploaded_file.name}"],
-                    file_name=uploaded_file.name,
-                    content=uploaded_file.getvalue(),
-                )
-                saved += 1
-            st.success(
-                t(
-                    lang,
-                    f"{saved}개의 이미지가 로컬 사이트 폴더에 저장되었습니다.",
-                    f"Saved {saved} image(s) into the local site folder.",
-                ),
-            )
-
-    images = site_store.list_images()
-    if images:
-        st.dataframe(pd.DataFrame(images), use_container_width=True)
-
-
-def render_representative_selection(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "대표 이미지 선택", "Representative image selection"))
-    images = site_store.list_images()
-    if not images:
-        st.warning(t(lang, "아직 업로드된 이미지가 없습니다.", "No images are available yet."))
-        return
-
-    image_df = pd.DataFrame(images)
-    editable = st.data_editor(
-        image_df[["image_id", "patient_id", "visit_date", "view", "is_representative", "image_path"]],
-        use_container_width=True,
-        hide_index=True,
-        disabled=["image_id", "patient_id", "visit_date", "view", "image_path"],
-        column_config={
-            "is_representative": st.column_config.CheckboxColumn(t(lang, "대표 이미지", "Representative")),
-        },
-    )
-    if st.button(t(lang, "대표 이미지 설정 저장", "Save representative flags")):
-        updates = {
-            row["image_id"]: row["is_representative"]
-            for _, row in editable.iterrows()
-        }
-        site_store.update_representative_flags(updates)
-        st.success(t(lang, "대표 이미지 설정이 업데이트되었습니다.", "Representative image flags updated."))
-
-    preview_lookup = {row["image_id"]: row for _, row in image_df.iterrows()}
-    selected_image_id = st.selectbox(t(lang, "미리보기 이미지", "Preview image"), list(preview_lookup.keys()))
-    st.image(preview_lookup[selected_image_id]["image_path"], use_container_width=True)
-
-
-def render_dataset_review(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "데이터셋 검토", "Dataset review"))
-    st.caption(t(lang, "입력된 환자, 방문, 이미지 정보를 image-level manifest 형태로 자동 정리합니다.", "Patient, visit, and image records are automatically organized into an image-level manifest."))
-    if st.button(t(lang, "Manifest 생성", "Generate manifest")):
-        manifest_df = site_store.generate_manifest()
-        st.success(t(lang, "로컬 환자, 방문, 이미지 정보로부터 manifest가 생성되었습니다.", "Manifest generated from local patient, visit, and image records."))
-    else:
-        manifest_df = site_store.load_manifest()
-
-    if manifest_df.empty:
-        st.info(t(lang, "manifest가 비어 있습니다. 먼저 방문 정보와 이미지를 입력하세요.", "The manifest is empty. Add visits and images first."))
-        return
-
-    st.dataframe(manifest_df, use_container_width=True)
-    st.download_button(
-        t(lang, "Manifest CSV 다운로드", "Download manifest CSV"),
-        data=manifest_df.to_csv(index=False).encode("utf-8"),
-        file_name="dataset_manifest.csv",
-        mime="text/csv",
-    )
-
-
-def render_external_validation(
-    control_plane: ControlPlaneStore,
-    workflow: ResearchWorkflowService | None,
-    context: dict[str, Any],
-    site_store: SiteStore,
-    runtime_status: dict[str, Any],
-    lang: str,
-) -> None:
-    st.subheader(t(lang, "외부 검증 실행", "External validation"))
-    st.caption(t(lang, "새 사이트 데이터는 학습 전에 먼저 external validation을 수행하는 것이 권장됩니다.", "New site data should be externally validated before any local training.")) 
-    if workflow is None:
-        render_local_node_status_panel(runtime_status, lang)
-        return
-
-    hardware = detect_hardware()
-    global_models = [
-        item for item in control_plane.list_model_versions()
-        if item.get("stage") == "global"
-    ]
-    if not global_models:
-        st.error(t(lang, "등록된 글로벌 모델 버전이 없습니다.", "No global model version is registered."))
-        return
-
-    model_lookup = {
-        f"{item['version_name']} [{item.get('architecture', 'cnn')}]": item
-        for item in global_models
-    }
-
-    render_stat_grid(
-        [
-            {"label": "CPU", "value": t(lang, "감지됨", "Detected"), "note": hardware["cpu_name"]},
-            {"label": "GPU", "value": t(lang, "사용 가능" if hardware["gpu_available"] else "없음", "Available" if hardware["gpu_available"] else "None"), "note": hardware["gpu_name"] or "N/A"},
-            {"label": "CUDA", "value": hardware["cuda_version"] or "N/A", "note": t(lang, "CUDA 버전", "CUDA version")},
-        ],
-    )
-
-    selector_columns = st.columns([1, 1.4])
-    selected_mode = selector_columns[0].selectbox(t(lang, "실행 모드", "Execution mode"), EXECUTION_MODES)
-    selected_model_label = selector_columns[1].selectbox(t(lang, "검증 모델", "Validation model"), list(model_lookup.keys()))
-    selected_model = model_lookup[selected_model_label]
-    execution_device = resolve_execution_mode(selected_mode, hardware)
-    option_columns = st.columns(2)
-    generate_gradcam = option_columns[0].checkbox(t(lang, "설명 시각화 생성", "Generate explanation artifacts"), value=True)
-    generate_medsam = option_columns[1].checkbox(t(lang, "MedSAM ROI 생성", "Generate MedSAM ROI artifacts"), value=True)
-    selected_model_note = selected_model.get("notes_ko") if lang == "ko" else selected_model.get("notes_en")
-    st.info(
-        t(
-            lang,
-            f"선택 모델 설명: {selected_model_note or selected_model.get('notes', '')}",
-            f"Selected model note: {selected_model_note or selected_model.get('notes', '')}",
-        ),
-    )
-    st.caption(
-        t(
-            lang,
-            f"선택 아키텍처: `{selected_model.get('architecture', 'cnn')}`. CNN은 Grad-CAM 스타일, ViT는 patch-token CAM, Swin은 마지막 hierarchical stage 기반 CAM을 사용합니다.",
-            f"Selected architecture: `{selected_model.get('architecture', 'cnn')}`. CNN uses Grad-CAM-style maps, ViT uses patch-token CAM, and Swin uses hierarchical stage CAM.",
-        ),
-    )
-
-    if execution_device == "cpu":
-        st.info(
-            t(
-                lang,
-                "CPU 모드에서는 대화형 검증 중 representative image 중심으로 시각화와 ROI 생성 범위를 제한합니다. 전체 MedSAM batch는 background job으로 큐잉할 수 있습니다.",
-                "CPU mode limits interactive explanation and ROI generation to representative images. Full MedSAM batch processing can be queued as a background job.",
-            ),
-        )
-        if st.button(t(lang, "전체 MedSAM batch 작업 큐 등록", "Queue full MedSAM batch job")):
-            job = site_store.enqueue_job("medsam_batch", {"scope": "full_manifest"})
-            st.success(t(lang, f"작업 {job['job_id']}가 큐에 등록되었습니다.", f"Queued job {job['job_id']}."))
-        if st.button(t(lang, "대기 중 작업 지금 실행", "Process queued jobs now")):
-            processed = process_background_jobs(site_store, workflow)
-            st.success(t(lang, f"{processed}개의 대기 작업을 처리했습니다.", f"Processed {processed} queued job(s)."))
-
-    if st.button(t(lang, "외부 검증 실행", "Run external validation")):
-        try:
-            summary, case_predictions, manifest_df = workflow.run_external_validation(
-                project_id=context["project"]["project_id"],
-                site_store=site_store,
-                model_version=selected_model,
-                execution_device=execution_device,
-                generate_gradcam=generate_gradcam,
-                generate_medsam=generate_medsam,
-            )
-            st.session_state["latest_validation_summary"] = summary
-            st.session_state["latest_validation_cases"] = case_predictions
-            st.success(t(lang, "외부 검증이 완료되어 중앙 control plane에 저장되었습니다.", "External validation completed and saved to the control plane."))
-            render_stat_grid(
-                [
-                    {"label": "AUROC", "value": "N/A" if summary["AUROC"] is None else f"{summary['AUROC']:.3f}", "note": t(lang, "검증 요약", "Validation summary")},
-                    {"label": t(lang, "정확도", "Accuracy"), "value": f"{summary['accuracy']:.3f}", "note": t(lang, "전체 정확도", "Overall accuracy")},
-                    {"label": t(lang, "민감도", "Sensitivity"), "value": f"{summary['sensitivity']:.3f}", "note": t(lang, "양성 탐지율", "Positive detection rate")},
-                    {"label": t(lang, "특이도", "Specificity"), "value": f"{summary['specificity']:.3f}", "note": t(lang, "음성 판별률", "Negative discrimination rate")},
-                ],
-            )
-            result_tabs = st.tabs([t(lang, "요약", "Summary"), t(lang, "증례", "Cases")])
-            with result_tabs[0]:
-                st.dataframe(pd.DataFrame([summary]), use_container_width=True)
-                st.caption(t(lang, f"{manifest_df['patient_id'].nunique()}명 환자 / {len(manifest_df)}장 이미지 검증 완료", f"Validated {manifest_df['patient_id'].nunique()} patients / {len(manifest_df)} images."))
-            with result_tabs[1]:
-                st.dataframe(pd.DataFrame(case_predictions), use_container_width=True)
-        except Exception as exc:
-            st.error(str(exc))
-
-    latest_summary = st.session_state.get("latest_validation_summary")
-    if latest_summary:
-        st.subheader(t(lang, "최근 검증 요약", "Latest validation summary"))
-        st.json(latest_summary)
-
-    st.divider()
-    st.subheader(t(lang, "선택적 로컬 fine-tuning", "Optional local fine-tuning"))
-    site_runs = control_plane.list_validation_runs(context["project"]["project_id"], site_store.site_id)
-    if not site_runs:
-        st.warning(t(lang, "먼저 external validation을 실행하세요. 로컬 fine-tuning은 그 이후 단계로 제한됩니다.", "Run external validation first. Local fine-tuning is intentionally gated behind that step."))
-        return
-
-    upload_type = st.selectbox(
-        t(lang, "모델 업데이트 업로드 형식", "Model update upload type"),
-        ["full model weights", "weight delta", "aggregated update"],
-    )
-    default_epochs = 5 if execution_device == "cuda" else 2
-    epochs = st.number_input(t(lang, "Epoch 수", "Epochs"), min_value=1, max_value=20, value=default_epochs)
-    if execution_device == "cpu":
-        st.caption(t(lang, "CPU 모드에서는 backbone을 고정하고 classifier head만 학습하며 epoch는 최대 3으로 제한됩니다.", "CPU mode freezes the selected backbone and trains only the classifier head, with epochs capped at 3."))
-    else:
-        st.caption(t(lang, "GPU 모드에서는 선택한 아키텍처에 대해 전체 fine-tuning이 가능합니다.", "GPU mode allows full fine-tuning for the selected architecture."))
-
-    if st.button(t(lang, "로컬 fine-tuning 실행 및 업데이트 등록", "Run local fine-tuning and register update")):
-        try:
-            update_metadata = workflow.run_local_fine_tuning(
-                site_store=site_store,
-                model_version=selected_model,
-                execution_device=execution_device,
-                upload_type=upload_type,
-                epochs=int(epochs),
-            )
-            st.success(t(lang, "로컬 fine-tuning이 완료되었고 모델 업데이트가 중앙에 등록되었습니다.", "Local fine-tuning finished and the model update was registered centrally."))
-            st.json(update_metadata)
-        except Exception as exc:
-            st.error(str(exc))
-
-
-def render_validation_dashboard(control_plane: ControlPlaneStore, context: dict[str, Any], lang: str) -> None:
-    st.subheader(t(lang, "검증 결과 대시보드", "Validation results dashboard"))
-    runs = control_plane.list_validation_runs(context["project"]["project_id"], context["site"]["site_id"])
-    if not runs:
-        st.info(t(lang, "이 사이트에 대한 검증 결과가 아직 없습니다.", "No validation runs found for this site."))
-        return
-
-    run_df = pd.DataFrame(runs).sort_values("run_date")
-    latest = run_df.iloc[-1]
-    render_stat_grid(
-        [
-            {"label": "AUROC", "value": "N/A" if pd.isna(latest["AUROC"]) else f"{latest['AUROC']:.3f}", "note": t(lang, "최근 검증", "Latest run")},
-            {"label": t(lang, "정확도", "Accuracy"), "value": f"{latest['accuracy']:.3f}", "note": latest["model_version"]},
-            {"label": t(lang, "민감도", "Sensitivity"), "value": f"{latest['sensitivity']:.3f}", "note": latest["validation_id"]},
-            {"label": t(lang, "특이도", "Specificity"), "value": f"{latest['specificity']:.3f}", "note": latest["model_architecture"]},
-        ],
-    )
-
-    summary_tab, trend_tab, cases_tab = st.tabs(
-        [
-            t(lang, "요약", "Summary"),
-            t(lang, "추이", "Trends"),
-            t(lang, "증례", "Cases"),
-        ],
-    )
-    with summary_tab:
-        st.dataframe(run_df, use_container_width=True)
-
-    with trend_tab:
-        metric_chart_df = run_df.melt(
-            id_vars=["run_date", "validation_id"],
-            value_vars=["accuracy", "sensitivity", "specificity", "F1"],
-            var_name="metric",
-            value_name="value",
-        )
-        st.plotly_chart(
-            px.line(metric_chart_df, x="run_date", y="value", color="metric", markers=True),
-            use_container_width=True,
-        )
-        if run_df["AUROC"].notna().any():
-            st.plotly_chart(
-                px.bar(run_df, x="validation_id", y="AUROC", color="model_version"),
-                use_container_width=True,
-            )
-
-    with cases_tab:
-        validation_lookup = {item["validation_id"]: item for item in runs}
-        selected_validation_id = st.selectbox(t(lang, "검증 실행 선택", "Validation run"), list(validation_lookup.keys()))
-        case_predictions = control_plane.load_case_predictions(selected_validation_id)
-        if case_predictions:
-            case_df = pd.DataFrame(case_predictions)
-            filter_columns = st.columns([1, 1.2])
-            incorrect_only = filter_columns[0].checkbox(t(lang, "오분류만 보기", "Incorrect only"), value=False)
-            patient_search = filter_columns[1].text_input(t(lang, "환자 ID 검색", "Search patient ID"))
-            if incorrect_only:
-                case_df = case_df[case_df["is_correct"] == False]
-            if patient_search.strip():
-                case_df = case_df[case_df["patient_id"].astype(str).str.contains(patient_search.strip(), case=False)]
-            st.dataframe(case_df, use_container_width=True)
-
-
-def render_gradcam_viewer(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "설명 시각화 뷰어", "Explanation viewer"))
-    st.caption(
-        t(
-            lang,
-            "CNN은 Grad-CAM 스타일, ViT는 patch-token CAM, Swin은 hierarchical stage CAM overlay를 생성합니다.",
-            "CNN uses Grad-CAM-style overlays, ViT uses patch-token CAM overlays, and Swin uses hierarchical stage CAM overlays.",
-        ),
-    )
-    files = site_store.artifact_files("gradcam")
-    if not files:
-        st.info(t(lang, "아직 생성된 설명 시각화 artifact가 없습니다.", "No explanation artifacts exist yet."))
-        return
-
-    selected_file = st.selectbox(t(lang, "Artifact 선택", "Artifact"), [str(path) for path in files])
-    st.image(selected_file, use_container_width=True)
-
-
-def render_medsam_viewer(site_store: SiteStore, lang: str) -> None:
-    st.subheader(t(lang, "MedSAM ROI 뷰어", "MedSAM ROI viewer"))
-    masks = site_store.artifact_files("medsam_mask")
-    if not masks:
-        st.info(t(lang, "아직 생성된 MedSAM ROI artifact가 없습니다.", "No MedSAM ROI artifacts exist yet."))
-        return
-
-    selected_mask = st.selectbox(t(lang, "Mask 선택", "Mask"), [str(path) for path in masks])
-    mask_path = Path(selected_mask)
-    crop_candidate = site_store.roi_crop_dir / mask_path.name.replace("_mask", "_crop")
-
-    columns = st.columns(2)
-    columns[0].image(selected_mask, caption=t(lang, "Mask", "Mask"), use_container_width=True)
-    if crop_candidate.exists():
-        columns[1].image(str(crop_candidate), caption=t(lang, "ROI crop", "ROI crop"), use_container_width=True)
-    else:
-        columns[1].warning(t(lang, "대응되는 ROI crop을 찾지 못했습니다.", "Matching ROI crop not found."))
-
-
-def process_background_jobs(site_store: SiteStore, workflow: ResearchWorkflowService) -> int:
-    processed = 0
-    manifest_df = site_store.generate_manifest()
-    if manifest_df.empty:
-        return processed
-
-    for job in site_store.list_jobs("queued"):
-        if job["job_type"] != "medsam_batch":
-            continue
-        for _, row in manifest_df.iterrows():
-            artifact_name = Path(row["image_path"]).stem
-            workflow.medsam_service.generate_roi(
-                row["image_path"],
-                site_store.medsam_mask_dir / f"{artifact_name}_mask.png",
-                site_store.roi_crop_dir / f"{artifact_name}_crop.png",
-            )
-        site_store.update_job_status(job["job_id"], "completed", {"processed_images": int(len(manifest_df))})
-        processed += 1
-    return processed

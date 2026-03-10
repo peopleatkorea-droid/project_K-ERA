@@ -89,6 +89,7 @@ class SiteStore:
         contact_lens_use: str,
         predisposing_factor: list[str],
         other_history: str,
+        active_stage: bool = True,
     ) -> dict[str, Any]:
         if not self.get_patient(patient_id):
             raise ValueError(f"Patient {patient_id} does not exist.")
@@ -106,6 +107,7 @@ class SiteStore:
             "contact_lens_use": contact_lens_use,
             "predisposing_factor": predisposing_factor,
             "other_history": other_history,
+            "active_stage": bool(active_stage),
             "created_at": utc_now(),
         }
         visits = self.list_visits()
@@ -176,12 +178,22 @@ class SiteStore:
                     "culture_species": visit["culture_species"],
                     "contact_lens_use": visit["contact_lens_use"],
                     "predisposing_factor": "|".join(visit.get("predisposing_factor", [])),
+                    "active_stage": visit.get("active_stage", True),
                     "view": image["view"],
                     "image_path": image["image_path"],
                     "is_representative": image["is_representative"],
                 }
             )
         return records
+
+    def list_visits_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
+        return [v for v in self.list_visits() if v["patient_id"] == patient_id]
+
+    def list_images_for_visit(self, patient_id: str, visit_date: str) -> list[dict[str, Any]]:
+        return [
+            img for img in self.list_images()
+            if img["patient_id"] == patient_id and img["visit_date"] == visit_date
+        ]
 
     def generate_manifest(self) -> pd.DataFrame:
         data_frame = pd.DataFrame(self.dataset_records(), columns=MANIFEST_COLUMNS)

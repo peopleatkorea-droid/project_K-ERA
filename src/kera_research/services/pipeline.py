@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
@@ -124,6 +124,185 @@ class ResearchWorkflowService:
         }
         saved_summary = self.control_plane.save_validation_run(summary, case_predictions)
         return saved_summary, case_predictions, manifest_df
+
+    def run_case_validation(
+        self,
+        project_id: str,
+        site_store: SiteStore,
+        patient_id: str,
+        visit_date: str,
+        model_version: dict[str, Any],
+        execution_device: str,
+        generate_gradcam: bool = True,
+        generate_medsam: bool = True,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """단일 케이스(환자 1명, 방문 1회)에 대해 즉시 검증을 수행합니다."""
+        manifest_df = site_store.generate_manifest()
+        case_df = manifest_df[
+            (manifest_df["patient_id"] == patient_id)
+            & (manifest_df["visit_date"] == visit_date)
+        ]
+        if case_df.empty:
+            raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
+
+        requires_crop = model_version.get("requires_medsam_crop", False)
+        model = self.model_manager.load_model(model_version, execution_device)
+
+        rep_rows = case_df[case_df["is_representative"] == True]
+        artifact_row = rep_rows.iloc[0] if not rep_rows.empty else case_df.iloc[0]
+
+        # MedSAM crop이 필요한 모델(DenseNet)은 대표 이미지 crop 먼저 생성
+        artifact_refs: dict[str, Any] = {
+            "gradcam_path": None,
+            "medsam_mask_path": None,
+            "roi_crop_path": None,
+        }
+        if generate_medsam or requires_crop:
+            artifact_name = Path(artifact_row["image_path"]).stem
+            medsam_result = self.medsam_service.generate_roi(
+                artifact_row["image_path"],
+                site_store.medsam_mask_dir / f"{artifact_name}_mask.png",
+                site_store.roi_crop_dir / f"{artifact_name}_crop.png",
+            )
+            artifact_refs["medsam_mask_path"] = medsam_result["medsam_mask_path"]
+            artifact_refs["roi_crop_path"] = medsam_result["roi_crop_path"]
+
+        # 추론: DenseNet은 crop 이미지로, 나머지는 원본으로
+        image_probabilities: list[float] = []
+        for _, row in case_df.iterrows():
+            infer_path = row["image_path"]
+            if requires_crop and artifact_refs["roi_crop_path"]:
+                infer_path = artifact_refs["roi_crop_path"]
+            prediction = self.model_manager.predict_image(model, infer_path, execution_device)
+            image_probabilities.append(prediction.probability)
+
+        predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
+        predicted_index = 1 if predicted_probability >= 0.5 else 0
+        true_index = LABEL_TO_INDEX[case_df.iloc[0]["culture_category"]]
+
+        if generate_gradcam:
+            artifact_name = Path(artifact_row["image_path"]).stem
+            gradcam_input = artifact_refs["roi_crop_path"] or artifact_row["image_path"]
+            gradcam_path = self.model_manager.generate_explanation(
+                model,
+                model_version,
+                gradcam_input,
+                execution_device,
+                site_store.gradcam_dir / f"{artifact_name}_gradcam.png",
+                target_class=predicted_index,
+            )
+            artifact_refs["gradcam_path"] = gradcam_path
+
+        validation_id = make_id("validation")
+        case_prediction: dict[str, Any] = {
+            "validation_id": validation_id,
+            "patient_id": patient_id,
+            "true_label": INDEX_TO_LABEL[true_index],
+            "predicted_label": INDEX_TO_LABEL[predicted_index],
+            "prediction_probability": predicted_probability,
+            "is_correct": bool(true_index == predicted_index),
+            **artifact_refs,
+        }
+
+        summary: dict[str, Any] = {
+            "validation_id": validation_id,
+            "project_id": project_id,
+            "site_id": site_store.site_id,
+            "model_version": model_version["version_name"],
+            "model_version_id": model_version["version_id"],
+            "model_architecture": model_version.get("architecture", "densenet121"),
+            "run_date": utc_now(),
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "n_images": int(len(case_df)),
+            "predicted_label": INDEX_TO_LABEL[predicted_index],
+            "true_label": INDEX_TO_LABEL[true_index],
+            "is_correct": bool(true_index == predicted_index),
+            "prediction_probability": predicted_probability,
+        }
+        saved_summary = self.control_plane.save_validation_run(summary, [case_prediction])
+        return saved_summary, [case_prediction]
+
+    def contribute_case(
+        self,
+        site_store: SiteStore,
+        patient_id: str,
+        visit_date: str,
+        model_version: dict[str, Any],
+        execution_device: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """케이스 기여: 로컬 파인튜닝 → weight delta 저장 → 기여 등록."""
+        manifest_df = site_store.generate_manifest()
+        case_df = manifest_df[
+            (manifest_df["patient_id"] == patient_id)
+            & (manifest_df["visit_date"] == visit_date)
+        ]
+        if case_df.empty:
+            raise ValueError(f"No data found for patient {patient_id} / {visit_date}.")
+
+        # DenseNet은 crop 이미지 경로를 사용해야 합니다
+        records = case_df.to_dict("records")
+        requires_crop = model_version.get("requires_medsam_crop", False)
+        if requires_crop:
+            updated_records = []
+            for rec in records:
+                crop_candidates = list(site_store.roi_crop_dir.glob(f"{Path(rec['image_path']).stem}_crop.png"))
+                if crop_candidates:
+                    rec = {**rec, "image_path": str(crop_candidates[0])}
+                updated_records.append(rec)
+            records = updated_records
+
+        full_finetune = execution_device == "cuda"
+        epochs = min(3, 1) if execution_device == "cpu" else 3
+        architecture = model_version.get("architecture", "densenet121")
+        output_model_path = site_store.update_dir / f"{make_id(architecture)}_weights.pth"
+
+        result = self.model_manager.fine_tune(
+            records=records,
+            base_model_reference=model_version,
+            output_model_path=output_model_path,
+            device=execution_device,
+            full_finetune=full_finetune,
+            epochs=epochs,
+        )
+
+        delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
+        self.model_manager.save_weight_delta(
+            model_version["model_path"],
+            result["output_model_path"],
+            delta_path,
+        )
+
+        update_metadata: dict[str, Any] = {
+            "update_id": make_id("update"),
+            "site_id": site_store.site_id,
+            "base_model_version_id": model_version["version_id"],
+            "architecture": architecture,
+            "upload_type": "weight delta",
+            "execution_device": execution_device,
+            "artifact_path": str(delta_path),
+            "n_cases": 1,
+            "contributed_by": user_id,
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "created_at": utc_now(),
+            "training_summary": result,
+            "status": "pending_upload",
+        }
+        self.control_plane.register_model_update(update_metadata)
+
+        contribution = {
+            "contribution_id": make_id("contrib"),
+            "user_id": user_id,
+            "site_id": site_store.site_id,
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "update_id": update_metadata["update_id"],
+            "created_at": utc_now(),
+        }
+        self.control_plane.register_contribution(contribution)
+        return update_metadata
 
     def run_local_fine_tuning(
         self,
