@@ -21,6 +21,9 @@ PREDISPOSING_FACTORS = [
     "unknown",
 ]
 VIEW_OPTIONS = ["white", "slit", "fluorescein"]
+SMEAR_RESULT_OPTIONS = ["not done", "positive", "negative", "unknown", "other"]
+VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
+USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 MODEL_ARCHITECTURES = ["cnn", "vit", "swin", "densenet121", "densenet161", "densenet169", "densenet201"]
 DENSENET_VARIANTS = ["densenet121", "densenet161", "densenet169", "densenet201"]
@@ -49,7 +52,10 @@ LABEL_TO_INDEX = {"bacterial": 0, "fungal": 1}
 INDEX_TO_LABEL = {0: "bacterial", 1: "fungal"}
 
 MANIFEST_COLUMNS = [
+    "site_id",
     "patient_id",
+    "chart_alias",
+    "local_case_code",
     "sex",
     "age",
     "visit_date",
@@ -58,7 +64,11 @@ MANIFEST_COLUMNS = [
     "culture_species",
     "contact_lens_use",
     "predisposing_factor",
+    "visit_status",
     "active_stage",
+    "other_history",
+    "smear_result",
+    "polymicrobial",
     "view",
     "image_path",
     "is_representative",

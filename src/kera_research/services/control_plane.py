@@ -3,67 +3,132 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from kera_research.config import (
-    BASE_DIR,
-    CONTROL_PLANE_CASE_DIR,
-    CONTROL_PLANE_DIR,
-    DEFAULT_USERS,
-    ensure_base_directories,
+from sqlalchemy import and_, select, update
+
+from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_DIR, DEFAULT_USERS, ensure_base_directories
+from kera_research.db import (
+    ENGINE,
+    aggregations,
+    contributions,
+    init_db,
+    model_updates,
+    model_versions,
+    organism_catalog,
+    organism_requests,
+    projects,
+    sites,
+    users,
+    validation_runs,
 )
 from kera_research.domain import CULTURE_SPECIES, make_id, utc_now
-from kera_research.storage import append_json_record, ensure_dir, read_json, write_json
+from kera_research.storage import ensure_dir, read_json, write_json
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    return dict(row._mapping)
+
+
+def _payload_record(row: Any, payload_key: str, extra_keys: list[str]) -> dict[str, Any]:
+    mapping = row._mapping
+    payload = dict(mapping[payload_key] or {})
+    for key in extra_keys:
+        if key not in payload and mapping.get(key) is not None:
+            payload[key] = mapping.get(key)
+    return payload
 
 
 class ControlPlaneStore:
     def __init__(self, root: Path | None = None) -> None:
         ensure_base_directories()
+        init_db()
         self.root = root or CONTROL_PLANE_DIR
         ensure_dir(self.root)
         ensure_dir(CONTROL_PLANE_CASE_DIR)
-
-        self.users_path = self.root / "users.json"
-        self.projects_path = self.root / "projects.json"
-        self.sites_path = self.root / "sites.json"
-        self.organism_catalog_path = self.root / "organism_catalog.json"
-        self.organism_requests_path = self.root / "organism_requests.json"
-        self.validation_runs_path = self.root / "validation_runs.json"
-        self.model_registry_path = self.root / "model_registry.json"
-        self.model_updates_path = self.root / "model_updates.json"
-        self.aggregations_path = self.root / "aggregations.json"
-        self.contributions_path = self.root / "contributions.json"
-
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
-        if not self.users_path.exists():
-            write_json(self.users_path, DEFAULT_USERS)
-        if not self.projects_path.exists():
-            write_json(self.projects_path, [])
-        if not self.sites_path.exists():
-            write_json(self.sites_path, [])
-        if not self.organism_catalog_path.exists():
-            write_json(self.organism_catalog_path, CULTURE_SPECIES)
-        if not self.organism_requests_path.exists():
-            write_json(self.organism_requests_path, [])
-        if not self.validation_runs_path.exists():
-            write_json(self.validation_runs_path, [])
-        if not self.model_registry_path.exists():
-            write_json(self.model_registry_path, [])
-        if not self.model_updates_path.exists():
-            write_json(self.model_updates_path, [])
-        if not self.aggregations_path.exists():
-            write_json(self.aggregations_path, [])
-        if not self.contributions_path.exists():
-            write_json(self.contributions_path, [])
+        with ENGINE.begin() as conn:
+            existing_users = {row.username for row in conn.execute(select(users.c.username))}
+            for user_record in DEFAULT_USERS:
+                if user_record["username"] not in existing_users:
+                    conn.execute(users.insert().values(**user_record))
+
+            catalog_count = conn.execute(select(organism_catalog.c.catalog_id)).first()
+            if catalog_count is None:
+                for category, species_list in CULTURE_SPECIES.items():
+                    for species_name in species_list:
+                        conn.execute(
+                            organism_catalog.insert().values(
+                                culture_category=category,
+                                species_name=species_name,
+                            )
+                        )
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
-        for user in read_json(self.users_path, []):
-            if user["username"] == username and user["password"] == password:
-                return user
-        return None
+        query = select(users).where(and_(users.c.username == username, users.c.password == password))
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        if row is None:
+            return None
+        return {
+            **dict(row),
+            "site_ids": row["site_ids"] if row["site_ids"] is not None else None,
+        }
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with ENGINE.begin() as conn:
+            rows = conn.execute(select(users).order_by(users.c.username)).mappings().all()
+        return [
+            {
+                **dict(row),
+                "site_ids": row["site_ids"] if row["site_ids"] is not None else None,
+            }
+            for row in rows
+        ]
+
+    def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
+        normalized = {
+            **user_record,
+            "site_ids": list(dict.fromkeys(user_record.get("site_ids", []))),
+        }
+        with ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(users).where(
+                    (users.c.user_id == normalized["user_id"]) | (users.c.username == normalized["username"])
+                )
+            ).mappings().first()
+            if existing:
+                conn.execute(
+                    update(users)
+                    .where(users.c.user_id == existing["user_id"])
+                    .values(**normalized)
+                )
+            else:
+                conn.execute(users.insert().values(**normalized))
+        return normalized
+
+    def accessible_sites_for_user(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        all_sites = self.list_sites()
+        if user.get("role") == "admin":
+            return all_sites
+        if user.get("site_ids") is None:
+            return all_sites
+        allowed_site_ids = set(user.get("site_ids", []))
+        return [site for site in all_sites if site["site_id"] in allowed_site_ids]
+
+    def user_can_access_site(self, user: dict[str, Any], site_id: str | None) -> bool:
+        if not site_id:
+            return False
+        if user.get("role") == "admin":
+            return True
+        if user.get("site_ids") is None:
+            return True
+        return site_id in set(user.get("site_ids", []))
 
     def list_projects(self) -> list[dict[str, Any]]:
-        return read_json(self.projects_path, [])
+        with ENGINE.begin() as conn:
+            rows = conn.execute(select(projects).order_by(projects.c.created_at)).mappings().all()
+        return [dict(row) for row in rows]
 
     def create_project(self, name: str, description: str, owner_user_id: str) -> dict[str, Any]:
         if not name.strip():
@@ -76,14 +141,18 @@ class ControlPlaneStore:
             "site_ids": [],
             "created_at": utc_now(),
         }
-        append_json_record(self.projects_path, record)
+        with ENGINE.begin() as conn:
+            conn.execute(projects.insert().values(**record))
         return record
 
     def list_sites(self, project_id: str | None = None) -> list[dict[str, Any]]:
-        sites = read_json(self.sites_path, [])
+        query = select(sites)
         if project_id:
-            return [site for site in sites if site["project_id"] == project_id]
-        return sites
+            query = query.where(sites.c.project_id == project_id)
+        query = query.order_by(sites.c.display_name)
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def create_site(
         self,
@@ -93,7 +162,7 @@ class ControlPlaneStore:
         hospital_name: str,
     ) -> dict[str, Any]:
         normalized_site_code = site_code.strip()
-        if not site_code.strip():
+        if not normalized_site_code:
             raise ValueError("Site code is required.")
         if not display_name.strip():
             raise ValueError("Site display name is required.")
@@ -105,24 +174,35 @@ class ControlPlaneStore:
             "local_storage_root": f"storage/sites/{normalized_site_code}",
             "created_at": utc_now(),
         }
-        sites = read_json(self.sites_path, [])
-        if any(site["site_id"] == normalized_site_code for site in sites):
-            raise ValueError(f"Site {normalized_site_code} already exists.")
-        sites.append(record)
-        write_json(self.sites_path, sites)
-
-        projects = read_json(self.projects_path, [])
-        for project in projects:
-            if project["project_id"] == project_id:
-                project.setdefault("site_ids", []).append(normalized_site_code)
-                break
-        write_json(self.projects_path, projects)
+        with ENGINE.begin() as conn:
+            existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
+            if existing_site:
+                raise ValueError(f"Site {normalized_site_code} already exists.")
+            project_row = conn.execute(select(projects).where(projects.c.project_id == project_id)).mappings().first()
+            if project_row is None:
+                raise ValueError(f"Unknown project_id: {project_id}")
+            conn.execute(sites.insert().values(**record))
+            project_site_ids = list(project_row["site_ids"] or [])
+            if normalized_site_code not in project_site_ids:
+                project_site_ids.append(normalized_site_code)
+            conn.execute(
+                update(projects)
+                .where(projects.c.project_id == project_id)
+                .values(site_ids=project_site_ids)
+            )
         return record
 
     def list_organisms(self, category: str | None = None) -> list[str] | dict[str, list[str]]:
-        catalog = read_json(self.organism_catalog_path, CULTURE_SPECIES)
+        query = select(organism_catalog).order_by(organism_catalog.c.culture_category, organism_catalog.c.species_name)
         if category:
-            return catalog.get(category, [])
+            query = query.where(organism_catalog.c.culture_category == category)
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        if category:
+            return [row["species_name"] for row in rows]
+        catalog: dict[str, list[str]] = {}
+        for row in rows:
+            catalog.setdefault(row["culture_category"], []).append(row["species_name"])
         return catalog
 
     def request_new_organism(
@@ -139,38 +219,58 @@ class ControlPlaneStore:
             "status": "pending",
             "reviewed_by": None,
             "created_at": utc_now(),
+            "reviewed_at": None,
         }
-        append_json_record(self.organism_requests_path, request_record)
+        with ENGINE.begin() as conn:
+            conn.execute(organism_requests.insert().values(**request_record))
         return request_record
 
     def list_organism_requests(self, status: str | None = None) -> list[dict[str, Any]]:
-        requests = read_json(self.organism_requests_path, [])
+        query = select(organism_requests).order_by(organism_requests.c.created_at.desc())
         if status:
-            return [item for item in requests if item["status"] == status]
-        return requests
+            query = query.where(organism_requests.c.status == status)
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def approve_organism(self, request_id: str, approver_user_id: str) -> dict[str, Any]:
-        requests = read_json(self.organism_requests_path, [])
-        catalog = read_json(self.organism_catalog_path, CULTURE_SPECIES)
-        approved_request = None
-
-        for request_record in requests:
-            if request_record["request_id"] == request_id:
-                request_record["status"] = "approved"
-                request_record["reviewed_by"] = approver_user_id
-                request_record["reviewed_at"] = utc_now()
-                approved_request = request_record
-                species_list = catalog.setdefault(request_record["culture_category"], [])
-                if request_record["requested_species"] not in species_list:
-                    species_list.append(request_record["requested_species"])
-                    species_list.sort()
-                break
-
-        if approved_request is None:
-            raise ValueError(f"Unknown request_id: {request_id}")
-
-        write_json(self.organism_requests_path, requests)
-        write_json(self.organism_catalog_path, catalog)
+        with ENGINE.begin() as conn:
+            request_row = conn.execute(
+                select(organism_requests).where(organism_requests.c.request_id == request_id)
+            ).mappings().first()
+            if request_row is None:
+                raise ValueError(f"Unknown request_id: {request_id}")
+            reviewed_at = utc_now()
+            approved_request = {
+                **dict(request_row),
+                "status": "approved",
+                "reviewed_by": approver_user_id,
+                "reviewed_at": reviewed_at,
+            }
+            conn.execute(
+                update(organism_requests)
+                .where(organism_requests.c.request_id == request_id)
+                .values(
+                    status="approved",
+                    reviewed_by=approver_user_id,
+                    reviewed_at=reviewed_at,
+                )
+            )
+            existing_species = conn.execute(
+                select(organism_catalog.c.catalog_id).where(
+                    and_(
+                        organism_catalog.c.culture_category == request_row["culture_category"],
+                        organism_catalog.c.species_name == request_row["requested_species"],
+                    )
+                )
+            ).first()
+            if existing_species is None:
+                conn.execute(
+                    organism_catalog.insert().values(
+                        culture_category=request_row["culture_category"],
+                        species_name=request_row["requested_species"],
+                    )
+                )
         return approved_request
 
     def list_validation_runs(
@@ -178,11 +278,19 @@ class ControlPlaneStore:
         project_id: str | None = None,
         site_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        runs = read_json(self.validation_runs_path, [])
+        query = select(validation_runs)
         if project_id:
-            runs = [run for run in runs if run.get("project_id") == project_id]
+            query = query.where(validation_runs.c.project_id == project_id)
         if site_id:
-            runs = [run for run in runs if run.get("site_id") == site_id]
+            query = query.where(validation_runs.c.site_id == site_id)
+        query = query.order_by(validation_runs.c.run_date.desc())
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        runs: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row["summary_json"] or {})
+            payload["case_predictions_path"] = row["case_predictions_path"]
+            runs.append(payload)
         return runs
 
     def save_validation_run(
@@ -196,7 +304,34 @@ class ControlPlaneStore:
             **summary,
             "case_predictions_path": str(case_path.relative_to(BASE_DIR)),
         }
-        append_json_record(self.validation_runs_path, payload)
+        record = {
+            "validation_id": summary["validation_id"],
+            "project_id": summary["project_id"],
+            "site_id": summary["site_id"],
+            "model_version": summary.get("model_version", ""),
+            "run_date": summary.get("run_date", utc_now()),
+            "n_cases": summary.get("n_cases"),
+            "n_images": summary.get("n_images"),
+            "AUROC": summary.get("AUROC"),
+            "accuracy": summary.get("accuracy"),
+            "sensitivity": summary.get("sensitivity"),
+            "specificity": summary.get("specificity"),
+            "F1": summary.get("F1"),
+            "case_predictions_path": payload["case_predictions_path"],
+            "summary_json": payload,
+        }
+        with ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(validation_runs.c.validation_id).where(validation_runs.c.validation_id == summary["validation_id"])
+            ).first()
+            if existing:
+                conn.execute(
+                    update(validation_runs)
+                    .where(validation_runs.c.validation_id == summary["validation_id"])
+                    .values(**record)
+                )
+            else:
+                conn.execute(validation_runs.insert().values(**record))
         return payload
 
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
@@ -204,30 +339,80 @@ class ControlPlaneStore:
         return read_json(case_path, [])
 
     def list_model_versions(self) -> list[dict[str, Any]]:
-        return read_json(self.model_registry_path, [])
+        with ENGINE.begin() as conn:
+            rows = conn.execute(select(model_versions).order_by(model_versions.c.created_at)).all()
+        return [
+            _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
+            for row in rows
+        ]
+
+    def _set_model_current_flag(
+        self,
+        conn: Any,
+        version_id: str,
+        is_current: bool,
+    ) -> None:
+        row = conn.execute(select(model_versions).where(model_versions.c.version_id == version_id)).first()
+        if row is None:
+            return
+        payload = _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
+        payload["is_current"] = is_current
+        conn.execute(
+            update(model_versions)
+            .where(model_versions.c.version_id == version_id)
+            .values(is_current=is_current, payload_json=payload)
+        )
 
     def ensure_model_version(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
-        versions = read_json(self.model_registry_path, [])
-        for index, item in enumerate(versions):
-            if item["version_id"] == model_metadata["version_id"]:
-                merged = {**item, **model_metadata}
-                versions[index] = merged
-                if merged.get("stage") == "global" and merged.get("ready", True) and merged.get("is_current"):
-                    for other_index, other in enumerate(versions):
-                        if other_index == index:
-                            continue
-                        if other.get("stage") == "global":
-                            versions[other_index] = {**other, "is_current": False}
-                write_json(self.model_registry_path, versions)
-                return merged
-        if model_metadata.get("stage") == "global" and model_metadata.get("ready", True) and model_metadata.get("is_current"):
-            versions = [
-                {**item, "is_current": False} if item.get("stage") == "global" else item
-                for item in versions
-            ]
-        versions.append(model_metadata)
-        write_json(self.model_registry_path, versions)
-        return model_metadata
+        merged = dict(model_metadata)
+        merged.setdefault("ready", True)
+        merged.setdefault("is_current", False)
+        with ENGINE.begin() as conn:
+            if merged.get("stage") == "global" and merged.get("ready", True) and merged.get("is_current"):
+                current_rows = conn.execute(
+                    select(model_versions.c.version_id).where(model_versions.c.stage == "global")
+                ).all()
+                for row in current_rows:
+                    if row.version_id != merged["version_id"]:
+                        self._set_model_current_flag(conn, row.version_id, False)
+
+            existing = conn.execute(
+                select(model_versions).where(model_versions.c.version_id == merged["version_id"])
+            ).first()
+            if existing:
+                existing_payload = _payload_record(
+                    existing,
+                    "payload_json",
+                    ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"],
+                )
+                merged = {**existing_payload, **merged}
+                conn.execute(
+                    update(model_versions)
+                    .where(model_versions.c.version_id == merged["version_id"])
+                    .values(
+                        version_name=merged["version_name"],
+                        architecture=merged["architecture"],
+                        stage=merged.get("stage"),
+                        created_at=merged.get("created_at"),
+                        ready=bool(merged.get("ready", True)),
+                        is_current=bool(merged.get("is_current", False)),
+                        payload_json=merged,
+                    )
+                )
+            else:
+                conn.execute(
+                    model_versions.insert().values(
+                        version_id=merged["version_id"],
+                        version_name=merged["version_name"],
+                        architecture=merged["architecture"],
+                        stage=merged.get("stage"),
+                        created_at=merged.get("created_at"),
+                        ready=bool(merged.get("ready", True)),
+                        is_current=bool(merged.get("is_current", False)),
+                        payload_json=merged,
+                    )
+                )
+        return merged
 
     def current_global_model(self) -> dict[str, Any] | None:
         versions = [
@@ -239,35 +424,90 @@ class ControlPlaneStore:
             return None
         current_versions = [item for item in versions if item.get("is_current")]
         if current_versions:
-            return sorted(current_versions, key=lambda item: item["created_at"])[-1]
-        return sorted(versions, key=lambda item: item["created_at"])[-1]
+            return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
+        return sorted(versions, key=lambda item: item.get("created_at", ""))[-1]
 
     def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
-        append_json_record(self.model_updates_path, update_metadata)
-        return update_metadata
+        record = dict(update_metadata)
+        with ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(model_updates).where(model_updates.c.update_id == record["update_id"])
+            ).first()
+            values = {
+                "update_id": record["update_id"],
+                "site_id": record.get("site_id"),
+                "architecture": record.get("architecture"),
+                "status": record.get("status"),
+                "created_at": record.get("created_at"),
+                "payload_json": record,
+            }
+            if existing:
+                conn.execute(update(model_updates).where(model_updates.c.update_id == record["update_id"]).values(**values))
+            else:
+                conn.execute(model_updates.insert().values(**values))
+        return record
+
+    def update_model_update_statuses(self, update_ids: list[str], status: str) -> None:
+        with ENGINE.begin() as conn:
+            rows = conn.execute(select(model_updates).where(model_updates.c.update_id.in_(update_ids))).all()
+            for row in rows:
+                payload = _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+                payload["status"] = status
+                conn.execute(
+                    update(model_updates)
+                    .where(model_updates.c.update_id == row._mapping["update_id"])
+                    .values(status=status, payload_json=payload)
+                )
 
     def list_model_updates(self, site_id: str | None = None) -> list[dict[str, Any]]:
-        updates = read_json(self.model_updates_path, [])
+        query = select(model_updates)
         if site_id:
-            return [item for item in updates if item.get("site_id") == site_id]
-        return updates
+            query = query.where(model_updates.c.site_id == site_id)
+        query = query.order_by(model_updates.c.created_at.desc())
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).all()
+        return [
+            _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+            for row in rows
+        ]
 
     def register_contribution(self, contribution: dict[str, Any]) -> dict[str, Any]:
-        append_json_record(self.contributions_path, contribution)
-        return contribution
+        record = dict(contribution)
+        with ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(contributions).where(contributions.c.contribution_id == record["contribution_id"])
+            ).first()
+            values = {
+                "contribution_id": record["contribution_id"],
+                "user_id": record.get("user_id"),
+                "site_id": record.get("site_id"),
+                "created_at": record.get("created_at"),
+                "payload_json": record,
+            }
+            if existing:
+                conn.execute(update(contributions).where(contributions.c.contribution_id == record["contribution_id"]).values(**values))
+            else:
+                conn.execute(contributions.insert().values(**values))
+        return record
 
     def list_contributions(self, user_id: str | None = None, site_id: str | None = None) -> list[dict[str, Any]]:
-        contribs = read_json(self.contributions_path, [])
+        query = select(contributions)
         if user_id:
-            contribs = [c for c in contribs if c.get("user_id") == user_id]
+            query = query.where(contributions.c.user_id == user_id)
         if site_id:
-            contribs = [c for c in contribs if c.get("site_id") == site_id]
-        return contribs
+            query = query.where(contributions.c.site_id == site_id)
+        query = query.order_by(contributions.c.created_at.desc())
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).all()
+        return [
+            _payload_record(row, "payload_json", ["contribution_id", "user_id", "site_id", "created_at"])
+            for row in rows
+        ]
 
     def get_contribution_stats(self, user_id: str | None = None) -> dict[str, Any]:
-        all_contribs = read_json(self.contributions_path, [])
+        all_contribs = self.list_contributions()
         total = len(all_contribs)
-        user_contribs = [c for c in all_contribs if c.get("user_id") == user_id] if user_id else []
+        user_contribs = [item for item in all_contribs if item.get("user_id") == user_id] if user_id else []
         user_total = len(user_contribs)
         pct = round(user_total / total * 100, 1) if total > 0 else 0.0
         current_model = self.current_global_model()
@@ -278,6 +518,14 @@ class ControlPlaneStore:
             "current_model_version": current_model["version_name"] if current_model else "—",
         }
 
+    def list_aggregations(self) -> list[dict[str, Any]]:
+        with ENGINE.begin() as conn:
+            rows = conn.execute(select(aggregations).order_by(aggregations.c.created_at.desc())).all()
+        return [
+            _payload_record(row, "payload_json", ["aggregation_id", "architecture", "created_at", "total_cases"])
+            for row in rows
+        ]
+
     def register_aggregation(
         self,
         base_model_version_id: str,
@@ -287,7 +535,6 @@ class ControlPlaneStore:
         site_weights: dict[str, int],
         requires_medsam_crop: bool = False,
     ) -> dict[str, Any]:
-        from kera_research.domain import make_id, utc_now
         agg_id = make_id("agg")
         record = {
             "aggregation_id": agg_id,
@@ -298,7 +545,18 @@ class ControlPlaneStore:
             "total_cases": sum(site_weights.values()),
             "created_at": utc_now(),
         }
-        append_json_record(self.aggregations_path, record)
+        with ENGINE.begin() as conn:
+            conn.execute(
+                aggregations.insert().values(
+                    aggregation_id=agg_id,
+                    base_model_version_id=base_model_version_id,
+                    new_version_name=new_version_name,
+                    architecture=architecture,
+                    total_cases=sum(site_weights.values()),
+                    created_at=record["created_at"],
+                    payload_json=record,
+                )
+            )
         new_version = {
             "version_id": make_id("model"),
             "version_name": new_version_name,
@@ -313,8 +571,8 @@ class ControlPlaneStore:
             "is_current": True,
             "ready": True,
             "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
-            "notes_ko": f"{len(site_weights)}개 기관, {sum(site_weights.values())}케이스 federated 집계 모델.",
-            "notes_en": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
+            "notes_ko": f"{len(site_weights)}개 사이트, 총 {sum(site_weights.values())}개 케이스의 Federated aggregation 결과입니다.",
+            "notes_en": f"Federated aggregation result from {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
         }
         self.ensure_model_version(new_version)
         return record

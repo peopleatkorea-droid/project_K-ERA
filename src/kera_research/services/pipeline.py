@@ -10,6 +10,7 @@ from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.modeling import ModelManager
+from kera_research.storage import write_json
 
 
 class ResearchWorkflowService:
@@ -164,6 +165,10 @@ class ResearchWorkflowService:
             "sensitivity": metrics["sensitivity"],
             "specificity": metrics["specificity"],
             "F1": metrics["F1"],
+            "confusion_matrix": metrics["confusion_matrix"],
+            "roc_curve": metrics["roc_curve"],
+            "n_correct": int(sum(pred == target for pred, target in zip(summary_predictions, summary_targets))),
+            "n_incorrect": int(sum(pred != target for pred, target in zip(summary_predictions, summary_targets))),
         }
         saved_summary = self.control_plane.save_validation_run(summary, case_predictions)
         return saved_summary, case_predictions, manifest_df
@@ -393,8 +398,10 @@ class ResearchWorkflowService:
         learning_rate: float = 1e-4,
         batch_size: int = 16,
         val_split: float = 0.2,
+        test_split: float = 0.2,
         use_pretrained: bool = True,
         use_medsam_crops: bool = True,
+        regenerate_split: bool = False,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
         """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다."""
@@ -409,6 +416,7 @@ class ResearchWorkflowService:
             manifest_df.to_dict("records"),
             requires_crop=True,
         )
+        saved_split = None if regenerate_split else site_store.load_patient_split() or None
 
         result = self.model_manager.initial_train(
             records=records,
@@ -419,9 +427,17 @@ class ResearchWorkflowService:
             learning_rate=learning_rate,
             batch_size=batch_size,
             val_split=val_split,
+            test_split=test_split,
             use_pretrained=use_pretrained,
+            saved_split=saved_split,
             progress_callback=progress_callback,
         )
+        patient_split = {
+            **result["patient_split"],
+            "site_id": site_store.site_id,
+        }
+        site_store.save_patient_split(patient_split)
+        result["patient_split"] = patient_split
 
         version_name = f"global-{architecture}-v{make_id('init')[:6]}"
         new_version = {
@@ -435,15 +451,74 @@ class ResearchWorkflowService:
             "training_input_policy": "medsam_roi_crop_only",
             "created_at": utc_now(),
             "is_current": True,
-            "notes": f"Initial training with MedSAM crops: {result['n_train_patients']} train patients / {result['n_val_patients']} val patients, best val_acc={result['best_val_acc']:.3f}",
-            "notes_ko": f"MedSAM crop 기반 초기 학습 모델: train {result['n_train_patients']}명 / val {result['n_val_patients']}명, 최고 val_acc={result['best_val_acc']:.3f}",
-            "notes_en": f"Initial training with MedSAM crops: {result['n_train_patients']} train patients / {result['n_val_patients']} val patients, best val_acc={result['best_val_acc']:.3f}",
+            "notes": (
+                f"Initial training with MedSAM crops: "
+                f"train {result['n_train_patients']} / val {result['n_val_patients']} / test {result['n_test_patients']} patients, "
+                f"best val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
+            ),
+            "notes_ko": (
+                f"MedSAM crop 기반 초기 학습 모델: "
+                f"train {result['n_train_patients']}명 / val {result['n_val_patients']}명 / test {result['n_test_patients']}명, "
+                f"최고 val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
+            ),
+            "notes_en": (
+                f"Initial training with MedSAM crops: "
+                f"train {result['n_train_patients']} / val {result['n_val_patients']} / test {result['n_test_patients']} patients, "
+                f"best val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
+            ),
             "ready": True,
         }
         self.control_plane.ensure_model_version(new_version)
         result["version_name"] = version_name
         result["model_version"] = new_version
         return result
+
+    def run_cross_validation(
+        self,
+        site_store: SiteStore,
+        architecture: str,
+        output_dir: str,
+        execution_device: str,
+        num_folds: int = 5,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        val_split: float = 0.2,
+        use_pretrained: bool = True,
+        use_medsam_crops: bool = True,
+    ) -> dict[str, Any]:
+        manifest_df = site_store.generate_manifest()
+        if manifest_df.empty:
+            raise ValueError("Cross-validation requires a non-empty dataset.")
+        if not use_medsam_crops:
+            raise ValueError("Cross-validation is MedSAM crop-only.")
+
+        records = self._prepare_records_for_model(
+            site_store,
+            manifest_df.to_dict("records"),
+            requires_crop=True,
+        )
+        result = self.model_manager.cross_validate(
+            records=records,
+            architecture=architecture,
+            output_dir=output_dir,
+            device=execution_device,
+            num_folds=num_folds,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            val_split=val_split,
+            use_pretrained=use_pretrained,
+        )
+        report = {
+            **result,
+            "site_id": site_store.site_id,
+            "training_input_policy": "medsam_roi_crop_only",
+        }
+        report_path = site_store.validation_dir / f"{report['cross_validation_id']}.json"
+        write_json(report_path, report)
+        report["report_path"] = str(report_path)
+        return report
 
     def run_local_fine_tuning(
         self,

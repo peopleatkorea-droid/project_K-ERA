@@ -97,6 +97,7 @@ DEFAULT_USERS = [
         "password": os.getenv("KERA_ADMIN_PASSWORD", "admin123"),
         "role": "admin",
         "full_name": "Platform Administrator",
+        "site_ids": [],
     },
     {
         "user_id": "user_researcher",
@@ -104,6 +105,7 @@ DEFAULT_USERS = [
         "password": os.getenv("KERA_RESEARCHER_PASSWORD", "research123"),
         "role": "researcher",
         "full_name": "Research User",
+        "site_ids": [],
     },
 ]
 

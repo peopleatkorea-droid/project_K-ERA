@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+import pandas as pd
 from PIL import Image
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score, roc_curve
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from kera_research.config import DEFAULT_GLOBAL_MODELS
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
@@ -713,6 +714,190 @@ class ModelManager:
         model.model = backbone
         return model
 
+    def _split_ids_with_fallback(
+        self,
+        patient_ids: list[str],
+        patient_labels: dict[str, str],
+        test_size: int,
+        seed: int,
+    ) -> tuple[list[str], list[str]]:
+        if test_size <= 0 or test_size >= len(patient_ids):
+            raise ValueError("test_size must leave at least one patient on each side of the split.")
+        labels = [patient_labels[patient_id] for patient_id in patient_ids]
+        stratify_labels = labels if len(set(labels)) > 1 else None
+        try:
+            left_ids, right_ids = train_test_split(
+                patient_ids,
+                test_size=test_size,
+                random_state=seed,
+                stratify=stratify_labels,
+            )
+        except ValueError:
+            shuffled = patient_ids[:]
+            random.Random(seed).shuffle(shuffled)
+            right_ids = shuffled[:test_size]
+            left_ids = shuffled[test_size:]
+        return list(left_ids), list(right_ids)
+
+    def _build_patient_split(
+        self,
+        patient_ids: list[str],
+        patient_labels: dict[str, str],
+        val_split: float,
+        test_split: float,
+        saved_split: dict[str, Any] | None = None,
+        seed: int = 42,
+    ) -> dict[str, Any]:
+        unique_patient_ids = list(dict.fromkeys(patient_ids))
+        if len(unique_patient_ids) < 4:
+            raise ValueError(f"At least 4 patients are required (current: {len(unique_patient_ids)}).")
+
+        if saved_split:
+            train_ids = [
+                patient_id
+                for patient_id in saved_split.get("train_patient_ids", [])
+                if patient_id in unique_patient_ids
+            ]
+            val_ids = [
+                patient_id
+                for patient_id in saved_split.get("val_patient_ids", [])
+                if patient_id in unique_patient_ids
+            ]
+            test_ids = [
+                patient_id
+                for patient_id in saved_split.get("test_patient_ids", [])
+                if patient_id in unique_patient_ids
+            ]
+            assigned = set(train_ids + val_ids + test_ids)
+            new_ids = [patient_id for patient_id in unique_patient_ids if patient_id not in assigned]
+            train_ids.extend(new_ids)
+            if train_ids and val_ids and test_ids:
+                return {
+                    **saved_split,
+                    "train_patient_ids": train_ids,
+                    "val_patient_ids": val_ids,
+                    "test_patient_ids": test_ids,
+                    "n_train_patients": len(train_ids),
+                    "n_val_patients": len(val_ids),
+                    "n_test_patients": len(test_ids),
+                    "total_patients": len(unique_patient_ids),
+                    "updated_at": utc_now(),
+                }
+
+        test_count = max(1, int(round(len(unique_patient_ids) * test_split)))
+        test_count = min(test_count, len(unique_patient_ids) - 2)
+        train_val_ids, test_ids = self._split_ids_with_fallback(unique_patient_ids, patient_labels, test_count, seed)
+
+        val_count = max(1, int(round(len(unique_patient_ids) * val_split)))
+        val_count = min(val_count, len(train_val_ids) - 1)
+        train_ids, val_ids = self._split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + 1)
+
+        return {
+            "split_id": make_id("split"),
+            "strategy": "patient_level_fixed_train_val_test",
+            "split_seed": seed,
+            "val_split": float(val_split),
+            "test_split": float(test_split),
+            "train_patient_ids": train_ids,
+            "val_patient_ids": val_ids,
+            "test_patient_ids": test_ids,
+            "n_train_patients": len(train_ids),
+            "n_val_patients": len(val_ids),
+            "n_test_patients": len(test_ids),
+            "total_patients": len(unique_patient_ids),
+            "created_at": utc_now(),
+        }
+
+    def _evaluate_loader(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+    ) -> dict[str, Any]:
+        require_torch()
+        model.eval()
+        true_labels: list[int] = []
+        predicted_labels: list[int] = []
+        positive_probabilities: list[float] = []
+        with torch.no_grad():
+            for batch_inputs, batch_labels in loader:
+                batch_inputs = batch_inputs.to(device)
+                batch_labels = batch_labels.to(device)
+                logits = model(batch_inputs)
+                probabilities = torch.softmax(logits, dim=1)
+                predictions = torch.argmax(probabilities, dim=1)
+                true_labels.extend(int(value) for value in batch_labels.tolist())
+                predicted_labels.extend(int(value) for value in predictions.tolist())
+                positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
+        metrics = self.classification_metrics(true_labels, predicted_labels, positive_probabilities)
+        metrics["n_samples"] = len(true_labels)
+        return metrics
+
+    def _build_cross_validation_splits(
+        self,
+        patient_ids: list[str],
+        patient_labels: dict[str, str],
+        num_folds: int,
+        val_split: float,
+        seed: int = 42,
+    ) -> list[dict[str, Any]]:
+        unique_patient_ids = list(dict.fromkeys(patient_ids))
+        if len(unique_patient_ids) < num_folds:
+            raise ValueError(f"At least {num_folds} patients are required for {num_folds}-fold cross-validation.")
+
+        label_list = [patient_labels[patient_id] for patient_id in unique_patient_ids]
+        label_counts = pd.Series(label_list).value_counts().to_dict()
+        use_stratified = len(set(label_list)) > 1 and min(label_counts.values()) >= num_folds
+
+        if use_stratified:
+            splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+            split_iter = splitter.split(unique_patient_ids, label_list)
+        else:
+            shuffled_ids = unique_patient_ids[:]
+            random.Random(seed).shuffle(shuffled_ids)
+            fold_buckets = [[] for _ in range(num_folds)]
+            for index, patient_id in enumerate(shuffled_ids):
+                fold_buckets[index % num_folds].append(patient_id)
+            split_iter = []
+            for fold_index in range(num_folds):
+                test_ids = fold_buckets[fold_index]
+                train_ids = [patient_id for idx, bucket in enumerate(fold_buckets) if idx != fold_index for patient_id in bucket]
+                split_iter.append((train_ids, test_ids))
+
+        folds: list[dict[str, Any]] = []
+        for fold_index, split in enumerate(split_iter, start=1):
+            if use_stratified:
+                train_val_idx, test_idx = split
+                train_val_ids = [unique_patient_ids[index] for index in train_val_idx.tolist()]
+                test_ids = [unique_patient_ids[index] for index in test_idx.tolist()]
+            else:
+                train_val_ids, test_ids = split
+            if len(train_val_ids) < 2 or not test_ids:
+                raise ValueError("Cross-validation fold construction failed. Not enough patients in a fold.")
+            val_count = max(1, int(round(len(train_val_ids) * val_split)))
+            val_count = min(val_count, len(train_val_ids) - 1)
+            train_ids, val_ids = self._split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + fold_index)
+            folds.append(
+                {
+                    "split_id": make_id("cvsplit"),
+                    "strategy": "patient_level_cross_validation",
+                    "fold_index": fold_index,
+                    "num_folds": num_folds,
+                    "split_seed": seed,
+                    "val_split": float(val_split),
+                    "test_split": len(test_ids) / len(unique_patient_ids),
+                    "train_patient_ids": train_ids,
+                    "val_patient_ids": val_ids,
+                    "test_patient_ids": test_ids,
+                    "n_train_patients": len(train_ids),
+                    "n_val_patients": len(val_ids),
+                    "n_test_patients": len(test_ids),
+                    "total_patients": len(unique_patient_ids),
+                    "created_at": utc_now(),
+                }
+            )
+        return folds
+
     def initial_train(
         self,
         records: list[dict[str, Any]],
@@ -723,7 +908,9 @@ class ModelManager:
         learning_rate: float = 1e-4,
         batch_size: int = 16,
         val_split: float = 0.2,
+        test_split: float = 0.2,
         use_pretrained: bool = True,
+        saved_split: dict[str, Any] | None = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
         """처음부터 DenseNet 학습 (ImageNet pretrained 권장).
@@ -756,31 +943,29 @@ class ModelManager:
         if len(patient_ids) < 4:
             raise ValueError(f"최소 4명의 환자가 필요합니다 (현재 {len(patient_ids)}명).")
 
-        patient_labels = [patient_to_label[patient_id] for patient_id in patient_ids]
-        stratify_labels = patient_labels if len(set(patient_labels)) > 1 else None
-        test_size = max(1, int(round(len(patient_ids) * val_split)))
-        if test_size >= len(patient_ids):
-            test_size = len(patient_ids) - 1
-        try:
-            train_patient_ids, val_patient_ids = train_test_split(
-                patient_ids,
-                test_size=test_size,
-                random_state=42,
-                stratify=stratify_labels,
-            )
-        except ValueError:
-            random.shuffle(patient_ids)
-            val_patient_ids = patient_ids[:test_size]
-            train_patient_ids = patient_ids[test_size:]
+        patient_split = self._build_patient_split(
+            patient_ids=patient_ids,
+            patient_labels=patient_to_label,
+            val_split=val_split,
+            test_split=test_split,
+            saved_split=saved_split,
+            seed=42,
+        )
+        train_patient_ids = patient_split["train_patient_ids"]
+        val_patient_ids = patient_split["val_patient_ids"]
+        test_patient_ids = patient_split["test_patient_ids"]
 
         train_records = [record for patient_id in train_patient_ids for record in patient_to_records[patient_id]]
         val_records = [record for patient_id in val_patient_ids for record in patient_to_records[patient_id]]
+        test_records = [record for patient_id in test_patient_ids for record in patient_to_records[patient_id]]
 
         train_ds = ManifestImageDataset(train_records, augment=True)
         val_ds = ManifestImageDataset(val_records, augment=False)
-        bs = min(batch_size, len(train_records))
+        test_ds = ManifestImageDataset(test_records, augment=False)
+        bs = max(1, min(batch_size, len(train_records)))
         train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False)
+        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_records))), shuffle=False)
 
         # 모델 초기화
         if use_pretrained and architecture in DENSENET_VARIANTS:
@@ -843,6 +1028,9 @@ class ModelManager:
 
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
+        model.load_state_dict(best_state)
+        val_metrics = self._evaluate_loader(model, val_loader, device)
+        test_metrics = self._evaluate_loader(model, test_loader, device)
         torch.save({"architecture": architecture, "state_dict": best_state}, output)
 
         return {
@@ -852,11 +1040,104 @@ class ModelManager:
             "epochs": epochs,
             "n_train": len(train_records),
             "n_val": len(val_records),
+            "n_test": len(test_records),
             "n_train_patients": len(train_patient_ids),
             "n_val_patients": len(val_patient_ids),
+            "n_test_patients": len(test_patient_ids),
             "best_val_acc": round(best_val_acc, 4),
             "use_pretrained": use_pretrained,
             "history": history,
+            "patient_split": patient_split,
+            "val_metrics": val_metrics,
+            "test_metrics": test_metrics,
+        }
+
+    def cross_validate(
+        self,
+        records: list[dict[str, Any]],
+        architecture: str,
+        output_dir: str | Path,
+        device: str,
+        num_folds: int = 5,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        val_split: float = 0.2,
+        use_pretrained: bool = True,
+    ) -> dict[str, Any]:
+        patient_labels = {
+            str(record["patient_id"]): str(record["culture_category"])
+            for record in records
+        }
+        patient_ids = list(dict.fromkeys(str(record["patient_id"]) for record in records))
+        folds = self._build_cross_validation_splits(
+            patient_ids=patient_ids,
+            patient_labels=patient_labels,
+            num_folds=num_folds,
+            val_split=val_split,
+            seed=42,
+        )
+
+        output_root = Path(output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        fold_results: list[dict[str, Any]] = []
+
+        for fold in folds:
+            fold_output_path = output_root / f"{architecture}_fold{fold['fold_index']}.pth"
+            train_result = self.initial_train(
+                records=records,
+                architecture=architecture,
+                output_model_path=fold_output_path,
+                device=device,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                val_split=val_split,
+                test_split=fold["test_split"],
+                use_pretrained=use_pretrained,
+                saved_split=fold,
+            )
+            fold_results.append(
+                {
+                    "fold_index": fold["fold_index"],
+                    "output_model_path": train_result["output_model_path"],
+                    "n_train_patients": train_result["n_train_patients"],
+                    "n_val_patients": train_result["n_val_patients"],
+                    "n_test_patients": train_result["n_test_patients"],
+                    "n_train": train_result["n_train"],
+                    "n_val": train_result["n_val"],
+                    "n_test": train_result["n_test"],
+                    "best_val_acc": train_result["best_val_acc"],
+                    "val_metrics": train_result["val_metrics"],
+                    "test_metrics": train_result["test_metrics"],
+                    "patient_split": train_result["patient_split"],
+                }
+            )
+
+        aggregate_metrics: dict[str, dict[str, float | None]] = {}
+        for metric_name in ["AUROC", "accuracy", "sensitivity", "specificity", "F1"]:
+            metric_values = [
+                float(fold["test_metrics"][metric_name])
+                for fold in fold_results
+                if fold["test_metrics"].get(metric_name) is not None
+            ]
+            aggregate_metrics[metric_name] = {
+                "mean": round(float(np.mean(metric_values)), 4) if metric_values else None,
+                "std": round(float(np.std(metric_values)), 4) if metric_values else None,
+            }
+
+        return {
+            "cross_validation_id": make_id("cv"),
+            "architecture": architecture,
+            "num_folds": num_folds,
+            "epochs": epochs,
+            "val_split": float(val_split),
+            "use_pretrained": use_pretrained,
+            "fold_results": fold_results,
+            "aggregate_metrics": aggregate_metrics,
+            "total_patients": len(patient_ids),
+            "total_records": len(records),
+            "created_at": utc_now(),
         }
 
     def save_weight_delta(
@@ -936,7 +1217,7 @@ class ModelManager:
         true_labels: list[int],
         predicted_labels: list[int],
         positive_probabilities: list[float],
-    ) -> dict[str, float | None]:
+    ) -> dict[str, Any]:
         accuracy = float(accuracy_score(true_labels, predicted_labels)) if true_labels else 0.0
         f1 = float(f1_score(true_labels, predicted_labels, zero_division=0)) if true_labels else 0.0
 
@@ -947,10 +1228,21 @@ class ModelManager:
 
         sensitivity = true_positive / (true_positive + false_negative) if (true_positive + false_negative) else 0.0
         specificity = true_negative / (true_negative + false_positive) if (true_negative + false_positive) else 0.0
+        confusion = confusion_matrix(true_labels, predicted_labels, labels=[0, 1]).tolist() if true_labels else [[0, 0], [0, 0]]
 
         auroc = None
+        roc = None
         if len(set(true_labels)) > 1:
             auroc = float(roc_auc_score(true_labels, positive_probabilities))
+            fpr, tpr, thresholds = roc_curve(true_labels, positive_probabilities)
+            roc = {
+                "fpr": [float(value) for value in fpr.tolist()],
+                "tpr": [float(value) for value in tpr.tolist()],
+                "thresholds": [
+                    None if not math.isfinite(float(value)) else float(value)
+                    for value in thresholds.tolist()
+                ],
+            }
 
         return {
             "AUROC": auroc,
@@ -958,4 +1250,9 @@ class ModelManager:
             "sensitivity": float(sensitivity),
             "specificity": float(specificity),
             "F1": f1,
+            "confusion_matrix": {
+                "labels": ["bacterial", "fungal"],
+                "matrix": confusion,
+            },
+            "roc_curve": roc,
         }

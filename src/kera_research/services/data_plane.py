@@ -4,15 +4,26 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import and_, select, update
 
 from kera_research.config import SITE_ROOT_DIR, ensure_base_directories
-from kera_research.domain import MANIFEST_COLUMNS, make_id, utc_now
-from kera_research.storage import ensure_dir, read_csv, read_json, write_csv, write_json
+from kera_research.db import (
+    ENGINE,
+    images as db_images,
+    init_db,
+    patients as db_patients,
+    site_jobs,
+    site_patient_splits,
+    visits as db_visits,
+)
+from kera_research.domain import MANIFEST_COLUMNS, VISIT_STATUS_OPTIONS, make_id, utc_now
+from kera_research.storage import ensure_dir, write_csv
 
 
 class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
+        init_db()
         self.site_id = site_id
         self.site_dir = SITE_ROOT_DIR / site_id
         self.raw_dir = self.site_dir / "data" / "raw"
@@ -24,12 +35,6 @@ class SiteStore:
         self.roi_crop_dir = self.artifact_dir / "roi_crops"
         self.validation_dir = self.site_dir / "validation"
         self.update_dir = self.site_dir / "model_updates"
-        self.job_path = self.site_dir / "background_jobs.json"
-
-        self.patients_path = self.site_dir / "patients.json"
-        self.visits_path = self.site_dir / "visits.json"
-        self.images_path = self.site_dir / "images.json"
-
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
@@ -43,41 +48,87 @@ class SiteStore:
             self.update_dir,
         ):
             ensure_dir(path)
-        for path in (self.patients_path, self.visits_path, self.images_path, self.job_path):
-            if not path.exists():
-                write_json(path, [])
 
     def list_patients(self) -> list[dict[str, Any]]:
-        return read_json(self.patients_path, [])
+        query = select(db_patients).where(db_patients.c.site_id == self.site_id).order_by(db_patients.c.created_at)
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [
+            {
+                "patient_id": row["patient_id"],
+                "sex": row["sex"],
+                "age": row["age"],
+                "chart_alias": row["chart_alias"],
+                "local_case_code": row["local_case_code"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def get_patient(self, patient_id: str) -> dict[str, Any] | None:
-        return next((item for item in self.list_patients() if item["patient_id"] == patient_id), None)
+        query = select(db_patients).where(
+            and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == patient_id)
+        )
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        if row is None:
+            return None
+        return {
+            "patient_id": row["patient_id"],
+            "sex": row["sex"],
+            "age": row["age"],
+            "chart_alias": row["chart_alias"],
+            "local_case_code": row["local_case_code"],
+            "created_at": row["created_at"],
+        }
 
-    def create_patient(self, patient_id: str, sex: str, age: int) -> dict[str, Any]:
+    def create_patient(
+        self,
+        patient_id: str,
+        sex: str,
+        age: int,
+        chart_alias: str = "",
+        local_case_code: str = "",
+    ) -> dict[str, Any]:
         if not patient_id.strip():
             raise ValueError("Patient ID is required.")
-        patients = self.list_patients()
         normalized_patient_id = patient_id.strip()
-        if any(item["patient_id"] == normalized_patient_id for item in patients):
+        if self.get_patient(normalized_patient_id):
             raise ValueError(f"Patient {normalized_patient_id} already exists.")
         record = {
+            "site_id": self.site_id,
             "patient_id": normalized_patient_id,
             "sex": sex,
             "age": int(age),
+            "chart_alias": chart_alias.strip(),
+            "local_case_code": local_case_code.strip(),
             "created_at": utc_now(),
         }
-        patients.append(record)
-        write_json(self.patients_path, patients)
-        return record
+        with ENGINE.begin() as conn:
+            conn.execute(db_patients.insert().values(**record))
+        return {key: record[key] for key in ["patient_id", "sex", "age", "chart_alias", "local_case_code", "created_at"]}
 
     def list_visits(self) -> list[dict[str, Any]]:
-        return read_json(self.visits_path, [])
+        query = (
+            select(db_visits)
+            .where(db_visits.c.site_id == self.site_id)
+            .order_by(db_visits.c.patient_id, db_visits.c.visit_date)
+        )
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
-        for visit in self.list_visits():
-            if visit["patient_id"] == patient_id and visit["visit_date"] == visit_date:
-                return visit
-        return None
+        query = select(db_visits).where(
+            and_(
+                db_visits.c.site_id == self.site_id,
+                db_visits.c.patient_id == patient_id,
+                db_visits.c.visit_date == visit_date,
+            )
+        )
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        return dict(row) if row else None
 
     def create_visit(
         self,
@@ -90,6 +141,9 @@ class SiteStore:
         predisposing_factor: list[str],
         other_history: str,
         active_stage: bool = True,
+        visit_status: str = "active",
+        smear_result: str = "",
+        polymicrobial: bool = False,
     ) -> dict[str, Any]:
         if not self.get_patient(patient_id):
             raise ValueError(f"Patient {patient_id} does not exist.")
@@ -97,8 +151,12 @@ class SiteStore:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_visit(patient_id, visit_date):
             raise ValueError(f"Visit {patient_id} / {visit_date} already exists.")
+        normalized_status = (visit_status or "").strip().lower()
+        if normalized_status not in VISIT_STATUS_OPTIONS:
+            normalized_status = "active" if active_stage else "scar"
         record = {
             "visit_id": make_id("visit"),
+            "site_id": self.site_id,
             "patient_id": patient_id,
             "visit_date": visit_date,
             "culture_confirmed": bool(culture_confirmed),
@@ -107,16 +165,25 @@ class SiteStore:
             "contact_lens_use": contact_lens_use,
             "predisposing_factor": predisposing_factor,
             "other_history": other_history,
-            "active_stage": bool(active_stage),
+            "visit_status": normalized_status,
+            "active_stage": normalized_status == "active",
+            "smear_result": smear_result.strip(),
+            "polymicrobial": bool(polymicrobial),
             "created_at": utc_now(),
         }
-        visits = self.list_visits()
-        visits.append(record)
-        write_json(self.visits_path, visits)
+        with ENGINE.begin() as conn:
+            conn.execute(db_visits.insert().values(**record))
         return record
 
     def list_images(self) -> list[dict[str, Any]]:
-        return read_json(self.images_path, [])
+        query = (
+            select(db_images)
+            .where(db_images.c.site_id == self.site_id)
+            .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
+        )
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def add_image(
         self,
@@ -138,6 +205,7 @@ class SiteStore:
         image_record = {
             "image_id": image_id,
             "visit_id": visit["visit_id"],
+            "site_id": self.site_id,
             "patient_id": patient_id,
             "visit_date": visit_date,
             "view": view,
@@ -145,55 +213,118 @@ class SiteStore:
             "is_representative": bool(is_representative),
             "uploaded_at": utc_now(),
         }
-        images = self.list_images()
-        images.append(image_record)
-        write_json(self.images_path, images)
+        with ENGINE.begin() as conn:
+            conn.execute(db_images.insert().values(**image_record))
         return image_record
 
     def update_representative_flags(self, updates: dict[str, bool]) -> None:
-        images = self.list_images()
-        for image in images:
-            if image["image_id"] in updates:
-                image["is_representative"] = bool(updates[image["image_id"]])
-        write_json(self.images_path, images)
+        with ENGINE.begin() as conn:
+            for image_id, is_representative in updates.items():
+                conn.execute(
+                    update(db_images)
+                    .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
+                    .values(is_representative=bool(is_representative))
+                )
 
     def dataset_records(self) -> list[dict[str, Any]]:
-        patients = {item["patient_id"]: item for item in self.list_patients()}
-        visits = {(item["patient_id"], item["visit_date"]): item for item in self.list_visits()}
+        patient_table = db_patients.alias("p")
+        visit_table = db_visits.alias("v")
+        image_table = db_images.alias("i")
+        query = (
+            select(
+                patient_table.c.patient_id,
+                patient_table.c.chart_alias,
+                patient_table.c.local_case_code,
+                patient_table.c.sex,
+                patient_table.c.age,
+                visit_table.c.visit_date,
+                visit_table.c.culture_confirmed,
+                visit_table.c.culture_category,
+                visit_table.c.culture_species,
+                visit_table.c.contact_lens_use,
+                visit_table.c.predisposing_factor,
+                visit_table.c.visit_status,
+                visit_table.c.active_stage,
+                visit_table.c.other_history,
+                visit_table.c.smear_result,
+                visit_table.c.polymicrobial,
+                image_table.c.view,
+                image_table.c.image_path,
+                image_table.c.is_representative,
+            )
+            .select_from(
+                patient_table.join(
+                    visit_table,
+                    and_(
+                        patient_table.c.site_id == visit_table.c.site_id,
+                        patient_table.c.patient_id == visit_table.c.patient_id,
+                    ),
+                ).join(
+                    image_table,
+                    and_(
+                        visit_table.c.site_id == image_table.c.site_id,
+                        visit_table.c.visit_id == image_table.c.visit_id,
+                    ),
+                )
+            )
+            .where(patient_table.c.site_id == self.site_id)
+            .order_by(patient_table.c.patient_id, visit_table.c.visit_date, image_table.c.uploaded_at)
+        )
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
         records: list[dict[str, Any]] = []
-
-        for image in self.list_images():
-            patient = patients.get(image["patient_id"])
-            visit = visits.get((image["patient_id"], image["visit_date"]))
-            if not patient or not visit:
-                continue
+        for row in rows:
             records.append(
                 {
-                    "patient_id": patient["patient_id"],
-                    "sex": patient["sex"],
-                    "age": patient["age"],
-                    "visit_date": visit["visit_date"],
-                    "culture_confirmed": visit["culture_confirmed"],
-                    "culture_category": visit["culture_category"],
-                    "culture_species": visit["culture_species"],
-                    "contact_lens_use": visit["contact_lens_use"],
-                    "predisposing_factor": "|".join(visit.get("predisposing_factor", [])),
-                    "active_stage": visit.get("active_stage", True),
-                    "view": image["view"],
-                    "image_path": image["image_path"],
-                    "is_representative": image["is_representative"],
+                    "site_id": self.site_id,
+                    "patient_id": row["patient_id"],
+                    "chart_alias": row["chart_alias"],
+                    "local_case_code": row["local_case_code"],
+                    "sex": row["sex"],
+                    "age": row["age"],
+                    "visit_date": row["visit_date"],
+                    "culture_confirmed": row["culture_confirmed"],
+                    "culture_category": row["culture_category"],
+                    "culture_species": row["culture_species"],
+                    "contact_lens_use": row["contact_lens_use"],
+                    "predisposing_factor": "|".join(row["predisposing_factor"] or []),
+                    "visit_status": row["visit_status"],
+                    "active_stage": row["active_stage"],
+                    "other_history": row["other_history"] or "",
+                    "smear_result": row["smear_result"] or "",
+                    "polymicrobial": row["polymicrobial"],
+                    "view": row["view"],
+                    "image_path": row["image_path"],
+                    "is_representative": row["is_representative"],
                 }
             )
         return records
 
     def list_visits_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
-        return [v for v in self.list_visits() if v["patient_id"] == patient_id]
+        query = (
+            select(db_visits)
+            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
+            .order_by(db_visits.c.visit_date)
+        )
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def list_images_for_visit(self, patient_id: str, visit_date: str) -> list[dict[str, Any]]:
-        return [
-            img for img in self.list_images()
-            if img["patient_id"] == patient_id and img["visit_date"] == visit_date
-        ]
+        query = (
+            select(db_images)
+            .where(
+                and_(
+                    db_images.c.site_id == self.site_id,
+                    db_images.c.patient_id == patient_id,
+                    db_images.c.visit_date == visit_date,
+                )
+            )
+            .order_by(db_images.c.uploaded_at)
+        )
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
 
     def generate_manifest(self) -> pd.DataFrame:
         data_frame = pd.DataFrame(self.dataset_records(), columns=MANIFEST_COLUMNS)
@@ -201,39 +332,92 @@ class SiteStore:
         return data_frame
 
     def load_manifest(self) -> pd.DataFrame:
-        if not self.manifest_path.exists():
-            return self.generate_manifest()
-        return read_csv(self.manifest_path)
+        return self.generate_manifest()
+
+    def load_patient_split(self) -> dict[str, Any]:
+        query = select(site_patient_splits.c.split_json).where(site_patient_splits.c.site_id == self.site_id)
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).first()
+        return dict(row[0]) if row and row[0] else {}
+
+    def save_patient_split(self, split_record: dict[str, Any]) -> dict[str, Any]:
+        record = {
+            "site_id": self.site_id,
+            "split_json": split_record,
+            "updated_at": utc_now(),
+        }
+        with ENGINE.begin() as conn:
+            existing = conn.execute(select(site_patient_splits.c.site_id).where(site_patient_splits.c.site_id == self.site_id)).first()
+            if existing:
+                conn.execute(
+                    update(site_patient_splits)
+                    .where(site_patient_splits.c.site_id == self.site_id)
+                    .values(**record)
+                )
+            else:
+                conn.execute(site_patient_splits.insert().values(**record))
+        return split_record
+
+    def clear_patient_split(self) -> None:
+        self.save_patient_split({})
 
     def enqueue_job(self, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        jobs = read_json(self.job_path, [])
         record = {
             "job_id": make_id("job"),
+            "site_id": self.site_id,
             "job_type": job_type,
             "status": "queued",
-            "payload": payload,
+            "payload_json": payload,
+            "result_json": None,
             "created_at": utc_now(),
+            "updated_at": None,
         }
-        jobs.append(record)
-        write_json(self.job_path, jobs)
-        return record
+        with ENGINE.begin() as conn:
+            conn.execute(site_jobs.insert().values(**record))
+        return {
+            "job_id": record["job_id"],
+            "job_type": record["job_type"],
+            "status": record["status"],
+            "payload": payload,
+            "created_at": record["created_at"],
+        }
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
-        jobs = read_json(self.job_path, [])
+        query = select(site_jobs).where(site_jobs.c.site_id == self.site_id).order_by(site_jobs.c.created_at.desc())
         if status:
-            return [job for job in jobs if job["status"] == status]
-        return jobs
+            query = query.where(site_jobs.c.status == status)
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [
+            {
+                "job_id": row["job_id"],
+                "job_type": row["job_type"],
+                "status": row["status"],
+                "payload": row["payload_json"],
+                "result": row["result_json"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
 
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
-        jobs = read_json(self.job_path, [])
-        for job in jobs:
-            if job["job_id"] == job_id:
-                job["status"] = status
-                job["updated_at"] = utc_now()
-                if result is not None:
-                    job["result"] = result
-                break
-        write_json(self.job_path, jobs)
+        with ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+            ).mappings().first()
+            if existing is None:
+                return
+            result_json = result if result is not None else existing["result_json"]
+            conn.execute(
+                update(site_jobs)
+                .where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+                .values(
+                    status=status,
+                    result_json=result_json,
+                    updated_at=utc_now(),
+                )
+            )
 
     def artifact_files(self, artifact_type: str) -> list[Path]:
         mapping = {
