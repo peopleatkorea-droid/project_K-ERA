@@ -16,7 +16,7 @@ from kera_research.domain import (
     SEX_OPTIONS,
     VIEW_OPTIONS,
 )
-from kera_research.i18n import SUPPORTED_LANGUAGES, t
+from kera_research.i18n import t
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
@@ -108,19 +108,21 @@ PHASE_META = {
 def run_app() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="K", layout="wide")
     init_session_state()
-    inject_custom_css()
+    inject_custom_css(st.session_state.get("theme", "light"))
 
     lang = st.session_state.get("lang", "ko")
     control_plane = ControlPlaneStore()
     workflow, workflow_error = bootstrap_workflow(control_plane)
 
-    render_sidebar(control_plane, lang)
+    render_sidebar_header(control_plane, lang)
     user = st.session_state.get("user")
     if not user:
+        render_sidebar_footer(lang, None)
         render_login_screen(lang)
         return
 
     context = resolve_context(control_plane)
+    render_sidebar_footer(lang, user)
     render_primary_navigation(lang)
     page_id = st.session_state.get("page_id", PAGES[0])
     site_store = SiteStore(context["site"]["site_id"]) if context["site"] else None
@@ -135,7 +137,7 @@ def run_app() -> None:
     )
     render_page_intro(page_id, lang)
     if workflow_error:
-        st.error(workflow_error)
+        st.error(format_workflow_error(workflow_error, lang))
 
     if site_store is not None:
         render_workflow_status(control_plane, context, site_store, lang)
@@ -178,38 +180,187 @@ def init_session_state() -> None:
     st.session_state.setdefault("user", None)
     st.session_state.setdefault("page_id", PAGES[0])
     st.session_state.setdefault("lang", "ko")
+    st.session_state.setdefault("theme", "light")
 
 
-def inject_custom_css() -> None:
-    st.markdown(
+def inject_custom_css(theme: str) -> None:
+    if theme == "dark":
+        theme_vars = """
+        :root {
+            --kera-ink: #e8eff7;
+            --kera-muted: #bfd0df;
+            --kera-accent: #59d0c9;
+            --kera-accent-soft: rgba(89, 208, 201, 0.12);
+            --kera-warm: #1f2a35;
+            --kera-card: rgba(19, 29, 40, 0.92);
+            --kera-border: rgba(232, 239, 247, 0.10);
+            --kera-bg-top: #121a23;
+            --kera-bg-bottom: #0d131a;
+            --kera-shadow: rgba(0, 0, 0, 0.28);
+            --kera-input: rgba(18, 26, 35, 0.92);
+            --kera-sidebar: rgba(11, 18, 26, 0.92);
+            --kera-footer: rgba(14, 22, 32, 0.96);
+            --kera-danger-bg: rgba(96, 28, 28, 0.18);
+            --kera-danger-ink: #ffd3d3;
+        }
         """
-        <style>
+    else:
+        theme_vars = """
         :root {
             --kera-ink: #17324d;
-            --kera-muted: #61788f;
+            --kera-muted: #4d6277;
             --kera-accent: #0d8f8a;
             --kera-accent-soft: #e8f6f5;
             --kera-warm: #f6f1e8;
-            --kera-card: rgba(255, 255, 255, 0.86);
+            --kera-card: rgba(255, 255, 255, 0.90);
             --kera-border: rgba(23, 50, 77, 0.10);
+            --kera-bg-top: #f4f7fb;
+            --kera-bg-bottom: #eef4f2;
+            --kera-shadow: rgba(23, 50, 77, 0.06);
+            --kera-input: rgba(255, 255, 255, 0.95);
+            --kera-sidebar: rgba(245, 249, 252, 0.94);
+            --kera-footer: rgba(255, 255, 255, 0.96);
+            --kera-danger-bg: #f7dede;
+            --kera-danger-ink: #8a2f2f;
         }
+        """
+
+    css = (
+        """
+        <style>
+        """
+        + theme_vars
+        + """
 
         .stApp {
             background:
                 radial-gradient(circle at top right, rgba(13, 143, 138, 0.10), transparent 26%),
                 radial-gradient(circle at top left, rgba(214, 180, 104, 0.12), transparent 24%),
-                linear-gradient(180deg, #f4f7fb 0%, #eef4f2 100%);
+                linear-gradient(180deg, var(--kera-bg-top) 0%, var(--kera-bg-bottom) 100%);
             color: var(--kera-ink);
             font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
         }
 
+        [data-testid="stAppViewContainer"] {
+            color: var(--kera-ink);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, var(--kera-sidebar), rgba(255,255,255,0.02));
+            border-right: 1px solid var(--kera-border);
+        }
+
+        [data-testid="stSidebar"] * {
+            color: var(--kera-ink) !important;
+        }
+
+        .stApp h1,
+        .stApp h2,
+        .stApp h3,
+        .stApp h4,
+        .stApp h5,
+        .stApp h6,
+        .stApp p,
+        .stApp label,
+        .stApp span,
+        .stApp div[data-testid="stMarkdownContainer"],
+        .stApp div[data-testid="stMarkdownContainer"] p,
+        .stApp div[data-testid="stMarkdownContainer"] li,
+        .stApp div[data-testid="stWidgetLabel"],
+        .stApp [data-testid="stAlertContainer"],
+        .stApp [data-testid="stRadio"] p {
+            color: var(--kera-ink) !important;
+        }
+
+        .stApp [data-testid="stCaptionContainer"] {
+            color: var(--kera-muted) !important;
+        }
+
+        .stApp [data-testid="stRadio"] > div[role="radiogroup"] {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.65rem;
+            margin-top: 0.25rem;
+        }
+
+        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label {
+            background: var(--kera-card);
+            border: 1px solid var(--kera-border);
+            border-radius: 999px;
+            padding: 0.45rem 0.85rem;
+            box-shadow: 0 8px 22px var(--kera-shadow);
+        }
+
+        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label * {
+            color: var(--kera-ink) !important;
+        }
+
+        .stApp [data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+            background: var(--kera-accent-soft);
+            border-color: rgba(13, 143, 138, 0.28);
+        }
+
+        [data-testid="stMetric"] {
+            background: var(--kera-card);
+            border: 1px solid var(--kera-border);
+            border-radius: 18px;
+            padding: 0.8rem 0.9rem;
+            box-shadow: 0 10px 24px var(--kera-shadow);
+        }
+
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricValue"] {
+            color: var(--kera-ink);
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.35rem;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            background: var(--kera-card);
+            border-radius: 999px;
+            border: 1px solid var(--kera-border);
+            padding: 0.45rem 0.9rem;
+        }
+
+        .stButton > button {
+            border-radius: 999px;
+            border: 1px solid var(--kera-border);
+            background: linear-gradient(135deg, var(--kera-accent), #2fa9a3);
+            color: white;
+            font-weight: 700;
+        }
+
+        .stToggle label[data-testid="stWidgetLabel"] p,
+        .stCheckbox label[data-testid="stWidgetLabel"] p {
+            color: var(--kera-ink) !important;
+            font-weight: 600;
+        }
+
+        .stButton > button:hover {
+            border: 1px solid var(--kera-border);
+            filter: brightness(1.04);
+            color: white;
+        }
+
+        .stSelectbox > div > div,
+        .stTextInput > div > div > input,
+        .stTextArea textarea,
+        .stDateInput > div > div input,
+        .stNumberInput input,
+        .stMultiSelect > div > div {
+            background: var(--kera-input);
+            color: var(--kera-ink);
+        }
+
         .kera-hero {
-            background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(232,246,245,0.92));
+            background: linear-gradient(135deg, var(--kera-card), var(--kera-accent-soft));
             border: 1px solid var(--kera-border);
             border-radius: 22px;
             padding: 1.1rem 1.25rem 1rem 1.25rem;
             margin: 0.35rem 0 1rem 0;
-            box-shadow: 0 18px 40px rgba(23, 50, 77, 0.06);
+            box-shadow: 0 18px 40px var(--kera-shadow);
         }
 
         .kera-eyebrow {
@@ -239,7 +390,7 @@ def inject_custom_css() -> None:
             border: 1px solid var(--kera-border);
             border-radius: 18px;
             padding: 0.95rem 1rem;
-            box-shadow: 0 10px 28px rgba(23, 50, 77, 0.05);
+            box-shadow: 0 10px 28px var(--kera-shadow);
         }
 
         .kera-card h4 {
@@ -267,7 +418,7 @@ def inject_custom_css() -> None:
             border: 1px solid var(--kera-border);
             border-radius: 18px;
             padding: 0.9rem 1rem;
-            box-shadow: 0 10px 24px rgba(23, 50, 77, 0.05);
+            box-shadow: 0 10px 24px var(--kera-shadow);
         }
 
         .kera-stat-label {
@@ -331,6 +482,51 @@ def inject_custom_css() -> None:
             margin: 0.4rem 0 1rem 0;
         }
 
+        .kera-sidebar-footer {
+            margin-top: 1.25rem;
+            padding: 1rem 0 0.25rem 0;
+            border-top: 1px solid var(--kera-border);
+        }
+
+        .kera-sidebar-user {
+            background: var(--kera-footer);
+            border: 1px solid var(--kera-border);
+            border-radius: 16px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.8rem;
+            box-shadow: 0 10px 24px var(--kera-shadow);
+        }
+
+        .kera-sidebar-user h4 {
+            margin: 0 0 0.2rem 0;
+            color: var(--kera-ink);
+            font-size: 0.98rem;
+        }
+
+        .kera-sidebar-user p {
+            margin: 0;
+            color: var(--kera-muted);
+            line-height: 1.45;
+            font-size: 0.88rem;
+        }
+
+        .stAlert {
+            color: var(--kera-ink);
+        }
+
+        .stAlert[data-baseweb="notification"] {
+            border-radius: 16px;
+        }
+
+        div[data-testid="stAlertContainer"] div[role="alert"] {
+            color: var(--kera-ink);
+        }
+
+        div[data-testid="stAlertContainer"] div[role="alert"][kind="error"] {
+            background: var(--kera-danger-bg);
+            color: var(--kera-danger-ink);
+        }
+
         @media (max-width: 640px) {
             .kera-hero {
                 border-radius: 18px;
@@ -342,9 +538,9 @@ def inject_custom_css() -> None:
             }
         }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
+    st.markdown(css, unsafe_allow_html=True)
 
 
 def bootstrap_workflow(control_plane: ControlPlaneStore) -> tuple[ResearchWorkflowService | None, str | None]:
@@ -352,6 +548,16 @@ def bootstrap_workflow(control_plane: ControlPlaneStore) -> tuple[ResearchWorkfl
         return ResearchWorkflowService(control_plane), None
     except Exception as exc:  # pragma: no cover - UI guard
         return None, f"Workflow services are unavailable: {exc}"
+
+
+def format_workflow_error(message: str, lang: str) -> str:
+    if "PyTorch is required" in message:
+        return t(
+            lang,
+            "모델 기능을 사용하려면 PyTorch가 필요합니다. 먼저 `pip install -r requirements.txt`로 의존성을 설치한 뒤 앱을 다시 실행하세요.",
+            "PyTorch is required for model features. Install dependencies with `pip install -r requirements.txt` and restart the app.",
+        )
+    return message
 
 
 def page_label(page_id: str, lang: str) -> str:
@@ -401,17 +607,18 @@ def render_page_intro(page_id: str, lang: str) -> None:
 
 
 def render_stat_grid(cards: list[dict[str, str]]) -> None:
-    html = "".join(
-        f"""
-        <div class="kera-stat-card">
-            <div class="kera-stat-label">{card['label']}</div>
-            <div class="kera-stat-value">{card['value']}</div>
-            <div class="kera-stat-note">{card.get('note', '')}</div>
-        </div>
-        """
-        for card in cards
-    )
-    st.markdown(f"<div class='kera-stat-grid'>{html}</div>", unsafe_allow_html=True)
+    if not cards:
+        return
+
+    columns_per_row = 4 if len(cards) > 4 else len(cards)
+    for start in range(0, len(cards), columns_per_row):
+        row_cards = cards[start:start + columns_per_row]
+        columns = st.columns(columns_per_row)
+        for column, card in zip(columns, row_cards):
+            with column:
+                st.metric(card["label"], card["value"])
+                if card.get("note"):
+                    st.caption(card["note"])
 
 
 def workflow_snapshot(
@@ -513,18 +720,8 @@ def render_workflow_status(
     st.markdown(f"<div class='kera-chip-row'>{chip_html}</div>", unsafe_allow_html=True)
 
 
-def render_sidebar(control_plane: ControlPlaneStore, lang: str) -> None:
+def render_sidebar_header(control_plane: ControlPlaneStore, lang: str) -> None:
     st.sidebar.title(t(lang, "탐색", "Navigation"))
-    selected_lang = st.sidebar.selectbox(
-        t(lang, "언어", "Language"),
-        list(SUPPORTED_LANGUAGES.keys()),
-        index=list(SUPPORTED_LANGUAGES.keys()).index(lang),
-        format_func=lambda value: SUPPORTED_LANGUAGES[value],
-    )
-    if selected_lang != lang:
-        st.session_state["lang"] = selected_lang
-        st.rerun()
-
     st.sidebar.caption(
         t(
             lang,
@@ -534,12 +731,7 @@ def render_sidebar(control_plane: ControlPlaneStore, lang: str) -> None:
     )
 
     user = st.session_state.get("user")
-    if user:
-        st.sidebar.success(f"{user['full_name']} ({user['role']})")
-        if st.sidebar.button(t(lang, "로그아웃", "Log out")):
-            st.session_state["user"] = None
-            st.rerun()
-    else:
+    if not user:
         with st.sidebar.form("login_form"):
             username = st.text_input(t(lang, "사용자 이름", "Username"))
             password = st.text_input(t(lang, "비밀번호", "Password"), type="password")
@@ -550,6 +742,49 @@ def render_sidebar(control_plane: ControlPlaneStore, lang: str) -> None:
                 st.session_state["user"] = user
                 st.rerun()
             st.sidebar.error(t(lang, "사용자 이름 또는 비밀번호가 올바르지 않습니다.", "Invalid username or password."))
+
+
+def render_sidebar_footer(lang: str, user: dict[str, Any] | None) -> None:
+    st.sidebar.divider()
+    if user:
+        role_map = {
+            "admin": t(lang, "관리자", "Administrator"),
+            "researcher": t(lang, "연구자", "Researcher"),
+        }
+        role_label = role_map.get(user["role"], user["role"].replace("_", " ").title())
+        st.sidebar.markdown(
+            f"""
+            <div class="kera-sidebar-user">
+                <h4>{user['full_name']}</h4>
+                <p>{t(lang, "로그인 역할", "Signed-in role")}: {role_label}<br/>{user['username']}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    english_enabled = st.sidebar.toggle(
+        t(lang, "English 전환", "Switch to Korean"),
+        value=lang == "en",
+        help=t(lang, "끄면 한국어, 켜면 영어 UI로 바뀝니다.", "Off uses Korean, on uses English."),
+    )
+    next_lang = "en" if english_enabled else "ko"
+    if next_lang != lang:
+        st.session_state["lang"] = next_lang
+        st.rerun()
+
+    dark_mode_enabled = st.sidebar.toggle(
+        t(lang, "다크 모드", "Dark mode"),
+        value=st.session_state.get("theme", "light") == "dark",
+        help=t(lang, "기본값은 라이트 모드입니다.", "Light mode is the default."),
+    )
+    next_theme = "dark" if dark_mode_enabled else "light"
+    if next_theme != st.session_state.get("theme", "light"):
+        st.session_state["theme"] = next_theme
+        st.rerun()
+
+    if user and st.sidebar.button(t(lang, "로그아웃", "Log out"), use_container_width=True):
+        st.session_state["user"] = None
+        st.rerun()
 
 
 def render_login_screen(lang: str) -> None:
@@ -1001,7 +1236,7 @@ def render_external_validation(
 
     render_stat_grid(
         [
-            {"label": "CPU", "value": hardware["cpu_name"], "note": t(lang, "현재 사용 가능한 CPU", "Available CPU")},
+            {"label": "CPU", "value": t(lang, "감지됨", "Detected"), "note": hardware["cpu_name"]},
             {"label": "GPU", "value": t(lang, "사용 가능" if hardware["gpu_available"] else "없음", "Available" if hardware["gpu_available"] else "None"), "note": hardware["gpu_name"] or "N/A"},
             {"label": "CUDA", "value": hardware["cuda_version"] or "N/A", "note": t(lang, "CUDA 버전", "CUDA version")},
         ],
