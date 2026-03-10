@@ -304,6 +304,74 @@ class ResearchWorkflowService:
         self.control_plane.register_contribution(contribution)
         return update_metadata
 
+    def run_initial_training(
+        self,
+        site_store: SiteStore,
+        architecture: str,
+        output_model_path: str,
+        execution_device: str,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        val_split: float = 0.2,
+        use_pretrained: bool = True,
+        use_medsam_crops: bool = True,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다.
+
+        use_medsam_crops=True이면 이미 생성된 ROI crop 이미지를 우선 사용합니다.
+        crop이 없는 이미지는 원본을 사용합니다.
+        """
+        manifest_df = site_store.generate_manifest()
+        if manifest_df.empty:
+            raise ValueError("학습 데이터가 없습니다. 먼저 이미지를 등록하세요.")
+
+        records = manifest_df.to_dict("records")
+
+        if use_medsam_crops:
+            updated: list[dict[str, Any]] = []
+            for rec in records:
+                stem = Path(rec["image_path"]).stem
+                crops = list(site_store.roi_crop_dir.glob(f"{stem}_crop.png"))
+                if crops:
+                    rec = {**rec, "image_path": str(crops[0])}
+                updated.append(rec)
+            records = updated
+
+        result = self.model_manager.initial_train(
+            records=records,
+            architecture=architecture,
+            output_model_path=output_model_path,
+            device=execution_device,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            val_split=val_split,
+            use_pretrained=use_pretrained,
+            progress_callback=progress_callback,
+        )
+
+        version_name = f"global-{architecture}-v{make_id('init')[:6]}"
+        new_version = {
+            "version_id": make_id("model"),
+            "version_name": version_name,
+            "architecture": architecture,
+            "stage": "global",
+            "base_version_id": None,
+            "model_path": output_model_path,
+            "requires_medsam_crop": use_medsam_crops,
+            "created_at": utc_now(),
+            "notes": f"Initial training: {result['n_train']} train / {result['n_val']} val, best val_acc={result['best_val_acc']:.3f}",
+            "notes_ko": f"초기 학습 모델: train {result['n_train']}건 / val {result['n_val']}건, 최고 val_acc={result['best_val_acc']:.3f}",
+            "notes_en": f"Initial training: {result['n_train']} train / {result['n_val']} val, best val_acc={result['best_val_acc']:.3f}",
+            "ready": True,
+        }
+        self.control_plane.ensure_model_version(new_version)
+        result["version_name"] = version_name
+        result["model_version"] = new_version
+        return result
+
     def run_local_fine_tuning(
         self,
         site_store: SiteStore,

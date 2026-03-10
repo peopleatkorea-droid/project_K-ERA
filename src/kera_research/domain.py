@@ -22,8 +22,8 @@ PREDISPOSING_FACTORS = [
 ]
 VIEW_OPTIONS = ["white", "slit", "fluorescein"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
-MODEL_ARCHITECTURES = ["cnn", "vit", "swin", "densenet121", "densenet169", "densenet201"]
-DENSENET_VARIANTS = ["densenet121", "densenet169", "densenet201"]
+MODEL_ARCHITECTURES = ["cnn", "vit", "swin", "densenet121", "densenet161", "densenet169", "densenet201"]
+DENSENET_VARIANTS = ["densenet121", "densenet161", "densenet169", "densenet201"]
 
 CULTURE_SPECIES = {
     "bacterial": [

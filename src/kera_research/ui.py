@@ -1047,15 +1047,312 @@ def _render_dashboard(cp: ControlPlaneStore, user: dict[str, Any], lang: str) ->
 # Admin panel
 # ──────────────────────────────────────────────
 
+def _render_admin_import(cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str) -> None:
+    """기존 원본 이미지 + CSV 메타데이터를 일괄 임포트합니다."""
+    st.markdown(f"### {t(lang, '기존 데이터 일괄 임포트', 'Bulk Data Import')}")
+    st.info(
+        t(
+            lang,
+            "원본 이미지와 CSV 메타데이터를 함께 업로드하면 환자/방문/이미지를 자동 등록합니다.\n\n"
+            "① CSV 템플릿 다운로드 → ② Excel에서 메타데이터 입력 → ③ CSV + 이미지 ZIP 업로드",
+            "Upload raw images with a CSV metadata file to auto-register patients, visits, and images.\n\n"
+            "① Download CSV template → ② Fill in metadata in Excel → ③ Upload CSV + image ZIP",
+        )
+    )
+
+    sites = cp.list_sites()
+    if not sites:
+        st.warning(t(lang, "먼저 사이트를 등록하세요.", "Register a site first."))
+        return
+
+    site_options = {s["site_id"]: f"{s['display_name']} ({s['site_id']})" for s in sites}
+    import_site_id = st.selectbox(
+        t(lang, "임포트할 사이트", "Target Site"),
+        options=list(site_options.keys()),
+        format_func=lambda x: site_options[x],
+        key="import_site_select",
+    )
+
+    # CSV 템플릿 다운로드
+    import io
+    template_rows = [
+        "patient_id,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
+        "contact_lens_use,predisposing_factor,active_stage,other_history,image_filename,view,is_representative",
+        "P001,female,45,2026-01-10,TRUE,bacterial,Pseudomonas aeruginosa,"
+        "none,trauma,TRUE,,P001_2026-01-10_white.jpg,white,TRUE",
+        "P001,female,45,2026-01-10,TRUE,bacterial,Pseudomonas aeruginosa,"
+        "none,trauma,TRUE,,P001_2026-01-10_slit.jpg,slit,FALSE",
+    ]
+    template_csv = "\n".join(template_rows)
+    st.download_button(
+        label=t(lang, "📄 CSV 템플릿 다운로드", "📄 Download CSV Template"),
+        data=template_csv.encode("utf-8-sig"),
+        file_name="kera_import_template.csv",
+        mime="text/csv",
+    )
+
+    st.divider()
+    st.markdown(f"**{t(lang, 'CSV + 이미지 ZIP 업로드', 'Upload CSV + Image ZIP')}**")
+
+    col_csv, col_zip = st.columns(2)
+    with col_csv:
+        csv_file = st.file_uploader(
+            t(lang, "메타데이터 CSV", "Metadata CSV"),
+            type=["csv"],
+            key="import_csv",
+        )
+    with col_zip:
+        zip_file = st.file_uploader(
+            t(lang, "이미지 ZIP (또는 개별 이미지)", "Image ZIP (or individual images)"),
+            type=["zip", "jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="import_zip",
+        )
+
+    if csv_file and zip_file:
+        try:
+            import zipfile
+            import tempfile
+
+            df = pd.read_csv(csv_file)
+            required_cols = ["patient_id", "sex", "age", "visit_date", "culture_confirmed",
+                             "culture_category", "culture_species", "image_filename", "view"]
+            missing = [c for c in required_cols if c not in df.columns]
+            if missing:
+                st.error(f"{t(lang, '누락된 열:', 'Missing columns:')} {missing}")
+            else:
+                st.dataframe(df.head(5), use_container_width=True)
+                st.caption(t(lang, f"총 {len(df)}행 미리보기 (처음 5행)", f"Preview of {len(df)} rows (first 5)"))
+
+                if st.button(t(lang, "✅ 임포트 실행", "✅ Run Import"), type="primary", key="btn_run_import"):
+                    site_store = SiteStore(import_site_id)
+
+                    # 이미지 파일 추출 (ZIP이면 압축 해제, 개별 파일이면 그대로)
+                    image_bytes: dict[str, bytes] = {}
+                    for uploaded in zip_file:
+                        if uploaded.name.endswith(".zip"):
+                            with zipfile.ZipFile(io.BytesIO(uploaded.read())) as zf:
+                                for name in zf.namelist():
+                                    if not name.endswith("/"):
+                                        image_bytes[Path(name).name] = zf.read(name)
+                        else:
+                            image_bytes[uploaded.name] = uploaded.read()
+
+                    ok, skip, errors = 0, 0, []
+                    for _, row in df.iterrows():
+                        try:
+                            pid = str(row["patient_id"]).strip()
+                            vdate = str(row["visit_date"]).strip()
+                            fname = str(row["image_filename"]).strip()
+
+                            # 환자 등록 (없으면 생성)
+                            if not site_store.get_patient(pid):
+                                site_store.create_patient(
+                                    pid,
+                                    str(row.get("sex", "unknown")),
+                                    int(row.get("age", 0)),
+                                )
+
+                            # 방문 등록 (없으면 생성)
+                            if not site_store.get_visit(pid, vdate):
+                                factors = str(row.get("predisposing_factor", "")).split("|") if row.get("predisposing_factor") else []
+                                site_store.create_visit(
+                                    patient_id=pid,
+                                    visit_date=vdate,
+                                    culture_confirmed=str(row.get("culture_confirmed", "TRUE")).upper() == "TRUE",
+                                    culture_category=str(row.get("culture_category", "bacterial")),
+                                    culture_species=str(row.get("culture_species", "Other")),
+                                    contact_lens_use=str(row.get("contact_lens_use", "unknown")),
+                                    predisposing_factor=factors,
+                                    other_history=str(row.get("other_history", "")),
+                                    active_stage=str(row.get("active_stage", "TRUE")).upper() == "TRUE",
+                                )
+
+                            # 이미지 등록
+                            if fname in image_bytes:
+                                site_store.add_image(
+                                    patient_id=pid,
+                                    visit_date=vdate,
+                                    view=str(row.get("view", "white")),
+                                    is_representative=str(row.get("is_representative", "FALSE")).upper() == "TRUE",
+                                    file_name=fname,
+                                    content=image_bytes[fname],
+                                )
+                                ok += 1
+                            else:
+                                skip += 1
+                                errors.append(f"{fname}: {t(lang, 'ZIP에서 파일을 찾을 수 없음', 'file not found in ZIP')}")
+                        except Exception as exc:
+                            errors.append(f"Row {_}: {exc}")
+
+                    st.success(t(lang, f"✅ {ok}개 이미지 임포트 완료 / {skip}개 건너뜀", f"✅ {ok} images imported / {skip} skipped"))
+                    if errors:
+                        with st.expander(t(lang, f"⚠️ 오류 {len(errors)}건", f"⚠️ {len(errors)} error(s)")):
+                            for e in errors:
+                                st.text(e)
+        except Exception as exc:
+            st.error(str(exc))
+
+
+def _render_admin_initial_training(
+    cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str
+) -> None:
+    """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다."""
+    st.markdown(f"### {t(lang, '초기 학습 (Train from Scratch)', 'Initial Training (from Scratch)')}")
+
+    if workflow is None:
+        st.error(t(lang, "AI 모듈이 준비되지 않았습니다.", "AI module not ready."))
+        return
+
+    sites = cp.list_sites()
+    if not sites:
+        st.warning(t(lang, "사이트를 먼저 등록하세요.", "Register a site first."))
+        return
+
+    site_options = {s["site_id"]: f"{s['display_name']} ({s['site_id']})" for s in sites}
+    train_site_id = st.selectbox(
+        t(lang, "학습 데이터 사이트", "Training Data Site"),
+        options=list(site_options.keys()),
+        format_func=lambda x: site_options[x],
+        key="train_site_select",
+    )
+    site_store = SiteStore(train_site_id)
+    manifest_df = site_store.load_manifest()
+    n_total = len(manifest_df)
+    n_patients = manifest_df["patient_id"].nunique() if not manifest_df.empty else 0
+
+    st.markdown(
+        f"<div class='kera-stat-grid'>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '전체 이미지', 'Total Images')}</div>"
+        f"<div class='kera-stat-value'>{n_total}</div></div>"
+        f"<div class='kera-stat-card'><div class='kera-stat-label'>{t(lang, '환자 수', 'Patients')}</div>"
+        f"<div class='kera-stat-value'>{n_patients}</div></div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    if n_total < 4:
+        st.warning(t(lang, "학습에 최소 4개 이미지가 필요합니다. 먼저 데이터를 임포트하세요.", "At least 4 images required. Import data first."))
+        return
+
+    st.divider()
+    st.markdown(f"**{t(lang, '학습 설정', 'Training Configuration')}**")
+
+    from kera_research.domain import DENSENET_VARIANTS
+    col1, col2 = st.columns(2)
+    with col1:
+        architecture = st.selectbox(
+            t(lang, "모델 구조", "Architecture"),
+            DENSENET_VARIANTS,
+            index=0,
+            help=t(lang, "모델 파일이 없으면 121을 권장합니다. 161이면 성능이 좋지만 느립니다.", "121 recommended if unsure. 161 is stronger but slower."),
+        )
+        epochs = st.slider(t(lang, "에포크", "Epochs"), 5, 100, 30)
+        val_split = st.slider(t(lang, "Validation 비율", "Validation Split"), 0.1, 0.4, 0.2, 0.05)
+    with col2:
+        use_pretrained = st.toggle(
+            t(lang, "ImageNet 초기화 사용 (권장)", "Use ImageNet pretrained weights (recommended)"),
+            value=True,
+        )
+        use_medsam = st.toggle(
+            t(lang, "MedSAM crop 이미지로 학습", "Train on MedSAM crop images"),
+            value=True,
+            help=t(lang, "추론 시와 동일한 전처리 사용 (권장)", "Use same preprocessing as inference (recommended)"),
+        )
+        lr = st.select_slider(
+            t(lang, "학습률", "Learning Rate"),
+            options=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3],
+            value=1e-4,
+            format_func=lambda x: f"{x:.0e}",
+        )
+        batch_size = st.select_slider(t(lang, "배치 크기", "Batch Size"), options=[4, 8, 16, 32], value=16)
+
+    hw = detect_hardware()
+    exec_mode = st.radio(t(lang, "실행 모드", "Execution Mode"), EXECUTION_MODES, horizontal=True)
+    device = resolve_execution_mode(exec_mode, hw)
+
+    if not hw["cuda_available"] and batch_size > 8:
+        st.warning(t(lang, "CPU 환경에서는 배치 크기 8 이하를 권장합니다.", "Batch size ≤ 8 recommended on CPU."))
+
+    from kera_research.config import MODEL_DIR
+    from kera_research.domain import make_id
+    output_path = str(MODEL_DIR / f"global_{architecture}_{make_id('init')[:8]}.pth")
+
+    if st.button(t(lang, "🚀 초기 학습 시작", "🚀 Start Initial Training"), type="primary", key="btn_initial_train"):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        chart_placeholder = st.empty()
+        history_store: list[dict[str, Any]] = []
+
+        def on_progress(epoch: int, total: int, train_loss: float, val_acc: float) -> None:
+            pct = epoch / total
+            progress_bar.progress(pct)
+            status_text.markdown(
+                f"**Epoch {epoch}/{total}** — "
+                f"train loss: `{train_loss:.4f}` — "
+                f"val acc: `{val_acc*100:.1f}%`"
+            )
+            history_store.append({"epoch": epoch, "train_loss": train_loss, "val_acc": val_acc})
+            if len(history_store) > 1:
+                fig = px.line(
+                    pd.DataFrame(history_store),
+                    x="epoch",
+                    y=["train_loss", "val_acc"],
+                    title=t(lang, "학습 곡선", "Training Curve"),
+                )
+                chart_placeholder.plotly_chart(fig, use_container_width=True)
+
+        try:
+            result = workflow.run_initial_training(
+                site_store=site_store,
+                architecture=architecture,
+                output_model_path=output_path,
+                execution_device=device,
+                epochs=epochs,
+                learning_rate=lr,
+                batch_size=batch_size,
+                val_split=val_split,
+                use_pretrained=use_pretrained,
+                use_medsam_crops=use_medsam,
+                progress_callback=on_progress,
+            )
+            progress_bar.progress(1.0)
+            st.success(
+                t(
+                    lang,
+                    f"✅ 학습 완료!\n\n"
+                    f"- 모델명: **{result['version_name']}**\n"
+                    f"- Train: {result['n_train']}건 / Val: {result['n_val']}건\n"
+                    f"- 최고 Val Accuracy: **{result['best_val_acc']*100:.1f}%**\n"
+                    f"- 저장 경로: `{result['output_model_path']}`",
+                    f"✅ Training complete!\n\n"
+                    f"- Model: **{result['version_name']}**\n"
+                    f"- Train: {result['n_train']} / Val: {result['n_val']}\n"
+                    f"- Best Val Accuracy: **{result['best_val_acc']*100:.1f}%**\n"
+                    f"- Saved to: `{result['output_model_path']}`",
+                )
+            )
+        except Exception as exc:
+            st.error(f"{t(lang, '학습 오류:', 'Training error:')} {exc}")
+
+
 def _render_admin(cp: ControlPlaneStore, workflow: ResearchWorkflowService | None, lang: str) -> None:
     st.title(t(lang, "⚙️ 관리자 패널", "⚙️ Admin Panel"))
 
-    tab_model, tab_sites, tab_organisms, tab_federated = st.tabs([
+    tab_import, tab_train, tab_model, tab_sites, tab_organisms, tab_federated = st.tabs([
+        t(lang, "📥 데이터 임포트", "📥 Import Data"),
+        t(lang, "🧠 초기 학습", "🧠 Initial Training"),
         t(lang, "모델 관리", "Models"),
         t(lang, "사이트 관리", "Sites"),
         t(lang, "균종 관리", "Organisms"),
         t(lang, "Federated 집계", "Federated Aggregation"),
     ])
+
+    with tab_import:
+        _render_admin_import(cp, workflow, lang)
+
+    with tab_train:
+        _render_admin_initial_training(cp, workflow, lang)
 
     with tab_model:
         st.markdown(f"#### {t(lang, '등록된 모델 버전', 'Registered Model Versions')}")

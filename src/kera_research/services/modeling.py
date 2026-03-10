@@ -306,17 +306,35 @@ def preprocess_image(image_path: str | Path, image_size: int = 224) -> tuple[Ima
     return image, tensor
 
 
+def _augment_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """학습용 간단한 augmentation (horizontal flip, 밝기/대비 jitter)."""
+    if random.random() < 0.5:
+        tensor = torch.flip(tensor, dims=[2])
+    if random.random() < 0.5:
+        tensor = torch.flip(tensor, dims=[1])
+    brightness = random.uniform(0.8, 1.2)
+    contrast = random.uniform(0.8, 1.2)
+    tensor = torch.clamp(tensor * brightness, 0.0, 1.0)
+    mean = tensor.mean()
+    tensor = torch.clamp((tensor - mean) * contrast + mean, 0.0, 1.0)
+    return tensor
+
+
 class ManifestImageDataset(Dataset):
-    def __init__(self, records: Iterable[dict[str, Any]]) -> None:
+    def __init__(self, records: Iterable[dict[str, Any]], augment: bool = False) -> None:
         self.records = list(records)
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         _, tensor = preprocess_image(self.records[index]["image_path"])
+        tensor = tensor.squeeze(0)
+        if self.augment:
+            tensor = _augment_tensor(tensor)
         label_value = LABEL_TO_INDEX[self.records[index]["culture_category"]]
-        return tensor.squeeze(0), torch.tensor(label_value, dtype=torch.long)
+        return tensor, torch.tensor(label_value, dtype=torch.long)
 
 
 @dataclass
@@ -671,7 +689,154 @@ class ModelManager:
             for parameter in model.head.parameters():
                 parameter.requires_grad = True
             return
+        if architecture in DENSENET_VARIANTS:
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.classifier.parameters():
+                parameter.requires_grad = True
+            return
         raise ValueError(f"Unsupported architecture: {architecture}")
+
+    def build_model_pretrained(self, architecture: str, num_classes: int = 2) -> nn.Module:
+        """ImageNet pretrained 가중치로 DenseNet 초기화 (초기 학습 전용)."""
+        require_torch()
+        if architecture not in DENSENET_VARIANTS:
+            raise ValueError(f"Pretrained loading only supported for DenseNet variants, not {architecture}.")
+        if not _TORCHVISION_AVAILABLE:
+            raise RuntimeError("torchvision is required. Run: pip install torchvision")
+        from torchvision.models import (
+            DenseNet121_Weights, DenseNet161_Weights,
+            DenseNet169_Weights, DenseNet201_Weights,
+        )
+        weight_map = {
+            "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
+            "densenet161": DenseNet161_Weights.IMAGENET1K_V1,
+            "densenet169": DenseNet169_Weights.IMAGENET1K_V1,
+            "densenet201": DenseNet201_Weights.IMAGENET1K_V1,
+        }
+        builder = getattr(_torchvision_models, architecture)
+        backbone = builder(weights=weight_map[architecture])
+        in_features = backbone.classifier.in_features
+        backbone.classifier = nn.Linear(in_features, num_classes)
+        model = DenseNetKeratitis.__new__(DenseNetKeratitis)
+        nn.Module.__init__(model)
+        model.model = backbone
+        return model
+
+    def initial_train(
+        self,
+        records: list[dict[str, Any]],
+        architecture: str,
+        output_model_path: str | Path,
+        device: str,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        val_split: float = 0.2,
+        use_pretrained: bool = True,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        """처음부터 DenseNet 학습 (ImageNet pretrained 권장).
+
+        Args:
+            records: manifest 레코드 리스트
+            architecture: densenet121 / densenet161 / densenet169 / densenet201
+            output_model_path: 저장 경로
+            device: cpu / cuda
+            epochs: 학습 에포크
+            learning_rate: 초기 학습률
+            batch_size: 배치 크기
+            val_split: validation 비율 (0~1)
+            use_pretrained: ImageNet 초기화 사용 여부
+            progress_callback: (epoch, total, train_loss, val_acc) → None
+        """
+        require_torch()
+        if len(records) < 4:
+            raise ValueError(f"최소 4개 케이스가 필요합니다 (현재 {len(records)}개).")
+
+        # Train / Val 분리
+        seed_everything(42)
+        indices = list(range(len(records)))
+        random.shuffle(indices)
+        val_n = max(1, int(len(indices) * val_split))
+        val_idx = indices[:val_n]
+        train_idx = indices[val_n:]
+
+        train_records = [records[i] for i in train_idx]
+        val_records = [records[i] for i in val_idx]
+
+        train_ds = ManifestImageDataset(train_records, augment=True)
+        val_ds = ManifestImageDataset(val_records, augment=False)
+        bs = min(batch_size, len(train_records))
+        train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True)
+        val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False)
+
+        # 모델 초기화
+        if use_pretrained and architecture in DENSENET_VARIANTS:
+            model = self.build_model_pretrained(architecture).to(device)
+        else:
+            model = self.build_model(architecture).to(device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        loss_fn = nn.CrossEntropyLoss()
+
+        best_val_acc = 0.0
+        best_state: dict[str, Any] = {}
+        history: list[dict[str, Any]] = []
+
+        for epoch in range(1, epochs + 1):
+            # Train
+            model.train()
+            train_losses: list[float] = []
+            for batch_inputs, batch_labels in train_loader:
+                batch_inputs = batch_inputs.to(device)
+                batch_labels = batch_labels.to(device)
+                optimizer.zero_grad()
+                loss = loss_fn(model(batch_inputs), batch_labels)
+                loss.backward()
+                optimizer.step()
+                train_losses.append(float(loss.item()))
+            scheduler.step()
+
+            # Validation
+            model.eval()
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for batch_inputs, batch_labels in val_loader:
+                    batch_inputs = batch_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    preds = torch.argmax(model(batch_inputs), dim=1)
+                    correct += int((preds == batch_labels).sum().item())
+                    total += len(batch_labels)
+
+            train_loss = float(np.mean(train_losses)) if train_losses else math.nan
+            val_acc = correct / total if total > 0 else 0.0
+            history.append({"epoch": epoch, "train_loss": train_loss, "val_acc": val_acc})
+
+            if val_acc >= best_val_acc:
+                best_val_acc = val_acc
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+            if progress_callback:
+                progress_callback(epoch, epochs, train_loss, val_acc)
+
+        output = Path(output_model_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"architecture": architecture, "state_dict": best_state}, output)
+
+        return {
+            "training_id": make_id("train"),
+            "output_model_path": str(output),
+            "architecture": architecture,
+            "epochs": epochs,
+            "n_train": len(train_records),
+            "n_val": len(val_records),
+            "best_val_acc": round(best_val_acc, 4),
+            "use_pretrained": use_pretrained,
+            "history": history,
+        }
 
     def save_weight_delta(
         self,
