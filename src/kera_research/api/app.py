@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import jwt
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
@@ -17,6 +21,15 @@ from kera_research.services.data_plane import SiteStore
 API_SECRET = os.getenv("KERA_API_SECRET", "dev-secret-change-me")
 API_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = 12
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+def _google_client_id() -> str:
+    return (
+        os.getenv("KERA_GOOGLE_CLIENT_ID", "").strip()
+        or os.getenv("GOOGLE_CLIENT_ID", "").strip()
+        or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", "").strip()
+    )
 
 
 def _create_access_token(user: dict[str, Any]) -> str:
@@ -26,6 +39,7 @@ def _create_access_token(user: dict[str, Any]) -> str:
         "username": user["username"],
         "role": user.get("role", "viewer"),
         "site_ids": user.get("site_ids"),
+        "approval_status": user.get("approval_status", "approved"),
         "exp": int(expires_at.timestamp()),
     }
     return jwt.encode(payload, API_SECRET, algorithm=API_ALGORITHM)
@@ -36,6 +50,37 @@ def _decode_access_token(token: str) -> dict[str, Any]:
         return jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.") from exc
+
+
+def _verify_google_id_token(id_token: str) -> dict[str, str]:
+    client_id = _google_client_id()
+    if not client_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google authentication is not configured on the server.",
+        )
+
+    query = urlencode({"id_token": id_token})
+    verify_url = f"{GOOGLE_TOKENINFO_URL}?{query}"
+    try:
+        with urlopen(verify_url, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token verification failed.") from exc
+
+    if payload.get("aud") != client_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google client ID mismatch.")
+    if str(payload.get("email_verified", "")).lower() not in {"true", "1"}:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email is not verified.")
+
+    email = str(payload.get("email", "")).strip().lower()
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google account did not return an email.")
+
+    return {
+        "email": email,
+        "name": str(payload.get("name") or payload.get("given_name") or email.split("@")[0]).strip(),
+    }
 
 
 def get_control_plane() -> ControlPlaneStore:
@@ -50,10 +95,18 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
     token = authorization.split(" ", 1)[1].strip()
     token_payload = _decode_access_token(token)
-    users = cp.list_users()
-    user = next((item for item in users if item["user_id"] == token_payload["sub"]), None)
+    user = cp.get_user_by_id(token_payload["sub"])
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists.")
+    return user
+
+
+def get_approved_user(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    if user.get("approval_status") != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not approved yet. Submit an institution request first.",
+        )
     return user
 
 
@@ -63,9 +116,45 @@ def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: s
     return SiteStore(site_id)
 
 
+def _build_auth_response(cp: ControlPlaneStore, user: dict[str, Any]) -> dict[str, Any]:
+    normalized = cp.get_user_by_id(user["user_id"]) or user
+    token = _create_access_token(normalized)
+    return {
+        "auth_state": normalized.get("approval_status", "approved"),
+        "access_token": token,
+        "token_type": "bearer",
+        "user": normalized,
+    }
+
+
+def _assert_request_review_permission(cp: ControlPlaneStore, reviewer: dict[str, Any], site_id: str) -> None:
+    if reviewer.get("role") == "admin":
+        return
+    if reviewer.get("role") == "site_admin" and cp.user_can_access_site(reviewer, site_id):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot review requests for this site.")
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+
+class AccessRequestCreateRequest(BaseModel):
+    requested_site_id: str
+    requested_role: str
+    message: str = ""
+
+
+class AccessRequestReviewRequest(BaseModel):
+    decision: str
+    assigned_role: str | None = None
+    assigned_site_id: str | None = None
+    reviewer_notes: str = ""
 
 
 class PatientCreateRequest(BaseModel):
@@ -91,7 +180,7 @@ class VisitCreateRequest(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="K-ERA Research API", version="0.1.0")
+    app = FastAPI(title="K-ERA Research API", version="0.2.0")
 
     allowed_origins = [
         "http://localhost:3000",
@@ -111,34 +200,109 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "service": "kera-api"}
+        return {
+            "status": "ok",
+            "service": "kera-api",
+            "google_auth_configured": bool(_google_client_id()),
+        }
+
+    @app.get("/api/public/sites")
+    def public_sites(cp: ControlPlaneStore = Depends(get_control_plane)) -> list[dict[str, Any]]:
+        return cp.list_sites()
 
     @app.post("/api/auth/login")
     def login(payload: LoginRequest, cp: ControlPlaneStore = Depends(get_control_plane)) -> dict[str, Any]:
-        user = cp.authenticate(payload.username, payload.password)
+        user = cp.authenticate(payload.username.strip().lower(), payload.password)
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
-        token = _create_access_token(user)
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user": {
-                "user_id": user["user_id"],
-                "username": user["username"],
-                "full_name": user.get("full_name", user["username"]),
-                "role": user.get("role", "viewer"),
-                "site_ids": user.get("site_ids"),
-            },
-        }
+        return _build_auth_response(cp, user)
+
+    @app.post("/api/auth/google")
+    def google_login(payload: GoogleLoginRequest, cp: ControlPlaneStore = Depends(get_control_plane)) -> dict[str, Any]:
+        identity = _verify_google_id_token(payload.id_token)
+        user = cp.ensure_google_user(identity["email"], identity["name"])
+        return _build_auth_response(cp, user)
 
     @app.get("/api/auth/me")
     def me(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
         return user
 
+    @app.get("/api/auth/access-requests")
+    def my_access_requests(
+        user: dict[str, Any] = Depends(get_current_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> list[dict[str, Any]]:
+        return cp.list_access_requests(user_id=user["user_id"])
+
+    @app.post("/api/auth/request-access")
+    def request_access(
+        payload: AccessRequestCreateRequest,
+        user: dict[str, Any] = Depends(get_current_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        if payload.requested_role not in {"site_admin", "researcher", "viewer"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid requested role.")
+        requested_site = next((item for item in cp.list_sites() if item["site_id"] == payload.requested_site_id), None)
+        if requested_site is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        request_record = cp.submit_access_request(
+            user_id=user["user_id"],
+            requested_site_id=payload.requested_site_id,
+            requested_role=payload.requested_role,
+            message=payload.message,
+        )
+        refreshed_user = cp.get_user_by_id(user["user_id"]) or user
+        return {
+            "request": request_record,
+            "auth_state": refreshed_user.get("approval_status", "application_required"),
+            "user": refreshed_user,
+        }
+
+    @app.get("/api/admin/access-requests")
+    def list_access_requests(
+        status_filter: str | None = None,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> list[dict[str, Any]]:
+        if user.get("role") == "admin":
+            return cp.list_access_requests(status=status_filter)
+        if user.get("role") == "site_admin":
+            site_ids = list(user.get("site_ids") or [])
+            if not site_ids:
+                return []
+            return cp.list_access_requests(status=status_filter, site_ids=site_ids)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or site admin access required.")
+
+    @app.post("/api/admin/access-requests/{request_id}/review")
+    def review_access_request(
+        request_id: str,
+        payload: AccessRequestReviewRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        access_request = next((item for item in cp.list_access_requests() if item["request_id"] == request_id), None)
+        if access_request is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown access request.")
+        target_site_id = payload.assigned_site_id or access_request["requested_site_id"]
+        _assert_request_review_permission(cp, user, target_site_id)
+        if payload.decision not in {"approved", "rejected"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid review decision.")
+        if payload.decision == "approved" and payload.assigned_role not in {None, "site_admin", "researcher", "viewer"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assigned role.")
+        reviewed = cp.review_access_request(
+            request_id=request_id,
+            reviewer_user_id=user["user_id"],
+            decision=payload.decision,
+            assigned_role=payload.assigned_role,
+            assigned_site_id=payload.assigned_site_id,
+            reviewer_notes=payload.reviewer_notes,
+        )
+        return {"request": reviewed}
+
     @app.get("/api/sites")
     def list_sites(
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         return cp.accessible_sites_for_user(user)
 
@@ -146,7 +310,7 @@ def create_app() -> FastAPI:
     def site_summary(
         site_id: str,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
         patients = site_store.list_patients()
@@ -172,7 +336,7 @@ def create_app() -> FastAPI:
     def list_patients(
         site_id: str,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
         return site_store.list_patients()
@@ -182,7 +346,7 @@ def create_app() -> FastAPI:
         site_id: str,
         payload: PatientCreateRequest,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
         return site_store.create_patient(
@@ -198,7 +362,7 @@ def create_app() -> FastAPI:
         site_id: str,
         patient_id: str | None = None,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
         if patient_id:
@@ -210,7 +374,7 @@ def create_app() -> FastAPI:
         site_id: str,
         payload: VisitCreateRequest,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
         return site_store.create_visit(
@@ -234,7 +398,7 @@ def create_app() -> FastAPI:
         patient_id: str | None = None,
         visit_date: str | None = None,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
         if patient_id and visit_date:
@@ -250,7 +414,7 @@ def create_app() -> FastAPI:
         is_representative: bool = False,
         file: UploadFile = File(...),
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
         content = await file.read()
@@ -267,7 +431,7 @@ def create_app() -> FastAPI:
     def export_manifest_csv(
         site_id: str,
         cp: ControlPlaneStore = Depends(get_control_plane),
-        user: dict[str, Any] = Depends(get_current_user),
+        user: dict[str, Any] = Depends(get_approved_user),
     ) -> Response:
         site_store = _require_site_access(cp, user, site_id)
         manifest_df = site_store.generate_manifest()
@@ -284,4 +448,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

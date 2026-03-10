@@ -92,6 +92,22 @@ organism_requests = Table(
     Column("reviewed_at", String(64), nullable=True),
 )
 
+access_requests = Table(
+    "access_requests",
+    METADATA,
+    Column("request_id", String(64), primary_key=True),
+    Column("user_id", String(64), nullable=False, index=True),
+    Column("email", String(255), nullable=False, index=True),
+    Column("requested_site_id", String(64), nullable=False, index=True),
+    Column("requested_role", String(32), nullable=False),
+    Column("message", Text, nullable=False, default=""),
+    Column("status", String(32), nullable=False, index=True),
+    Column("reviewed_by", String(64), nullable=True),
+    Column("reviewer_notes", Text, nullable=False, default=""),
+    Column("created_at", String(64), nullable=False),
+    Column("reviewed_at", String(64), nullable=True),
+)
+
 validation_runs = Table(
     "validation_runs",
     METADATA,

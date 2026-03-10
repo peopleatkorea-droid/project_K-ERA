@@ -8,6 +8,7 @@ from sqlalchemy import and_, select, update
 from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_DIR, DEFAULT_USERS, ensure_base_directories
 from kera_research.db import (
     ENGINE,
+    access_requests,
     aggregations,
     contributions,
     init_db,
@@ -22,6 +23,8 @@ from kera_research.db import (
 )
 from kera_research.domain import CULTURE_SPECIES, make_id, utc_now
 from kera_research.storage import ensure_dir, read_json, write_json
+
+GOOGLE_AUTH_SENTINEL = "__google__"
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -70,25 +73,40 @@ class ControlPlaneStore:
             row = conn.execute(query).mappings().first()
         if row is None:
             return None
-        return {
-            **dict(row),
-            "site_ids": row["site_ids"] if row["site_ids"] is not None else None,
-        }
+        return self._serialize_user(dict(row))
+
+    def _serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
+        serialized = dict(user_record)
+        serialized["site_ids"] = serialized["site_ids"] if serialized.get("site_ids") is not None else None
+        serialized["approval_status"] = self.user_approval_status(serialized)
+        latest_request = self.latest_access_request(serialized["user_id"])
+        serialized["latest_access_request"] = latest_request
+        return serialized
+
+    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        with ENGINE.begin() as conn:
+            row = conn.execute(select(users).where(users.c.user_id == user_id)).mappings().first()
+        if row is None:
+            return None
+        return self._serialize_user(dict(row))
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        normalized = username.strip().lower()
+        with ENGINE.begin() as conn:
+            row = conn.execute(select(users).where(users.c.username == normalized)).mappings().first()
+        if row is None:
+            return None
+        return self._serialize_user(dict(row))
 
     def list_users(self) -> list[dict[str, Any]]:
         with ENGINE.begin() as conn:
             rows = conn.execute(select(users).order_by(users.c.username)).mappings().all()
-        return [
-            {
-                **dict(row),
-                "site_ids": row["site_ids"] if row["site_ids"] is not None else None,
-            }
-            for row in rows
-        ]
+        return [self._serialize_user(dict(row)) for row in rows]
 
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         normalized = {
             **user_record,
+            "username": user_record["username"].strip().lower(),
             "site_ids": list(dict.fromkeys(user_record.get("site_ids", []))),
         }
         with ENGINE.begin() as conn:
@@ -105,7 +123,158 @@ class ControlPlaneStore:
                 )
             else:
                 conn.execute(users.insert().values(**normalized))
-        return normalized
+        return self.get_user_by_id(normalized["user_id"]) or normalized
+
+    def ensure_google_user(self, email: str, full_name: str) -> dict[str, Any]:
+        normalized_email = email.strip().lower()
+        existing = self.get_user_by_username(normalized_email)
+        if existing:
+            if existing.get("full_name") != full_name:
+                updated = {**existing, "full_name": full_name}
+                return self.upsert_user(updated)
+            return existing
+        return self.upsert_user(
+            {
+                "user_id": make_id("user"),
+                "username": normalized_email,
+                "password": GOOGLE_AUTH_SENTINEL,
+                "role": "viewer",
+                "full_name": full_name.strip() or normalized_email,
+                "site_ids": [],
+            }
+        )
+
+    def user_approval_status(self, user: dict[str, Any]) -> str:
+        if user.get("role") == "admin":
+            return "approved"
+        if user.get("password") != GOOGLE_AUTH_SENTINEL:
+            return "approved"
+        if user.get("site_ids"):
+            return "approved"
+        latest_request = self.latest_access_request(user["user_id"])
+        if latest_request is None:
+            return "application_required"
+        return latest_request.get("status", "application_required")
+
+    def submit_access_request(
+        self,
+        user_id: str,
+        requested_site_id: str,
+        requested_role: str,
+        message: str = "",
+    ) -> dict[str, Any]:
+        user = self.get_user_by_id(user_id)
+        if user is None:
+            raise ValueError(f"Unknown user_id: {user_id}")
+        latest_request = self.latest_access_request(user_id)
+        if latest_request and latest_request.get("status") == "pending":
+            raise ValueError("There is already a pending approval request for this user.")
+        request_record = {
+            "request_id": make_id("access"),
+            "user_id": user_id,
+            "email": user["username"],
+            "requested_site_id": requested_site_id,
+            "requested_role": requested_role,
+            "message": message.strip(),
+            "status": "pending",
+            "reviewed_by": None,
+            "reviewer_notes": "",
+            "created_at": utc_now(),
+            "reviewed_at": None,
+        }
+        with ENGINE.begin() as conn:
+            conn.execute(access_requests.insert().values(**request_record))
+        return request_record
+
+    def latest_access_request(self, user_id: str) -> dict[str, Any] | None:
+        query = (
+            select(access_requests)
+            .where(access_requests.c.user_id == user_id)
+            .order_by(access_requests.c.created_at.desc())
+        )
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        return dict(row) if row else None
+
+    def list_access_requests(
+        self,
+        status: str | None = None,
+        site_ids: list[str] | None = None,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = select(access_requests)
+        if status:
+            query = query.where(access_requests.c.status == status)
+        if site_ids is not None:
+            query = query.where(access_requests.c.requested_site_id.in_(site_ids))
+        if user_id:
+            query = query.where(access_requests.c.user_id == user_id)
+        query = query.order_by(access_requests.c.created_at.desc())
+        with ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
+
+    def review_access_request(
+        self,
+        request_id: str,
+        reviewer_user_id: str,
+        decision: str,
+        assigned_role: str | None = None,
+        assigned_site_id: str | None = None,
+        reviewer_notes: str = "",
+    ) -> dict[str, Any]:
+        with ENGINE.begin() as conn:
+            request_row = conn.execute(
+                select(access_requests).where(access_requests.c.request_id == request_id)
+            ).mappings().first()
+            if request_row is None:
+                raise ValueError(f"Unknown request_id: {request_id}")
+            if request_row["status"] != "pending":
+                raise ValueError("Only pending requests can be reviewed.")
+
+            reviewed_at = utc_now()
+            decision_value = decision.strip().lower()
+            site_id = (assigned_site_id or request_row["requested_site_id"]).strip()
+            role_value = (assigned_role or request_row["requested_role"]).strip()
+            conn.execute(
+                update(access_requests)
+                .where(access_requests.c.request_id == request_id)
+                .values(
+                    status=decision_value,
+                    reviewed_by=reviewer_user_id,
+                    reviewer_notes=reviewer_notes.strip(),
+                    reviewed_at=reviewed_at,
+                    requested_site_id=site_id,
+                    requested_role=role_value,
+                )
+            )
+
+            user_row = conn.execute(
+                select(users).where(users.c.user_id == request_row["user_id"])
+            ).mappings().first()
+            if user_row is None:
+                raise ValueError(f"Unknown user_id: {request_row['user_id']}")
+
+            if decision_value == "approved":
+                next_site_ids = list(user_row["site_ids"] or [])
+                if site_id and site_id not in next_site_ids:
+                    next_site_ids.append(site_id)
+                conn.execute(
+                    update(users)
+                    .where(users.c.user_id == request_row["user_id"])
+                    .values(role=role_value, site_ids=next_site_ids)
+                )
+
+        reviewed = self.list_access_requests(user_id=request_row["user_id"])
+        return reviewed[0] if reviewed else {
+            **dict(request_row),
+            "status": decision_value,
+            "reviewed_by": reviewer_user_id,
+            "reviewer_notes": reviewer_notes.strip(),
+            "reviewed_at": reviewed_at,
+            "requested_site_id": site_id,
+            "requested_role": role_value,
+        }
 
     def accessible_sites_for_user(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         all_sites = self.list_sites()

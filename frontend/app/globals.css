@@ -139,6 +139,10 @@ textarea {
   background: rgba(255, 255, 255, 0.85);
 }
 
+.field textarea {
+  resize: vertical;
+}
+
 .button-row {
   display: flex;
   gap: 12px;
@@ -288,10 +292,94 @@ th {
   background: rgba(255, 255, 255, 0.45);
 }
 
+.google-panel {
+  margin-bottom: 18px;
+}
+
+.google-button-slot {
+  min-height: 48px;
+}
+
+.divider-line {
+  margin: 18px 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.approval-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.approval-status-card,
+.approval-form-card {
+  padding: 24px;
+}
+
+.request-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.request-item {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.request-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.approval-admin-panel {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.admin-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tone-pending {
+  background: rgba(188, 132, 71, 0.14);
+  color: #9b5c1c;
+}
+
+.tone-rejected {
+  background: rgba(178, 74, 63, 0.12);
+  color: var(--danger);
+}
+
+.tone-application_required {
+  background: rgba(20, 32, 43, 0.08);
+  color: var(--ink);
+}
+
 @media (max-width: 980px) {
   .hero,
   .page-grid,
   .split,
+  .approval-grid,
+  .review-grid,
   .highlight-grid,
   .metric-grid {
     grid-template-columns: 1fr;
