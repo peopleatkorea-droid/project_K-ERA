@@ -1,0 +1,80 @@
+# Local Node 배포 가이드
+
+## 목적
+
+K-ERA는 중앙 SaaS와 병원 내부 Local Node를 분리해 운영하는 것을 권장합니다.
+
+- 중앙 SaaS: 프로젝트, 사용자, 모델 버전, 검증 통계 관리
+- Local Node: 이미지 저장, AI 추론, MedSAM, Grad-CAM, 로컬 fine-tuning 실행
+
+임상의 또는 연구자는 브라우저만 사용하고, Python 설치나 `pip install`은 병원 IT 또는 설치 담당자가 처리하는 구조를 목표로 합니다.
+
+## 왜 Local Node가 필요한가
+
+- 원본 슬릿램프 이미지는 병원 내부에만 저장해야 함
+- PyTorch, CUDA, MedSAM 같은 AI 의존성은 사용자 PC마다 직접 설치시키면 운영이 어려움
+- 외부 검증과 로컬 학습은 병원 내부 GPU 워크스테이션 또는 서버에서 실행하는 편이 안정적임
+
+## 권장 운영 방식
+
+### 1. 중앙 SaaS
+
+- 클라우드 또는 기관 중앙 서버
+- 프로젝트 관리
+- 사용자 인증
+- 모델 버전 관리
+- 검증 통계 저장
+- 모델 업데이트 저장
+
+### 2. 병원별 Local Node
+
+- 병원 내부 Windows 워크스테이션 또는 서버
+- `.venv` 기반 Python 실행 환경
+- PyTorch/Streamlit/분석 패키지 설치
+- 이미지 로컬 저장소 접근
+- 브라우저로 내부 사용자 접속
+
+## 설치 담당자용 기본 절차
+
+프로젝트 루트에서 아래만 실행하면 됩니다.
+
+```powershell
+.\scripts\setup_local_node.ps1
+.\scripts\run_local_node.ps1
+```
+
+첫 번째 스크립트는 다음을 자동 처리합니다.
+
+- 가상환경 생성
+- 필수 패키지 설치
+- PyTorch 포함 의존성 설치
+- 기본 health check 수행
+
+두 번째 스크립트는 Local Node 앱을 실행합니다.
+
+## GPU 환경에서의 설치
+
+기본 스크립트는 `requirements.txt` 기준으로 설치합니다.
+
+기관 GPU 정책상 특정 PyTorch wheel index가 필요하다면 설치 담당자가 아래처럼 실행할 수 있습니다.
+
+```powershell
+.\scripts\setup_local_node.ps1 -TorchIndexUrl "<GPU용 torch index url>"
+```
+
+## 임상의 사용자 경험 원칙
+
+- 임상의에게 `pip install`, `torch`, `CUDA` 같은 메시지를 직접 보여주지 않음
+- AI 기능이 아직 준비되지 않았을 때는:
+  - 데이터 입력은 계속 가능
+  - AI 검증 기능은 준비 중
+  - 설치 담당자에게 문의 필요
+  정도만 표시
+
+## 향후 권장 고도화
+
+- Windows Installer (`.msi`) 또는 배포 패키지 제공
+- 병원 IT용 무인 설치 옵션
+- 설치 후 자동 self-check
+- 서비스형 실행으로 백그라운드 부팅 자동화
+- 중앙 SaaS에서 Local Node 상태를 원격 확인하는 health ping

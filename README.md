@@ -213,7 +213,27 @@ storage/sites/SNUH/data/raw/P001/2026-03-10/image_01.jpg
 - Pillow
 - scikit-learn
 
-### 설치
+### 임상의용 권장 실행 방식
+
+임상의 또는 일반 연구자가 직접 `pip install`을 입력하는 방식은 권장하지 않습니다.
+
+권장 구조는 다음과 같습니다.
+
+- 연구자/임상의: 브라우저만 사용
+- 병원 IT 또는 설치 담당자: Local Node 1회 설치 및 업데이트 담당
+
+설치 담당자는 프로젝트 루트에서 아래 두 명령만 사용하면 됩니다.
+
+```powershell
+.\scripts\setup_local_node.ps1
+.\scripts\run_local_node.ps1
+```
+
+이 스크립트는 가상환경 생성, 패키지 설치, 기본 health check, Streamlit 실행을 순서대로 처리합니다.
+
+상세 운영 방식은 [docs/local_node_deployment.md](docs/local_node_deployment.md)를 참고하면 됩니다.
+
+### 개발/테스트용 수동 설치
 
 PowerShell 기준:
 
@@ -226,7 +246,7 @@ pip install -r requirements.txt
 ### 실행
 
 ```powershell
-streamlit run app.py
+.\scripts\run_local_node.ps1
 ```
 
 브라우저가 열리면 로그인 후 사용할 수 있습니다.
@@ -245,6 +265,7 @@ streamlit run app.py
 - 입력 화면을 단계별로 분리해 복잡도를 낮춤
 - 모델 선택, 실행 모드, 설명 시각화 옵션을 한 화면에서 직관적으로 배치
 - 검증 결과는 요약, 추이, 증례 탭으로 나누어 모바일에서도 보기 쉽게 구성
+- AI 모듈이 준비되지 않은 경우에도 개발자용 `pip` 오류 대신 설치 상태 안내를 표시
 
 ## 11. 다국어(i18n)
 
@@ -393,6 +414,8 @@ streamlit run app.py
   - 병원 로컬 데이터 저장소
 - `src/kera_research/services/hardware.py`
   - CPU/GPU 감지
+- `src/kera_research/services/runtime.py`
+  - 로컬 노드 설치 상태 및 AI 준비 상태 점검
 - `src/kera_research/services/artifacts.py`
   - MedSAM 어댑터
 - `src/kera_research/services/modeling.py`
@@ -403,6 +426,12 @@ streamlit run app.py
   - Streamlit UI 화면
 - `docs/dataset_schema.md`
   - 데이터 스키마 문서
+- `docs/local_node_deployment.md`
+  - Local Node 설치 및 운영 가이드
+- `scripts/setup_local_node.ps1`
+  - Local Node 자동 설치 스크립트
+- `scripts/run_local_node.ps1`
+  - Local Node 실행 스크립트
 
 ## 18. 제공되는 MVP 화면
 
@@ -442,10 +471,8 @@ streamlit run app.py
 처음 실행하는 연구자를 위한 최소 순서만 다시 정리하면 다음과 같습니다.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
+.\scripts\setup_local_node.ps1
+.\scripts\run_local_node.ps1
 ```
 
 로그인 후:

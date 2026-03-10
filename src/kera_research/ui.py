@@ -21,6 +21,7 @@ from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.pipeline import ResearchWorkflowService
+from kera_research.services.runtime import detect_local_node_status
 
 PAGE_META = {
     "dashboard": {
@@ -111,6 +112,7 @@ def run_app() -> None:
     inject_custom_css(st.session_state.get("theme", "light"))
 
     lang = st.session_state.get("lang", "ko")
+    runtime_status = detect_local_node_status()
     control_plane = ControlPlaneStore()
     workflow, workflow_error = bootstrap_workflow(control_plane)
 
@@ -137,13 +139,13 @@ def run_app() -> None:
     )
     render_page_intro(page_id, lang)
     if workflow_error:
-        st.error(format_workflow_error(workflow_error, lang))
+        render_runtime_banner(runtime_status, workflow_error, lang)
 
     if site_store is not None:
         render_workflow_status(control_plane, context, site_store, lang)
 
     if page_id == "dashboard":
-        render_project_dashboard(control_plane, context, workflow, lang)
+        render_project_dashboard(control_plane, context, workflow, runtime_status, lang)
         return
 
     if not context["project"] or not context["site"]:
@@ -167,7 +169,7 @@ def run_app() -> None:
     elif page_id == "dataset_review":
         render_dataset_review(site_store, lang)
     elif page_id == "validation_run":
-        render_external_validation(control_plane, workflow, context, site_store, lang)
+        render_external_validation(control_plane, workflow, context, site_store, runtime_status, lang)
     elif page_id == "validation_dashboard":
         render_validation_dashboard(control_plane, context, lang)
     elif page_id == "gradcam_viewer":
@@ -554,10 +556,77 @@ def format_workflow_error(message: str, lang: str) -> str:
     if "PyTorch is required" in message:
         return t(
             lang,
-            "모델 기능을 사용하려면 PyTorch가 필요합니다. 먼저 `pip install -r requirements.txt`로 의존성을 설치한 뒤 앱을 다시 실행하세요.",
-            "PyTorch is required for model features. Install dependencies with `pip install -r requirements.txt` and restart the app.",
+            "이 병원 환경의 AI 실행 모듈이 아직 준비되지 않았습니다. 데이터 입력은 계속 가능하며, 외부 검증과 학습 기능은 설치 담당자가 로컬 노드를 준비한 뒤 사용할 수 있습니다.",
+            "The AI runtime for this hospital environment is not ready yet. Data entry can continue, and validation or training will become available after the local node is prepared by an installer.",
         )
-    return message
+    return t(
+        lang,
+        f"AI 실행 모듈 상태를 확인해야 합니다. 세부 내용: {message}",
+        f"The AI runtime needs attention. Details: {message}",
+    )
+
+
+def render_runtime_banner(runtime_status: dict[str, Any], workflow_error: str, lang: str) -> None:
+    if runtime_status["ai_engine_ready"]:
+        return
+
+    st.warning(format_workflow_error(workflow_error, lang))
+    st.caption(
+        t(
+            lang,
+            "연구 데이터 입력과 프로젝트 관리는 계속 사용할 수 있습니다. AI 검증 기능은 로컬 노드 준비 후 자동으로 활성화됩니다.",
+            "Project setup and data entry remain available. AI validation features will activate automatically after the local node is prepared.",
+        ),
+    )
+
+
+def render_local_node_status_panel(runtime_status: dict[str, Any], lang: str, show_installer_help: bool = True) -> None:
+    readiness_label = t(lang, "준비 완료", "Ready") if runtime_status["ai_engine_ready"] else t(lang, "설정 필요", "Setup needed")
+    medsam_label = t(lang, "연결됨", "Connected") if runtime_status["medsam_ready"] else t(lang, "선택 사항", "Optional")
+
+    render_stat_grid(
+        [
+            {"label": t(lang, "데이터 입력", "Data entry"), "value": t(lang, "사용 가능", "Available"), "note": t(lang, "환자/방문/이미지 등록 가능", "Patient, visit, and image entry is available")},
+            {"label": t(lang, "AI 엔진", "AI engine"), "value": readiness_label, "note": t(lang, "외부 검증 및 학습 실행 상태", "External validation and training runtime")},
+            {"label": "GPU", "value": t(lang, "사용 가능", "Available") if runtime_status["gpu_ready"] else t(lang, "선택 사항", "Optional"), "note": runtime_status["gpu_name"] or runtime_status["cpu_name"]},
+            {"label": "MedSAM", "value": medsam_label, "note": t(lang, "ROI 자동 생성 연결 상태", "ROI generation connector status")},
+        ],
+    )
+
+    if runtime_status["ai_engine_ready"]:
+        st.success(
+            t(
+                lang,
+                "이 로컬 노드는 AI 검증과 선택적 로컬 파인튜닝을 실행할 준비가 되었습니다.",
+                "This local node is ready for AI validation and optional local fine-tuning.",
+            ),
+        )
+    else:
+        missing_label = ", ".join(runtime_status["missing_packages"]) if runtime_status["missing_packages"] else t(lang, "알 수 없음", "Unknown")
+        st.info(
+            t(
+                lang,
+                "현재는 프로젝트 관리와 데이터 입력만 바로 사용할 수 있습니다. AI 검증 기능은 설치 담당자가 로컬 노드를 준비한 뒤 활성화됩니다.",
+                "Project management and data entry are available now. AI validation features will activate after an installer prepares the local node.",
+            ),
+        )
+        if show_installer_help:
+            with st.expander(t(lang, "설치 담당자용 안내", "Installer guidance")):
+                st.markdown(
+                    t(
+                        lang,
+                        "연구자나 임상의가 직접 `pip` 명령을 입력할 필요는 없습니다. 병원 내부 서버 또는 워크스테이션에서 아래 스크립트를 한 번 실행해 로컬 노드를 준비하면 됩니다.",
+                        "Researchers or clinicians should not need to type `pip` commands. Prepare the local node once on the hospital server or workstation with the script below.",
+                    ),
+                )
+                st.code(f".\\scripts\\setup_local_node.ps1\n.\\scripts\\run_local_node.ps1", language="powershell")
+                st.caption(
+                    t(
+                        lang,
+                        f"현재 확인된 미설치 패키지: {missing_label}",
+                        f"Currently missing packages: {missing_label}",
+                    ),
+                )
 
 
 def page_label(page_id: str, lang: str) -> str:
@@ -871,6 +940,7 @@ def render_project_dashboard(
     control_plane: ControlPlaneStore,
     context: dict[str, Any],
     workflow: ResearchWorkflowService | None,
+    runtime_status: dict[str, Any],
     lang: str,
 ) -> None:
     projects = control_plane.list_projects()
@@ -929,6 +999,8 @@ def render_project_dashboard(
 
     with overview_tab:
         st.subheader(t(lang, "중앙 관리 현황", "Control plane overview"))
+        st.markdown(f"#### {t(lang, '로컬 AI 노드 준비 상태', 'Local AI node status')}")
+        render_local_node_status_panel(runtime_status, lang)
         global_models = [item for item in model_versions if item.get("stage") == "global"]
         if global_models:
             model_labels = ", ".join(
@@ -983,7 +1055,7 @@ def render_project_dashboard(
             st.info(t(lang, "사이트를 등록하기 전에 먼저 프로젝트를 생성하세요.", "Create a project before registering a site."))
 
         if workflow is None:
-            st.warning(t(lang, "모델 서비스가 현재 사용 불가능합니다.", "Model services are currently unavailable."))
+            render_local_node_status_panel(runtime_status, lang)
 
     with catalog_tab:
         catalog = control_plane.list_organisms()
@@ -1212,12 +1284,13 @@ def render_external_validation(
     workflow: ResearchWorkflowService | None,
     context: dict[str, Any],
     site_store: SiteStore,
+    runtime_status: dict[str, Any],
     lang: str,
 ) -> None:
     st.subheader(t(lang, "외부 검증 실행", "External validation"))
     st.caption(t(lang, "새 사이트 데이터는 학습 전에 먼저 external validation을 수행하는 것이 권장됩니다.", "New site data should be externally validated before any local training.")) 
     if workflow is None:
-        st.error(t(lang, "워크플로우 서비스를 사용할 수 없습니다. 먼저 전체 의존성을 설치하세요.", "Workflow services are unavailable. Install the full requirements first."))
+        render_local_node_status_panel(runtime_status, lang)
         return
 
     hardware = detect_hardware()
