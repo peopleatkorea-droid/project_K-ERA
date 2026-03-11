@@ -381,7 +381,8 @@ export type ModelUpdateRecord = {
       roi_area_ratio?: number | null;
     };
     privacy_controls?: {
-      thumbnail_max_side_px?: number;
+      source_thumbnail_max_side_px?: number;
+      derived_thumbnail_max_side_px?: number;
       upload_exif_removed?: boolean;
       stored_filename_policy?: string;
       review_media_policy?: string;

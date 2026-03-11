@@ -129,7 +129,11 @@ class ResearchWorkflowService:
 
         source_image_path = str(representative.get("image_path") or "")
         if source_image_path and Path(source_image_path).exists():
-            artifacts["source_thumbnail_path"] = self._write_review_thumbnail(source_image_path, source_thumb_path)
+            artifacts["source_thumbnail_path"] = self._write_review_thumbnail(
+                source_image_path,
+                source_thumb_path,
+                max_size=(128, 128),
+            )
 
         roi_crop_path = str(prepared_representative.get("roi_crop_path") or "")
         if roi_crop_path and Path(roi_crop_path).exists():
@@ -171,7 +175,8 @@ class ResearchWorkflowService:
                 "roi_area_ratio": roi_area_ratio,
             },
             "privacy_controls": {
-                "thumbnail_max_side_px": 320,
+                "source_thumbnail_max_side_px": 128,
+                "derived_thumbnail_max_side_px": 320,
                 "upload_exif_removed": True,
                 "stored_filename_policy": "randomized_image_id_only",
                 "review_media_policy": "thumbnail_only_for_admin_review",

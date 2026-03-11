@@ -669,3 +669,72 @@ project_K-ERA/
 - 별도 worker/job queue, audit log, 더 세분화된 권한 체계는 후속 작업이 필요합니다.
 - Streamlit 레거시 UI 소스는 제거되었고, 현재 앱은 FastAPI + Next.js만 사용합니다.
 - 실제 운영 전에는 IRB, 보안, 접근통제, 익명화 정책을 별도로 검토해야 합니다.
+## 19. 2026-03-12 추가 구현 사항
+
+이번 작업에서는 연합학습 기여 승인 흐름과 업로드 이미지 비식별 저장 정책을 반영했습니다.
+
+### 1. 등록자 기준 환자/케이스 필터
+
+- `patients`, `visits`에 `created_by_user_id`를 저장합니다.
+- 병원 전체 공유는 유지하면서도, 현재 로그인한 사용자가 등록한 환자/케이스만 따로 조회할 수 있습니다.
+- 관련 API:
+  - `GET /api/sites/{site_id}/patients?mine=true`
+  - `GET /api/sites/{site_id}/cases?mine=true`
+
+### 2. 업로드 이미지 저장 정책
+
+- 새로 업로드되는 이미지는 저장 시 EXIF 메타데이터를 제거합니다.
+- 저장 파일명에는 원본 파일명을 쓰지 않고, `image_id` 기반 랜덤 파일명만 사용합니다.
+- 이 정책은 수동 업로드와 bulk import 양쪽에 공통 적용됩니다.
+
+### 3. single-case contribution 유지
+
+- `single-case contribution`은 그대로 유지합니다.
+- 희귀 케이스가 적게 발생하는 환경을 고려해 1건 단위 기여를 허용합니다.
+- 대신 기여 직후 바로 집계하지 않고, 중앙 검토를 거치도록 변경했습니다.
+
+### 4. model update 승인 리포트
+
+- 케이스 기여 시 각 업데이트마다 `approval_report.json`을 생성합니다.
+- 리포트에는 다음 정보가 포함됩니다.
+  - 대표 이미지 기준 source thumbnail
+  - ROI crop thumbnail
+  - MedSAM mask thumbnail
+  - QA 지표: 밝기, 대비, edge density, ROI 면적 비율
+  - privacy control 정보: EXIF 제거 여부, 파일명 정책, 리뷰 미디어 정책
+
+### 5. 중앙 승인 흐름
+
+- 새 모델 업데이트 상태는 기본적으로 `pending_review`로 등록됩니다.
+- 관리자 또는 site admin은 중앙 승인 UI에서 업데이트를 검토하고 `approved` 또는 `rejected`로 처리할 수 있습니다.
+- 관련 API:
+  - `POST /api/admin/model-updates/{update_id}/review`
+  - `GET /api/admin/model-updates/{update_id}/artifacts/{artifact_kind}`
+
+### 6. federated aggregation 정책
+
+- 연합 집계는 이제 `approved` 상태의 업데이트만 대상으로 합니다.
+- 예전 `pending_upload` 데이터는 리뷰 대기열에서 계속 확인할 수 있지만, 집계 전에 먼저 승인되어야 합니다.
+
+### 7. 썸네일 정책
+
+- 원본 source thumbnail은 긴 변 기준 `128 px`로 제한합니다.
+- ROI / mask 등 파생 썸네일은 기존 리뷰용 크기를 유지합니다.
+- 운영 원칙:
+  - full-resolution clinical images never leave the institution
+  - only low-resolution review thumbnails and QA metadata are used for central review
+
+### 8. 관리자 UI
+
+- Registry 화면에서 모델 업데이트를 선택할 수 있습니다.
+- 선택한 업데이트에 대해 아래 항목을 확인할 수 있습니다.
+  - source / ROI / mask 썸네일
+  - 케이스 수, representative view
+  - brightness / contrast / edge / ROI area ratio
+  - 리뷰 메모
+  - 승인 / 반려 버튼
+
+### 9. 검증
+
+- `python -m compileall src` 통과
+- `cd frontend && npm run build` 통과
