@@ -3,6 +3,8 @@
 import Script from "next/script";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
+import { AdminWorkspace } from "../components/admin-workspace";
+import { CaseWorkspace } from "../components/case-workspace";
 import {
   createPatient,
   downloadManifest,
@@ -11,6 +13,8 @@ import {
   fetchMyAccessRequests,
   fetchPatients,
   fetchPublicSites,
+  type PatientRecord,
+  type SiteSummary,
   fetchSiteSummary,
   fetchSites,
   googleLogin,
@@ -36,23 +40,6 @@ declare global {
     };
   }
 }
-
-type PatientRecord = {
-  patient_id: string;
-  sex: string;
-  age: number;
-  chart_alias?: string;
-  local_case_code?: string;
-};
-
-type SiteSummary = {
-  site_id: string;
-  n_patients: number;
-  n_visits: number;
-  n_images: number;
-  n_active_visits: number;
-  n_validation_runs: number;
-};
 
 type ReviewDraft = {
   assigned_role: string;
@@ -104,9 +91,11 @@ export default function HomePage() {
     requested_role: "researcher",
     message: "",
   });
+  const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
 
   const approved = user?.approval_status === "approved";
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
+  const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
 
   useEffect(() => {
     const stored = window.localStorage.getItem(TOKEN_KEY);
@@ -175,8 +164,8 @@ export default function HomePage() {
           fetchSiteSummary(currentSiteId, currentToken),
           fetchPatients(currentSiteId, currentToken),
         ]);
-        setSummary(nextSummary as SiteSummary);
-        setPatients(nextPatients as PatientRecord[]);
+        setSummary(nextSummary);
+        setPatients(nextPatients);
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : "Failed to load site data.");
       } finally {
@@ -253,6 +242,21 @@ export default function HomePage() {
     setUser(auth.user);
   }
 
+  async function refreshSiteData(siteId: string, currentToken: string) {
+    const [nextSummary, nextPatients] = await Promise.all([
+      fetchSiteSummary(siteId, currentToken),
+      fetchPatients(siteId, currentToken),
+    ]);
+    setSummary(nextSummary);
+    setPatients(nextPatients);
+  }
+
+  async function refreshApprovedSites(currentToken: string) {
+    const nextSites = await fetchSites(currentToken);
+    setSites(nextSites);
+    setSelectedSiteId((current) => current ?? nextSites[0]?.site_id ?? null);
+  }
+
   async function handleLocalLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
@@ -282,8 +286,7 @@ export default function HomePage() {
         local_case_code: patientForm.local_case_code,
       });
       setPatientForm((current) => ({ ...current, patient_id: "", chart_alias: "", local_case_code: "" }));
-      setPatients((await fetchPatients(selectedSiteId, token)) as PatientRecord[]);
-      setSummary((await fetchSiteSummary(selectedSiteId, token)) as SiteSummary);
+      await refreshSiteData(selectedSiteId, token);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Patient creation failed.");
     } finally {
@@ -348,6 +351,7 @@ export default function HomePage() {
     window.localStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
+    setWorkspaceMode("canvas");
     setSites([]);
     setSelectedSiteId(null);
     setSummary(null);
@@ -369,48 +373,48 @@ export default function HomePage() {
         <section className="hero">
           <article className="hero-card hero-copy">
             <div>
-              <div className="eyebrow">Clinician Web Workspace</div>
-              <h1>K-ERA Research Web</h1>
+              <div className="eyebrow">Clinical Research Workspace</div>
+              <h1>K-ERA Case Canvas</h1>
               <p>
-                Google institution onboarding now sits in front of the clinician workflow. Approved users enter
-                the site console, pending users stay in an approval lane until an admin reviews the request.
+                Sign in with your institution account, request the right site once, and move directly into a
+                document-style case canvas after approval.
               </p>
             </div>
             <div className="highlight-grid">
               <div className="highlight">
                 <strong>Google Sign-In</strong>
-                <span className="muted">Researchers can sign in with a verified Google account.</span>
+                <span className="muted">Researchers can onboard with a verified institution-linked Google account.</span>
               </div>
               <div className="highlight">
                 <strong>Approval Queue</strong>
-                <span className="muted">Admins and site admins review hospital and role requests.</span>
+                <span className="muted">Admins review institution and role requests before site access opens.</span>
               </div>
               <div className="highlight">
-                <strong>PostgreSQL-backed</strong>
-                <span className="muted">Users, requests, sites, and manifest exports stay in one backend.</span>
+                <strong>Case Canvas</strong>
+                <span className="muted">Author, validate, and contribute cases from one continuous workspace.</span>
               </div>
               <div className="highlight">
-                <strong>Fallback Admin</strong>
-                <span className="muted">The local admin login remains available for setup and recovery.</span>
+                <strong>Admin Recovery</strong>
+                <span className="muted">A local admin fallback remains available for setup and incident recovery.</span>
               </div>
             </div>
           </article>
 
           <section className="hero-card login-panel">
             <div className="eyebrow">Sign In</div>
-            <h2>Enter the research platform</h2>
-            <p className="muted">Google is for researcher onboarding. Local username/password remains for admin recovery.</p>
+            <h2>Enter the case workspace</h2>
+            <p className="muted">Google is the default path for researchers. Local username/password stays admin-only for recovery.</p>
             {GOOGLE_CLIENT_ID ? (
               <div className="google-panel">
                 <div className="field">
-                  <label>Researcher Google login</label>
+                  <label>Institution Google login</label>
                   <div ref={googleButtonRef} className="google-button-slot" />
                 </div>
               </div>
             ) : (
               <div className="empty">Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.</div>
             )}
-            <div className="divider-line">Administrator fallback</div>
+            <div className="divider-line">Administrator recovery only</div>
             <form className="stack" onSubmit={handleLocalLogin}>
               <div className="field">
                 <label htmlFor="username">Username</label>
@@ -431,7 +435,7 @@ export default function HomePage() {
               </div>
               {error ? <div className="error">{error}</div> : null}
               <button className="primary-button" type="submit" disabled={loading}>
-                {loading ? "Connecting..." : "Login to API"}
+                {loading ? "Connecting..." : "Enter admin recovery"}
               </button>
             </form>
           </section>
@@ -536,282 +540,40 @@ export default function HomePage() {
     );
   }
 
-  return (
-    <main className="shell">
-      <section className="dashboard">
-        <div className="section-head">
-          <div>
-            <div className="eyebrow">FastAPI + Next.js</div>
-            <h2>Clinician Research Console</h2>
-            <p className="muted">
-              Logged in as {user.full_name} · {user.role}
-            </p>
-          </div>
-          <div className="button-row">
-            <button className="secondary-button" type="button" onClick={() => void handleManifestDownload()} disabled={!selectedSiteId}>
-              Export Manifest CSV
-            </button>
-            <button className="secondary-button" type="button" onClick={handleLogout}>
-              Log Out
-            </button>
-          </div>
-        </div>
+  if (workspaceMode === "canvas" || !canOpenOperations) {
+    return (
+      <CaseWorkspace
+        token={token}
+        user={user}
+        sites={sites}
+        selectedSiteId={selectedSiteId}
+        summary={summary}
+        canOpenOperations={canOpenOperations}
+        onSelectSite={setSelectedSiteId}
+        onExportManifest={handleManifestDownload}
+        onLogout={handleLogout}
+        onOpenOperations={() => setWorkspaceMode("operations")}
+        onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+      />
+    );
+  }
 
-        {error ? <div className="error">{error}</div> : null}
+  if (workspaceMode === "operations" && canOpenOperations) {
+    return (
+      <AdminWorkspace
+        token={token}
+        user={user}
+        sites={sites}
+        selectedSiteId={selectedSiteId}
+        summary={summary}
+        onSelectSite={setSelectedSiteId}
+        onOpenCanvas={() => setWorkspaceMode("canvas")}
+        onLogout={handleLogout}
+        onRefreshSites={() => refreshApprovedSites(token)}
+        onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+      />
+    );
+  }
 
-        <section className="page-grid">
-          <aside className="sidebar-card">
-            <div className="eyebrow">Sites</div>
-            <h3>Accessible hospitals</h3>
-            <div className="site-list">
-              {sites.length === 0 ? (
-                <div className="empty">No sites are assigned to this account yet.</div>
-              ) : (
-                sites.map((site) => (
-                  <button
-                    key={site.site_id}
-                    className={`site-button ${selectedSiteId === site.site_id ? "active" : ""}`}
-                    type="button"
-                    onClick={() => setSelectedSiteId(site.site_id)}
-                  >
-                    <strong>{site.display_name}</strong>
-                    <div className="muted">{site.hospital_name || site.site_id}</div>
-                  </button>
-                ))
-              )}
-            </div>
-          </aside>
-
-          <section className="content-card">
-            <div className="section-head">
-              <div>
-                <div className="eyebrow">Dashboard</div>
-                <h3>{selectedSiteId ? `Site ${selectedSiteId}` : "Choose a site"}</h3>
-              </div>
-              {selectedSiteId ? <span className="status-chip">API connected</span> : null}
-            </div>
-
-            {summary ? (
-              <div className="metric-grid">
-                <div className="metric-card">
-                  <strong>{summary.n_patients}</strong>
-                  <span className="muted">Patients</span>
-                </div>
-                <div className="metric-card">
-                  <strong>{summary.n_visits}</strong>
-                  <span className="muted">Visits</span>
-                </div>
-                <div className="metric-card">
-                  <strong>{summary.n_images}</strong>
-                  <span className="muted">Images</span>
-                </div>
-                <div className="metric-card">
-                  <strong>{summary.n_validation_runs}</strong>
-                  <span className="muted">Validation runs</span>
-                </div>
-              </div>
-            ) : (
-              <div className="empty">Select a site to load the API-backed summary.</div>
-            )}
-
-            <div className="split" style={{ marginTop: 24 }}>
-              <section className="panel" style={{ padding: 20 }}>
-                <div className="section-head">
-                  <div>
-                    <div className="eyebrow">Create Patient</div>
-                    <h3>First migrated workflow</h3>
-                  </div>
-                </div>
-                <form className="stack" onSubmit={handleCreatePatient}>
-                  <div className="field">
-                    <label htmlFor="patient_id">Patient ID</label>
-                    <input
-                      id="patient_id"
-                      value={patientForm.patient_id}
-                      onChange={(event) => setPatientForm((current) => ({ ...current, patient_id: event.target.value }))}
-                      disabled={!selectedSiteId}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="sex">Sex</label>
-                    <select
-                      id="sex"
-                      value={patientForm.sex}
-                      onChange={(event) => setPatientForm((current) => ({ ...current, sex: event.target.value }))}
-                    >
-                      <option value="female">female</option>
-                      <option value="male">male</option>
-                      <option value="other">other</option>
-                      <option value="unknown">unknown</option>
-                    </select>
-                  </div>
-                  <div className="field">
-                    <label htmlFor="age">Age</label>
-                    <input
-                      id="age"
-                      type="number"
-                      value={patientForm.age}
-                      onChange={(event) => setPatientForm((current) => ({ ...current, age: event.target.value }))}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="chart_alias">Chart Alias</label>
-                    <input
-                      id="chart_alias"
-                      value={patientForm.chart_alias}
-                      onChange={(event) => setPatientForm((current) => ({ ...current, chart_alias: event.target.value }))}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="local_case_code">Local Case Code</label>
-                    <input
-                      id="local_case_code"
-                      value={patientForm.local_case_code}
-                      onChange={(event) => setPatientForm((current) => ({ ...current, local_case_code: event.target.value }))}
-                    />
-                  </div>
-                  <button className="primary-button" type="submit" disabled={loading || !selectedSiteId}>
-                    {loading ? "Saving..." : "Create patient"}
-                  </button>
-                </form>
-              </section>
-
-              <section className="panel" style={{ padding: 20 }}>
-                <div className="section-head">
-                  <div>
-                    <div className="eyebrow">Patients</div>
-                    <h3>Current site records</h3>
-                  </div>
-                </div>
-                {patients.length === 0 ? (
-                  <div className="empty">No patient rows yet. Create one to validate the new API flow.</div>
-                ) : (
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Patient</th>
-                          <th>Sex</th>
-                          <th>Age</th>
-                          <th>Alias</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {patients
-                          .slice()
-                          .sort((a, b) => a.patient_id.localeCompare(b.patient_id))
-                          .map((patient) => (
-                            <tr key={patient.patient_id}>
-                              <td>{patient.patient_id}</td>
-                              <td>{patient.sex}</td>
-                              <td>{patient.age}</td>
-                              <td>{patient.chart_alias || patient.local_case_code || "-"}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-            </div>
-
-            {canReview ? (
-              <section className="approval-admin-panel">
-                <div className="section-head">
-                  <div>
-                    <div className="eyebrow">Approval Queue</div>
-                    <h3>Pending institution requests</h3>
-                  </div>
-                </div>
-                {adminRequests.length === 0 ? (
-                  <div className="empty">No pending requests right now.</div>
-                ) : (
-                  <div className="request-list admin-list">
-                    {adminRequests.map((request) => {
-                      const draft = reviewDrafts[request.request_id] ?? {
-                        assigned_role: request.requested_role,
-                        assigned_site_id: request.requested_site_id,
-                        reviewer_notes: "",
-                      };
-                      return (
-                        <div key={request.request_id} className="request-item admin-item">
-                          <div className="request-item-head">
-                            <div>
-                              <strong>{request.email}</strong>
-                              <div className="muted">
-                                requested {request.requested_role} at {request.requested_site_id}
-                              </div>
-                            </div>
-                            <span className="status-chip tone-pending">pending</span>
-                          </div>
-                          {request.message ? <p className="muted">{request.message}</p> : null}
-                          <div className="review-grid">
-                            <div className="field">
-                              <label>Assign site</label>
-                              <select
-                                value={draft.assigned_site_id}
-                                onChange={(event) =>
-                                  setReviewDrafts((current) => ({
-                                    ...current,
-                                    [request.request_id]: { ...draft, assigned_site_id: event.target.value },
-                                  }))
-                                }
-                              >
-                                {publicSites.map((site) => (
-                                  <option key={site.site_id} value={site.site_id}>
-                                    {site.display_name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="field">
-                              <label>Assign role</label>
-                              <select
-                                value={draft.assigned_role}
-                                onChange={(event) =>
-                                  setReviewDrafts((current) => ({
-                                    ...current,
-                                    [request.request_id]: { ...draft, assigned_role: event.target.value },
-                                  }))
-                                }
-                              >
-                                <option value="site_admin">site_admin</option>
-                                <option value="researcher">researcher</option>
-                                <option value="viewer">viewer</option>
-                              </select>
-                            </div>
-                          </div>
-                          <div className="field">
-                            <label>Reviewer notes</label>
-                            <textarea
-                              rows={3}
-                              value={draft.reviewer_notes}
-                              onChange={(event) =>
-                                setReviewDrafts((current) => ({
-                                  ...current,
-                                  [request.request_id]: { ...draft, reviewer_notes: event.target.value },
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="button-row">
-                            <button className="primary-button" type="button" disabled={loading} onClick={() => void handleReview(request.request_id, "approved")}>
-                              Approve
-                            </button>
-                            <button className="secondary-button" type="button" disabled={loading} onClick={() => void handleReview(request.request_id, "rejected")}>
-                              Reject
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            ) : null}
-          </section>
-        </section>
-      </section>
-    </main>
-  );
+  return null;
 }

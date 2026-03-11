@@ -185,6 +185,12 @@ class SiteStore:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
+    def get_image(self, image_id: str) -> dict[str, Any] | None:
+        query = select(db_images).where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
+        with ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        return dict(row) if row else None
+
     def add_image(
         self,
         patient_id: str,
@@ -325,6 +331,52 @@ class SiteStore:
         with ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
+
+    def list_case_summaries(self) -> list[dict[str, Any]]:
+        patients_by_id = {patient["patient_id"]: patient for patient in self.list_patients()}
+        images_by_visit: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for image in self.list_images():
+            images_by_visit.setdefault((image["patient_id"], image["visit_date"]), []).append(image)
+
+        summaries: list[dict[str, Any]] = []
+        for visit in self.list_visits():
+            patient = patients_by_id.get(visit["patient_id"], {})
+            visit_images = images_by_visit.get((visit["patient_id"], visit["visit_date"]), [])
+            representative = next((image for image in visit_images if image.get("is_representative")), None)
+            latest_uploaded_at = visit_images[-1]["uploaded_at"] if visit_images else None
+            summaries.append(
+                {
+                    "case_id": f"{visit['patient_id']}::{visit['visit_date']}",
+                    "visit_id": visit["visit_id"],
+                    "patient_id": visit["patient_id"],
+                    "visit_date": visit["visit_date"],
+                    "chart_alias": patient.get("chart_alias", ""),
+                    "local_case_code": patient.get("local_case_code", ""),
+                    "sex": patient.get("sex", ""),
+                    "age": patient.get("age"),
+                    "culture_category": visit.get("culture_category", ""),
+                    "culture_species": visit.get("culture_species", ""),
+                    "contact_lens_use": visit.get("contact_lens_use", ""),
+                    "visit_status": visit.get("visit_status", "active"),
+                    "smear_result": visit.get("smear_result", ""),
+                    "polymicrobial": bool(visit.get("polymicrobial", False)),
+                    "image_count": len(visit_images),
+                    "representative_image_id": representative["image_id"] if representative else None,
+                    "representative_view": representative["view"] if representative else None,
+                    "created_at": visit.get("created_at"),
+                    "latest_image_uploaded_at": latest_uploaded_at,
+                }
+            )
+
+        summaries.sort(
+            key=lambda item: (
+                item.get("visit_date") or "",
+                item.get("latest_image_uploaded_at") or "",
+                item.get("created_at") or "",
+            ),
+            reverse=True,
+        )
+        return summaries
 
     def generate_manifest(self) -> pd.DataFrame:
         data_frame = pd.DataFrame(self.dataset_records(), columns=MANIFEST_COLUMNS)

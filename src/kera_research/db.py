@@ -15,6 +15,8 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    inspect,
+    text,
 )
 from sqlalchemy.engine import Engine
 
@@ -42,6 +44,7 @@ users = Table(
     METADATA,
     Column("user_id", String(64), primary_key=True),
     Column("username", String(255), nullable=False, unique=True, index=True),
+    Column("google_sub", String(255), nullable=True),
     Column("password", Text, nullable=False),
     Column("role", String(32), nullable=False),
     Column("full_name", String(255), nullable=False),
@@ -246,3 +249,25 @@ site_jobs = Table(
 
 def init_db() -> None:
     METADATA.create_all(ENGINE)
+    _migrate_schema()
+
+
+def _migrate_schema() -> None:
+    inspector = inspect(ENGINE)
+    if "users" not in inspector.get_table_names():
+        return
+
+    user_columns = {column["name"] for column in inspector.get_columns("users")}
+    with ENGINE.begin() as conn:
+        if "google_sub" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)"))
+
+        if ENGINE.dialect.name == "sqlite":
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub "
+                    "ON users (google_sub) WHERE google_sub IS NOT NULL"
+                )
+            )
+        elif ENGINE.dialect.name == "postgresql":
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub)"))

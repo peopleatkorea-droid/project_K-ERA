@@ -10,7 +10,8 @@ from kera_research.config import MEDSAM_CHECKPOINT, MEDSAM_SCRIPT
 from kera_research.services.hardware import detect_hardware
 
 REQUIRED_PACKAGES = {
-    "streamlit": "UI",
+    "fastapi": "API",
+    "uvicorn": "ASGI server",
     "pandas": "Metadata",
     "plotly": "Charts",
     "matplotlib": "Visualization",

@@ -15,7 +15,7 @@ const serif = Fraunces({
 
 export const metadata: Metadata = {
   title: "K-ERA Research Web",
-  description: "FastAPI + Next.js clinician research workflow for infectious keratitis.",
+  description: "Clinical research workspace for infectious keratitis case review and validation.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -81,22 +81,40 @@ class ControlPlaneStore:
         serialized["approval_status"] = self.user_approval_status(serialized)
         latest_request = self.latest_access_request(serialized["user_id"])
         serialized["latest_access_request"] = latest_request
+        serialized.pop("google_sub", None)
+        serialized.pop("password", None)
         return serialized
 
-    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+    def _load_user_by_id(self, user_id: str) -> dict[str, Any] | None:
         with ENGINE.begin() as conn:
             row = conn.execute(select(users).where(users.c.user_id == user_id)).mappings().first()
-        if row is None:
-            return None
-        return self._serialize_user(dict(row))
+        return dict(row) if row else None
 
-    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+    def _load_user_by_username(self, username: str) -> dict[str, Any] | None:
         normalized = username.strip().lower()
         with ENGINE.begin() as conn:
             row = conn.execute(select(users).where(users.c.username == normalized)).mappings().first()
-        if row is None:
+        return dict(row) if row else None
+
+    def _load_user_by_google_sub(self, google_sub: str) -> dict[str, Any] | None:
+        normalized_sub = google_sub.strip()
+        if not normalized_sub:
             return None
-        return self._serialize_user(dict(row))
+        with ENGINE.begin() as conn:
+            row = conn.execute(select(users).where(users.c.google_sub == normalized_sub)).mappings().first()
+        return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        row = self._load_user_by_id(user_id)
+        return self._serialize_user(row) if row else None
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        row = self._load_user_by_username(username)
+        return self._serialize_user(row) if row else None
+
+    def get_user_by_google_sub(self, google_sub: str) -> dict[str, Any] | None:
+        row = self._load_user_by_google_sub(google_sub)
+        return self._serialize_user(row) if row else None
 
     def list_users(self) -> list[dict[str, Any]]:
         with ENGINE.begin() as conn:
@@ -104,11 +122,14 @@ class ControlPlaneStore:
         return [self._serialize_user(dict(row)) for row in rows]
 
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
+        normalized_site_ids = list(dict.fromkeys(user_record.get("site_ids") or []))
         normalized = {
             **user_record,
             "username": user_record["username"].strip().lower(),
-            "site_ids": list(dict.fromkeys(user_record.get("site_ids", []))),
+            "site_ids": normalized_site_ids,
         }
+        if "google_sub" in normalized:
+            normalized["google_sub"] = str(normalized.get("google_sub") or "").strip() or None
         with ENGINE.begin() as conn:
             existing = conn.execute(
                 select(users).where(
@@ -116,30 +137,62 @@ class ControlPlaneStore:
                 )
             ).mappings().first()
             if existing:
+                persisted = dict(existing)
+                persisted.update(normalized)
+                persisted["user_id"] = existing["user_id"]
                 conn.execute(
                     update(users)
                     .where(users.c.user_id == existing["user_id"])
-                    .values(**normalized)
+                    .values(**persisted)
                 )
+                user_id = existing["user_id"]
             else:
                 conn.execute(users.insert().values(**normalized))
-        return self.get_user_by_id(normalized["user_id"]) or normalized
+                user_id = normalized["user_id"]
+        return self.get_user_by_id(user_id) or normalized
 
-    def ensure_google_user(self, email: str, full_name: str) -> dict[str, Any]:
+    def ensure_google_user(self, google_sub: str, email: str, full_name: str) -> dict[str, Any]:
+        normalized_sub = google_sub.strip()
         normalized_email = email.strip().lower()
-        existing = self.get_user_by_username(normalized_email)
-        if existing:
-            if existing.get("full_name") != full_name:
-                updated = {**existing, "full_name": full_name}
-                return self.upsert_user(updated)
-            return existing
+        normalized_name = full_name.strip() or normalized_email
+        if not normalized_sub:
+            raise ValueError("Google account did not return a stable subject identifier.")
+
+        existing_by_sub = self._load_user_by_google_sub(normalized_sub)
+        if existing_by_sub:
+            email_owner = self._load_user_by_username(normalized_email)
+            if email_owner and email_owner["user_id"] != existing_by_sub["user_id"]:
+                raise ValueError("This Google email is already used by another account.")
+            updated = {
+                **existing_by_sub,
+                "username": normalized_email,
+                "full_name": normalized_name,
+                "google_sub": normalized_sub,
+            }
+            return self.upsert_user(updated)
+
+        existing_by_email = self._load_user_by_username(normalized_email)
+        if existing_by_email:
+            if existing_by_email.get("password") != GOOGLE_AUTH_SENTINEL:
+                raise ValueError("This email is already reserved by a local account.")
+            bound_google_sub = str(existing_by_email.get("google_sub") or "").strip()
+            if bound_google_sub and bound_google_sub != normalized_sub:
+                raise ValueError("This email is already linked to a different Google account.")
+            updated = {
+                **existing_by_email,
+                "full_name": normalized_name,
+                "google_sub": normalized_sub,
+            }
+            return self.upsert_user(updated)
+
         return self.upsert_user(
             {
                 "user_id": make_id("user"),
                 "username": normalized_email,
+                "google_sub": normalized_sub,
                 "password": GOOGLE_AUTH_SENTINEL,
                 "role": "viewer",
-                "full_name": full_name.strip() or normalized_email,
+                "full_name": normalized_name,
                 "site_ids": [],
             }
         )

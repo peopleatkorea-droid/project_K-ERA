@@ -1,483 +1,636 @@
 # K-ERA Research Platform
 
-감염성 각막염(infectious keratitis) AI 연구를 위한 데이터셋 큐레이션 및 외부 검증 플랫폼입니다.
-
-이 프로젝트는 임상 진단용 의료기기가 아니라, 다기관 연구 환경에서 슬릿램프 이미지 데이터셋을 정리하고, 병원별 로컬 데이터로 외부 검증을 수행하며, Federated Learning 방식으로 다기관 모델을 점진적으로 개선하는 연구 워크플로우 도구입니다.
-
-한국인 임상의 및 연구자가 최소한의 코딩 지식으로 사용할 수 있도록 Streamlit 기반의 단계형(Case Wizard) UI로 구성했습니다.
-
-## 1. 핵심 철학
-
-- **원본 이미지는 병원 내부 로컬 환경에만 저장합니다.**
-- 중앙 서버는 프로젝트 메타데이터, 모델 버전, 기여 통계, 집계된 모델 업데이트만 관리합니다.
-- 원본 슬릿램프 이미지를 외부로 전송하지 않아 보안·프라이버시 규정을 준수합니다.
-- Federated Learning: 각 병원에서 로컬 파인튜닝 후 가중치 델타만 중앙에 전송합니다.
-- 외부 검증(External Validation) → 기여(Contribute) → 중앙 집계(FedAvg Aggregation) 순서를 권장합니다.
-
-## 2. Case Wizard 워크플로우
-
-임상의가 진료 후 단계별로 케이스를 입력하는 7단계 wizard 구조입니다.
-
-```
-[1] 환자  →  [2] 방문  →  [3] 이미지  →  [4] 검증  →  [5] 시각화  →  [6] 기여  →  [7] 완료
-```
-
-| 단계 | 내용 |
-|------|------|
-| 1. 환자 | 기존 환자 검색 + 이전 방문 타임라인 확인 / 신규 환자 등록 |
-| 2. 방문 | 방문일, Culture 결과, 균종, 콘택트렌즈, 선행요인, **활성기(active_stage)** 여부 입력 |
-| 3. 이미지 | 슬릿램프 이미지 다중 업로드, view(white/slit/fluorescein) 지정, 대표 이미지 선택 |
-| 4. 검증 | 글로벌 모델 선택, 실행 모드(Auto/CPU/GPU) 선택, 즉시 추론 실행, 예측 확률 바 확인 |
-| 5. 시각화 | 원본 이미지 \| MedSAM ROI crop \| Grad-CAM 3단 비교 |
-| 6. 기여 | Federated Learning 설명 확인, 로컬 파인튜닝 후 가중치 델타 기여 또는 저장만 선택 |
-| 7. 완료 | 감사 메시지 + 사이트 기여 통계 카드 (누적 케이스 수, 기여 횟수, 마지막 기여일) |
-
-사이드바에서 언제든지 **새 케이스**, **대시보드**, **관리자 패널**로 이동할 수 있습니다.
-
-## 3. 지원 모델 구조
-
-### 현재 지원 아키텍처
-
-| 아키텍처 | 용도 |
-|----------|------|
-| CNN baseline | 경량 baseline, MedSAM crop 없이 동작 |
-| ViT baseline | 경량 baseline, MedSAM crop 없이 동작 |
-| Swin baseline | 경량 baseline, MedSAM crop 없이 동작 |
-| **DenseNet121** | **사전학습 모델(.pth) 연동, MedSAM crop 필수** |
-| **DenseNet161** | **사전학습 모델(.pth) 연동, MedSAM crop 필수** |
-| **DenseNet169** | **사전학습 모델(.pth) 연동, MedSAM crop 필수** |
-| **DenseNet201** | **사전학습 모델(.pth) 연동, MedSAM crop 필수** |
-
-### DenseNet .pth 파일 연동
-
-기존에 DenseNet으로 학습한 `.pth` 파일이 있다면 바로 연동할 수 있습니다.
-
-`_load_densenet_flexible()` 함수가 다음 5가지 checkpoint 형식을 자동으로 처리합니다.
-
-- 일반 state_dict
-- `module.` prefix (DataParallel로 학습한 경우)
-- `model.` prefix (wrapper 클래스로 저장한 경우)
-- `state_dict` key 안에 저장된 경우
-- `model_state_dict` key 안에 저장된 경우
-
-`.pth` 파일이 없으면 해당 모델은 `ready: False`로 등록되어 추론에 사용되지 않습니다.
-
-### 초기 학습 (Initial Training)
-
-원본 이미지만 있고 아직 학습 데이터를 정리하지 않은 경우, 앱 내 **관리자 패널 → 초기 학습** 탭에서 처음부터 학습할 수 있습니다.
-
-- ImageNet pretrained DenseNet을 backbone으로 사용
-- 관리자가 직접 train/val split 비율, 에폭 수, 학습률을 설정
-- augmentation(좌우 반전, 밝기/대비 jitter) 자동 적용
-- Cosine Annealing LR scheduler 사용
-- 실시간 progress bar + 학습/검증 손실 차트 제공
-- best validation loss 기준 모델 자동 저장 후 모델 레지스트리에 등록
-
-## 4. Federated Learning
-
-### 구조 (B안: 이미지 외부 전송 없음)
-
-```
-[병원 A 로컬 파인튜닝] ──┐
-[병원 B 로컬 파인튜닝] ──┼──▶ 가중치 델타만 중앙 전송 ──▶ FedAvg 집계 ──▶ 새 글로벌 모델 배포
-[병원 C 로컬 파인튜닝] ──┘
-```
-
-- 원본 이미지는 각 병원 로컬에만 존재합니다.
-- 중앙에는 **가중치 델타(weight delta)** 만 전송됩니다.
-- 집계는 **케이스 수 가중 FedAvg(weighted average)** 방식으로 수행됩니다.
-- 관리자가 집계 시 참여 사이트와 round를 선택합니다.
-
-### 기여 통계
-
-각 사이트의 기여 이력은 `contributions.json`에 저장됩니다.
-
-- 누적 기여 케이스 수
-- 기여 횟수
-- 마지막 기여일
-
-기여 완료 후 7단계 완료 화면에서 확인할 수 있습니다.
-
-## 5. 시스템 구조
-
-### SaaS Control Plane
-
-중앙에서 관리하는 영역입니다.
-
-- 사용자 로그인
-- 프로젝트 관리
-- 사이트(병원) 등록
-- 균종 드롭다운 및 신규 균종 요청 승인
-- 모델 버전 관리
-- 검증 통계 저장
-- **기여 이력 및 집계 기록 관리**
-- **Federated aggregation (FedAvg) 실행 및 새 모델 버전 등록**
-
-### Local Data Plane
-
-각 병원 내부에서 운영하는 영역입니다.
-
-- 이미지 로컬 저장
-- 환자/방문/이미지 메타데이터 저장
-- 데이터셋 manifest 자동 생성
-- MedSAM ROI 생성
-- **DenseNet 추론 (MedSAM crop → DenseNet 파이프라인)**
-- Grad-CAM 시각화
-- 외부 검증 수행 (per-case 즉시 추론)
-- **로컬 파인튜닝 후 가중치 델타 생성**
-- **초기 학습 (ImageNet pretrained DenseNet 처음부터 학습)**
-
-## 6. 주요 기능
-
-### Case Wizard
-
-- 7단계 단계형 입력 화면
-- 환자 검색 및 이전 방문 타임라인
-- 신규 환자 등록
-- Culture 정보 입력 (confirmed, category, species)
-- **active_stage(활성기)** 토글: 활성기 케이스 학습 기여 우선 적용
-- 슬릿램프 이미지 다중 업로드 (view 지정, 대표 이미지 선택)
-- 즉시 추론(per-case validation)
-- 원본 | MedSAM crop | Grad-CAM 3단 비교 시각화
-- Federated Learning 기여 또는 저장만 선택
-
-### 일괄 데이터 임포트
-
-기존에 정리된 데이터가 있거나 다량의 케이스를 한 번에 입력할 때 사용합니다.
-
-- **관리자 패널 → 데이터 임포트** 탭 사용
-- CSV 템플릿 다운로드 → 작성 후 ZIP(CSV + 이미지)으로 압축
-- ZIP 업로드 → 자동 파싱 및 데이터 저장
-
-### 연구 대시보드
-
-- 누적 케이스 수, Culture 분포(bacterial/fungal) 차트
-- 최근 검증 이력 테이블
-
-### 관리자 패널 (6탭)
-
-| 탭 | 기능 |
-|----|------|
-| 데이터 임포트 | CSV 템플릿 다운로드 + ZIP 일괄 임포트 |
-| 초기 학습 | ImageNet pretrained DenseNet 처음부터 학습 |
-| 모델 관리 | 글로벌 모델 목록, 버전 관리 |
-| 사이트 관리 | 병원 등록 및 조회 |
-| 균종 관리 | 균종 드롭다운 관리 및 신규 요청 승인 |
-| Federated | 기여 이력 조회, FedAvg 집계 실행, 새 모델 배포 |
-
-## 7. 연구 데이터 입력 규칙
-
-### 필수 조건
-
-- culture-proven keratitis case만 허용
-- 방문 등록 시 `culture_confirmed = true`여야 함
-
-### 필수 환자 정보
-
-- `patient_id`
-- `sex`
-- `age`
-
-### 필수 방문 정보
-
-- `visit_date`
-- `culture_confirmed`
-- `culture_category`
-- `culture_species`
-- `contact_lens_use`
-- `predisposing_factor`
-- `active_stage` (활성기 여부, 기본값 true)
-
-### 이미지 정보
-
-각 업로드 이미지에 대해 사용자가 직접 다음을 지정합니다.
-
-- `view`
-  - `white`
-  - `slit`
-  - `fluorescein`
-- `is_representative`
-
-자동 view 분류는 하지 않습니다.
-
-## 8. 균종 관리
-
-초기 드롭다운은 다음을 포함합니다.
-
-### Bacterial
-
-- Staphylococcus aureus
-- Staphylococcus epidermidis
-- Streptococcus pneumoniae
-- Pseudomonas aeruginosa
-- Moraxella
-- Nocardia
-- Other
-
-### Fungal
-
-- Fusarium
-- Aspergillus
-- Candida
-- Curvularia
-- Alternaria
-- Other
-
-목록에 없는 균종은 사용자가 요청할 수 있으며, 관리자가 승인하면 중앙 catalog에 반영됩니다.
-
-## 9. 폴더 구조
-
-### 로컬 데이터 (병원 내부)
+감염성 각막염(infectious keratitis) 연구를 위한 데이터셋 운영, 외부 검증, 로컬 학습, Federated Learning 집계를 지원하는 연구 플랫폼입니다.
+
+이 저장소에는 현재 웹 기반 Local Node가 기본 실행 경로로 들어 있습니다.
+
+- `FastAPI + Next.js Web Local Node`: 연구자/임상의가 병원 내부에서 직접 사용하는 주 실행 앱
+- `src/kera_research/ui.py`: 과거 Streamlit 구현 흔적로 남아 있는 레거시 참조 코드
+
+중요: 이 프로젝트는 연구 워크플로우용이며, 임상 진단/치료 의사결정용 의료기기가 아닙니다.
+
+## 1. 앱의 목적
+
+이 앱의 목적은 다음 4가지를 하나의 연구 워크플로우로 묶는 것입니다.
+
+1. 병원 내부 원본 슬릿램프 이미지를 외부 반출 없이 구조화해 저장
+2. 케이스 단위 또는 사이트 전체 단위로 글로벌 모델 외부 검증 수행
+3. 로컬 데이터로 fine-tuning 후 weight delta만 중앙에 기여
+4. 여러 기관의 delta를 weighted FedAvg로 집계해 새 글로벌 모델 생성
+
+즉, "원본 이미지는 병원 내부에 남기고, 중앙에는 메타데이터/지표/모델 업데이트만 전달"하는 구조를 목표로 합니다.
+
+## 2. 현재 구현 상태 요약
+
+2026-03 기준, 코드상 구현 상태는 아래와 같습니다.
+
+### Web Local Node
+
+- 문서형 `Case Canvas` 구현 완료
+- 환자/방문/이미지 등록 구현
+- 케이스 단위 validation / ROI preview / Grad-CAM 확인 구현
+- 사이트 전체 external validation 구현
+- 데이터 일괄 임포트 구현
+- 초기 학습(initial training) 구현
+- 환자 단위 cross-validation 구현
+- Federated aggregation 구현
+- 사이트/프로젝트/사용자 관리 화면 구현
+
+### FastAPI + Next.js Web
+
+- JWT 로그인 구현
+- Google Sign-In 기반 연구자 온보딩 구현
+- 기관/역할 접근 요청(access request) 제출 및 승인 구현
+- 사이트별 요약 조회 구현
+- 환자/방문/이미지/케이스 요약 API 구현
+- 저장된 케이스 단위 validation / ROI preview / contribution API 구현
+- validation artifact, ROI artifact, case history, site activity API 구현
+- 사이트 전체 external validation 실행 및 최근 metric 조회 API 구현
+- Next.js 웹 UI는 인증, 승인 요청, 승인 큐, 문서형 케이스 캔버스, 저장된 케이스 검증/ROI preview/기여/히스토리 조회까지 연결됨
+
+### 아직 진행 중인 부분
+
+- 학습/집계 작업은 현재 동기식 실행이며 별도 worker/job runner는 연결되지 않았습니다.
+- MedSAM은 외부 스크립트가 설정되면 실제 호출하고, 아니면 fallback ROI를 생성합니다.
+- `src/kera_research/ui.py` 자체는 저장소에 남아 있으므로, 완전한 소스 삭제까지 하려면 후속 정리 커밋이 한 번 더 필요합니다.
+
+### 2026-03-11 웹 마이그레이션 업데이트
+
+오늘 기준으로 웹 스택 쪽에 아래 항목이 추가되었습니다.
+
+- Notion 스타일에 가까운 `Case Canvas` 도입
+- 환자/방문/이미지 입력을 문서형 화면에서 인라인 편집으로 처리
+- 브라우저 로컬 기반 draft autosave / 복구
+- 저장된 케이스에 대한 ROI preview
+- 저장된 케이스에 대한 validation 실행과 Grad-CAM / ROI artifact 확인
+- 저장된 케이스에 대한 contribution 실행과 기여 통계 확인
+- selected case 기준 validation / contribution history 조회
+- 웹 워크스페이스에서 site-level validation 실행 및 최근 run 확인
+- 사이트 단위 recent activity / pending update 요약
+- 로그인/승인 화면을 워크스페이스와 같은 다크 톤으로 정리
+- legacy 콘솔은 admin 전용 fallback으로 제한
+- selected case validation 결과에 confidence 게이지와 상태 배지 추가
+- admin/site_admin용 `Operations Workspace` 추가
+- 웹에서 access request review, initial training, cross-validation, model registry, federated aggregation 실행 가능
+- FastAPI에 model registry / model update / aggregation / training endpoint 추가
+- `tests/test_api_http.py`에 access review, validation, contribution, training, aggregation HTTP 테스트 추가
+- 웹 `Operations Workspace`에 bulk import, project/site/user 관리, 고급 validation 비교, misclassification review 추가
+- FastAPI에 bulk import, admin project/site/user 관리, site comparison, validation case listing endpoint 추가
+- `run_local_node.ps1` 기본 런처가 Streamlit 대신 FastAPI + Next.js 두 프로세스를 올리도록 변경
+- 기본 실행 경로에서 Streamlit fallback/legacy 콘솔 제거
+
+즉, 웹 UI는 더 이상 "승인용 보조 콘솔" 수준이 아니라, 실제 임상 입력과 운영 관리의 기본 경로가 되었습니다. 현재 기본 런처와 기본 사용자 흐름은 모두 FastAPI + Next.js 기준입니다.
+
+## 3. 전체 구조
 
 ```text
-storage/sites/<site_id>/
-  data/raw/<patient_id>/<visit_date>/image_file.jpg
-  patients.json
-  visits.json
-  images.json
-  manifests/dataset_manifest.csv
-  artifacts/gradcam/
-  artifacts/medsam_masks/
-  artifacts/roi_crops/
-  model_updates/
-  contributions.json
+[병원 내부 Local Node]
+  Next.js UI
+  FastAPI API
+  SQLite/PostgreSQL 메타데이터 저장
+  원본 이미지 저장
+  MedSAM / Grad-CAM / PyTorch 학습
+
+            │
+            │ weight delta / 집계 메타데이터
+            ▼
+
+[중앙 Control Plane 논리]
+  프로젝트 / 사이트 / 모델 버전 / 기여 / 집계 이력 관리
 ```
 
-### 중앙 Control Plane
+현재 저장소는 단일 리포지토리 안에 Local Node와 중앙 Control Plane 로직을 함께 담고 있습니다.
+
+## 4. 주요 사용자 흐름
+
+### 4.1 Streamlit Case Wizard
+
+Streamlit 앱의 핵심 입력 흐름은 7단계입니다.
 
 ```text
-storage/control_plane/
-  projects.json
-  sites.json
-  organism_catalog.json
-  organism_requests.json
-  model_registry.json
-  validation_runs.json
-  validation_cases/
-  model_updates.json
-  contributions/
-  aggregations/
+[1] 환자 → [2] 방문 → [3] 이미지 → [4] 검증 → [5] 시각화 → [6] 기여 → [7] 완료
 ```
 
-## 10. Manifest 스키마
+각 단계에서 가능한 일:
 
-최소 manifest 컬럼은 다음과 같습니다.
+| 단계 | 구현 내용 |
+|------|-----------|
+| 1. 환자 | 기존 환자 검색, 신규 환자 등록, 이전 방문 타임라인 확인 |
+| 2. 방문 | culture 정보, 균종, contact lens, predisposing factor, visit status, smear 결과 입력 |
+| 3. 이미지 | 다중 이미지 업로드, `view` 지정, 대표 이미지 선택 |
+| 4. 검증 | 글로벌 모델 선택, CPU/GPU/Auto 실행, 단일 케이스 즉시 추론 |
+| 5. 시각화 | 원본 이미지, MedSAM ROI crop, Grad-CAM 결과 비교 |
+| 6. 기여 | 로컬 fine-tuning 후 weight delta 생성 및 기여 |
+| 7. 완료 | 기여 결과와 통계 확인 |
 
-- `patient_id`
-- `sex`
-- `age`
-- `visit_date`
-- `culture_confirmed`
-- `culture_category`
-- `culture_species`
-- `contact_lens_use`
-- `predisposing_factor`
-- `active_stage`
-- `view`
-- `image_path`
-- `is_representative`
+### 4.2 Dashboard
 
-상세 스키마는 [docs/dataset_schema.md](docs/dataset_schema.md) 문서를 참고하면 됩니다.
+Streamlit 대시보드에는 다음이 포함됩니다.
 
-## 11. 실행 환경
+- 사이트별 환자/방문/활성기 방문 수
+- 고정 patient split 현황
+- 사이트 전체 external validation 실행
+- 최신 validation AUROC / Accuracy / Sensitivity / Specificity / F1 확인
+- 최근 validation 이력 및 데이터 분포 확인
 
-### 권장 스택
+### 4.3 Admin Panel
 
-- Python 3.10+
-- Streamlit
-- PyTorch
-- torchvision
-- pandas
-- plotly
-- Pillow
-- scikit-learn
+현재 관리자 패널은 실제 코드 기준으로 다음 탭을 가집니다.
 
-### 임상의용 권장 실행 방식
+#### `admin` 권한
 
-임상의 또는 일반 연구자가 직접 `pip install`을 입력하는 방식은 권장하지 않습니다.
+1. 데이터 임포트
+2. 초기 학습
+3. Cross-Validation
+4. 모델 관리
+5. 사이트 관리
+6. 균종 관리
+7. 사용자 권한
+8. Federated 집계
 
-권장 구조는 다음과 같습니다.
+#### `site_admin` 권한
 
-- 연구자/임상의: 브라우저만 사용
-- 병원 IT 또는 설치 담당자: Local Node 1회 설치 및 업데이트 담당
+- 데이터 임포트
+- 초기 학습
+- Cross-Validation
+- 모델 관리
+- 사이트 관리(조회 중심)
 
-설치 담당자는 프로젝트 루트에서 아래 두 명령만 사용하면 됩니다.
+## 5. 웹/API 스택 구현 범위
 
-```powershell
-.\scripts\setup_local_node.ps1
-.\scripts\run_local_node.ps1
-```
+README에 기존에 잘 드러나지 않았던 부분입니다. 이 저장소에는 별도 웹 스택이 포함되어 있습니다.
 
-이 스크립트는 가상환경 생성, 패키지 설치, 기본 health check, Streamlit 실행을 순서대로 처리합니다.
+### FastAPI API
 
-상세 운영 방식은 [docs/local_node_deployment.md](docs/local_node_deployment.md)를 참고하면 됩니다.
+구현된 주요 엔드포인트:
 
-### 개발/테스트용 수동 설치
+- `/api/health`
+- `/api/public/sites`
+- `/api/auth/login`
+- `/api/auth/google`
+- `/api/auth/me`
+- `/api/auth/access-requests`
+- `/api/auth/request-access`
+- `/api/admin/access-requests`
+- `/api/admin/access-requests/{request_id}/review`
+- `/api/sites`
+- `/api/sites/{site_id}/summary`
+- `/api/sites/{site_id}/activity`
+- `/api/sites/{site_id}/cases`
+- `/api/sites/{site_id}/validations`
+- `/api/sites/{site_id}/validations/run`
+- `/api/sites/{site_id}/cases/validate`
+- `/api/sites/{site_id}/cases/contribute`
+- `/api/sites/{site_id}/cases/roi-preview`
+- `/api/sites/{site_id}/cases/roi-preview/artifacts/{artifact_kind}`
+- `/api/sites/{site_id}/cases/history`
+- `/api/sites/{site_id}/patients`
+- `/api/sites/{site_id}/visits`
+- `/api/sites/{site_id}/images`
+- `/api/sites/{site_id}/images/representative`
+- `/api/sites/{site_id}/images/{image_id}/content`
+- `/api/sites/{site_id}/validations/{validation_id}/artifacts/{artifact_kind}`
+- `/api/sites/{site_id}/manifest.csv`
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+### Next.js 웹 프론트엔드
 
-### 실행
+현재 웹 UI에서 가능한 일:
 
-```powershell
-.\scripts\run_local_node.ps1
-```
+- Google 계정 로그인
+- 로컬 관리자 계정 로그인
+- 기관/역할 접근 요청 제출
+- 승인 상태 확인
+- 관리자/사이트 관리자의 접근 요청 승인/반려
+- 접근 가능한 사이트 목록 확인
+- 사이트 요약 지표 조회
+- 사이트 activity 요약 조회
+- 문서형 케이스 캔버스에서 환자/방문/이미지 작성
+- 브라우저 로컬 draft 복구
+- 저장된 케이스 이미지 확인
+- 저장된 케이스 ROI preview
+- 저장된 케이스 validation 실행 및 artifact 확인
+- 저장된 케이스 contribution 실행
+- selected case 기준 validation / contribution history 확인
+- site-level validation 실행 및 최근 run 확인
+- manifest CSV 다운로드
 
-브라우저가 열리면 로그인 후 사용할 수 있습니다.
+즉, 웹 UI는 이미 케이스 입력과 검토의 핵심 흐름을 상당 부분 담당하고 있고, Streamlit은 아직 fallback 및 일부 고급 운영 화면 중심으로 남아 있습니다.
+
+## 6. 인증과 권한
+
+### 현재 지원 권한
+
+- `admin`
+- `site_admin`
+- `researcher`
+- `viewer`
+
+### 인증 방식
+
+- Streamlit: 로컬 username/password 로그인
+- Web: 로컬 username/password + Google Sign-In
 
 ### 기본 계정
 
 - 관리자: `admin / admin123`
 - 연구자: `researcher / research123`
 
-## 12. GPU / CPU 동작 방식
+### Google 온보딩 흐름
 
-앱은 실행 시 하드웨어를 자동 감지합니다.
+1. 사용자가 Google 계정으로 로그인
+2. 기본 권한은 `viewer` 상태로 생성
+3. 기관(site)과 역할(role) 접근 요청 제출
+4. `admin` 또는 해당 사이트의 `site_admin`이 승인/반려
+5. 승인 후 사이트 접근 가능
 
-실행 모드는 다음 세 가지입니다.
+## 7. 데이터 저장 구조
 
-| 모드 | 동작 |
-|------|------|
-| Auto | CUDA 가능 시 GPU, 아니면 CPU 자동 선택 |
-| CPU mode | 대표 이미지 중심 추론, classifier head 중심 제한적 학습 |
-| GPU mode | 전체 배치 처리, MedSAM batch, 전체 모델 fine-tuning |
+현재 구현은 "JSON 파일 중심"이 아니라 "SQLAlchemy 기반 DB + 아티팩트 파일" 구조입니다.
 
-## 13. MedSAM 및 시각화
+### 기본 DB
 
-### MedSAM
+- 기본 DB: `storage/kera.db` (SQLite)
+- 환경변수 `KERA_DATABASE_URL` 또는 `DATABASE_URL`로 다른 DB 사용 가능
+- `requirements.txt`에 `psycopg2-binary`가 포함되어 있어 PostgreSQL 연결도 고려한 구조입니다
 
-- 환경변수 `MEDSAM_SCRIPT`, `MEDSAM_CHECKPOINT` 설정 시 외부 MedSAM 추론 스크립트 호출
-- 설정이 없을 경우 fallback ROI 생성 로직 동작 (워크플로우 테스트용)
-- DenseNet 모델은 MedSAM crop을 필수 전처리로 사용 (`requires_medsam_crop: True`)
+### DB에 저장되는 주요 엔터티
 
-### 설명 가능성 시각화
+- users
+- access_requests
+- projects
+- sites
+- organism_catalog
+- organism_requests
+- patients
+- visits
+- images
+- validation_runs
+- model_versions
+- model_updates
+- contributions
+- aggregations
+- site_patient_splits
+- site_jobs
 
-| 모델 | 시각화 방식 |
-|------|------------|
-| CNN | Grad-CAM overlay |
-| ViT | patch embedding 기반 CAM overlay |
-| Swin | hierarchical window stage 기반 CAM overlay |
-| DenseNet | Grad-CAM (denseblock4 타겟) |
-
-## 14. 프로젝트 구조
+### 파일로 저장되는 주요 아티팩트
 
 ```text
-project_K-ERA/
-├── app.py                              # Streamlit 실행 진입점
-├── requirements.txt                    # 의존성 목록 (torchvision 포함)
-├── src/kera_research/
-│   ├── config.py                       # 경로, 기본 계정, 모델 기본 설정
-│   ├── domain.py                       # 공통 상수, 옵션값, 스키마 정의
-│   ├── storage.py                      # JSON/CSV 저장 유틸리티
-│   ├── ui.py                           # Streamlit UI (Case Wizard 7단계)
-│   └── services/
-│       ├── control_plane.py            # 중앙 메타데이터, 기여 통계, FedAvg 집계
-│       ├── data_plane.py               # 병원 로컬 데이터 저장소
-│       ├── hardware.py                 # CPU/GPU 감지
-│       ├── runtime.py                  # 로컬 노드 설치 상태 및 AI 준비 상태 점검
-│       ├── artifacts.py                # MedSAM 어댑터
-│       ├── modeling.py                 # CNN/ViT/Swin/DenseNet 모델, 추론, 시각화, 학습
-│       └── pipeline.py                 # validation, contribution, initial training orchestration
-├── docs/
-│   ├── dataset_schema.md               # 데이터 스키마 문서
-│   └── local_node_deployment.md        # Local Node 설치 및 운영 가이드
-└── scripts/
-    ├── setup_local_node.ps1            # Local Node 자동 설치 스크립트
-    └── run_local_node.ps1              # Local Node 실행 스크립트
+storage/
+  kera.db
+  control_plane/
+    validation_cases/
+      <validation_id>.json
+  sites/<site_id>/
+    data/raw/<patient_id>/<visit_date>/*
+    manifests/dataset_manifest.csv
+    artifacts/gradcam/*
+    artifacts/medsam_masks/*
+    artifacts/roi_crops/*
+    validation/<cross_validation_id>.json
+    model_updates/*
 ```
 
-## 15. 사용 순서
+## 8. 연구 데이터 스키마
 
-### 신규 케이스 입력 (Case Wizard)
+### 환자 정보
 
-1. 사이드바에서 사이트(병원) 선택
-2. **새 케이스** 버튼 클릭
-3. 환자 검색 또는 신규 등록
-4. 방문 정보 입력 (culture 결과, 균종, active_stage 등)
-5. 슬릿램프 이미지 업로드 및 view 지정
-6. 글로벌 모델로 즉시 검증 실행
-7. Grad-CAM / MedSAM crop 시각화 확인
-8. Federated Learning 기여 또는 저장만 선택
-9. 기여 통계 확인 후 완료
+- `patient_id`
+- `sex`
+- `age`
+- `chart_alias`
+- `local_case_code`
 
-### 일괄 데이터 임포트
+### 방문 정보
 
-1. **관리자 패널 → 데이터 임포트** 탭 이동
-2. CSV 템플릿 다운로드
-3. 케이스 정보 입력 후 이미지와 함께 ZIP으로 압축
-4. ZIP 파일 업로드
+기존 README보다 실제 구현 필드가 더 많습니다.
 
-### 처음부터 학습 (원본 이미지만 있는 경우)
+- `visit_date`
+- `culture_confirmed`
+- `culture_category`
+- `culture_species`
+- `contact_lens_use`
+- `predisposing_factor`
+- `visit_status`
+  - `active`
+  - `improving`
+  - `scar`
+- `active_stage`
+- `smear_result`
+  - `not done`
+  - `positive`
+  - `negative`
+  - `unknown`
+  - `other`
+- `polymicrobial`
+- `other_history`
 
-1. 일괄 임포트로 원본 이미지 및 메타데이터 등록
-2. **관리자 패널 → 초기 학습** 탭 이동
-3. 사이트, 모델 아키텍처, 하이퍼파라미터 설정
-4. 학습 시작 → 실시간 학습 곡선 모니터링
-5. 완료 후 모델 레지스트리에 자동 등록
+### 이미지 정보
 
-### Federated Aggregation (관리자)
+- `view`
+  - `white`
+  - `slit`
+  - `fluorescein`
+- `is_representative`
+- `image_path`
 
-1. **관리자 패널 → Federated** 탭 이동
-2. 각 사이트의 기여 이력 확인
-3. 집계에 참여할 사이트 선택
-4. FedAvg 집계 실행
-5. 새 글로벌 모델 버전으로 등록 및 배포
+### Manifest 컬럼
 
-## 16. UI / UX 특징
+현재 manifest는 최소 컬럼보다 확장된 형태로 생성됩니다.
 
-- 7단계 wizard 구조로 복잡한 데이터 입력을 단순화
-- 상단 step indicator로 현재 위치와 진행 상황 표시
-- 환자 이전 방문 타임라인 표시
-- 즉시 추론 결과를 확률 바(probability bar)로 시각적으로 표시
-- 원본 | MedSAM crop | Grad-CAM 3단 비교 화면
-- 기여 완료 후 통계 카드(누적 케이스, 기여 횟수, 마지막 기여일) 표시
-- AI 모듈이 준비되지 않은 경우 설치 상태 안내 표시
-- 한국어 기본, 영어 전환 지원
+- `site_id`
+- `patient_id`
+- `chart_alias`
+- `local_case_code`
+- `sex`
+- `age`
+- `visit_date`
+- `culture_confirmed`
+- `culture_category`
+- `culture_species`
+- `contact_lens_use`
+- `predisposing_factor`
+- `visit_status`
+- `active_stage`
+- `other_history`
+- `smear_result`
+- `polymicrobial`
+- `view`
+- `image_path`
+- `is_representative`
 
-## 17. 다국어(i18n)
+자세한 설명은 [docs/dataset_schema.md](docs/dataset_schema.md)를 참고하면 됩니다.
 
-현재 지원 언어:
+## 9. 데이터 입력/임포트 규칙
 
-- 한국어 (기본)
-- 영어
+### 단일 케이스 입력
 
-앱 좌측 사이드바에서 언어를 전환할 수 있습니다.
+- Streamlit wizard에서 환자 → 방문 → 이미지 순으로 등록
+- 방문이 먼저 있어야 이미지 업로드 가능
+- `culture_confirmed = true`인 case만 허용
 
-## 18. 주의사항
+### 일괄 임포트
 
-- 이 프로젝트는 연구 워크플로우용입니다.
-- 임상 진단이나 치료 의사결정을 위한 소프트웨어가 아닙니다.
-- 기본 포함 모델(CNN/ViT/Swin baseline)은 데모용입니다.
-- DenseNet .pth 파일은 별도로 준비해야 합니다.
-- 실제 연구 적용 시 보안, 익명화, 접근권한, 감사로그, IRB 및 기관 정책을 별도로 검토해야 합니다.
+관리자 패널의 데이터 임포트 기능에서 지원합니다.
 
-## 19. 다음 개발 권장 사항
+- CSV 템플릿 다운로드 가능
+- ZIP 이미지 또는 개별 이미지 파일 업로드 가능
+- CSV의 `image_filename`과 실제 업로드 파일명을 매칭
+- 환자/방문이 없으면 자동 생성 후 이미지 적재
 
-- 실제 MedSAM inference 파이프라인 연결 (현재 fallback ROI 사용)
-- 비동기 job queue 및 worker 도입 (초기 학습, 집계 background 처리)
-- 다기관 federated aggregation REST API 추가
-- 사용자/권한 체계 강화 (RBAC, 2FA)
-- 감사로그(audit trail) 추가
-- 보고서 및 export 템플릿 완전한 i18n 확장
-- longitudinal visit modeling 확장
-- multimodal fusion 확장
-- 성능 비교 대시보드 고도화
-- 모바일용 read-only 결과 화면 고도화
+CSV 템플릿에는 다음 확장 컬럼이 포함됩니다.
 
-## 20. 빠른 시작 요약
+- `chart_alias`
+- `local_case_code`
+- `visit_status`
+- `active_stage`
+- `smear_result`
+- `polymicrobial`
+- `other_history`
+
+## 10. 지원 모델 및 AI 기능
+
+### 지원 아키텍처
+
+| 아키텍처 | 상태 | 특징 |
+|----------|------|------|
+| CNN baseline | 구현됨 | 경량 baseline, raw image 사용 |
+| ViT baseline | 구현됨 | 경량 baseline, raw image 사용 |
+| Swin baseline | 구현됨 | 경량 baseline, raw image 사용 |
+| DenseNet121 | 구현됨 | MedSAM crop 필수 |
+| DenseNet161 | 구현됨 | MedSAM crop 필수 |
+| DenseNet169 | 구현됨 | MedSAM crop 필수 |
+| DenseNet201 | 구현됨 | MedSAM crop 필수 |
+
+### DenseNet 체크포인트 로딩
+
+기존 `.pth`를 유연하게 읽도록 구현되어 있습니다.
+
+- 일반 `state_dict`
+- `module.` prefix
+- `model.` prefix
+- `state_dict` key 래핑
+- `model_state_dict` key 래핑
+- `weights` key 래핑
+
+DenseNet 글로벌 모델 파일이 `models/`에 없으면 모델 버전은 등록되지만 `ready: false` 상태가 됩니다.
+
+### 구현된 AI 작업
+
+- 단일 이미지 추론
+- 단일 케이스 validation
+- 사이트 전체 external validation
+- Grad-CAM / CAM 기반 설명 생성
+- MedSAM ROI crop 생성
+- 초기 학습(initial training)
+- 환자 단위 cross-validation
+- 로컬 fine-tuning
+- weight delta 저장
+- weighted FedAvg aggregation
+
+## 11. MedSAM 동작 방식
+
+### 외부 MedSAM 연결
+
+아래 환경변수가 설정되어 있고 실제 파일이 존재하면 외부 MedSAM 스크립트를 호출합니다.
+
+- `MEDSAM_SCRIPT`
+- `MEDSAM_CHECKPOINT`
+
+기본 탐색 위치:
+
+- `scripts/medsam_auto_roi.py`
+- `MedSAM-main/work_dir/MedSAM/medsam_vit_b.pth`
+
+### fallback 동작
+
+외부 MedSAM이 없거나 실행 실패 시:
+
+- 중심부 타원형 mask를 생성
+- 그 영역을 crop해서 ROI로 사용
+
+따라서 MedSAM 환경이 없어도 전체 워크플로우 자체는 테스트할 수 있습니다.
+
+## 12. 학습 기능
+
+### 초기 학습
+
+구현 내용:
+
+- DenseNet 계열 학습
+- ImageNet pretrained 백본 사용 가능
+- patient-level split 고정 저장
+- train/val/test 분리
+- augmentation 적용
+- class imbalance weight 적용
+- cosine annealing scheduler 사용
+- best validation accuracy 기준 저장
+- test set metric 계산
+- 완료 후 글로벌 모델 버전 자동 등록
+
+### Cross-Validation
+
+README에 누락되어 있었지만 실제 구현되어 있습니다.
+
+- patient-level fold 기준
+- StratifiedKFold 가능 시 사용
+- fold별 모델 저장
+- 평균/표준편차 metric 계산
+- 결과 JSON 리포트 저장
+
+### Federated Learning
+
+현재 구현된 흐름:
+
+1. 각 사이트가 로컬 fine-tuning 실행
+2. base model 대비 weight delta 저장
+3. 중앙 관리자가 pending delta 목록 확인
+4. weighted FedAvg 수행
+5. 새 글로벌 모델 버전 등록
+6. 기존 pending update 상태를 `aggregated`로 변경
+
+## 13. 실행 모드
+
+### Streamlit Local Node
+
+권장 실행:
 
 ```powershell
 .\scripts\setup_local_node.ps1
 .\scripts\run_local_node.ps1
 ```
 
-로그인 후:
+### FastAPI API 서버
 
-1. 사이트 등록 (관리자 패널)
-2. 새 케이스 버튼 클릭
-3. 환자 → 방문 → 이미지 → 검증 → 시각화 → 기여 → 완료
+```powershell
+.\scripts\run_api_server.ps1
+```
 
-이 순서만 따르면 MVP 전체 흐름을 바로 확인할 수 있습니다.
+기본 주소:
+
+- `http://127.0.0.1:8000`
+
+### Next.js 웹 프론트엔드
+
+```powershell
+.\scripts\run_web_frontend.ps1
+```
+
+기본 주소:
+
+- `http://127.0.0.1:3000`
+
+`run_web_frontend.ps1`는 `node_modules`가 없으면 자동으로 `npm install`을 수행합니다.
+
+## 14. CPU / GPU 동작
+
+앱은 하드웨어를 자동 감지합니다.
+
+| 선택 | 실제 장치 결정 |
+|------|----------------|
+| `Auto` | CUDA 가능 시 `cuda`, 아니면 `cpu` |
+| `CPU mode` | 항상 `cpu` |
+| `GPU mode` | CUDA 가능 시 `cuda`, 아니면 `cpu`로 fallback |
+
+일부 학습 로직은 CPU일 때 더 짧은 epoch 또는 제한된 fine-tuning 전략을 사용합니다.
+
+## 15. 폴더 구조
+
+```text
+project_K-ERA/
+├── app.py
+├── README.md
+├── requirements.txt
+├── frontend/
+│   ├── app/page.tsx
+│   └── lib/api.ts
+├── src/kera_research/
+│   ├── api/app.py
+│   ├── ui.py
+│   ├── db.py
+│   ├── config.py
+│   ├── domain.py
+│   └── services/
+│       ├── artifacts.py
+│       ├── control_plane.py
+│       ├── data_plane.py
+│       ├── hardware.py
+│       ├── modeling.py
+│       ├── pipeline.py
+│       └── runtime.py
+├── scripts/
+│   ├── setup_local_node.ps1
+│   ├── run_local_node.ps1
+│   ├── run_api_server.ps1
+│   ├── run_web_frontend.ps1
+│   └── medsam_auto_roi.py
+├── docs/
+│   ├── dataset_schema.md
+│   └── local_node_deployment.md
+└── storage/
+    ├── kera.db
+    ├── control_plane/
+    └── sites/
+```
+
+## 16. 빠른 시작
+
+### 웹 Local Node로 바로 확인하기
+
+1. Local Node 설치
+
+```powershell
+.\scripts\setup_local_node.ps1
+```
+
+2. API + 프론트 동시 실행
+
+```powershell
+.\scripts\run_local_node.ps1
+```
+
+3. 로그인 후 순서
+
+- 프로젝트 생성
+- 사이트 등록
+- 기관/역할 승인 또는 관리자 로그인
+- 새 케이스 입력
+- 이미지 업로드
+- validation / ROI preview / misclassification review 확인
+- contribution 또는 운영 작업 실행
+
+### 웹 스택까지 같이 확인하기
+
+1. API 서버 실행
+
+```powershell
+.\scripts\run_api_server.ps1
+```
+
+2. 프론트엔드 실행
+
+```powershell
+.\scripts\run_web_frontend.ps1
+```
+
+3. 브라우저에서 `http://127.0.0.1:3000` 접속
+
+## 17. 문서에 새로 반영한 구현 항목
+
+기존 README에 비해 이번에 반영한 핵심 구현 항목은 다음과 같습니다.
+
+- FastAPI + Next.js 웹 스택 존재
+- Google 로그인 및 기관 승인 워크플로우
+- SQLAlchemy 기반 DB 저장 구조
+- 환자/방문 스키마의 확장 필드
+- 관리자 패널의 실제 탭 수(교차검증, 사용자 권한 포함)
+- patient-level cross-validation
+- 사이트 전체 external validation
+- 사용자/권한 관리
+- API 실행 스크립트와 웹 프론트엔드 실행 스크립트
+
+## 18. 한계와 다음 단계
+
+- 웹 프론트엔드가 현재 기본 운영 UI입니다.
+- 별도 worker/job queue, audit log, 더 세분화된 권한 체계는 후속 작업이 필요합니다.
+- 저장소 안의 `src/kera_research/ui.py`는 더 이상 기본 실행 경로가 아니며, 완전 삭제는 후속 정리 작업으로 남아 있습니다.
+- 실제 운영 전에는 IRB, 보안, 접근통제, 익명화 정책을 별도로 검토해야 합니다.

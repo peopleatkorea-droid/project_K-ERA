@@ -11,11 +11,114 @@ $venvPath = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $requirementsPath = Join-Path $repoRoot "requirements.txt"
 
+function Invoke-PythonCommand {
+    param(
+        [string[]]$PythonCommand,
+        [string[]]$Arguments
+    )
+
+    $exe = $PythonCommand[0]
+    $prefix = @()
+    if ($PythonCommand.Length -gt 1) {
+        $prefix = $PythonCommand[1..($PythonCommand.Length - 1)]
+    }
+
+    & $exe @prefix @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python command failed: $($PythonCommand -join ' ') $($Arguments -join ' ')"
+    }
+}
+
+function Test-PythonCommand {
+    param(
+        [string[]]$PythonCommand
+    )
+
+    try {
+        $exe = $PythonCommand[0]
+        $prefix = @()
+        if ($PythonCommand.Length -gt 1) {
+            $prefix = $PythonCommand[1..($PythonCommand.Length - 1)]
+        }
+        $probe = & $exe @prefix -c "import sys; major, minor = sys.version_info[:2]; print(f'{sys.executable}|{major}.{minor}'); raise SystemExit(0 if (major == 3 and minor in (10, 11, 12)) else 1)"
+        return [pscustomobject]@{
+            Ok = ($LASTEXITCODE -eq 0)
+            Probe = @($probe | Where-Object { $_ })
+        }
+    } catch {
+        return [pscustomobject]@{
+            Ok = $false
+            Probe = @()
+        }
+    }
+}
+
+function Resolve-PythonCommand {
+    param(
+        [string]$RequestedPython
+    )
+
+    $requested = ($RequestedPython ?? "").Trim()
+    if ($requested -and $requested -ne "python") {
+        $requestedResult = Test-PythonCommand @($requested)
+        if ($requestedResult.Ok) {
+            return [pscustomobject]@{
+                Command = @($requested)
+                Probe = $requestedResult.Probe
+            }
+        }
+        throw "Requested Python executable is not usable: $requested"
+    }
+
+    $candidateCommands = @()
+    if ($requested -eq "python") {
+        $candidateCommands += ,@("python")
+    }
+
+    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyLauncher) {
+        foreach ($versionSwitch in @("-3.11", "-3.12", "-3.10")) {
+            $candidateCommands += ,@($pyLauncher.Source, $versionSwitch)
+        }
+    }
+
+    foreach ($candidatePath in @(
+        "C:\Users\USER\anaconda3\python.exe",
+        "C:\Users\USER\AppData\Local\spyder-6\python.exe",
+        "C:\ProgramData\spyder-6\python.exe",
+        "C:\Users\USER\AppData\Local\Python\bin\python.exe"
+    )) {
+        if (Test-Path $candidatePath) {
+            $candidateCommands += ,@($candidatePath)
+        }
+    }
+
+    foreach ($candidate in $candidateCommands) {
+        $candidateResult = Test-PythonCommand $candidate
+        if ($candidateResult.Ok) {
+            return [pscustomobject]@{
+                Command = @($candidate)
+                Probe = $candidateResult.Probe
+            }
+        }
+    }
+
+    throw "No supported Python 3.10/3.11/3.12 executable was found. Set -PythonExe explicitly."
+}
+
 Write-Host "[K-ERA] Local node setup started" -ForegroundColor Cyan
+
+$pythonResolution = Resolve-PythonCommand -RequestedPython $PythonExe
+$pythonCommand = @($pythonResolution.Command)
+$pythonProbeValue = @($pythonResolution.Probe | Where-Object { $_ })[0]
+if (-not $pythonProbeValue) {
+    $pythonProbeValue = ($pythonCommand -join " ")
+}
+Write-Host "[K-ERA] Using Python: $pythonProbeValue"
 
 if (-not (Test-Path $venvPython)) {
     Write-Host "[K-ERA] Creating virtual environment at $venvPath"
-    & $PythonExe -m venv $venvPath
+    Invoke-PythonCommand -PythonCommand $pythonCommand -Arguments @("-m", "venv", $venvPath)
 }
 
 Write-Host "[K-ERA] Upgrading pip/setuptools/wheel"
@@ -39,7 +142,7 @@ if ($TorchIndexUrl) {
 Write-Host "[K-ERA] Running health check"
 @'
 import importlib
-packages = ["streamlit", "pandas", "plotly", "matplotlib", "numpy", "PIL", "sklearn", "torch"]
+packages = ["fastapi", "uvicorn", "pandas", "plotly", "matplotlib", "numpy", "PIL", "sklearn", "torch"]
 missing = []
 for name in packages:
     try:

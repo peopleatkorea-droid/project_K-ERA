@@ -6,6 +6,21 @@ export type SiteRecord = {
   hospital_name: string;
 };
 
+export type ProjectRecord = {
+  project_id: string;
+  name: string;
+  description: string;
+  owner_user_id: string;
+  site_ids: string[];
+  created_at: string;
+};
+
+export type ManagedSiteRecord = SiteRecord & {
+  project_id: string;
+  local_storage_root?: string;
+  created_at?: string;
+};
+
 export type AccessRequestRecord = {
   request_id: string;
   user_id: string;
@@ -30,6 +45,431 @@ export type AuthUser = {
   latest_access_request?: AccessRequestRecord | null;
 };
 
+export type ManagedUserRecord = AuthUser & {
+  site_ids: string[] | null;
+};
+
+export type PatientRecord = {
+  patient_id: string;
+  sex: string;
+  age: number;
+  chart_alias?: string;
+  local_case_code?: string;
+  created_at?: string;
+};
+
+export type VisitRecord = {
+  visit_id: string;
+  patient_id: string;
+  visit_date: string;
+  culture_confirmed: boolean;
+  culture_category: string;
+  culture_species: string;
+  contact_lens_use: string;
+  predisposing_factor: string[];
+  other_history: string;
+  visit_status: string;
+  active_stage: boolean;
+  smear_result: string;
+  polymicrobial: boolean;
+  created_at: string;
+};
+
+export type ImageRecord = {
+  image_id: string;
+  visit_id: string;
+  patient_id: string;
+  visit_date: string;
+  view: string;
+  image_path: string;
+  is_representative: boolean;
+  uploaded_at: string;
+};
+
+export type CaseSummaryRecord = {
+  case_id: string;
+  visit_id: string;
+  patient_id: string;
+  visit_date: string;
+  chart_alias: string;
+  local_case_code: string;
+  sex: string;
+  age: number | null;
+  culture_category: string;
+  culture_species: string;
+  contact_lens_use: string;
+  visit_status: string;
+  smear_result: string;
+  polymicrobial: boolean;
+  image_count: number;
+  representative_image_id: string | null;
+  representative_view: string | null;
+  created_at: string | null;
+  latest_image_uploaded_at: string | null;
+};
+
+export type SiteSummary = {
+  site_id: string;
+  n_patients: number;
+  n_visits: number;
+  n_images: number;
+  n_active_visits: number;
+  n_validation_runs: number;
+  latest_validation?: Record<string, unknown> | null;
+};
+
+export type CaseValidationSummary = {
+  validation_id: string;
+  project_id: string;
+  site_id: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_date: string;
+  patient_id: string;
+  visit_date: string;
+  n_images: number;
+  predicted_label: string;
+  true_label: string;
+  is_correct: boolean;
+  prediction_probability: number;
+};
+
+export type CaseValidationPrediction = {
+  validation_id: string;
+  patient_id: string;
+  visit_date: string;
+  true_label: string;
+  predicted_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+  gradcam_path?: string | null;
+  medsam_mask_path?: string | null;
+  roi_crop_path?: string | null;
+};
+
+export type CaseValidationResponse = {
+  summary: CaseValidationSummary;
+  case_prediction: CaseValidationPrediction | null;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+    requires_medsam_crop: boolean;
+  };
+  execution_device: string;
+  artifact_availability: {
+    gradcam: boolean;
+    roi_crop: boolean;
+    medsam_mask: boolean;
+  };
+};
+
+export type ContributionStats = {
+  total_contributions: number;
+  user_contributions: number;
+  user_contribution_pct: number;
+  current_model_version: string;
+};
+
+export type CaseContributionResponse = {
+  update: {
+    update_id: string;
+    site_id: string;
+    base_model_version_id: string;
+    architecture: string;
+    upload_type: string;
+    execution_device: string;
+    artifact_path: string;
+    n_cases: number;
+    contributed_by: string;
+    patient_id: string;
+    visit_date: string;
+    created_at: string;
+    training_input_policy: string;
+    training_summary: Record<string, unknown>;
+    status: string;
+  };
+  visit_status: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  stats: ContributionStats;
+};
+
+export type RoiPreviewRecord = {
+  patient_id: string;
+  visit_date: string;
+  image_id: string | null;
+  view: string;
+  is_representative: boolean;
+  source_image_path: string;
+  has_roi_crop: boolean;
+  has_medsam_mask: boolean;
+};
+
+export type CaseHistoryValidationRecord = {
+  validation_id: string;
+  run_date: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_scope: string;
+  predicted_label: string;
+  true_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+};
+
+export type CaseHistoryContributionRecord = {
+  contribution_id: string;
+  created_at: string;
+  user_id: string;
+  update_id: string;
+  update_status: string | null;
+  upload_type: string | null;
+  architecture: string | null;
+  execution_device: string | null;
+  base_model_version_id: string | null;
+};
+
+export type CaseHistoryResponse = {
+  validations: CaseHistoryValidationRecord[];
+  contributions: CaseHistoryContributionRecord[];
+};
+
+export type SiteActivityValidationRecord = {
+  validation_id: string;
+  run_date: string;
+  model_version: string;
+  model_architecture: string;
+  n_cases: number;
+  n_images: number;
+  accuracy?: number | null;
+  AUROC?: number | null;
+  site_id: string;
+};
+
+export type SiteActivityContributionRecord = {
+  contribution_id: string;
+  created_at: string;
+  user_id: string;
+  patient_id: string;
+  visit_date: string;
+  update_id: string;
+  update_status: string | null;
+  upload_type: string | null;
+};
+
+export type SiteActivityResponse = {
+  pending_updates: number;
+  recent_validations: SiteActivityValidationRecord[];
+  recent_contributions: SiteActivityContributionRecord[];
+};
+
+export type SiteValidationRunRecord = {
+  validation_id: string;
+  project_id: string;
+  site_id: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_date: string;
+  n_patients: number;
+  n_cases: number;
+  n_images: number;
+  AUROC?: number | null;
+  accuracy?: number | null;
+  sensitivity?: number | null;
+  specificity?: number | null;
+  F1?: number | null;
+};
+
+export type SiteValidationRunResponse = {
+  summary: SiteValidationRunRecord;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+};
+
+export type AdminOverviewResponse = {
+  site_count: number;
+  model_version_count: number;
+  pending_access_requests: number;
+  pending_model_updates: number;
+  current_model_version?: string | null;
+  aggregation_count?: number;
+};
+
+export type ModelVersionRecord = {
+  version_id: string;
+  version_name: string;
+  architecture: string;
+  stage?: string | null;
+  created_at?: string | null;
+  ready?: boolean;
+  is_current?: boolean;
+  notes?: string;
+  notes_ko?: string;
+  notes_en?: string;
+  model_path?: string;
+  aggregation_id?: string | null;
+  base_version_id?: string | null;
+  requires_medsam_crop?: boolean;
+  training_input_policy?: string;
+};
+
+export type ModelUpdateRecord = {
+  update_id: string;
+  site_id?: string | null;
+  base_model_version_id?: string | null;
+  architecture?: string | null;
+  upload_type?: string | null;
+  execution_device?: string | null;
+  artifact_path?: string | null;
+  n_cases?: number | null;
+  contributed_by?: string | null;
+  patient_id?: string | null;
+  visit_date?: string | null;
+  created_at?: string | null;
+  training_input_policy?: string | null;
+  training_summary?: Record<string, unknown>;
+  status?: string | null;
+};
+
+export type AggregationRecord = {
+  aggregation_id: string;
+  base_model_version_id?: string | null;
+  new_version_name: string;
+  architecture?: string | null;
+  site_weights?: Record<string, number>;
+  total_cases?: number | null;
+  created_at?: string | null;
+};
+
+export type InitialTrainingResult = {
+  training_id: string;
+  version_name: string;
+  output_model_path: string;
+  n_train: number;
+  n_val: number;
+  n_test: number;
+  n_train_patients: number;
+  n_val_patients: number;
+  n_test_patients: number;
+  best_val_acc: number;
+  use_pretrained: boolean;
+  patient_split?: Record<string, unknown>;
+  history?: Array<Record<string, unknown>>;
+  val_metrics?: Record<string, number | null>;
+  test_metrics?: Record<string, number | null>;
+  model_version?: ModelVersionRecord;
+};
+
+export type InitialTrainingResponse = {
+  site_id: string;
+  execution_device: string;
+  result: InitialTrainingResult;
+  model_version?: ModelVersionRecord;
+};
+
+export type CrossValidationMetricSummary = {
+  mean?: number | null;
+  std?: number | null;
+};
+
+export type CrossValidationFoldRecord = {
+  fold_index: number;
+  output_model_path?: string;
+  n_train_patients: number;
+  n_val_patients: number;
+  n_test_patients: number;
+  n_train: number;
+  n_val: number;
+  n_test: number;
+  best_val_acc?: number;
+  val_metrics?: Record<string, number | null>;
+  test_metrics?: Record<string, number | null>;
+  patient_split?: Record<string, unknown>;
+};
+
+export type CrossValidationReport = {
+  cross_validation_id: string;
+  site_id: string;
+  architecture: string;
+  execution_device?: string | null;
+  created_at?: string | null;
+  num_folds: number;
+  epochs: number;
+  learning_rate: number;
+  batch_size: number;
+  val_split: number;
+  use_pretrained: boolean;
+  aggregate_metrics: Record<string, CrossValidationMetricSummary>;
+  fold_results: CrossValidationFoldRecord[];
+  report_path?: string;
+  training_input_policy?: string;
+};
+
+export type CrossValidationRunResponse = {
+  site_id: string;
+  execution_device: string;
+  report: CrossValidationReport;
+};
+
+export type AggregationRunResponse = {
+  aggregation: AggregationRecord;
+  model_version?: ModelVersionRecord | null;
+  aggregated_update_ids: string[];
+};
+
+export type BulkImportResponse = {
+  site_id: string;
+  rows_received: number;
+  files_received: number;
+  created_patients: number;
+  created_visits: number;
+  imported_images: number;
+  skipped_images: number;
+  errors: string[];
+  file_sources: Record<string, string>;
+};
+
+export type SiteComparisonRecord = {
+  site_id: string;
+  display_name: string;
+  hospital_name: string;
+  run_count: number;
+  accuracy?: number | null;
+  sensitivity?: number | null;
+  specificity?: number | null;
+  F1?: number | null;
+  AUROC?: number | null;
+  latest_validation_id?: string | null;
+  latest_run_date?: string | null;
+};
+
+export type ValidationCasePredictionRecord = {
+  validation_id: string;
+  patient_id: string;
+  visit_date: string;
+  true_label: string;
+  predicted_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+  roi_crop_available: boolean;
+  gradcam_available: boolean;
+  medsam_mask_available: boolean;
+  representative_image_id?: string | null;
+  representative_view?: string | null;
+};
+
 export type AuthResponse = {
   auth_state: AuthState;
   access_token: string;
@@ -39,6 +479,10 @@ export type AuthResponse = {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+
+function buildApiUrl(path: string): string {
+  return `${API_BASE_URL}${path}`;
+}
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers);
@@ -53,6 +497,11 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
     headers,
   });
   if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `Request failed: ${response.status}`);
+    }
     const detail = await response.text();
     throw new Error(detail || `Request failed: ${response.status}`);
   }
@@ -86,11 +535,43 @@ export async function fetchPublicSites() {
 }
 
 export async function fetchSiteSummary(siteId: string, token: string) {
-  return request<Record<string, unknown>>(`/api/sites/${siteId}/summary`, {}, token);
+  return request<SiteSummary>(`/api/sites/${siteId}/summary`, {}, token);
+}
+
+export async function fetchSiteActivity(siteId: string, token: string) {
+  return request<SiteActivityResponse>(`/api/sites/${siteId}/activity`, {}, token);
+}
+
+export async function fetchSiteValidations(siteId: string, token: string) {
+  return request<SiteValidationRunRecord[]>(`/api/sites/${siteId}/validations`, {}, token);
+}
+
+export async function fetchValidationCases(
+  siteId: string,
+  validationId: string,
+  token: string,
+  options: {
+    misclassified_only?: boolean;
+    limit?: number;
+  } = {}
+) {
+  const params = new URLSearchParams();
+  if (options.misclassified_only) {
+    params.set("misclassified_only", "true");
+  }
+  if (typeof options.limit === "number") {
+    params.set("limit", String(options.limit));
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ValidationCasePredictionRecord[]>(
+    `/api/sites/${siteId}/validations/${validationId}/cases${suffix}`,
+    {},
+    token
+  );
 }
 
 export async function fetchPatients(siteId: string, token: string) {
-  return request<Array<Record<string, unknown>>>(`/api/sites/${siteId}/patients`, {}, token);
+  return request<PatientRecord[]>(`/api/sites/${siteId}/patients`, {}, token);
 }
 
 export async function createPatient(
@@ -104,7 +585,7 @@ export async function createPatient(
     local_case_code?: string;
   }
 ) {
-  return request<Record<string, unknown>>(
+  return request<PatientRecord>(
     `/api/sites/${siteId}/patients`,
     {
       method: "POST",
@@ -115,7 +596,7 @@ export async function createPatient(
 }
 
 export async function downloadManifest(siteId: string, token: string) {
-  const response = await fetch(`${API_BASE_URL}/api/sites/${siteId}/manifest.csv`, {
+  const response = await fetch(buildApiUrl(`/api/sites/${siteId}/manifest.csv`), {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -153,6 +634,91 @@ export async function fetchAccessRequests(token: string, statusFilter = "pending
   return request<AccessRequestRecord[]>(`/api/admin/access-requests${suffix}`, {}, token);
 }
 
+export async function fetchAdminOverview(token: string) {
+  return request<AdminOverviewResponse>("/api/admin/overview", {}, token);
+}
+
+export async function fetchProjects(token: string) {
+  return request<ProjectRecord[]>("/api/admin/projects", {}, token);
+}
+
+export async function createProject(
+  token: string,
+  payload: {
+    name: string;
+    description?: string;
+  }
+) {
+  return request<ProjectRecord>(
+    "/api/admin/projects",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        description: "",
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchAdminSites(token: string, projectId?: string) {
+  const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return request<ManagedSiteRecord[]>(`/api/admin/sites${suffix}`, {}, token);
+}
+
+export async function createAdminSite(
+  token: string,
+  payload: {
+    project_id: string;
+    site_code: string;
+    display_name: string;
+    hospital_name?: string;
+  }
+) {
+  return request<ManagedSiteRecord>(
+    "/api/admin/sites",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        hospital_name: "",
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchUsers(token: string) {
+  return request<ManagedUserRecord[]>("/api/admin/users", {}, token);
+}
+
+export async function upsertManagedUser(
+  token: string,
+  payload: {
+    user_id?: string;
+    username: string;
+    full_name?: string;
+    password?: string;
+    role: string;
+    site_ids?: string[];
+  }
+) {
+  return request<ManagedUserRecord>(
+    "/api/admin/users",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        full_name: "",
+        password: "",
+        site_ids: [],
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
 export async function reviewAccessRequest(
   requestId: string,
   token: string,
@@ -168,6 +734,437 @@ export async function reviewAccessRequest(
     {
       method: "POST",
       body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function fetchModelVersions(token: string) {
+  return request<ModelVersionRecord[]>("/api/admin/model-versions", {}, token);
+}
+
+export async function fetchModelUpdates(
+  token: string,
+  options: {
+    site_id?: string;
+    status_filter?: string;
+  } = {}
+) {
+  const params = new URLSearchParams();
+  if (options.site_id) {
+    params.set("site_id", options.site_id);
+  }
+  if (options.status_filter) {
+    params.set("status_filter", options.status_filter);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ModelUpdateRecord[]>(`/api/admin/model-updates${suffix}`, {}, token);
+}
+
+export async function fetchAggregations(token: string) {
+  return request<AggregationRecord[]>("/api/admin/aggregations", {}, token);
+}
+
+export async function fetchSiteComparison(token: string) {
+  return request<SiteComparisonRecord[]>("/api/admin/site-comparison", {}, token);
+}
+
+export async function runFederatedAggregation(
+  token: string,
+  payload: {
+    update_ids?: string[];
+    new_version_name?: string;
+  } = {}
+) {
+  return request<AggregationRunResponse>(
+    "/api/admin/aggregations/run",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        update_ids: [],
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchCases(siteId: string, token: string) {
+  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases`, {}, token);
+}
+
+export async function fetchVisits(siteId: string, token: string, patientId?: string) {
+  const suffix = patientId ? `?patient_id=${encodeURIComponent(patientId)}` : "";
+  return request<VisitRecord[]>(`/api/sites/${siteId}/visits${suffix}`, {}, token);
+}
+
+export async function createVisit(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    culture_confirmed?: boolean;
+    culture_category: string;
+    culture_species: string;
+    contact_lens_use: string;
+    predisposing_factor?: string[];
+    other_history?: string;
+    visit_status?: string;
+    smear_result?: string;
+    polymicrobial?: boolean;
+  }
+) {
+  return request<VisitRecord>(
+    `/api/sites/${siteId}/visits`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        culture_confirmed: true,
+        predisposing_factor: [],
+        other_history: "",
+        visit_status: "active",
+        smear_result: "not done",
+        polymicrobial: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchImages(siteId: string, token: string, patientId?: string, visitDate?: string) {
+  const params = new URLSearchParams();
+  if (patientId) {
+    params.set("patient_id", patientId);
+  }
+  if (visitDate) {
+    params.set("visit_date", visitDate);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ImageRecord[]>(`/api/sites/${siteId}/images${suffix}`, {}, token);
+}
+
+export async function uploadImage(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    view: string;
+    is_representative?: boolean;
+    file: File;
+  }
+) {
+  const form = new FormData();
+  form.set("patient_id", payload.patient_id);
+  form.set("visit_date", payload.visit_date);
+  form.set("view", payload.view);
+  form.set("is_representative", String(Boolean(payload.is_representative)));
+  form.set("file", payload.file);
+  return request<ImageRecord>(
+    `/api/sites/${siteId}/images`,
+    {
+      method: "POST",
+      body: form,
+    },
+    token
+  );
+}
+
+export async function setRepresentativeImage(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    representative_image_id: string;
+  }
+) {
+  return request<{ images: ImageRecord[] }>(
+    `/api/sites/${siteId}/images/representative`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function fetchImageBlob(siteId: string, imageId: string, token: string) {
+  const response = await fetch(buildApiUrl(`/api/sites/${siteId}/images/${imageId}/content`), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `Image fetch failed: ${response.status}`);
+    }
+    throw new Error(`Image fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function downloadImportTemplate(siteId: string, token: string) {
+  const response = await fetch(buildApiUrl(`/api/sites/${siteId}/import/template.csv`), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Import template download failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function runBulkImport(
+  siteId: string,
+  token: string,
+  payload: {
+    csvFile: File;
+    files: File[];
+  }
+) {
+  const form = new FormData();
+  form.set("csv_file", payload.csvFile);
+  for (const file of payload.files) {
+    form.append("files", file);
+  }
+  return request<BulkImportResponse>(
+    `/api/sites/${siteId}/import/bulk`,
+    {
+      method: "POST",
+      body: form,
+    },
+    token
+  );
+}
+
+export async function runCaseValidation(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    generate_gradcam?: boolean;
+    generate_medsam?: boolean;
+  }
+) {
+  return request<CaseValidationResponse>(
+    `/api/sites/${siteId}/cases/validate`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        generate_gradcam: true,
+        generate_medsam: true,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchValidationArtifactBlob(
+  siteId: string,
+  validationId: string,
+  patientId: string,
+  visitDate: string,
+  artifactKind: "gradcam" | "roi_crop" | "medsam_mask",
+  token: string
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  const response = await fetch(
+    buildApiUrl(`/api/sites/${siteId}/validations/${validationId}/artifacts/${artifactKind}?${params.toString()}`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+  if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `Artifact fetch failed: ${response.status}`);
+    }
+    throw new Error(`Artifact fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function runCaseContribution(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+  }
+) {
+  return request<CaseContributionResponse>(
+    `/api/sites/${siteId}/cases/contribute`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchCaseRoiPreview(siteId: string, patientId: string, visitDate: string, token: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<RoiPreviewRecord[]>(`/api/sites/${siteId}/cases/roi-preview?${params.toString()}`, {}, token);
+}
+
+export async function fetchCaseRoiPreviewArtifactBlob(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "roi_crop" | "medsam_mask",
+  token: string
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+    image_id: imageId,
+  });
+  const response = await fetch(
+    buildApiUrl(`/api/sites/${siteId}/cases/roi-preview/artifacts/${artifactKind}?${params.toString()}`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+  if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `ROI preview fetch failed: ${response.status}`);
+    }
+    throw new Error(`ROI preview fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function fetchCaseHistory(siteId: string, patientId: string, visitDate: string, token: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<CaseHistoryResponse>(`/api/sites/${siteId}/cases/history?${params.toString()}`, {}, token);
+}
+
+export async function runSiteValidation(
+  siteId: string,
+  token: string,
+  payload: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    generate_gradcam?: boolean;
+    generate_medsam?: boolean;
+    model_version_id?: string;
+  } = {}
+) {
+  return request<SiteValidationRunResponse>(
+    `/api/sites/${siteId}/validations/run`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        generate_gradcam: true,
+        generate_medsam: true,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function runInitialTraining(
+  siteId: string,
+  token: string,
+  payload: {
+    architecture?: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    epochs?: number;
+    learning_rate?: number;
+    batch_size?: number;
+    val_split?: number;
+    test_split?: number;
+    use_pretrained?: boolean;
+    regenerate_split?: boolean;
+  } = {}
+) {
+  return request<InitialTrainingResponse>(
+    `/api/sites/${siteId}/training/initial`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        architecture: "densenet121",
+        execution_mode: "auto",
+        epochs: 30,
+        learning_rate: 1e-4,
+        batch_size: 16,
+        val_split: 0.2,
+        test_split: 0.2,
+        use_pretrained: true,
+        regenerate_split: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchCrossValidationReports(siteId: string, token: string) {
+  return request<CrossValidationReport[]>(`/api/sites/${siteId}/training/cross-validation`, {}, token);
+}
+
+export async function runCrossValidation(
+  siteId: string,
+  token: string,
+  payload: {
+    architecture?: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    num_folds?: number;
+    epochs?: number;
+    learning_rate?: number;
+    batch_size?: number;
+    val_split?: number;
+    use_pretrained?: boolean;
+  } = {}
+) {
+  return request<CrossValidationRunResponse>(
+    `/api/sites/${siteId}/training/cross-validation`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        architecture: "densenet121",
+        execution_mode: "auto",
+        num_folds: 5,
+        epochs: 10,
+        learning_rate: 1e-4,
+        batch_size: 16,
+        val_split: 0.2,
+        use_pretrained: true,
+        ...payload,
+      }),
     },
     token
   );
