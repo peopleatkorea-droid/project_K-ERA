@@ -58,6 +58,11 @@ export type PatientRecord = {
   created_at?: string;
 };
 
+export type OrganismRecord = {
+  culture_category: string;
+  culture_species: string;
+};
+
 export type VisitRecord = {
   visit_id: string;
   patient_id: string;
@@ -65,11 +70,13 @@ export type VisitRecord = {
   culture_confirmed: boolean;
   culture_category: string;
   culture_species: string;
+  additional_organisms: OrganismRecord[];
   contact_lens_use: string;
   predisposing_factor: string[];
   other_history: string;
   visit_status: string;
   active_stage: boolean;
+  is_initial_visit: boolean;
   smear_result: string;
   polymicrobial: boolean;
   created_at: string;
@@ -97,8 +104,10 @@ export type CaseSummaryRecord = {
   age: number | null;
   culture_category: string;
   culture_species: string;
+  additional_organisms: OrganismRecord[];
   contact_lens_use: string;
   visit_status: string;
+  is_initial_visit: boolean;
   smear_result: string;
   polymicrobial: boolean;
   image_count: number;
@@ -689,6 +698,27 @@ export async function createAdminSite(
   );
 }
 
+export async function updateAdminSite(
+  siteId: string,
+  token: string,
+  payload: {
+    display_name: string;
+    hospital_name?: string;
+  }
+) {
+  return request<ManagedSiteRecord>(
+    `/api/admin/sites/${siteId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        hospital_name: "",
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
 export async function fetchUsers(token: string) {
   return request<ManagedUserRecord[]>("/api/admin/users", {}, token);
 }
@@ -807,10 +837,12 @@ export async function createVisit(
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
+    additional_organisms?: OrganismRecord[];
     contact_lens_use: string;
     predisposing_factor?: string[];
     other_history?: string;
     visit_status?: string;
+    is_initial_visit?: boolean;
     smear_result?: string;
     polymicrobial?: boolean;
   }
@@ -824,7 +856,9 @@ export async function createVisit(
         predisposing_factor: [],
         other_history: "",
         visit_status: "active",
+        is_initial_visit: false,
         smear_result: "not done",
+        additional_organisms: [],
         polymicrobial: false,
         ...payload,
       }),
@@ -1116,7 +1150,7 @@ export async function runInitialTraining(
     {
       method: "POST",
       body: JSON.stringify({
-        architecture: "densenet121",
+        architecture: "convnext_tiny",
         execution_mode: "auto",
         epochs: 30,
         learning_rate: 1e-4,
@@ -1155,7 +1189,7 @@ export async function runCrossValidation(
     {
       method: "POST",
       body: JSON.stringify({
-        architecture: "densenet121",
+        architecture: "convnext_tiny",
         execution_mode: "auto",
         num_folds: 5,
         epochs: 10,

@@ -285,6 +285,28 @@ if nn is not None:
         def classifier(self) -> nn.Module:
             return self.model.classifier
 
+
+    class ConvNeXtTinyKeratitis(nn.Module):
+        def __init__(self, num_classes: int = 2) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for ConvNeXt. Run: pip install torchvision")
+            backbone = _torchvision_models.convnext_tiny(weights=None)
+            in_features = backbone.classifier[-1].in_features
+            backbone.classifier[-1] = nn.Linear(in_features, num_classes)
+            self.model = backbone
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            return self.model(inputs)
+
+        @property
+        def features(self) -> nn.Module:
+            return self.model.features
+
+        @property
+        def classifier(self) -> nn.Module:
+            return self.model.classifier
+
 else:  # pragma: no cover - dependency guard
     class TinyKeratitisCNN:  # type: ignore[override]
         pass
@@ -296,6 +318,9 @@ else:  # pragma: no cover - dependency guard
         pass
 
     class DenseNetKeratitis:  # type: ignore[override]
+        pass
+
+    class ConvNeXtTinyKeratitis:  # type: ignore[override]
         pass
 
 
@@ -358,6 +383,8 @@ class ModelManager:
             return TinyPatchViT()
         if architecture == "swin":
             return TinySwinLike()
+        if architecture == "convnext_tiny":
+            return ConvNeXtTinyKeratitis()
         if architecture in DENSENET_VARIANTS:
             return DenseNetKeratitis(variant=architecture)
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -521,6 +548,15 @@ class ModelManager:
                 target_layer=model.stage3[-1],
                 target_class=target_class,
             )
+        if architecture == "convnext_tiny":
+            return self._generate_cam_from_layer(
+                model=model,
+                image_path=image_path,
+                device=device,
+                output_path=output_path,
+                target_layer=model.features[-1],
+                target_class=target_class,
+            )
         if architecture in DENSENET_VARIANTS:
             # DenseNet: 마지막 denseblock의 마지막 레이어를 CAM 타겟으로 사용
             target_layer = model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
@@ -680,6 +716,12 @@ class ModelManager:
             for parameter in model.head.parameters():
                 parameter.requires_grad = True
             return
+        if architecture == "convnext_tiny":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.classifier.parameters():
+                parameter.requires_grad = True
+            return
         if architecture in DENSENET_VARIANTS:
             for parameter in model.parameters():
                 parameter.requires_grad = False
@@ -689,30 +731,43 @@ class ModelManager:
         raise ValueError(f"Unsupported architecture: {architecture}")
 
     def build_model_pretrained(self, architecture: str, num_classes: int = 2) -> nn.Module:
-        """ImageNet pretrained 가중치로 DenseNet 초기화 (초기 학습 전용)."""
+        """ImageNet pretrained 가중치로 학습용 backbone을 초기화합니다."""
         require_torch()
-        if architecture not in DENSENET_VARIANTS:
-            raise ValueError(f"Pretrained loading only supported for DenseNet variants, not {architecture}.")
         if not _TORCHVISION_AVAILABLE:
             raise RuntimeError("torchvision is required. Run: pip install torchvision")
-        from torchvision.models import (
-            DenseNet121_Weights, DenseNet161_Weights,
-            DenseNet169_Weights, DenseNet201_Weights,
-        )
-        weight_map = {
-            "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
-            "densenet161": DenseNet161_Weights.IMAGENET1K_V1,
-            "densenet169": DenseNet169_Weights.IMAGENET1K_V1,
-            "densenet201": DenseNet201_Weights.IMAGENET1K_V1,
-        }
-        builder = getattr(_torchvision_models, architecture)
-        backbone = builder(weights=weight_map[architecture])
-        in_features = backbone.classifier.in_features
-        backbone.classifier = nn.Linear(in_features, num_classes)
-        model = DenseNetKeratitis.__new__(DenseNetKeratitis)
-        nn.Module.__init__(model)
-        model.model = backbone
-        return model
+        if architecture in DENSENET_VARIANTS:
+            from torchvision.models import (
+                DenseNet121_Weights,
+                DenseNet161_Weights,
+                DenseNet169_Weights,
+                DenseNet201_Weights,
+            )
+
+            weight_map = {
+                "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
+                "densenet161": DenseNet161_Weights.IMAGENET1K_V1,
+                "densenet169": DenseNet169_Weights.IMAGENET1K_V1,
+                "densenet201": DenseNet201_Weights.IMAGENET1K_V1,
+            }
+            builder = getattr(_torchvision_models, architecture)
+            backbone = builder(weights=weight_map[architecture])
+            in_features = backbone.classifier.in_features
+            backbone.classifier = nn.Linear(in_features, num_classes)
+            model = DenseNetKeratitis.__new__(DenseNetKeratitis)
+            nn.Module.__init__(model)
+            model.model = backbone
+            return model
+        if architecture == "convnext_tiny":
+            from torchvision.models import ConvNeXt_Tiny_Weights
+
+            backbone = _torchvision_models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
+            in_features = backbone.classifier[-1].in_features
+            backbone.classifier[-1] = nn.Linear(in_features, num_classes)
+            model = ConvNeXtTinyKeratitis.__new__(ConvNeXtTinyKeratitis)
+            nn.Module.__init__(model)
+            model.model = backbone
+            return model
+        raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
 
     def _split_ids_with_fallback(
         self,
@@ -913,11 +968,11 @@ class ModelManager:
         saved_split: dict[str, Any] | None = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
-        """처음부터 DenseNet 학습 (ImageNet pretrained 권장).
+        """처음부터 학습 가능한 backbone을 학습합니다 (ImageNet pretrained 권장).
 
         Args:
             records: manifest 레코드 리스트
-            architecture: densenet121 / densenet161 / densenet169 / densenet201
+            architecture: 지원되는 training architecture 이름
             output_model_path: 저장 경로
             device: cpu / cuda
             epochs: 학습 에포크

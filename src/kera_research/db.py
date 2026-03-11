@@ -202,9 +202,11 @@ visits = Table(
     Column("culture_species", String(255), nullable=False),
     Column("contact_lens_use", String(64), nullable=False),
     Column("predisposing_factor", JSON, nullable=False),
+    Column("additional_organisms", JSON, nullable=False, default=list),
     Column("other_history", Text, nullable=False, default=""),
     Column("visit_status", String(32), nullable=False, index=True),
     Column("active_stage", Boolean, nullable=False),
+    Column("is_initial_visit", Boolean, nullable=False, default=False),
     Column("smear_result", String(64), nullable=False, default=""),
     Column("polymicrobial", Boolean, nullable=False, default=False),
     Column("created_at", String(64), nullable=False),
@@ -254,13 +256,24 @@ def init_db() -> None:
 
 def _migrate_schema() -> None:
     inspector = inspect(ENGINE)
-    if "users" not in inspector.get_table_names():
+    table_names = inspector.get_table_names()
+    if "users" not in table_names:
         return
 
     user_columns = {column["name"] for column in inspector.get_columns("users")}
     with ENGINE.begin() as conn:
         if "google_sub" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)"))
+
+        if "visits" in table_names:
+            visit_columns = {column["name"] for column in inspector.get_columns("visits")}
+            if "is_initial_visit" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT 0"))
+            if "additional_organisms" not in visit_columns:
+                if ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
+                else:
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
 
         if ENGINE.dialect.name == "sqlite":
             conn.execute(

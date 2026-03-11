@@ -6,6 +6,7 @@ import { LocaleToggle, pick, translateApiError, translateOption, translateRole, 
 import {
   type CaseHistoryResponse,
   type CaseContributionResponse,
+  type OrganismRecord,
   type RoiPreviewRecord,
   type SiteActivityResponse,
   type SiteValidationRunRecord,
@@ -42,16 +43,13 @@ const CONTACT_LENS_OPTIONS = [
 ];
 const PREDISPOSING_FACTOR_OPTIONS = [
   "trauma",
-  "contact lens",
   "ocular surface disease",
   "topical steroid use",
   "post surgery",
   "neurotrophic",
   "unknown",
 ];
-const SMEAR_RESULT_OPTIONS = ["not done", "positive", "negative", "unknown", "other"];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
-const VIEW_OPTIONS = ["white", "slit", "fluorescein"];
 const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
     "Staphylococcus aureus",
@@ -67,6 +65,7 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Haemophilus influenzae",
     "Klebsiella pneumoniae",
     "Enterobacter",
+    "Burkholderia",
     "Nocardia",
     "Other",
   ],
@@ -119,12 +118,14 @@ type DraftState = {
   sex: string;
   age: string;
   visit_date: string;
+  visit_reference_mode: "date" | "initial" | "follow_up";
+  follow_up_number: string;
   culture_category: string;
   culture_species: string;
+  additional_organisms: OrganismRecord[];
   contact_lens_use: string;
   visit_status: string;
-  smear_result: string;
-  polymicrobial: boolean;
+  is_initial_visit: boolean;
   predisposing_factor: string[];
   other_history: string;
 };
@@ -176,12 +177,14 @@ function createDraft(): DraftState {
     sex: "female",
     age: "65",
     visit_date: new Date().toISOString().slice(0, 10),
+    visit_reference_mode: "date",
+    follow_up_number: "01",
     culture_category: "bacterial",
     culture_species: CULTURE_SPECIES.bacterial[0],
+    additional_organisms: [],
     contact_lens_use: "none",
     visit_status: "active",
-    smear_result: "not done",
-    polymicrobial: false,
+    is_initial_visit: true,
     predisposing_factor: [],
     other_history: "",
   };
@@ -195,7 +198,81 @@ function createDraftId(): string {
 }
 
 function formatCaseTitle(caseRecord: CaseSummaryRecord): string {
-  return caseRecord.chart_alias || caseRecord.local_case_code || caseRecord.patient_id;
+  return caseRecord.local_case_code || caseRecord.patient_id;
+}
+
+function organismKey(organism: Pick<OrganismRecord, "culture_category" | "culture_species">): string {
+  return `${organism.culture_category.trim().toLowerCase()}::${organism.culture_species.trim().toLowerCase()}`;
+}
+
+function normalizeAdditionalOrganisms(
+  primaryCategory: string,
+  primarySpecies: string,
+  organisms: OrganismRecord[] | undefined
+): OrganismRecord[] {
+  const primaryKey = organismKey({
+    culture_category: primaryCategory,
+    culture_species: primarySpecies,
+  });
+  const seen = new Set<string>([primaryKey]);
+  const normalized: OrganismRecord[] = [];
+  for (const organism of organisms ?? []) {
+    const culture_category = String(organism?.culture_category ?? "").trim().toLowerCase();
+    const culture_species = String(organism?.culture_species ?? "").trim();
+    if (!culture_category || !culture_species) {
+      continue;
+    }
+    const nextKey = organismKey({ culture_category, culture_species });
+    if (seen.has(nextKey)) {
+      continue;
+    }
+    seen.add(nextKey);
+    normalized.push({ culture_category, culture_species });
+  }
+  return normalized;
+}
+
+function listOrganisms(
+  cultureCategory: string,
+  cultureSpecies: string,
+  additionalOrganisms: OrganismRecord[] | undefined
+): OrganismRecord[] {
+  const primarySpecies = cultureSpecies.trim();
+  if (!primarySpecies) {
+    return normalizeAdditionalOrganisms(cultureCategory, cultureSpecies, additionalOrganisms);
+  }
+  return [
+    {
+      culture_category: cultureCategory.trim().toLowerCase(),
+      culture_species: primarySpecies,
+    },
+    ...normalizeAdditionalOrganisms(cultureCategory, cultureSpecies, additionalOrganisms),
+  ];
+}
+
+function organismSummaryLabel(
+  cultureCategory: string,
+  cultureSpecies: string,
+  additionalOrganisms: OrganismRecord[] | undefined
+): string {
+  const organisms = listOrganisms(cultureCategory, cultureSpecies, additionalOrganisms);
+  if (!organisms.length) {
+    return "";
+  }
+  if (organisms.length === 1) {
+    return organisms[0].culture_species;
+  }
+  return `${organisms[0].culture_species} + ${organisms.length - 1}`;
+}
+
+function organismDetailLabel(
+  cultureCategory: string,
+  cultureSpecies: string,
+  additionalOrganisms: OrganismRecord[] | undefined
+): string {
+  return listOrganisms(cultureCategory, cultureSpecies, additionalOrganisms)
+    .map((organism) => organism.culture_species)
+    .join(" · ");
 }
 
 function formatProbability(value: number | null | undefined, emptyLabel = "n/a"): string {
@@ -242,6 +319,71 @@ function draftStorageKey(userId: string, siteId: string): string {
   return `kera_workspace_draft:${userId}:${siteId}`;
 }
 
+function favoriteStorageKey(userId: string, siteId: string): string {
+  return `kera_workspace_favorites:${userId}:${siteId}`;
+}
+
+function buildVisitReference(draft: DraftState): string {
+  if (draft.visit_reference_mode === "initial") {
+    return "Initial";
+  }
+  if (draft.visit_reference_mode === "follow_up") {
+    return `F/U-${draft.follow_up_number.padStart(2, "0")}`;
+  }
+  return draft.visit_date.trim();
+}
+
+function displayVisitReference(locale: "en" | "ko", visitReference: string): string {
+  const normalized = String(visitReference ?? "").trim();
+  if (!normalized) {
+    return normalized;
+  }
+  if (/^(initial|초진)$/i.test(normalized)) {
+    return pick(locale, "Initial", "초진");
+  }
+  const followUpMatch = normalized.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  if (followUpMatch) {
+    return `F/U-${followUpMatch[1].padStart(2, "0")}`;
+  }
+  return normalized;
+}
+
+function normalizeRecoveredDraft(draft: DraftState): DraftState {
+  const normalizedAdditionalOrganisms = normalizeAdditionalOrganisms(
+    draft.culture_category,
+    draft.culture_species,
+    draft.additional_organisms
+  );
+  const visitReference = String(draft.visit_date ?? "").trim();
+  const followUpMatch = visitReference.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  if (followUpMatch) {
+    return {
+      ...draft,
+      additional_organisms: normalizedAdditionalOrganisms,
+      visit_reference_mode: "follow_up",
+      follow_up_number: followUpMatch[1].padStart(2, "0"),
+      is_initial_visit: false,
+      visit_date: createDraft().visit_date,
+    };
+  }
+  if (/^(initial|초진)$/i.test(visitReference)) {
+    return {
+      ...draft,
+      additional_organisms: normalizedAdditionalOrganisms,
+      visit_reference_mode: "initial",
+      follow_up_number: draft.follow_up_number || "01",
+      is_initial_visit: true,
+      visit_date: createDraft().visit_date,
+    };
+  }
+  return {
+    ...draft,
+    additional_organisms: normalizedAdditionalOrganisms,
+    visit_reference_mode: draft.visit_reference_mode ?? "date",
+    follow_up_number: draft.follow_up_number || "01",
+  };
+}
+
 function hasDraftContent(draft: DraftState): boolean {
   const emptyDraft = createDraft();
   return (
@@ -251,12 +393,14 @@ function hasDraftContent(draft: DraftState): boolean {
     draft.sex !== emptyDraft.sex ||
     draft.age !== emptyDraft.age ||
     draft.visit_date !== emptyDraft.visit_date ||
+    draft.visit_reference_mode !== emptyDraft.visit_reference_mode ||
+    draft.follow_up_number !== emptyDraft.follow_up_number ||
     draft.culture_category !== emptyDraft.culture_category ||
     draft.culture_species !== emptyDraft.culture_species ||
+    draft.additional_organisms.length > 0 ||
     draft.contact_lens_use !== emptyDraft.contact_lens_use ||
     draft.visit_status !== emptyDraft.visit_status ||
-    draft.smear_result !== emptyDraft.smear_result ||
-    draft.polymicrobial !== emptyDraft.polymicrobial ||
+    draft.is_initial_visit !== emptyDraft.is_initial_visit ||
     draft.predisposing_factor.length > 0 ||
     draft.other_history.trim() !== emptyDraft.other_history
   );
@@ -270,6 +414,10 @@ function executionModeFromDevice(device: string | undefined): "auto" | "cpu" | "
     return "cpu";
   }
   return "auto";
+}
+
+function visitPhaseCopy(locale: "en" | "ko", isInitialVisit: boolean): string {
+  return isInitialVisit ? pick(locale, "Initial", "초진") : pick(locale, "Follow-up", "재진");
 }
 
 export function CaseWorkspace({
@@ -291,6 +439,10 @@ export function CaseWorkspace({
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
   const [draft, setDraft] = useState<DraftState>(() => createDraft());
+  const [pendingOrganism, setPendingOrganism] = useState<OrganismRecord>({
+    culture_category: "bacterial",
+    culture_species: CULTURE_SPECIES.bacterial[0],
+  });
   const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
   const [cases, setCases] = useState<CaseSummaryRecord[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
@@ -315,8 +467,10 @@ export function CaseWorkspace({
   const [completionState, setCompletionState] = useState<CompletionState | null>(null);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [caseSearch, setCaseSearch] = useState("");
+  const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>([]);
   const [toast, setToast] = useState<ToastState>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const whiteFileInputRef = useRef<HTMLInputElement | null>(null);
+  const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const draftImagesRef = useRef<DraftImage[]>([]);
   const validationArtifactUrlsRef = useRef<string[]>([]);
   const roiPreviewUrlsRef = useRef<string[]>([]);
@@ -346,19 +500,25 @@ export function CaseWorkspace({
     contributionFailed: pick(locale, "Contribution failed.", "기여에 실패했습니다."),
     selectSiteForCase: pick(locale, "Select a hospital before creating a case.", "케이스를 생성하려면 병원을 선택하세요."),
     patientIdRequired: pick(locale, "Patient ID is required.", "환자 ID는 필수입니다."),
-    visitDateRequired: pick(locale, "Visit date is required.", "방문일은 필수입니다."),
+    visitDateRequired: pick(locale, "Visit reference is required.", "방문 기준값은 필수입니다."),
     cultureSpeciesRequired: pick(locale, "Culture species is required.", "균종은 필수입니다."),
     imageRequired: pick(locale, "Add at least one slit-lamp image to save this case.", "케이스를 저장하려면 세극등 이미지를 하나 이상 추가하세요."),
     patientCreationFailed: pick(locale, "Patient creation failed.", "환자 생성에 실패했습니다."),
     caseSaved: (patientId: string, visitDate: string, siteId: string) =>
       pick(locale, `Case ${patientId} / ${visitDate} saved to hospital ${siteId}.`, `${patientId} / ${visitDate} 케이스가 병원 ${siteId}에 저장되었습니다.`),
     caseSaveFailed: pick(locale, "Case save failed.", "케이스 저장에 실패했습니다."),
+    organismAdded: pick(locale, "Organism added to this visit.", "이 방문에 균종을 추가했습니다."),
+    organismDuplicate: pick(locale, "That organism is already attached to this visit.", "이미 이 방문에 추가된 균종입니다."),
     draftAutosaved: (time: string) => pick(locale, `Draft autosaved ${time}`, `${time}에 초안 자동 저장`),
     draftUnsaved: pick(locale, "Draft changes live only in this tab", "초안 변경 내용은 현재 탭에만 유지됩니다"),
     savedCases: pick(locale, "saved cases", "저장된 케이스"),
     loadingSavedCases: pick(locale, "Loading saved cases...", "저장된 케이스를 불러오는 중..."),
     noSavedCases: pick(locale, "No saved cases for this hospital yet.", "이 병원에는 아직 저장된 케이스가 없습니다."),
+    favoriteAdded: pick(locale, "Case added to favorites.", "케이스를 즐겨찾기에 추가했습니다."),
+    favoriteRemoved: pick(locale, "Case removed from favorites.", "케이스 즐겨찾기를 해제했습니다."),
   };
+  const whiteDraftImages = draftImages.filter((image) => image.view === "white");
+  const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
 
   useEffect(() => {
     draftImagesRef.current = draftImages;
@@ -391,13 +551,30 @@ export function CaseWorkspace({
   useEffect(() => {
     if (!selectedSiteId) {
       setDraft(createDraft());
+      setPendingOrganism({
+        culture_category: "bacterial",
+        culture_species: CULTURE_SPECIES.bacterial[0],
+      });
       setDraftSavedAt(null);
+      setFavoriteCaseIds([]);
       return;
     }
 
     const rawDraft = window.localStorage.getItem(draftStorageKey(user.user_id, selectedSiteId));
+    const rawFavorites = window.localStorage.getItem(favoriteStorageKey(user.user_id, selectedSiteId));
+    try {
+      const parsedFavorites = rawFavorites ? (JSON.parse(rawFavorites) as string[]) : [];
+      setFavoriteCaseIds(Array.isArray(parsedFavorites) ? parsedFavorites : []);
+    } catch {
+      window.localStorage.removeItem(favoriteStorageKey(user.user_id, selectedSiteId));
+      setFavoriteCaseIds([]);
+    }
     if (!rawDraft) {
       setDraft(createDraft());
+      setPendingOrganism({
+        culture_category: "bacterial",
+        culture_species: CULTURE_SPECIES.bacterial[0],
+      });
       setDraftSavedAt(null);
       replaceDraftImages([]);
       return;
@@ -405,9 +582,13 @@ export function CaseWorkspace({
 
     try {
       const parsed = JSON.parse(rawDraft) as PersistedDraft;
-      setDraft({
+      setDraft(normalizeRecoveredDraft({
         ...createDraft(),
         ...parsed.draft,
+      }));
+      setPendingOrganism({
+        culture_category: "bacterial",
+        culture_species: CULTURE_SPECIES.bacterial[0],
       });
       setDraftSavedAt(parsed.updated_at);
       replaceDraftImages([]);
@@ -418,10 +599,21 @@ export function CaseWorkspace({
     } catch {
       window.localStorage.removeItem(draftStorageKey(user.user_id, selectedSiteId));
       setDraft(createDraft());
+      setPendingOrganism({
+        culture_category: "bacterial",
+        culture_species: CULTURE_SPECIES.bacterial[0],
+      });
       setDraftSavedAt(null);
       replaceDraftImages([]);
     }
   }, [selectedSiteId, user.user_id]);
+
+  useEffect(() => {
+    if (!selectedSiteId) {
+      return;
+    }
+    window.localStorage.setItem(favoriteStorageKey(user.user_id, selectedSiteId), JSON.stringify(favoriteCaseIds));
+  }, [favoriteCaseIds, selectedSiteId, user.user_id]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -684,13 +876,92 @@ export function CaseWorkspace({
     setSelectedCase(null);
     setSelectedCaseImages([]);
     setDraft(createDraft());
+    setPendingOrganism({
+      culture_category: "bacterial",
+      culture_species: CULTURE_SPECIES.bacterial[0],
+    });
   }
 
-  function openFilePicker() {
-    fileInputRef.current?.click();
+  function isFavoriteCase(caseId: string): boolean {
+    return favoriteCaseIds.includes(caseId);
   }
 
-  function appendFiles(files: File[]) {
+  function toggleFavoriteCase(caseId: string) {
+    setFavoriteCaseIds((current) => {
+      const exists = current.includes(caseId);
+      const next = exists ? current.filter((item) => item !== caseId) : [...current, caseId];
+      setToast({
+        tone: "success",
+        message: exists ? copy.favoriteRemoved : copy.favoriteAdded,
+      });
+      return next;
+    });
+  }
+
+  function updatePrimaryOrganism(cultureCategory: string, cultureSpecies: string) {
+    setDraft((current) => ({
+      ...current,
+      culture_category: cultureCategory,
+      culture_species: cultureSpecies,
+      additional_organisms: normalizeAdditionalOrganisms(
+        cultureCategory,
+        cultureSpecies,
+        current.additional_organisms
+      ),
+    }));
+  }
+
+  function addAdditionalOrganism() {
+    const nextOrganism = {
+      culture_category: pendingOrganism.culture_category.trim().toLowerCase(),
+      culture_species: pendingOrganism.culture_species.trim(),
+    };
+    if (!nextOrganism.culture_category || !nextOrganism.culture_species) {
+      return;
+    }
+    const currentOrganisms = listOrganisms(
+      draft.culture_category,
+      draft.culture_species,
+      draft.additional_organisms
+    );
+    if (currentOrganisms.some((organism) => organismKey(organism) === organismKey(nextOrganism))) {
+      setToast({
+        tone: "error",
+        message: copy.organismDuplicate,
+      });
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      additional_organisms: [
+        ...current.additional_organisms,
+        nextOrganism,
+      ],
+    }));
+    setToast({
+      tone: "success",
+      message: copy.organismAdded,
+    });
+  }
+
+  function removeAdditionalOrganism(organismToRemove: OrganismRecord) {
+    setDraft((current) => ({
+      ...current,
+      additional_organisms: current.additional_organisms.filter(
+        (organism) => organismKey(organism) !== organismKey(organismToRemove)
+      ),
+    }));
+  }
+
+  function openFilePicker(view: "white" | "fluorescein") {
+    if (view === "fluorescein") {
+      fluoresceinFileInputRef.current?.click();
+      return;
+    }
+    whiteFileInputRef.current?.click();
+  }
+
+  function appendFiles(files: File[], view: "white" | "fluorescein") {
     if (!files.length) {
       return;
     }
@@ -710,7 +981,7 @@ export function CaseWorkspace({
           draft_id: createDraftId(),
           file,
           preview_url: URL.createObjectURL(file),
-          view: "white",
+          view,
           is_representative: false,
         });
       }
@@ -735,12 +1006,6 @@ export function CaseWorkspace({
         ...image,
         is_representative: image.draft_id === draftId,
       }))
-    );
-  }
-
-  function updateDraftImageView(draftId: string, view: string) {
-    setDraftImages((current) =>
-      current.map((image) => (image.draft_id === draftId ? { ...image, view } : image))
     );
   }
 
@@ -1016,6 +1281,7 @@ export function CaseWorkspace({
   }
 
   async function handleSaveCase() {
+    const nextVisitReference = buildVisitReference(draft);
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForCase });
       return;
@@ -1024,7 +1290,7 @@ export function CaseWorkspace({
       setToast({ tone: "error", message: copy.patientIdRequired });
       return;
     }
-    if (!draft.visit_date.trim()) {
+    if (!nextVisitReference) {
       setToast({ tone: "error", message: copy.visitDateRequired });
       return;
     }
@@ -1044,7 +1310,7 @@ export function CaseWorkspace({
           patient_id: draft.patient_id.trim(),
           sex: draft.sex,
           age: Number(draft.age || 0),
-          chart_alias: draft.chart_alias.trim(),
+          chart_alias: "",
           local_case_code: draft.local_case_code.trim(),
         });
       } catch (nextError) {
@@ -1056,21 +1322,26 @@ export function CaseWorkspace({
 
       await createVisit(selectedSiteId, token, {
         patient_id: draft.patient_id.trim(),
-        visit_date: draft.visit_date,
+        visit_date: nextVisitReference,
         culture_category: draft.culture_category,
         culture_species: draft.culture_species.trim(),
+        additional_organisms: normalizeAdditionalOrganisms(
+          draft.culture_category,
+          draft.culture_species,
+          draft.additional_organisms
+        ),
         contact_lens_use: draft.contact_lens_use,
         predisposing_factor: draft.predisposing_factor,
         other_history: draft.other_history.trim(),
         visit_status: draft.visit_status,
-        smear_result: draft.smear_result,
-        polymicrobial: draft.polymicrobial,
+        is_initial_visit: draft.is_initial_visit,
+        polymicrobial: draft.additional_organisms.length > 0,
       });
 
       for (const image of draftImages) {
         await uploadImage(selectedSiteId, token, {
           patient_id: draft.patient_id.trim(),
-          visit_date: draft.visit_date,
+          visit_date: nextVisitReference,
           view: image.view,
           is_representative: image.is_representative,
           file: image.file,
@@ -1081,12 +1352,12 @@ export function CaseWorkspace({
       const nextCases = await fetchCases(selectedSiteId, token);
       setCases(nextCases);
       const createdCase = nextCases.find(
-        (item) => item.patient_id === draft.patient_id.trim() && item.visit_date === draft.visit_date
+        (item) => item.patient_id === draft.patient_id.trim() && item.visit_date === nextVisitReference
       );
       await loadSiteActivity(selectedSiteId);
       setToast({
         tone: "success",
-        message: copy.caseSaved(draft.patient_id.trim(), draft.visit_date, selectedSiteId),
+        message: copy.caseSaved(draft.patient_id.trim(), nextVisitReference, selectedSiteId),
       });
       clearDraftStorage(selectedSiteId);
       resetDraft();
@@ -1095,7 +1366,7 @@ export function CaseWorkspace({
       setCompletionState({
         kind: "saved",
         patient_id: draft.patient_id.trim(),
-        visit_date: draft.visit_date,
+        visit_date: nextVisitReference,
         timestamp: new Date().toISOString(),
       });
     } catch (nextError) {
@@ -1109,23 +1380,33 @@ export function CaseWorkspace({
   }
 
   const searchNeedle = deferredSearch.trim().toLowerCase();
-  const filteredCases = cases.filter((item) => {
+  const filteredCases = cases
+    .filter((item) => {
     if (!searchNeedle) {
       return true;
     }
     const haystack = [
       item.patient_id,
       item.chart_alias,
-      item.local_case_code,
       item.culture_category,
       item.culture_species,
+      ...(item.additional_organisms ?? []).map((organism) => organism.culture_species),
       item.visit_date,
     ]
       .join(" ")
       .toLowerCase();
     return haystack.includes(searchNeedle);
-  });
+    })
+    .sort((left, right) => {
+      const leftFavorite = isFavoriteCase(left.case_id) ? 1 : 0;
+      const rightFavorite = isFavoriteCase(right.case_id) ? 1 : 0;
+      if (leftFavorite !== rightFavorite) {
+        return rightFavorite - leftFavorite;
+      }
+      return 0;
+    });
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
+  const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const momentumPercent = cases.length === 0 ? 18 : Math.min(100, 18 + cases.length * 12);
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
   const canRunRoiPreview = canRunValidation;
@@ -1144,6 +1425,15 @@ export function CaseWorkspace({
   const draftStatusLabel = draftSavedAt
     ? copy.draftAutosaved(new Date(draftSavedAt).toLocaleTimeString(localeTag, { hour: "2-digit", minute: "2-digit" }))
     : copy.draftUnsaved;
+  const resolvedVisitReference = buildVisitReference(draft);
+  const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
+  const phaseLockedByReference = draft.visit_reference_mode !== "date";
+  const visitReferenceHint =
+    draft.visit_reference_mode === "date"
+      ? pick(locale, "Use the actual visit date when it is known.", "실제 방문 날짜를 알고 있으면 날짜로 기록하세요.")
+      : draft.visit_reference_mode === "initial"
+        ? pick(locale, "This will be saved as Initial.", "이 값은 Initial로 저장됩니다.")
+        : pick(locale, "This will be saved as F/U-## with the selected follow-up number.", "선택한 추적 번호에 따라 F/U-## 형식으로 저장됩니다.");
 
   return (
     <main className="workspace-shell" data-workspace-theme={theme}>
@@ -1287,7 +1577,7 @@ export function CaseWorkspace({
             className="rail-search"
             value={caseSearch}
             onChange={(event) => setCaseSearch(event.target.value)}
-            placeholder={pick(locale, "Search patient, alias, species", "환자, 별칭, 균종 검색")}
+            placeholder={pick(locale, "Search patient or species", "환자 또는 균종 검색")}
           />
           <div className="rail-case-list">
             {casesLoading ? <div className="empty-surface">{copy.loadingSavedCases}</div> : null}
@@ -1305,15 +1595,23 @@ export function CaseWorkspace({
                 }}
               >
                 <div className="case-list-head">
-                  <strong>{formatCaseTitle(item)}</strong>
+                  <strong className="case-list-title">
+                    {isFavoriteCase(item.case_id) ? <span className="favorite-indicator" aria-hidden="true">★</span> : null}
+                    <span>{formatCaseTitle(item)}</span>
+                  </strong>
                   <span>{item.image_count} {pick(locale, "imgs", "이미지")}</span>
                 </div>
                 <div className="case-list-meta">
                   <span>{item.patient_id}</span>
-                  <span>{item.visit_date}</span>
+                  <span>{displayVisitReference(locale, item.visit_date)}</span>
+                  <span>{visitPhaseCopy(locale, item.is_initial_visit)}</span>
                 </div>
                 <div className="case-list-tagline">
-                  {translateOption(locale, "cultureCategory", item.culture_category)} / {item.culture_species}
+                  {translateOption(locale, "cultureCategory", item.culture_category)} / {organismSummaryLabel(
+                    item.culture_category,
+                    item.culture_species,
+                    item.additional_organisms
+                  )}
                 </div>
               </button>
             ))}
@@ -1358,7 +1656,7 @@ export function CaseWorkspace({
             <div className="doc-title-row">
               <div>
                 <div className="doc-eyebrow">{pick(locale, "New case", "새 케이스")}</div>
-                <h3>{draft.chart_alias.trim() || draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "제목 없는 각막염 케이스")}</h3>
+                <h3>{draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "제목 없는 각막염 케이스")}</h3>
               </div>
               <div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
             </div>
@@ -1367,106 +1665,21 @@ export function CaseWorkspace({
               {draftImages.length > 0 ? <span className="doc-site-badge">{pick(locale, "Unsaved image files stay in this tab only", "저장되지 않은 이미지 파일은 현재 탭에만 유지됩니다")}</span> : null}
             </div>
 
-            <section className="property-grid">
-              <label className="property-chip">
-                <span>{pick(locale, "Patient ID", "환자 ID")}</span>
-                <input
-                  value={draft.patient_id}
-                  onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
-                  placeholder="KERA-2026-001"
-                />
-              </label>
-              <label className="property-chip">
-                <span>{pick(locale, "Visit date", "방문일")}</span>
-                <input
-                  type="date"
-                  value={draft.visit_date}
-                  onChange={(event) => setDraft((current) => ({ ...current, visit_date: event.target.value }))}
-                />
-              </label>
-              <label className="property-chip">
-                <span>{pick(locale, "Category", "분류")}</span>
-                <select
-                  value={draft.culture_category}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      culture_category: event.target.value,
-                      culture_species: (CULTURE_SPECIES[event.target.value] ?? [current.culture_species])[0],
-                    }))
-                  }
-                >
-                  {Object.keys(CULTURE_SPECIES).map((option) => (
-                    <option key={option} value={option}>
-                      {translateOption(locale, "cultureCategory", option)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="property-chip">
-                <span>{pick(locale, "Species", "균종")}</span>
-                <select
-                  value={draft.culture_species}
-                  onChange={(event) => setDraft((current) => ({ ...current, culture_species: event.target.value }))}
-                >
-                  {speciesOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="property-chip">
-                <span>{pick(locale, "Status", "상태")}</span>
-                <select
-                  value={draft.visit_status}
-                  onChange={(event) => setDraft((current) => ({ ...current, visit_status: event.target.value }))}
-                >
-                  {VISIT_STATUS_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {translateOption(locale, "visitStatus", option)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="property-chip">
-                <span>{pick(locale, "Smear", "도말검사")}</span>
-                <select
-                  value={draft.smear_result}
-                  onChange={(event) => setDraft((current) => ({ ...current, smear_result: event.target.value }))}
-                >
-                  {SMEAR_RESULT_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {translateOption(locale, "smear", option)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </section>
-
             <section className="doc-section">
               <div className="doc-section-head">
                 <div>
                   <div className="doc-section-label">{pick(locale, "Patient identity", "환자 정보")}</div>
-                  <h4>{pick(locale, "Inline profile properties", "인라인 프로필 속성")}</h4>
+                  <h4>{pick(locale, "Start with patient details", "환자 정보부터 입력")}</h4>
                 </div>
                 <span>{draftImages.length} {pick(locale, "image blocks", "이미지 블록")}</span>
               </div>
               <div className="inline-form-grid">
                 <label className="inline-field">
-                  <span>{pick(locale, "Chart alias", "차트 별칭")}</span>
+                  <span>{pick(locale, "Patient ID", "환자 ID")}</span>
                   <input
-                    value={draft.chart_alias}
-                    onChange={(event) => setDraft((current) => ({ ...current, chart_alias: event.target.value }))}
-                    placeholder={pick(locale, "Cornea board case", "각막 보드 케이스")}
-                  />
-                </label>
-                <label className="inline-field">
-                  <span>{pick(locale, "Local code", "로컬 코드")}</span>
-                  <input
-                    value={draft.local_case_code}
-                    onChange={(event) => setDraft((current) => ({ ...current, local_case_code: event.target.value }))}
-                    placeholder="OPH-IK-26-01"
+                    value={draft.patient_id}
+                    onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
+                    placeholder="KERA-2026-001"
                   />
                 </label>
                 <label className="inline-field">
@@ -1491,7 +1704,18 @@ export function CaseWorkspace({
                     onChange={(event) => setDraft((current) => ({ ...current, age: event.target.value }))}
                   />
                 </label>
-                <label className="inline-field">
+              </div>
+            </section>
+
+            <section className="doc-section">
+              <div className="doc-section-head">
+                <div>
+                  <div className="doc-section-label">{pick(locale, "Visit context", "방문 맥락")}</div>
+                  <h4>{pick(locale, "Clinical tags instead of rigid steps", "고정 단계 대신 임상 태그로 정리")}</h4>
+                </div>
+              </div>
+              <div className="visit-context-inline">
+                <label className="visit-context-select">
                   <span>{pick(locale, "Contact lens", "콘택트렌즈")}</span>
                   <select
                     value={draft.contact_lens_use}
@@ -1504,36 +1728,18 @@ export function CaseWorkspace({
                     ))}
                   </select>
                 </label>
-                <label className="inline-field inline-toggle">
-                  <span>{pick(locale, "Polymicrobial", "다균종")}</span>
-                  <button
-                    className={`toggle-pill ${draft.polymicrobial ? "active" : ""}`}
-                    type="button"
-                    onClick={() => setDraft((current) => ({ ...current, polymicrobial: !current.polymicrobial }))}
-                  >
-                    {draft.polymicrobial ? pick(locale, "Included", "포함됨") : pick(locale, "Single organism", "단일 균종")}
-                  </button>
-                </label>
-              </div>
-            </section>
-            <section className="doc-section">
-              <div className="doc-section-head">
-                <div>
-                  <div className="doc-section-label">{pick(locale, "Visit context", "방문 맥락")}</div>
-                  <h4>{pick(locale, "Clinical tags instead of rigid steps", "고정 단계 대신 임상 태그로 정리")}</h4>
+                <div className="tag-cloud visit-context-tags">
+                  {PREDISPOSING_FACTOR_OPTIONS.map((factor) => (
+                    <button
+                      key={factor}
+                      className={`tag-pill ${draft.predisposing_factor.includes(factor) ? "active" : ""}`}
+                      type="button"
+                      onClick={() => togglePredisposingFactor(factor)}
+                    >
+                      {translateOption(locale, "predisposing", factor)}
+                    </button>
+                  ))}
                 </div>
-              </div>
-              <div className="tag-cloud">
-                {PREDISPOSING_FACTOR_OPTIONS.map((factor) => (
-                  <button
-                    key={factor}
-                    className={`tag-pill ${draft.predisposing_factor.includes(factor) ? "active" : ""}`}
-                    type="button"
-                    onClick={() => togglePredisposingFactor(factor)}
-                  >
-                    {translateOption(locale, "predisposing", factor)}
-                  </button>
-                ))}
               </div>
               <label className="notes-field">
                 <span>{pick(locale, "Case note", "케이스 메모")}</span>
@@ -1546,79 +1752,347 @@ export function CaseWorkspace({
               </label>
             </section>
 
+            <section className="property-grid">
+              <label className="property-chip">
+                <span>{pick(locale, "Visit reference", "방문 기준값")}</span>
+                <select
+                  value={draft.visit_reference_mode}
+                  onChange={(event) =>
+                    setDraft((current) => {
+                      const nextMode = event.target.value as DraftState["visit_reference_mode"];
+                      return {
+                        ...current,
+                        visit_reference_mode: nextMode,
+                        is_initial_visit: nextMode === "date" ? current.is_initial_visit : nextMode === "initial",
+                      };
+                    })
+                  }
+                >
+                  <option value="initial">{pick(locale, "Initial", "초진")}</option>
+                  <option value="follow_up">{pick(locale, "F/U #", "F/U #")}</option>
+                  <option value="date">{pick(locale, "Date", "날짜")}</option>
+                </select>
+                {draft.visit_reference_mode === "date" ? (
+                  <input
+                    type="date"
+                    value={draft.visit_date}
+                    onChange={(event) => setDraft((current) => ({ ...current, visit_date: event.target.value }))}
+                  />
+                ) : null}
+                {draft.visit_reference_mode === "follow_up" ? (
+                  <select
+                    value={draft.follow_up_number}
+                    onChange={(event) => setDraft((current) => ({ ...current, follow_up_number: event.target.value }))}
+                  >
+                    {Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0")).map((option) => (
+                      <option key={option} value={option}>
+                        {`F/U-${option}`}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <div className="doc-site-badge visit-reference-preview">{resolvedVisitReferenceLabel || common.notAvailable}</div>
+                <div className="property-hint">{visitReferenceHint}</div>
+              </label>
+              <label className="property-chip">
+                <span>{pick(locale, "Category", "분류")}</span>
+                <select
+                  value={draft.culture_category}
+                  onChange={(event) => {
+                    const nextCategory = event.target.value;
+                    updatePrimaryOrganism(
+                      nextCategory,
+                      (CULTURE_SPECIES[nextCategory] ?? [draft.culture_species])[0]
+                    );
+                  }}
+                >
+                  {Object.keys(CULTURE_SPECIES).map((option) => (
+                    <option key={option} value={option}>
+                      {translateOption(locale, "cultureCategory", option)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="property-chip">
+                <span>{pick(locale, "Species", "균종")}</span>
+                <select
+                  value={draft.culture_species}
+                  onChange={(event) => updatePrimaryOrganism(draft.culture_category, event.target.value)}
+                >
+                  {speciesOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+                <div className="property-hint">
+                  {pick(locale, "This is the primary organism label for the case.", "이 값이 케이스의 주 균종 라벨로 저장됩니다.")}
+                </div>
+              </label>
+              <div className="property-chip">
+                <span>{pick(locale, "Add organism", "균종 추가")}</span>
+                <div className="organism-add-grid">
+                  <select
+                    value={pendingOrganism.culture_category}
+                    onChange={(event) => {
+                      const nextCategory = event.target.value;
+                      setPendingOrganism({
+                        culture_category: nextCategory,
+                        culture_species: (CULTURE_SPECIES[nextCategory] ?? [pendingOrganism.culture_species])[0],
+                      });
+                    }}
+                  >
+                    {Object.keys(CULTURE_SPECIES).map((option) => (
+                      <option key={`pending-${option}`} value={option}>
+                        {translateOption(locale, "cultureCategory", option)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={pendingOrganism.culture_species}
+                    onChange={(event) =>
+                      setPendingOrganism((current) => ({
+                        ...current,
+                        culture_species: event.target.value,
+                      }))
+                    }
+                  >
+                    {pendingSpeciesOptions.map((option) => (
+                      <option key={`pending-species-${option}`} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="ghost-button organism-add-button" type="button" onClick={addAdditionalOrganism}>
+                    {pick(locale, "Add", "추가")}
+                  </button>
+                </div>
+                <div className="property-hint">
+                  {pick(locale, "Add a co-isolate here. Once one is added, the visit is treated as polymicrobial automatically.", "공동 분리 균주를 여기서 추가하세요. 하나라도 추가되면 이 방문은 자동으로 다균종으로 처리됩니다.")}
+                </div>
+              </div>
+              <label className="property-chip">
+                <span>{pick(locale, "Status", "상태")}</span>
+                <select
+                  value={draft.visit_status}
+                  onChange={(event) => setDraft((current) => ({ ...current, visit_status: event.target.value }))}
+                >
+                  {VISIT_STATUS_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {translateOption(locale, "visitStatus", option)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="property-chip">
+                <span>{pick(locale, "Visit phase", "방문 단계")}</span>
+                <div className="segmented-toggle" role="group" aria-label={pick(locale, "Visit phase", "방문 단계")}>
+                  <button
+                    className={`toggle-pill phase-pill phase-initial ${draft.is_initial_visit ? "active" : ""}`}
+                    type="button"
+                    disabled={phaseLockedByReference}
+                    onClick={() => setDraft((current) => ({ ...current, is_initial_visit: true }))}
+                  >
+                    {pick(locale, "Initial", "초진")}
+                  </button>
+                  <button
+                    className={`toggle-pill phase-pill phase-followup ${!draft.is_initial_visit ? "active" : ""}`}
+                    type="button"
+                    disabled={phaseLockedByReference}
+                    onClick={() => setDraft((current) => ({ ...current, is_initial_visit: false }))}
+                  >
+                    {pick(locale, "Follow-up", "재진")}
+                  </button>
+                </div>
+                <div className="property-hint">
+                  {phaseLockedByReference
+                    ? pick(locale, "When Visit reference is set to Initial or F/U #, the phase is derived automatically.", "방문 기준값이 초진 또는 F/U #이면 방문 단계가 자동으로 결정됩니다.")
+                    : draft.is_initial_visit
+                      ? pick(locale, "Turn this off for follow-up photography or later visits.", "추적 사진이나 이후 방문이면 이 토글을 끄세요.")
+                      : pick(locale, "Turn this on when this case represents the first documented visit.", "이 케이스가 첫 기록 방문이면 이 토글을 켜세요.")}
+                </div>
+              </div>
+            </section>
+            <section className="doc-section">
+              <div className="doc-section-head">
+                <div>
+                  <div className="doc-section-label">{pick(locale, "Organism set", "균종 구성")}</div>
+                  <h4>{pick(locale, "Primary label plus optional co-isolates", "주 균종과 선택적 추가 균주")}</h4>
+                </div>
+                <span>
+                  {draft.additional_organisms.length > 0
+                    ? pick(locale, "Polymicrobial", "다균종")
+                    : pick(locale, "Single organism", "단일 균종")}
+                </span>
+              </div>
+              <div className="organism-chip-row">
+                {listOrganisms(draft.culture_category, draft.culture_species, draft.additional_organisms).map((organism, index) => (
+                  <div key={`draft-organism-${organismKey(organism)}`} className="organism-chip">
+                    <div className="organism-chip-copy">
+                      <strong>{organism.culture_species}</strong>
+                      <span>
+                        {index === 0
+                          ? pick(locale, "Primary", "주 균종")
+                          : translateOption(locale, "cultureCategory", organism.culture_category)}
+                      </span>
+                    </div>
+                    {index > 0 ? (
+                      <button
+                        className="organism-chip-remove"
+                        type="button"
+                        onClick={() => removeAdditionalOrganism(organism)}
+                        aria-label={pick(locale, "Remove organism", "균종 제거")}
+                      >
+                        {pick(locale, "Remove", "제거")}
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              <div className="property-hint">
+                {draft.additional_organisms.length > 0
+                  ? pick(locale, "Multiple organisms are attached to this visit, so it will be saved as polymicrobial automatically.", "이 방문에는 여러 균종이 연결되어 있어 저장 시 자동으로 다균종으로 처리됩니다.")
+                  : pick(locale, "If a second organism is identified, add it above instead of toggling a separate polymicrobial switch.", "추가 균종이 확인되면 별도 다균종 토글 대신 위에서 균종을 추가하세요.")}
+              </div>
+            </section>
             <section className="doc-section">
               <div className="doc-section-head">
                 <div>
                   <div className="doc-section-label">{pick(locale, "Image board", "이미지 보드")}</div>
-                  <h4>{pick(locale, "Drop slit-lamp images into the page", "세극등 이미지를 페이지에 바로 넣기")}</h4>
-                </div>
-                <button className="ghost-button" type="button" onClick={openFilePicker}>
-                  {pick(locale, "Add files", "파일 추가")}
-                </button>
-              </div>
-              <div
-                className="drop-surface"
-                onClick={openFilePicker}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  appendFiles(Array.from(event.dataTransfer.files));
-                }}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  hidden
-                  onChange={(event) => appendFiles(Array.from(event.target.files ?? []))}
-                />
-                <div className="drop-copy">
-                  <strong>{pick(locale, "Drag and drop corneal images here", "각막 이미지를 여기로 드래그 앤 드롭하세요")}</strong>
-                  <span>{pick(locale, "Images stay local until you save this case into the selected hospital workspace.", "이 이미지는 케이스를 저장하기 전까지 선택한 병원 워크스페이스에 저장되지 않고 로컬에만 유지됩니다.")}</span>
+                  <h4>{pick(locale, "Place White (slit) and fluorescein images into separate slots", "White (slit) 뷰와 fluorescein 뷰를 나눠서 넣기")}</h4>
                 </div>
               </div>
+              <div className="ops-stack">
+                <section className="ops-card">
+                  <div className="panel-card-head">
+                    <strong>{pick(locale, "White (slit) view", "White (slit) 뷰")}</strong>
+                    <button className="ghost-button" type="button" onClick={() => openFilePicker("white")}>
+                      {pick(locale, "Add files", "파일 추가")}
+                    </button>
+                  </div>
+                  <div
+                    className="drop-surface"
+                    onClick={() => openFilePicker("white")}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      appendFiles(Array.from(event.dataTransfer.files), "white");
+                    }}
+                  >
+                    <input
+                      ref={whiteFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(event) => {
+                        appendFiles(Array.from(event.target.files ?? []), "white");
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <div className="drop-copy">
+                      <strong>{pick(locale, "Drop White (slit) photos here", "White (slit) 사진을 여기로 넣으세요")}</strong>
+                      <span>{pick(locale, "These files will be stored as the white view without auto-detection.", "자동 인식 없이 white 뷰로 저장됩니다.")}</span>
+                    </div>
+                  </div>
+                  {whiteDraftImages.length > 0 ? (
+                    <div className="image-grid">
+                      {whiteDraftImages.map((image) => (
+                        <article key={image.draft_id} className="image-card">
+                          <div className="image-preview-frame">
+                            <img src={image.preview_url} alt={image.file.name} className="image-preview" />
+                          </div>
+                          <div className="image-card-body">
+                            <div className="image-card-head">
+                              <strong>{image.file.name}</strong>
+                              <button className="text-button" type="button" onClick={() => removeDraftImage(image.draft_id)}>
+                                {pick(locale, "Remove", "제거")}
+                              </button>
+                            </div>
+                            <div className="image-card-controls">
+                              <span>{pick(locale, "Stored as white view", "white 뷰로 저장")}</span>
+                              <button
+                                className={`toggle-pill ${image.is_representative ? "active" : ""}`}
+                                type="button"
+                                onClick={() => setRepresentativeImage(image.draft_id)}
+                              >
+                                {image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Mark representative", "대표 이미지로 지정")}
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
 
-              {draftImages.length > 0 ? (
-                <div className="image-grid">
-                  {draftImages.map((image) => (
-                    <article key={image.draft_id} className="image-card">
-                      <div className="image-preview-frame">
-                        <img src={image.preview_url} alt={image.file.name} className="image-preview" />
-                      </div>
-                      <div className="image-card-body">
-                        <div className="image-card-head">
-                          <strong>{image.file.name}</strong>
-                          <button className="text-button" type="button" onClick={() => removeDraftImage(image.draft_id)}>
-                            {pick(locale, "Remove", "제거")}
-                          </button>
-                        </div>
-                        <div className="image-card-controls">
-                          <label className="inline-field">
-                            <span>{pick(locale, "View", "뷰")}</span>
-                            <select value={image.view} onChange={(event) => updateDraftImageView(image.draft_id, event.target.value)}>
-                              {VIEW_OPTIONS.map((option) => (
-                                <option key={option} value={option}>
-                                  {translateOption(locale, "view", option)}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <button
-                            className={`toggle-pill ${image.is_representative ? "active" : ""}`}
-                            type="button"
-                            onClick={() => setRepresentativeImage(image.draft_id)}
-                          >
-                            {image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Mark representative", "대표 이미지로 지정")}
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : null}
+                <section className="ops-card">
+                  <div className="panel-card-head">
+                    <strong>{pick(locale, "Fluorescein view", "Fluorescein 뷰")}</strong>
+                    <button className="ghost-button" type="button" onClick={() => openFilePicker("fluorescein")}>
+                      {pick(locale, "Add files", "파일 추가")}
+                    </button>
+                  </div>
+                  <div
+                    className="drop-surface"
+                    onClick={() => openFilePicker("fluorescein")}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      appendFiles(Array.from(event.dataTransfer.files), "fluorescein");
+                    }}
+                  >
+                    <input
+                      ref={fluoresceinFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(event) => {
+                        appendFiles(Array.from(event.target.files ?? []), "fluorescein");
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <div className="drop-copy">
+                      <strong>{pick(locale, "Drop fluorescein photos here", "fluorescein 사진을 여기로 넣으세요")}</strong>
+                      <span>{pick(locale, "These files will be stored as the fluorescein view without auto-detection.", "자동 인식 없이 fluorescein 뷰로 저장됩니다.")}</span>
+                    </div>
+                  </div>
+                  {fluoresceinDraftImages.length > 0 ? (
+                    <div className="image-grid">
+                      {fluoresceinDraftImages.map((image) => (
+                        <article key={image.draft_id} className="image-card">
+                          <div className="image-preview-frame">
+                            <img src={image.preview_url} alt={image.file.name} className="image-preview" />
+                          </div>
+                          <div className="image-card-body">
+                            <div className="image-card-head">
+                              <strong>{image.file.name}</strong>
+                              <button className="text-button" type="button" onClick={() => removeDraftImage(image.draft_id)}>
+                                {pick(locale, "Remove", "제거")}
+                              </button>
+                            </div>
+                            <div className="image-card-controls">
+                              <span>{pick(locale, "Stored as fluorescein view", "fluorescein 뷰로 저장")}</span>
+                              <button
+                                className={`toggle-pill ${image.is_representative ? "active" : ""}`}
+                                type="button"
+                                onClick={() => setRepresentativeImage(image.draft_id)}
+                              >
+                                {image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Mark representative", "대표 이미지로 지정")}
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              </div>
             </section>
 
             <div className="doc-footer">
@@ -1649,28 +2123,54 @@ export function CaseWorkspace({
               <div className="panel-stack">
                 <section className="panel-card">
                   <div className="panel-card-head">
-                    <strong>{formatCaseTitle(selectedCase)}</strong>
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => void handleRunValidation()}
-                      disabled={validationBusy || !canRunValidation}
-                    >
-                      {validationBusy ? pick(locale, "Validating...", "검증 중...") : pick(locale, "Run AI validation", "AI 검증 실행")}
-                    </button>
+                    <strong className="case-list-title">
+                      {isFavoriteCase(selectedCase.case_id) ? <span className="favorite-indicator" aria-hidden="true">★</span> : null}
+                      <span>{formatCaseTitle(selectedCase)}</span>
+                    </strong>
+                    <div className="panel-card-actions">
+                      <button
+                        className={`ghost-button favorite-toggle ${isFavoriteCase(selectedCase.case_id) ? "active" : ""}`}
+                        type="button"
+                        onClick={() => toggleFavoriteCase(selectedCase.case_id)}
+                      >
+                        {isFavoriteCase(selectedCase.case_id) ? pick(locale, "Favorited", "즐겨찾기됨") : pick(locale, "Favorite", "즐겨찾기")}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => void handleRunValidation()}
+                        disabled={validationBusy || !canRunValidation}
+                      >
+                        {validationBusy ? pick(locale, "Validating...", "검증 중...") : pick(locale, "Run AI validation", "AI 검증 실행")}
+                      </button>
+                    </div>
                   </div>
                   <div className="panel-meta">
                     <span>{selectedCase.patient_id}</span>
-                    <span>{selectedCase.visit_date}</span>
+                    <span>{displayVisitReference(locale, selectedCase.visit_date)}</span>
+                    <span>{visitPhaseCopy(locale, selectedCase.is_initial_visit)}</span>
                     <span>{translateOption(locale, "cultureCategory", selectedCase.culture_category)}</span>
                   </div>
                   <p>
                     {pick(
                       locale,
-                      `${selectedCase.culture_species} with ${selectedCase.image_count} uploaded images. Current status is ${translateOption(locale, "visitStatus", selectedCase.visit_status)}.`,
-                      `${selectedCase.culture_species} · 업로드 이미지 ${selectedCase.image_count}장 · 현재 상태 ${translateOption(locale, "visitStatus", selectedCase.visit_status)}`
+                      `${organismDetailLabel(selectedCase.culture_category, selectedCase.culture_species, selectedCase.additional_organisms)} with ${selectedCase.image_count} uploaded images. Current status is ${translateOption(locale, "visitStatus", selectedCase.visit_status)}.`,
+                      `${organismDetailLabel(selectedCase.culture_category, selectedCase.culture_species, selectedCase.additional_organisms)} · 업로드 이미지 ${selectedCase.image_count}장 · 현재 상태 ${translateOption(locale, "visitStatus", selectedCase.visit_status)}`
                     )}
                   </p>
+                  {selectedCase.polymicrobial || (selectedCase.additional_organisms?.length ?? 0) > 0 ? (
+                    <div className="organism-chip-row">
+                      {listOrganisms(
+                        selectedCase.culture_category,
+                        selectedCase.culture_species,
+                        selectedCase.additional_organisms
+                      ).map((organism) => (
+                        <span key={`selected-${organismKey(organism)}`} className="organism-chip static">
+                          {organism.culture_species}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   {!canRunValidation ? <p>{pick(locale, "Viewer accounts can inspect saved images, but validation remains disabled.", "뷰어 계정은 저장된 이미지를 볼 수 있지만 검증은 실행할 수 없습니다.")}</p> : null}
                 </section>
 
@@ -2001,7 +2501,7 @@ export function CaseWorkspace({
                   <strong>{pick(locale, "Draft checklist", "초안 체크리스트")}</strong>
                   <div className="panel-checklist">
                     <div className={draft.patient_id.trim() ? "complete" : ""}>{pick(locale, "Patient identity", "환자 정보")}</div>
-                    <div className={draft.visit_date.trim() ? "complete" : ""}>{pick(locale, "Visit date", "방문일")}</div>
+                    <div className={resolvedVisitReference ? "complete" : ""}>{pick(locale, "Visit reference", "방문 기준값")}</div>
                     <div className={draft.culture_species.trim() ? "complete" : ""}>{pick(locale, "Organism metadata", "균종 메타데이터")}</div>
                     <div className={draftImages.length > 0 ? "complete" : ""}>{pick(locale, "Image blocks", "이미지 블록")}</div>
                   </div>

@@ -18,7 +18,7 @@ from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel, Field
 
 from kera_research.config import MODEL_DIR
-from kera_research.domain import DENSENET_VARIANTS, make_id
+from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
@@ -276,16 +276,23 @@ class PatientCreateRequest(BaseModel):
     local_case_code: str = ""
 
 
+class OrganismSelection(BaseModel):
+    culture_category: str
+    culture_species: str
+
+
 class VisitCreateRequest(BaseModel):
     patient_id: str
     visit_date: str
     culture_confirmed: bool = True
     culture_category: str
     culture_species: str
+    additional_organisms: list[OrganismSelection] = Field(default_factory=list)
     contact_lens_use: str
     predisposing_factor: list[str] = Field(default_factory=list)
     other_history: str = ""
     visit_status: str = "active"
+    is_initial_visit: bool = False
     smear_result: str = ""
     polymicrobial: bool = False
 
@@ -319,7 +326,7 @@ class SiteValidationRunRequest(BaseModel):
 
 
 class InitialTrainingRequest(BaseModel):
-    architecture: str = "densenet121"
+    architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
     epochs: int = 30
     learning_rate: float = 1e-4
@@ -331,7 +338,7 @@ class InitialTrainingRequest(BaseModel):
 
 
 class CrossValidationRunRequest(BaseModel):
-    architecture: str = "densenet121"
+    architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
     num_folds: int = 5
     epochs: int = 10
@@ -354,6 +361,11 @@ class ProjectCreateRequest(BaseModel):
 class SiteCreateRequest(BaseModel):
     project_id: str
     site_code: str
+    display_name: str
+    hospital_name: str = ""
+
+
+class SiteUpdateRequest(BaseModel):
     display_name: str
     hospital_name: str = ""
 
@@ -915,6 +927,19 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    @app.patch("/api/admin/sites/{site_id}")
+    def update_site(
+        site_id: str,
+        payload: SiteUpdateRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_platform_admin(user)
+        try:
+            return cp.update_site_metadata(site_id, payload.display_name, payload.hospital_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     @app.get("/api/admin/users")
     def list_users(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -1131,6 +1156,7 @@ def create_app() -> FastAPI:
                         culture_confirmed=_bool_from_value(row.get("culture_confirmed"), True),
                         culture_category=_coerce_text(row.get("culture_category"), "bacterial") or "bacterial",
                         culture_species=_coerce_text(row.get("culture_species"), "Other") or "Other",
+                        additional_organisms=[],
                         contact_lens_use=_coerce_text(row.get("contact_lens_use"), "unknown") or "unknown",
                         predisposing_factor=factors,
                         other_history=_coerce_text(row.get("other_history")),
@@ -1280,10 +1306,10 @@ def create_app() -> FastAPI:
         site_store = _require_site_access(cp, user, site_id)
         workflow = _get_workflow(cp)
 
-        if payload.architecture not in DENSENET_VARIANTS:
+        if payload.architecture not in TRAINING_ARCHITECTURES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Initial training supports only DenseNet variants: {', '.join(DENSENET_VARIANTS)}",
+                detail=f"Initial training supports only these architectures: {', '.join(TRAINING_ARCHITECTURES)}",
             )
 
         output_path = MODEL_DIR / f"global_{payload.architecture}_{make_id('init')[:8]}.pth"
@@ -1339,10 +1365,10 @@ def create_app() -> FastAPI:
         site_store = _require_site_access(cp, user, site_id)
         workflow = _get_workflow(cp)
 
-        if payload.architecture not in DENSENET_VARIANTS:
+        if payload.architecture not in TRAINING_ARCHITECTURES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cross-validation supports only DenseNet variants: {', '.join(DENSENET_VARIANTS)}",
+                detail=f"Cross-validation supports only these architectures: {', '.join(TRAINING_ARCHITECTURES)}",
             )
 
         output_dir = MODEL_DIR / f"cross_validation_{make_id('cvdir')[:8]}"
@@ -1439,11 +1465,13 @@ def create_app() -> FastAPI:
                 culture_confirmed=payload.culture_confirmed,
                 culture_category=payload.culture_category,
                 culture_species=payload.culture_species,
+                additional_organisms=[item.model_dump() for item in payload.additional_organisms],
                 contact_lens_use=payload.contact_lens_use,
                 predisposing_factor=payload.predisposing_factor,
                 other_history=payload.other_history,
                 visit_status=payload.visit_status,
                 active_stage=payload.visit_status == "active",
+                is_initial_visit=payload.is_initial_visit,
                 smear_result=payload.smear_result,
                 polymicrobial=payload.polymicrobial,
             )

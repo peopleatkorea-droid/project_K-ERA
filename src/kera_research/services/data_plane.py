@@ -20,6 +20,39 @@ from kera_research.domain import MANIFEST_COLUMNS, VISIT_STATUS_OPTIONS, make_id
 from kera_research.storage import ensure_dir, write_csv
 
 
+def _normalize_organism_entry(entry: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(entry, dict):
+        return None
+    category = str(entry.get("culture_category", "")).strip().lower()
+    species = str(entry.get("culture_species", "")).strip()
+    if not category or not species:
+        return None
+    return {
+        "culture_category": category,
+        "culture_species": species,
+    }
+
+
+def _normalize_additional_organisms(
+    primary_category: str,
+    primary_species: str,
+    additional_organisms: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    primary_key = f"{primary_category.strip().lower()}::{primary_species.strip().lower()}"
+    normalized: list[dict[str, str]] = []
+    seen = {primary_key}
+    for raw_entry in additional_organisms or []:
+        entry = _normalize_organism_entry(raw_entry)
+        if entry is None:
+            continue
+        entry_key = f"{entry['culture_category']}::{entry['culture_species'].lower()}"
+        if entry_key in seen:
+            continue
+        seen.add(entry_key)
+        normalized.append(entry)
+    return normalized
+
+
 class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
@@ -137,11 +170,13 @@ class SiteStore:
         culture_confirmed: bool,
         culture_category: str,
         culture_species: str,
+        additional_organisms: list[dict[str, Any]] | None,
         contact_lens_use: str,
         predisposing_factor: list[str],
         other_history: str,
         active_stage: bool = True,
         visit_status: str = "active",
+        is_initial_visit: bool = False,
         smear_result: str = "",
         polymicrobial: bool = False,
     ) -> dict[str, Any]:
@@ -151,6 +186,13 @@ class SiteStore:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_visit(patient_id, visit_date):
             raise ValueError(f"Visit {patient_id} / {visit_date} already exists.")
+        normalized_category = culture_category.strip().lower()
+        normalized_species = culture_species.strip()
+        normalized_additional_organisms = _normalize_additional_organisms(
+            normalized_category,
+            normalized_species,
+            additional_organisms,
+        )
         normalized_status = (visit_status or "").strip().lower()
         if normalized_status not in VISIT_STATUS_OPTIONS:
             normalized_status = "active" if active_stage else "scar"
@@ -160,15 +202,17 @@ class SiteStore:
             "patient_id": patient_id,
             "visit_date": visit_date,
             "culture_confirmed": bool(culture_confirmed),
-            "culture_category": culture_category,
-            "culture_species": culture_species,
+            "culture_category": normalized_category,
+            "culture_species": normalized_species,
             "contact_lens_use": contact_lens_use,
             "predisposing_factor": predisposing_factor,
+            "additional_organisms": normalized_additional_organisms,
             "other_history": other_history,
             "visit_status": normalized_status,
             "active_stage": normalized_status == "active",
+            "is_initial_visit": bool(is_initial_visit),
             "smear_result": smear_result.strip(),
-            "polymicrobial": bool(polymicrobial),
+            "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
             "created_at": utc_now(),
         }
         with ENGINE.begin() as conn:
@@ -247,6 +291,7 @@ class SiteStore:
                 visit_table.c.culture_confirmed,
                 visit_table.c.culture_category,
                 visit_table.c.culture_species,
+                visit_table.c.additional_organisms,
                 visit_table.c.contact_lens_use,
                 visit_table.c.predisposing_factor,
                 visit_table.c.visit_status,
@@ -292,6 +337,7 @@ class SiteStore:
                     "culture_confirmed": row["culture_confirmed"],
                     "culture_category": row["culture_category"],
                     "culture_species": row["culture_species"],
+                    "additional_organisms": row["additional_organisms"] or [],
                     "contact_lens_use": row["contact_lens_use"],
                     "predisposing_factor": "|".join(row["predisposing_factor"] or []),
                     "visit_status": row["visit_status"],
@@ -356,10 +402,14 @@ class SiteStore:
                     "age": patient.get("age"),
                     "culture_category": visit.get("culture_category", ""),
                     "culture_species": visit.get("culture_species", ""),
+                    "additional_organisms": visit.get("additional_organisms", []) or [],
                     "contact_lens_use": visit.get("contact_lens_use", ""),
                     "visit_status": visit.get("visit_status", "active"),
+                    "is_initial_visit": bool(visit.get("is_initial_visit", False)),
                     "smear_result": visit.get("smear_result", ""),
-                    "polymicrobial": bool(visit.get("polymicrobial", False)),
+                    "polymicrobial": bool(
+                        visit.get("polymicrobial", False) or (visit.get("additional_organisms", []) or [])
+                    ),
                     "image_count": len(visit_images),
                     "representative_image_id": representative["image_id"] if representative else None,
                     "representative_view": representative["view"] if representative else None,

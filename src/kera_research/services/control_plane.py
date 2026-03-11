@@ -389,6 +389,14 @@ class ControlPlaneStore:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
+    def get_site(self, site_id: str) -> dict[str, Any] | None:
+        normalized_site_id = site_id.strip()
+        if not normalized_site_id:
+            return None
+        with ENGINE.begin() as conn:
+            row = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
+        return dict(row) if row else None
+
     def create_site(
         self,
         project_id: str,
@@ -426,6 +434,31 @@ class ControlPlaneStore:
                 .values(site_ids=project_site_ids)
             )
         return record
+
+    def update_site_metadata(self, site_id: str, display_name: str, hospital_name: str) -> dict[str, Any]:
+        normalized_site_id = site_id.strip()
+        normalized_display_name = display_name.strip()
+        normalized_hospital_name = hospital_name.strip()
+        if not normalized_site_id:
+            raise ValueError("Site code is required.")
+        if not normalized_display_name:
+            raise ValueError("Site display name is required.")
+
+        with ENGINE.begin() as conn:
+            existing_site = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
+            if existing_site is None:
+                raise ValueError(f"Unknown site_id: {normalized_site_id}")
+            conn.execute(
+                update(sites)
+                .where(sites.c.site_id == normalized_site_id)
+                .values(display_name=normalized_display_name, hospital_name=normalized_hospital_name)
+            )
+
+        return self.get_site(normalized_site_id) or {
+            "site_id": normalized_site_id,
+            "display_name": normalized_display_name,
+            "hospital_name": normalized_hospital_name,
+        }
 
     def list_organisms(self, category: str | None = None) -> list[str] | dict[str, list[str]]:
         query = select(organism_catalog).order_by(organism_catalog.c.culture_category, organism_catalog.c.species_name)

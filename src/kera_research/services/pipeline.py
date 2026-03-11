@@ -404,7 +404,7 @@ class ResearchWorkflowService:
         regenerate_split: bool = False,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
-        """사이트 전체 데이터로 DenseNet 초기 학습을 수행합니다."""
+        """사이트 전체 데이터로 MedSAM ROI crop 기반 초기 학습을 수행합니다."""
         manifest_df = site_store.generate_manifest()
         if manifest_df.empty:
             raise ValueError("학습 데이터가 없습니다. 먼저 이미지를 등록하세요.")

@@ -536,6 +536,7 @@ th {
 .doc-section-head,
 .workspace-panel-head,
 .panel-card-head,
+.panel-card-actions,
 .case-list-head,
 .image-card-head,
 .doc-footer {
@@ -658,6 +659,17 @@ th {
   margin-bottom: 4px;
 }
 
+.case-list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.favorite-indicator {
+  color: #f4c978;
+  text-shadow: 0 0 16px rgba(244, 201, 120, 0.28);
+}
+
 .rail-site-button span,
 .case-list-item span,
 .rail-copy,
@@ -763,6 +775,175 @@ th {
   color: var(--workspace-muted);
 }
 
+.property-hint {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--workspace-muted);
+}
+
+.organism-add-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.organism-add-button {
+  justify-content: center;
+}
+
+.organism-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.organism-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--workspace-line);
+  background: rgba(125, 211, 195, 0.08);
+}
+
+.organism-chip.static {
+  padding: 9px 13px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.organism-chip-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.organism-chip-copy strong {
+  font-size: 0.92rem;
+}
+
+.organism-chip-copy span {
+  font-size: 0.74rem;
+  color: var(--workspace-muted);
+}
+
+.organism-chip-remove {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--workspace-accent);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-shell[data-workspace-theme="light"] .organism-chip {
+  background: rgba(15, 143, 135, 0.08);
+}
+
+.segmented-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px;
+  border-radius: 18px;
+  border: 1px solid var(--workspace-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.segmented-toggle .toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  background: transparent;
+}
+
+.segmented-toggle .phase-pill {
+  font-weight: 700;
+  border-color: transparent;
+}
+
+.segmented-toggle .phase-pill:not(.active) {
+  opacity: 0.72;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.segmented-toggle .phase-pill.active {
+  color: #071318;
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.workspace-shell[data-workspace-theme="light"] .segmented-toggle .phase-pill.active {
+  color: #ffffff;
+  box-shadow:
+    0 10px 24px rgba(15, 27, 38, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.segmented-toggle .phase-initial.active {
+  border-color: rgba(125, 211, 195, 0.6);
+  background: linear-gradient(135deg, #8de4d3, #49b7a5);
+}
+
+.segmented-toggle .phase-followup.active {
+  border-color: rgba(247, 208, 135, 0.58);
+  background: linear-gradient(135deg, #f4c978, #d89a33);
+}
+
+.workspace-shell[data-workspace-theme="light"] .segmented-toggle .phase-initial.active {
+  border-color: rgba(15, 123, 116, 0.42);
+  background: linear-gradient(135deg, #0f8f87, #08635d);
+}
+
+.workspace-shell[data-workspace-theme="light"] .segmented-toggle .phase-followup.active {
+  border-color: rgba(183, 113, 17, 0.38);
+  background: linear-gradient(135deg, #d49a39, #b77111);
+}
+
+.toggle-pill:disabled {
+  cursor: default;
+  opacity: 0.6;
+  transform: none;
+}
+
+.visit-reference-preview {
+  width: fit-content;
+}
+
+.visit-context-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.visit-context-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.visit-context-select span {
+  font-size: 0.82rem;
+  color: var(--workspace-muted);
+  white-space: nowrap;
+}
+
+.visit-context-select select {
+  min-width: 180px;
+  width: auto;
+}
+
+.visit-context-tags {
+  flex: 1 1 420px;
+  align-items: center;
+}
+
 .doc-section {
   padding: 24px 0;
   border-top: 1px solid var(--workspace-line);
@@ -791,6 +972,12 @@ th {
 .text-button {
   background: rgba(255, 255, 255, 0.04);
   color: inherit;
+}
+
+.favorite-toggle.active {
+  border-color: rgba(244, 201, 120, 0.45);
+  background: rgba(244, 201, 120, 0.14);
+  color: #f4c978;
 }
 
 .tag-pill,

@@ -26,6 +26,7 @@ import {
   runCrossValidation,
   runFederatedAggregation,
   runInitialTraining,
+  updateAdminSite,
   upsertManagedUser,
   type AccessRequestRecord,
   type AdminOverviewResponse,
@@ -46,7 +47,13 @@ import {
   type ValidationCasePredictionRecord,
 } from "../lib/api";
 
-const DENSENET_OPTIONS = ["densenet121", "densenet161", "densenet169", "densenet201"];
+const TRAINING_ARCHITECTURE_OPTIONS = [
+  { value: "convnext_tiny", label: "ConvNeXt-Tiny" },
+  { value: "densenet121", label: "DenseNet121" },
+  { value: "densenet161", label: "DenseNet161" },
+  { value: "densenet169", label: "DenseNet169" },
+  { value: "densenet201", label: "DenseNet201" },
+];
 
 type ReviewDraft = {
   assigned_role: string;
@@ -125,6 +132,15 @@ function createUserForm(): UserFormState {
   };
 }
 
+function createSiteForm(projectId = "") {
+  return {
+    project_id: projectId,
+    site_code: "",
+    display_name: "",
+    hospital_name: "",
+  };
+}
+
 export function AdminWorkspace({
   token,
   user,
@@ -165,7 +181,8 @@ export function AdminWorkspace({
   const [bulkImportBusy, setBulkImportBusy] = useState(false);
   const [bulkImportResult, setBulkImportResult] = useState<BulkImportResponse | null>(null);
   const [projectForm, setProjectForm] = useState({ name: "", description: "" });
-  const [siteForm, setSiteForm] = useState({ project_id: "", site_code: "", display_name: "", hospital_name: "" });
+  const [siteForm, setSiteForm] = useState(() => createSiteForm());
+  const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState<UserFormState>(() => createUserForm());
   const [initialBusy, setInitialBusy] = useState(false);
   const [initialResult, setInitialResult] = useState<InitialTrainingResponse | null>(null);
@@ -176,7 +193,7 @@ export function AdminWorkspace({
   const [newVersionName, setNewVersionName] = useState("");
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
   const [initialForm, setInitialForm] = useState({
-    architecture: "densenet121",
+    architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
     epochs: 30,
     learning_rate: 1e-4,
@@ -187,7 +204,7 @@ export function AdminWorkspace({
     regenerate_split: false,
   });
   const [crossValidationForm, setCrossValidationForm] = useState({
-    architecture: "densenet121",
+    architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
     num_folds: 5,
     epochs: 10,
@@ -265,8 +282,11 @@ export function AdminWorkspace({
     projectRegistered: pick(locale, "Project registered.", "프로젝트를 등록했습니다."),
     unableCreateProject: pick(locale, "Unable to create project.", "프로젝트 생성에 실패했습니다."),
     siteFieldsRequired: pick(locale, "Project, hospital code, and app display name are required.", "프로젝트, 병원 코드, 앱 표시명은 필수입니다."),
+    siteNameRequired: pick(locale, "App display name is required.", "앱 표시명은 필수입니다."),
     siteRegistered: (siteId: string) => pick(locale, `Hospital ${siteId} registered.`, `${siteId} 병원을 등록했습니다.`),
     unableCreateSite: pick(locale, "Unable to create hospital.", "병원 생성에 실패했습니다."),
+    siteUpdated: (siteId: string) => pick(locale, `Updated hospital ${siteId}.`, `${siteId} 병원 정보를 수정했습니다.`),
+    unableUpdateSite: pick(locale, "Unable to update hospital.", "병원 수정에 실패했습니다."),
     usernameRequired: pick(locale, "Username is required.", "아이디는 필수입니다."),
     assignSiteRequired: pick(locale, "Assign at least one hospital for non-admin users.", "관리자가 아닌 사용자는 최소 한 개 이상의 병원을 지정해야 합니다."),
     userSaved: pick(locale, "User settings saved.", "사용자 설정을 저장했습니다."),
@@ -631,6 +651,21 @@ export function AdminWorkspace({
     }
   }
 
+  function resetSiteForm(projectId = siteForm.project_id || projects[0]?.project_id || "") {
+    setEditingSiteId(null);
+    setSiteForm(createSiteForm(projectId));
+  }
+
+  function handleEditSite(site: ManagedSiteRecord) {
+    setEditingSiteId(site.site_id);
+    setSiteForm({
+      project_id: site.project_id,
+      site_code: site.site_id,
+      display_name: site.display_name,
+      hospital_name: site.hospital_name ?? "",
+    });
+  }
+
   async function handleCreateSite() {
     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || "";
     if (!effectiveProjectId || !siteForm.site_code.trim() || !siteForm.display_name.trim()) {
@@ -639,19 +674,33 @@ export function AdminWorkspace({
     }
     try {
       const createdSite = await createAdminSite(token, { ...siteForm, project_id: effectiveProjectId });
-      setSiteForm((current) => ({
-        ...current,
-        project_id: effectiveProjectId,
-        site_code: "",
-        display_name: "",
-        hospital_name: "",
-      }));
+      resetSiteForm(effectiveProjectId);
       await onRefreshSites();
       await refreshWorkspace();
       onSelectSite(createdSite.site_id);
       setToast({ tone: "success", message: copy.siteRegistered(createdSite.site_id) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableCreateSite) });
+    }
+  }
+
+  async function handleUpdateSite() {
+    if (!editingSiteId || !siteForm.display_name.trim()) {
+      setToast({ tone: "error", message: copy.siteNameRequired });
+      return;
+    }
+    try {
+      const updatedSite = await updateAdminSite(editingSiteId, token, {
+        display_name: siteForm.display_name,
+        hospital_name: siteForm.hospital_name,
+      });
+      resetSiteForm(updatedSite.project_id);
+      await onRefreshSites();
+      await refreshWorkspace();
+      onSelectSite(updatedSite.site_id);
+      setToast({ tone: "success", message: copy.siteUpdated(updatedSite.site_id) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableUpdateSite) });
     }
   }
 
@@ -817,7 +866,7 @@ export function AdminWorkspace({
             <section className="doc-surface">
               <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Initial training", "초기 학습")}</div><h3>{pick(locale, "Register the next global baseline", "다음 글로벌 기준 모델 등록")}</h3></div><div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div></div>
               <div className="ops-form-grid ops-form-grid-wide">
-                <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={initialForm.architecture} onChange={(event) => setInitialForm((current) => ({ ...current, architecture: event.target.value }))}>{DENSENET_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+                <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={initialForm.architecture} onChange={(event) => setInitialForm((current) => ({ ...current, architecture: event.target.value }))}>{TRAINING_ARCHITECTURE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <label className="inline-field"><span>{pick(locale, "Execution mode", "실행 모드")}</span><select value={initialForm.execution_mode} onChange={(event) => setInitialForm((current) => ({ ...current, execution_mode: event.target.value as "auto" | "cpu" | "gpu" }))}><option value="auto">{pick(locale, "auto", "자동")}</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
                 <label className="inline-field"><span>{pick(locale, "Epochs", "에폭")}</span><input type="number" min={1} value={initialForm.epochs} onChange={(event) => setInitialForm((current) => ({ ...current, epochs: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Batch size", "배치 크기")}</span><input type="number" min={1} value={initialForm.batch_size} onChange={(event) => setInitialForm((current) => ({ ...current, batch_size: Number(event.target.value) }))} /></label>
@@ -826,7 +875,7 @@ export function AdminWorkspace({
                 <label className="inline-field"><span>{pick(locale, "Test split", "테스트 비율")}</span><input type="number" min={0.1} max={0.4} step="0.05" value={initialForm.test_split} onChange={(event) => setInitialForm((current) => ({ ...current, test_split: Number(event.target.value) }))} /></label>
               </div>
               <div className="workspace-actions"><button className={`toggle-pill ${initialForm.use_pretrained ? "active" : ""}`} type="button" onClick={() => setInitialForm((current) => ({ ...current, use_pretrained: !current.use_pretrained }))}>{initialForm.use_pretrained ? pick(locale, "Pretrained init", "사전학습 초기화") : pick(locale, "Scratch init", "처음부터 학습")}</button><button className={`toggle-pill ${initialForm.regenerate_split ? "active" : ""}`} type="button" onClick={() => setInitialForm((current) => ({ ...current, regenerate_split: !current.regenerate_split }))}>{initialForm.regenerate_split ? pick(locale, "Regenerate split", "분할 재생성") : pick(locale, "Reuse split", "기존 분할 재사용")}</button></div>
-              <div className="doc-footer"><div><strong>{pick(locale, "DenseNet + MedSAM crop only", "DenseNet + MedSAM crop 전용")}</strong><p>{pick(locale, "The existing Python pipeline still executes the actual training.", "실제 학습 실행은 기존 Python 파이프라인이 계속 담당합니다.")}</p></div><button className="primary-workspace-button" type="button" disabled={initialBusy || !selectedSiteId} onClick={() => void handleInitialTraining()}>{initialBusy ? pick(locale, "Training...", "학습 중...") : pick(locale, "Run initial training", "초기 학습 실행")}</button></div>
+              <div className="doc-footer"><div><strong>{pick(locale, "DenseNet / ConvNeXt + MedSAM crop only", "DenseNet / ConvNeXt + MedSAM crop 전용")}</strong><p>{pick(locale, "The existing Python pipeline still executes the actual training.", "실제 학습 실행은 기존 Python 파이프라인이 계속 담당합니다.")}</p></div><button className="primary-workspace-button" type="button" disabled={initialBusy || !selectedSiteId} onClick={() => void handleInitialTraining()}>{initialBusy ? pick(locale, "Training...", "학습 중...") : pick(locale, "Run initial training", "초기 학습 실행")}</button></div>
               {initialResult ? <div className="panel-metric-grid"><div><strong>{initialResult.result.n_train_patients}</strong><span>{pick(locale, "train patients", "학습 환자")}</span></div><div><strong>{initialResult.result.n_val_patients}</strong><span>{pick(locale, "val patients", "검증 환자")}</span></div><div><strong>{initialResult.result.n_test_patients}</strong><span>{pick(locale, "test patients", "테스트 환자")}</span></div><div><strong>{formatMetric(initialResult.result.best_val_acc, common.notAvailable)}</strong><span>{pick(locale, "best val acc", "최고 검증 정확도")}</span></div></div> : null}
             </section>
           ) : null}
@@ -834,7 +883,7 @@ export function AdminWorkspace({
             <section className="doc-surface">
               <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Cross-validation", "교차 검증")}</div><h3>{pick(locale, "Patient-level fold review", "환자 단위 fold 검토")}</h3></div><div className="doc-site-badge">{crossValidationReports.length} {pick(locale, "report(s)", "리포트")}</div></div>
               <div className="ops-form-grid ops-form-grid-wide">
-                <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={crossValidationForm.architecture} onChange={(event) => setCrossValidationForm((current) => ({ ...current, architecture: event.target.value }))}>{DENSENET_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+                <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={crossValidationForm.architecture} onChange={(event) => setCrossValidationForm((current) => ({ ...current, architecture: event.target.value }))}>{TRAINING_ARCHITECTURE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <label className="inline-field"><span>{pick(locale, "Execution mode", "실행 모드")}</span><select value={crossValidationForm.execution_mode} onChange={(event) => setCrossValidationForm((current) => ({ ...current, execution_mode: event.target.value as "auto" | "cpu" | "gpu" }))}><option value="auto">{pick(locale, "auto", "자동")}</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
                 <label className="inline-field"><span>{pick(locale, "Folds", "폴드 수")}</span><input type="number" min={3} max={5} value={crossValidationForm.num_folds} onChange={(event) => setCrossValidationForm((current) => ({ ...current, num_folds: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Epochs", "에폭")}</span><input type="number" min={1} value={crossValidationForm.epochs} onChange={(event) => setCrossValidationForm((current) => ({ ...current, epochs: Number(event.target.value) }))} /></label>
@@ -879,14 +928,19 @@ export function AdminWorkspace({
                   </section>
                   <section className="ops-card">
                     <div className="panel-card-head"><strong>{pick(locale, "Hospitals", "병원")}</strong><span>{managedSites.length}</span></div>
-                    {managedSites.length === 0 ? <div className="empty-surface">{pick(locale, "No hospital is visible to this account.", "이 계정에서 볼 수 있는 병원이 없습니다.")}</div> : <div className="ops-list">{managedSites.map((site) => <div key={site.site_id} className="ops-item"><div className="panel-card-head"><strong>{site.display_name}</strong><span>{site.project_id}</span></div><div className="panel-meta"><span>{site.site_id}</span><span>{site.hospital_name || pick(locale, "No hospital name", "병원명 없음")}</span></div></div>)}</div>}
+                    {managedSites.length === 0 ? <div className="empty-surface">{pick(locale, "No hospital is visible to this account.", "이 계정에서 볼 수 있는 병원이 없습니다.")}</div> : <div className="ops-list">{managedSites.map((site) => canManagePlatform ? <button key={site.site_id} className="ops-item ops-table-button" type="button" onClick={() => handleEditSite(site)}><div className="panel-card-head"><strong>{site.display_name}</strong><span>{site.project_id}</span></div><div className="panel-meta"><span>{site.site_id}</span><span>{site.hospital_name || pick(locale, "No hospital name", "병원명 없음")}</span></div></button> : <div key={site.site_id} className="ops-item"><div className="panel-card-head"><strong>{site.display_name}</strong><span>{site.project_id}</span></div><div className="panel-meta"><span>{site.site_id}</span><span>{site.hospital_name || pick(locale, "No hospital name", "병원명 없음")}</span></div></div>)}</div>}
                     {canManagePlatform ? (
                       <div className="ops-stack">
+                        <div className="panel-meta">
+                          <span>{editingSiteId ? pick(locale, `Editing ${editingSiteId}`, `${editingSiteId} 수정 중`) : pick(locale, "Registering a new hospital", "새 병원 등록")}</span>
+                          <span>{pick(locale, "Hospital code remains immutable after creation.", "병원 코드는 생성 후 수정하지 않습니다.")}</span>
+                        </div>
                         <label className="inline-field">
                           <span>{pick(locale, "Project", "프로젝트")}</span>
                           <select
                             value={siteForm.project_id || projects[0]?.project_id || ""}
                             onChange={(event) => setSiteForm((current) => ({ ...current, project_id: event.target.value }))}
+                            disabled={Boolean(editingSiteId)}
                           >
                             {projects.map((project) => (
                               <option key={project.project_id} value={project.project_id}>
@@ -902,6 +956,7 @@ export function AdminWorkspace({
                               value={siteForm.site_code}
                               onChange={(event) => setSiteForm((current) => ({ ...current, site_code: event.target.value }))}
                               placeholder={pick(locale, "e.g. JNUH", "예: JNUH")}
+                              disabled={Boolean(editingSiteId)}
                             />
                           </label>
                           <label className="inline-field">
@@ -909,7 +964,7 @@ export function AdminWorkspace({
                             <input
                               value={siteForm.display_name}
                               onChange={(event) => setSiteForm((current) => ({ ...current, display_name: event.target.value }))}
-                              placeholder={pick(locale, "Jeju National University Hospital", "제주대병원")}
+                              placeholder={pick(locale, "Jeju National University Hospital", "예: 제주대병원")}
                             />
                           </label>
                         </div>
@@ -921,15 +976,18 @@ export function AdminWorkspace({
                           <input
                             value={siteForm.hospital_name}
                             onChange={(event) => setSiteForm((current) => ({ ...current, hospital_name: event.target.value }))}
-                            placeholder={pick(locale, "Jeju National University Hospital", "제주대학교병원")}
+                            placeholder={pick(locale, "Jeju National University Hospital", "예: 제주대학교병원")}
                           />
                         </label>
                         <p className="muted">
                           {pick(locale, "The official hospital name is stored as the formal institution name.", "공식 병원명은 정식 기관명으로 저장됩니다.")}
                         </p>
-                        <button className="primary-workspace-button" type="button" onClick={() => void handleCreateSite()} disabled={projects.length === 0}>
-                          {pick(locale, "Register hospital", "병원 등록")}
-                        </button>
+                        <div className="workspace-actions">
+                          <button className="ghost-button" type="button" onClick={() => resetSiteForm()}>{pick(locale, "Reset", "초기화")}</button>
+                          <button className="primary-workspace-button" type="button" onClick={() => void (editingSiteId ? handleUpdateSite() : handleCreateSite())} disabled={projects.length === 0}>
+                            {editingSiteId ? pick(locale, "Save hospital", "병원 저장") : pick(locale, "Register hospital", "병원 등록")}
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                   </section>

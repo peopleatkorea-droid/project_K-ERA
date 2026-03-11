@@ -358,10 +358,11 @@ class ApiHttpTests(unittest.TestCase):
                 "culture_species": "Staphylococcus aureus",
                 "contact_lens_use": "none",
                 "visit_status": "active",
-                "smear_result": "not done",
+                "is_initial_visit": True,
             },
         )
         self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        self.assertTrue(visit_response.json()["is_initial_visit"])
         image_response = self.client.post(
             f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=2026-03-11&view=slit&is_representative=true",
             headers={"Authorization": f"Bearer {token}"},
@@ -394,6 +395,40 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(contribution_payload["update"]["status"], "pending_upload")
             self.assertEqual(contribution_payload["stats"]["user_contributions"], 1)
 
+    def test_visit_auto_marks_polymicrobial_when_multiple_organisms_are_added(self):
+        token = self._login("http_researcher", "research123")
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": "HTTP-002", "sex": "female", "age": 58, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+
+        visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-002",
+                "visit_date": "Initial",
+                "culture_category": "bacterial",
+                "culture_species": "Staphylococcus aureus",
+                "additional_organisms": [
+                    {
+                        "culture_category": "fungal",
+                        "culture_species": "Fusarium",
+                    }
+                ],
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        visit_payload = visit_response.json()
+        self.assertTrue(visit_payload["polymicrobial"])
+        self.assertEqual(len(visit_payload["additional_organisms"]), 1)
+        self.assertEqual(visit_payload["additional_organisms"][0]["culture_species"], "Fusarium")
+
     def test_training_registry_and_aggregation_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token)
@@ -402,15 +437,15 @@ class ApiHttpTests(unittest.TestCase):
             training_response = self.client.post(
                 f"/api/sites/{self.site_id}/training/initial",
                 headers={"Authorization": f"Bearer {admin_token}"},
-                json={"architecture": "densenet121", "execution_mode": "cpu", "epochs": 2},
+                json={"architecture": "convnext_tiny", "execution_mode": "cpu", "epochs": 2},
             )
             self.assertEqual(training_response.status_code, 200, training_response.text)
-            self.assertEqual(training_response.json()["result"]["version_name"], "global-densenet121-http")
+            self.assertEqual(training_response.json()["result"]["version_name"], "global-convnext_tiny-http")
 
             cv_response = self.client.post(
                 f"/api/sites/{self.site_id}/training/cross-validation",
                 headers={"Authorization": f"Bearer {admin_token}"},
-                json={"architecture": "densenet121", "execution_mode": "cpu", "num_folds": 3},
+                json={"architecture": "convnext_tiny", "execution_mode": "cpu", "num_folds": 3},
             )
             self.assertEqual(cv_response.status_code, 200, cv_response.text)
 
@@ -503,6 +538,18 @@ class ApiHttpTests(unittest.TestCase):
             },
         )
         self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+
+        update_site_response = self.client.patch(
+            "/api/admin/sites/OPS_HTTP",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "display_name": "Ops HTTP Site Updated",
+                "hospital_name": "Ops Hospital Updated",
+            },
+        )
+        self.assertEqual(update_site_response.status_code, 200, update_site_response.text)
+        self.assertEqual(update_site_response.json()["display_name"], "Ops HTTP Site Updated")
+        self.assertEqual(update_site_response.json()["hospital_name"], "Ops Hospital Updated")
 
         create_user_response = self.client.post(
             "/api/admin/users",

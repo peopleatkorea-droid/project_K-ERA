@@ -500,6 +500,8 @@ README에 누락되어 있었지만 실제 구현되어 있습니다.
 .\scripts\run_local_node.ps1
 ```
 
+`setup_local_node.ps1`는 기본적으로 하드웨어를 감지해 CPU/GPU torch 프로필을 자동 선택합니다.
+
 ### FastAPI API 서버
 
 ```powershell
@@ -534,6 +536,36 @@ README에 누락되어 있었지만 실제 구현되어 있습니다.
 
 일부 학습 로직은 CPU일 때 더 짧은 epoch 또는 제한된 fine-tuning 전략을 사용합니다.
 
+### 설치 프로필
+
+로컬 설치 스크립트는 배포 안정성을 위해 torch 의존성을 CPU/GPU 프로필로 분리합니다.
+
+- `requirements.txt`: torch를 제외한 공통 애플리케이션 패키지
+- `requirements-cpu.txt`: CPU용 torch/torchvision
+- `requirements-gpu-cu128.txt`: CUDA 12.8용 GPU torch/torchvision
+
+기본 설치:
+
+```powershell
+.\scripts\setup_local_node.ps1
+```
+
+- NVIDIA GPU가 감지되면 GPU 프로필을 설치
+- GPU가 없으면 CPU 프로필을 설치
+
+강제 설치 예시:
+
+```powershell
+.\scripts\setup_local_node.ps1 -TorchProfile cpu
+.\scripts\setup_local_node.ps1 -TorchProfile gpu
+```
+
+기관 정책상 별도 PyTorch index가 필요하면 GPU 프로필에만 아래 옵션을 추가합니다.
+
+```powershell
+.\scripts\setup_local_node.ps1 -TorchProfile gpu -TorchIndexUrl "<GPU용 torch index url>"
+```
+
 ## 15. 폴더 구조
 
 ```text
@@ -541,6 +573,8 @@ project_K-ERA/
 ├── app.py
 ├── README.md
 ├── requirements.txt
+├── requirements-cpu.txt
+├── requirements-gpu-cu128.txt
 ├── frontend/
 │   ├── app/page.tsx
 │   └── lib/api.ts
