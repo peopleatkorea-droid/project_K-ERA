@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, select, update
 
 from kera_research.config import SITE_ROOT_DIR, ensure_base_directories
@@ -53,6 +55,27 @@ def _normalize_additional_organisms(
     return normalized
 
 
+def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
+    suffix = Path(file_name).suffix.lower() or ".jpg"
+    try:
+        with Image.open(BytesIO(content)) as image:
+            normalized = ImageOps.exif_transpose(image)
+            output = BytesIO()
+            format_name = (normalized.format or image.format or "").upper()
+            if format_name == "PNG" or suffix == ".png":
+                if normalized.mode not in {"RGB", "RGBA", "L"}:
+                    normalized = normalized.convert("RGBA" if "A" in normalized.getbands() else "RGB")
+                normalized.save(output, format="PNG")
+                return output.getvalue(), ".png"
+
+            if normalized.mode not in {"RGB", "L"}:
+                normalized = normalized.convert("RGB")
+            normalized.save(output, format="JPEG", quality=95, optimize=True)
+            return output.getvalue(), ".jpg"
+    except (UnidentifiedImageError, OSError, ValueError):
+        return content, suffix
+
+
 class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
@@ -82,13 +105,17 @@ class SiteStore:
         ):
             ensure_dir(path)
 
-    def list_patients(self) -> list[dict[str, Any]]:
-        query = select(db_patients).where(db_patients.c.site_id == self.site_id).order_by(db_patients.c.created_at)
+    def list_patients(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
+        query = select(db_patients).where(db_patients.c.site_id == self.site_id)
+        if created_by_user_id:
+            query = query.where(db_patients.c.created_by_user_id == created_by_user_id)
+        query = query.order_by(db_patients.c.created_at.desc())
         with ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [
             {
                 "patient_id": row["patient_id"],
+                "created_by_user_id": row.get("created_by_user_id"),
                 "sex": row["sex"],
                 "age": row["age"],
                 "chart_alias": row["chart_alias"],
@@ -108,6 +135,7 @@ class SiteStore:
             return None
         return {
             "patient_id": row["patient_id"],
+            "created_by_user_id": row.get("created_by_user_id"),
             "sex": row["sex"],
             "age": row["age"],
             "chart_alias": row["chart_alias"],
@@ -122,6 +150,7 @@ class SiteStore:
         age: int,
         chart_alias: str = "",
         local_case_code: str = "",
+        created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
         if not patient_id.strip():
             raise ValueError("Patient ID is required.")
@@ -131,6 +160,7 @@ class SiteStore:
         record = {
             "site_id": self.site_id,
             "patient_id": normalized_patient_id,
+            "created_by_user_id": created_by_user_id,
             "sex": sex,
             "age": int(age),
             "chart_alias": chart_alias.strip(),
@@ -139,7 +169,18 @@ class SiteStore:
         }
         with ENGINE.begin() as conn:
             conn.execute(db_patients.insert().values(**record))
-        return {key: record[key] for key in ["patient_id", "sex", "age", "chart_alias", "local_case_code", "created_at"]}
+        return {
+            key: record[key]
+            for key in [
+                "patient_id",
+                "created_by_user_id",
+                "sex",
+                "age",
+                "chart_alias",
+                "local_case_code",
+                "created_at",
+            ]
+        }
 
     def list_visits(self) -> list[dict[str, Any]]:
         query = (
@@ -167,6 +208,7 @@ class SiteStore:
         self,
         patient_id: str,
         visit_date: str,
+        actual_visit_date: str | None,
         culture_confirmed: bool,
         culture_category: str,
         culture_species: str,
@@ -179,6 +221,7 @@ class SiteStore:
         is_initial_visit: bool = False,
         smear_result: str = "",
         polymicrobial: bool = False,
+        created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
         if not self.get_patient(patient_id):
             raise ValueError(f"Patient {patient_id} does not exist.")
@@ -200,7 +243,9 @@ class SiteStore:
             "visit_id": make_id("visit"),
             "site_id": self.site_id,
             "patient_id": patient_id,
+            "created_by_user_id": created_by_user_id,
             "visit_date": visit_date,
+            "actual_visit_date": (actual_visit_date or "").strip() or None,
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
             "culture_species": normalized_species,
@@ -249,8 +294,9 @@ class SiteStore:
             raise ValueError("Visit must exist before image upload.")
         visit_dir = ensure_dir(self.raw_dir / patient_id / visit_date)
         image_id = make_id("image")
-        destination = visit_dir / f"{image_id}_{Path(file_name).name}"
-        destination.write_bytes(content)
+        sanitized_content, normalized_suffix = _sanitize_image_bytes(content, file_name)
+        destination = visit_dir / f"{image_id}{normalized_suffix}"
+        destination.write_bytes(sanitized_content)
 
         image_record = {
             "image_id": image_id,
@@ -378,8 +424,11 @@ class SiteStore:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
-    def list_case_summaries(self) -> list[dict[str, Any]]:
-        patients_by_id = {patient["patient_id"]: patient for patient in self.list_patients()}
+    def list_case_summaries(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
+        patients_by_id = {
+            patient["patient_id"]: patient
+            for patient in self.list_patients(created_by_user_id=created_by_user_id)
+        }
         images_by_visit: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for image in self.list_images():
             images_by_visit.setdefault((image["patient_id"], image["visit_date"]), []).append(image)
@@ -387,6 +436,8 @@ class SiteStore:
         summaries: list[dict[str, Any]] = []
         for visit in self.list_visits():
             patient = patients_by_id.get(visit["patient_id"], {})
+            if not patient:
+                continue
             visit_images = images_by_visit.get((visit["patient_id"], visit["visit_date"]), [])
             representative = next((image for image in visit_images if image.get("is_representative")), None)
             latest_uploaded_at = visit_images[-1]["uploaded_at"] if visit_images else None
@@ -396,6 +447,7 @@ class SiteStore:
                     "visit_id": visit["visit_id"],
                     "patient_id": visit["patient_id"],
                     "visit_date": visit["visit_date"],
+                    "actual_visit_date": visit.get("actual_visit_date"),
                     "chart_alias": patient.get("chart_alias", ""),
                     "local_case_code": patient.get("local_case_code", ""),
                     "sex": patient.get("sex", ""),
@@ -413,6 +465,7 @@ class SiteStore:
                     "image_count": len(visit_images),
                     "representative_image_id": representative["image_id"] if representative else None,
                     "representative_view": representative["view"] if representative else None,
+                    "created_by_user_id": patient.get("created_by_user_id"),
                     "created_at": visit.get("created_at"),
                     "latest_image_uploaded_at": latest_uploaded_at,
                 }

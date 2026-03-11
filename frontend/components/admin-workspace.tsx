@@ -13,6 +13,7 @@ import {
   fetchAggregations,
   fetchCrossValidationReports,
   fetchImageBlob,
+  fetchModelUpdateArtifactBlob,
   fetchModelUpdates,
   fetchModelVersions,
   fetchProjects,
@@ -22,6 +23,7 @@ import {
   fetchValidationArtifactBlob,
   fetchValidationCases,
   reviewAccessRequest,
+  reviewModelUpdate,
   runBulkImport,
   runCrossValidation,
   runFederatedAggregation,
@@ -189,9 +191,21 @@ export function AdminWorkspace({
   const [crossValidationBusy, setCrossValidationBusy] = useState(false);
   const [crossValidationReports, setCrossValidationReports] = useState<CrossValidationReport[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [selectedModelUpdateId, setSelectedModelUpdateId] = useState<string | null>(null);
+  const [modelUpdateReviewNotes, setModelUpdateReviewNotes] = useState<Record<string, string>>({});
+  const [selectedUpdatePreviewUrls, setSelectedUpdatePreviewUrls] = useState<{
+    source: string | null;
+    roi: string | null;
+    mask: string | null;
+  }>({
+    source: null,
+    roi: null,
+    mask: null,
+  });
   const [aggregationBusy, setAggregationBusy] = useState(false);
   const [newVersionName, setNewVersionName] = useState("");
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
+  const modelUpdatePreviewUrlsRef = useRef<string[]>([]);
   const [initialForm, setInitialForm] = useState({
     architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
@@ -217,7 +231,10 @@ export function AdminWorkspace({
   const canAggregate = user.role === "admin";
   const canManagePlatform = user.role === "admin";
   const currentModel = modelVersions.find((item) => item.is_current) ?? modelVersions[modelVersions.length - 1] ?? null;
-  const pendingUploadUpdates = modelUpdates.filter((item) => item.status === "pending_upload");
+  const pendingReviewUpdates = modelUpdates.filter((item) => ["pending_review", "pending_upload"].includes(item.status ?? ""));
+  const approvedUpdates = modelUpdates.filter((item) => item.status === "approved");
+  const selectedModelUpdate = modelUpdates.find((item) => item.update_id === selectedModelUpdateId) ?? modelUpdates[0] ?? null;
+  const selectedApprovalReport = selectedModelUpdate?.approval_report ?? null;
   const selectedReport = crossValidationReports.find((item) => item.cross_validation_id === selectedReportId) ?? null;
   const selectedValidationRun = siteValidationRuns.find((item) => item.validation_id === selectedValidationId) ?? null;
   const baselineValidationRun = siteValidationRuns.find((item) => item.validation_id === baselineValidationId) ?? null;
@@ -272,6 +289,9 @@ export function AdminWorkspace({
     crossValidationFailed: pick(locale, "Cross-validation failed.", "교차 검증에 실패했습니다."),
     createdVersion: (name: string) => pick(locale, `Created ${name}.`, `${name} 버전을 생성했습니다.`),
     aggregationFailed: pick(locale, "Federated aggregation failed.", "연합 집계에 실패했습니다."),
+    updateReviewed: (decision: "approved" | "rejected") =>
+      pick(locale, `Update ${decision}.`, `업데이트를 ${decision === "approved" ? "승인" : "반려"}했습니다.`),
+    updateReviewFailed: pick(locale, "Unable to review model update.", "모델 업데이트 검토에 실패했습니다."),
     selectSiteForTemplate: pick(locale, "Select a hospital before downloading the template.", "템플릿을 내려받으려면 병원을 선택하세요."),
     templateDownloadFailed: pick(locale, "Template download failed.", "템플릿 다운로드에 실패했습니다."),
     selectSiteForImport: pick(locale, "Select a hospital before importing.", "임포트를 하려면 병원을 선택하세요."),
@@ -302,6 +322,9 @@ export function AdminWorkspace({
   useEffect(() => {
     return () => {
       for (const url of dashboardPreviewUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+      for (const url of modelUpdatePreviewUrlsRef.current) {
         URL.revokeObjectURL(url);
       }
     };
@@ -364,6 +387,15 @@ export function AdminWorkspace({
           }
           return next;
         });
+        setModelUpdateReviewNotes((current) => {
+          const next = { ...current };
+          for (const item of nextUpdates) {
+            if (next[item.update_id] === undefined) {
+              next[item.update_id] = item.reviewer_notes ?? "";
+            }
+          }
+          return next;
+        });
       } catch (nextError) {
         if (!cancelled) {
           setToast({ tone: "error", message: describeError(nextError, copy.unableLoadOperations) });
@@ -388,6 +420,16 @@ export function AdminWorkspace({
     setCompareValidationId((current) => current ?? siteValidationRuns[0]?.validation_id ?? null);
     setBaselineValidationId((current) => current ?? siteValidationRuns[1]?.validation_id ?? siteValidationRuns[0]?.validation_id ?? null);
   }, [siteValidationRuns]);
+
+  useEffect(() => {
+    if (!modelUpdates.length) {
+      setSelectedModelUpdateId(null);
+      return;
+    }
+    setSelectedModelUpdateId((current) =>
+      current && modelUpdates.some((item) => item.update_id === current) ? current : modelUpdates[0]?.update_id ?? null
+    );
+  }, [modelUpdates]);
 
   useEffect(() => {
     for (const url of dashboardPreviewUrlsRef.current) {
@@ -482,6 +524,45 @@ export function AdminWorkspace({
       cancelled = true;
     };
   }, [selectedSiteId, selectedValidationId, token]);
+
+  useEffect(() => {
+    for (const url of modelUpdatePreviewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    modelUpdatePreviewUrlsRef.current = [];
+    setSelectedUpdatePreviewUrls({ source: null, roi: null, mask: null });
+    if (!selectedModelUpdate) {
+      return;
+    }
+
+    let cancelled = false;
+    async function loadModelUpdatePreviews() {
+      const nextUrls = { source: null as string | null, roi: null as string | null, mask: null as string | null };
+      const artifactKinds: Array<["source" | "roi" | "mask", "source_thumbnail" | "roi_thumbnail" | "mask_thumbnail"]> = [
+        ["source", "source_thumbnail"],
+        ["roi", "roi_thumbnail"],
+        ["mask", "mask_thumbnail"],
+      ];
+      for (const [key, artifactKind] of artifactKinds) {
+        try {
+          const blob = await fetchModelUpdateArtifactBlob(selectedModelUpdate.update_id, artifactKind, token);
+          const url = URL.createObjectURL(blob);
+          modelUpdatePreviewUrlsRef.current.push(url);
+          nextUrls[key] = url;
+        } catch {
+          nextUrls[key] = null;
+        }
+      }
+      if (!cancelled) {
+        setSelectedUpdatePreviewUrls(nextUrls);
+      }
+    }
+
+    void loadModelUpdatePreviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModelUpdate, token]);
 
   async function refreshWorkspace(siteScoped = false) {
     const [
@@ -591,6 +672,22 @@ export function AdminWorkspace({
       setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
     } finally {
       setAggregationBusy(false);
+    }
+  }
+
+  async function handleModelUpdateReview(decision: "approved" | "rejected") {
+    if (!selectedModelUpdate) {
+      return;
+    }
+    try {
+      await reviewModelUpdate(selectedModelUpdate.update_id, token, {
+        decision,
+        reviewer_notes: modelUpdateReviewNotes[selectedModelUpdate.update_id] ?? "",
+      });
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.updateReviewed(decision) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.updateReviewFailed) });
     }
   }
 
@@ -766,7 +863,7 @@ export function AdminWorkspace({
         <section className="workspace-card rail-section">
           <div className="panel-metric-grid rail-metric-grid">
             <div><strong>{overview?.pending_access_requests ?? pendingRequests.length}</strong><span>{pick(locale, "pending access", "대기 중 접근 요청")}</span></div>
-            <div><strong>{overview?.pending_model_updates ?? pendingUploadUpdates.length}</strong><span>{pick(locale, "pending updates", "대기 중 업데이트")}</span></div>
+            <div><strong>{overview?.pending_model_updates ?? pendingReviewUpdates.length}</strong><span>{pick(locale, "pending updates", "대기 중 업데이트")}</span></div>
             <div><strong>{overview?.model_version_count ?? modelVersions.length}</strong><span>{pick(locale, "models", "모델")}</span></div>
             <div><strong>{overview?.current_model_version ?? currentModel?.version_name ?? common.notAvailable}</strong><span>{pick(locale, "current model", "현재 모델")}</span></div>
           </div>
@@ -911,9 +1008,38 @@ export function AdminWorkspace({
                 </section>
                 <section className="ops-card">
                   <div className="panel-card-head"><strong>{pick(locale, "Model updates", "모델 업데이트")}</strong><span>{modelUpdates.length}</span></div>
-                  {modelUpdates.length === 0 ? <div className="empty-surface">{pick(locale, "No model update has been recorded for the current filter.", "현재 필터에 기록된 모델 업데이트가 없습니다.")}</div> : <div className="ops-list">{modelUpdates.map((item) => <div key={item.update_id} className="ops-item"><div className="panel-card-head"><strong>{item.update_id}</strong><span>{item.status ?? pick(locale, "unknown", "알 수 없음")}</span></div><div className="panel-meta"><span>{item.site_id ?? pick(locale, "unknown hospital", "알 수 없는 병원")}</span><span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span><span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span></div></div>)}</div>}
+                  {modelUpdates.length === 0 ? <div className="empty-surface">{pick(locale, "No model update has been recorded for the current filter.", "현재 필터에 기록된 모델 업데이트가 없습니다.")}</div> : <div className="ops-list">{modelUpdates.map((item) => <button key={item.update_id} className="ops-item ops-table-button" type="button" onClick={() => setSelectedModelUpdateId(item.update_id)}><div className="panel-card-head"><strong>{item.update_id}</strong><span>{item.status ?? pick(locale, "unknown", "알 수 없음")}</span></div><div className="panel-meta"><span>{item.site_id ?? pick(locale, "unknown hospital", "알 수 없는 병원")}</span><span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span><span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span></div></button>)}</div>}
                 </section>
               </div>
+              {selectedModelUpdate ? (
+                <section className="ops-card">
+                  <div className="panel-card-head"><strong>{pick(locale, "Selected update", "선택한 업데이트")}</strong><span>{selectedModelUpdate.status ?? common.notAvailable}</span></div>
+                  <div className="panel-meta"><span>{selectedModelUpdate.site_id ?? common.notAvailable}</span><span>{selectedModelUpdate.patient_id ?? common.notAvailable}</span><span>{selectedModelUpdate.visit_date ?? common.notAvailable}</span></div>
+                  <div className="ops-gallery-triptych">
+                    <div className="panel-image-card">{selectedUpdatePreviewUrls.source ? <img src={selectedUpdatePreviewUrls.source} alt="Source thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Source unavailable", "원본 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Source", "원본")}</strong></div></div>
+                    <div className="panel-image-card">{selectedUpdatePreviewUrls.roi ? <img src={selectedUpdatePreviewUrls.roi} alt="ROI thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "ROI unavailable", "ROI 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>ROI</strong></div></div>
+                    <div className="panel-image-card">{selectedUpdatePreviewUrls.mask ? <img src={selectedUpdatePreviewUrls.mask} alt="Mask thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Mask unavailable", "Mask 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>Mask</strong></div></div>
+                  </div>
+                  <div className="panel-metric-grid">
+                    <div><strong>{selectedApprovalReport?.case_summary?.image_count ?? 0}</strong><span>{pick(locale, "images", "이미지 수")}</span></div>
+                    <div><strong>{selectedApprovalReport?.case_summary?.representative_view ?? common.notAvailable}</strong><span>{pick(locale, "representative view", "대표 view")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.source?.mean_brightness, common.notAvailable)}</strong><span>{pick(locale, "source brightness", "원본 밝기")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.source?.edge_density, common.notAvailable)}</strong><span>{pick(locale, "source edge", "원본 edge")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_crop?.contrast_stddev, common.notAvailable)}</strong><span>{pick(locale, "ROI contrast", "ROI 대비")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_area_ratio, common.notAvailable)}</strong><span>{pick(locale, "ROI area ratio", "ROI 면적 비율")}</span></div>
+                  </div>
+                  <div className="panel-meta">
+                    <span>{pick(locale, "EXIF removed", "EXIF 제거")}: {selectedApprovalReport?.privacy_controls?.upload_exif_removed ? pick(locale, "yes", "예") : pick(locale, "no", "아니오")}</span>
+                    <span>{pick(locale, "Filename policy", "파일명 정책")}: {selectedApprovalReport?.privacy_controls?.stored_filename_policy ?? common.notAvailable}</span>
+                    <span>{pick(locale, "Media policy", "미디어 정책")}: {selectedApprovalReport?.privacy_controls?.review_media_policy ?? common.notAvailable}</span>
+                  </div>
+                  <label className="notes-field"><span>{pick(locale, "Reviewer note", "검토 메모")}</span><textarea rows={3} value={modelUpdateReviewNotes[selectedModelUpdate.update_id] ?? ""} onChange={(event) => setModelUpdateReviewNotes((current) => ({ ...current, [selectedModelUpdate.update_id]: event.target.value }))} /></label>
+                  <div className="workspace-actions">
+                    <button className="ghost-button" type="button" onClick={() => void handleModelUpdateReview("rejected")}>{pick(locale, "Reject update", "업데이트 반려")}</button>
+                    <button className="primary-workspace-button" type="button" onClick={() => void handleModelUpdateReview("approved")}>{pick(locale, "Approve update", "업데이트 승인")}</button>
+                  </div>
+                </section>
+              ) : null}
             </section>
           ) : null}
           {section === "management" ? (
@@ -998,11 +1124,11 @@ export function AdminWorkspace({
           ) : null}
           {section === "federation" && canAggregate ? (
             <section className="doc-surface">
-              <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Federation", "연합학습")}</div><h3>{pick(locale, "Aggregate pending hospital deltas", "대기 중 병원 델타 집계")}</h3></div><div className="doc-site-badge">{pendingUploadUpdates.length} {pick(locale, "pending", "대기")}</div></div>
+              <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Federation", "연합학습")}</div><h3>{pick(locale, "Aggregate approved hospital deltas", "승인된 병원 델타 집계")}</h3></div><div className="doc-site-badge">{approvedUpdates.length} {pick(locale, "approved", "승인됨")}</div></div>
               <label className="inline-field"><span>{pick(locale, "Optional version name", "선택적 버전 이름")}</span><input value={newVersionName} onChange={(event) => setNewVersionName(event.target.value)} placeholder="global-densenet-fedavg-20260311" /></label>
-              <div className="doc-footer"><div><strong>{pick(locale, "Aggregate the full pending queue", "대기열 전체 집계")}</strong><p>{pick(locale, "The API currently aggregates all pending deltas that share one architecture and base model.", "현재 API는 같은 아키텍처와 기준 모델을 공유하는 모든 대기 delta를 집계합니다.")}</p></div><button className="primary-workspace-button" type="button" disabled={aggregationBusy || pendingUploadUpdates.length === 0} onClick={() => void handleAggregation()}>{aggregationBusy ? pick(locale, "Aggregating...", "집계 중...") : pick(locale, "Run FedAvg aggregation", "FedAvg 집계 실행")}</button></div>
+              <div className="doc-footer"><div><strong>{pick(locale, "Aggregate the full approved queue", "승인 대기열 전체 집계")}</strong><p>{pick(locale, "The API now aggregates only approved deltas that share one architecture and base model.", "이제 API는 같은 아키텍처와 기준 모델을 공유하는 승인된 delta만 집계합니다.")}</p></div><button className="primary-workspace-button" type="button" disabled={aggregationBusy || approvedUpdates.length === 0} onClick={() => void handleAggregation()}>{aggregationBusy ? pick(locale, "Aggregating...", "집계 중...") : pick(locale, "Run FedAvg aggregation", "FedAvg 집계 실행")}</button></div>
               <div className="ops-dual-grid">
-                <section className="ops-card">{pendingUploadUpdates.length === 0 ? <div className="empty-surface">{pick(locale, "No pending updates are available for aggregation.", "집계할 대기 중 업데이트가 없습니다.")}</div> : <div className="ops-list">{pendingUploadUpdates.map((item) => <div key={item.update_id} className="ops-item"><div className="panel-card-head"><strong>{item.update_id}</strong><span>{item.site_id}</span></div><div className="panel-meta"><span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span><span>{item.n_cases ?? 0} {pick(locale, "cases", "케이스")}</span><span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span></div></div>)}</div>}</section>
+                <section className="ops-card">{approvedUpdates.length === 0 ? <div className="empty-surface">{pick(locale, "No approved updates are available for aggregation.", "집계할 승인된 업데이트가 없습니다.")}</div> : <div className="ops-list">{approvedUpdates.map((item) => <div key={item.update_id} className="ops-item"><div className="panel-card-head"><strong>{item.update_id}</strong><span>{item.site_id}</span></div><div className="panel-meta"><span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span><span>{item.n_cases ?? 0} {pick(locale, "cases", "케이스")}</span><span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span></div></div>)}</div>}</section>
                 <section className="ops-card">{aggregations.length === 0 ? <div className="empty-surface">{pick(locale, "No aggregation record has been registered yet.", "아직 등록된 집계 기록이 없습니다.")}</div> : <div className="ops-list">{aggregations.map((item) => <div key={item.aggregation_id} className="ops-item"><div className="panel-card-head"><strong>{item.new_version_name}</strong><span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span></div><div className="panel-meta"><span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span><span>{item.total_cases ?? 0} {pick(locale, "cases", "케이스")}</span><span>{Object.keys(item.site_weights ?? {}).length} {pick(locale, "hospitals", "병원")}</span></div></div>)}</div>}</section>
               </div>
             </section>

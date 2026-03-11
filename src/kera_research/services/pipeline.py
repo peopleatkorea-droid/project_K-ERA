@@ -4,13 +4,14 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.modeling import ModelManager
-from kera_research.storage import write_json
+from kera_research.storage import ensure_dir, write_json
 
 
 class ResearchWorkflowService:
@@ -53,6 +54,133 @@ class ResearchWorkflowService:
                 item["image_path"] = roi["roi_crop_path"]
             prepared.append(item)
         return prepared
+
+    def _select_representative_record(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        representative = next((item for item in records if item.get("is_representative")), None)
+        return representative or records[0]
+
+    def _compute_image_qa_metrics(self, image_path: str) -> dict[str, Any]:
+        with Image.open(image_path) as image:
+            normalized = ImageOps.exif_transpose(image)
+            grayscale = normalized.convert("L")
+            luminance = ImageStat.Stat(grayscale)
+            edges = grayscale.filter(ImageFilter.FIND_EDGES)
+            edge_stats = ImageStat.Stat(edges)
+            return {
+                "width": int(normalized.width),
+                "height": int(normalized.height),
+                "mean_brightness": round(float(luminance.mean[0]), 3),
+                "contrast_stddev": round(float(luminance.stddev[0]), 3),
+                "edge_density": round(float(edge_stats.mean[0]), 3),
+            }
+
+    def _write_review_thumbnail(
+        self,
+        source_path: str,
+        output_path: Path,
+        *,
+        max_size: tuple[int, int] = (320, 320),
+    ) -> str:
+        ensure_dir(output_path.parent)
+        with Image.open(source_path) as image:
+            normalized = ImageOps.exif_transpose(image)
+            thumbnail = normalized.copy()
+            thumbnail.thumbnail(max_size)
+            suffix = output_path.suffix.lower()
+            if suffix == ".png":
+                if thumbnail.mode not in {"RGB", "RGBA", "L"}:
+                    thumbnail = thumbnail.convert("RGBA" if "A" in thumbnail.getbands() else "RGB")
+                thumbnail.save(output_path, format="PNG")
+            else:
+                if thumbnail.mode not in {"RGB", "L"}:
+                    thumbnail = thumbnail.convert("RGB")
+                thumbnail.save(output_path, format="JPEG", quality=88, optimize=True)
+        return str(output_path)
+
+    def _build_approval_report(
+        self,
+        site_store: SiteStore,
+        case_records: list[dict[str, Any]],
+        prepared_records: list[dict[str, Any]],
+        update_id: str,
+        patient_id: str,
+        visit_date: str,
+    ) -> tuple[dict[str, Any], Path]:
+        representative = self._select_representative_record(case_records)
+        prepared_representative = next(
+            (
+                item
+                for item in prepared_records
+                if item.get("source_image_path") == representative.get("image_path")
+            ),
+            prepared_records[0],
+        )
+
+        review_dir = site_store.update_dir / update_id
+        source_thumb_path = review_dir / "source_thumbnail.jpg"
+        roi_thumb_path = review_dir / "roi_thumbnail.jpg"
+        mask_thumb_path = review_dir / "mask_thumbnail.png"
+
+        artifacts: dict[str, str | None] = {
+            "source_thumbnail_path": None,
+            "roi_thumbnail_path": None,
+            "mask_thumbnail_path": None,
+        }
+
+        source_image_path = str(representative.get("image_path") or "")
+        if source_image_path and Path(source_image_path).exists():
+            artifacts["source_thumbnail_path"] = self._write_review_thumbnail(source_image_path, source_thumb_path)
+
+        roi_crop_path = str(prepared_representative.get("roi_crop_path") or "")
+        if roi_crop_path and Path(roi_crop_path).exists():
+            artifacts["roi_thumbnail_path"] = self._write_review_thumbnail(roi_crop_path, roi_thumb_path)
+
+        medsam_mask_path = str(prepared_representative.get("medsam_mask_path") or "")
+        if medsam_mask_path and Path(medsam_mask_path).exists():
+            artifacts["mask_thumbnail_path"] = self._write_review_thumbnail(medsam_mask_path, mask_thumb_path)
+
+        source_metrics = self._compute_image_qa_metrics(source_image_path) if source_image_path else {}
+        roi_metrics = self._compute_image_qa_metrics(roi_crop_path) if roi_crop_path else {}
+        mask_metrics = self._compute_image_qa_metrics(medsam_mask_path) if medsam_mask_path else {}
+
+        roi_area_ratio = None
+        if source_metrics and roi_metrics:
+            source_area = max(1, int(source_metrics["width"]) * int(source_metrics["height"]))
+            roi_area = int(roi_metrics["width"]) * int(roi_metrics["height"])
+            roi_area_ratio = round(float(roi_area / source_area), 4)
+
+        report = {
+            "report_id": make_id("approval"),
+            "update_id": update_id,
+            "site_id": site_store.site_id,
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "generated_at": utc_now(),
+            "case_summary": {
+                "image_count": len(case_records),
+                "representative_view": representative.get("view"),
+                "views": [str(item.get("view") or "unknown") for item in case_records],
+                "culture_category": representative.get("culture_category"),
+                "culture_species": representative.get("culture_species"),
+                "is_single_case_delta": True,
+            },
+            "qa_metrics": {
+                "source": source_metrics,
+                "roi_crop": roi_metrics,
+                "medsam_mask": mask_metrics,
+                "roi_area_ratio": roi_area_ratio,
+            },
+            "privacy_controls": {
+                "thumbnail_max_side_px": 320,
+                "upload_exif_removed": True,
+                "stored_filename_policy": "randomized_image_id_only",
+                "review_media_policy": "thumbnail_only_for_admin_review",
+            },
+            "artifacts": artifacts,
+        }
+        report_path = review_dir / "approval_report.json"
+        write_json(report_path, report)
+        return report, report_path
 
     def run_external_validation(
         self,
@@ -357,8 +485,18 @@ class ResearchWorkflowService:
             delta_path,
         )
 
+        update_id = make_id("update")
+        approval_report, approval_report_path = self._build_approval_report(
+            site_store,
+            case_df.to_dict("records"),
+            records,
+            update_id,
+            patient_id,
+            visit_date,
+        )
+
         update_metadata: dict[str, Any] = {
-            "update_id": make_id("update"),
+            "update_id": update_id,
             "site_id": site_store.site_id,
             "base_model_version_id": model_version["version_id"],
             "architecture": architecture,
@@ -372,7 +510,9 @@ class ResearchWorkflowService:
             "created_at": utc_now(),
             "training_input_policy": "medsam_roi_crop_only",
             "training_summary": result,
-            "status": "pending_upload",
+            "approval_report_path": str(approval_report_path),
+            "approval_report": approval_report,
+            "status": "pending_review",
         }
         self.control_plane.register_model_update(update_metadata)
 

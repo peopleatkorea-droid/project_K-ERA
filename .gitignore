@@ -13,3 +13,4 @@ artifacts/
 .env
 .env.local
 frontend/.env.local
+storage/kera_secret.key

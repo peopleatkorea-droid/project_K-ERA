@@ -51,6 +51,7 @@ export type ManagedUserRecord = AuthUser & {
 
 export type PatientRecord = {
   patient_id: string;
+  created_by_user_id?: string | null;
   sex: string;
   age: number;
   chart_alias?: string;
@@ -66,7 +67,9 @@ export type OrganismRecord = {
 export type VisitRecord = {
   visit_id: string;
   patient_id: string;
+  created_by_user_id?: string | null;
   visit_date: string;
+  actual_visit_date?: string | null;
   culture_confirmed: boolean;
   culture_category: string;
   culture_species: string;
@@ -97,7 +100,9 @@ export type CaseSummaryRecord = {
   case_id: string;
   visit_id: string;
   patient_id: string;
+  created_by_user_id?: string | null;
   visit_date: string;
+  actual_visit_date?: string | null;
   chart_alias: string;
   local_case_code: string;
   sex: string;
@@ -350,6 +355,43 @@ export type ModelUpdateRecord = {
   training_input_policy?: string | null;
   training_summary?: Record<string, unknown>;
   status?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  reviewer_notes?: string | null;
+  approval_report_path?: string | null;
+  approval_report?: {
+    report_id?: string;
+    update_id?: string;
+    site_id?: string;
+    patient_id?: string;
+    visit_date?: string;
+    generated_at?: string;
+    case_summary?: {
+      image_count?: number;
+      representative_view?: string | null;
+      views?: string[];
+      culture_category?: string | null;
+      culture_species?: string | null;
+      is_single_case_delta?: boolean;
+    };
+    qa_metrics?: {
+      source?: Record<string, number>;
+      roi_crop?: Record<string, number>;
+      medsam_mask?: Record<string, number>;
+      roi_area_ratio?: number | null;
+    };
+    privacy_controls?: {
+      thumbnail_max_side_px?: number;
+      upload_exif_removed?: boolean;
+      stored_filename_policy?: string;
+      review_media_policy?: string;
+    };
+    artifacts?: {
+      source_thumbnail_path?: string | null;
+      roi_thumbnail_path?: string | null;
+      mask_thumbnail_path?: string | null;
+    };
+  };
 };
 
 export type AggregationRecord = {
@@ -487,7 +529,7 @@ export type AuthResponse = {
 };
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
 
 function buildApiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
@@ -579,8 +621,13 @@ export async function fetchValidationCases(
   );
 }
 
-export async function fetchPatients(siteId: string, token: string) {
-  return request<PatientRecord[]>(`/api/sites/${siteId}/patients`, {}, token);
+export async function fetchPatients(siteId: string, token: string, options?: { mine?: boolean }) {
+  const params = new URLSearchParams();
+  if (options?.mine) {
+    params.set("mine", "true");
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<PatientRecord[]>(`/api/sites/${siteId}/patients${suffix}`, {}, token);
 }
 
 export async function createPatient(
@@ -791,6 +838,46 @@ export async function fetchModelUpdates(
   return request<ModelUpdateRecord[]>(`/api/admin/model-updates${suffix}`, {}, token);
 }
 
+export async function reviewModelUpdate(
+  updateId: string,
+  token: string,
+  payload: {
+    decision: "approved" | "rejected";
+    reviewer_notes?: string;
+  }
+) {
+  return request<{ update: ModelUpdateRecord }>(
+    `/api/admin/model-updates/${updateId}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function fetchModelUpdateArtifactBlob(
+  updateId: string,
+  artifactKind: "source_thumbnail" | "roi_thumbnail" | "mask_thumbnail",
+  token: string
+) {
+  const response = await fetch(buildApiUrl(`/api/admin/model-updates/${updateId}/artifacts/${artifactKind}`), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `Artifact fetch failed: ${response.status}`);
+    }
+    const detail = await response.text();
+    throw new Error(detail || `Artifact fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function fetchAggregations(token: string) {
   return request<AggregationRecord[]>("/api/admin/aggregations", {}, token);
 }
@@ -819,8 +906,13 @@ export async function runFederatedAggregation(
   );
 }
 
-export async function fetchCases(siteId: string, token: string) {
-  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases`, {}, token);
+export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean }) {
+  const params = new URLSearchParams();
+  if (options?.mine) {
+    params.set("mine", "true");
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases${suffix}`, {}, token);
 }
 
 export async function fetchVisits(siteId: string, token: string, patientId?: string) {
@@ -834,6 +926,7 @@ export async function createVisit(
   payload: {
     patient_id: string;
     visit_date: string;
+    actual_visit_date?: string | null;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -853,6 +946,7 @@ export async function createVisit(
       method: "POST",
       body: JSON.stringify({
         culture_confirmed: true,
+        actual_visit_date: null,
         predisposing_factor: [],
         other_history: "",
         visit_status: "active",

@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find 'c:/Users/jeong/Downloads/Web Apps/project_K-ERA/frontend/lib' -type f -name *.ts)",
+      "Bash(grep -r \"SECRET\\\\|API_KEY\\\\|PASSWORD\\\\|TOKEN\" 'c:/Users/jeong/Downloads/Web Apps/project_K-ERA' --include=*.py --include=*.ts --include=*.tsx --include=*.env* -n)",
+      "Bash(grep -r \"dangerouslySetInnerHTML\\\\|innerHTML\\\\|eval\\\\|Function\\(\" 'c:/Users/jeong/Downloads/Web Apps/project_K-ERA/frontend' --include=*.tsx --include=*.ts)",
+      "Bash(ls -la \"c:/Users/jeong/Downloads/Web Apps/project_K-ERA/.env\"*)",
+      "Bash(pip install:*)",
+      "Bash(pip show:*)",
+      "Bash(python -c \":*)",
+      "Bash(PYTHONPATH=src python -c \"from kera_research.api.app import app; print\\(''import OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"from kera_research.api.app import app; print\\(''import OK''\\)\")",
+      "Bash(PYTHONPATH=src .venv/Scripts/python -c \"from kera_research.api.app import app; print\\(''import OK''\\)\")",
+      "Bash(node_modules/.bin/next.cmd build:*)",
+      "Bash(\".venv/Scripts/python.exe\" -c \"import bcrypt; print\\(''''OK''''\\)\" 2)",
+      "Bash(1 \".venv/Scripts/pip.exe\" show bcrypt)",
+      "Bash(PYTHONPATH=src \".venv/Scripts/python.exe\" -c \"from kera_research.api.app import app; print\\(''OK''\\)\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"c:/Users/jeong/Downloads/Web Apps/project_K-ERA/scripts/run_api_server.ps1\")",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 42132 /F)",
+      "Bash(kill -f 42132)",
+      "Bash(kill 42132)",
+      "Bash(powershell -Command 'Stop-Process -Id 42132 -Force' 2)",
+      "Bash(1 sleep:*)",
+      "Bash(\"/c/Users/jeong/Downloads/Web Apps/project_K-ERA/.env.local\":*)"
+    ]
+  }
+}

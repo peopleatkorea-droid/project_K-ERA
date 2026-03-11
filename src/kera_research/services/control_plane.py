@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import bcrypt
 from sqlalchemy import and_, delete, select, update
 
 from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_DIR, DEFAULT_USERS, ensure_base_directories
@@ -25,6 +26,14 @@ from kera_research.domain import CULTURE_SPECIES, make_id, utc_now
 from kera_research.storage import ensure_dir, read_json, write_json
 
 GOOGLE_AUTH_SENTINEL = "__google__"
+
+
+def _hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt_hash(value: str) -> bool:
+    return value.startswith(("$2b$", "$2a$", "$2y$"))
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -81,12 +90,26 @@ class ControlPlaneStore:
                     )
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
-        query = select(users).where(and_(users.c.username == username, users.c.password == password))
+        query = select(users).where(users.c.username == username)
         with ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
         if row is None:
             return None
-        return self._serialize_user(dict(row))
+        user_record = dict(row)
+        stored = user_record.get("password", "")
+        if stored == GOOGLE_AUTH_SENTINEL:
+            return None
+        if _is_bcrypt_hash(stored):
+            if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
+                return None
+        else:
+            # Plaintext fallback for migration: verify then upgrade
+            if stored != password:
+                return None
+            new_hash = _hash_password(password)
+            with ENGINE.begin() as conn:
+                conn.execute(update(users).where(users.c.username == username).values(password=new_hash))
+        return self._serialize_user(user_record)
 
     def _serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         serialized = dict(user_record)
@@ -715,6 +738,37 @@ class ControlPlaneStore:
                 conn.execute(model_updates.insert().values(**values))
         return record
 
+    def get_model_update(self, update_id: str) -> dict[str, Any] | None:
+        normalized_update_id = update_id.strip()
+        if not normalized_update_id:
+            return None
+        with ENGINE.begin() as conn:
+            row = conn.execute(
+                select(model_updates).where(model_updates.c.update_id == normalized_update_id)
+            ).first()
+        if row is None:
+            return None
+        return _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+
+    def update_model_update(self, update_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        current = self.get_model_update(update_id)
+        if current is None:
+            raise ValueError(f"Unknown update_id: {update_id}")
+        merged = {**current, **updates}
+        with ENGINE.begin() as conn:
+            conn.execute(
+                update(model_updates)
+                .where(model_updates.c.update_id == update_id)
+                .values(
+                    site_id=merged.get("site_id"),
+                    architecture=merged.get("architecture"),
+                    status=merged.get("status"),
+                    created_at=merged.get("created_at"),
+                    payload_json=merged,
+                )
+            )
+        return merged
+
     def update_model_update_statuses(self, update_ids: list[str], status: str) -> None:
         with ENGINE.begin() as conn:
             rows = conn.execute(select(model_updates).where(model_updates.c.update_id.in_(update_ids))).all()
@@ -726,6 +780,29 @@ class ControlPlaneStore:
                     .where(model_updates.c.update_id == row._mapping["update_id"])
                     .values(status=status, payload_json=payload)
                 )
+
+    def review_model_update(
+        self,
+        update_id: str,
+        reviewer_user_id: str,
+        decision: str,
+        reviewer_notes: str = "",
+    ) -> dict[str, Any]:
+        normalized_decision = decision.strip().lower()
+        if normalized_decision not in {"approved", "rejected"}:
+            raise ValueError("Invalid review decision.")
+        current = self.get_model_update(update_id)
+        if current is None:
+            raise ValueError(f"Unknown update_id: {update_id}")
+        return self.update_model_update(
+            update_id,
+            {
+                "status": normalized_decision,
+                "reviewed_by": reviewer_user_id,
+                "reviewed_at": utc_now(),
+                "reviewer_notes": reviewer_notes.strip(),
+            },
+        )
 
     def list_model_updates(self, site_id: str | None = None) -> list[dict[str, Any]]:
         query = select(model_updates)

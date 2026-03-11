@@ -82,10 +82,15 @@ export default function HomePage() {
   const [adminRequests, setAdminRequests] = useState<AccessRequestRecord[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [googleReady, setGoogleReady] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
+  const [siteBusy, setSiteBusy] = useState(false);
+  const [patientBusy, setPatientBusy] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [reviewBusyById, setReviewBusyById] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
-  const [loginForm, setLoginForm] = useState({ username: "admin", password: "admin123" });
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [patientForm, setPatientForm] = useState({
     patient_id: "",
     sex: "female",
@@ -228,7 +233,7 @@ export default function HomePage() {
     }
     const currentToken = token;
     async function bootstrap() {
-      setLoading(true);
+      setBootstrapBusy(true);
       setError(null);
       try {
         const me = await fetchMe(currentToken);
@@ -248,7 +253,7 @@ export default function HomePage() {
         setToken(null);
         setUser(null);
       } finally {
-        setLoading(false);
+        setBootstrapBusy(false);
       }
     }
     void bootstrap();
@@ -261,7 +266,7 @@ export default function HomePage() {
     const currentToken = token;
     const currentSiteId = selectedSiteId;
     async function loadSite() {
-      setLoading(true);
+      setSiteBusy(true);
       setError(null);
       try {
         const [nextSummary, nextPatients] = await Promise.all([
@@ -273,7 +278,7 @@ export default function HomePage() {
       } catch (nextError) {
         setError(describeError(nextError, copy.failedLoadSiteData));
       } finally {
-        setLoading(false);
+        setSiteBusy(false);
       }
     }
     void loadSite();
@@ -317,7 +322,7 @@ export default function HomePage() {
           setError(copy.googleNoCredential);
           return;
         }
-        setLoading(true);
+        setAuthBusy(true);
         setError(null);
         try {
           const auth = await googleLogin(response.credential);
@@ -327,7 +332,7 @@ export default function HomePage() {
         } catch (nextError) {
           setError(describeError(nextError, copy.googleLoginFailed));
         } finally {
-          setLoading(false);
+          setAuthBusy(false);
         }
       },
     });
@@ -363,14 +368,14 @@ export default function HomePage() {
 
   async function handleLocalLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setLoading(true);
+    setAuthBusy(true);
     setError(null);
     try {
       await applyAuth(await login(loginForm.username, loginForm.password));
     } catch (nextError) {
       setError(describeError(nextError, copy.loginFailed));
     } finally {
-      setLoading(false);
+      setAuthBusy(false);
     }
   }
 
@@ -379,7 +384,7 @@ export default function HomePage() {
     if (!token || !selectedSiteId) {
       return;
     }
-    setLoading(true);
+    setPatientBusy(true);
     setError(null);
     try {
       await createPatient(selectedSiteId, token, {
@@ -394,7 +399,7 @@ export default function HomePage() {
     } catch (nextError) {
       setError(describeError(nextError, pick(locale, "Patient creation failed.", "환자 생성에 실패했습니다.")));
     } finally {
-      setLoading(false);
+      setPatientBusy(false);
     }
   }
 
@@ -403,7 +408,7 @@ export default function HomePage() {
     if (!token) {
       return;
     }
-    setLoading(true);
+    setRequestBusy(true);
     setError(null);
     try {
       const response = await submitAccessRequest(token, requestForm);
@@ -412,7 +417,7 @@ export default function HomePage() {
     } catch (nextError) {
       setError(describeError(nextError, copy.requestSubmissionFailed));
     } finally {
-      setLoading(false);
+      setRequestBusy(false);
     }
   }
 
@@ -421,7 +426,7 @@ export default function HomePage() {
       return;
     }
     const draft = reviewDrafts[requestId];
-    setLoading(true);
+    setReviewBusyById((current) => ({ ...current, [requestId]: true }));
     setError(null);
     try {
       await reviewAccessRequest(requestId, token, {
@@ -434,7 +439,7 @@ export default function HomePage() {
     } catch (nextError) {
       setError(describeError(nextError, pick(locale, "Review failed.", "검토에 실패했습니다.")));
     } finally {
-      setLoading(false);
+      setReviewBusyById((current) => ({ ...current, [requestId]: false }));
     }
   }
 
@@ -538,8 +543,8 @@ export default function HomePage() {
                 />
               </div>
               {error ? <div className="error">{error}</div> : null}
-              <button className="primary-button" type="submit" disabled={loading}>
-                {loading ? copy.connecting : copy.enterAdminRecovery}
+              <button className="primary-button" type="submit" disabled={authBusy}>
+                {authBusy ? copy.connecting : copy.enterAdminRecovery}
               </button>
             </form>
           </section>
@@ -634,8 +639,8 @@ export default function HomePage() {
                     placeholder={copy.requestPlaceholder}
                   />
                 </div>
-                <button className="primary-button" type="submit" disabled={loading || !requestForm.requested_site_id}>
-                  {loading ? copy.submitting : copy.submitInstitutionRequest}
+                <button className="primary-button" type="submit" disabled={requestBusy || !requestForm.requested_site_id}>
+                  {requestBusy ? copy.submitting : copy.submitInstitutionRequest}
                 </button>
               </form>
             </article>

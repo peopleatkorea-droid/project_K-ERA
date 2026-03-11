@@ -20,15 +20,39 @@ from pydantic import BaseModel, Field
 from kera_research.config import MODEL_DIR
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
-from kera_research.services.control_plane import ControlPlaneStore
+from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.storage import read_json
 
 
-API_SECRET = os.getenv("KERA_API_SECRET", "dev-secret-change-me")
+_ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"}
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+def _load_or_create_api_secret() -> str:
+    env_secret = os.getenv("KERA_API_SECRET", "").strip()
+    if env_secret:
+        return env_secret
+    # Auto-generate and persist so the secret survives restarts
+    from kera_research.config import STORAGE_DIR
+    secret_file = STORAGE_DIR / "kera_secret.key"
+    if secret_file.exists():
+        saved = secret_file.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    import secrets
+    generated = secrets.token_hex(32)
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    secret_file.write_text(generated, encoding="utf-8")
+    try:
+        os.chmod(secret_file, 0o600)  # owner read-only on POSIX
+    except OSError:
+        pass
+    return generated
+
+API_SECRET = _load_or_create_api_secret()
 API_ALGORITHM = "HS256"
-TOKEN_TTL_HOURS = 12
+TOKEN_TTL_HOURS = 2
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 IMPORT_TEMPLATE_ROWS = [
     "patient_id,chart_alias,local_case_code,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
@@ -246,6 +270,20 @@ def _visible_model_updates(
     return updates
 
 
+def _is_pending_model_update(update: dict[str, Any]) -> bool:
+    return str(update.get("status") or "").strip().lower() in {"pending_review", "pending_upload"}
+
+
+def _load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
+    embedded = update.get("approval_report")
+    if isinstance(embedded, dict):
+        return embedded
+    report_path = str(update.get("approval_report_path") or "").strip()
+    if not report_path:
+        return {}
+    return read_json(Path(report_path), {})
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -284,6 +322,7 @@ class OrganismSelection(BaseModel):
 class VisitCreateRequest(BaseModel):
     patient_id: str
     visit_date: str
+    actual_visit_date: str | None = None
     culture_confirmed: bool = True
     culture_category: str
     culture_species: str
@@ -351,6 +390,11 @@ class CrossValidationRunRequest(BaseModel):
 class AggregationRunRequest(BaseModel):
     update_ids: list[str] = Field(default_factory=list)
     new_version_name: str | None = None
+
+
+class ModelUpdateReviewRequest(BaseModel):
+    decision: str
+    reviewer_notes: str = ""
 
 
 class ProjectCreateRequest(BaseModel):
@@ -555,7 +599,7 @@ def _build_site_activity(
         for item in cp.list_model_updates(site_id=site_id)
         if item.get("update_id")
     }
-    pending_updates = len([item for item in updates_by_id.values() if item.get("status") == "pending_upload"])
+    pending_updates = len([item for item in updates_by_id.values() if _is_pending_model_update(item)])
 
     recent_validations = [
         {
@@ -618,8 +662,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )
 
     @app.get("/api/health")
@@ -738,7 +782,7 @@ def create_app() -> FastAPI:
             if user.get("role") == "admin"
             else cp.list_access_requests(status="pending", site_ids=[site["site_id"] for site in visible_sites])
         )
-        visible_updates = _visible_model_updates(cp, user, status_filter="pending_upload")
+        visible_updates = [item for item in _visible_model_updates(cp, user) if _is_pending_model_update(item)]
         current_model = cp.current_global_model()
         overview = {
             "site_count": len(visible_sites),
@@ -771,6 +815,61 @@ def create_app() -> FastAPI:
             _require_site_access(cp, user, site_id)
         return _visible_model_updates(cp, user, site_id=site_id, status_filter=status_filter)
 
+    @app.post("/api/admin/model-updates/{update_id}/review")
+    def review_model_update(
+        update_id: str,
+        payload: ModelUpdateReviewRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        update_record = cp.get_model_update(update_id)
+        if update_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model update.")
+        site_id = str(update_record.get("site_id") or "").strip()
+        if site_id:
+            _require_site_access(cp, user, site_id)
+        try:
+            reviewed = cp.review_model_update(
+                update_id,
+                reviewer_user_id=user["user_id"],
+                decision=payload.decision,
+                reviewer_notes=payload.reviewer_notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"update": reviewed}
+
+    @app.get("/api/admin/model-updates/{update_id}/artifacts/{artifact_kind}")
+    def get_model_update_artifact(
+        update_id: str,
+        artifact_kind: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> Response:
+        _require_admin_workspace_permission(user)
+        update_record = cp.get_model_update(update_id)
+        if update_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model update.")
+        site_id = str(update_record.get("site_id") or "").strip()
+        if site_id:
+            _require_site_access(cp, user, site_id)
+        report = _load_approval_report(update_record)
+        artifacts = report.get("artifacts") if isinstance(report, dict) else {}
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        key = {
+            "source_thumbnail": "source_thumbnail_path",
+            "roi_thumbnail": "roi_thumbnail_path",
+            "mask_thumbnail": "mask_thumbnail_path",
+        }.get(artifact_kind)
+        if key is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported artifact kind.")
+        artifact_path = str(artifacts.get(key) or "").strip()
+        if not artifact_path or not Path(artifact_path).exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact is not available.")
+        return FileResponse(artifact_path)
+
     @app.get("/api/admin/aggregations")
     def list_aggregations(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -789,18 +888,18 @@ def create_app() -> FastAPI:
         workflow = _get_workflow(cp)
 
         selected_ids = set(payload.update_ids)
-        pending_updates = [
+        approved_updates = [
             item
             for item in cp.list_model_updates()
-            if item.get("status") == "pending_upload" and (not selected_ids or item.get("update_id") in selected_ids)
+            if item.get("status") == "approved" and (not selected_ids or item.get("update_id") in selected_ids)
         ]
-        if not pending_updates:
+        if not approved_updates:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No pending updates are available for aggregation.",
+                detail="No approved updates are available for aggregation.",
             )
 
-        architectures = {item.get("architecture") for item in pending_updates}
+        architectures = {item.get("architecture") for item in approved_updates}
         if len(architectures) != 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -808,7 +907,7 @@ def create_app() -> FastAPI:
             )
         architecture = next(iter(architectures))
 
-        base_model_ids = {item.get("base_model_version_id") for item in pending_updates}
+        base_model_ids = {item.get("base_model_version_id") for item in approved_updates}
         if len(base_model_ids) != 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -825,17 +924,17 @@ def create_app() -> FastAPI:
                 detail="No global model is available for aggregation.",
             )
 
-        delta_paths = [str(item.get("artifact_path") or "") for item in pending_updates]
+        delta_paths = [str(item.get("artifact_path") or "") for item in approved_updates]
         missing_paths = [path for path in delta_paths if not path or not Path(path).exists()]
         if missing_paths:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="One or more pending update artifacts are missing on disk.",
+                detail="One or more approved update artifacts are missing on disk.",
             )
 
         site_weights: dict[str, int] = {}
         delta_weights: list[int] = []
-        for update_record in pending_updates:
+        for update_record in approved_updates:
             site_key = str(update_record.get("site_id") or "unknown")
             n_cases = max(1, int(update_record.get("n_cases", 1) or 1))
             site_weights[site_key] = site_weights.get(site_key, 0) + n_cases
@@ -864,7 +963,7 @@ def create_app() -> FastAPI:
             site_weights=site_weights,
             requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
         )
-        cp.update_model_update_statuses([item["update_id"] for item in pending_updates], "aggregated")
+        cp.update_model_update_statuses([item["update_id"] for item in approved_updates], "aggregated")
         model_version = next(
             (item for item in cp.list_model_versions() if item.get("aggregation_id") == aggregation["aggregation_id"]),
             cp.current_global_model(),
@@ -873,7 +972,7 @@ def create_app() -> FastAPI:
         return {
             "aggregation": aggregation,
             "model_version": model_version,
-            "aggregated_update_ids": [item["update_id"] for item in pending_updates],
+            "aggregated_update_ids": [item["update_id"] for item in approved_updates],
         }
 
     @app.get("/api/admin/projects")
@@ -965,9 +1064,15 @@ def create_app() -> FastAPI:
 
         existing = cp.get_user_by_id(payload.user_id) if payload.user_id else cp.get_user_by_username(payload.username)
         existing_raw = cp._load_user_by_id(existing["user_id"]) if existing else None
-        password = payload.password.strip()
-        if not password and existing_raw:
+        new_password = payload.password.strip()
+        if new_password:
+            # New password supplied — hash it
+            password = _hash_password(new_password)
+        elif existing_raw:
+            # Keep existing (already hashed) password
             password = str(existing_raw.get("password") or "")
+        else:
+            password = ""
         if not password:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password is required for user creation.")
 
@@ -1095,6 +1200,9 @@ def create_app() -> FastAPI:
                             if member.endswith("/"):
                                 continue
                             image_name = Path(member).name
+                            # Skip entries with path traversal or empty names
+                            if not image_name or image_name.startswith(".") or ".." in member:
+                                continue
                             image_bytes[image_name] = archive.read(member)
                             image_sources[image_name] = upload_name
                 except zipfile.BadZipFile as exc:
@@ -1142,6 +1250,7 @@ def create_app() -> FastAPI:
                         age=int(float(row.get("age") or 0)),
                         chart_alias=_coerce_text(row.get("chart_alias")),
                         local_case_code=_coerce_text(row.get("local_case_code")),
+                        created_by_user_id=user["user_id"],
                     )
                     patient_cache.add(patient_id)
                     created_patients += 1
@@ -1153,6 +1262,7 @@ def create_app() -> FastAPI:
                     site_store.create_visit(
                         patient_id=patient_id,
                         visit_date=visit_date,
+                        actual_visit_date=None,
                         culture_confirmed=_bool_from_value(row.get("culture_confirmed"), True),
                         culture_category=_coerce_text(row.get("culture_category"), "bacterial") or "bacterial",
                         culture_species=_coerce_text(row.get("culture_species"), "Other") or "Other",
@@ -1164,6 +1274,7 @@ def create_app() -> FastAPI:
                         active_stage=_bool_from_value(row.get("active_stage"), True),
                         smear_result=_coerce_text(row.get("smear_result")),
                         polymicrobial=_bool_from_value(row.get("polymicrobial"), False),
+                        created_by_user_id=user["user_id"],
                     )
                     visit_cache.add(visit_key)
                     created_visits += 1
@@ -1404,20 +1515,24 @@ def create_app() -> FastAPI:
     @app.get("/api/sites/{site_id}/cases")
     def list_cases(
         site_id: str,
+        mine: bool = False,
         cp: ControlPlaneStore = Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
-        return site_store.list_case_summaries()
+        created_by_user_id = user["user_id"] if mine else None
+        return site_store.list_case_summaries(created_by_user_id=created_by_user_id)
 
     @app.get("/api/sites/{site_id}/patients")
     def list_patients(
         site_id: str,
+        mine: bool = False,
         cp: ControlPlaneStore = Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
-        return site_store.list_patients()
+        created_by_user_id = user["user_id"] if mine else None
+        return site_store.list_patients(created_by_user_id=created_by_user_id)
 
     @app.post("/api/sites/{site_id}/patients")
     def create_patient(
@@ -1434,6 +1549,7 @@ def create_app() -> FastAPI:
                 age=payload.age,
                 chart_alias=payload.chart_alias,
                 local_case_code=payload.local_case_code,
+                created_by_user_id=user["user_id"],
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -1462,6 +1578,7 @@ def create_app() -> FastAPI:
             return site_store.create_visit(
                 patient_id=payload.patient_id,
                 visit_date=payload.visit_date,
+                actual_visit_date=payload.actual_visit_date,
                 culture_confirmed=payload.culture_confirmed,
                 culture_category=payload.culture_category,
                 culture_species=payload.culture_species,
@@ -1474,6 +1591,7 @@ def create_app() -> FastAPI:
                 is_initial_visit=payload.is_initial_visit,
                 smear_result=payload.smear_result,
                 polymicrobial=payload.polymicrobial,
+                created_by_user_id=user["user_id"],
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -1504,6 +1622,11 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
         content = await file.read()
+        if len(content) > _MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 20 MB limit.")
+        mime = mimetypes.guess_type(file.filename or "")[0] or ""
+        if mime not in _ALLOWED_IMAGE_MIMES:
+            raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only JPEG, PNG, TIFF, BMP, or WebP images are allowed.")
         try:
             return site_store.add_image(
                 patient_id=patient_id,

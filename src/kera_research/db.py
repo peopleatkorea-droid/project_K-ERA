@@ -182,6 +182,7 @@ patients = Table(
     Column("patient_row_id", Integer, primary_key=True, autoincrement=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False),
+    Column("created_by_user_id", String(64), nullable=True, index=True),
     Column("sex", String(32), nullable=False),
     Column("age", Integer, nullable=False),
     Column("chart_alias", String(255), nullable=False, default=""),
@@ -196,7 +197,9 @@ visits = Table(
     Column("visit_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False, index=True),
+    Column("created_by_user_id", String(64), nullable=True, index=True),
     Column("visit_date", String(32), nullable=False, index=True),
+    Column("actual_visit_date", String(32), nullable=True),
     Column("culture_confirmed", Boolean, nullable=False),
     Column("culture_category", String(32), nullable=False, index=True),
     Column("culture_species", String(255), nullable=False),
@@ -267,13 +270,25 @@ def _migrate_schema() -> None:
 
         if "visits" in table_names:
             visit_columns = {column["name"] for column in inspector.get_columns("visits")}
+            if "created_by_user_id" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN created_by_user_id VARCHAR(64)"))
             if "is_initial_visit" not in visit_columns:
-                conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT 0"))
+                if ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT FALSE"))
             if "additional_organisms" not in visit_columns:
                 if ENGINE.dialect.name == "sqlite":
                     conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
                 else:
                     conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
+            if "actual_visit_date" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN actual_visit_date VARCHAR(32)"))
+
+        if "patients" in table_names:
+            patient_columns = {column["name"] for column in inspector.get_columns("patients")}
+            if "created_by_user_id" not in patient_columns:
+                conn.execute(text("ALTER TABLE patients ADD COLUMN created_by_user_id VARCHAR(64)"))
 
         if ENGINE.dialect.name == "sqlite":
             conn.execute(

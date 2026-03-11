@@ -20,6 +20,10 @@ if str(SRC_DIR) not in sys.path:
 def reload_app_module(db_path: Path):
     os.environ["KERA_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
+    os.environ["KERA_ADMIN_USERNAME"] = "admin"
+    os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
+    os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
+    os.environ["KERA_RESEARCHER_PASSWORD"] = "research123"
     for module_name in list(sys.modules):
         if module_name.startswith("kera_research"):
             del sys.modules[module_name]

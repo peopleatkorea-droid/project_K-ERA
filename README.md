@@ -231,10 +231,11 @@ README에 기존에 잘 드러나지 않았던 부분입니다. 이 저장소에
 
 - Web: 로컬 username/password + Google Sign-In
 
-### 기본 계정
+### 로컬 계정 시드
 
-- 관리자: `admin / admin123`
-- 연구자: `researcher / research123`
+- 로컬 username/password 계정은 환경변수로 지정했을 때만 시드됩니다.
+- 예: `KERA_ADMIN_USERNAME`, `KERA_ADMIN_PASSWORD`
+- 연구자 계정도 필요하면 `KERA_RESEARCHER_USERNAME`, `KERA_RESEARCHER_PASSWORD`를 지정합니다.
 
 ### Google 온보딩 흐름
 
@@ -510,7 +511,7 @@ README에 누락되어 있었지만 실제 구현되어 있습니다.
 
 기본 주소:
 
-- `http://127.0.0.1:8000`
+- `http://localhost:8000`
 
 ### Next.js 웹 프론트엔드
 
@@ -520,7 +521,7 @@ README에 누락되어 있었지만 실제 구현되어 있습니다.
 
 기본 주소:
 
-- `http://127.0.0.1:3000`
+- `http://localhost:3000`
 
 `run_web_frontend.ps1`는 `node_modules`가 없으면 자동으로 `npm install`을 수행합니다.
 
@@ -646,7 +647,7 @@ project_K-ERA/
 .\scripts\run_web_frontend.ps1
 ```
 
-3. 브라우저에서 `http://127.0.0.1:3000` 접속
+3. 브라우저에서 `http://localhost:3000` 접속
 
 ## 17. 문서에 새로 반영한 구현 항목
 

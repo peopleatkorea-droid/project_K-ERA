@@ -1,0 +1,53 @@
+:root {
+  --color-accent: #7dd3c3;
+  --color-accent-strong: #49b7a5;
+  --color-accent-soft: rgba(125, 211, 195, 0.14);
+  --color-accent-light: #0f7b74;
+  --color-accent-light-strong: #08635d;
+  --color-danger: #f4a49a;
+
+  --surface-app-bg: #0f1318;
+  --surface-panel: rgba(21, 25, 33, 0.88);
+  --surface-panel-strong: rgba(28, 33, 41, 0.96);
+  --surface-line: rgba(255, 255, 255, 0.09);
+  --shadow-elevated: 0 24px 80px rgba(0, 0, 0, 0.34);
+
+  --text-ink: #f4f7fb;
+  --text-muted: #96a3b3;
+
+  --bg: var(--surface-app-bg);
+  --panel: var(--surface-panel);
+  --panel-strong: var(--surface-panel-strong);
+  --line: var(--surface-line);
+  --ink: var(--text-ink);
+  --muted: var(--text-muted);
+  --accent: var(--color-accent);
+  --accent-strong: var(--color-accent-strong);
+  --accent-soft: var(--color-accent-soft);
+  --danger: var(--color-danger);
+  --shadow: var(--shadow-elevated);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 195, 0.14), transparent 30%),
+    radial-gradient(circle at 80% 16%, rgba(86, 136, 255, 0.12), transparent 24%),
+    radial-gradient(circle at bottom right, rgba(247, 208, 135, 0.1), transparent 28%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans), sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}

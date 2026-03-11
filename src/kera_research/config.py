@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import bcrypt
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 STORAGE_DIR = BASE_DIR / "storage"
 CONTROL_PLANE_DIR = STORAGE_DIR / "control_plane"
@@ -90,23 +92,48 @@ def _resolve_medsam_checkpoint() -> str:
 MEDSAM_SCRIPT = _resolve_medsam_script()
 MEDSAM_CHECKPOINT = _resolve_medsam_checkpoint()
 
+def _env_seed_user(
+    *,
+    user_id: str,
+    username_env: str,
+    password_env: str,
+    role: str,
+    full_name: str,
+) -> dict[str, object] | None:
+    username = os.getenv(username_env, "").strip().lower()
+    password = os.getenv(password_env, "").strip()
+    if not username or not password:
+        return None
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return {
+        "user_id": user_id,
+        "username": username,
+        "password": hashed,
+        "role": role,
+        "full_name": full_name,
+        "site_ids": [],
+    }
+
+
 DEFAULT_USERS = [
-    {
-        "user_id": "user_admin",
-        "username": os.getenv("KERA_ADMIN_USERNAME", "admin"),
-        "password": os.getenv("KERA_ADMIN_PASSWORD", "admin123"),
-        "role": "admin",
-        "full_name": "Platform Administrator",
-        "site_ids": [],
-    },
-    {
-        "user_id": "user_researcher",
-        "username": os.getenv("KERA_RESEARCHER_USERNAME", "researcher"),
-        "password": os.getenv("KERA_RESEARCHER_PASSWORD", "research123"),
-        "role": "researcher",
-        "full_name": "Research User",
-        "site_ids": [],
-    },
+    user
+    for user in (
+        _env_seed_user(
+            user_id="user_admin",
+            username_env="KERA_ADMIN_USERNAME",
+            password_env="KERA_ADMIN_PASSWORD",
+            role="admin",
+            full_name="Platform Administrator",
+        ),
+        _env_seed_user(
+            user_id="user_researcher",
+            username_env="KERA_RESEARCHER_USERNAME",
+            password_env="KERA_RESEARCHER_PASSWORD",
+            role="researcher",
+            full_name="Research User",
+        ),
+    )
+    if user is not None
 ]
 
 
