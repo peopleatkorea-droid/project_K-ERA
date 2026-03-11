@@ -5,7 +5,6 @@
 이 저장소에는 현재 웹 기반 Local Node가 기본 실행 경로로 들어 있습니다.
 
 - `FastAPI + Next.js Web Local Node`: 연구자/임상의가 병원 내부에서 직접 사용하는 주 실행 앱
-- `src/kera_research/ui.py`: 과거 Streamlit 구현 흔적로 남아 있는 레거시 참조 코드
 
 중요: 이 프로젝트는 연구 워크플로우용이며, 임상 진단/치료 의사결정용 의료기기가 아닙니다.
 
@@ -52,7 +51,7 @@
 
 - 학습/집계 작업은 현재 동기식 실행이며 별도 worker/job runner는 연결되지 않았습니다.
 - MedSAM은 외부 스크립트가 설정되면 실제 호출하고, 아니면 fallback ROI를 생성합니다.
-- `src/kera_research/ui.py` 자체는 저장소에 남아 있으므로, 완전한 소스 삭제까지 하려면 후속 정리 커밋이 한 번 더 필요합니다.
+- Streamlit 기반 레거시 UI 소스는 제거되었고, 기본 실행 경로는 FastAPI + Next.js만 사용합니다.
 
 ### 2026-03-11 웹 마이그레이션 업데이트
 
@@ -68,6 +67,9 @@
 - 웹 워크스페이스에서 site-level validation 실행 및 최근 run 확인
 - 사이트 단위 recent activity / pending update 요약
 - 로그인/승인 화면을 워크스페이스와 같은 다크 톤으로 정리
+- 웹 UI 한/영(i18n) 토글 추가
+- 로그인/승인 화면과 주요 Case/Operations Workspace 헤더/상태 문구를 한/영으로 전환 가능
+- 2차 i18n으로 운영 화면 세부 폼 라벨, 대시보드/히스토리 패널, 주요 오류 토스트까지 한/영 전환 범위를 확대
 - legacy 콘솔은 admin 전용 fallback으로 제한
 - selected case validation 결과에 confidence 게이지와 상태 배지 추가
 - admin/site_admin용 `Operations Workspace` 추가
@@ -103,12 +105,12 @@
 
 ## 4. 주요 사용자 흐름
 
-### 4.1 Streamlit Case Wizard
+### 4.1 Web Case Canvas
 
-Streamlit 앱의 핵심 입력 흐름은 7단계입니다.
+현재 웹 앱의 핵심 입력 흐름은 문서형 Case Canvas와 우측 슬라이드오버 패널입니다.
 
 ```text
-[1] 환자 → [2] 방문 → [3] 이미지 → [4] 검증 → [5] 시각화 → [6] 기여 → [7] 완료
+[1] 환자/방문 속성 입력 → [2] 이미지 업로드 → [3] 저장 → [4] 검증 → [5] 시각화 → [6] 기여 → [7] 완료
 ```
 
 각 단계에서 가능한 일:
@@ -123,9 +125,9 @@ Streamlit 앱의 핵심 입력 흐름은 7단계입니다.
 | 6. 기여 | 로컬 fine-tuning 후 weight delta 생성 및 기여 |
 | 7. 완료 | 기여 결과와 통계 확인 |
 
-### 4.2 Dashboard
+### 4.2 Web Dashboard
 
-Streamlit 대시보드에는 다음이 포함됩니다.
+웹 대시보드에는 다음이 포함됩니다.
 
 - 사이트별 환자/방문/활성기 방문 수
 - 고정 patient split 현황
@@ -133,9 +135,9 @@ Streamlit 대시보드에는 다음이 포함됩니다.
 - 최신 validation AUROC / Accuracy / Sensitivity / Specificity / F1 확인
 - 최근 validation 이력 및 데이터 분포 확인
 
-### 4.3 Admin Panel
+### 4.3 Operations Workspace
 
-현재 관리자 패널은 실제 코드 기준으로 다음 탭을 가집니다.
+현재 운영 화면은 실제 코드 기준으로 다음 탭을 가집니다.
 
 #### `admin` 권한
 
@@ -214,7 +216,7 @@ README에 기존에 잘 드러나지 않았던 부분입니다. 이 저장소에
 - site-level validation 실행 및 최근 run 확인
 - manifest CSV 다운로드
 
-즉, 웹 UI는 이미 케이스 입력과 검토의 핵심 흐름을 상당 부분 담당하고 있고, Streamlit은 아직 fallback 및 일부 고급 운영 화면 중심으로 남아 있습니다.
+즉, 웹 UI가 이미 케이스 입력과 검토, 운영 관리의 기본 경로를 담당합니다.
 
 ## 6. 인증과 권한
 
@@ -227,7 +229,6 @@ README에 기존에 잘 드러나지 않았던 부분입니다. 이 저장소에
 
 ### 인증 방식
 
-- Streamlit: 로컬 username/password 로그인
 - Web: 로컬 username/password + Google Sign-In
 
 ### 기본 계정
@@ -364,7 +365,7 @@ storage/
 
 ### 단일 케이스 입력
 
-- Streamlit wizard에서 환자 → 방문 → 이미지 순으로 등록
+- 웹 Case Canvas에서 환자 → 방문 → 이미지 순으로 등록
 - 방문이 먼저 있어야 이미지 업로드 가능
 - `culture_confirmed = true`인 case만 허용
 
@@ -490,7 +491,7 @@ README에 누락되어 있었지만 실제 구현되어 있습니다.
 
 ## 13. 실행 모드
 
-### Streamlit Local Node
+### Web Local Node
 
 권장 실행:
 
@@ -545,7 +546,6 @@ project_K-ERA/
 │   └── lib/api.ts
 ├── src/kera_research/
 │   ├── api/app.py
-│   ├── ui.py
 │   ├── db.py
 │   ├── config.py
 │   ├── domain.py
@@ -632,5 +632,5 @@ project_K-ERA/
 
 - 웹 프론트엔드가 현재 기본 운영 UI입니다.
 - 별도 worker/job queue, audit log, 더 세분화된 권한 체계는 후속 작업이 필요합니다.
-- 저장소 안의 `src/kera_research/ui.py`는 더 이상 기본 실행 경로가 아니며, 완전 삭제는 후속 정리 작업으로 남아 있습니다.
+- Streamlit 레거시 UI 소스는 제거되었고, 현재 앱은 FastAPI + Next.js만 사용합니다.
 - 실제 운영 전에는 IRB, 보안, 접근통제, 익명화 정책을 별도로 검토해야 합니다.

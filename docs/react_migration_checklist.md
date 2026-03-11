@@ -20,7 +20,7 @@ This checklist replaces the Streamlit-first clinician workflow with a React/Next
 - Done: Bulk import, project/site/user management, and advanced dashboard parity in React
 - Done: HTTP-level API tests for access review, validation, contribution, training, aggregation, import, and management
 - Done: Default launcher switched to FastAPI + React only
-- Pending: Remove obsolete Streamlit-only source files after the web cutover settles
+- Done: Obsolete Streamlit-only source files removed after the web cutover
 
 ## Phase 1: Safe coexistence
 
@@ -52,11 +52,11 @@ This checklist replaces the Streamlit-first clinician workflow with a React/Next
 - [x] Switch default launcher to FastAPI + React only
 - [x] Restrict Streamlit to internal fallback use for one transition window
 - [x] Remove the Streamlit wizard once production workflows are stable
-- [ ] Delete obsolete Streamlit-only UI code after cutover
+- [x] Delete obsolete Streamlit-only UI code after cutover
 
 ## Guardrails
 
 - Reuse `control_plane.py`, `data_plane.py`, and `pipeline.py` instead of duplicating business logic
 - Prefer additive API changes over schema rewrites unless a draft table becomes necessary
-- Keep the residual Streamlit source isolated from the default launcher until it is deleted
+- Keep the default launcher on FastAPI + React only
 - Validate each phase with `npm run build` and Python smoke tests before expanding scope

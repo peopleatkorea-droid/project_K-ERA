@@ -594,8 +594,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="K-ERA Research API", version="0.2.0")
 
     allowed_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        origin
+        for port in range(3000, 3020)
+        for origin in (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
     ]
     extra_origin = os.getenv("KERA_FRONTEND_ORIGIN", "").strip()
     if extra_origin:

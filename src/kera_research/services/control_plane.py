@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, delete, select, update
 
 from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_DIR, DEFAULT_USERS, ensure_base_directories
 from kera_research.db import (
@@ -56,16 +56,29 @@ class ControlPlaneStore:
                 if user_record["username"] not in existing_users:
                     conn.execute(users.insert().values(**user_record))
 
-            catalog_count = conn.execute(select(organism_catalog.c.catalog_id)).first()
-            if catalog_count is None:
-                for category, species_list in CULTURE_SPECIES.items():
-                    for species_name in species_list:
-                        conn.execute(
-                            organism_catalog.insert().values(
-                                culture_category=category,
-                                species_name=species_name,
-                            )
+            conn.execute(
+                delete(organism_catalog).where(
+                    and_(
+                        organism_catalog.c.culture_category == "bacterial",
+                        organism_catalog.c.species_name == "Moraxella spp",
+                    )
+                )
+            )
+
+            existing_catalog = {
+                (row.culture_category, row.species_name)
+                for row in conn.execute(select(organism_catalog.c.culture_category, organism_catalog.c.species_name))
+            }
+            for category, species_list in CULTURE_SPECIES.items():
+                for species_name in species_list:
+                    if (category, species_name) in existing_catalog:
+                        continue
+                    conn.execute(
+                        organism_catalog.insert().values(
+                            culture_category=category,
+                            species_name=species_name,
                         )
+                    )
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
         query = select(users).where(and_(users.c.username == username, users.c.password == password))

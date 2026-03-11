@@ -1,10 +1,32 @@
 param(
-    [string]$ApiBaseUrl = "http://127.0.0.1:8000",
+    [string]$ApiBaseUrl = "http://localhost:8000",
     [int]$Port = 3000
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+function Test-PortAvailable {
+    param(
+        [int]$CandidatePort
+    )
+
+    return -not (Get-NetTCPConnection -LocalPort $CandidatePort -State Listen -ErrorAction SilentlyContinue)
+}
+
+function Resolve-WebPort {
+    param(
+        [int]$PreferredPort
+    )
+
+    for ($candidate = $PreferredPort; $candidate -lt ($PreferredPort + 20); $candidate++) {
+        if (Test-PortAvailable -CandidatePort $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "No available frontend port found between $PreferredPort and $($PreferredPort + 19)."
+}
 
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
@@ -26,8 +48,16 @@ try {
         throw "Next.js CLI not found. Run npm install in the frontend directory first."
     }
 
+    $resolvedPort = Resolve-WebPort -PreferredPort $Port
+    if ($resolvedPort -ne $Port) {
+        Write-Host "[K-ERA] Port $Port is already in use. Starting frontend on $resolvedPort instead." -ForegroundColor Yellow
+        if ($env:NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
+            Write-Host "[K-ERA] Google Sign-In requires the exact frontend origin to be registered in Google Cloud Console: http://localhost:$resolvedPort" -ForegroundColor Yellow
+        }
+    }
+
     $env:NEXT_PUBLIC_API_BASE_URL = $ApiBaseUrl
-    & $nextCli dev --hostname 0.0.0.0 --port $Port
+    & $nextCli dev --hostname 0.0.0.0 --port $resolvedPort
 }
 finally {
     Pop-Location

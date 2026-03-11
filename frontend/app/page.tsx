@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { AdminWorkspace } from "../components/admin-workspace";
 import { CaseWorkspace } from "../components/case-workspace";
+import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import {
   createPatient,
   downloadManifest,
@@ -48,22 +49,28 @@ type ReviewDraft = {
 };
 
 const TOKEN_KEY = "kera_web_token";
+const WORKSPACE_THEME_KEY = "kera_workspace_theme";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 
-function statusCopy(status: AuthState): string {
+function statusCopy(locale: "en" | "ko", status: AuthState): string {
   if (status === "pending") {
-    return "Your institution request is pending review.";
+    return pick(locale, "Your institution request is pending review.", "기관 접근 요청이 검토 대기 중입니다.");
   }
   if (status === "rejected") {
-    return "Your last institution request was rejected. Submit a revised request.";
+    return pick(
+      locale,
+      "Your last institution request was rejected. Submit a revised request.",
+      "이전 기관 접근 요청이 반려되었습니다. 수정 후 다시 제출해 주세요."
+    );
   }
   if (status === "application_required") {
-    return "Submit your institution and role request to continue.";
+    return pick(locale, "Submit your institution and role request to continue.", "계속하려면 기관과 역할 요청을 제출해 주세요.");
   }
-  return "Approved";
+  return pick(locale, "Approved", "승인됨");
 }
 
 export default function HomePage() {
+  const { locale } = useI18n();
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sites, setSites] = useState<SiteRecord[]>([]);
@@ -92,10 +99,96 @@ export default function HomePage() {
     message: "",
   });
   const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
+  const [workspaceTheme, setWorkspaceTheme] = useState<"dark" | "light">("dark");
 
   const approved = user?.approval_status === "approved";
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
   const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
+  const copy = {
+    unableLoadInstitutions: pick(locale, "Unable to load institutions.", "기관 목록을 불러오지 못했습니다."),
+    failedConnect: pick(locale, "Failed to connect.", "연결에 실패했습니다."),
+    failedLoadSiteData: pick(locale, "Failed to load hospital data.", "병원 데이터를 불러오지 못했습니다."),
+    failedLoadApprovalQueue: pick(locale, "Failed to load approval queue.", "승인 대기열을 불러오지 못했습니다."),
+    googleNoCredential: pick(locale, "Google login did not return a credential.", "Google 로그인 자격 정보가 반환되지 않았습니다."),
+    googleLoginFailed: pick(locale, "Google login failed.", "Google 로그인에 실패했습니다."),
+    loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
+    requestSubmissionFailed: pick(locale, "Request submission failed.", "요청 제출에 실패했습니다."),
+    connecting: pick(locale, "Connecting...", "연결 중..."),
+    submitting: pick(locale, "Submitting...", "제출 중..."),
+    heroEyebrow: pick(locale, "Clinical Research Workspace", "임상 연구 워크스페이스"),
+    heroBody: pick(
+      locale,
+      "Sign in with your institution account, request the right hospital once, and move directly into a document-style case canvas after approval.",
+      "기관 계정으로 로그인하고 한 번만 병원 접근을 요청하면, 승인 후 문서형 케이스 캔버스로 바로 이동할 수 있습니다."
+    ),
+    signIn: pick(locale, "Sign In", "로그인"),
+    enterWorkspace: pick(locale, "Enter the case workspace", "케이스 워크스페이스 입장"),
+    signInBody: pick(
+      locale,
+      "Google is the default path for researchers. Local username/password stays admin-only for recovery.",
+      "연구자는 Google 로그인이 기본 경로이며, 로컬 아이디/비밀번호는 관리자 복구용으로만 유지됩니다."
+    ),
+    googleLogin: pick(locale, "Institution Google login", "기관 Google 로그인"),
+    googleDisabled: pick(
+      locale,
+      "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.",
+      "`NEXT_PUBLIC_GOOGLE_CLIENT_ID`가 설정되기 전까지 Google 로그인이 비활성화됩니다."
+    ),
+    adminRecoveryOnly: pick(locale, "Administrator recovery only", "관리자 복구 전용"),
+    username: pick(locale, "Username", "아이디"),
+    password: pick(locale, "Password", "비밀번호"),
+    enterAdminRecovery: pick(locale, "Enter admin recovery", "관리자 복구로 입장"),
+    approvalRequired: pick(locale, "Approval Required", "승인 필요"),
+    institutionAccessRequest: pick(locale, "Institution access request", "기관 접근 요청"),
+    signedInAs: (name: string, username: string) =>
+      pick(locale, `Signed in as ${name} (${username})`, `${name} (${username}) 계정으로 로그인됨`),
+    currentStatus: pick(locale, "Current Status", "현재 상태"),
+    approvedBody: pick(
+      locale,
+      "Approved accounts receive hospital access and enter the clinician console automatically.",
+      "승인된 계정은 병원 접근 권한을 받고 바로 임상 콘솔에 들어갑니다."
+    ),
+    noInstitutionRequest: pick(locale, "No institution request submitted yet.", "아직 기관 접근 요청을 제출하지 않았습니다."),
+    reviewerLabel: pick(locale, "Reviewer", "검토자"),
+    requestAccess: pick(locale, "Request Access", "접근 요청"),
+    chooseInstitutionRole: pick(locale, "Choose your institution and role", "기관과 역할 선택"),
+    hospital: pick(locale, "Hospital", "병원"),
+    requestedRole: pick(locale, "Requested role", "요청 역할"),
+    noteForReviewer: pick(locale, "Note for reviewer", "검토자 메모"),
+    requestPlaceholder: pick(
+      locale,
+      "Department, study role, or context for this request.",
+      "소속 부서, 연구 역할, 요청 배경을 적어주세요."
+    ),
+    submitInstitutionRequest: pick(locale, "Submit institution request", "기관 접근 요청 제출"),
+    logOut: pick(locale, "Log Out", "로그아웃"),
+    highlightGoogleTitle: pick(locale, "Google Sign-In", "Google 로그인"),
+    highlightGoogleBody: pick(
+      locale,
+      "Researchers can onboard with a verified institution-linked Google account.",
+      "연구자는 기관에 연결된 Google 계정으로 온보딩할 수 있습니다."
+    ),
+    highlightApprovalTitle: pick(locale, "Approval Queue", "승인 큐"),
+    highlightApprovalBody: pick(
+      locale,
+      "Admins review institution and role requests before hospital access opens.",
+      "관리자가 기관과 역할 요청을 검토한 뒤 병원 접근이 열립니다."
+    ),
+    highlightCanvasTitle: pick(locale, "Case Canvas", "케이스 캔버스"),
+    highlightCanvasBody: pick(
+      locale,
+      "Author, validate, and contribute cases from one continuous workspace.",
+      "하나의 연속된 워크스페이스에서 케이스 작성, 검증, 기여까지 처리합니다."
+    ),
+    highlightRecoveryTitle: pick(locale, "Admin Recovery", "관리자 복구"),
+    highlightRecoveryBody: pick(
+      locale,
+      "A local admin fallback remains available for setup and incident recovery.",
+      "초기 설정과 장애 대응을 위한 로컬 관리자 경로는 유지됩니다."
+    ),
+  };
+  const describeError = (nextError: unknown, fallback: string) =>
+    nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
 
   useEffect(() => {
     const stored = window.localStorage.getItem(TOKEN_KEY);
@@ -103,6 +196,17 @@ export default function HomePage() {
       setToken(stored);
     }
   }, []);
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem(WORKSPACE_THEME_KEY);
+    if (storedTheme === "dark" || storedTheme === "light") {
+      setWorkspaceTheme(storedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(WORKSPACE_THEME_KEY, workspaceTheme);
+  }, [workspaceTheme]);
 
   useEffect(() => {
     void fetchPublicSites()
@@ -114,9 +218,9 @@ export default function HomePage() {
         }));
       })
       .catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : "Unable to load institutions.");
+        setError(describeError(nextError, copy.unableLoadInstitutions));
       });
-  }, []);
+  }, [copy.unableLoadInstitutions]);
 
   useEffect(() => {
     if (!token) {
@@ -139,7 +243,7 @@ export default function HomePage() {
           setMyRequests(await fetchMyAccessRequests(currentToken));
         }
       } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : "Failed to connect.");
+        setError(describeError(nextError, copy.failedConnect));
         window.localStorage.removeItem(TOKEN_KEY);
         setToken(null);
         setUser(null);
@@ -148,7 +252,7 @@ export default function HomePage() {
       }
     }
     void bootstrap();
-  }, [token]);
+  }, [token, copy.failedConnect]);
 
   useEffect(() => {
     if (!token || !selectedSiteId || !approved) {
@@ -167,13 +271,13 @@ export default function HomePage() {
         setSummary(nextSummary);
         setPatients(nextPatients);
       } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : "Failed to load site data.");
+        setError(describeError(nextError, copy.failedLoadSiteData));
       } finally {
         setLoading(false);
       }
     }
     void loadSite();
-  }, [token, selectedSiteId, approved]);
+  }, [token, selectedSiteId, approved, copy.failedLoadSiteData]);
 
   useEffect(() => {
     if (!token || !canReview) {
@@ -197,9 +301,9 @@ export default function HomePage() {
         });
       })
       .catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : "Failed to load approval queue.");
+        setError(describeError(nextError, copy.failedLoadApprovalQueue));
       });
-  }, [token, canReview]);
+  }, [token, canReview, copy.failedLoadApprovalQueue]);
 
   useEffect(() => {
     if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleButtonRef.current || !window.google?.accounts?.id) {
@@ -210,7 +314,7 @@ export default function HomePage() {
       client_id: GOOGLE_CLIENT_ID,
       callback: async (response: { credential?: string }) => {
         if (!response.credential) {
-          setError("Google login did not return a credential.");
+          setError(copy.googleNoCredential);
           return;
         }
         setLoading(true);
@@ -221,7 +325,7 @@ export default function HomePage() {
           setToken(auth.access_token);
           setUser(auth.user);
         } catch (nextError) {
-          setError(nextError instanceof Error ? nextError.message : "Google login failed.");
+          setError(describeError(nextError, copy.googleLoginFailed));
         } finally {
           setLoading(false);
         }
@@ -234,7 +338,7 @@ export default function HomePage() {
       text: "signin_with",
       shape: "pill",
     });
-  }, [googleReady, token]);
+  }, [googleReady, token, copy.googleLoginFailed, copy.googleNoCredential]);
 
   async function applyAuth(auth: AuthResponse) {
     window.localStorage.setItem(TOKEN_KEY, auth.access_token);
@@ -264,7 +368,7 @@ export default function HomePage() {
     try {
       await applyAuth(await login(loginForm.username, loginForm.password));
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Login failed.");
+      setError(describeError(nextError, copy.loginFailed));
     } finally {
       setLoading(false);
     }
@@ -288,7 +392,7 @@ export default function HomePage() {
       setPatientForm((current) => ({ ...current, patient_id: "", chart_alias: "", local_case_code: "" }));
       await refreshSiteData(selectedSiteId, token);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Patient creation failed.");
+      setError(describeError(nextError, pick(locale, "Patient creation failed.", "환자 생성에 실패했습니다.")));
     } finally {
       setLoading(false);
     }
@@ -306,7 +410,7 @@ export default function HomePage() {
       setUser(response.user);
       setMyRequests(await fetchMyAccessRequests(token));
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Request submission failed.");
+      setError(describeError(nextError, copy.requestSubmissionFailed));
     } finally {
       setLoading(false);
     }
@@ -328,7 +432,7 @@ export default function HomePage() {
       });
       setAdminRequests(await fetchAccessRequests(token, "pending"));
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Review failed.");
+      setError(describeError(nextError, pick(locale, "Review failed.", "검토에 실패했습니다.")));
     } finally {
       setLoading(false);
     }
@@ -363,6 +467,9 @@ export default function HomePage() {
   if (!token || !user) {
     return (
       <main className="shell">
+        <div className="shell-toolbar">
+          <LocaleToggle />
+        </div>
         {GOOGLE_CLIENT_ID ? (
           <Script
             src="https://accounts.google.com/gsi/client"
@@ -373,51 +480,48 @@ export default function HomePage() {
         <section className="hero">
           <article className="hero-card hero-copy">
             <div>
-              <div className="eyebrow">Clinical Research Workspace</div>
-              <h1>K-ERA Case Canvas</h1>
-              <p>
-                Sign in with your institution account, request the right site once, and move directly into a
-                document-style case canvas after approval.
-              </p>
+              <div className="eyebrow">{copy.heroEyebrow}</div>
+              <h1>{pick(locale, "K-ERA Case Canvas", "K-ERA 케이스 캔버스")}</h1>
+              <p>{copy.heroBody}</p>
             </div>
             <div className="highlight-grid">
               <div className="highlight">
-                <strong>Google Sign-In</strong>
-                <span className="muted">Researchers can onboard with a verified institution-linked Google account.</span>
+                <strong>{copy.highlightGoogleTitle}</strong>
+                <span className="muted">{copy.highlightGoogleBody}</span>
               </div>
               <div className="highlight">
-                <strong>Approval Queue</strong>
-                <span className="muted">Admins review institution and role requests before site access opens.</span>
+                <strong>{copy.highlightApprovalTitle}</strong>
+                <span className="muted">{copy.highlightApprovalBody}</span>
               </div>
               <div className="highlight">
-                <strong>Case Canvas</strong>
-                <span className="muted">Author, validate, and contribute cases from one continuous workspace.</span>
+                <strong>{copy.highlightCanvasTitle}</strong>
+                <span className="muted">{copy.highlightCanvasBody}</span>
               </div>
               <div className="highlight">
-                <strong>Admin Recovery</strong>
-                <span className="muted">A local admin fallback remains available for setup and incident recovery.</span>
+                <strong>{copy.highlightRecoveryTitle}</strong>
+                <span className="muted">{copy.highlightRecoveryBody}</span>
               </div>
             </div>
           </article>
 
           <section className="hero-card login-panel">
-            <div className="eyebrow">Sign In</div>
-            <h2>Enter the case workspace</h2>
-            <p className="muted">Google is the default path for researchers. Local username/password stays admin-only for recovery.</p>
+            <div className="eyebrow">{copy.signIn}</div>
+            <h2>{copy.enterWorkspace}</h2>
+            <p className="muted">{copy.signInBody}</p>
             {GOOGLE_CLIENT_ID ? (
               <div className="google-panel">
                 <div className="field">
-                  <label>Institution Google login</label>
+                  <label>{copy.googleLogin}</label>
                   <div ref={googleButtonRef} className="google-button-slot" />
                 </div>
               </div>
             ) : (
-              <div className="empty">Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.</div>
+              <div className="empty">{copy.googleDisabled}</div>
             )}
-            <div className="divider-line">Administrator recovery only</div>
+            <div className="divider-line">{copy.adminRecoveryOnly}</div>
             <form className="stack" onSubmit={handleLocalLogin}>
               <div className="field">
-                <label htmlFor="username">Username</label>
+                <label htmlFor="username">{copy.username}</label>
                 <input
                   id="username"
                   value={loginForm.username}
@@ -425,7 +529,7 @@ export default function HomePage() {
                 />
               </div>
               <div className="field">
-                <label htmlFor="password">Password</label>
+                <label htmlFor="password">{copy.password}</label>
                 <input
                   id="password"
                   type="password"
@@ -435,7 +539,7 @@ export default function HomePage() {
               </div>
               {error ? <div className="error">{error}</div> : null}
               <button className="primary-button" type="submit" disabled={loading}>
-                {loading ? "Connecting..." : "Enter admin recovery"}
+                {loading ? copy.connecting : copy.enterAdminRecovery}
               </button>
             </form>
           </section>
@@ -447,17 +551,18 @@ export default function HomePage() {
   if (!approved) {
     return (
       <main className="shell">
+        <div className="shell-toolbar">
+          <LocaleToggle />
+        </div>
         <section className="dashboard">
           <div className="section-head">
             <div>
-              <div className="eyebrow">Approval Required</div>
-              <h2>Institution access request</h2>
-              <p className="muted">
-                Signed in as {user.full_name} ({user.username})
-              </p>
+              <div className="eyebrow">{copy.approvalRequired}</div>
+              <h2>{copy.institutionAccessRequest}</h2>
+              <p className="muted">{copy.signedInAs(user.full_name, user.username)}</p>
             </div>
             <button className="secondary-button" type="button" onClick={handleLogout}>
-              Log Out
+              {copy.logOut}
             </button>
           </div>
 
@@ -465,22 +570,22 @@ export default function HomePage() {
 
           <section className="approval-grid">
             <article className="content-card approval-status-card">
-              <div className="eyebrow">Current Status</div>
-              <h3>{statusCopy(user.approval_status)}</h3>
-              <p className="muted">Approved accounts receive site access and enter the clinician console automatically.</p>
-              <div className={`status-chip tone-${user.approval_status}`}>{user.approval_status}</div>
+              <div className="eyebrow">{copy.currentStatus}</div>
+              <h3>{statusCopy(locale, user.approval_status)}</h3>
+              <p className="muted">{copy.approvedBody}</p>
+              <div className={`status-chip tone-${user.approval_status}`}>{translateStatus(locale, user.approval_status)}</div>
               {myRequests.length === 0 ? (
-                <div className="empty">No institution request submitted yet.</div>
+                <div className="empty">{copy.noInstitutionRequest}</div>
               ) : (
                 <div className="request-list">
                   {myRequests.map((request) => (
                     <div key={request.request_id} className="request-item">
                       <strong>{request.requested_site_id}</strong>
                       <div className="muted">
-                        {request.requested_role} · {request.status}
+                        {translateRole(locale, request.requested_role)} · {translateStatus(locale, request.status)}
                       </div>
                       {request.message ? <div className="muted">“{request.message}”</div> : null}
-                      {request.reviewer_notes ? <div className="muted">Reviewer: {request.reviewer_notes}</div> : null}
+                      {request.reviewer_notes ? <div className="muted">{copy.reviewerLabel}: {request.reviewer_notes}</div> : null}
                     </div>
                   ))}
                 </div>
@@ -488,11 +593,11 @@ export default function HomePage() {
             </article>
 
             <article className="content-card approval-form-card">
-              <div className="eyebrow">Request Access</div>
-              <h3>Choose your institution and role</h3>
+              <div className="eyebrow">{copy.requestAccess}</div>
+              <h3>{copy.chooseInstitutionRole}</h3>
               <form className="stack" onSubmit={handleRequestAccess}>
                 <div className="field">
-                  <label htmlFor="requested_site_id">Hospital</label>
+                  <label htmlFor="requested_site_id">{copy.hospital}</label>
                   <select
                     id="requested_site_id"
                     value={requestForm.requested_site_id}
@@ -508,29 +613,29 @@ export default function HomePage() {
                   </select>
                 </div>
                 <div className="field">
-                  <label htmlFor="requested_role">Requested role</label>
+                  <label htmlFor="requested_role">{copy.requestedRole}</label>
                   <select
                     id="requested_role"
                     value={requestForm.requested_role}
                     onChange={(event) => setRequestForm((current) => ({ ...current, requested_role: event.target.value }))}
                   >
-                    <option value="researcher">researcher</option>
-                    <option value="viewer">viewer</option>
-                    <option value="site_admin">site_admin</option>
+                    <option value="researcher">{translateRole(locale, "researcher")}</option>
+                    <option value="viewer">{translateRole(locale, "viewer")}</option>
+                    <option value="site_admin">{translateRole(locale, "site_admin")}</option>
                   </select>
                 </div>
                 <div className="field">
-                  <label htmlFor="message">Note for reviewer</label>
+                  <label htmlFor="message">{copy.noteForReviewer}</label>
                   <textarea
                     id="message"
                     rows={4}
                     value={requestForm.message}
                     onChange={(event) => setRequestForm((current) => ({ ...current, message: event.target.value }))}
-                    placeholder="Department, study role, or context for this request."
+                    placeholder={copy.requestPlaceholder}
                   />
                 </div>
                 <button className="primary-button" type="submit" disabled={loading || !requestForm.requested_site_id}>
-                  {loading ? "Submitting..." : "Submit institution request"}
+                  {loading ? copy.submitting : copy.submitInstitutionRequest}
                 </button>
               </form>
             </article>
@@ -554,6 +659,8 @@ export default function HomePage() {
         onLogout={handleLogout}
         onOpenOperations={() => setWorkspaceMode("operations")}
         onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+        theme={workspaceTheme}
+        onToggleTheme={() => setWorkspaceTheme((current) => (current === "dark" ? "light" : "dark"))}
       />
     );
   }
@@ -571,6 +678,8 @@ export default function HomePage() {
         onLogout={handleLogout}
         onRefreshSites={() => refreshApprovedSites(token)}
         onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+        theme={workspaceTheme}
+        onToggleTheme={() => setWorkspaceTheme((current) => (current === "dark" ? "light" : "dark"))}
       />
     );
   }
