@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -93,11 +94,25 @@ MANIFEST_COLUMNS = [
     "view",
     "image_path",
     "is_representative",
+    "lesion_prompt_box",
 ]
 
 
 def make_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
+
+
+def make_case_reference_id(site_id: str, patient_id: str, visit_date: str, salt: str) -> str:
+    payload = "::".join(
+        [
+            salt.strip(),
+            site_id.strip(),
+            patient_id.strip(),
+            visit_date.strip(),
+        ]
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"caseref_{digest[:20]}"
 
 
 def utc_now() -> str:

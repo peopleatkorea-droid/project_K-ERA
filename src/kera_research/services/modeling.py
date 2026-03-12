@@ -409,7 +409,7 @@ class ModelManager:
                             "model_path": str(model_path),
                             "requires_medsam_crop": template.get("requires_medsam_crop", False),
                             "training_input_policy": (
-                                "medsam_roi_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
+                                "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                             ),
                             "is_current": template.get("is_current", False),
                             "created_at": utc_now(),
@@ -438,7 +438,7 @@ class ModelManager:
                     "model_path": str(model_path),
                     "requires_medsam_crop": template.get("requires_medsam_crop", False),
                     "training_input_policy": (
-                        "medsam_roi_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
+                        "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                     ),
                     "is_current": template.get("is_current", False),
                     "created_at": utc_now(),
@@ -631,11 +631,18 @@ class ModelManager:
             ),
         )
         normalized = resized_heatmap.astype(np.float32) / 255.0
+        # Keep the source image intact and emphasize only the hotter Grad-CAM regions.
+        emphasis = np.clip((normalized - 0.35) / 0.65, 0.0, 1.0)
+        alpha = np.where(emphasis > 0, 0.12 + emphasis * 0.43, 0.0).astype(np.float32)
+        alpha = alpha[..., None]
+
         color = np.zeros_like(original_array, dtype=np.float32)
-        color[..., 0] = normalized * 255.0
-        color[..., 1] = np.sqrt(normalized) * 110.0
-        color[..., 2] = (1.0 - normalized) * 60.0
-        blended = 0.55 * original_array.astype(np.float32) + 0.45 * color
+        color[..., 0] = 255.0
+        color[..., 1] = 90.0 + emphasis * 120.0
+        color[..., 2] = 20.0 + (1.0 - emphasis) * 35.0
+
+        original = original_array.astype(np.float32)
+        blended = original * (1.0 - alpha) + color * alpha
         return np.clip(blended, 0, 255).astype(np.uint8)
 
     def fine_tune(

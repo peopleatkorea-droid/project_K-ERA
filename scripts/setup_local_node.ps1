@@ -236,7 +236,7 @@ Write-Host "[K-ERA] Running health check"
 import importlib
 import os
 
-packages = ["fastapi", "uvicorn", "pandas", "plotly", "matplotlib", "numpy", "PIL", "sklearn", "torch", "torchvision"]
+packages = ["fastapi", "uvicorn", "pandas", "plotly", "matplotlib", "numpy", "PIL", "sklearn", "torch", "torchvision", "bcrypt"]
 missing = []
 for name in packages:
     try:

@@ -9,6 +9,7 @@ import {
   downloadImportTemplate,
   fetchAccessRequests,
   fetchAdminOverview,
+  fetchStorageSettings,
   fetchAdminSites,
   fetchAggregations,
   fetchCrossValidationReports,
@@ -22,6 +23,7 @@ import {
   fetchUsers,
   fetchValidationArtifactBlob,
   fetchValidationCases,
+  migrateAdminSiteStorageRoot,
   reviewAccessRequest,
   reviewModelUpdate,
   runBulkImport,
@@ -29,6 +31,8 @@ import {
   runFederatedAggregation,
   runInitialTraining,
   updateAdminSite,
+  updateAdminSiteStorageRoot,
+  updateStorageSettings,
   upsertManagedUser,
   type AccessRequestRecord,
   type AdminOverviewResponse,
@@ -45,6 +49,7 @@ import {
   type SiteComparisonRecord,
   type SiteRecord,
   type SiteSummary,
+  type StorageSettingsRecord,
   type SiteValidationRunRecord,
   type ValidationCasePredictionRecord,
 } from "../lib/api";
@@ -163,6 +168,7 @@ export function AdminWorkspace({
   const [section, setSection] = useState<WorkspaceSection>("dashboard");
   const [toast, setToast] = useState<ToastState>(null);
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
+  const [storageSettings, setStorageSettings] = useState<StorageSettingsRecord | null>(null);
   const [pendingRequests, setPendingRequests] = useState<AccessRequestRecord[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [modelVersions, setModelVersions] = useState<ModelVersionRecord[]>([]);
@@ -184,6 +190,8 @@ export function AdminWorkspace({
   const [bulkImportResult, setBulkImportResult] = useState<BulkImportResponse | null>(null);
   const [projectForm, setProjectForm] = useState({ name: "", description: "" });
   const [siteForm, setSiteForm] = useState(() => createSiteForm());
+  const [instanceStorageRootForm, setInstanceStorageRootForm] = useState("");
+  const [siteStorageRootForm, setSiteStorageRootForm] = useState("");
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState<UserFormState>(() => createUserForm());
   const [initialBusy, setInitialBusy] = useState(false);
@@ -203,12 +211,14 @@ export function AdminWorkspace({
     mask: null,
   });
   const [aggregationBusy, setAggregationBusy] = useState(false);
+  const [storageSettingsBusy, setStorageSettingsBusy] = useState(false);
   const [newVersionName, setNewVersionName] = useState("");
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
   const modelUpdatePreviewUrlsRef = useRef<string[]>([]);
   const [initialForm, setInitialForm] = useState({
     architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
+    crop_mode: "automated" as "automated" | "manual" | "both",
     epochs: 30,
     learning_rate: 1e-4,
     batch_size: 16,
@@ -220,6 +230,7 @@ export function AdminWorkspace({
   const [crossValidationForm, setCrossValidationForm] = useState({
     architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
+    crop_mode: "automated" as "automated" | "manual",
     num_folds: 5,
     epochs: 10,
     learning_rate: 1e-4,
@@ -230,6 +241,8 @@ export function AdminWorkspace({
 
   const canAggregate = user.role === "admin";
   const canManagePlatform = user.role === "admin";
+  const canManageStorageRoot = user.role === "admin" || user.role === "site_admin";
+  const selectedManagedSite = managedSites.find((item) => item.site_id === selectedSiteId) ?? null;
   const currentModel = modelVersions.find((item) => item.is_current) ?? modelVersions[modelVersions.length - 1] ?? null;
   const pendingReviewUpdates = modelUpdates.filter((item) => ["pending_review", "pending_upload"].includes(item.status ?? ""));
   const approvedUpdates = modelUpdates.filter((item) => item.status === "approved");
@@ -277,6 +290,7 @@ export function AdminWorkspace({
   }));
   const copy = {
     unableLoadOperations: pick(locale, "Unable to load operations.", "운영 화면을 불러오지 못했습니다."),
+    unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
     requestReviewed: (decision: "approved" | "rejected") =>
       pick(locale, `Request ${decision}.`, `요청이 ${decision === "approved" ? "승인" : "반려"} 처리되었습니다.`),
@@ -307,6 +321,15 @@ export function AdminWorkspace({
     unableCreateSite: pick(locale, "Unable to create hospital.", "병원 생성에 실패했습니다."),
     siteUpdated: (siteId: string) => pick(locale, `Updated hospital ${siteId}.`, `${siteId} 병원 정보를 수정했습니다.`),
     unableUpdateSite: pick(locale, "Unable to update hospital.", "병원 수정에 실패했습니다."),
+    storageRootSaved: pick(locale, "Default storage root saved.", "기본 저장 경로를 저장했습니다."),
+    unableSaveStorageRoot: pick(locale, "Unable to save storage root.", "저장 경로 저장에 실패했습니다."),
+    selectedSiteStorageRootSaved: (siteId: string) =>
+      pick(locale, `Saved storage root for ${siteId}.`, `${siteId}의 저장 경로를 저장했습니다.`),
+    unableSaveSelectedSiteStorageRoot: pick(locale, "Unable to save the selected hospital storage root.", "선택한 병원의 저장 경로 저장에 실패했습니다."),
+    selectedSiteStorageMigrated: (siteId: string) =>
+      pick(locale, `Migrated stored files for ${siteId}.`, `${siteId}의 저장 파일을 새 경로로 이동했습니다.`),
+    unableMigrateSelectedSiteStorageRoot: pick(locale, "Unable to migrate the selected hospital storage root.", "선택한 병원의 저장 경로 마이그레이션에 실패했습니다."),
+    selectSiteForStorageRoot: pick(locale, "Select a hospital before changing its storage root.", "저장 경로를 바꾸려면 먼저 병원을 선택하세요."),
     usernameRequired: pick(locale, "Username is required.", "아이디는 필수입니다."),
     assignSiteRequired: pick(locale, "Assign at least one hospital for non-admin users.", "관리자가 아닌 사용자는 최소 한 개 이상의 병원을 지정해야 합니다."),
     userSaved: pick(locale, "User settings saved.", "사용자 설정을 저장했습니다."),
@@ -336,6 +359,7 @@ export function AdminWorkspace({
       try {
         const [
           nextOverview,
+          nextStorageSettings,
           nextRequests,
           nextVersions,
           nextUpdates,
@@ -348,6 +372,7 @@ export function AdminWorkspace({
           nextSiteValidationRuns,
         ] = await Promise.all([
           fetchAdminOverview(token),
+          fetchStorageSettings(token),
           fetchAccessRequests(token, "pending"),
           fetchModelVersions(token),
           fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
@@ -361,6 +386,7 @@ export function AdminWorkspace({
         ]);
         if (cancelled) return;
         setOverview(nextOverview);
+        setStorageSettings(nextStorageSettings);
         setPendingRequests(nextRequests);
         setModelVersions(nextVersions);
         setModelUpdates(nextUpdates);
@@ -372,6 +398,14 @@ export function AdminWorkspace({
         setCrossValidationReports(nextCrossValidationReports);
         setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
         setSiteValidationRuns(nextSiteValidationRuns);
+        setInstanceStorageRootForm((current) => current || nextStorageSettings.storage_root);
+        setSiteStorageRootForm((current) => {
+          if (current) {
+            return current;
+          }
+          const activeSite = nextManagedSites.find((item) => item.site_id === selectedSiteId) ?? nextManagedSites[0];
+          return activeSite?.local_storage_root ?? "";
+        });
         setSiteForm((current) => ({
           ...current,
           project_id: current.project_id || nextProjects[0]?.project_id || "",
@@ -398,7 +432,7 @@ export function AdminWorkspace({
         });
       } catch (nextError) {
         if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadOperations) });
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
         }
       }
     }
@@ -564,9 +598,20 @@ export function AdminWorkspace({
     };
   }, [selectedModelUpdate, token]);
 
+  useEffect(() => {
+    if (storageSettings) {
+      setInstanceStorageRootForm(storageSettings.storage_root);
+    }
+  }, [storageSettings]);
+
+  useEffect(() => {
+    setSiteStorageRootForm(selectedManagedSite?.local_storage_root ?? "");
+  }, [selectedManagedSite?.site_id, selectedManagedSite?.local_storage_root]);
+
   async function refreshWorkspace(siteScoped = false) {
     const [
       nextOverview,
+      nextStorageSettings,
       nextVersions,
       nextUpdates,
       nextAggregations,
@@ -579,6 +624,7 @@ export function AdminWorkspace({
       nextRequests,
     ] = await Promise.all([
       fetchAdminOverview(token),
+      fetchStorageSettings(token),
       fetchModelVersions(token),
       fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
       canAggregate ? fetchAggregations(token) : Promise.resolve([]),
@@ -591,6 +637,7 @@ export function AdminWorkspace({
       fetchAccessRequests(token, "pending"),
     ]);
     setOverview(nextOverview);
+    setStorageSettings(nextStorageSettings);
     setModelVersions(nextVersions);
     setModelUpdates(nextUpdates);
     setAggregations(nextAggregations);
@@ -601,6 +648,7 @@ export function AdminWorkspace({
     setCrossValidationReports(nextCrossValidationReports);
     setSiteValidationRuns(nextSiteValidationRuns);
     setPendingRequests(nextRequests);
+    setInstanceStorageRootForm(nextStorageSettings.storage_root);
     if (siteScoped && selectedSiteId) {
       await onSiteDataChanged(selectedSiteId);
     }
@@ -801,6 +849,72 @@ export function AdminWorkspace({
     }
   }
 
+  async function handleSaveStorageRoot() {
+    if (!instanceStorageRootForm.trim()) {
+      setToast({ tone: "error", message: copy.unableSaveStorageRoot });
+      return;
+    }
+    setStorageSettingsBusy(true);
+    try {
+      const nextSettings = await updateStorageSettings(token, {
+        storage_root: instanceStorageRootForm,
+      });
+      setStorageSettings(nextSettings);
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.storageRootSaved });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableSaveStorageRoot) });
+    } finally {
+      setStorageSettingsBusy(false);
+    }
+  }
+
+  async function handleSaveSelectedSiteStorageRoot() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForStorageRoot });
+      return;
+    }
+    if (!siteStorageRootForm.trim()) {
+      setToast({ tone: "error", message: copy.unableSaveSelectedSiteStorageRoot });
+      return;
+    }
+    setStorageSettingsBusy(true);
+    try {
+      await updateAdminSiteStorageRoot(selectedSiteId, token, {
+        storage_root: siteStorageRootForm,
+      });
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.selectedSiteStorageRootSaved(selectedSiteId) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableSaveSelectedSiteStorageRoot) });
+    } finally {
+      setStorageSettingsBusy(false);
+    }
+  }
+
+  async function handleMigrateSelectedSiteStorageRoot() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForStorageRoot });
+      return;
+    }
+    if (!siteStorageRootForm.trim()) {
+      setToast({ tone: "error", message: copy.unableMigrateSelectedSiteStorageRoot });
+      return;
+    }
+    setStorageSettingsBusy(true);
+    try {
+      await migrateAdminSiteStorageRoot(selectedSiteId, token, {
+        storage_root: siteStorageRootForm,
+      });
+      await refreshWorkspace(true);
+      setToast({ tone: "success", message: copy.selectedSiteStorageMigrated(selectedSiteId) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableMigrateSelectedSiteStorageRoot) });
+    } finally {
+      setStorageSettingsBusy(false);
+    }
+  }
+
   async function handleSaveUser() {
     if (!userForm.username.trim()) {
       setToast({ tone: "error", message: copy.usernameRequired });
@@ -916,7 +1030,7 @@ export function AdminWorkspace({
                   </section>
                   <section className="ops-card">
                     <div className="panel-card-head"><strong>{pick(locale, "Representative misclassified cases", "대표 오분류 케이스")}</strong><span>{dashboardBusy ? common.loading : `${misclassifiedCases.length} ${pick(locale, "shown", "표시됨")}`}</span></div>
-                    {misclassifiedCases.length === 0 ? <div className="empty-surface">{pick(locale, "No misclassified case preview is available for the selected validation run.", "선택한 검증 실행에 대한 오분류 미리보기가 없습니다.")}</div> : <div className="ops-gallery-grid">{misclassifiedCases.map((item) => <article key={`${item.patient_id}-${item.visit_date}`} className="ops-item"><div className="panel-card-head"><strong>{item.patient_id}</strong><span>{item.visit_date}</span></div><div className="panel-meta"><span>{item.true_label}</span><span>{item.predicted_label}</span><span>{formatMetric(item.prediction_probability, common.notAvailable)}</span></div><div className="ops-gallery-triptych"><div className="panel-image-card">{item.original_preview_url ? <img src={item.original_preview_url} alt={pick(locale, `${item.patient_id} original image`, `${item.patient_id} 원본 이미지`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Original unavailable", "원본을 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Original", "원본")}</strong></div></div><div className="panel-image-card">{item.roi_preview_url ? <img src={item.roi_preview_url} alt={pick(locale, `${item.patient_id} ROI`, `${item.patient_id} ROI`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "ROI unavailable", "ROI를 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "ROI", "ROI")}</strong></div></div><div className="panel-image-card">{item.gradcam_preview_url ? <img src={item.gradcam_preview_url} alt={pick(locale, `${item.patient_id} Grad-CAM`, `${item.patient_id} Grad-CAM`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Grad-CAM unavailable", "Grad-CAM을 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong></div></div></div></article>)}</div>}
+                    {misclassifiedCases.length === 0 ? <div className="empty-surface">{pick(locale, "No misclassified case preview is available for the selected validation run.", "선택한 검증 실행에 대한 오분류 미리보기가 없습니다.")}</div> : <div className="ops-gallery-grid">{misclassifiedCases.map((item) => <article key={`${item.patient_id}-${item.visit_date}`} className="ops-item"><div className="panel-card-head"><strong>{item.patient_id}</strong><span>{item.visit_date}</span></div><div className="panel-meta"><span>{item.true_label}</span><span>{item.predicted_label}</span><span>{formatMetric(item.prediction_probability, common.notAvailable)}</span></div><div className="ops-gallery-triptych"><div className="panel-image-card">{item.original_preview_url ? <img src={item.original_preview_url} alt={pick(locale, `${item.patient_id} original image`, `${item.patient_id} 원본 이미지`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Original unavailable", "원본을 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Original", "원본")}</strong></div></div><div className="panel-image-card">{item.roi_preview_url ? <img src={item.roi_preview_url} alt={pick(locale, `${item.patient_id} cornea crop`, `${item.patient_id} 각막 crop`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Cornea crop", "각막 crop")}</strong></div></div><div className="panel-image-card">{item.gradcam_preview_url ? <img src={item.gradcam_preview_url} alt={pick(locale, `${item.patient_id} Grad-CAM`, `${item.patient_id} Grad-CAM`)} className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Grad-CAM unavailable", "Grad-CAM을 표시할 수 없습니다")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong></div></div></div></article>)}</div>}
                   </section>
                 </div>
               ) : <div className="empty-surface">{pick(locale, "Select a hospital to open the advanced dashboard.", "고급 대시보드를 열려면 병원을 선택하세요.")}</div>}
@@ -965,6 +1079,7 @@ export function AdminWorkspace({
               <div className="ops-form-grid ops-form-grid-wide">
                 <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={initialForm.architecture} onChange={(event) => setInitialForm((current) => ({ ...current, architecture: event.target.value }))}>{TRAINING_ARCHITECTURE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <label className="inline-field"><span>{pick(locale, "Execution mode", "실행 모드")}</span><select value={initialForm.execution_mode} onChange={(event) => setInitialForm((current) => ({ ...current, execution_mode: event.target.value as "auto" | "cpu" | "gpu" }))}><option value="auto">{pick(locale, "auto", "자동")}</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+                <label className="inline-field"><span>{pick(locale, "Crop mode", "Crop 모드")}</span><select value={initialForm.crop_mode} onChange={(event) => setInitialForm((current) => ({ ...current, crop_mode: event.target.value as "automated" | "manual" | "both" }))}><option value="automated">{pick(locale, "Automated cornea crop", "Automated 각막 crop")}</option><option value="manual">{pick(locale, "Manual lesion crop", "Manual 병변 crop")}</option><option value="both">{pick(locale, "Both ensemble", "둘 다 앙상블")}</option></select></label>
                 <label className="inline-field"><span>{pick(locale, "Epochs", "에폭")}</span><input type="number" min={1} value={initialForm.epochs} onChange={(event) => setInitialForm((current) => ({ ...current, epochs: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Batch size", "배치 크기")}</span><input type="number" min={1} value={initialForm.batch_size} onChange={(event) => setInitialForm((current) => ({ ...current, batch_size: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Learning rate", "학습률")}</span><input type="number" min={0.00001} step="0.00001" value={initialForm.learning_rate} onChange={(event) => setInitialForm((current) => ({ ...current, learning_rate: Number(event.target.value) }))} /></label>
@@ -982,6 +1097,7 @@ export function AdminWorkspace({
               <div className="ops-form-grid ops-form-grid-wide">
                 <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={crossValidationForm.architecture} onChange={(event) => setCrossValidationForm((current) => ({ ...current, architecture: event.target.value }))}>{TRAINING_ARCHITECTURE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <label className="inline-field"><span>{pick(locale, "Execution mode", "실행 모드")}</span><select value={crossValidationForm.execution_mode} onChange={(event) => setCrossValidationForm((current) => ({ ...current, execution_mode: event.target.value as "auto" | "cpu" | "gpu" }))}><option value="auto">{pick(locale, "auto", "자동")}</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
+                <label className="inline-field"><span>{pick(locale, "Crop mode", "Crop 모드")}</span><select value={crossValidationForm.crop_mode} onChange={(event) => setCrossValidationForm((current) => ({ ...current, crop_mode: event.target.value as "automated" | "manual" }))}><option value="automated">{pick(locale, "Automated cornea crop", "Automated 각막 crop")}</option><option value="manual">{pick(locale, "Manual lesion crop", "Manual 병변 crop")}</option></select></label>
                 <label className="inline-field"><span>{pick(locale, "Folds", "폴드 수")}</span><input type="number" min={3} max={5} value={crossValidationForm.num_folds} onChange={(event) => setCrossValidationForm((current) => ({ ...current, num_folds: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Epochs", "에폭")}</span><input type="number" min={1} value={crossValidationForm.epochs} onChange={(event) => setCrossValidationForm((current) => ({ ...current, epochs: Number(event.target.value) }))} /></label>
                 <label className="inline-field"><span>{pick(locale, "Batch size", "배치 크기")}</span><input type="number" min={1} value={crossValidationForm.batch_size} onChange={(event) => setCrossValidationForm((current) => ({ ...current, batch_size: Number(event.target.value) }))} /></label>
@@ -1014,10 +1130,10 @@ export function AdminWorkspace({
               {selectedModelUpdate ? (
                 <section className="ops-card">
                   <div className="panel-card-head"><strong>{pick(locale, "Selected update", "선택한 업데이트")}</strong><span>{selectedModelUpdate.status ?? common.notAvailable}</span></div>
-                  <div className="panel-meta"><span>{selectedModelUpdate.site_id ?? common.notAvailable}</span><span>{selectedModelUpdate.patient_id ?? common.notAvailable}</span><span>{selectedModelUpdate.visit_date ?? common.notAvailable}</span></div>
+                  <div className="panel-meta"><span>{selectedModelUpdate.site_id ?? common.notAvailable}</span><span>{selectedModelUpdate.case_reference_id ?? common.notAvailable}</span><span>{selectedModelUpdate.architecture ?? common.notAvailable}</span></div>
                   <div className="ops-gallery-triptych">
                     <div className="panel-image-card">{selectedUpdatePreviewUrls.source ? <img src={selectedUpdatePreviewUrls.source} alt="Source thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Source unavailable", "원본 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Source", "원본")}</strong></div></div>
-                    <div className="panel-image-card">{selectedUpdatePreviewUrls.roi ? <img src={selectedUpdatePreviewUrls.roi} alt="ROI thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "ROI unavailable", "ROI 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>ROI</strong></div></div>
+                    <div className="panel-image-card">{selectedUpdatePreviewUrls.roi ? <img src={selectedUpdatePreviewUrls.roi} alt="Cornea crop thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Cornea crop unavailable", "각막 crop 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Cornea crop", "각막 crop")}</strong></div></div>
                     <div className="panel-image-card">{selectedUpdatePreviewUrls.mask ? <img src={selectedUpdatePreviewUrls.mask} alt="Mask thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Mask unavailable", "Mask 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>Mask</strong></div></div>
                   </div>
                   <div className="panel-metric-grid">
@@ -1025,8 +1141,8 @@ export function AdminWorkspace({
                     <div><strong>{selectedApprovalReport?.case_summary?.representative_view ?? common.notAvailable}</strong><span>{pick(locale, "representative view", "대표 view")}</span></div>
                     <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.source?.mean_brightness, common.notAvailable)}</strong><span>{pick(locale, "source brightness", "원본 밝기")}</span></div>
                     <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.source?.edge_density, common.notAvailable)}</strong><span>{pick(locale, "source edge", "원본 edge")}</span></div>
-                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_crop?.contrast_stddev, common.notAvailable)}</strong><span>{pick(locale, "ROI contrast", "ROI 대비")}</span></div>
-                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_area_ratio, common.notAvailable)}</strong><span>{pick(locale, "ROI area ratio", "ROI 면적 비율")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_crop?.contrast_stddev, common.notAvailable)}</strong><span>{pick(locale, "Cornea crop contrast", "각막 crop 대비")}</span></div>
+                    <div><strong>{formatMetric(selectedApprovalReport?.qa_metrics?.roi_area_ratio, common.notAvailable)}</strong><span>{pick(locale, "Cornea crop area ratio", "각막 crop 면적 비율")}</span></div>
                   </div>
                   <div className="panel-meta">
                     <span>{pick(locale, "EXIF removed", "EXIF 제거")}: {selectedApprovalReport?.privacy_controls?.upload_exif_removed ? pick(locale, "yes", "예") : pick(locale, "no", "아니오")}</span>
@@ -1046,6 +1162,87 @@ export function AdminWorkspace({
             <section className="doc-surface">
               <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Management", "관리")}</div><h3>{pick(locale, "Projects, hospitals, and users", "프로젝트, 병원, 사용자 관리")}</h3></div><div className="doc-site-badge">{translateRole(locale, canManagePlatform ? "admin" : "site_admin")}</div></div>
               <div className="ops-stack">
+                {canManageStorageRoot ? (
+                  <div className="ops-dual-grid">
+                    <section className="ops-card">
+                      <div className="panel-card-head">
+                        <strong>{pick(locale, "Default storage root", "기본 저장 경로")}</strong>
+                        <span>{storageSettings?.uses_custom_root ? pick(locale, "custom", "사용자 지정") : pick(locale, "default", "기본값")}</span>
+                      </div>
+                      <div className="ops-stack">
+                        <label className="inline-field">
+                          <span>{pick(locale, "Folder path", "폴더 경로")}</span>
+                          <input
+                            value={instanceStorageRootForm}
+                            onChange={(event) => setInstanceStorageRootForm(event.target.value)}
+                            placeholder="D:\\KERA_DATA"
+                          />
+                        </label>
+                        <div className="panel-meta">
+                          <span>{pick(locale, "Used as the default root when a new hospital is created.", "새 병원을 만들 때 기본 저장 루트로 사용됩니다.")}</span>
+                          <span>{pick(locale, "Current default", "현재 기본값")}: {storageSettings?.default_storage_root ?? common.notAvailable}</span>
+                        </div>
+                        <div className="workspace-actions">
+                          <button className="ghost-button" type="button" onClick={() => setInstanceStorageRootForm(storageSettings?.default_storage_root ?? "")}>
+                            {pick(locale, "Use built-in default", "기본 경로 사용")}
+                          </button>
+                          <button className="primary-workspace-button" type="button" onClick={() => void handleSaveStorageRoot()} disabled={storageSettingsBusy}>
+                            {storageSettingsBusy ? pick(locale, "Saving...", "저장 중...") : pick(locale, "Save default root", "기본 경로 저장")}
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+                    <section className="ops-card">
+                      <div className="panel-card-head">
+                        <strong>{pick(locale, "Selected hospital storage root", "선택한 병원 저장 경로")}</strong>
+                        <span>{selectedSiteId ?? common.notAvailable}</span>
+                      </div>
+                      {selectedManagedSite ? (
+                        <div className="ops-stack">
+                          <label className="inline-field">
+                            <span>{pick(locale, "Folder path", "폴더 경로")}</span>
+                            <input
+                              value={siteStorageRootForm}
+                              onChange={(event) => setSiteStorageRootForm(event.target.value)}
+                              placeholder="D:\\HospitalAData\\JNUH"
+                            />
+                          </label>
+                          <div className="panel-meta">
+                            <span>{pick(locale, "This changes where new files for the selected hospital will be written.", "선택한 병원의 새 파일이 저장될 경로를 바꿉니다.")}</span>
+                            <span>{pick(locale, "For safety, the app only allows this before any patient, visit, or image exists for the hospital.", "안전을 위해 환자, 방문, 이미지가 하나도 없을 때만 변경할 수 있습니다.")}</span>
+                          </div>
+                          <div className="panel-meta">
+                            <span>{pick(locale, "Current root", "현재 경로")}: {selectedManagedSite.local_storage_root ?? common.notAvailable}</span>
+                            <span>{pick(locale, "Current hospital data", "현재 병원 데이터")}: {summary ? `${summary.n_patients}/${summary.n_visits}/${summary.n_images}` : common.notAvailable}</span>
+                          </div>
+                          <div className="workspace-actions">
+                            <button className="ghost-button" type="button" onClick={() => setSiteStorageRootForm(selectedManagedSite.local_storage_root ?? "")}>
+                              {pick(locale, "Reset", "초기화")}
+                            </button>
+                            <button
+                              className="primary-workspace-button"
+                              type="button"
+                              onClick={() => void handleSaveSelectedSiteStorageRoot()}
+                              disabled={storageSettingsBusy || Boolean(summary && (summary.n_patients > 0 || summary.n_visits > 0 || summary.n_images > 0))}
+                            >
+                              {storageSettingsBusy ? pick(locale, "Saving...", "저장 중...") : pick(locale, "Save hospital root", "병원 경로 저장")}
+                            </button>
+                            <button
+                              className="primary-workspace-button"
+                              type="button"
+                              onClick={() => void handleMigrateSelectedSiteStorageRoot()}
+                              disabled={storageSettingsBusy || !Boolean(summary && (summary.n_patients > 0 || summary.n_visits > 0 || summary.n_images > 0))}
+                            >
+                              {storageSettingsBusy ? pick(locale, "Migrating...", "이동 중...") : pick(locale, "Migrate existing data", "기존 데이터 이동")}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="empty-surface">{pick(locale, "Select a hospital to review or change its storage path.", "저장 경로를 확인하거나 변경하려면 병원을 선택하세요.")}</div>
+                      )}
+                    </section>
+                  </div>
+                ) : null}
                 <div className="ops-dual-grid">
                   <section className="ops-card">
                     <div className="panel-card-head"><strong>{pick(locale, "Projects", "프로젝트")}</strong><span>{projects.length}</span></div>

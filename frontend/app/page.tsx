@@ -179,11 +179,11 @@ export default function HomePage() {
       "Admins review institution and role requests before hospital access opens.",
       "관리자가 기관과 역할 요청을 검토한 뒤 병원 접근이 열립니다."
     ),
-    highlightCanvasTitle: pick(locale, "Case Canvas", "케이스 캔버스"),
+    highlightCanvasTitle: pick(locale, "Case Authoring", "증례 작성"),
     highlightCanvasBody: pick(
       locale,
-      "Author, validate, and contribute cases from one continuous workspace.",
-      "하나의 연속된 워크스페이스에서 케이스 작성, 검증, 기여까지 처리합니다."
+      "Create, validate, and contribute cases from one workspace.",
+      "하나의 작업공간에서 증례 작성, 검증, 기여를 처리합니다."
     ),
     highlightRecoveryTitle: pick(locale, "Admin Recovery", "관리자 복구"),
     highlightRecoveryBody: pick(
@@ -486,7 +486,7 @@ export default function HomePage() {
           <article className="hero-card hero-copy">
             <div>
               <div className="eyebrow">{copy.heroEyebrow}</div>
-              <h1>{pick(locale, "K-ERA Case Canvas", "K-ERA 케이스 캔버스")}</h1>
+              <h1>{pick(locale, "K-ERA", "K-ERA")}</h1>
               <p>{copy.heroBody}</p>
             </div>
             <div className="highlight-grid">

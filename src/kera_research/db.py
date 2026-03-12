@@ -28,20 +28,54 @@ def _default_database_url() -> str:
     return f"sqlite:///{database_path}"
 
 
-DATABASE_URL = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL") or _default_database_url()
+def _resolve_control_plane_database_url() -> str:
+    legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
+    return (
+        os.getenv("KERA_CONTROL_PLANE_DATABASE_URL")
+        or os.getenv("KERA_AUTH_DATABASE_URL")
+        or legacy_url
+        or _default_database_url()
+    )
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-ENGINE: Engine = create_engine(
-    DATABASE_URL,
+
+def _resolve_data_plane_database_url() -> str:
+    legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
+    return (
+        os.getenv("KERA_DATA_PLANE_DATABASE_URL")
+        or os.getenv("KERA_LOCAL_DATABASE_URL")
+        or legacy_url
+        or _default_database_url()
+    )
+
+
+def _connect_args_for(database_url: str) -> dict[str, object]:
+    return {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+
+
+CONTROL_PLANE_DATABASE_URL = _resolve_control_plane_database_url()
+DATA_PLANE_DATABASE_URL = _resolve_data_plane_database_url()
+DATABASE_URL = CONTROL_PLANE_DATABASE_URL
+
+CONTROL_PLANE_ENGINE: Engine = create_engine(
+    CONTROL_PLANE_DATABASE_URL,
     future=True,
     pool_pre_ping=True,
-    connect_args=_connect_args,
+    connect_args=_connect_args_for(CONTROL_PLANE_DATABASE_URL),
 )
-METADATA = MetaData()
+DATA_PLANE_ENGINE: Engine = create_engine(
+    DATA_PLANE_DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    connect_args=_connect_args_for(DATA_PLANE_DATABASE_URL),
+)
+ENGINE = CONTROL_PLANE_ENGINE
+CONTROL_PLANE_METADATA = MetaData()
+DATA_PLANE_METADATA = MetaData()
+METADATA = CONTROL_PLANE_METADATA
 
 users = Table(
     "users",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("user_id", String(64), primary_key=True),
     Column("username", String(255), nullable=False, unique=True, index=True),
     Column("google_sub", String(255), nullable=True),
@@ -53,7 +87,7 @@ users = Table(
 
 projects = Table(
     "projects",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("project_id", String(64), primary_key=True),
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=False, default=""),
@@ -64,7 +98,7 @@ projects = Table(
 
 sites = Table(
     "sites",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("site_id", String(64), primary_key=True),
     Column("project_id", String(64), nullable=False, index=True),
     Column("display_name", String(255), nullable=False),
@@ -75,7 +109,7 @@ sites = Table(
 
 organism_catalog = Table(
     "organism_catalog",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("catalog_id", Integer, primary_key=True, autoincrement=True),
     Column("culture_category", String(32), nullable=False, index=True),
     Column("species_name", String(255), nullable=False),
@@ -84,7 +118,7 @@ organism_catalog = Table(
 
 organism_requests = Table(
     "organism_requests",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("request_id", String(64), primary_key=True),
     Column("culture_category", String(32), nullable=False, index=True),
     Column("requested_species", String(255), nullable=False),
@@ -97,7 +131,7 @@ organism_requests = Table(
 
 access_requests = Table(
     "access_requests",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("request_id", String(64), primary_key=True),
     Column("user_id", String(64), nullable=False, index=True),
     Column("email", String(255), nullable=False, index=True),
@@ -113,7 +147,7 @@ access_requests = Table(
 
 validation_runs = Table(
     "validation_runs",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("validation_id", String(64), primary_key=True),
     Column("project_id", String(64), nullable=False, index=True),
     Column("site_id", String(64), nullable=False, index=True),
@@ -132,7 +166,7 @@ validation_runs = Table(
 
 model_versions = Table(
     "model_versions",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("version_id", String(64), primary_key=True),
     Column("version_name", String(255), nullable=False, index=True),
     Column("architecture", String(64), nullable=False, index=True),
@@ -145,7 +179,7 @@ model_versions = Table(
 
 model_updates = Table(
     "model_updates",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("update_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=True, index=True),
     Column("architecture", String(64), nullable=True, index=True),
@@ -156,7 +190,7 @@ model_updates = Table(
 
 contributions = Table(
     "contributions",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("contribution_id", String(64), primary_key=True),
     Column("user_id", String(64), nullable=True, index=True),
     Column("site_id", String(64), nullable=True, index=True),
@@ -166,7 +200,7 @@ contributions = Table(
 
 aggregations = Table(
     "aggregations",
-    METADATA,
+    CONTROL_PLANE_METADATA,
     Column("aggregation_id", String(64), primary_key=True),
     Column("base_model_version_id", String(64), nullable=True, index=True),
     Column("new_version_name", String(255), nullable=False),
@@ -176,9 +210,17 @@ aggregations = Table(
     Column("payload_json", JSON, nullable=False),
 )
 
+app_settings = Table(
+    "app_settings",
+    CONTROL_PLANE_METADATA,
+    Column("setting_key", String(128), primary_key=True),
+    Column("setting_value", Text, nullable=False),
+    Column("updated_at", String(64), nullable=False),
+)
+
 patients = Table(
     "patients",
-    METADATA,
+    DATA_PLANE_METADATA,
     Column("patient_row_id", Integer, primary_key=True, autoincrement=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False),
@@ -193,7 +235,7 @@ patients = Table(
 
 visits = Table(
     "visits",
-    METADATA,
+    DATA_PLANE_METADATA,
     Column("visit_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False, index=True),
@@ -218,7 +260,7 @@ visits = Table(
 
 images = Table(
     "images",
-    METADATA,
+    DATA_PLANE_METADATA,
     Column("image_id", String(64), primary_key=True),
     Column("visit_id", String(64), nullable=False, index=True),
     Column("site_id", String(64), nullable=False, index=True),
@@ -227,12 +269,13 @@ images = Table(
     Column("view", String(32), nullable=False, index=True),
     Column("image_path", Text, nullable=False),
     Column("is_representative", Boolean, nullable=False, default=False),
+    Column("lesion_prompt_box", JSON, nullable=True),
     Column("uploaded_at", String(64), nullable=False),
 )
 
 site_patient_splits = Table(
     "site_patient_splits",
-    METADATA,
+    DATA_PLANE_METADATA,
     Column("site_id", String(64), primary_key=True),
     Column("split_json", JSON, nullable=False),
     Column("updated_at", String(64), nullable=False),
@@ -240,7 +283,7 @@ site_patient_splits = Table(
 
 site_jobs = Table(
     "site_jobs",
-    METADATA,
+    DATA_PLANE_METADATA,
     Column("job_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("job_type", String(64), nullable=False, index=True),
@@ -252,36 +295,59 @@ site_jobs = Table(
 )
 
 
+def init_control_plane_db() -> None:
+    CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
+    _migrate_control_plane_schema()
+
+
+def init_data_plane_db() -> None:
+    DATA_PLANE_METADATA.create_all(DATA_PLANE_ENGINE)
+    _migrate_data_plane_schema()
+
+
 def init_db() -> None:
-    METADATA.create_all(ENGINE)
-    _migrate_schema()
+    init_control_plane_db()
+    init_data_plane_db()
 
 
-def _migrate_schema() -> None:
-    inspector = inspect(ENGINE)
+def _migrate_control_plane_schema() -> None:
+    inspector = inspect(CONTROL_PLANE_ENGINE)
     table_names = inspector.get_table_names()
     if "users" not in table_names:
         return
 
     user_columns = {column["name"] for column in inspector.get_columns("users")}
-    with ENGINE.begin() as conn:
+    with CONTROL_PLANE_ENGINE.begin() as conn:
         if "google_sub" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)"))
 
+        if CONTROL_PLANE_ENGINE.dialect.name == "sqlite":
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub "
+                    "ON users (google_sub) WHERE google_sub IS NOT NULL"
+                )
+            )
+        elif CONTROL_PLANE_ENGINE.dialect.name == "postgresql":
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub)"))
+
+
+def _migrate_data_plane_schema() -> None:
+    inspector = inspect(DATA_PLANE_ENGINE)
+    table_names = inspector.get_table_names()
+
+    with DATA_PLANE_ENGINE.begin() as conn:
         if "visits" in table_names:
             visit_columns = {column["name"] for column in inspector.get_columns("visits")}
             if "created_by_user_id" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN created_by_user_id VARCHAR(64)"))
             if "is_initial_visit" not in visit_columns:
-                if ENGINE.dialect.name == "sqlite":
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
                     conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT 0"))
                 else:
                     conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT FALSE"))
             if "additional_organisms" not in visit_columns:
-                if ENGINE.dialect.name == "sqlite":
-                    conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
-                else:
-                    conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
+                conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
             if "actual_visit_date" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN actual_visit_date VARCHAR(32)"))
 
@@ -290,12 +356,7 @@ def _migrate_schema() -> None:
             if "created_by_user_id" not in patient_columns:
                 conn.execute(text("ALTER TABLE patients ADD COLUMN created_by_user_id VARCHAR(64)"))
 
-        if ENGINE.dialect.name == "sqlite":
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub "
-                    "ON users (google_sub) WHERE google_sub IS NOT NULL"
-                )
-            )
-        elif ENGINE.dialect.name == "postgresql":
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub)"))
+        if "images" in table_names:
+            image_columns = {column["name"] for column in inspector.get_columns("images")}
+            if "lesion_prompt_box" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN lesion_prompt_box JSON"))

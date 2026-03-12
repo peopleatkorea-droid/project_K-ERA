@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import gc
 import io
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -17,9 +21,36 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 
-def reload_app_module(db_path: Path):
-    os.environ["KERA_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+def reload_app_module(
+    db_path: Path | None = None,
+    *,
+    control_plane_db_path: Path | None = None,
+    data_plane_db_path: Path | None = None,
+    control_plane_artifact_dir: Path | None = None,
+):
+    for env_name in (
+        "KERA_DATABASE_URL",
+        "DATABASE_URL",
+        "KERA_CONTROL_PLANE_DATABASE_URL",
+        "KERA_AUTH_DATABASE_URL",
+        "KERA_DATA_PLANE_DATABASE_URL",
+        "KERA_LOCAL_DATABASE_URL",
+        "KERA_CONTROL_PLANE_ARTIFACT_DIR",
+        "KERA_CASE_REFERENCE_SALT",
+    ):
+        os.environ.pop(env_name, None)
+
+    if db_path is not None:
+        os.environ["KERA_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    if control_plane_db_path is not None:
+        os.environ["KERA_CONTROL_PLANE_DATABASE_URL"] = f"sqlite:///{control_plane_db_path.as_posix()}"
+    if data_plane_db_path is not None:
+        os.environ["KERA_DATA_PLANE_DATABASE_URL"] = f"sqlite:///{data_plane_db_path.as_posix()}"
+    if control_plane_artifact_dir is not None:
+        os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
+
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
+    os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
     os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
@@ -96,6 +127,7 @@ class FakeWorkflow:
         delta_path = site_store.update_dir / f"{self.app_module.make_id('delta')}.pt"
         delta_path.parent.mkdir(parents=True, exist_ok=True)
         delta_path.write_bytes(b"delta")
+        case_reference_id = self.control_plane.case_reference_id(site_store.site_id, patient_id, visit_date)
         update = {
             "update_id": self.app_module.make_id("update"),
             "site_id": site_store.site_id,
@@ -106,11 +138,15 @@ class FakeWorkflow:
             "artifact_path": str(delta_path),
             "n_cases": 1,
             "contributed_by": user_id,
-            "patient_id": patient_id,
-            "visit_date": visit_date,
+            "case_reference_id": case_reference_id,
             "created_at": "2026-03-11T00:10:00+00:00",
-            "training_input_policy": "medsam_roi_crop_only",
+            "training_input_policy": "medsam_cornea_crop_only",
             "training_summary": {"epochs": 1},
+            "approval_report": {
+                "site_id": site_store.site_id,
+                "case_reference_id": case_reference_id,
+                "artifacts": {},
+            },
             "status": "pending_upload",
         }
         self.control_plane.register_model_update(update)
@@ -119,8 +155,7 @@ class FakeWorkflow:
                 "contribution_id": self.app_module.make_id("contrib"),
                 "user_id": user_id,
                 "site_id": site_store.site_id,
-                "patient_id": patient_id,
-                "visit_date": visit_date,
+                "case_reference_id": case_reference_id,
                 "update_id": update["update_id"],
                 "created_at": "2026-03-11T00:10:00+00:00",
             }
@@ -285,7 +320,11 @@ class FakeWorkflow:
 class ApiHttpTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.app_module = reload_app_module(Path(self.tempdir.name) / "test.db")
+        self.control_plane_artifact_dir = Path(self.tempdir.name) / "control_artifacts"
+        self.app_module = reload_app_module(
+            Path(self.tempdir.name) / "test.db",
+            control_plane_artifact_dir=self.control_plane_artifact_dir,
+        )
         self.db_module = sys.modules["kera_research.db"]
         self.cp = self.app_module.ControlPlaneStore()
         project = self.cp.create_project("HTTP Test Project", "test", "user_admin")
@@ -318,6 +357,16 @@ class ApiHttpTests(unittest.TestCase):
                 "site_ids": [self.site_id],
             }
         )
+        self.site_admin = self.cp.upsert_user(
+            {
+                "user_id": self.app_module.make_id("user"),
+                "username": "http_site_admin",
+                "password": "siteadmin123",
+                "role": "site_admin",
+                "full_name": "HTTP Site Admin",
+                "site_ids": [self.site_id],
+            }
+        )
         self.requester = self.cp.upsert_user(
             {
                 "user_id": self.app_module.make_id("user"),
@@ -334,11 +383,62 @@ class ApiHttpTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
-        self.db_module.ENGINE.dispose()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
         shutil.rmtree(self.site_store.site_dir, ignore_errors=True)
         if self.seed_model_path.exists():
             self.seed_model_path.unlink()
+        for _ in range(3):
+            try:
+                self.tempdir.cleanup()
+                break
+            except PermissionError:
+                gc.collect()
+                time.sleep(0.2)
+        else:
+            self.tempdir.cleanup()
+
+    def test_auth_and_local_case_data_can_use_separate_databases(self):
+        old_site_dir = self.site_store.site_dir
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+        shutil.rmtree(old_site_dir, ignore_errors=True)
         self.tempdir.cleanup()
+
+        split_tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = split_tempdir
+        control_db = Path(split_tempdir.name) / "control.db"
+        local_db = Path(split_tempdir.name) / "local.db"
+        self.app_module = reload_app_module(
+            control_plane_db_path=control_db,
+            data_plane_db_path=local_db,
+            control_plane_artifact_dir=Path(split_tempdir.name) / "control_artifacts",
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+        project = self.cp.create_project("Split DB Project", "test", "user_admin")
+        self.site_id = "SPLIT_DB"
+        self.cp.create_site(project["project_id"], self.site_id, "Split Site", "Split Hospital")
+        self.site_store = self.app_module.SiteStore(self.site_id)
+        from fastapi.testclient import TestClient
+
+        self.client = TestClient(self.app_module.create_app())
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token)
+
+        with sqlite3.connect(control_db) as conn:
+            control_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            control_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        with sqlite3.connect(local_db) as conn:
+            local_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            local_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+
+        self.assertIn("users", control_tables)
+        self.assertNotIn("users", local_tables)
+        self.assertGreaterEqual(control_users, 1)
+        self.assertIn("patients", local_tables)
+        self.assertEqual(local_patients, 1)
 
     def _login(self, username: str, password: str) -> str:
         response = self.client.post("/api/auth/login", json={"username": username, "password": password})
@@ -368,8 +468,14 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(visit_response.status_code, 200, visit_response.text)
         self.assertTrue(visit_response.json()["is_initial_visit"])
         image_response = self.client.post(
-            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=2026-03-11&view=slit&is_representative=true",
+            f"/api/sites/{self.site_id}/images",
             headers={"Authorization": f"Bearer {token}"},
+            data={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "view": "slit",
+                "is_representative": "true",
+            },
             files={"file": ("slit.png", b"fake-image", "image/png")},
         )
         self.assertEqual(image_response.status_code, 200, image_response.text)
@@ -398,6 +504,65 @@ class ApiHttpTests(unittest.TestCase):
             contribution_payload = contribution_response.json()
             self.assertEqual(contribution_payload["update"]["status"], "pending_upload")
             self.assertEqual(contribution_payload["stats"]["user_contributions"], 1)
+            self.assertIn("case_reference_id", contribution_payload["update"])
+            self.assertNotIn("patient_id", contribution_payload["update"])
+            self.assertNotIn("visit_date", contribution_payload["update"])
+
+            history_response = self.client.get(
+                f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=2026-03-11",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(history_response.status_code, 200, history_response.text)
+            history_payload = history_response.json()
+            self.assertEqual(len(history_payload["contributions"]), 1)
+            self.assertEqual(
+                history_payload["contributions"][0]["case_reference_id"],
+                contribution_payload["update"]["case_reference_id"],
+            )
+
+            activity_response = self.client.get(
+                f"/api/sites/{self.site_id}/activity",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(activity_response.status_code, 200, activity_response.text)
+            activity_payload = activity_response.json()
+            self.assertEqual(
+                activity_payload["recent_contributions"][0]["case_reference_id"],
+                contribution_payload["update"]["case_reference_id"],
+            )
+            self.assertNotIn("patient_id", activity_payload["recent_contributions"][0])
+            self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
+
+    def test_admin_model_update_artifact_can_be_served_from_embedded_thumbnail(self):
+        admin_token = self._login("admin", "admin123")
+        update_id = self.app_module.make_id("update")
+        thumbnail_bytes = b"embedded-thumb"
+        self.cp.register_model_update(
+            {
+                "update_id": update_id,
+                "site_id": self.site_id,
+                "architecture": "densenet121",
+                "status": "pending_review",
+                "created_at": "2026-03-11T00:15:00+00:00",
+                "approval_report": {
+                    "artifacts": {
+                        "source_thumbnail": {
+                            "media_type": "image/jpeg",
+                            "encoding": "base64",
+                            "bytes_b64": base64.b64encode(thumbnail_bytes).decode("ascii"),
+                        }
+                    }
+                },
+            }
+        )
+
+        response = self.client.get(
+            f"/api/admin/model-updates/{update_id}/artifacts/source_thumbnail",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content, thumbnail_bytes)
+        self.assertEqual(response.headers.get("content-type"), "image/jpeg")
 
     def test_visit_auto_marks_polymicrobial_when_multiple_organisms_are_added(self):
         token = self._login("http_researcher", "research123")
@@ -465,7 +630,7 @@ class ApiHttpTests(unittest.TestCase):
                 delta_path = self.site_store.update_dir / f"pending_{index}.pt"
                 delta_path.parent.mkdir(parents=True, exist_ok=True)
                 delta_path.write_bytes(b"delta")
-                self.cp.register_model_update(
+                registered_update = self.cp.register_model_update(
                     {
                         "update_id": self.app_module.make_id("update"),
                         "site_id": self.site_id,
@@ -476,9 +641,11 @@ class ApiHttpTests(unittest.TestCase):
                         "artifact_path": str(delta_path),
                         "n_cases": 1,
                         "created_at": f"2026-03-11T00:4{index}:00+00:00",
-                        "status": "pending_upload",
+                        "status": "approved",
                     }
                 )
+                self.assertTrue(Path(str(registered_update["central_artifact_path"])).exists())
+                delta_path.unlink()
 
             aggregation_response = self.client.post(
                 "/api/admin/aggregations/run",
@@ -628,6 +795,88 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(comparison_response.status_code, 200, comparison_response.text)
         self.assertTrue(any(item["site_id"] == "OPS_HTTP" for item in comparison_response.json()))
+
+    def test_site_admin_can_manage_storage_settings_and_empty_site_root(self):
+        site_admin_token = self._login("http_site_admin", "siteadmin123")
+        temp_storage_root = Path(self.tempdir.name) / "instance-storage-root"
+        site_storage_root = temp_storage_root / self.site_id
+
+        settings_response = self.client.get(
+            "/api/admin/storage-settings",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(settings_response.status_code, 200, settings_response.text)
+
+        update_settings_response = self.client.patch(
+            "/api/admin/storage-settings",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(temp_storage_root)},
+        )
+        self.assertEqual(update_settings_response.status_code, 200, update_settings_response.text)
+        self.assertEqual(update_settings_response.json()["storage_root"], str(temp_storage_root.resolve()))
+
+        update_site_root_response = self.client.patch(
+            f"/api/admin/sites/{self.site_id}/storage-root",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(site_storage_root)},
+        )
+        self.assertEqual(update_site_root_response.status_code, 200, update_site_root_response.text)
+        self.assertEqual(update_site_root_response.json()["local_storage_root"], str(site_storage_root.resolve()))
+
+        self._seed_case(site_admin_token)
+        blocked_response = self.client.patch(
+            f"/api/admin/sites/{self.site_id}/storage-root",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(site_storage_root.parent / 'second-root')},
+        )
+        self.assertEqual(blocked_response.status_code, 400, blocked_response.text)
+        self.assertIn("Storage root can only be changed", blocked_response.json()["detail"])
+
+    def test_site_storage_root_migration_rewrites_existing_paths(self):
+        site_admin_token = self._login("http_site_admin", "siteadmin123")
+        original_root = Path(self.tempdir.name) / "site-original-root" / self.site_id
+        migrated_root = Path(self.tempdir.name) / "site-migrated-root" / self.site_id
+
+        prepare_root_response = self.client.patch(
+            f"/api/admin/sites/{self.site_id}/storage-root",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(original_root)},
+        )
+        self.assertEqual(prepare_root_response.status_code, 200, prepare_root_response.text)
+
+        self._seed_case(site_admin_token)
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {site_admin_token}"},
+                json={"patient_id": "HTTP-001", "visit_date": "2026-03-11", "execution_mode": "cpu"},
+            )
+            self.assertEqual(validation_response.status_code, 200, validation_response.text)
+            validation_id = validation_response.json()["summary"]["validation_id"]
+
+        predictions_before = self.cp.load_case_predictions(validation_id)
+        self.assertTrue(str(predictions_before[0]["roi_crop_path"]).startswith(str(original_root.resolve())))
+
+        migrate_response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/storage-root/migrate",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(migrated_root)},
+        )
+        self.assertEqual(migrate_response.status_code, 200, migrate_response.text)
+        self.assertEqual(migrate_response.json()["local_storage_root"], str(migrated_root.resolve()))
+
+        predictions_after = self.cp.load_case_predictions(validation_id)
+        self.assertTrue(str(predictions_after[0]["roi_crop_path"]).startswith(str(migrated_root.resolve())))
+        self.assertFalse(original_root.exists())
+        self.assertTrue(migrated_root.exists())
+
+        artifact_response = self.client.get(
+            f"/api/sites/{self.site_id}/validations/{validation_id}/artifacts/roi_crop?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(artifact_response.status_code, 200, artifact_response.text)
 
 
 if __name__ == "__main__":

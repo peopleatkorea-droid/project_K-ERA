@@ -9,6 +9,14 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 STORAGE_DIR = BASE_DIR / "storage"
 CONTROL_PLANE_DIR = STORAGE_DIR / "control_plane"
 CONTROL_PLANE_CASE_DIR = CONTROL_PLANE_DIR / "validation_cases"
+CONTROL_PLANE_ARTIFACT_DIR = Path(
+    os.getenv("KERA_CONTROL_PLANE_ARTIFACT_DIR", "").strip() or (CONTROL_PLANE_DIR / "artifacts")
+)
+CASE_REFERENCE_SALT = (
+    os.getenv("KERA_CASE_REFERENCE_SALT", "").strip()
+    or os.getenv("KERA_API_SECRET", "").strip()
+    or "kera-case-reference-v1"
+)
 SITE_ROOT_DIR = STORAGE_DIR / "sites"
 MODEL_DIR = BASE_DIR / "models"
 DOCS_DIR = BASE_DIR / "docs"
@@ -23,9 +31,9 @@ DEFAULT_GLOBAL_MODELS = [
         "version_name": "global-densenet-v1.0",
         "architecture": "densenet121",
         "model_path": MODEL_DIR / "global_densenet_v1.pth",
-        "notes": "DenseNet121 global model using MedSAM ROI crops for inference and training.",
-        "notes_ko": "MedSAM ROI crop 기반 추론/학습을 사용하는 DenseNet121 글로벌 모델입니다.",
-        "notes_en": "DenseNet121 global model using MedSAM ROI crops for inference and training.",
+        "notes": "DenseNet121 global model using MedSAM cornea crops for inference and training.",
+        "notes_ko": "MedSAM cornea crop 기반 추론/학습을 사용하는 DenseNet121 글로벌 모델입니다.",
+        "notes_en": "DenseNet121 global model using MedSAM cornea crops for inference and training.",
         "requires_medsam_crop": True,
         "is_current": True,
     },
@@ -142,6 +150,7 @@ def ensure_base_directories() -> None:
         STORAGE_DIR,
         CONTROL_PLANE_DIR,
         CONTROL_PLANE_CASE_DIR,
+        CONTROL_PLANE_ARTIFACT_DIR,
         SITE_ROOT_DIR,
         MODEL_DIR,
         DOCS_DIR,

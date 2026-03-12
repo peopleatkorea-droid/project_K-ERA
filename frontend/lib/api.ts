@@ -21,6 +21,12 @@ export type ManagedSiteRecord = SiteRecord & {
   created_at?: string;
 };
 
+export type StorageSettingsRecord = {
+  storage_root: string;
+  default_storage_root: string;
+  uses_custom_root: boolean;
+};
+
 export type AccessRequestRecord = {
   request_id: string;
   user_id: string;
@@ -93,6 +99,12 @@ export type ImageRecord = {
   view: string;
   image_path: string;
   is_representative: boolean;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
   uploaded_at: string;
 };
 
@@ -157,9 +169,14 @@ export type CaseValidationPrediction = {
   predicted_label: string;
   prediction_probability: number;
   is_correct: boolean;
+  crop_mode?: "automated" | "manual" | "both";
   gradcam_path?: string | null;
   medsam_mask_path?: string | null;
   roi_crop_path?: string | null;
+  lesion_mask_path?: string | null;
+  lesion_crop_path?: string | null;
+  ensemble_weights?: Record<string, number> | null;
+  ensemble_component_predictions?: Array<Record<string, unknown>> | null;
 };
 
 export type CaseValidationResponse = {
@@ -170,12 +187,16 @@ export type CaseValidationResponse = {
     version_name: string;
     architecture: string;
     requires_medsam_crop: boolean;
+    crop_mode?: "automated" | "manual" | "both";
+    ensemble_mode?: string | null;
   };
   execution_device: string;
   artifact_availability: {
     gradcam: boolean;
     roi_crop: boolean;
     medsam_mask: boolean;
+    lesion_crop: boolean;
+    lesion_mask: boolean;
   };
 };
 
@@ -197,8 +218,7 @@ export type CaseContributionResponse = {
     artifact_path: string;
     n_cases: number;
     contributed_by: string;
-    patient_id: string;
-    visit_date: string;
+    case_reference_id?: string | null;
     created_at: string;
     training_input_policy: string;
     training_summary: Record<string, unknown>;
@@ -223,6 +243,25 @@ export type RoiPreviewRecord = {
   source_image_path: string;
   has_roi_crop: boolean;
   has_medsam_mask: boolean;
+  backend: string;
+};
+
+export type LesionPreviewRecord = {
+  patient_id: string;
+  visit_date: string;
+  image_id: string | null;
+  view: string;
+  is_representative: boolean;
+  source_image_path: string;
+  has_lesion_crop: boolean;
+  has_lesion_mask: boolean;
+  backend: string;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
 };
 
 export type CaseHistoryValidationRecord = {
@@ -242,6 +281,7 @@ export type CaseHistoryContributionRecord = {
   contribution_id: string;
   created_at: string;
   user_id: string;
+  case_reference_id?: string | null;
   update_id: string;
   update_status: string | null;
   upload_type: string | null;
@@ -271,8 +311,7 @@ export type SiteActivityContributionRecord = {
   contribution_id: string;
   created_at: string;
   user_id: string;
-  patient_id: string;
-  visit_date: string;
+  case_reference_id?: string | null;
   update_id: string;
   update_status: string | null;
   upload_type: string | null;
@@ -337,6 +376,10 @@ export type ModelVersionRecord = {
   base_version_id?: string | null;
   requires_medsam_crop?: boolean;
   training_input_policy?: string;
+  crop_mode?: "automated" | "manual" | "both";
+  ensemble_mode?: string | null;
+  component_model_version_ids?: string[];
+  ensemble_weights?: Record<string, number> | null;
 };
 
 export type ModelUpdateRecord = {
@@ -347,10 +390,14 @@ export type ModelUpdateRecord = {
   upload_type?: string | null;
   execution_device?: string | null;
   artifact_path?: string | null;
+  central_artifact_path?: string | null;
+  central_artifact_name?: string | null;
+  central_artifact_size_bytes?: number | null;
+  central_artifact_sha256?: string | null;
+  artifact_storage?: string | null;
   n_cases?: number | null;
   contributed_by?: string | null;
-  patient_id?: string | null;
-  visit_date?: string | null;
+  case_reference_id?: string | null;
   created_at?: string | null;
   training_input_policy?: string | null;
   training_summary?: Record<string, unknown>;
@@ -363,8 +410,7 @@ export type ModelUpdateRecord = {
     report_id?: string;
     update_id?: string;
     site_id?: string;
-    patient_id?: string;
-    visit_date?: string;
+    case_reference_id?: string;
     generated_at?: string;
     case_summary?: {
       image_count?: number;
@@ -388,6 +434,21 @@ export type ModelUpdateRecord = {
       review_media_policy?: string;
     };
     artifacts?: {
+      source_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
+      roi_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
+      mask_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
       source_thumbnail_path?: string | null;
       roi_thumbnail_path?: string | null;
       mask_thumbnail_path?: string | null;
@@ -422,6 +483,9 @@ export type InitialTrainingResult = {
   val_metrics?: Record<string, number | null>;
   test_metrics?: Record<string, number | null>;
   model_version?: ModelVersionRecord;
+  crop_mode?: "automated" | "manual" | "both";
+  component_results?: Array<Record<string, unknown>>;
+  model_versions?: ModelVersionRecord[];
 };
 
 export type InitialTrainingResponse = {
@@ -536,6 +600,32 @@ function buildApiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
 }
 
+function stringifyApiDetail(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        if (item && typeof item === "object") {
+          const record = item as { loc?: unknown; msg?: unknown };
+          const location = Array.isArray(record.loc) ? record.loc.map((part) => String(part)).join(".") : "";
+          const message = typeof record.msg === "string" ? record.msg : JSON.stringify(item);
+          return location ? `${location}: ${message}` : message;
+        }
+        return String(item);
+      })
+      .join(" | ");
+  }
+  if (detail && typeof detail === "object") {
+    return JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData)) {
@@ -551,8 +641,8 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
   if (!response.ok) {
     const contentType = response.headers.get("Content-Type") ?? "";
     if (contentType.includes("application/json")) {
-      const payload = (await response.json()) as { detail?: string };
-      throw new Error(payload.detail || `Request failed: ${response.status}`);
+      const payload = (await response.json()) as { detail?: unknown };
+      throw new Error(stringifyApiDetail(payload.detail) || `Request failed: ${response.status}`);
     }
     const detail = await response.text();
     throw new Error(detail || `Request failed: ${response.status}`);
@@ -693,6 +783,26 @@ export async function fetchAccessRequests(token: string, statusFilter = "pending
 
 export async function fetchAdminOverview(token: string) {
   return request<AdminOverviewResponse>("/api/admin/overview", {}, token);
+}
+
+export async function fetchStorageSettings(token: string) {
+  return request<StorageSettingsRecord>("/api/admin/storage-settings", {}, token);
+}
+
+export async function updateStorageSettings(
+  token: string,
+  payload: {
+    storage_root: string;
+  }
+) {
+  return request<StorageSettingsRecord>(
+    "/api/admin/storage-settings",
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
 }
 
 export async function fetchProjects(token: string) {
@@ -962,6 +1072,87 @@ export async function createVisit(
   );
 }
 
+export async function updateAdminSiteStorageRoot(
+  siteId: string,
+  token: string,
+  payload: {
+    storage_root: string;
+  }
+) {
+  return request<ManagedSiteRecord>(
+    `/api/admin/sites/${siteId}/storage-root`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function migrateAdminSiteStorageRoot(
+  siteId: string,
+  token: string,
+  payload: {
+    storage_root: string;
+  }
+) {
+  return request<ManagedSiteRecord>(
+    `/api/admin/sites/${siteId}/storage-root/migrate`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function updateVisit(
+  siteId: string,
+  token: string,
+  patientId: string,
+  visitDate: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    actual_visit_date?: string | null;
+    culture_confirmed?: boolean;
+    culture_category: string;
+    culture_species: string;
+    additional_organisms?: OrganismRecord[];
+    contact_lens_use: string;
+    predisposing_factor?: string[];
+    other_history?: string;
+    visit_status?: string;
+    is_initial_visit?: boolean;
+    smear_result?: string;
+    polymicrobial?: boolean;
+  }
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<VisitRecord>(
+    `/api/sites/${siteId}/visits?${params.toString()}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        culture_confirmed: true,
+        actual_visit_date: null,
+        predisposing_factor: [],
+        other_history: "",
+        visit_status: "active",
+        is_initial_visit: false,
+        smear_result: "not done",
+        additional_organisms: [],
+        polymicrobial: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
 export async function fetchImages(siteId: string, token: string, patientId?: string, visitDate?: string) {
   const params = new URLSearchParams();
   if (patientId) {
@@ -999,6 +1190,14 @@ export async function uploadImage(
     },
     token
   );
+}
+
+export async function deleteVisitImages(siteId: string, token: string, patientId: string, visitDate: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<{ deleted_count: number }>(`/api/sites/${siteId}/images?${params.toString()}`, { method: "DELETE" }, token);
 }
 
 export async function setRepresentativeImage(
@@ -1079,6 +1278,7 @@ export async function runCaseValidation(
     patient_id: string;
     visit_date: string;
     execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
     generate_gradcam?: boolean;
     generate_medsam?: boolean;
   }
@@ -1103,7 +1303,7 @@ export async function fetchValidationArtifactBlob(
   validationId: string,
   patientId: string,
   visitDate: string,
-  artifactKind: "gradcam" | "roi_crop" | "medsam_mask",
+  artifactKind: "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
   token: string
 ) {
   const params = new URLSearchParams({
@@ -1160,6 +1360,14 @@ export async function fetchCaseRoiPreview(siteId: string, patientId: string, vis
   return request<RoiPreviewRecord[]>(`/api/sites/${siteId}/cases/roi-preview?${params.toString()}`, {}, token);
 }
 
+export async function fetchCaseLesionPreview(siteId: string, patientId: string, visitDate: string, token: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview?${params.toString()}`, {}, token);
+}
+
 export async function fetchCaseRoiPreviewArtifactBlob(
   siteId: string,
   patientId: string,
@@ -1190,6 +1398,73 @@ export async function fetchCaseRoiPreviewArtifactBlob(
     throw new Error(`ROI preview fetch failed: ${response.status}`);
   }
   return response.blob();
+}
+
+export async function fetchCaseLesionPreviewArtifactBlob(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "lesion_crop" | "lesion_mask",
+  token: string
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+    image_id: imageId,
+  });
+  const response = await fetch(
+    buildApiUrl(`/api/sites/${siteId}/cases/lesion-preview/artifacts/${artifactKind}?${params.toString()}`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+  if (!response.ok) {
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail || `Lesion preview fetch failed: ${response.status}`);
+    }
+    throw new Error(`Lesion preview fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+export async function updateImageLesionBox(
+  siteId: string,
+  imageId: string,
+  token: string,
+  payload: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }
+) {
+  return request<ImageRecord>(
+    `/api/sites/${siteId}/images/${imageId}/lesion-box`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function clearImageLesionBox(
+  siteId: string,
+  imageId: string,
+  token: string
+) {
+  return request<ImageRecord>(
+    `/api/sites/${siteId}/images/${imageId}/lesion-box`,
+    {
+      method: "DELETE",
+    },
+    token
+  );
 }
 
 export async function fetchCaseHistory(siteId: string, patientId: string, visitDate: string, token: string) {
@@ -1231,6 +1506,7 @@ export async function runInitialTraining(
   payload: {
     architecture?: string;
     execution_mode?: "auto" | "cpu" | "gpu";
+    crop_mode?: "automated" | "manual" | "both";
     epochs?: number;
     learning_rate?: number;
     batch_size?: number;
@@ -1247,6 +1523,7 @@ export async function runInitialTraining(
       body: JSON.stringify({
         architecture: "convnext_tiny",
         execution_mode: "auto",
+        crop_mode: "automated",
         epochs: 30,
         learning_rate: 1e-4,
         batch_size: 16,
@@ -1271,6 +1548,7 @@ export async function runCrossValidation(
   payload: {
     architecture?: string;
     execution_mode?: "auto" | "cpu" | "gpu";
+    crop_mode?: "automated" | "manual";
     num_folds?: number;
     epochs?: number;
     learning_rate?: number;
@@ -1286,6 +1564,7 @@ export async function runCrossValidation(
       body: JSON.stringify({
         architecture: "convnext_tiny",
         execution_mode: "auto",
+        crop_mode: "automated",
         num_folds: 5,
         epochs: 10,
         learning_rate: 1e-4,

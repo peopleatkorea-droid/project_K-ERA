@@ -1,740 +1,467 @@
 # K-ERA Research Platform
 
-감염성 각막염(infectious keratitis) 연구를 위한 데이터셋 운영, 외부 검증, 로컬 학습, Federated Learning 집계를 지원하는 연구 플랫폼입니다.
+감염성 각막염(infectious keratitis) 연구를 위한 로컬 연구 노드입니다. 현재 이 저장소의 기본 실행 경로는 `FastAPI + Next.js` 웹 앱이며, 병원 내부에서 케이스 등록, 검증, 로컬 학습, 기여, 운영 관리를 한 저장소 안에서 수행할 수 있습니다.
 
-이 저장소에는 현재 웹 기반 Local Node가 기본 실행 경로로 들어 있습니다.
+중요: 이 프로젝트는 연구 워크플로우용 소프트웨어이며, 임상 진단 또는 치료 의사결정용 의료기기가 아닙니다.
 
-- `FastAPI + Next.js Web Local Node`: 연구자/임상의가 병원 내부에서 직접 사용하는 주 실행 앱
+## 현재 앱 상태
 
-중요: 이 프로젝트는 연구 워크플로우용이며, 임상 진단/치료 의사결정용 의료기기가 아닙니다.
+현재 코드 기준으로 동작하는 핵심 구성은 아래와 같습니다.
 
-## 1. 앱의 목적
+- `frontend/`: Next.js 15 + React 19 웹 UI
+- `src/kera_research/api/app.py`: FastAPI API 서버
+- `storage/`: SQLite DB, 사이트별 원본 이미지, validation artifact, model update 저장
+- `models/`: 로컬 학습/검증에 사용하는 모델 파일 저장 위치
+- `scripts/run_local_node.ps1`: API와 웹 프론트엔드를 함께 띄우는 기본 런처
 
-이 앱의 목적은 다음 4가지를 하나의 연구 워크플로우로 묶는 것입니다.
+이 저장소는 더 이상 Streamlit 기반 앱을 기본 경로로 사용하지 않습니다. 현재 사용자 흐름과 실행 스크립트는 모두 웹 스택 기준입니다.
 
-1. 병원 내부 원본 슬릿램프 이미지를 외부 반출 없이 구조화해 저장
-2. 케이스 단위 또는 사이트 전체 단위로 글로벌 모델 외부 검증 수행
-3. 로컬 데이터로 fine-tuning 후 weight delta만 중앙에 기여
-4. 여러 기관의 delta를 weighted FedAvg로 집계해 새 글로벌 모델 생성
+## 현재 구현 범위
 
-즉, "원본 이미지는 병원 내부에 남기고, 중앙에는 메타데이터/지표/모델 업데이트만 전달"하는 구조를 목표로 합니다.
+### 1. 인증과 접근 제어
 
-## 2. 현재 구현 상태 요약
+- JWT 기반 로그인
+- Google Sign-In 로그인 지원
+- 기관(site) 및 역할(role) 접근 요청 제출
+- `admin`, `site_admin`의 접근 요청 승인/반려
+- 로컬 계정(username/password) 시드 지원
 
-2026-03 기준, 코드상 구현 상태는 아래와 같습니다.
-
-### Web Local Node
-
-- 문서형 `Case Canvas` 구현 완료
-- 환자/방문/이미지 등록 구현
-- 케이스 단위 validation / ROI preview / Grad-CAM 확인 구현
-- 사이트 전체 external validation 구현
-- 데이터 일괄 임포트 구현
-- 초기 학습(initial training) 구현
-- 환자 단위 cross-validation 구현
-- Federated aggregation 구현
-- 사이트/프로젝트/사용자 관리 화면 구현
-
-### FastAPI + Next.js Web
-
-- JWT 로그인 구현
-- Google Sign-In 기반 연구자 온보딩 구현
-- 기관/역할 접근 요청(access request) 제출 및 승인 구현
-- 사이트별 요약 조회 구현
-- 환자/방문/이미지/케이스 요약 API 구현
-- 저장된 케이스 단위 validation / ROI preview / contribution API 구현
-- validation artifact, ROI artifact, case history, site activity API 구현
-- 사이트 전체 external validation 실행 및 최근 metric 조회 API 구현
-- Next.js 웹 UI는 인증, 승인 요청, 승인 큐, 문서형 케이스 캔버스, 저장된 케이스 검증/ROI preview/기여/히스토리 조회까지 연결됨
-
-### 아직 진행 중인 부분
-
-- 학습/집계 작업은 현재 동기식 실행이며 별도 worker/job runner는 연결되지 않았습니다.
-- MedSAM은 외부 스크립트가 설정되면 실제 호출하고, 아니면 fallback ROI를 생성합니다.
-- Streamlit 기반 레거시 UI 소스는 제거되었고, 기본 실행 경로는 FastAPI + Next.js만 사용합니다.
-
-### 2026-03-11 웹 마이그레이션 업데이트
-
-오늘 기준으로 웹 스택 쪽에 아래 항목이 추가되었습니다.
-
-- Notion 스타일에 가까운 `Case Canvas` 도입
-- 환자/방문/이미지 입력을 문서형 화면에서 인라인 편집으로 처리
-- 브라우저 로컬 기반 draft autosave / 복구
-- 저장된 케이스에 대한 ROI preview
-- 저장된 케이스에 대한 validation 실행과 Grad-CAM / ROI artifact 확인
-- 저장된 케이스에 대한 contribution 실행과 기여 통계 확인
-- selected case 기준 validation / contribution history 조회
-- 웹 워크스페이스에서 site-level validation 실행 및 최근 run 확인
-- 사이트 단위 recent activity / pending update 요약
-- 로그인/승인 화면을 워크스페이스와 같은 다크 톤으로 정리
-- 웹 UI 한/영(i18n) 토글 추가
-- 로그인/승인 화면과 주요 Case/Operations Workspace 헤더/상태 문구를 한/영으로 전환 가능
-- 2차 i18n으로 운영 화면 세부 폼 라벨, 대시보드/히스토리 패널, 주요 오류 토스트까지 한/영 전환 범위를 확대
-- legacy 콘솔은 admin 전용 fallback으로 제한
-- selected case validation 결과에 confidence 게이지와 상태 배지 추가
-- admin/site_admin용 `Operations Workspace` 추가
-- 웹에서 access request review, initial training, cross-validation, model registry, federated aggregation 실행 가능
-- FastAPI에 model registry / model update / aggregation / training endpoint 추가
-- `tests/test_api_http.py`에 access review, validation, contribution, training, aggregation HTTP 테스트 추가
-- 웹 `Operations Workspace`에 bulk import, project/site/user 관리, 고급 validation 비교, misclassification review 추가
-- FastAPI에 bulk import, admin project/site/user 관리, site comparison, validation case listing endpoint 추가
-- `run_local_node.ps1` 기본 런처가 Streamlit 대신 FastAPI + Next.js 두 프로세스를 올리도록 변경
-- 기본 실행 경로에서 Streamlit fallback/legacy 콘솔 제거
-
-즉, 웹 UI는 더 이상 "승인용 보조 콘솔" 수준이 아니라, 실제 임상 입력과 운영 관리의 기본 경로가 되었습니다. 현재 기본 런처와 기본 사용자 흐름은 모두 FastAPI + Next.js 기준입니다.
-
-## 3. 전체 구조
-
-```text
-[병원 내부 Local Node]
-  Next.js UI
-  FastAPI API
-  SQLite/PostgreSQL 메타데이터 저장
-  원본 이미지 저장
-  MedSAM / Grad-CAM / PyTorch 학습
-
-            │
-            │ weight delta / 집계 메타데이터
-            ▼
-
-[중앙 Control Plane 논리]
-  프로젝트 / 사이트 / 모델 버전 / 기여 / 집계 이력 관리
-```
-
-현재 저장소는 단일 리포지토리 안에 Local Node와 중앙 Control Plane 로직을 함께 담고 있습니다.
-
-## 4. 주요 사용자 흐름
-
-### 4.1 Web Case Canvas
-
-현재 웹 앱의 핵심 입력 흐름은 문서형 Case Canvas와 우측 슬라이드오버 패널입니다.
-
-```text
-[1] 환자/방문 속성 입력 → [2] 이미지 업로드 → [3] 저장 → [4] 검증 → [5] 시각화 → [6] 기여 → [7] 완료
-```
-
-각 단계에서 가능한 일:
-
-| 단계 | 구현 내용 |
-|------|-----------|
-| 1. 환자 | 기존 환자 검색, 신규 환자 등록, 이전 방문 타임라인 확인 |
-| 2. 방문 | culture 정보, 균종, contact lens, predisposing factor, visit status, smear 결과 입력 |
-| 3. 이미지 | 다중 이미지 업로드, `view` 지정, 대표 이미지 선택 |
-| 4. 검증 | 글로벌 모델 선택, CPU/GPU/Auto 실행, 단일 케이스 즉시 추론 |
-| 5. 시각화 | 원본 이미지, MedSAM ROI crop, Grad-CAM 결과 비교 |
-| 6. 기여 | 로컬 fine-tuning 후 weight delta 생성 및 기여 |
-| 7. 완료 | 기여 결과와 통계 확인 |
-
-### 4.2 Web Dashboard
-
-웹 대시보드에는 다음이 포함됩니다.
-
-- 사이트별 환자/방문/활성기 방문 수
-- 고정 patient split 현황
-- 사이트 전체 external validation 실행
-- 최신 validation AUROC / Accuracy / Sensitivity / Specificity / F1 확인
-- 최근 validation 이력 및 데이터 분포 확인
-
-### 4.3 Operations Workspace
-
-현재 운영 화면은 실제 코드 기준으로 다음 탭을 가집니다.
-
-#### `admin` 권한
-
-1. 데이터 임포트
-2. 초기 학습
-3. Cross-Validation
-4. 모델 관리
-5. 사이트 관리
-6. 균종 관리
-7. 사용자 권한
-8. Federated 집계
-
-#### `site_admin` 권한
-
-- 데이터 임포트
-- 초기 학습
-- Cross-Validation
-- 모델 관리
-- 사이트 관리(조회 중심)
-
-## 5. 웹/API 스택 구현 범위
-
-README에 기존에 잘 드러나지 않았던 부분입니다. 이 저장소에는 별도 웹 스택이 포함되어 있습니다.
-
-### FastAPI API
-
-구현된 주요 엔드포인트:
-
-- `/api/health`
-- `/api/public/sites`
-- `/api/auth/login`
-- `/api/auth/google`
-- `/api/auth/me`
-- `/api/auth/access-requests`
-- `/api/auth/request-access`
-- `/api/admin/access-requests`
-- `/api/admin/access-requests/{request_id}/review`
-- `/api/sites`
-- `/api/sites/{site_id}/summary`
-- `/api/sites/{site_id}/activity`
-- `/api/sites/{site_id}/cases`
-- `/api/sites/{site_id}/validations`
-- `/api/sites/{site_id}/validations/run`
-- `/api/sites/{site_id}/cases/validate`
-- `/api/sites/{site_id}/cases/contribute`
-- `/api/sites/{site_id}/cases/roi-preview`
-- `/api/sites/{site_id}/cases/roi-preview/artifacts/{artifact_kind}`
-- `/api/sites/{site_id}/cases/history`
-- `/api/sites/{site_id}/patients`
-- `/api/sites/{site_id}/visits`
-- `/api/sites/{site_id}/images`
-- `/api/sites/{site_id}/images/representative`
-- `/api/sites/{site_id}/images/{image_id}/content`
-- `/api/sites/{site_id}/validations/{validation_id}/artifacts/{artifact_kind}`
-- `/api/sites/{site_id}/manifest.csv`
-
-### Next.js 웹 프론트엔드
-
-현재 웹 UI에서 가능한 일:
-
-- Google 계정 로그인
-- 로컬 관리자 계정 로그인
-- 기관/역할 접근 요청 제출
-- 승인 상태 확인
-- 관리자/사이트 관리자의 접근 요청 승인/반려
-- 접근 가능한 사이트 목록 확인
-- 사이트 요약 지표 조회
-- 사이트 activity 요약 조회
-- 문서형 케이스 캔버스에서 환자/방문/이미지 작성
-- 브라우저 로컬 draft 복구
-- 저장된 케이스 이미지 확인
-- 저장된 케이스 ROI preview
-- 저장된 케이스 validation 실행 및 artifact 확인
-- 저장된 케이스 contribution 실행
-- selected case 기준 validation / contribution history 확인
-- site-level validation 실행 및 최근 run 확인
-- manifest CSV 다운로드
-
-즉, 웹 UI가 이미 케이스 입력과 검토, 운영 관리의 기본 경로를 담당합니다.
-
-## 6. 인증과 권한
-
-### 현재 지원 권한
+지원 역할:
 
 - `admin`
 - `site_admin`
 - `researcher`
 - `viewer`
 
-### 인증 방식
+### 2. Case Canvas
 
-- Web: 로컬 username/password + Google Sign-In
+웹의 기본 작업 화면은 문서형 `Case Canvas`입니다.
 
-### 로컬 계정 시드
+- 환자 등록
+- 방문 등록
+- 다중 이미지 업로드
+- 대표 이미지 지정
+- 저장된 케이스 목록 조회
+- 브라우저 로컬 draft autosave / draft 복구
+- 한/영 UI 전환
+- 사이트별 요약 지표 조회
+- 최근 validation / contribution 활동 조회
 
-- 로컬 username/password 계정은 환경변수로 지정했을 때만 시드됩니다.
-- 예: `KERA_ADMIN_USERNAME`, `KERA_ADMIN_PASSWORD`
-- 연구자 계정도 필요하면 `KERA_RESEARCHER_USERNAME`, `KERA_RESEARCHER_PASSWORD`를 지정합니다.
+케이스 저장 흐름은 대체로 아래 순서입니다.
 
-### Google 온보딩 흐름
+1. 환자 정보 입력
+2. 방문 정보 입력
+3. 슬릿램프 이미지 업로드
+4. 케이스 저장
+5. ROI preview / validation / contribution 실행
 
-1. 사용자가 Google 계정으로 로그인
-2. 기본 권한은 `viewer` 상태로 생성
-3. 기관(site)과 역할(role) 접근 요청 제출
-4. `admin` 또는 해당 사이트의 `site_admin`이 승인/반려
-5. 승인 후 사이트 접근 가능
+### 3. 케이스 단위 AI 워크플로우
 
-## 7. 데이터 저장 구조
+저장된 케이스에 대해 아래 기능이 연결되어 있습니다.
 
-현재 구현은 "JSON 파일 중심"이 아니라 "SQLAlchemy 기반 DB + 아티팩트 파일" 구조입니다.
+- ROI preview 생성
+- MedSAM 기반 ROI crop / mask 생성 시도
+- 케이스 단위 validation 실행
+- Grad-CAM artifact 조회
+- validation history 조회
+- case contribution 실행
+- contribution history 조회
 
-### 기본 DB
+현재 contribution은 활성 병변(`visit_status == active`) 케이스에만 허용됩니다.
 
-- 기본 DB: `storage/kera.db` (SQLite)
-- 환경변수 `KERA_DATABASE_URL` 또는 `DATABASE_URL`로 다른 DB 사용 가능
-- `requirements.txt`에 `psycopg2-binary`가 포함되어 있어 PostgreSQL 연결도 고려한 구조입니다
+### 4. 사이트 단위 운영 기능
 
-### DB에 저장되는 주요 엔터티
+운영 화면(`Operations Workspace`)에서는 아래 기능이 구현되어 있습니다.
 
-- users
-- access_requests
-- projects
-- sites
-- organism_catalog
-- organism_requests
-- patients
-- visits
-- images
-- validation_runs
-- model_versions
-- model_updates
-- contributions
-- aggregations
-- site_patient_splits
-- site_jobs
+- bulk import CSV + 이미지 아카이브 업로드
+- import template CSV 다운로드
+- 인스턴스 기본 저장 경로 설정
+- 사이트별 저장 경로 설정
+- 기존 사이트 데이터 저장 경로 마이그레이션
+- 사이트 전체 external validation 실행
+- validation run 목록 조회
+- misclassified case 조회
+- site comparison 조회
+- initial training 실행
+- cross-validation 실행 및 리포트 조회
+- model registry 조회
+- model update review
+- federated aggregation 실행
+- project / site / user 관리
 
-### 파일로 저장되는 주요 아티팩트
+권한 차이:
+
+- `admin`: 전체 운영 기능 사용 가능
+- `site_admin`: 사이트 중심 운영 기능 사용 가능
+
+저장 경로 관련 권한:
+
+- `admin`, `site_admin` 모두 운영 화면에서 저장 경로를 관리할 수 있습니다.
+- 데이터가 없는 사이트는 저장 경로만 바로 바꿀 수 있습니다.
+- 이미 환자/방문/이미지가 있는 사이트는 `Migrate existing data`로 폴더 이동과 경로 재작성을 함께 수행합니다.
+
+## 현재 구조
 
 ```text
-storage/
-  kera.db
-  control_plane/
-    validation_cases/
-      <validation_id>.json
-  sites/<site_id>/
-    data/raw/<patient_id>/<visit_date>/*
-    manifests/dataset_manifest.csv
-    artifacts/gradcam/*
-    artifacts/medsam_masks/*
-    artifacts/roi_crops/*
-    validation/<cross_validation_id>.json
-    model_updates/*
+[Browser]
+   |
+   v
+[Next.js Web UI]  http://localhost:3000
+   |
+   v
+[FastAPI API]     http://localhost:8000
+   |
+   +-- SQLite or PostgreSQL metadata
+   +-- storage/sites/<SITE_ID>/data/raw
+   +-- storage/sites/<SITE_ID>/artifacts
+   +-- storage/sites/<SITE_ID>/validation
+   +-- storage/sites/<SITE_ID>/model_updates
+   +-- models/
 ```
 
-## 8. 연구 데이터 스키마
+메타데이터는 기본적으로 SQLite에 저장되고, 원본 이미지와 파생 artifact는 파일 시스템에 저장됩니다.
 
-### 환자 정보
+## 빠른 실행
 
-- `patient_id`
-- `sex`
-- `age`
-- `chart_alias`
-- `local_case_code`
+### 요구사항
 
-### 방문 정보
+- Windows PowerShell
+- Python 3.10, 3.11, 또는 3.12
+- Node.js / npm
 
-기존 README보다 실제 구현 필드가 더 많습니다.
-
-- `visit_date`
-- `culture_confirmed`
-- `culture_category`
-- `culture_species`
-- `contact_lens_use`
-- `predisposing_factor`
-- `visit_status`
-  - `active`
-  - `improving`
-  - `scar`
-- `active_stage`
-- `smear_result`
-  - `not done`
-  - `positive`
-  - `negative`
-  - `unknown`
-  - `other`
-- `polymicrobial`
-- `other_history`
-
-### 이미지 정보
-
-- `view`
-  - `white`
-  - `slit`
-  - `fluorescein`
-- `is_representative`
-- `image_path`
-
-### Manifest 컬럼
-
-현재 manifest는 최소 컬럼보다 확장된 형태로 생성됩니다.
-
-- `site_id`
-- `patient_id`
-- `chart_alias`
-- `local_case_code`
-- `sex`
-- `age`
-- `visit_date`
-- `culture_confirmed`
-- `culture_category`
-- `culture_species`
-- `contact_lens_use`
-- `predisposing_factor`
-- `visit_status`
-- `active_stage`
-- `other_history`
-- `smear_result`
-- `polymicrobial`
-- `view`
-- `image_path`
-- `is_representative`
-
-자세한 설명은 [docs/dataset_schema.md](docs/dataset_schema.md)를 참고하면 됩니다.
-
-## 9. 데이터 입력/임포트 규칙
-
-### 단일 케이스 입력
-
-- 웹 Case Canvas에서 환자 → 방문 → 이미지 순으로 등록
-- 방문이 먼저 있어야 이미지 업로드 가능
-- `culture_confirmed = true`인 case만 허용
-
-### 일괄 임포트
-
-관리자 패널의 데이터 임포트 기능에서 지원합니다.
-
-- CSV 템플릿 다운로드 가능
-- ZIP 이미지 또는 개별 이미지 파일 업로드 가능
-- CSV의 `image_filename`과 실제 업로드 파일명을 매칭
-- 환자/방문이 없으면 자동 생성 후 이미지 적재
-
-CSV 템플릿에는 다음 확장 컬럼이 포함됩니다.
-
-- `chart_alias`
-- `local_case_code`
-- `visit_status`
-- `active_stage`
-- `smear_result`
-- `polymicrobial`
-- `other_history`
-
-## 10. 지원 모델 및 AI 기능
-
-### 지원 아키텍처
-
-| 아키텍처 | 상태 | 특징 |
-|----------|------|------|
-| CNN baseline | 구현됨 | 경량 baseline, raw image 사용 |
-| ViT baseline | 구현됨 | 경량 baseline, raw image 사용 |
-| Swin baseline | 구현됨 | 경량 baseline, raw image 사용 |
-| DenseNet121 | 구현됨 | MedSAM crop 필수 |
-| DenseNet161 | 구현됨 | MedSAM crop 필수 |
-| DenseNet169 | 구현됨 | MedSAM crop 필수 |
-| DenseNet201 | 구현됨 | MedSAM crop 필수 |
-
-### DenseNet 체크포인트 로딩
-
-기존 `.pth`를 유연하게 읽도록 구현되어 있습니다.
-
-- 일반 `state_dict`
-- `module.` prefix
-- `model.` prefix
-- `state_dict` key 래핑
-- `model_state_dict` key 래핑
-- `weights` key 래핑
-
-DenseNet 글로벌 모델 파일이 `models/`에 없으면 모델 버전은 등록되지만 `ready: false` 상태가 됩니다.
-
-### 구현된 AI 작업
-
-- 단일 이미지 추론
-- 단일 케이스 validation
-- 사이트 전체 external validation
-- Grad-CAM / CAM 기반 설명 생성
-- MedSAM ROI crop 생성
-- 초기 학습(initial training)
-- 환자 단위 cross-validation
-- 로컬 fine-tuning
-- weight delta 저장
-- weighted FedAvg aggregation
-
-## 11. MedSAM 동작 방식
-
-### 외부 MedSAM 연결
-
-아래 환경변수가 설정되어 있고 실제 파일이 존재하면 외부 MedSAM 스크립트를 호출합니다.
-
-- `MEDSAM_SCRIPT`
-- `MEDSAM_CHECKPOINT`
-
-기본 탐색 위치:
-
-- `scripts/medsam_auto_roi.py`
-- `MedSAM-main/work_dir/MedSAM/medsam_vit_b.pth`
-
-### fallback 동작
-
-외부 MedSAM이 없거나 실행 실패 시:
-
-- 중심부 타원형 mask를 생성
-- 그 영역을 crop해서 ROI로 사용
-
-따라서 MedSAM 환경이 없어도 전체 워크플로우 자체는 테스트할 수 있습니다.
-
-## 12. 학습 기능
-
-### 초기 학습
-
-구현 내용:
-
-- DenseNet 계열 학습
-- ImageNet pretrained 백본 사용 가능
-- patient-level split 고정 저장
-- train/val/test 분리
-- augmentation 적용
-- class imbalance weight 적용
-- cosine annealing scheduler 사용
-- best validation accuracy 기준 저장
-- test set metric 계산
-- 완료 후 글로벌 모델 버전 자동 등록
-
-### Cross-Validation
-
-README에 누락되어 있었지만 실제 구현되어 있습니다.
-
-- patient-level fold 기준
-- StratifiedKFold 가능 시 사용
-- fold별 모델 저장
-- 평균/표준편차 metric 계산
-- 결과 JSON 리포트 저장
-
-### Federated Learning
-
-현재 구현된 흐름:
-
-1. 각 사이트가 로컬 fine-tuning 실행
-2. base model 대비 weight delta 저장
-3. 중앙 관리자가 pending delta 목록 확인
-4. weighted FedAvg 수행
-5. 새 글로벌 모델 버전 등록
-6. 기존 pending update 상태를 `aggregated`로 변경
-
-## 13. 실행 모드
-
-### Web Local Node
-
-권장 실행:
-
-```powershell
-.\scripts\setup_local_node.ps1
-.\scripts\run_local_node.ps1
-```
-
-`setup_local_node.ps1`는 기본적으로 하드웨어를 감지해 CPU/GPU torch 프로필을 자동 선택합니다.
-
-### FastAPI API 서버
-
-```powershell
-.\scripts\run_api_server.ps1
-```
-
-기본 주소:
-
-- `http://localhost:8000`
-
-### Next.js 웹 프론트엔드
-
-```powershell
-.\scripts\run_web_frontend.ps1
-```
-
-기본 주소:
-
-- `http://localhost:3000`
-
-`run_web_frontend.ps1`는 `node_modules`가 없으면 자동으로 `npm install`을 수행합니다.
-
-## 14. CPU / GPU 동작
-
-앱은 하드웨어를 자동 감지합니다.
-
-| 선택 | 실제 장치 결정 |
-|------|----------------|
-| `Auto` | CUDA 가능 시 `cuda`, 아니면 `cpu` |
-| `CPU mode` | 항상 `cpu` |
-| `GPU mode` | CUDA 가능 시 `cuda`, 아니면 `cpu`로 fallback |
-
-일부 학습 로직은 CPU일 때 더 짧은 epoch 또는 제한된 fine-tuning 전략을 사용합니다.
-
-### 설치 프로필
-
-로컬 설치 스크립트는 배포 안정성을 위해 torch 의존성을 CPU/GPU 프로필로 분리합니다.
-
-- `requirements.txt`: torch를 제외한 공통 애플리케이션 패키지
-- `requirements-cpu.txt`: CPU용 torch/torchvision
-- `requirements-gpu-cu128.txt`: CUDA 12.8용 GPU torch/torchvision
-
-기본 설치:
+### 1. 의존성 설치
 
 ```powershell
 .\scripts\setup_local_node.ps1
 ```
 
-- NVIDIA GPU가 감지되면 GPU 프로필을 설치
-- GPU가 없으면 CPU 프로필을 설치
+이 스크립트는 다음을 수행합니다.
 
-강제 설치 예시:
+- `.venv` 생성
+- Python 패키지 설치
+- GPU 유무를 보고 CPU/GPU용 torch 패키지 설치
+- 기본 health check 실행
+
+옵션 예시:
 
 ```powershell
 .\scripts\setup_local_node.ps1 -TorchProfile cpu
 .\scripts\setup_local_node.ps1 -TorchProfile gpu
 ```
 
-기관 정책상 별도 PyTorch index가 필요하면 GPU 프로필에만 아래 옵션을 추가합니다.
+### 2. 환경변수 설정
 
-```powershell
-.\scripts\setup_local_node.ps1 -TorchProfile gpu -TorchIndexUrl "<GPU용 torch index url>"
-```
+선택적으로 `.env.local`에 값을 넣을 수 있습니다.
 
-## 15. 폴더 구조
+주요 환경변수:
 
-```text
-project_K-ERA/
-├── app.py
-├── README.md
-├── requirements.txt
-├── requirements-cpu.txt
-├── requirements-gpu-cu128.txt
-├── frontend/
-│   ├── app/page.tsx
-│   └── lib/api.ts
-├── src/kera_research/
-│   ├── api/app.py
-│   ├── db.py
-│   ├── config.py
-│   ├── domain.py
-│   └── services/
-│       ├── artifacts.py
-│       ├── control_plane.py
-│       ├── data_plane.py
-│       ├── hardware.py
-│       ├── modeling.py
-│       ├── pipeline.py
-│       └── runtime.py
-├── scripts/
-│   ├── setup_local_node.ps1
-│   ├── run_local_node.ps1
-│   ├── run_api_server.ps1
-│   ├── run_web_frontend.ps1
-│   └── medsam_auto_roi.py
-├── docs/
-│   ├── dataset_schema.md
-│   └── local_node_deployment.md
-└── storage/
-    ├── kera.db
-    ├── control_plane/
-    └── sites/
-```
+- `KERA_ADMIN_USERNAME`
+- `KERA_ADMIN_PASSWORD`
+- `KERA_RESEARCHER_USERNAME`
+- `KERA_RESEARCHER_PASSWORD`
+- `KERA_API_SECRET`
+- `KERA_GOOGLE_CLIENT_ID`
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID`
+- `KERA_CONTROL_PLANE_DATABASE_URL`
+- `KERA_CONTROL_PLANE_ARTIFACT_DIR`
+- `KERA_DATA_PLANE_DATABASE_URL`
+- `KERA_DATABASE_URL`
+- `DATABASE_URL`
+- `MEDSAM_SCRIPT`
+- `MEDSAM_CHECKPOINT`
 
-## 16. 빠른 시작
+설명:
 
-### 웹 Local Node로 바로 확인하기
+- 로컬 계정은 환경변수가 있을 때만 시드됩니다.
+- `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 서버/프런트엔드에서 서로 보완되도록 스크립트가 처리합니다.
+- `KERA_CONTROL_PLANE_DATABASE_URL`를 지정하면 로그인/권한/프로젝트/모델 레지스트리 같은 중앙 control plane 메타데이터를 별도 DB로 분리할 수 있습니다.
+- `KERA_CONTROL_PLANE_ARTIFACT_DIR`를 지정하면 delta/중앙 검토 산출물 같은 control plane 파일 아티팩트를 별도 경로에 저장할 수 있습니다.
+- `KERA_DATA_PLANE_DATABASE_URL`를 지정하면 환자/방문/이미지와 같은 로컬 data plane 메타데이터를 별도 DB로 둘 수 있습니다.
+- 두 변수를 지정하지 않으면 기존과 동일하게 `KERA_DATABASE_URL` 또는 `DATABASE_URL` 하나를 공용 DB로 사용합니다.
+- 아무 DB도 지정하지 않으면 기본값은 `storage/kera.db`입니다.
 
-1. Local Node 설치
+### 3. 앱 실행
 
-```powershell
-.\scripts\setup_local_node.ps1
-```
-
-2. API + 프론트 동시 실행
+기본 실행:
 
 ```powershell
 .\scripts\run_local_node.ps1
 ```
 
-3. 로그인 후 순서
+이 스크립트는 다음을 수행합니다.
 
-- 프로젝트 생성
-- 사이트 등록
-- 기관/역할 승인 또는 관리자 로그인
-- 새 케이스 입력
-- 이미지 업로드
-- validation / ROI preview / misclassification review 확인
-- contribution 또는 운영 작업 실행
+- FastAPI 서버 실행
+- Next.js 개발 서버 실행
+- 사용 가능한 포트를 찾아 자동 조정
+- 브라우저 자동 오픈
 
-### 웹 스택까지 같이 확인하기
-
-1. API 서버 실행
+개별 실행도 가능합니다.
 
 ```powershell
 .\scripts\run_api_server.ps1
-```
-
-2. 프론트엔드 실행
-
-```powershell
 .\scripts\run_web_frontend.ps1
 ```
 
-3. 브라우저에서 `http://localhost:3000` 접속
+## 저장 구조
 
-## 17. 문서에 새로 반영한 구현 항목
+기본 저장 위치는 `storage/`입니다.
 
-기존 README에 비해 이번에 반영한 핵심 구현 항목은 다음과 같습니다.
+이미지 저장 정책:
 
-- FastAPI + Next.js 웹 스택 존재
-- Google 로그인 및 기관 승인 워크플로우
-- SQLAlchemy 기반 DB 저장 구조
-- 환자/방문 스키마의 확장 필드
-- 관리자 패널의 실제 탭 수(교차검증, 사용자 권한 포함)
-- patient-level cross-validation
-- 사이트 전체 external validation
-- 사용자/권한 관리
-- API 실행 스크립트와 웹 프론트엔드 실행 스크립트
+- 업로드 시 EXIF 메타데이터를 제거합니다.
+- 저장 파일명은 원본 파일명이 아니라 생성된 `image_id` 기반 이름을 사용합니다.
 
-## 18. 한계와 다음 단계
+- `storage/kera.db`: 기본 SQLite DB. control plane / data plane 분리 변수를 지정하지 않으면 공용 DB로 사용됩니다.
+- `storage/control_plane/`: validation case JSON, aggregation 메타데이터 등
+- `storage/sites/<SITE_ID>/data/raw/`: 원본 이미지
+- `storage/sites/<SITE_ID>/artifacts/gradcam/`: Grad-CAM 결과
+- `storage/sites/<SITE_ID>/artifacts/roi_crops/`: ROI crop
+- `storage/sites/<SITE_ID>/artifacts/medsam_masks/`: MedSAM mask
+- `storage/sites/<SITE_ID>/validation/`: validation 결과 및 cross-validation 리포트
+- `storage/sites/<SITE_ID>/model_updates/`: 로컬 contribution 결과물
 
-- 웹 프론트엔드가 현재 기본 운영 UI입니다.
-- 별도 worker/job queue, audit log, 더 세분화된 권한 체계는 후속 작업이 필요합니다.
-- Streamlit 레거시 UI 소스는 제거되었고, 현재 앱은 FastAPI + Next.js만 사용합니다.
-- 실제 운영 전에는 IRB, 보안, 접근통제, 익명화 정책을 별도로 검토해야 합니다.
-## 19. 2026-03-12 추가 구현 사항
+기본 DB는 SQLAlchemy를 사용하며 PostgreSQL 연결도 가능하도록 구성되어 있습니다.
 
-이번 작업에서는 연합학습 기여 승인 흐름과 업로드 이미지 비식별 저장 정책을 반영했습니다.
+### 저장 경로 설정
 
-### 1. 등록자 기준 환자/케이스 필터
+기본 동작:
 
-- `patients`, `visits`에 `created_by_user_id`를 저장합니다.
-- 병원 전체 공유는 유지하면서도, 현재 로그인한 사용자가 등록한 환자/케이스만 따로 조회할 수 있습니다.
-- 관련 API:
-  - `GET /api/sites/{site_id}/patients?mine=true`
-  - `GET /api/sites/{site_id}/cases?mine=true`
+- 별도 설정이 없으면 사이트 데이터는 `storage/sites/<SITE_ID>/` 아래에 저장됩니다.
 
-### 2. 업로드 이미지 저장 정책
+운영 화면에서 가능한 작업:
 
-- 새로 업로드되는 이미지는 저장 시 EXIF 메타데이터를 제거합니다.
-- 저장 파일명에는 원본 파일명을 쓰지 않고, `image_id` 기반 랜덤 파일명만 사용합니다.
-- 이 정책은 수동 업로드와 bulk import 양쪽에 공통 적용됩니다.
+- 인스턴스 기본 저장 루트 변경
+  - 예: `D:\KERA_DATA`
+  - 이후 새로 생성되는 사이트의 기본 저장 경로는 `<기본 루트>\<SITE_ID>`가 됩니다.
+- 선택한 사이트 저장 루트 변경
+  - 데이터가 없는 사이트는 경로만 갱신합니다.
+- 기존 사이트 데이터 마이그레이션
+  - 데이터가 있는 사이트는 폴더를 새 경로로 이동하고, 내부 경로 참조도 함께 재작성합니다.
 
-### 3. single-case contribution 유지
+예시:
 
-- `single-case contribution`은 그대로 유지합니다.
-- 희귀 케이스가 적게 발생하는 환경을 고려해 1건 단위 기여를 허용합니다.
-- 대신 기여 직후 바로 집계하지 않고, 중앙 검토를 거치도록 변경했습니다.
+- 인스턴스 A: `D:\HospitalAData`
+- 인스턴스 B: `E:\HospitalBData`
 
-### 4. model update 승인 리포트
+현재 구현 기준으로 마이그레이션 시 함께 갱신되는 항목:
 
-- 케이스 기여 시 각 업데이트마다 `approval_report.json`을 생성합니다.
-- 리포트에는 다음 정보가 포함됩니다.
-  - 대표 이미지 기준 source thumbnail
-  - ROI crop thumbnail
-  - MedSAM mask thumbnail
-  - QA 지표: 밝기, 대비, edge density, ROI 면적 비율
-  - privacy control 정보: EXIF 제거 여부, 파일명 정책, 리뷰 미디어 정책
+- 이미지 DB의 `image_path`
+- validation case JSON 안의 artifact 경로
+- 사이트 validation / cross-validation JSON 안의 경로
+- model update payload 안의 사이트 로컬 경로
+- 사이트 메타데이터의 `local_storage_root`
 
-### 5. 중앙 승인 흐름
+주의:
 
-- 새 모델 업데이트 상태는 기본적으로 `pending_review`로 등록됩니다.
-- 관리자 또는 site admin은 중앙 승인 UI에서 업데이트를 검토하고 `approved` 또는 `rejected`로 처리할 수 있습니다.
-- 관련 API:
-  - `POST /api/admin/model-updates/{update_id}/review`
-  - `GET /api/admin/model-updates/{update_id}/artifacts/{artifact_kind}`
+- 기존 데이터가 있는 사이트는 단순 경로 변경이 아니라 마이그레이션을 사용해야 합니다.
+- 사이트별 파일 경로는 현재 DB와 JSON에 문자열로 저장되므로, 수동으로 폴더만 옮기면 참조가 깨질 수 있습니다.
 
-### 6. federated aggregation 정책
+다기관 운영에서는 보통 아래 구성이 적절합니다.
 
-- 연합 집계는 이제 `approved` 상태의 업데이트만 대상으로 합니다.
-- 예전 `pending_upload` 데이터는 리뷰 대기열에서 계속 확인할 수 있지만, 집계 전에 먼저 승인되어야 합니다.
+- `KERA_CONTROL_PLANE_DATABASE_URL`: 중앙 Postgres/Neon
+- `KERA_CONTROL_PLANE_ARTIFACT_DIR`: 중앙 서버 또는 공유 스토리지 경로
+- `KERA_DATA_PLANE_DATABASE_URL`: 병원 Local Node의 로컬 SQLite 또는 병원 내부 DB
 
-### 7. 썸네일 정책
+이렇게 설정하면 로그인 정보와 권한은 중앙에서 관리하고, 환자/방문/이미지 메타데이터는 병원 내부에 남길 수 있습니다.
 
-- 원본 source thumbnail은 긴 변 기준 `128 px`로 제한합니다.
-- ROI / mask 등 파생 썸네일은 기존 리뷰용 크기를 유지합니다.
-- 운영 원칙:
-  - full-resolution clinical images never leave the institution
-  - only low-resolution review thumbnails and QA metadata are used for central review
+기여(review) 워크플로우는 원본 이미지를 중앙으로 올리지 않고, 중앙 검토용 저해상도 썸네일만 모델 업데이트 레코드에 포함시키는 방향을 권장합니다. 현재 구현은 review thumbnail을 중앙 model update payload에 포함시켜 다른 PC에서도 같은 기여 썸네일을 볼 수 있게 설계되어 있습니다.
+weight delta는 중앙 control plane artifact 경로에 복사되며, 집계는 로컬 경로보다 이 중앙 artifact 경로를 우선 사용합니다.
 
-### 8. 관리자 UI
+## 2026-03-12 기준 다기관 관련 추가 구현
 
-- Registry 화면에서 모델 업데이트를 선택할 수 있습니다.
-- 선택한 업데이트에 대해 아래 항목을 확인할 수 있습니다.
-  - source / ROI / mask 썸네일
-  - 케이스 수, representative view
-  - brightness / contrast / edge / ROI area ratio
-  - 리뷰 메모
-  - 승인 / 반려 버튼
+오늘 반영된 다기관 운영 관련 핵심 변경은 아래와 같습니다.
 
-### 9. 검증
+### 1. 중앙 DB와 로컬 DB 분리
 
-- `python -m compileall src` 통과
-- `cd frontend && npm run build` 통과
+- `KERA_CONTROL_PLANE_DATABASE_URL`
+  - 로그인, 권한, 프로젝트, 사이트, 모델 버전, 모델 업데이트, 집계 이력 등 중앙 운영 메타데이터 저장
+- `KERA_DATA_PLANE_DATABASE_URL`
+  - 환자, 방문, 이미지, 로컬 학습 관련 메타데이터 저장
+- 기존 `KERA_DATABASE_URL` 또는 `DATABASE_URL` 하나만 쓰는 단일 DB 방식도 계속 지원
+
+권장 구성:
+
+- 중앙 control plane: Neon Postgres
+- 병원 Local Node data plane: 각 PC 또는 병원 내부 SQLite/Postgres
+
+### 2. 중앙 검토용 썸네일 공유
+
+학습 기여 시 중앙으로 올라가는 것은 원본 이미지가 아니라 검토용 저해상도 썸네일입니다.
+
+- source thumbnail: 최대 128px
+- ROI thumbnail: 최대 320px
+- mask thumbnail: 최대 320px
+- EXIF 제거 유지
+
+이 썸네일은 model update의 `approval_report` payload에 포함되므로, 같은 병원의 다른 PC나 중앙 관리자 화면에서도 검토할 수 있습니다.
+
+반대로 중앙에 올리지 않는 항목:
+
+- 원본 이미지
+- full-size ROI crop
+- full-size MedSAM mask
+
+### 3. delta 중앙 저장 및 중앙 집계
+
+기여 시 생성되는 weight delta는 이제 로컬 경로만 기록하는 것이 아니라 중앙 artifact 경로에도 복사됩니다.
+
+- 로컬 경로: `artifact_path`
+- 중앙 경로: `central_artifact_path`
+- 추가 메타데이터:
+  - `central_artifact_name`
+  - `central_artifact_size_bytes`
+  - `central_artifact_sha256`
+  - `artifact_storage`
+
+집계(FedAvg)는 로컬 파일 경로보다 중앙 artifact 경로를 우선 사용합니다. 따라서 기여를 올린 PC의 로컬 delta 파일이 없어져도 중앙 복사본이 남아 있으면 집계가 가능합니다.
+
+관련 환경변수:
+
+- `KERA_CONTROL_PLANE_ARTIFACT_DIR`
+  - 중앙 delta 및 control plane 파일 아티팩트 저장 경로
+
+### 4. 중앙 기여 메타데이터 비식별화
+
+중앙 control plane에 저장되는 기여 메타데이터에서는 `patient_id`, `visit_date`를 직접 저장하지 않도록 변경했습니다.
+
+대신 아래 필드를 사용합니다.
+
+- `case_reference_id`
+
+이 값은 아래 정보를 바탕으로 생성한 해시 기반 참조 키입니다.
+
+- `site_id`
+- `patient_id`
+- `visit_date`
+- `KERA_CASE_REFERENCE_SALT`
+
+목적:
+
+- 중앙에서는 환자 식별자 없이 같은 케이스를 안정적으로 추적
+- 로컬에서는 기존처럼 `patient_id + visit_date`로 케이스 작업 유지
+- case history, contribution history, 운영 화면의 최근 기여 목록은 계속 동작
+
+관련 환경변수:
+
+- `KERA_CASE_REFERENCE_SALT`
+  - 모든 설치본에서 동일하게 맞추는 것을 권장
+  - 지정하지 않으면 `KERA_API_SECRET` 또는 기본 fallback 문자열을 사용
+
+### 5. 현재 중앙에 남는 정보와 남지 않는 정보
+
+중앙에 남는 정보:
+
+- 사용자 계정과 권한
+- 프로젝트/사이트 정보
+- 모델 버전 및 업데이트 상태
+- 집계 이력
+- 중앙 검토용 썸네일
+- `case_reference_id`
+- 비식별 QA 메트릭
+- delta 중앙 저장 경로 및 무결성 정보
+
+중앙에 남기지 않는 정보:
+
+- 원본 이미지
+- 환자 ID
+- visit_date
+- 로컬 원본 파일 경로
+
+### 6. 실행/검증 메모
+
+- `scripts/setup_local_node.ps1`는 `bcrypt` health check를 포함하도록 보강되었습니다.
+- 주요 HTTP 테스트는 `tests/test_api_http.py` 기준으로 통과 상태입니다.
+
+권장 검증 명령:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_api_http
+```
+
+## 주요 API 범위
+
+README에는 현재 자주 쓰는 범위만 정리합니다.
+
+공통 / 인증:
+
+- `GET /api/health`
+- `GET /api/public/sites`
+- `POST /api/auth/login`
+- `POST /api/auth/google`
+- `GET /api/auth/me`
+- `POST /api/auth/request-access`
+
+사이트 작업:
+
+- `GET /api/sites`
+- `GET /api/sites/{site_id}/summary`
+- `GET /api/sites/{site_id}/cases`
+- `POST /api/sites/{site_id}/patients`
+- `POST /api/sites/{site_id}/visits`
+- `POST /api/sites/{site_id}/images`
+- `POST /api/sites/{site_id}/cases/validate`
+- `POST /api/sites/{site_id}/cases/contribute`
+- `GET /api/sites/{site_id}/cases/roi-preview`
+- `POST /api/sites/{site_id}/validations/run`
+- `POST /api/sites/{site_id}/training/initial`
+- `POST /api/sites/{site_id}/training/cross-validation`
+- `POST /api/sites/{site_id}/import/bulk`
+
+운영 / 관리자:
+
+- `GET /api/admin/overview`
+- `GET /api/admin/storage-settings`
+- `PATCH /api/admin/storage-settings`
+- `GET /api/admin/model-versions`
+- `GET /api/admin/model-updates`
+- `POST /api/admin/model-updates/{update_id}/review`
+- `GET /api/admin/aggregations`
+- `POST /api/admin/aggregations/run`
+- `GET /api/admin/projects`
+- `POST /api/admin/projects`
+- `GET /api/admin/sites`
+- `POST /api/admin/sites`
+- `PATCH /api/admin/sites/{site_id}`
+- `PATCH /api/admin/sites/{site_id}/storage-root`
+- `POST /api/admin/sites/{site_id}/storage-root/migrate`
+- `GET /api/admin/users`
+- `POST /api/admin/users`
+- `GET /api/admin/site-comparison`
+
+전체 엔드포인트 목록은 [src/kera_research/api/app.py](src/kera_research/api/app.py)에서 확인할 수 있습니다.
+
+## 테스트
+
+현재 저장소에는 주요 HTTP 워크플로우를 검증하는 테스트가 포함되어 있습니다.
+
+```powershell
+python -m unittest tests.test_api_http
+```
+
+포함 범위:
+
+- 로그인
+- 접근 요청 승인
+- 케이스 validation / contribution
+- 저장 경로 설정 / 마이그레이션
+- initial training
+- cross-validation
+- bulk import
+- aggregation
+- 운영 API 일부
+
+## 현재 한계와 주의사항
+
+현재 코드 기준으로 아래 사항은 문서에 남겨둘 필요가 있습니다.
+
+- 학습, validation, aggregation은 백그라운드 worker 없이 API 요청에서 동기 실행됩니다.
+- `site_jobs` 테이블 구조는 있으나, 별도 작업 큐 실행기는 연결되어 있지 않습니다.
+- MedSAM은 로컬 스크립트와 체크포인트가 준비되면 사용하고, 그렇지 않으면 fallback ROI 경로에 의존합니다.
+- 프런트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.
+- 배포용 인증, 비밀 관리, 감사 로깅, 장애 복구는 연구용 로컬 노드 수준으로만 구성되어 있습니다.
+
+## 관련 문서
+
+- [local_node_deployment.md](docs/local_node_deployment.md)
+- [react_migration_checklist.md](docs/react_migration_checklist.md)
+- [dataset_schema.md](docs/dataset_schema.md)

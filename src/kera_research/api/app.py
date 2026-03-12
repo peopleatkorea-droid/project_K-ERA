@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import inspect
 import io
 import mimetypes
 import os
@@ -11,7 +13,7 @@ from typing import Any
 import google.auth.transport.requests
 import jwt
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
@@ -208,6 +210,18 @@ def _resolve_execution_device(selection: str) -> str:
     return resolve_execution_mode(ui_selection, detect_hardware())
 
 
+def _call_with_supported_kwargs(func: Any, /, **kwargs: Any) -> Any:
+    signature = inspect.signature(func)
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+        return func(**kwargs)
+    supported_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters
+    }
+    return func(**supported_kwargs)
+
+
 def _require_validation_permission(user: dict[str, Any]) -> None:
     if user.get("role") in {"admin", "site_admin", "researcher"}:
         return
@@ -284,6 +298,19 @@ def _load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
     return read_json(Path(report_path), {})
 
 
+def _embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | None:
+    media_type = str(artifact.get("media_type") or "application/octet-stream").strip() or "application/octet-stream"
+    encoding = str(artifact.get("encoding") or "").strip().lower()
+    payload = artifact.get("bytes_b64")
+    if encoding != "base64" or not isinstance(payload, str) or not payload.strip():
+        return None
+    try:
+        content = base64.b64decode(payload.encode("ascii"), validate=True)
+    except (ValueError, OSError):
+        return None
+    return Response(content=content, media_type=media_type)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -342,10 +369,18 @@ class RepresentativeImageRequest(BaseModel):
     representative_image_id: str
 
 
+class LesionBoxRequest(BaseModel):
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
 class CaseValidationRequest(BaseModel):
     patient_id: str
     visit_date: str
     execution_mode: str = "auto"
+    model_version_id: str | None = None
     generate_gradcam: bool = True
     generate_medsam: bool = True
 
@@ -367,6 +402,7 @@ class SiteValidationRunRequest(BaseModel):
 class InitialTrainingRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
+    crop_mode: str = "automated"
     epochs: int = 30
     learning_rate: float = 1e-4
     batch_size: int = 16
@@ -379,6 +415,7 @@ class InitialTrainingRequest(BaseModel):
 class CrossValidationRunRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
+    crop_mode: str = "automated"
     num_folds: int = 5
     epochs: int = 10
     learning_rate: float = 1e-4
@@ -414,6 +451,14 @@ class SiteUpdateRequest(BaseModel):
     hospital_name: str = ""
 
 
+class StorageSettingsUpdateRequest(BaseModel):
+    storage_root: str
+
+
+class SiteStorageRootUpdateRequest(BaseModel):
+    storage_root: str
+
+
 class UserUpsertRequest(BaseModel):
     user_id: str | None = None
     username: str
@@ -442,6 +487,22 @@ def _coerce_text(value: Any, default: str = "") -> str:
     if isinstance(value, float) and pd.isna(value):
         return default
     return str(value).strip()
+
+
+def _normalize_storage_root(value: str) -> Path:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("Storage root is required.")
+    candidate = Path(normalized).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("Storage root must be an absolute path.")
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Unable to create or access the storage root: {exc}") from exc
+    if not candidate.is_dir():
+        raise ValueError("Storage root must be a directory.")
+    return candidate.resolve()
 
 
 def _site_comparison_rows(cp: ControlPlaneStore, user: dict[str, Any]) -> list[dict[str, Any]]:
@@ -531,6 +592,7 @@ def _build_case_history(
     patient_id: str,
     visit_date: str,
 ) -> dict[str, list[dict[str, Any]]]:
+    case_reference_id = cp.case_reference_id(site_id, patient_id, visit_date)
     validation_history: list[dict[str, Any]] = []
     for run in cp.list_validation_runs(site_id=site_id):
         case_prediction = next(
@@ -561,11 +623,11 @@ def _build_case_history(
     updates_by_id = {
         item["update_id"]: item
         for item in cp.list_model_updates(site_id=site_id)
-        if item.get("patient_id") == patient_id and item.get("visit_date") == visit_date
+        if item.get("case_reference_id") == case_reference_id
     }
     contribution_history: list[dict[str, Any]] = []
     for item in cp.list_contributions(site_id=site_id):
-        if item.get("patient_id") != patient_id or item.get("visit_date") != visit_date:
+        if item.get("case_reference_id") != case_reference_id:
             continue
         update = updates_by_id.get(item.get("update_id"))
         contribution_history.append(
@@ -573,6 +635,7 @@ def _build_case_history(
                 "contribution_id": item.get("contribution_id"),
                 "created_at": item.get("created_at"),
                 "user_id": item.get("user_id"),
+                "case_reference_id": item.get("case_reference_id"),
                 "update_id": item.get("update_id"),
                 "update_status": update.get("status") if update else None,
                 "upload_type": update.get("upload_type") if update else None,
@@ -623,8 +686,7 @@ def _build_site_activity(
                 "contribution_id": item.get("contribution_id"),
                 "created_at": item.get("created_at"),
                 "user_id": item.get("user_id"),
-                "patient_id": item.get("patient_id"),
-                "visit_date": item.get("visit_date"),
+                "case_reference_id": item.get("case_reference_id"),
                 "update_id": item.get("update_id"),
                 "update_status": update.get("status") if update else None,
                 "upload_type": update.get("upload_type") if update else None,
@@ -795,6 +857,39 @@ def create_app() -> FastAPI:
             overview["aggregation_count"] = len(cp.list_aggregations())
         return overview
 
+    @app.get("/api/admin/storage-settings")
+    def get_storage_settings(
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        default_root = str(cp.default_instance_storage_root())
+        current_root = cp.instance_storage_root()
+        return {
+            "storage_root": current_root,
+            "default_storage_root": default_root,
+            "uses_custom_root": current_root != default_root,
+        }
+
+    @app.patch("/api/admin/storage-settings")
+    def update_storage_settings(
+        payload: StorageSettingsUpdateRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        try:
+            normalized_root = _normalize_storage_root(payload.storage_root)
+            cp.set_app_setting("instance_storage_root", str(normalized_root))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        default_root = str(cp.default_instance_storage_root())
+        return {
+            "storage_root": cp.instance_storage_root(),
+            "default_storage_root": default_root,
+            "uses_custom_root": cp.instance_storage_root() != default_root,
+        }
+
     @app.get("/api/admin/model-versions")
     def list_model_versions(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -858,17 +953,28 @@ def create_app() -> FastAPI:
         artifacts = report.get("artifacts") if isinstance(report, dict) else {}
         if not isinstance(artifacts, dict):
             artifacts = {}
-        key = {
+        embedded_key = {
+            "source_thumbnail": "source_thumbnail",
+            "roi_thumbnail": "roi_thumbnail",
+            "mask_thumbnail": "mask_thumbnail",
+        }.get(artifact_kind)
+        if embedded_key is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported artifact kind.")
+        embedded_artifact = artifacts.get(embedded_key)
+        if isinstance(embedded_artifact, dict):
+            embedded_response = _embedded_review_artifact_response(embedded_artifact)
+            if embedded_response is not None:
+                return embedded_response
+
+        legacy_path_key = {
             "source_thumbnail": "source_thumbnail_path",
             "roi_thumbnail": "roi_thumbnail_path",
             "mask_thumbnail": "mask_thumbnail_path",
-        }.get(artifact_kind)
-        if key is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported artifact kind.")
-        artifact_path = str(artifacts.get(key) or "").strip()
-        if not artifact_path or not Path(artifact_path).exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact is not available.")
-        return FileResponse(artifact_path)
+        }[artifact_kind]
+        artifact_path = str(artifacts.get(legacy_path_key) or "").strip()
+        if artifact_path and Path(artifact_path).exists():
+            return FileResponse(artifact_path)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact is not available.")
 
     @app.get("/api/admin/aggregations")
     def list_aggregations(
@@ -924,7 +1030,10 @@ def create_app() -> FastAPI:
                 detail="No global model is available for aggregation.",
             )
 
-        delta_paths = [str(item.get("artifact_path") or "") for item in approved_updates]
+        delta_paths = [
+            str(item.get("central_artifact_path") or item.get("artifact_path") or "")
+            for item in approved_updates
+        ]
         missing_paths = [path for path in delta_paths if not path or not Path(path).exists()]
         if missing_paths:
             raise HTTPException(
@@ -1426,11 +1535,13 @@ def create_app() -> FastAPI:
         output_path = MODEL_DIR / f"global_{payload.architecture}_{make_id('init')[:8]}.pth"
         try:
             execution_device = _resolve_execution_device(payload.execution_mode)
-            result = workflow.run_initial_training(
+            result = _call_with_supported_kwargs(
+                workflow.run_initial_training,
                 site_store=site_store,
                 architecture=payload.architecture,
                 output_model_path=str(output_path),
                 execution_device=execution_device,
+                crop_mode=payload.crop_mode,
                 epochs=int(payload.epochs),
                 learning_rate=float(payload.learning_rate),
                 batch_size=int(payload.batch_size),
@@ -1485,11 +1596,13 @@ def create_app() -> FastAPI:
         output_dir = MODEL_DIR / f"cross_validation_{make_id('cvdir')[:8]}"
         try:
             execution_device = _resolve_execution_device(payload.execution_mode)
-            report = workflow.run_cross_validation(
+            report = _call_with_supported_kwargs(
+                workflow.run_cross_validation,
                 site_store=site_store,
                 architecture=payload.architecture,
                 output_dir=str(output_dir),
                 execution_device=execution_device,
+                crop_mode=payload.crop_mode,
                 num_folds=int(payload.num_folds),
                 epochs=int(payload.epochs),
                 learning_rate=float(payload.learning_rate),
@@ -1596,6 +1709,74 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    @app.patch("/api/admin/sites/{site_id}/storage-root")
+    def update_site_storage_root(
+        site_id: str,
+        payload: SiteStorageRootUpdateRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        if site_store.list_patients() or site_store.list_visits() or site_store.list_images():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Storage root can only be changed before any patient, visit, or image is stored for this site.",
+            )
+        try:
+            normalized_root = _normalize_storage_root(payload.storage_root)
+            updated_site = cp.update_site_storage_root(site_id, str(normalized_root))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return updated_site
+
+    @app.post("/api/admin/sites/{site_id}/storage-root/migrate")
+    def migrate_site_storage_root(
+        site_id: str,
+        payload: SiteStorageRootUpdateRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        _require_site_access(cp, user, site_id)
+        try:
+            normalized_root = _normalize_storage_root(payload.storage_root)
+            updated_site = cp.migrate_site_storage_root(site_id, str(normalized_root))
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return updated_site
+
+    @app.patch("/api/sites/{site_id}/visits")
+    def update_visit(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        payload: VisitCreateRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        try:
+            return site_store.update_visit(
+                patient_id=patient_id,
+                visit_date=visit_date,
+                actual_visit_date=payload.actual_visit_date,
+                culture_confirmed=payload.culture_confirmed,
+                culture_category=payload.culture_category,
+                culture_species=payload.culture_species,
+                additional_organisms=[item.model_dump() for item in payload.additional_organisms],
+                contact_lens_use=payload.contact_lens_use,
+                predisposing_factor=payload.predisposing_factor,
+                other_history=payload.other_history,
+                visit_status=payload.visit_status,
+                active_stage=payload.visit_status == "active",
+                is_initial_visit=payload.is_initial_visit,
+                smear_result=payload.smear_result,
+                polymicrobial=payload.polymicrobial,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     @app.get("/api/sites/{site_id}/images")
     def list_images(
         site_id: str,
@@ -1612,10 +1793,10 @@ def create_app() -> FastAPI:
     @app.post("/api/sites/{site_id}/images")
     async def upload_image(
         site_id: str,
-        patient_id: str,
-        visit_date: str,
-        view: str,
-        is_representative: bool = False,
+        patient_id: str = Form(...),
+        visit_date: str = Form(...),
+        view: str = Form(...),
+        is_representative: bool = Form(False),
         file: UploadFile = File(...),
         cp: ControlPlaneStore = Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
@@ -1639,6 +1820,18 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    @app.delete("/api/sites/{site_id}/images")
+    def delete_images(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        deleted_count = site_store.delete_images_for_visit(patient_id, visit_date)
+        return {"deleted_count": deleted_count}
+
     @app.post("/api/sites/{site_id}/images/representative")
     def set_representative_image(
         site_id: str,
@@ -1661,6 +1854,47 @@ def create_app() -> FastAPI:
         return {
             "images": site_store.list_images_for_visit(payload.patient_id, payload.visit_date),
         }
+
+    @app.patch("/api/sites/{site_id}/images/{image_id}/lesion-box")
+    def update_lesion_box(
+        site_id: str,
+        image_id: str,
+        payload: LesionBoxRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        lesion_prompt_box = {
+            "x0": min(max(float(payload.x0), 0.0), 1.0),
+            "y0": min(max(float(payload.y0), 0.0), 1.0),
+            "x1": min(max(float(payload.x1), 0.0), 1.0),
+            "y1": min(max(float(payload.y1), 0.0), 1.0),
+        }
+        if lesion_prompt_box["x1"] <= lesion_prompt_box["x0"] or lesion_prompt_box["y1"] <= lesion_prompt_box["y0"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lesion box coordinates are invalid.")
+        try:
+            return site_store.update_lesion_prompt_box(image_id, lesion_prompt_box)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/sites/{site_id}/images/{image_id}/lesion-box")
+    def clear_lesion_box(
+        site_id: str,
+        image_id: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        try:
+            return site_store.update_lesion_prompt_box(image_id, None)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.get("/api/sites/{site_id}/images/{image_id}/content")
     def get_image_content(
@@ -1689,8 +1923,8 @@ def create_app() -> FastAPI:
         _require_validation_permission(user)
         site_store = _require_site_access(cp, user, site_id)
         workflow = _get_workflow(cp)
-        model_version = cp.current_global_model()
-        if model_version is None:
+        model_version = _get_model_version(cp, payload.model_version_id)
+        if model_version is None or not model_version.get("ready", True):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="No ready global model is available for validation.",
@@ -1725,12 +1959,16 @@ def create_app() -> FastAPI:
                 "version_name": model_version.get("version_name"),
                 "architecture": model_version.get("architecture"),
                 "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
+                "crop_mode": model_version.get("crop_mode"),
+                "ensemble_mode": model_version.get("ensemble_mode"),
             },
             "execution_device": execution_device,
             "artifact_availability": {
                 "gradcam": bool(case_prediction and case_prediction.get("gradcam_path")),
                 "roi_crop": bool(case_prediction and case_prediction.get("roi_crop_path")),
                 "medsam_mask": bool(case_prediction and case_prediction.get("medsam_mask_path")),
+                "lesion_crop": bool(case_prediction and case_prediction.get("lesion_crop_path")),
+                "lesion_mask": bool(case_prediction and case_prediction.get("lesion_mask_path")),
             },
         }
 
@@ -1825,6 +2063,7 @@ def create_app() -> FastAPI:
                 "source_image_path": item.get("source_image_path"),
                 "has_roi_crop": bool(item.get("roi_crop_path")),
                 "has_medsam_mask": bool(item.get("medsam_mask_path")),
+                "backend": item.get("backend", "unknown"),
             }
             for item in previews
         ]
@@ -1882,6 +2121,98 @@ def create_app() -> FastAPI:
         media_type = mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"
         return FileResponse(path=artifact_path, media_type=media_type, filename=artifact_path.name)
 
+    @app.get("/api/sites/{site_id}/cases/lesion-preview")
+    def preview_case_lesion(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> list[dict[str, Any]]:
+        _require_validation_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        workflow = _get_workflow(cp)
+        image_records = site_store.list_images_for_visit(patient_id, visit_date)
+        image_by_path = {image["image_path"]: image for image in image_records}
+        try:
+            previews = workflow.preview_case_lesion(site_store, patient_id, visit_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Lesion preview is unavailable: {exc}",
+            ) from exc
+
+        return [
+            {
+                "patient_id": item["patient_id"],
+                "visit_date": item["visit_date"],
+                "image_id": image_by_path.get(item["source_image_path"], {}).get("image_id"),
+                "view": item.get("view"),
+                "is_representative": bool(item.get("is_representative")),
+                "source_image_path": item.get("source_image_path"),
+                "has_lesion_crop": bool(item.get("lesion_crop_path")),
+                "has_lesion_mask": bool(item.get("lesion_mask_path")),
+                "backend": item.get("backend", "unknown"),
+                "lesion_prompt_box": item.get("lesion_prompt_box"),
+            }
+            for item in previews
+        ]
+
+    @app.get("/api/sites/{site_id}/cases/lesion-preview/artifacts/{artifact_kind}")
+    def get_case_lesion_preview_artifact(
+        site_id: str,
+        artifact_kind: str,
+        patient_id: str,
+        visit_date: str,
+        image_id: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> FileResponse:
+        _require_validation_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        workflow = _get_workflow(cp)
+        image = site_store.get_image(image_id)
+        if image is None or image.get("patient_id") != patient_id or image.get("visit_date") != visit_date:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found for this case.")
+
+        try:
+            previews = workflow.preview_case_lesion(site_store, patient_id, visit_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Lesion preview is unavailable: {exc}",
+            ) from exc
+
+        preview = next((item for item in previews if item.get("source_image_path") == image.get("image_path")), None)
+        if preview is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesion preview record not found.")
+
+        artifact_key = {
+            "lesion_crop": "lesion_crop_path",
+            "lesion_mask": "lesion_mask_path",
+        }.get(artifact_kind)
+        if artifact_key is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown lesion preview artifact.")
+
+        artifact_path_value = preview.get(artifact_key)
+        if not artifact_path_value:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requested lesion artifact is not available.")
+
+        artifact_path = Path(str(artifact_path_value)).resolve()
+        try:
+            artifact_path.relative_to(site_store.site_dir.resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact is outside the site workspace.") from exc
+        if not artifact_path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file not found on disk.")
+
+        media_type = mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"
+        return FileResponse(path=artifact_path, media_type=media_type, filename=artifact_path.name)
+
     @app.get("/api/sites/{site_id}/cases/history")
     def get_case_history(
         site_id: str,
@@ -1926,6 +2257,8 @@ def create_app() -> FastAPI:
             "gradcam": "gradcam_path",
             "roi_crop": "roi_crop_path",
             "medsam_mask": "medsam_mask_path",
+            "lesion_crop": "lesion_crop_path",
+            "lesion_mask": "lesion_mask_path",
         }.get(artifact_kind)
         if artifact_key is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown validation artifact.")

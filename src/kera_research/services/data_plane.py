@@ -6,16 +6,19 @@ from typing import Any
 
 import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, delete, select, update
 
-from kera_research.config import SITE_ROOT_DIR, ensure_base_directories
+from kera_research.config import BASE_DIR, SITE_ROOT_DIR, ensure_base_directories
 from kera_research.db import (
-    ENGINE,
+    CONTROL_PLANE_ENGINE,
+    DATA_PLANE_ENGINE,
     images as db_images,
-    init_db,
+    init_control_plane_db,
+    init_data_plane_db,
     patients as db_patients,
     site_jobs,
     site_patient_splits,
+    sites as control_sites,
     visits as db_visits,
 )
 from kera_research.domain import MANIFEST_COLUMNS, VISIT_STATUS_OPTIONS, make_id, utc_now
@@ -76,12 +79,30 @@ def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
         return content, suffix
 
 
+def _resolve_site_storage_root(site_id: str) -> Path:
+    with CONTROL_PLANE_ENGINE.begin() as conn:
+        row = conn.execute(
+            select(control_sites.c.local_storage_root).where(control_sites.c.site_id == site_id)
+        ).first()
+
+    configured_root = str(row[0] or "").strip() if row else ""
+    if configured_root:
+        root_path = Path(configured_root).expanduser()
+        if not root_path.is_absolute():
+            root_path = (BASE_DIR / root_path).resolve()
+        else:
+            root_path = root_path.resolve()
+        return root_path
+    return (SITE_ROOT_DIR / site_id).resolve()
+
+
 class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
-        init_db()
+        init_control_plane_db()
+        init_data_plane_db()
         self.site_id = site_id
-        self.site_dir = SITE_ROOT_DIR / site_id
+        self.site_dir = _resolve_site_storage_root(site_id)
         self.raw_dir = self.site_dir / "data" / "raw"
         self.manifest_dir = self.site_dir / "manifests"
         self.manifest_path = self.manifest_dir / "dataset_manifest.csv"
@@ -89,6 +110,8 @@ class SiteStore:
         self.gradcam_dir = self.artifact_dir / "gradcam"
         self.medsam_mask_dir = self.artifact_dir / "medsam_masks"
         self.roi_crop_dir = self.artifact_dir / "roi_crops"
+        self.lesion_mask_dir = self.artifact_dir / "lesion_masks"
+        self.lesion_crop_dir = self.artifact_dir / "lesion_crops"
         self.validation_dir = self.site_dir / "validation"
         self.update_dir = self.site_dir / "model_updates"
         self._seed_defaults()
@@ -100,6 +123,8 @@ class SiteStore:
             self.gradcam_dir,
             self.medsam_mask_dir,
             self.roi_crop_dir,
+            self.lesion_mask_dir,
+            self.lesion_crop_dir,
             self.validation_dir,
             self.update_dir,
         ):
@@ -110,7 +135,7 @@ class SiteStore:
         if created_by_user_id:
             query = query.where(db_patients.c.created_by_user_id == created_by_user_id)
         query = query.order_by(db_patients.c.created_at.desc())
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [
             {
@@ -129,7 +154,7 @@ class SiteStore:
         query = select(db_patients).where(
             and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == patient_id)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
         if row is None:
             return None
@@ -167,7 +192,7 @@ class SiteStore:
             "local_case_code": local_case_code.strip(),
             "created_at": utc_now(),
         }
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(db_patients.insert().values(**record))
         return {
             key: record[key]
@@ -188,7 +213,7 @@ class SiteStore:
             .where(db_visits.c.site_id == self.site_id)
             .order_by(db_visits.c.patient_id, db_visits.c.visit_date)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
@@ -200,7 +225,7 @@ class SiteStore:
                 db_visits.c.visit_date == visit_date,
             )
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
         return dict(row) if row else None
 
@@ -260,9 +285,74 @@ class SiteStore:
             "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
             "created_at": utc_now(),
         }
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(db_visits.insert().values(**record))
         return record
+
+    def update_visit(
+        self,
+        patient_id: str,
+        visit_date: str,
+        actual_visit_date: str | None,
+        culture_confirmed: bool,
+        culture_category: str,
+        culture_species: str,
+        additional_organisms: list[dict[str, Any]] | None,
+        contact_lens_use: str,
+        predisposing_factor: list[str],
+        other_history: str,
+        active_stage: bool = True,
+        visit_status: str = "active",
+        is_initial_visit: bool = False,
+        smear_result: str = "",
+        polymicrobial: bool = False,
+    ) -> dict[str, Any]:
+        existing = self.get_visit(patient_id, visit_date)
+        if existing is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        if not culture_confirmed:
+            raise ValueError("Only culture-proven keratitis cases are allowed.")
+        normalized_category = culture_category.strip().lower()
+        normalized_species = culture_species.strip()
+        normalized_additional_organisms = _normalize_additional_organisms(
+            normalized_category,
+            normalized_species,
+            additional_organisms,
+        )
+        normalized_status = (visit_status or "").strip().lower()
+        if normalized_status not in VISIT_STATUS_OPTIONS:
+            normalized_status = "active" if active_stage else "scar"
+        values = {
+            "actual_visit_date": (actual_visit_date or "").strip() or None,
+            "culture_confirmed": bool(culture_confirmed),
+            "culture_category": normalized_category,
+            "culture_species": normalized_species,
+            "contact_lens_use": contact_lens_use,
+            "predisposing_factor": predisposing_factor,
+            "additional_organisms": normalized_additional_organisms,
+            "other_history": other_history,
+            "visit_status": normalized_status,
+            "active_stage": normalized_status == "active",
+            "is_initial_visit": bool(is_initial_visit),
+            "smear_result": smear_result.strip(),
+            "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
+        }
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_visits)
+                .where(
+                    and_(
+                        db_visits.c.site_id == self.site_id,
+                        db_visits.c.patient_id == patient_id,
+                        db_visits.c.visit_date == visit_date,
+                    )
+                )
+                .values(**values)
+            )
+        refreshed = self.get_visit(patient_id, visit_date)
+        if refreshed is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        return refreshed
 
     def list_images(self) -> list[dict[str, Any]]:
         query = (
@@ -270,13 +360,13 @@ class SiteStore:
             .where(db_images.c.site_id == self.site_id)
             .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
     def get_image(self, image_id: str) -> dict[str, Any] | None:
         query = select(db_images).where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
         return dict(row) if row else None
 
@@ -307,20 +397,53 @@ class SiteStore:
             "view": view,
             "image_path": str(destination),
             "is_representative": bool(is_representative),
+            "lesion_prompt_box": None,
             "uploaded_at": utc_now(),
         }
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(db_images.insert().values(**image_record))
         return image_record
 
+    def delete_images_for_visit(self, patient_id: str, visit_date: str) -> int:
+        existing_images = self.list_images_for_visit(patient_id, visit_date)
+        for image in existing_images:
+            image_path = Path(str(image.get("image_path") or ""))
+            if image_path.exists():
+                image_path.unlink(missing_ok=True)
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                delete(db_images).where(
+                    and_(
+                        db_images.c.site_id == self.site_id,
+                        db_images.c.patient_id == patient_id,
+                        db_images.c.visit_date == visit_date,
+                    )
+                )
+            )
+        return len(existing_images)
+
     def update_representative_flags(self, updates: dict[str, bool]) -> None:
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             for image_id, is_representative in updates.items():
                 conn.execute(
                     update(db_images)
                     .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
                     .values(is_representative=bool(is_representative))
                 )
+
+    def update_lesion_prompt_box(self, image_id: str, lesion_prompt_box: dict[str, Any] | None) -> dict[str, Any]:
+        if self.get_image(image_id) is None:
+            raise ValueError("Image not found.")
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_images)
+                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
+                .values(lesion_prompt_box=lesion_prompt_box)
+            )
+        refreshed = self.get_image(image_id)
+        if refreshed is None:
+            raise ValueError("Image not found.")
+        return refreshed
 
     def dataset_records(self) -> list[dict[str, Any]]:
         patient_table = db_patients.alias("p")
@@ -348,6 +471,7 @@ class SiteStore:
                 image_table.c.view,
                 image_table.c.image_path,
                 image_table.c.is_representative,
+                image_table.c.lesion_prompt_box,
             )
             .select_from(
                 patient_table.join(
@@ -367,7 +491,7 @@ class SiteStore:
             .where(patient_table.c.site_id == self.site_id)
             .order_by(patient_table.c.patient_id, visit_table.c.visit_date, image_table.c.uploaded_at)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -394,6 +518,7 @@ class SiteStore:
                     "view": row["view"],
                     "image_path": row["image_path"],
                     "is_representative": row["is_representative"],
+                    "lesion_prompt_box": row["lesion_prompt_box"],
                 }
             )
         return records
@@ -404,7 +529,7 @@ class SiteStore:
             .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
             .order_by(db_visits.c.visit_date)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
@@ -420,7 +545,7 @@ class SiteStore:
             )
             .order_by(db_images.c.uploaded_at)
         )
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
 
@@ -491,7 +616,7 @@ class SiteStore:
 
     def load_patient_split(self) -> dict[str, Any]:
         query = select(site_patient_splits.c.split_json).where(site_patient_splits.c.site_id == self.site_id)
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).first()
         return dict(row[0]) if row and row[0] else {}
 
@@ -501,7 +626,7 @@ class SiteStore:
             "split_json": split_record,
             "updated_at": utc_now(),
         }
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(select(site_patient_splits.c.site_id).where(site_patient_splits.c.site_id == self.site_id)).first()
             if existing:
                 conn.execute(
@@ -527,7 +652,7 @@ class SiteStore:
             "created_at": utc_now(),
             "updated_at": None,
         }
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(site_jobs.insert().values(**record))
         return {
             "job_id": record["job_id"],
@@ -541,7 +666,7 @@ class SiteStore:
         query = select(site_jobs).where(site_jobs.c.site_id == self.site_id).order_by(site_jobs.c.created_at.desc())
         if status:
             query = query.where(site_jobs.c.status == status)
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [
             {
@@ -557,7 +682,7 @@ class SiteStore:
         ]
 
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
-        with ENGINE.begin() as conn:
+        with DATA_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(
                 select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
             ).mappings().first()
@@ -579,6 +704,8 @@ class SiteStore:
             "gradcam": self.gradcam_dir,
             "medsam_mask": self.medsam_mask_dir,
             "roi_crop": self.roi_crop_dir,
+            "lesion_mask": self.lesion_mask_dir,
+            "lesion_crop": self.lesion_crop_dir,
         }
         directory = mapping[artifact_type]
         return sorted(directory.glob("*"))

@@ -1,11 +1,12 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useDeferredValue, useEffect, useRef, useState } from "react";
 
 import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n } from "../lib/i18n";
 import {
   type CaseHistoryResponse,
   type CaseContributionResponse,
+  type LesionPreviewRecord,
   type OrganismRecord,
   type PatientRecord,
   type RoiPreviewRecord,
@@ -13,12 +14,17 @@ import {
   type SiteValidationRunRecord,
   createPatient,
   createVisit,
+  deleteVisitImages,
   fetchCaseHistory,
+  fetchCaseLesionPreview,
+  fetchCaseLesionPreviewArtifactBlob,
   fetchCaseRoiPreview,
   fetchCaseRoiPreviewArtifactBlob,
+  clearImageLesionBox,
   fetchCases,
   fetchImageBlob,
   fetchPatients,
+  fetchVisits,
   fetchValidationArtifactBlob,
   fetchImages,
   fetchSiteActivity,
@@ -29,9 +35,12 @@ import {
   type ImageRecord,
   type SiteRecord,
   type SiteSummary,
+  type VisitRecord,
   runSiteValidation,
+  updateVisit,
   runCaseContribution,
   runCaseValidation,
+  updateImageLesionBox,
   uploadImage,
 } from "../lib/api";
 
@@ -107,9 +116,40 @@ type SavedImagePreview = ImageRecord & {
 type RoiPreviewCard = RoiPreviewRecord & {
   source_preview_url: string | null;
   roi_crop_url: string | null;
+  medsam_mask_url: string | null;
 };
 
-type ValidationArtifactKind = "gradcam" | "roi_crop" | "medsam_mask";
+type LesionPreviewCard = LesionPreviewRecord & {
+  source_preview_url: string | null;
+  lesion_crop_url: string | null;
+  lesion_mask_url: string | null;
+};
+
+type PatientListThumbnail = {
+  case_id: string;
+  image_id: string;
+  view: string | null;
+  preview_url: string | null;
+};
+
+type PatientListRow = {
+  patient_id: string;
+  latest_case: CaseSummaryRecord;
+  case_count: number;
+  organism_summary: string;
+  representative_thumbnails: PatientListThumbnail[];
+};
+
+type NormalizedBox = {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+};
+
+type LesionBoxMap = Record<string, NormalizedBox | null>;
+
+type ValidationArtifactKind = "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask";
 
 type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
 
@@ -171,6 +211,130 @@ type CaseWorkspaceProps = {
   onToggleTheme: () => void;
 };
 
+function loadHtmlImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
+    image.src = src;
+  });
+}
+
+function MaskOverlayPreview({
+  sourceUrl,
+  maskUrl,
+  alt,
+  tint = [125, 211, 195],
+}: {
+  sourceUrl: string | null | undefined;
+  maskUrl: string | null | undefined;
+  alt: string;
+  tint?: [number, number, number];
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [overlayReady, setOverlayReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function renderOverlay() {
+      if (!canvasRef.current || !sourceUrl || !maskUrl) {
+        setOverlayReady(false);
+        return;
+      }
+      try {
+        const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(sourceUrl), loadHtmlImage(maskUrl)]);
+        if (cancelled || !canvasRef.current) {
+          return;
+        }
+        const canvas = canvasRef.current;
+        canvas.width = sourceImage.naturalWidth || sourceImage.width;
+        canvas.height = sourceImage.naturalHeight || sourceImage.height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setOverlayReady(false);
+          return;
+        }
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
+
+        const maskCanvas = document.createElement("canvas");
+        maskCanvas.width = canvas.width;
+        maskCanvas.height = canvas.height;
+        const maskContext = maskCanvas.getContext("2d");
+        if (!maskContext) {
+          setOverlayReady(false);
+          return;
+        }
+        maskContext.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+        const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
+        const sourceData = context.getImageData(0, 0, canvas.width, canvas.height);
+        const finalData = context.createImageData(canvas.width, canvas.height);
+        finalData.data.set(sourceData.data);
+
+        for (let index = 0; index < maskData.data.length; index += 4) {
+          const intensity = maskData.data[index];
+          if (intensity > 24) {
+            const alpha = 0.34;
+            finalData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
+            finalData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
+            finalData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
+            finalData.data[index + 3] = 255;
+          }
+        }
+
+        for (let y = 1; y < canvas.height - 1; y += 1) {
+          for (let x = 1; x < canvas.width - 1; x += 1) {
+            const pixelIndex = (y * canvas.width + x) * 4;
+            const inside = maskData.data[pixelIndex] > 24;
+            if (!inside) {
+              continue;
+            }
+            const neighbors = [
+              ((y - 1) * canvas.width + x) * 4,
+              ((y + 1) * canvas.width + x) * 4,
+              (y * canvas.width + (x - 1)) * 4,
+              (y * canvas.width + (x + 1)) * 4,
+            ];
+            if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
+              finalData.data[pixelIndex] = Math.min(255, tint[0] + 20);
+              finalData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
+              finalData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
+              finalData.data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+
+        context.putImageData(finalData, 0, 0);
+        setOverlayReady(true);
+      } catch {
+        if (!cancelled) {
+          setOverlayReady(false);
+        }
+      }
+    }
+    void renderOverlay();
+    return () => {
+      cancelled = true;
+    };
+  }, [maskUrl, sourceUrl, tint]);
+
+  if (!sourceUrl || !maskUrl) {
+    return <div className="panel-image-fallback">{alt}</div>;
+  }
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        className={`panel-image-preview panel-image-overlay${overlayReady ? " ready" : ""}`}
+        aria-label={alt}
+      />
+      {!overlayReady ? <img src={sourceUrl} alt={alt} className="panel-image-preview panel-image-overlay-fallback" /> : null}
+    </>
+  );
+}
+
 function createDraft(): DraftState {
   return {
     patient_id: "",
@@ -180,8 +344,8 @@ function createDraft(): DraftState {
     age: "65",
     actual_visit_date: "",
     follow_up_number: "1",
-    culture_category: "bacterial",
-    culture_species: CULTURE_SPECIES.bacterial[0],
+    culture_category: "",
+    culture_species: "",
     additional_organisms: [],
     contact_lens_use: "none",
     visit_status: "active",
@@ -201,6 +365,35 @@ function createDraftId(): string {
 
 function formatCaseTitle(caseRecord: CaseSummaryRecord): string {
   return caseRecord.local_case_code || caseRecord.patient_id;
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function normalizeBox(box: NormalizedBox): NormalizedBox {
+  return {
+    x0: clamp01(Math.min(box.x0, box.x1)),
+    y0: clamp01(Math.min(box.y0, box.y1)),
+    x1: clamp01(Math.max(box.x0, box.x1)),
+    y1: clamp01(Math.max(box.y0, box.y1)),
+  };
+}
+
+function toNormalizedBox(value: unknown): NormalizedBox | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const box = value as Record<string, unknown>;
+  if (["x0", "y0", "x1", "y1"].every((key) => typeof box[key] === "number")) {
+    return normalizeBox({
+      x0: Number(box.x0),
+      y0: Number(box.y0),
+      x1: Number(box.x1),
+      y1: Number(box.y1),
+    });
+  }
+  return null;
 }
 
 function organismKey(organism: Pick<OrganismRecord, "culture_category" | "culture_species">): string {
@@ -419,6 +612,18 @@ function visitPhaseCopy(locale: "en" | "ko", isInitialVisit: boolean): string {
   return isInitialVisit ? pick(locale, "Initial", "초진") : pick(locale, "Follow-up", "재진");
 }
 
+function computeNextFollowUpNumber(visits: VisitRecord[]): number {
+  let maxFollowUp = 0;
+  for (const visit of visits) {
+    const match = String(visit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+    if (!match) {
+      continue;
+    }
+    maxFollowUp = Math.max(maxFollowUp, Number(match[1]) || 0);
+  }
+  return maxFollowUp + 1;
+}
+
 export function CaseWorkspace({
   token,
   user,
@@ -437,6 +642,19 @@ export function CaseWorkspace({
   const { locale, localeTag, common } = useI18n();
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+  const isAlreadyExistsError = (nextError: unknown) => {
+    if (!(nextError instanceof Error)) {
+      return false;
+    }
+    const rawMessage = nextError.message.toLowerCase();
+    const translatedMessage = translateApiError(locale, nextError.message).toLowerCase();
+    return (
+      rawMessage.includes("already exists") ||
+      rawMessage.includes("이미 존재") ||
+      translatedMessage.includes("already exists") ||
+      translatedMessage.includes("이미 존재")
+    );
+  };
   const [draft, setDraft] = useState<DraftState>(() => createDraft());
   const [pendingOrganism, setPendingOrganism] = useState<OrganismRecord>({
     culture_category: "bacterial",
@@ -450,9 +668,12 @@ export function CaseWorkspace({
   const [casesLoading, setCasesLoading] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [railView, setRailView] = useState<"cases" | "patients">("cases");
   const [selectedCase, setSelectedCase] = useState<CaseSummaryRecord | null>(null);
   const [selectedCaseImages, setSelectedCaseImages] = useState<SavedImagePreview[]>([]);
+  const [patientVisitGallery, setPatientVisitGallery] = useState<Record<string, SavedImagePreview[]>>({});
   const [panelBusy, setPanelBusy] = useState(false);
+  const [patientVisitGalleryBusy, setPatientVisitGalleryBusy] = useState(false);
   const [activityBusy, setActivityBusy] = useState(false);
   const [siteActivity, setSiteActivity] = useState<SiteActivityResponse | null>(null);
   const [siteValidationBusy, setSiteValidationBusy] = useState(false);
@@ -462,6 +683,12 @@ export function CaseWorkspace({
   const [validationArtifacts, setValidationArtifacts] = useState<ValidationArtifactPreviews>({});
   const [roiPreviewBusy, setRoiPreviewBusy] = useState(false);
   const [roiPreviewItems, setRoiPreviewItems] = useState<RoiPreviewCard[]>([]);
+  const [lesionPreviewBusy, setLesionPreviewBusy] = useState(false);
+  const [lesionPreviewItems, setLesionPreviewItems] = useState<LesionPreviewCard[]>([]);
+  const [lesionPromptDrafts, setLesionPromptDrafts] = useState<LesionBoxMap>({});
+  const [lesionPromptSaved, setLesionPromptSaved] = useState<LesionBoxMap>({});
+  const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
+  const [lesionBoxBusyImageId, setLesionBoxBusyImageId] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [caseHistory, setCaseHistory] = useState<CaseHistoryResponse | null>(null);
   const [contributionBusy, setContributionBusy] = useState(false);
@@ -471,12 +698,19 @@ export function CaseWorkspace({
   const [caseSearch, setCaseSearch] = useState("");
   const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>([]);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
+  const [patientListThumbs, setPatientListThumbs] = useState<Record<string, PatientListThumbnail[]>>({});
   const [toast, setToast] = useState<ToastState>(null);
   const whiteFileInputRef = useRef<HTMLInputElement | null>(null);
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const draftImagesRef = useRef<DraftImage[]>([]);
   const validationArtifactUrlsRef = useRef<string[]>([]);
   const roiPreviewUrlsRef = useRef<string[]>([]);
+  const lesionPreviewUrlsRef = useRef<string[]>([]);
+  const patientListThumbUrlsRef = useRef<string[]>([]);
+  const patientVisitGalleryUrlsRef = useRef<string[]>([]);
+  const railListSectionRef = useRef<HTMLElement | null>(null);
+  const lesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
+  const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const deferredSearch = useDeferredValue(caseSearch);
   const copy = {
     unableLoadPatients: pick(locale, "Unable to load patients.", "환자 목록을 불러오지 못했습니다."),
@@ -485,10 +719,10 @@ export function CaseWorkspace({
     unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "병원 활동을 불러오지 못했습니다."),
     unableLoadSiteValidationHistory: pick(locale, "Unable to load hospital validation history.", "병원 검증 이력을 불러오지 못했습니다."),
     unableLoadCaseHistory: pick(locale, "Unable to load case history.", "케이스 이력을 불러오지 못했습니다."),
-    selectSavedCaseForRoi: pick(locale, "Select a saved case before running ROI preview.", "ROI 미리보기를 실행하려면 저장된 케이스를 선택하세요."),
+    selectSavedCaseForRoi: pick(locale, "Select a saved case before running cornea preview.", "각막 crop 미리보기를 실행하려면 저장된 케이스를 선택하세요."),
     roiPreviewGenerated: (patientId: string, visitDate: string) =>
-      pick(locale, `ROI preview generated for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} ROI 미리보기를 생성했습니다.`),
-    roiPreviewFailed: pick(locale, "ROI preview failed.", "ROI 미리보기에 실패했습니다."),
+      pick(locale, `Cornea preview generated for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 각막 crop 미리보기를 생성했습니다.`),
+    roiPreviewFailed: pick(locale, "Cornea preview failed.", "각막 crop 미리보기에 실패했습니다."),
     selectSiteForValidation: pick(locale, "Select a hospital before running hospital validation.", "병원 검증을 실행하려면 병원을 선택하세요."),
     siteValidationSaved: (validationId: string) =>
       pick(locale, `Hospital validation saved as ${validationId}.`, `병원 검증이 ${validationId}로 저장되었습니다.`),
@@ -505,7 +739,7 @@ export function CaseWorkspace({
     selectSiteForCase: pick(locale, "Select a hospital before creating a case.", "케이스를 생성하려면 병원을 선택하세요."),
     patientIdRequired: pick(locale, "Patient ID is required.", "환자 ID는 필수입니다."),
     visitDateRequired: pick(locale, "Visit reference is required.", "방문 기준값은 필수입니다."),
-    cultureSpeciesRequired: pick(locale, "Culture species is required.", "균종은 필수입니다."),
+    cultureSpeciesRequired: pick(locale, "Select the primary organism.", "대표 균종을 선택하세요."),
     imageRequired: pick(locale, "Add at least one slit-lamp image to save this case.", "케이스를 저장하려면 세극등 이미지를 하나 이상 추가하세요."),
     patientCreationFailed: pick(locale, "Patient creation failed.", "환자 생성에 실패했습니다."),
     caseSaved: (patientId: string, visitDate: string, siteId: string) =>
@@ -536,6 +770,8 @@ export function CaseWorkspace({
     mineBadge: pick(locale, "mine", "내 등록"),
     favoriteAdded: pick(locale, "Case added to favorites.", "케이스를 즐겨찾기에 추가했습니다."),
     favoriteRemoved: pick(locale, "Case removed from favorites.", "케이스 즐겨찾기를 해제했습니다."),
+    listViewHeaderCopy: pick(locale, "Browse saved patients and open the latest case.", "저장 환자를 보고 최신 케이스를 엽니다."),
+    caseAuthoringHeaderCopy: pick(locale, "Create, review, and contribute cases from this workspace.", "이 작업공간에서 증례 작성, 검토, 기여를 진행할 수 있습니다."),
   };
   const whiteDraftImages = draftImages.filter((image) => image.view === "white");
   const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
@@ -562,7 +798,31 @@ export function CaseWorkspace({
 
   useEffect(() => {
     return () => {
+      for (const url of patientListThumbUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const url of patientVisitGalleryUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
       for (const url of roiPreviewUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const url of lesionPreviewUrlsRef.current) {
         URL.revokeObjectURL(url);
       }
     };
@@ -776,15 +1036,27 @@ export function CaseWorkspace({
     validationArtifactUrlsRef.current = [];
     setValidationArtifacts({});
     clearRoiPreview();
+    clearLesionPreview();
     setValidationResult(null);
     setCaseHistory(null);
     setContributionResult(null);
+    setLesionPromptDrafts({});
+    setLesionPromptSaved({});
+    for (const url of patientVisitGalleryUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    patientVisitGalleryUrlsRef.current = [];
+    setPatientVisitGallery({});
     if (!selectedSiteId || !selectedCase) {
       setSelectedCaseImages([]);
+      setPatientVisitGallery({});
       return;
     }
     const currentSiteId = selectedSiteId;
     const currentCase = selectedCase;
+    const currentPatientCases = [...cases]
+      .filter((item) => item.patient_id === currentCase.patient_id)
+      .sort((left, right) => caseTimestamp(right) - caseTimestamp(left));
     let cancelled = false;
     const createdUrls: string[] = [];
     async function loadSelectedCaseImages() {
@@ -805,6 +1077,11 @@ export function CaseWorkspace({
         );
         if (!cancelled) {
           setSelectedCaseImages(nextImages);
+          const nextSavedBoxes = Object.fromEntries(
+            nextImages.map((image) => [image.image_id, toNormalizedBox(image.lesion_prompt_box)])
+          );
+          setLesionPromptSaved(nextSavedBoxes);
+          setLesionPromptDrafts(nextSavedBoxes);
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -813,10 +1090,52 @@ export function CaseWorkspace({
             message: describeError(nextError, pick(locale, "Unable to load case images.", "케이스 이미지를 불러오지 못했습니다.")),
           });
           setSelectedCaseImages([]);
+          setLesionPromptSaved({});
+          setLesionPromptDrafts({});
         }
       } finally {
         if (!cancelled) {
           setPanelBusy(false);
+        }
+      }
+    }
+    async function loadPatientVisitGallery() {
+      setPatientVisitGalleryBusy(true);
+      try {
+        const nextEntries = await Promise.all(
+          currentPatientCases.map(async (caseItem) => {
+            const imageRecords = await fetchImages(currentSiteId, token, caseItem.patient_id, caseItem.visit_date);
+            const images = await Promise.all(
+              imageRecords.map(async (record) => {
+                try {
+                  const blob = await fetchImageBlob(currentSiteId, record.image_id, token);
+                  const previewUrl = URL.createObjectURL(blob);
+                  createdUrls.push(previewUrl);
+                  return { ...record, preview_url: previewUrl };
+                } catch {
+                  return { ...record, preview_url: null };
+                }
+              })
+            );
+            return [caseItem.case_id, images] as const;
+          })
+        );
+        if (!cancelled) {
+          const nextGallery = Object.fromEntries(nextEntries);
+          patientVisitGalleryUrlsRef.current = createdUrls;
+          setPatientVisitGallery(nextGallery);
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setPatientVisitGallery({});
+          setToast({
+            tone: "error",
+            message: describeError(nextError, pick(locale, "Unable to load this patient's visit gallery.", "이 환자의 방문 이미지 묶음을 불러오지 못했습니다.")),
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setPatientVisitGalleryBusy(false);
         }
       }
     }
@@ -842,6 +1161,7 @@ export function CaseWorkspace({
       }
     }
     void loadSelectedCaseImages();
+    void loadPatientVisitGallery();
     void loadSelectedCaseHistory();
     return () => {
       cancelled = true;
@@ -849,7 +1169,7 @@ export function CaseWorkspace({
         URL.revokeObjectURL(url);
       }
     };
-  }, [selectedCase, selectedSiteId, token]);
+  }, [cases, selectedCase, selectedSiteId, token]);
 
   useEffect(() => {
     if (!toast) {
@@ -863,6 +1183,13 @@ export function CaseWorkspace({
     };
   }, [toast]);
 
+  useEffect(() => {
+    if (railView !== "patients") {
+      return;
+    }
+    railListSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [railView]);
+
   function replaceDraftImages(nextImages: DraftImage[]) {
     const nextIds = new Set(nextImages.map((image) => image.draft_id));
     for (const current of draftImagesRef.current) {
@@ -870,6 +1197,11 @@ export function CaseWorkspace({
         URL.revokeObjectURL(current.preview_url);
       }
     }
+    setDraftLesionPromptBoxes((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([draftId]) => nextIds.has(draftId))
+      )
+    );
     setDraftImages(nextImages);
   }
 
@@ -889,6 +1221,14 @@ export function CaseWorkspace({
     setRoiPreviewItems([]);
   }
 
+  function clearLesionPreview() {
+    for (const url of lesionPreviewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    lesionPreviewUrlsRef.current = [];
+    setLesionPreviewItems([]);
+  }
+
   function clearDraftStorage(siteId: string | null = selectedSiteId) {
     if (!siteId) {
       setDraftSavedAt(null);
@@ -898,33 +1238,207 @@ export function CaseWorkspace({
     setDraftSavedAt(null);
   }
 
-  function prefillDraftFromPatient(patient: PatientRecord) {
-    setDraft((current) => ({
-      ...current,
-      patient_id: patient.patient_id,
-      sex: patient.sex || current.sex,
-      age: String(patient.age ?? current.age),
-      chart_alias: patient.chart_alias ?? current.chart_alias,
-      local_case_code: patient.local_case_code ?? current.local_case_code,
-    }));
+  async function prefillDraftFromPatient(patient: PatientRecord) {
+    setSelectedCase(null);
+    setPanelOpen(true);
+    setRailView("cases");
+    const applyPatientOnly = () => {
+      setDraft((current) => ({
+        ...current,
+        patient_id: patient.patient_id,
+        sex: patient.sex || current.sex,
+        age: String(patient.age ?? current.age),
+        chart_alias: patient.chart_alias ?? current.chart_alias,
+        local_case_code: patient.local_case_code ?? current.local_case_code,
+        intake_completed: true,
+      }));
+    };
+    applyPatientOnly();
+    if (!selectedSiteId) {
+      return;
+    }
+    try {
+      const visits = await fetchVisits(selectedSiteId, token, patient.patient_id);
+      const latestVisit = [...visits].sort((left, right) => visitTimestamp(right) - visitTimestamp(left))[0];
+      if (!latestVisit) {
+        return;
+      }
+      const followUpMatch = String(latestVisit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+      setDraft((current) => ({
+        ...current,
+        patient_id: patient.patient_id,
+        sex: patient.sex || current.sex,
+        age: String(patient.age ?? current.age),
+        chart_alias: patient.chart_alias ?? current.chart_alias,
+        local_case_code: patient.local_case_code ?? current.local_case_code,
+        actual_visit_date: latestVisit.actual_visit_date?.trim() || current.actual_visit_date,
+        culture_category: latestVisit.culture_category || current.culture_category,
+        culture_species: latestVisit.culture_species || current.culture_species,
+        additional_organisms: normalizeAdditionalOrganisms(
+          latestVisit.culture_category,
+          latestVisit.culture_species,
+          latestVisit.additional_organisms
+        ),
+        contact_lens_use: latestVisit.contact_lens_use || current.contact_lens_use,
+        visit_status: latestVisit.visit_status || current.visit_status,
+        is_initial_visit: latestVisit.is_initial_visit,
+        follow_up_number: followUpMatch ? String(Number(followUpMatch[1]) || 1) : current.follow_up_number,
+        predisposing_factor: latestVisit.predisposing_factor ?? current.predisposing_factor,
+        other_history: latestVisit.other_history ?? current.other_history,
+        intake_completed: true,
+      }));
+      if (latestVisit.culture_category) {
+        setPendingOrganism({
+          culture_category: latestVisit.culture_category,
+          culture_species:
+            latestVisit.additional_organisms?.[0]?.culture_species ||
+            (CULTURE_SPECIES[latestVisit.culture_category]?.[0] ?? pendingOrganism.culture_species),
+        });
+      }
+      setShowAdditionalOrganismForm(false);
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to load the latest visit details for this patient.", "이 환자의 최근 방문 정보를 불러오지 못했습니다.")),
+      });
+    }
   }
 
-  function resetDraft() {
+  async function startFollowUpDraftFromSelectedCase() {
+    if (!selectedCase) {
+      return;
+    }
+
     replaceDraftImages([]);
+    setDraftLesionPromptBoxes({});
     clearDraftStorage();
     clearValidationArtifacts();
     clearRoiPreview();
+    clearLesionPreview();
     setValidationResult(null);
     setCaseHistory(null);
     setContributionResult(null);
     setSelectedCase(null);
     setSelectedCaseImages([]);
+    setPanelOpen(true);
+    setRailView("cases");
+    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+    const fallbackFollowUpNumber = String((selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1);
+
+    const applyFallbackDraft = (followUpNumber: string) => {
+      setDraft((current) => ({
+        ...current,
+        patient_id: selectedCase.patient_id,
+        sex: selectedCase.sex || current.sex,
+        age: String(selectedCase.age ?? current.age),
+        chart_alias: selectedCase.chart_alias ?? current.chart_alias,
+        local_case_code: selectedCase.local_case_code ?? current.local_case_code,
+        actual_visit_date: "",
+        culture_category: selectedCase.culture_category || current.culture_category,
+        culture_species: selectedCase.culture_species || current.culture_species,
+        additional_organisms: normalizeAdditionalOrganisms(
+          selectedCase.culture_category,
+          selectedCase.culture_species,
+          selectedCase.additional_organisms
+        ),
+        contact_lens_use: selectedCase.contact_lens_use || current.contact_lens_use,
+        visit_status: selectedCase.visit_status || current.visit_status,
+        is_initial_visit: false,
+        follow_up_number: followUpNumber,
+        intake_completed: true,
+      }));
+      setPendingOrganism({
+        culture_category: selectedCase.culture_category || "bacterial",
+        culture_species:
+          selectedCase.additional_organisms?.[0]?.culture_species ||
+          selectedCase.culture_species ||
+          (CULTURE_SPECIES[selectedCase.culture_category || "bacterial"]?.[0] ?? ""),
+      });
+      setShowAdditionalOrganismForm(false);
+    };
+
+    if (!selectedSiteId) {
+      applyFallbackDraft(fallbackFollowUpNumber);
+      return;
+    }
+
+    try {
+      const visits = await fetchVisits(selectedSiteId, token, selectedCase.patient_id);
+      const nextFollowUpNumber = String(computeNextFollowUpNumber(visits));
+      const latestVisit = [...visits].sort((left, right) => visitTimestamp(right) - visitTimestamp(left))[0] ?? null;
+      if (!latestVisit) {
+        applyFallbackDraft(nextFollowUpNumber);
+        return;
+      }
+      setDraft((current) => ({
+        ...current,
+        patient_id: selectedCase.patient_id,
+        sex: selectedCase.sex || current.sex,
+        age: String(selectedCase.age ?? current.age),
+        chart_alias: selectedCase.chart_alias ?? current.chart_alias,
+        local_case_code: selectedCase.local_case_code ?? current.local_case_code,
+        actual_visit_date: "",
+        culture_category: latestVisit.culture_category || selectedCase.culture_category || current.culture_category,
+        culture_species: latestVisit.culture_species || selectedCase.culture_species || current.culture_species,
+        additional_organisms: normalizeAdditionalOrganisms(
+          latestVisit.culture_category || selectedCase.culture_category,
+          latestVisit.culture_species || selectedCase.culture_species,
+          latestVisit.additional_organisms ?? selectedCase.additional_organisms
+        ),
+        contact_lens_use: latestVisit.contact_lens_use || selectedCase.contact_lens_use || current.contact_lens_use,
+        visit_status: latestVisit.visit_status || selectedCase.visit_status || current.visit_status,
+        is_initial_visit: false,
+        follow_up_number: nextFollowUpNumber,
+        predisposing_factor: latestVisit.predisposing_factor ?? current.predisposing_factor,
+        other_history: latestVisit.other_history ?? current.other_history,
+        intake_completed: true,
+      }));
+      setPendingOrganism({
+        culture_category: latestVisit.culture_category || selectedCase.culture_category || "bacterial",
+        culture_species:
+          latestVisit.additional_organisms?.[0]?.culture_species ||
+          latestVisit.culture_species ||
+          selectedCase.culture_species ||
+          (CULTURE_SPECIES[latestVisit.culture_category || selectedCase.culture_category || "bacterial"]?.[0] ?? ""),
+      });
+      setShowAdditionalOrganismForm(false);
+    } catch (nextError) {
+      applyFallbackDraft(fallbackFollowUpNumber);
+      setToast({
+        tone: "error",
+        message: describeError(
+          nextError,
+          pick(locale, "Unable to prepare the next follow-up draft for this patient.", "이 환자의 다음 재진 초안을 준비하지 못했습니다.")
+        ),
+      });
+    }
+  }
+
+  function resetDraft() {
+    setRailView("cases");
+    replaceDraftImages([]);
+    clearDraftStorage();
+    clearValidationArtifacts();
+    clearRoiPreview();
+    clearLesionPreview();
+    setValidationResult(null);
+    setCaseHistory(null);
+    setContributionResult(null);
+    setSelectedCase(null);
+    setSelectedCaseImages([]);
+    setDraftLesionPromptBoxes({});
     setDraft(createDraft());
     setPendingOrganism({
       culture_category: "bacterial",
       culture_species: CULTURE_SPECIES.bacterial[0],
     });
     setShowAdditionalOrganismForm(false);
+  }
+
+  function startNewCaseDraft() {
+    resetDraft();
+    setPanelOpen(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function isFavoriteCase(caseId: string): boolean {
@@ -943,11 +1457,18 @@ export function CaseWorkspace({
     });
   }
 
+  function openSavedCase(caseRecord: CaseSummaryRecord, nextView: "cases" | "patients" = "cases") {
+    setSelectedCase(caseRecord);
+    setPanelOpen(true);
+    setRailView(nextView);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function updatePrimaryOrganism(cultureCategory: string, cultureSpecies: string) {
     setDraft((current) => ({
       ...current,
-      culture_category: cultureCategory,
-      culture_species: cultureSpecies,
+      culture_category: cultureCategory.trim().toLowerCase(),
+      culture_species: cultureSpecies.trim(),
       additional_organisms: normalizeAdditionalOrganisms(
         cultureCategory,
         cultureSpecies,
@@ -1026,6 +1547,7 @@ export function CaseWorkspace({
     setPanelOpen(true);
     clearValidationArtifacts();
     clearRoiPreview();
+    clearLesionPreview();
     setValidationResult(null);
     setCaseHistory(null);
     setContributionResult(null);
@@ -1065,6 +1587,81 @@ export function CaseWorkspace({
         is_representative: image.draft_id === draftId,
       }))
     );
+  }
+
+  function updateDraftLesionBoxFromPointer(draftId: string, clientX: number, clientY: number, element: HTMLDivElement) {
+    const drawState = draftLesionDrawStateRef.current;
+    if (!drawState || drawState.imageId !== draftId) {
+      return;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    const currentX = clamp01((clientX - rect.left) / rect.width);
+    const currentY = clamp01((clientY - rect.top) / rect.height);
+    setDraftLesionPromptBoxes((current) => ({
+      ...current,
+      [draftId]: normalizeBox({
+        x0: drawState.x,
+        y0: drawState.y,
+        x1: currentX,
+        y1: currentY,
+      }),
+    }));
+  }
+
+  function handleDraftLesionPointerDown(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const element = event.currentTarget;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    const startX = clamp01((event.clientX - rect.left) / rect.width);
+    const startY = clamp01((event.clientY - rect.top) / rect.height);
+    draftLesionDrawStateRef.current = {
+      imageId: draftId,
+      pointerId: event.pointerId,
+      x: startX,
+      y: startY,
+    };
+    setDraftLesionPromptBoxes((current) => ({
+      ...current,
+      [draftId]: { x0: startX, y0: startY, x1: startX, y1: startY },
+    }));
+    element.setPointerCapture(event.pointerId);
+  }
+
+  function handleDraftLesionPointerMove(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    if (
+      draftLesionDrawStateRef.current?.pointerId !== event.pointerId ||
+      draftLesionDrawStateRef.current?.imageId !== draftId
+    ) {
+      return;
+    }
+    updateDraftLesionBoxFromPointer(draftId, event.clientX, event.clientY, event.currentTarget);
+  }
+
+  function finishDraftLesionPointer(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    const drawState = draftLesionDrawStateRef.current;
+    if (!drawState || drawState.pointerId !== event.pointerId || drawState.imageId !== draftId) {
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const currentX = clamp01((event.clientX - rect.left) / rect.width);
+    const currentY = clamp01((event.clientY - rect.top) / rect.height);
+    const nextBox = normalizeBox({
+      x0: drawState.x,
+      y0: drawState.y,
+      x1: currentX,
+      y1: currentY,
+    });
+    setDraftLesionPromptBoxes((current) => ({
+      ...current,
+      [draftId]: nextBox.x1 - nextBox.x0 < 0.01 || nextBox.y1 - nextBox.y0 < 0.01 ? null : nextBox,
+    }));
+    draftLesionDrawStateRef.current = null;
   }
 
   function togglePredisposingFactor(factor: string) {
@@ -1127,6 +1724,263 @@ export function CaseWorkspace({
     }
   }
 
+  const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
+  const lesionBoxChangedImageIds = selectedCaseImages
+    .map((image) => image.image_id)
+    .filter((imageId) => JSON.stringify(lesionPromptDrafts[imageId] ?? null) !== JSON.stringify(lesionPromptSaved[imageId] ?? null));
+  const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some((value) => value);
+
+  async function persistLesionPromptBox(imageId: string, nextBox: NormalizedBox) {
+    if (!selectedSiteId) {
+      throw new Error(pick(locale, "Select a hospital first.", "먼저 병원을 선택하세요."));
+    }
+    setLesionBoxBusyImageId(imageId);
+    try {
+      const normalized = normalizeBox(nextBox);
+      if (normalized.x1 - normalized.x0 < 0.01 || normalized.y1 - normalized.y0 < 0.01) {
+        throw new Error(pick(locale, "Lesion box is too small.", "병변 박스가 너무 작습니다."));
+      }
+      const updatedImage = await updateImageLesionBox(selectedSiteId, imageId, token, normalized);
+      setSelectedCaseImages((current) =>
+        current.map((image) =>
+          image.image_id === updatedImage.image_id
+            ? { ...image, ...updatedImage, preview_url: image.preview_url }
+            : image
+        )
+      );
+      setLesionPromptSaved((current) => ({ ...current, [imageId]: normalized }));
+      setLesionPromptDrafts((current) => ({ ...current, [imageId]: normalized }));
+      return normalized;
+    } finally {
+      setLesionBoxBusyImageId(null);
+    }
+  }
+
+  async function clearSavedLesionPromptBox(imageId: string) {
+    if (!selectedSiteId) {
+      throw new Error(pick(locale, "Select a hospital first.", "먼저 병원을 선택하세요."));
+    }
+    setLesionBoxBusyImageId(imageId);
+    try {
+      const updatedImage = await clearImageLesionBox(selectedSiteId, imageId, token);
+      setSelectedCaseImages((current) =>
+        current.map((image) =>
+          image.image_id === updatedImage.image_id
+            ? { ...image, ...updatedImage, preview_url: image.preview_url }
+            : image
+        )
+      );
+      setLesionPromptSaved((current) => ({ ...current, [imageId]: null }));
+      setLesionPromptDrafts((current) => ({ ...current, [imageId]: null }));
+    } finally {
+      setLesionBoxBusyImageId(null);
+    }
+  }
+
+  function updateLesionDraftFromPointer(imageId: string, clientX: number, clientY: number, element: HTMLDivElement) {
+    const drawState = lesionDrawStateRef.current;
+    if (!drawState || drawState.imageId !== imageId) {
+      return;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    const currentX = clamp01((clientX - rect.left) / rect.width);
+    const currentY = clamp01((clientY - rect.top) / rect.height);
+    setLesionPromptDrafts((current) => ({
+      ...current,
+      [imageId]: normalizeBox({
+        x0: drawState.x,
+        y0: drawState.y,
+        x1: currentX,
+        y1: currentY,
+      }),
+    }));
+  }
+
+  function handleLesionPointerDown(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const element = event.currentTarget;
+    const rect = element.getBoundingClientRect();
+    const startX = clamp01((event.clientX - rect.left) / rect.width);
+    const startY = clamp01((event.clientY - rect.top) / rect.height);
+    lesionDrawStateRef.current = {
+      imageId,
+      pointerId: event.pointerId,
+      x: startX,
+      y: startY,
+    };
+    setLesionPromptDrafts((current) => ({
+      ...current,
+      [imageId]: { x0: startX, y0: startY, x1: startX, y1: startY },
+    }));
+    element.setPointerCapture(event.pointerId);
+  }
+
+  function handleLesionPointerMove(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    if (
+      lesionDrawStateRef.current?.pointerId !== event.pointerId ||
+      lesionDrawStateRef.current?.imageId !== imageId
+    ) {
+      return;
+    }
+    updateLesionDraftFromPointer(imageId, event.clientX, event.clientY, event.currentTarget);
+  }
+
+  async function finishLesionPointer(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+    const drawState = lesionDrawStateRef.current;
+    if (!drawState || drawState.pointerId !== event.pointerId || drawState.imageId !== imageId) {
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const currentX = clamp01((event.clientX - rect.left) / rect.width);
+    const currentY = clamp01((event.clientY - rect.top) / rect.height);
+    const draftBox = normalizeBox({
+      x0: drawState.x,
+      y0: drawState.y,
+      x1: currentX,
+      y1: currentY,
+    });
+    setLesionPromptDrafts((current) => ({ ...current, [imageId]: draftBox }));
+    lesionDrawStateRef.current = null;
+    if (draftBox.x1 - draftBox.x0 < 0.01 || draftBox.y1 - draftBox.y0 < 0.01) {
+      try {
+        await clearSavedLesionPromptBox(imageId);
+      } catch (nextError) {
+        setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
+        setToast({
+          tone: "error",
+          message: describeError(nextError, pick(locale, "Unable to clear lesion box.", "병변 박스를 해제하지 못했습니다.")),
+        });
+      }
+      return;
+    }
+    try {
+      await persistLesionPromptBox(imageId, draftBox);
+    } catch (nextError) {
+      setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to auto-save lesion box.", "병변 박스를 자동 저장하지 못했습니다.")),
+      });
+    }
+  }
+
+  async function persistChangedLesionBoxes() {
+    for (const imageId of lesionBoxChangedImageIds) {
+      const draftBox = lesionPromptDrafts[imageId];
+      if (draftBox) {
+        await persistLesionPromptBox(imageId, draftBox);
+      }
+    }
+  }
+
+  async function handleRunLesionPreview() {
+    if (!selectedSiteId || !selectedCase) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select a saved case before running lesion preview.", "병변 crop 미리보기를 실행하려면 저장된 케이스를 선택하세요."),
+      });
+      return;
+    }
+    const hasAnyDraftBox = Object.values(lesionPromptDrafts).some((value) => value);
+    const hasAnySavedBox = Object.values(lesionPromptSaved).some((value) => value);
+    if (!hasAnyDraftBox && !hasAnySavedBox) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Draw and save at least one lesion box first.", "병변 박스를 하나 이상 그리고 저장하세요."),
+      });
+      return;
+    }
+
+    setLesionPreviewBusy(true);
+    clearLesionPreview();
+    setPanelOpen(true);
+    try {
+      if (lesionBoxChangedImageIds.length > 0) {
+        await persistChangedLesionBoxes();
+      }
+      const previews = await fetchCaseLesionPreview(
+        selectedSiteId,
+        selectedCase.patient_id,
+        selectedCase.visit_date,
+        token
+      );
+      const nextItems = await Promise.all(
+        previews.map(async (item) => {
+          const nextCard: LesionPreviewCard = {
+            ...item,
+            source_preview_url: null,
+            lesion_crop_url: null,
+            lesion_mask_url: null,
+          };
+          if (item.image_id) {
+            try {
+              const sourceBlob = await fetchImageBlob(selectedSiteId, item.image_id, token);
+              const sourceUrl = URL.createObjectURL(sourceBlob);
+              lesionPreviewUrlsRef.current.push(sourceUrl);
+              nextCard.source_preview_url = sourceUrl;
+            } catch {
+              nextCard.source_preview_url = null;
+            }
+            if (item.has_lesion_crop) {
+              try {
+                const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+                  selectedSiteId,
+                  selectedCase.patient_id,
+                  selectedCase.visit_date,
+                  item.image_id,
+                  "lesion_crop",
+                  token
+                );
+                const cropUrl = URL.createObjectURL(cropBlob);
+                lesionPreviewUrlsRef.current.push(cropUrl);
+                nextCard.lesion_crop_url = cropUrl;
+              } catch {
+                nextCard.lesion_crop_url = null;
+              }
+            }
+            if (item.has_lesion_mask) {
+              try {
+                const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+                  selectedSiteId,
+                  selectedCase.patient_id,
+                  selectedCase.visit_date,
+                  item.image_id,
+                  "lesion_mask",
+                  token
+                );
+                const maskUrl = URL.createObjectURL(maskBlob);
+                lesionPreviewUrlsRef.current.push(maskUrl);
+                nextCard.lesion_mask_url = maskUrl;
+              } catch {
+                nextCard.lesion_mask_url = null;
+              }
+            }
+          }
+          return nextCard;
+        })
+      );
+      setLesionPreviewItems(nextItems);
+      setToast({
+        tone: "success",
+        message: pick(
+          locale,
+          `Lesion preview generated for ${selectedCase.patient_id} / ${selectedCase.visit_date}.`,
+          `${selectedCase.patient_id} / ${selectedCase.visit_date} 병변 crop 미리보기를 생성했습니다.`
+        ),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Lesion preview failed.", "병변 crop 미리보기에 실패했습니다.")),
+      });
+    } finally {
+      setLesionPreviewBusy(false);
+    }
+  }
+
   async function handleRunRoiPreview() {
     if (!selectedSiteId || !selectedCase) {
       setToast({ tone: "error", message: copy.selectSavedCaseForRoi });
@@ -1149,6 +2003,7 @@ export function CaseWorkspace({
             ...item,
             source_preview_url: null,
             roi_crop_url: null,
+            medsam_mask_url: null,
           };
           if (item.image_id) {
             try {
@@ -1174,6 +2029,23 @@ export function CaseWorkspace({
                 nextCard.roi_crop_url = roiUrl;
               } catch {
                 nextCard.roi_crop_url = null;
+              }
+            }
+            if (item.has_medsam_mask) {
+              try {
+                const maskBlob = await fetchCaseRoiPreviewArtifactBlob(
+                  selectedSiteId,
+                  selectedCase.patient_id,
+                  selectedCase.visit_date,
+                  item.image_id,
+                  "medsam_mask",
+                  token
+                );
+                const maskUrl = URL.createObjectURL(maskBlob);
+                roiPreviewUrlsRef.current.push(maskUrl);
+                nextCard.medsam_mask_url = maskUrl;
+              } catch {
+                nextCard.medsam_mask_url = null;
               }
             }
           }
@@ -1236,9 +2108,10 @@ export function CaseWorkspace({
       const result = await runCaseValidation(selectedSiteId, token, {
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
+        model_version_id: validationResult?.model_version.version_id,
       });
       const nextArtifacts: ValidationArtifactPreviews = {};
-      const artifactKinds: ValidationArtifactKind[] = ["roi_crop", "gradcam", "medsam_mask"];
+      const artifactKinds: ValidationArtifactKind[] = ["roi_crop", "gradcam", "medsam_mask", "lesion_crop", "lesion_mask"];
 
       for (const artifactKind of artifactKinds) {
         const isAvailable =
@@ -1246,7 +2119,11 @@ export function CaseWorkspace({
             ? result.artifact_availability.roi_crop
             : artifactKind === "gradcam"
               ? result.artifact_availability.gradcam
-              : result.artifact_availability.medsam_mask;
+              : artifactKind === "medsam_mask"
+                ? result.artifact_availability.medsam_mask
+                : artifactKind === "lesion_crop"
+                  ? result.artifact_availability.lesion_crop
+                  : result.artifact_availability.lesion_mask;
         if (!isAvailable) {
           continue;
         }
@@ -1340,6 +2217,79 @@ export function CaseWorkspace({
 
   async function handleSaveCase() {
     const nextVisitReference = buildVisitReference(draft);
+    const patientId = draft.patient_id.trim();
+    const visitPayload = (visitReference: string) => ({
+      patient_id: patientId,
+      visit_date: visitReference,
+      actual_visit_date: draft.actual_visit_date.trim() || null,
+      culture_category: draft.culture_category,
+      culture_species: draft.culture_species.trim(),
+      additional_organisms: normalizeAdditionalOrganisms(
+        draft.culture_category,
+        draft.culture_species,
+        draft.additional_organisms
+      ),
+      contact_lens_use: draft.contact_lens_use,
+      predisposing_factor: draft.predisposing_factor,
+      other_history: draft.other_history.trim(),
+      visit_status: draft.visit_status,
+      is_initial_visit: /^initial$/i.test(visitReference),
+      polymicrobial: draft.additional_organisms.length > 0,
+    });
+    const uploadDraftImagesToVisit = async (visitReference: string) => {
+      for (const image of draftImages) {
+        const uploadedImage = await uploadImage(selectedSiteId!, token, {
+          patient_id: patientId,
+          visit_date: visitReference,
+          view: image.view,
+          is_representative: image.is_representative,
+          file: image.file,
+        });
+        const draftBox = draftLesionPromptBoxes[image.draft_id];
+        if (draftBox) {
+          await updateImageLesionBox(selectedSiteId!, uploadedImage.image_id, token, draftBox);
+        }
+      }
+    };
+    const finalizeSavedCase = async (visitReference: string) => {
+      await onSiteDataChanged(selectedSiteId!);
+      const [nextCases, nextPatients] = await Promise.all([
+        fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
+        fetchPatients(selectedSiteId!, token, { mine: showOnlyMine }),
+      ]);
+      setCases(nextCases);
+      setPatientRecords(nextPatients);
+      const createdCase = nextCases.find(
+        (item) => item.patient_id === patientId && item.visit_date === visitReference
+      );
+      await loadSiteActivity(selectedSiteId!);
+      setToast({
+        tone: "success",
+        message: copy.caseSaved(patientId, visitReference, selectedSiteId!),
+      });
+      clearDraftStorage(selectedSiteId!);
+      resetDraft();
+      setSelectedCase(createdCase ?? null);
+      setPanelOpen(true);
+      setCompletionState({
+        kind: "saved",
+        patient_id: patientId,
+        visit_date: visitReference,
+        timestamp: new Date().toISOString(),
+      });
+    };
+    const nextAvailableFollowUpReference = async () => {
+      const visits = await fetchVisits(selectedSiteId!, token, patientId);
+      const usedVisitReferences = visits.map((item) => item.visit_date);
+      let maxFollowUp = 0;
+      for (const item of usedVisitReferences) {
+        const match = String(item).match(/^F\/U-(\d{2})$/i);
+        if (match) {
+          maxFollowUp = Math.max(maxFollowUp, Number(match[1]));
+        }
+      }
+      return `F/U-${String(maxFollowUp + 1).padStart(2, "0")}`;
+    };
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForCase });
       return;
@@ -1365,73 +2315,55 @@ export function CaseWorkspace({
     try {
       try {
         await createPatient(selectedSiteId, token, {
-          patient_id: draft.patient_id.trim(),
+          patient_id: patientId,
           sex: draft.sex,
           age: Number(draft.age || 0),
           chart_alias: "",
           local_case_code: draft.local_case_code.trim(),
         });
       } catch (nextError) {
-        const message = describeError(nextError, copy.patientCreationFailed);
-        if (!message.toLowerCase().includes("already exists")) {
+        if (!isAlreadyExistsError(nextError)) {
           throw nextError;
         }
       }
 
-      await createVisit(selectedSiteId, token, {
-        patient_id: draft.patient_id.trim(),
-        visit_date: nextVisitReference,
-        actual_visit_date: draft.actual_visit_date.trim() || null,
-        culture_category: draft.culture_category,
-        culture_species: draft.culture_species.trim(),
-        additional_organisms: normalizeAdditionalOrganisms(
-          draft.culture_category,
-          draft.culture_species,
-          draft.additional_organisms
-        ),
-        contact_lens_use: draft.contact_lens_use,
-        predisposing_factor: draft.predisposing_factor,
-        other_history: draft.other_history.trim(),
-        visit_status: draft.visit_status,
-        is_initial_visit: draft.is_initial_visit,
-        polymicrobial: draft.additional_organisms.length > 0,
-      });
-
-      for (const image of draftImages) {
-        await uploadImage(selectedSiteId, token, {
-          patient_id: draft.patient_id.trim(),
-          visit_date: nextVisitReference,
-          view: image.view,
-          is_representative: image.is_representative,
-          file: image.file,
-        });
+      try {
+        await createVisit(selectedSiteId, token, visitPayload(nextVisitReference));
+        await uploadDraftImagesToVisit(nextVisitReference);
+        await finalizeSavedCase(nextVisitReference);
+      } catch (nextError) {
+        if (!isAlreadyExistsError(nextError)) {
+          throw nextError;
+        }
+        const overwriteConfirmed = window.confirm(
+          pick(
+            locale,
+            `Visit ${patientId} / ${displayVisitReference(locale, nextVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
+            `방문 ${patientId} / ${displayVisitReference(locale, nextVisitReference)}가 이미 존재합니다.\n\n확인을 누르면 덮어쓰고, 취소를 누르면 다른 케이스로 저장합니다.`
+          )
+        );
+        if (overwriteConfirmed) {
+          await updateVisit(selectedSiteId, token, patientId, nextVisitReference, visitPayload(nextVisitReference));
+          await deleteVisitImages(selectedSiteId, token, patientId, nextVisitReference);
+          await uploadDraftImagesToVisit(nextVisitReference);
+          await finalizeSavedCase(nextVisitReference);
+        } else {
+          const alternateVisitReference = await nextAvailableFollowUpReference();
+          const saveAlternateConfirmed = window.confirm(
+            pick(
+              locale,
+              `Save this case as ${displayVisitReference(locale, alternateVisitReference)} instead?`,
+              `이 케이스를 ${displayVisitReference(locale, alternateVisitReference)}로 저장할까요?`
+            )
+          );
+          if (!saveAlternateConfirmed) {
+            return;
+          }
+          await createVisit(selectedSiteId, token, visitPayload(alternateVisitReference));
+          await uploadDraftImagesToVisit(alternateVisitReference);
+          await finalizeSavedCase(alternateVisitReference);
+        }
       }
-
-      await onSiteDataChanged(selectedSiteId);
-      const [nextCases, nextPatients] = await Promise.all([
-        fetchCases(selectedSiteId, token, { mine: showOnlyMine }),
-        fetchPatients(selectedSiteId, token, { mine: showOnlyMine }),
-      ]);
-      setCases(nextCases);
-      setPatientRecords(nextPatients);
-      const createdCase = nextCases.find(
-        (item) => item.patient_id === draft.patient_id.trim() && item.visit_date === nextVisitReference
-      );
-      await loadSiteActivity(selectedSiteId);
-      setToast({
-        tone: "success",
-        message: copy.caseSaved(draft.patient_id.trim(), nextVisitReference, selectedSiteId),
-      });
-      clearDraftStorage(selectedSiteId);
-      resetDraft();
-      setSelectedCase(createdCase ?? null);
-      setPanelOpen(true);
-      setCompletionState({
-        kind: "saved",
-        patient_id: draft.patient_id.trim(),
-        visit_date: nextVisitReference,
-        timestamp: new Date().toISOString(),
-      });
     } catch (nextError) {
       setToast({
         tone: "error",
@@ -1469,6 +2401,94 @@ export function CaseWorkspace({
       }
       return 0;
     });
+  const patientListRows = Array.from(
+    filteredCases.reduce((groups, caseRecord) => {
+      const currentGroup = groups.get(caseRecord.patient_id) ?? [];
+      currentGroup.push(caseRecord);
+      groups.set(caseRecord.patient_id, currentGroup);
+      return groups;
+    }, new Map<string, CaseSummaryRecord[]>()).entries()
+  )
+    .map(([patientId, groupedCases]): PatientListRow => {
+      const sortedCases = [...groupedCases].sort((left, right) => caseTimestamp(right) - caseTimestamp(left));
+      const latestCase = sortedCases[0];
+      return {
+        patient_id: patientId,
+        latest_case: latestCase,
+        case_count: groupedCases.length,
+        organism_summary: Array.from(
+          new Set(
+            sortedCases
+              .flatMap((item) => listOrganisms(item.culture_category, item.culture_species, item.additional_organisms))
+              .map((organism) => organism.culture_species)
+          )
+        )
+          .slice(0, 3)
+          .join(" · "),
+        representative_thumbnails: sortedCases
+          .filter((item) => item.representative_image_id)
+          .slice(0, 3)
+          .map((item) => ({
+            case_id: item.case_id,
+            image_id: item.representative_image_id as string,
+            view: item.representative_view,
+            preview_url: null,
+          })),
+      };
+    })
+    .sort((left, right) => caseTimestamp(right.latest_case) - caseTimestamp(left.latest_case));
+  const selectedPatientCases = selectedCase
+    ? [...cases]
+        .filter((item) => item.patient_id === selectedCase.patient_id)
+        .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))
+    : [];
+  const patientListThumbKey = patientListRows
+    .map((row) => `${row.patient_id}:${row.representative_thumbnails.map((item) => item.image_id).join(",")}`)
+    .join("|");
+  useEffect(() => {
+    for (const url of patientListThumbUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    patientListThumbUrlsRef.current = [];
+    if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
+      setPatientListThumbs({});
+      return;
+    }
+    const currentSiteId = selectedSiteId;
+    let cancelled = false;
+    const createdUrls: string[] = [];
+    async function loadPatientListThumbs() {
+      const nextThumbs: Record<string, PatientListThumbnail[]> = {};
+      for (const row of patientListRows) {
+        nextThumbs[row.patient_id] = [];
+        for (const item of row.representative_thumbnails) {
+          try {
+            const blob = await fetchImageBlob(currentSiteId, item.image_id, token);
+            const previewUrl = URL.createObjectURL(blob);
+            createdUrls.push(previewUrl);
+            nextThumbs[row.patient_id].push({ ...item, preview_url: previewUrl });
+          } catch {
+            nextThumbs[row.patient_id].push({ ...item, preview_url: null });
+          }
+        }
+      }
+      if (!cancelled) {
+        patientListThumbUrlsRef.current = createdUrls;
+        setPatientListThumbs(nextThumbs);
+      } else {
+        for (const url of createdUrls) {
+          URL.revokeObjectURL(url);
+        }
+      }
+    }
+    void loadPatientListThumbs();
+    return () => {
+      cancelled = true;
+      for (const url of createdUrls) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [patientListThumbKey, railView, selectedSiteId, token]);
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const momentumPercent = cases.length === 0 ? 18 : Math.min(100, 18 + cases.length * 12);
@@ -1494,19 +2514,36 @@ export function CaseWorkspace({
   const resolvedVisitReference = buildVisitReference(draft);
   const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
   const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
+  const mainHeaderTitle =
+    railView === "patients"
+      ? pick(locale, "Patient list", "환자 리스트")
+      : pick(locale, "Case Authoring", "증례 작성");
+  const mainHeaderCopy =
+    railView === "patients"
+      ? copy.listViewHeaderCopy
+      : copy.caseAuthoringHeaderCopy;
 
   return (
     <main className="workspace-shell" data-workspace-theme={theme}>
       <div className="workspace-noise" />
       <aside className="workspace-rail">
         <div className="workspace-brand">
-          <div>
+          <div className="workspace-brand-copy">
             <div className="workspace-kicker">{pick(locale, "Case Studio", "케이스 스튜디오")}</div>
-            <h1>{pick(locale, "K-ERA Canvas", "K-ERA 캔버스")}</h1>
+            <h1>{pick(locale, "K-ERA", "K-ERA")}</h1>
           </div>
-          <button className="ghost-button" type="button" onClick={resetDraft}>
-            {pick(locale, "New draft", "새 초안")}
-          </button>
+          <div className="workspace-brand-actions">
+            <button className="ghost-button compact-ghost-button brand-action-button brand-action-primary" type="button" onClick={startNewCaseDraft}>
+              {pick(locale, "New case", "신규 케이스")}
+            </button>
+            <button
+              className={`toggle-pill brand-action-button brand-action-secondary ${railView === "patients" ? "active" : ""}`}
+              type="button"
+              onClick={() => setRailView("patients")}
+            >
+              {pick(locale, "List view", "리스트")}
+            </button>
+          </div>
         </div>
 
         <section className="workspace-card rail-section">
@@ -1571,7 +2608,7 @@ export function CaseWorkspace({
             ))}
             {siteActivity?.recent_contributions.slice(0, 2).map((item) => (
               <div key={item.contribution_id} className="rail-activity-item">
-                <strong>{item.patient_id}</strong>
+                <strong>{item.case_reference_id ?? common.notAvailable}</strong>
                 <span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span>
                 <span>{item.update_status ?? pick(locale, "queued", "대기열 등록")}</span>
               </div>
@@ -1583,10 +2620,10 @@ export function CaseWorkspace({
         </section>
 
         <section className="workspace-card rail-section">
-          <div className="rail-section-head">
+          <div className="rail-section-head validation-rail-head">
             <span className="rail-label">{pick(locale, "Hospital validation", "병원 검증")}</span>
             <button
-              className="ghost-button"
+              className="ghost-button compact-ghost-button rail-run-button"
               type="button"
               onClick={() => void handleRunSiteValidation()}
               disabled={siteValidationBusy || !selectedSiteId || !canRunValidation}
@@ -1678,72 +2715,19 @@ export function CaseWorkspace({
           </div>
         </section>
 
-        <section className="workspace-card rail-section rail-case-section">
-          <div className="rail-section-head">
-            <span className="rail-label">{pick(locale, "Recent cases", "최근 케이스")}</span>
-            <strong>{filteredCases.length}</strong>
-          </div>
-          <input
-            className="rail-search"
-            value={caseSearch}
-            onChange={(event) => setCaseSearch(event.target.value)}
-            placeholder={pick(locale, "Search patient or species", "환자 또는 균종 검색")}
-          />
-          <div className="rail-case-list">
-            {casesLoading ? <div className="empty-surface">{copy.loadingSavedCases}</div> : null}
-            {!casesLoading && filteredCases.length === 0 ? (
-              <div className="empty-surface">{copy.noSavedCases}</div>
-            ) : null}
-            {filteredCases.map((item) => (
-              <button
-                key={item.case_id}
-                className={`case-list-item ${selectedCase?.case_id === item.case_id ? "active" : ""}`}
-                type="button"
-                onClick={() => {
-                  setSelectedCase(item);
-                  setPanelOpen(true);
-                }}
-              >
-                <div className="case-list-head">
-                  <strong className="case-list-title">
-                    {isFavoriteCase(item.case_id) ? <span className="favorite-indicator" aria-hidden="true">★</span> : null}
-                    <span>{formatCaseTitle(item)}</span>
-                  </strong>
-                  <span>{item.image_count} {pick(locale, "imgs", "이미지")}</span>
-                </div>
-                <div className="case-list-meta">
-                  <span>{item.patient_id}</span>
-                  <span>{displayVisitReference(locale, item.visit_date)}</span>
-                  {item.actual_visit_date ? <span>{item.actual_visit_date}</span> : null}
-                  <span>{visitPhaseCopy(locale, item.is_initial_visit)}</span>
-                </div>
-                <div className="case-list-tagline">
-                  {translateOption(locale, "cultureCategory", item.culture_category)} / {organismSummaryLabel(
-                    item.culture_category,
-                    item.culture_species,
-                    item.additional_organisms
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
       </aside>
 
       <section className="workspace-main">
         <header className="workspace-header">
           <div>
             <div className="workspace-kicker">{pick(locale, "Research document", "연구 문서")}</div>
-            <h2>{pick(locale, "Compose one case as a living page", "한 케이스를 살아있는 페이지처럼 작성")}</h2>
-            <p>
-              {pick(
-                locale,
-                `Logged in as ${user.full_name} (${translateRole(locale, user.role)}). Case authoring, review, and contribution now stay in one continuous web workspace.`,
-                `${user.full_name} (${translateRole(locale, user.role)}) 계정으로 로그인됨. 케이스 작성, 검토, 기여 흐름이 이제 하나의 연속된 웹 워크스페이스 안에서 이어집니다.`
-              )}
-            </p>
+            <div className="workspace-title-row">
+              <h2>{mainHeaderTitle}</h2>
+              <span className="workspace-title-copy">{mainHeaderCopy}</span>
+            </div>
           </div>
           <div className="workspace-actions">
+            <span className="workspace-user-badge">{translateRole(locale, user.role)}</span>
             <LocaleToggle />
             <button className="ghost-button" type="button" onClick={onToggleTheme}>
               {theme === "dark" ? pick(locale, "Light mode", "라이트 모드") : pick(locale, "Dark mode", "다크 모드")}
@@ -1756,47 +2740,476 @@ export function CaseWorkspace({
             <button className="ghost-button" type="button" onClick={onExportManifest} disabled={!selectedSiteId}>
               {pick(locale, "Export manifest", "매니페스트 내보내기")}
             </button>
-            <button className="primary-workspace-button" type="button" onClick={onLogout}>
-              {pick(locale, "Log out", "로그아웃")}
-            </button>
+              <button className="primary-workspace-button complete-intake-button" type="button" onClick={onLogout}>
+                {pick(locale, "Log out", "로그아웃")}
+              </button>
           </div>
         </header>
 
         <div className="workspace-center">
+          {railView === "patients" ? (
+            <section className="doc-surface">
+              <div className="doc-title-row">
+                <div className="doc-title-copy">
+                  <div className="doc-eyebrow">{pick(locale, "Patient list", "환자 리스트")}</div>
+                  <h3>{pick(locale, "Saved patients", "저장 환자 목록")}</h3>
+                </div>
+                <div className="doc-title-meta">
+                  <div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
+                  <span className="doc-site-badge">{`${patientListRows.length} ${pick(locale, "patients", "환자")}`}</span>
+                </div>
+              </div>
+              <div className="doc-badge-row">
+                <span className="doc-site-badge">
+                  {pick(
+                    locale,
+                    "Each row is one patient. Click a row to load the latest saved case with images and lesion boxes.",
+                    "각 행은 환자 1명입니다. 행을 누르면 최신 저장 케이스와 이미지, lesion box를 바로 불러옵니다."
+                  )}
+                </span>
+              </div>
+              <section className="doc-section list-board-section">
+                <input
+                  className="rail-search list-board-search"
+                  value={caseSearch}
+                  onChange={(event) => setCaseSearch(event.target.value)}
+                  placeholder={pick(locale, "Search patient or organism", "환자 또는 균종으로 검색")}
+                />
+                {casesLoading ? <div className="empty-surface">{copy.loadingSavedCases}</div> : null}
+                {!casesLoading && patientListRows.length === 0 ? (
+                  <div className="empty-surface">{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장 환자가 아직 없습니다.")}</div>
+                ) : null}
+                <div className="list-board-stack">
+                  {patientListRows.map((row) => (
+                    <button
+                      key={`board-${row.patient_id}`}
+                      className={`case-list-item patient-list-row board-patient-row ${
+                        selectedCase?.patient_id === row.patient_id ? "active" : ""
+                      }`}
+                      type="button"
+                      onClick={() => openSavedCase(row.latest_case, "cases")}
+                    >
+                      <div className="patient-list-row-main">
+                        <div className="patient-list-row-chips">
+                          <span className="patient-list-chip strong">{row.latest_case.local_case_code || row.patient_id}</span>
+                          <span className="patient-list-chip">{row.patient_id}</span>
+                          <span className="patient-list-chip">{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? common.notAvailable}`}</span>
+                          <span className="patient-list-chip">{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
+                          <span className="patient-list-chip">{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>
+                        </div>
+                        <div className="patient-list-row-meta">
+                          <span>{displayVisitReference(locale, row.latest_case.visit_date)}</span>
+                          {row.latest_case.actual_visit_date ? <span>{row.latest_case.actual_visit_date}</span> : null}
+                          <span>{formatDateTime(row.latest_case.latest_image_uploaded_at ?? row.latest_case.created_at, localeTag, common.notAvailable)}</span>
+                        </div>
+                      </div>
+                      <div className="patient-list-thumbnails">
+                        {row.representative_thumbnails.length === 0 ? (
+                          <span className="patient-list-thumb-empty">{pick(locale, "No thumbnails", "썸네일 없음")}</span>
+                        ) : (
+                          row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
+                            const previewUrl =
+                              patientListThumbs[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id)?.preview_url ?? null;
+                            return previewUrl ? (
+                              <img
+                                key={`board-${thumbnail.case_id}`}
+                                src={previewUrl}
+                                alt={`${row.patient_id}-${thumbnail.case_id}`}
+                                className="patient-list-thumb"
+                              />
+                            ) : (
+                              <div key={`board-${thumbnail.case_id}`} className="patient-list-thumb patient-list-thumb-fallback">
+                                {translateOption(locale, "view", thumbnail.view ?? "white")}
+                              </div>
+                            );
+                          })
+                        )}
+                        {row.representative_thumbnails.length > 4 ? (
+                          <span className="patient-list-thumb-more">+{row.representative_thumbnails.length - 4}</span>
+                        ) : null}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </section>
+          ) : selectedCase ? (
           <section className="doc-surface">
             <div className="doc-title-row">
-              <div>
-                <div className="doc-eyebrow">{pick(locale, "New case", "새 케이스")}</div>
+              <div className="doc-title-copy">
+                <div className="doc-eyebrow">{pick(locale, "Saved case", "저장 케이스")}</div>
+                <h3>{formatCaseTitle(selectedCase)}</h3>
+              </div>
+              <div className="doc-title-meta">
+                <div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
+                <span className="doc-site-badge">{displayVisitReference(locale, selectedCase.visit_date)}</span>
+              </div>
+            </div>
+
+            <section className="doc-section intake-summary-card saved-case-summary-card">
+              <div className="doc-section-head">
+                <div>
+                  <div className="doc-section-label">{pick(locale, "Case summary", "케이스 요약")}</div>
+                </div>
+                <div className="workspace-actions">
+                  <button className="ghost-button saved-case-action-button" type="button" onClick={() => void startFollowUpDraftFromSelectedCase()}>
+                    {pick(locale, "Add F/U", "재진 추가")}
+                  </button>
+                  <button
+                    className={`ghost-button saved-case-action-button ${isFavoriteCase(selectedCase.case_id) ? "saved-case-action-button-active" : ""}`}
+                    type="button"
+                    onClick={() => toggleFavoriteCase(selectedCase.case_id)}
+                  >
+                    {isFavoriteCase(selectedCase.case_id) ? pick(locale, "Favorited", "즐겨찾기됨") : pick(locale, "Favorite", "즐겨찾기")}
+                  </button>
+                </div>
+              </div>
+              <div className="intake-summary-grid">
+                <div className="intake-summary-block">
+                  <div className="intake-summary-inline">
+                    <strong>{selectedCase.local_case_code || selectedCase.patient_id}</strong>
+                    <p>{`${translateOption(locale, "sex", selectedCase.sex)} · ${selectedCase.age ?? common.notAvailable}`}</p>
+                  </div>
+                </div>
+                <div className="intake-summary-block">
+                  <div className="intake-summary-inline">
+                    <strong>{displayVisitReference(locale, selectedCase.visit_date)}</strong>
+                    <p>{translateOption(locale, "visitStatus", selectedCase.visit_status)}</p>
+                  </div>
+                </div>
+                <div className="intake-summary-block intake-summary-block-wide">
+                  <div className="intake-summary-inline intake-summary-inline-organism">
+                    <strong>{`${translateOption(locale, "cultureCategory", selectedCase.culture_category)} · ${selectedCase.culture_species}`}</strong>
+                    {(selectedCase.additional_organisms?.length ?? 0) > 0 ? (
+                      <div className="organism-chip-row">
+                        {selectedCase.additional_organisms.map((organism) => (
+                          <span key={`saved-summary-${organismKey(organism)}`} className="organism-chip static">
+                            {`${translateOption(locale, "cultureCategory", organism.culture_category)} · ${organism.culture_species}`}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="doc-section">
+              <div className="doc-section-head">
+                <div className="visit-context-headline">
+                  <div className="doc-section-label">{pick(locale, "Patient timeline", "환자 전체 방문")}</div>
+                  <h4 className="visit-context-hint">
+                    {pick(locale, "Review all saved visit images grouped by Initial and follow-ups.", "초진과 재진별로 저장된 이미지를 한 번에 확인합니다.")}
+                  </h4>
+                </div>
+                <span className="doc-site-badge">
+                  {patientVisitGalleryBusy
+                    ? common.loading
+                    : `${selectedPatientCases.length} ${pick(locale, "visits", "방문")}`}
+                </span>
+              </div>
+              {patientVisitGalleryBusy ? <div className="empty-surface">{common.loading}</div> : null}
+              {!patientVisitGalleryBusy && selectedPatientCases.length === 0 ? (
+                <div className="empty-surface">{pick(locale, "No saved visits are available for this patient yet.", "이 환자에는 아직 저장된 방문이 없습니다.")}</div>
+              ) : null}
+              {!patientVisitGalleryBusy && selectedPatientCases.length > 0 ? (
+                <div className="patient-visit-gallery-stack">
+                  {selectedPatientCases.map((caseItem) => {
+                    const visitImages = patientVisitGallery[caseItem.case_id] ?? [];
+                    return (
+                      <section
+                        key={`visit-gallery-${caseItem.case_id}`}
+                        className={`patient-visit-gallery-card ${selectedCase.case_id === caseItem.case_id ? "active" : ""}`}
+                      >
+                        <div className="panel-card-head">
+                          <strong>{displayVisitReference(locale, caseItem.visit_date)}</strong>
+                          <button
+                            type="button"
+                            className={`toggle-pill compact ${selectedCase.case_id === caseItem.case_id ? "active" : ""}`}
+                            onClick={() => openSavedCase(caseItem, "cases")}
+                          >
+                            {selectedCase.case_id === caseItem.case_id ? pick(locale, "Current visit", "현재 방문") : pick(locale, "Open visit", "방문 열기")}
+                          </button>
+                        </div>
+                        <div className="panel-meta">
+                          <span>{formatDateTime(caseItem.latest_image_uploaded_at ?? caseItem.created_at, localeTag, common.notAvailable)}</span>
+                          <span>{`${visitImages.length} ${pick(locale, "images", "이미지")}`}</span>
+                          <span>{`${translateOption(locale, "cultureCategory", caseItem.culture_category)} · ${organismSummaryLabel(caseItem.culture_category, caseItem.culture_species, caseItem.additional_organisms)}`}</span>
+                        </div>
+                        {visitImages.length > 0 ? (
+                          <div className="patient-visit-image-strip">
+                            {visitImages.map((image) => (
+                              <div key={`timeline-${image.image_id}`} className="patient-visit-image-card">
+                                {image.preview_url ? (
+                                  <img src={image.preview_url} alt={image.image_id} className="patient-visit-image-thumb" />
+                                ) : (
+                                  <div className="patient-visit-image-thumb patient-visit-image-thumb-fallback">
+                                    {translateOption(locale, "view", image.view)}
+                                  </div>
+                                )}
+                                <div className="patient-visit-image-meta">
+                                  <strong>{translateOption(locale, "view", image.view)}</strong>
+                                  <span>{image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting", "보조 이미지")}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="empty-surface">{pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}</div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="doc-section">
+              <div className="doc-section-head">
+                <div className="visit-context-headline">
+                  <div className="doc-section-label">{pick(locale, "Saved images", "저장 이미지")}</div>
+                  <h4 className="visit-context-hint">
+                    {pick(locale, "Review the uploaded images and edit lesion boxes directly here", "업로드된 이미지를 확인하고 여기서 바로 lesion box를 수정")}</h4>
+                </div>
+                <span className="doc-site-badge">{panelBusy ? common.loading : `${selectedCaseImages.length} ${pick(locale, "images", "이미지")}`}</span>
+              </div>
+              <div className="ops-stack saved-case-image-board">
+                {selectedCaseImages.map((image) => (
+                  <section key={`doc-${image.image_id}`} className="ops-card">
+                    {image.preview_url ? (
+                      <div
+                        className="lesion-editor-surface panel-image-annotation-surface"
+                        onPointerDown={(event) => handleLesionPointerDown(image.image_id, event)}
+                        onPointerMove={(event) => handleLesionPointerMove(image.image_id, event)}
+                        onPointerUp={(event) => finishLesionPointer(image.image_id, event)}
+                        onPointerCancel={(event) => finishLesionPointer(image.image_id, event)}
+                      >
+                        <img
+                          src={image.preview_url}
+                          alt={image.image_id}
+                          className="panel-image-preview lesion-editor-image"
+                          draggable={false}
+                          onDragStart={(event) => event.preventDefault()}
+                        />
+                        {lesionPromptDrafts[image.image_id] ? (
+                          <div
+                            className="lesion-box-overlay"
+                            style={{
+                              left: `${(lesionPromptDrafts[image.image_id]?.x0 ?? 0) * 100}%`,
+                              top: `${(lesionPromptDrafts[image.image_id]?.y0 ?? 0) * 100}%`,
+                              width: `${((lesionPromptDrafts[image.image_id]?.x1 ?? 0) - (lesionPromptDrafts[image.image_id]?.x0 ?? 0)) * 100}%`,
+                              height: `${((lesionPromptDrafts[image.image_id]?.y1 ?? 0) - (lesionPromptDrafts[image.image_id]?.y0 ?? 0)) * 100}%`,
+                            }}
+                          />
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="panel-image-fallback">{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
+                    )}
+                    <div className="panel-meta panel-image-inline-meta">
+                      <strong className="panel-image-inline-label">{translateOption(locale, "view", image.view)}</strong>
+                      <span>{image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
+                      <span>
+                        {lesionBoxBusyImageId === image.image_id
+                          ? pick(locale, "Saving box...", "박스 자동 저장 중...")
+                          : lesionPromptDrafts[image.image_id]
+                          ? JSON.stringify(lesionPromptDrafts[image.image_id] ?? null) !== JSON.stringify(lesionPromptSaved[image.image_id] ?? null)
+                            ? pick(locale, "Unsaved box", "미저장 박스")
+                            : pick(locale, "Box saved", "박스 저장됨")
+                          : pick(locale, "No box", "박스 없음")}
+                      </span>
+                    </div>
+                  </section>
+                ))}
+              </div>
+              {!selectedCaseImages.length && !panelBusy ? (
+                <div className="empty-surface">{pick(locale, "No saved images are attached to this case yet.", "이 케이스에는 아직 저장 이미지가 없습니다.")}</div>
+              ) : null}
+            </section>
+
+            <div className="ops-dual-grid">
+              <section className="doc-section">
+                <div className="doc-section-head preview-section-head">
+                  <div className="preview-section-copy">
+                    <div className="doc-section-label">{pick(locale, "Cornea preview", "각막 crop 미리보기")}</div>
+                  </div>
+                  <button
+                    className="ghost-button preview-run-button"
+                    type="button"
+                    onClick={() => void handleRunRoiPreview()}
+                    disabled={roiPreviewBusy || !canRunRoiPreview}
+                  >
+                    {roiPreviewBusy ? pick(locale, "Preparing...", "준비 중...") : pick(locale, "Preview cornea crop", "각막 crop 미리보기 실행")}
+                  </button>
+                </div>
+                {!canRunRoiPreview ? <p>{pick(locale, "Viewer accounts can inspect images, but cornea preview remains disabled.", "뷰어 계정은 이미지는 볼 수 있지만 각막 crop 미리보기는 실행할 수 없습니다.")}</p> : null}
+                {canRunRoiPreview && roiPreviewItems.length === 0 ? (
+                  <p>{pick(locale, "Generate a preview to compare the saved source images with their cornea crops.", "저장된 원본 이미지와 각막 crop을 비교하려면 미리보기를 생성하세요.")}</p>
+                ) : null}
+                {roiPreviewItems.length > 0 ? (
+                  <div className="panel-image-stack">
+                    {roiPreviewItems.map((item) => (
+                      <div key={`${item.image_id ?? item.source_image_path}:roi`} className="panel-image-card">
+                        <div className="panel-card-head">
+                          <strong>{translateOption(locale, "view", item.view)}</strong>
+                          <span>{item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
+                        </div>
+                        <div className="panel-meta">
+                          <span>{`backend: ${item.backend}`}</span>
+                        </div>
+                        <div className="panel-preview-grid">
+                          <div>
+                            {item.source_preview_url ? (
+                              <img src={item.source_preview_url} alt={`${item.view} source`} className="panel-image-preview" />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Source", "원본")}</strong>
+                            </div>
+                          </div>
+                          <div>
+                            {item.medsam_mask_url ? (
+                              <MaskOverlayPreview
+                                sourceUrl={item.source_preview_url}
+                                maskUrl={item.medsam_mask_url}
+                                alt={`${item.view} cornea mask overlay`}
+                                tint={[231, 211, 111]}
+                              />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Cornea mask unavailable", "각막 mask를 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Cornea mask", "각막 mask")}</strong>
+                            </div>
+                          </div>
+                          <div>
+                            {item.roi_crop_url ? (
+                              <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className="panel-image-preview" />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="doc-section">
+                <div className="doc-section-head preview-section-head">
+                  <div className="preview-section-copy">
+                    <div className="doc-section-label">{pick(locale, "Lesion preview", "병변 crop 미리보기")}</div>
+                  </div>
+                  <button
+                    className="ghost-button preview-run-button"
+                    type="button"
+                    onClick={() => void handleRunLesionPreview()}
+                    disabled={lesionPreviewBusy || selectedCaseImages.length === 0}
+                  >
+                    {lesionPreviewBusy ? pick(locale, "Preparing...", "준비 중...") : pick(locale, "Preview lesion crop", "병변 crop 미리보기 실행")}
+                  </button>
+                </div>
+                {!selectedCaseImages.length ? <p>{pick(locale, "Select a saved case with uploaded images before running lesion preview.", "병변 crop 미리보기를 실행하려면 업로드 이미지가 있는 저장된 케이스를 선택하세요.")}</p> : null}
+                {selectedCaseImages.length > 0 && lesionPreviewItems.length === 0 ? (
+                  <p>
+                    {hasAnySavedLesionBox
+                      ? pick(locale, "Generate a preview to compare each boxed image with its lesion-centered crop.", "박스가 저장된 각 이미지를 병변 중심 crop과 비교하려면 미리보기를 생성하세요.")
+                      : pick(locale, "Save at least one lesion box in the saved images section, then run preview.", "저장 이미지 섹션에서 병변 박스를 하나 이상 저장한 뒤 미리보기를 실행하세요.")}
+                  </p>
+                ) : null}
+                {lesionPreviewItems.length > 0 ? (
+                  <div className="panel-image-stack">
+                    {lesionPreviewItems.map((item) => (
+                      <div key={`${item.image_id ?? item.source_image_path}:lesion`} className="panel-image-card">
+                        <div className="panel-card-head">
+                          <strong>{translateOption(locale, "view", item.view)}</strong>
+                          <span>{item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
+                        </div>
+                        <div className="panel-meta">
+                          <span>{`backend: ${item.backend}`}</span>
+                        </div>
+                        <div className="panel-preview-grid">
+                          <div>
+                            {item.source_preview_url ? (
+                              <img src={item.source_preview_url} alt={`${item.view} source`} className="panel-image-preview" />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Source", "원본")}</strong>
+                            </div>
+                          </div>
+                          <div>
+                            {item.lesion_mask_url ? (
+                              <MaskOverlayPreview
+                                sourceUrl={item.source_preview_url}
+                                maskUrl={item.lesion_mask_url}
+                                alt={`${item.view} lesion mask overlay`}
+                                tint={[242, 164, 154]}
+                              />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Lesion mask unavailable", "병변 mask를 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Lesion mask", "병변 mask")}</strong>
+                            </div>
+                          </div>
+                          <div>
+                            {item.lesion_crop_url ? (
+                              <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className="panel-image-preview" />
+                            ) : (
+                              <div className="panel-image-fallback">{pick(locale, "Lesion crop unavailable", "병변 crop을 표시할 수 없습니다")}</div>
+                            )}
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          </section>
+          ) : (
+          <section className="doc-surface">
+            <div className="doc-title-row">
+              <div className="doc-title-copy">
+                <div className="doc-eyebrow">{pick(locale, "Case Authoring", "증례 작성")}</div>
                 <h3>{draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "제목 없는 각막염 케이스")}</h3>
               </div>
-              <div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
+              <div className="doc-title-meta">
+                <div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
+                <span className="doc-site-badge">{draftStatusLabel}</span>
+              </div>
             </div>
-            <div className="doc-badge-row">
-              <span className="doc-site-badge">{draftStatusLabel}</span>
-              {draftImages.length > 0 ? <span className="doc-site-badge">{pick(locale, "Unsaved image files stay in this tab only", "저장되지 않은 이미지 파일은 현재 탭에만 유지됩니다")}</span> : null}
-            </div>
+            {draftImages.length > 0 ? (
+              <div className="doc-badge-row">
+                <span className="doc-site-badge">{pick(locale, "Unsaved image files stay in this tab only", "저장되지 않은 이미지 파일은 현재 탭에만 유지됩니다")}</span>
+              </div>
+            ) : null}
 
             {!draft.intake_completed ? (
               <>
             <section className="doc-section">
-              <div className="doc-section-head">
-                <div>
-                  <div className="doc-section-label">{pick(locale, "Patient identity", "환자 정보")}</div>
-                  <h4>{pick(locale, "Start with patient details", "환자 정보부터 입력")}</h4>
-                </div>
-                <span>{draftImages.length} {pick(locale, "image blocks", "이미지 블록")}</span>
-              </div>
-              <div className="inline-form-grid">
-                <label className="inline-field">
-                  <span>{pick(locale, "Patient ID", "환자 ID")}</span>
+              <div className="patient-inline-header">
+                <div className="doc-section-label">{pick(locale, "Patient identity", "환자 정보")}</div>
+                <label className="patient-inline-item patient-inline-item-id">
+                  <strong>{pick(locale, "Patient ID", "환자 ID")}</strong>
                   <input
                     value={draft.patient_id}
                     onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
                     placeholder="KERA-2026-001"
                   />
                 </label>
-                <label className="inline-field">
-                  <span>{pick(locale, "Sex", "성별")}</span>
+                <label className="patient-inline-item">
+                  <strong>{pick(locale, "Sex", "성별")}</strong>
                   <select
                     value={draft.sex}
                     onChange={(event) => setDraft((current) => ({ ...current, sex: event.target.value }))}
@@ -1808,8 +3221,8 @@ export function CaseWorkspace({
                     ))}
                   </select>
                 </label>
-                <label className="inline-field">
-                  <span>{pick(locale, "Age", "나이")}</span>
+                <label className="patient-inline-item patient-inline-item-age">
+                  <strong>{pick(locale, "Age", "나이")}</strong>
                   <input
                     type="number"
                     min={0}
@@ -1817,14 +3230,21 @@ export function CaseWorkspace({
                     onChange={(event) => setDraft((current) => ({ ...current, age: event.target.value }))}
                   />
                 </label>
+                <span className="patient-inline-count">{draftImages.length} {pick(locale, "image blocks", "이미지 블록")}</span>
               </div>
             </section>
 
             <section className="doc-section">
               <div className="doc-section-head">
-                <div>
+                <div className="visit-context-headline">
                   <div className="doc-section-label">{pick(locale, "Visit context", "방문 맥락")}</div>
-                  <h4>{pick(locale, "Clinical tags instead of rigid steps", "고정 단계 대신 임상 태그로 정리")}</h4>
+                  <div className="property-hint visit-context-hint">
+                    {pick(
+                      locale,
+                      "Select one or more risk factors below using the toggles.",
+                      "아래 위험 인자를 토글로 하나 이상 선택할 수 있습니다."
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="visit-context-inline">
@@ -1857,7 +3277,7 @@ export function CaseWorkspace({
               <label className="notes-field">
                 <span>{pick(locale, "Case note", "케이스 메모")}</span>
                 <textarea
-                  rows={5}
+                  rows={1}
                   value={draft.other_history}
                   onChange={(event) => setDraft((current) => ({ ...current, other_history: event.target.value }))}
                   placeholder={pick(locale, "Freeform note space for ocular surface context, referral history, or procedural remarks.", "안구 표면 상태, 전원 이력, 시술 관련 메모 등을 자유롭게 적을 수 있습니다.")}
@@ -1866,157 +3286,143 @@ export function CaseWorkspace({
             </section>
 
             <section className="doc-section">
-              <div className="doc-section-head">
-                <div>
+              <div className="organism-inline-header">
+                <div className="organism-inline-meta">
                   <div className="doc-section-label">{pick(locale, "Organism", "균종")}</div>
-                  <h4>{pick(locale, "Set the primary organism before timing metadata", "방문 시점 정보보다 먼저 균종 입력")}</h4>
+                  <span className="organism-inline-state">
+                    {draft.additional_organisms.length > 0
+                      ? pick(locale, "Polymicrobial", "다균종")
+                      : pick(locale, "Single organism", "단일 균종")}
+                  </span>
                 </div>
-                <span>
-                  {draft.additional_organisms.length > 0
-                    ? pick(locale, "Polymicrobial", "다균종")
-                    : pick(locale, "Single organism", "단일 균종")}
-                </span>
-              </div>
-              <div className="property-grid organism-entry-grid">
-                <label className="property-chip">
-                <span>{pick(locale, "Category", "분류")}</span>
+                <label className="organism-inline-item">
+                  <strong>{pick(locale, "Category", "분류")}</strong>
                 <select
                   value={draft.culture_category}
                   onChange={(event) => {
                     const nextCategory = event.target.value;
-                    updatePrimaryOrganism(
-                      nextCategory,
-                      (CULTURE_SPECIES[nextCategory] ?? [draft.culture_species])[0]
-                    );
+                    updatePrimaryOrganism(nextCategory, "");
                   }}
                 >
+                  <option value="">{pick(locale, "Select category", "분류 선택")}</option>
                   {Object.keys(CULTURE_SPECIES).map((option) => (
                     <option key={option} value={option}>
                       {translateOption(locale, "cultureCategory", option)}
                     </option>
                   ))}
                 </select>
-              </label>
-                <label className="property-chip">
-                <span>{pick(locale, "Species", "세부 균종")}</span>
+                </label>
+                <label className="organism-inline-item organism-inline-item-species">
+                  <strong>{pick(locale, "Species", "세부 균종")}</strong>
                 <select
                   value={draft.culture_species}
+                  disabled={!draft.culture_category}
                   onChange={(event) => updatePrimaryOrganism(draft.culture_category, event.target.value)}
                 >
+                  <option value="">{pick(locale, "Select species", "균종 선택")}</option>
                   {speciesOptions.map((option) => (
                     <option key={option} value={option}>
                       {option}
                     </option>
-                  ))}
-                </select>
-                <div className="property-hint">
-                  {pick(locale, "This is the primary organism label for the case.", "이 값이 케이스의 주 균종 라벨로 저장됩니다.")}
-                </div>
-              </label>
-                <div className="property-chip property-chip-wide">
-                <span>{pick(locale, "Additional organisms", "추가 균종")}</span>
+                    ))}
+                  </select>
+                </label>
+                <div className="organism-inline-item organism-inline-item-action">
+                <strong>{pick(locale, "Additional organisms", "추가 균종")}</strong>
                 <button
                   className={`ghost-button ${showAdditionalOrganismForm ? "active" : ""}`}
                   type="button"
                   onClick={() => setShowAdditionalOrganismForm((current) => !current)}
                 >
                   {showAdditionalOrganismForm
-                    ? pick(locale, "Hide additional organism (polymicrobial) input", "추가 균종(다균종) 입력 닫기")
-                    : pick(locale, "Add additional organism (polymicrobial)", "추가 균종 (다균종) 입력")}
+                    ? pick(locale, "Hide mixed", "다균종 입력 닫기")
+                    : pick(locale, "Add mixed", "다균종 입력")}
                 </button>
-                {showAdditionalOrganismForm ? (
-                  <div className="organism-add-grid">
-                    <select
-                      value={pendingOrganism.culture_category}
-                      onChange={(event) => {
-                        const nextCategory = event.target.value;
-                        setPendingOrganism({
-                          culture_category: nextCategory,
-                          culture_species: (CULTURE_SPECIES[nextCategory] ?? [pendingOrganism.culture_species])[0],
-                        });
-                      }}
-                    >
-                      {Object.keys(CULTURE_SPECIES).map((option) => (
-                        <option key={`pending-${option}`} value={option}>
-                          {translateOption(locale, "cultureCategory", option)}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={pendingOrganism.culture_species}
-                      onChange={(event) =>
-                        setPendingOrganism((current) => ({
-                          ...current,
-                          culture_species: event.target.value,
-                        }))
-                      }
-                    >
-                      {pendingSpeciesOptions.map((option) => (
-                        <option key={`pending-species-${option}`} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="ghost-button organism-add-button" type="button" onClick={addAdditionalOrganism}>
-                      {pick(locale, "Add organism", "균종 추가")}
-                    </button>
-                  </div>
-                ) : null}
-                <div className="property-hint">
-                  {pick(locale, "Only open this when a polymicrobial case needs extra organism labels.", "다균종 케이스에서만 추가 균종 입력을 열어 사용하세요.")}
-                </div>
                 </div>
               </div>
+              <div className="property-hint organism-primary-hint">
+                {pick(locale, "This is the primary organism label for the case.", "이 값이 케이스의 주 균종 라벨로 저장됩니다.")}
+              </div>
+              {showAdditionalOrganismForm ? (
+                <div className="organism-add-grid">
+                  <select
+                    value={pendingOrganism.culture_category}
+                    onChange={(event) => {
+                      const nextCategory = event.target.value;
+                      setPendingOrganism({
+                        culture_category: nextCategory,
+                        culture_species: (CULTURE_SPECIES[nextCategory] ?? [pendingOrganism.culture_species])[0],
+                      });
+                    }}
+                  >
+                    {Object.keys(CULTURE_SPECIES).map((option) => (
+                      <option key={`pending-${option}`} value={option}>
+                        {translateOption(locale, "cultureCategory", option)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={pendingOrganism.culture_species}
+                    onChange={(event) =>
+                      setPendingOrganism((current) => ({
+                        ...current,
+                        culture_species: event.target.value,
+                      }))
+                    }
+                  >
+                    {pendingSpeciesOptions.map((option) => (
+                      <option key={`pending-species-${option}`} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="ghost-button organism-add-button" type="button" onClick={addAdditionalOrganism}>
+                    {pick(locale, "Add organism", "균종 추가")}
+                  </button>
+                </div>
+              ) : null}
             </section>
-            <section className="doc-section">
-              <div className="doc-section-head">
-                <div>
-                  <div className="doc-section-label">{pick(locale, "Organism summary", "균종 요약")}</div>
-                  <h4>{pick(locale, "Review the primary label and any polymicrobial additions", "대표 균종과 추가 균종 확인")}</h4>
+            {draft.additional_organisms.length > 0 ? (
+              <section className="doc-section">
+                <div className="doc-section-head">
+                  <div>
+                    <div className="doc-section-label">{pick(locale, "Organism summary", "균종 요약")}</div>
+                  </div>
+                  <span>{pick(locale, "Polymicrobial", "다균종")}</span>
                 </div>
-                <span>
-                  {draft.additional_organisms.length > 0
-                    ? pick(locale, "Polymicrobial", "다균종")
-                    : pick(locale, "Single organism", "단일 균종")}
-                </span>
-              </div>
-              <div className="organism-chip-row">
-                {intakeOrganisms.map((organism, index) => (
-                  <div key={`draft-organism-${organismKey(organism)}`} className="organism-chip">
-                    <div className="organism-chip-copy">
-                      <strong>{organism.culture_species}</strong>
-                      <span>
-                        {index === 0
-                          ? pick(locale, "Primary", "대표 균종")
-                          : translateOption(locale, "cultureCategory", organism.culture_category)}
-                      </span>
+                <div className="organism-chip-row">
+                  {intakeOrganisms.map((organism, index) => (
+                    <div key={`draft-organism-${organismKey(organism)}`} className="organism-chip">
+                      <div className="organism-chip-copy">
+                        <strong>{organism.culture_species}</strong>
+                        <span>
+                          {index === 0
+                            ? pick(locale, "Primary", "대표 균종")
+                            : translateOption(locale, "cultureCategory", organism.culture_category)}
+                        </span>
+                      </div>
+                      {index > 0 ? (
+                        <button
+                          className="organism-chip-remove"
+                          type="button"
+                          onClick={() => removeAdditionalOrganism(organism)}
+                          aria-label={pick(locale, "Remove organism", "균종 제거")}
+                        >
+                          {pick(locale, "Remove", "제거")}
+                        </button>
+                      ) : null}
                     </div>
-                    {index > 0 ? (
-                      <button
-                        className="organism-chip-remove"
-                        type="button"
-                        onClick={() => removeAdditionalOrganism(organism)}
-                        aria-label={pick(locale, "Remove organism", "균종 제거")}
-                      >
-                        {pick(locale, "Remove", "제거")}
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-              <div className="property-hint">
-                {draft.additional_organisms.length > 0
-                  ? pick(locale, "This visit will be saved as polymicrobial automatically.", "이 방문은 저장 시 자동으로 다균종으로 처리됩니다.")
-                  : pick(locale, "Keep this as a single organism unless an additional isolate is confirmed.", "추가 분리 균주가 확인되기 전까지는 단일 균종으로 유지하세요.")}
-              </div>
-            </section>
+                  ))}
+                </div>
+                <div className="property-hint">
+                  {pick(locale, "This visit will be saved as polymicrobial automatically.", "이 방문은 저장 시 자동으로 다균종으로 처리됩니다.")}
+                </div>
+              </section>
+            ) : null}
             <div className="doc-footer">
-              <div>
-                <strong>{pick(locale, "Core intake checkpoint", "기본 입력 체크포인트")}</strong>
-                <p>{pick(locale, "Lock patient, context, and organism into a summary card before entering visit timing.", "방문 시점 정보를 넣기 전에 환자 정보, 방문 맥락, 균종을 카드로 고정합니다.")}</p>
-              </div>
-              <button className="primary-workspace-button" type="button" onClick={handleCompleteIntake}>
-                {pick(locale, "Mark intake complete", "완료 표시")}
+              <div />
+              <button className="primary-workspace-button complete-intake-button" type="button" onClick={handleCompleteIntake}>
+                {pick(locale, "Complete", "완료")}
               </button>
             </div>
               </>
@@ -2026,7 +3432,6 @@ export function CaseWorkspace({
               <div className="doc-section-head">
                 <div>
                   <div className="doc-section-label">{pick(locale, "Core intake", "기본 입력")}</div>
-                  <h4>{pick(locale, "Patient, context, and organism are now a summary card", "환자 정보, 방문 맥락, 균종이 요약 카드로 전환됨")}</h4>
                 </div>
                 <button
                   className="ghost-button"
@@ -2038,30 +3443,37 @@ export function CaseWorkspace({
               </div>
               <div className="intake-summary-grid">
                 <div className="intake-summary-block">
-                  <span>{pick(locale, "Patient", "환자")}</span>
-                  <strong>{draft.patient_id.trim() || common.notAvailable}</strong>
-                  <p>{`${translateOption(locale, "sex", draft.sex)} · ${draft.age || common.notAvailable}`}</p>
+                  <div className="intake-summary-inline">
+                    <strong>{draft.patient_id.trim() || common.notAvailable}</strong>
+                    <p>{`${translateOption(locale, "sex", draft.sex)} · ${draft.age || common.notAvailable}`}</p>
+                  </div>
                 </div>
                 <div className="intake-summary-block">
-                  <span>{pick(locale, "Visit context", "방문 맥락")}</span>
-                  <strong>{translateOption(locale, "contactLens", draft.contact_lens_use)}</strong>
-                  <p>
-                    {draft.predisposing_factor.length > 0
-                      ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" · ")
-                      : pick(locale, "No predisposing factor selected", "선택된 선행 인자 없음")}
-                  </p>
+                  <div className="intake-summary-inline">
+                    {draft.contact_lens_use !== "none" ? (
+                      <strong>{translateOption(locale, "contactLens", draft.contact_lens_use)}</strong>
+                    ) : null}
+                    <p>
+                      {draft.predisposing_factor.length > 0
+                        ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" · ")
+                        : pick(locale, "No predisposing factor selected", "선택된 선행 인자 없음")}
+                    </p>
+                  </div>
                 </div>
                 <div className="intake-summary-block intake-summary-block-wide">
-                  <span>{pick(locale, "Organism", "균종")}</span>
-                  <strong>{`${translateOption(locale, "cultureCategory", draft.culture_category)} · ${draft.culture_species}`}</strong>
-                  <div className="organism-chip-row">
-                    {intakeOrganisms.map((organism, index) => (
-                      <span key={`summary-organism-${organismKey(organism)}`} className="organism-chip static">
-                        {index === 0 ? organism.culture_species : `${translateOption(locale, "cultureCategory", organism.culture_category)} · ${organism.culture_species}`}
-                      </span>
-                    ))}
+                  <div className="intake-summary-inline intake-summary-inline-organism">
+                    <strong>{`${translateOption(locale, "cultureCategory", draft.culture_category)} · ${draft.culture_species}`}</strong>
+                    {draft.additional_organisms.length > 0 ? (
+                      <div className="organism-chip-row">
+                        {intakeOrganisms.slice(1).map((organism) => (
+                          <span key={`summary-organism-${organismKey(organism)}`} className="organism-chip static">
+                            {`${translateOption(locale, "cultureCategory", organism.culture_category)} · ${organism.culture_species}`}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                  {draft.other_history.trim() ? <p>{draft.other_history.trim()}</p> : null}
+                  {draft.other_history.trim() ? <p className="intake-summary-note">{draft.other_history.trim()}</p> : null}
                 </div>
               </div>
             </section>
@@ -2072,9 +3484,14 @@ export function CaseWorkspace({
                   <div className="doc-section-label">{pick(locale, "Visit timing", "방문 시점")}</div>
                   <h4>{pick(locale, "Choose initial or follow-up, then add the date if needed", "초진/재진 선택 후 필요하면 날짜 입력")}</h4>
                 </div>
-                <span>{resolvedVisitReferenceLabel}</span>
+                <div className="doc-badge-row visit-timing-meta">
+                  <span className="doc-site-badge">{pick(locale, "Visit reference", "방문 기준값")} · {resolvedVisitReferenceLabel}</span>
+                  <span className="doc-site-badge">{pick(locale, "Calendar date", "실제 날짜")} · {actualVisitDateLabel}</span>
+                </div>
               </div>
-              <div className="property-grid visit-timing-grid">
+              <div
+                className={`property-grid visit-timing-grid ${!draft.is_initial_visit ? "visit-timing-grid-follow-up" : ""}`}
+              >
                 <div className="property-chip">
                   <span>{pick(locale, "Visit phase", "초진/재진")}</span>
                   <div className="segmented-toggle" role="group" aria-label={pick(locale, "Visit phase", "초진/재진")}>
@@ -2134,10 +3551,6 @@ export function CaseWorkspace({
                   </select>
                 </label>
               </div>
-              <div className="doc-badge-row">
-                <span className="doc-site-badge">{pick(locale, "Visit reference", "방문 기준값")} · {resolvedVisitReferenceLabel}</span>
-                <span className="doc-site-badge">{pick(locale, "Calendar date", "실제 날짜")} · {actualVisitDateLabel}</span>
-              </div>
             </section>
               </>
             )}
@@ -2145,15 +3558,15 @@ export function CaseWorkspace({
               <>
             <section className="doc-section">
               <div className="doc-section-head">
-                <div>
+                <div className="visit-context-headline">
                   <div className="doc-section-label">{pick(locale, "Image board", "이미지 보드")}</div>
-                  <h4>{pick(locale, "Place White (slit) and fluorescein images into separate slots", "White (slit) 뷰와 fluorescein 뷰를 나눠서 넣기")}</h4>
+                  <h4 className="visit-context-hint">{pick(locale, "Place White (Slit) and Fluorescein images into separate slots", "White (Slit) 뷰와 Fluorescein 뷰를 나눠서 넣기")}</h4>
                 </div>
               </div>
               <div className="ops-stack">
                 <section className="ops-card">
                   <div className="panel-card-head">
-                    <strong>{pick(locale, "White (slit) view", "White (slit) 뷰")}</strong>
+                    <strong>{pick(locale, "White (Slit) view", "White (Slit) 뷰")}</strong>
                     <button className="ghost-button" type="button" onClick={() => openFilePicker("white")}>
                       {pick(locale, "Add files", "파일 추가")}
                     </button>
@@ -2181,26 +3594,49 @@ export function CaseWorkspace({
                       }}
                     />
                     <div className="drop-copy">
-                      <strong>{pick(locale, "Drop White (slit) photos here", "White (slit) 사진을 여기로 넣으세요")}</strong>
-                      <span>{pick(locale, "These files will be stored as the white view without auto-detection.", "자동 인식 없이 white 뷰로 저장됩니다.")}</span>
+                      <strong>{pick(locale, "Drop White (Slit) photos here", "White (Slit) 사진을 여기로 넣으세요")}</strong>
+                      <span>{pick(locale, "These files will be stored as the White view.", "White 뷰로 저장됩니다.")}</span>
                     </div>
                   </div>
                   {whiteDraftImages.length > 0 ? (
-                    <div className="image-grid">
+                    <div className={`image-grid ${whiteDraftImages.length === 1 ? "single" : ""}`}>
                       {whiteDraftImages.map((image) => (
                         <article key={image.draft_id} className="image-card">
-                          <div className="image-preview-frame">
-                            <img src={image.preview_url} alt={image.file.name} className="image-preview" />
+                          <div
+                            className="image-preview-frame lesion-editor-surface draft-lesion-surface"
+                            onPointerDown={(event) => handleDraftLesionPointerDown(image.draft_id, event)}
+                            onPointerMove={(event) => handleDraftLesionPointerMove(image.draft_id, event)}
+                            onPointerUp={(event) => finishDraftLesionPointer(image.draft_id, event)}
+                            onPointerCancel={(event) => finishDraftLesionPointer(image.draft_id, event)}
+                          >
+                            <img
+                              src={image.preview_url}
+                              alt={image.file.name}
+                              className="image-preview lesion-editor-image"
+                              draggable={false}
+                              onDragStart={(event) => event.preventDefault()}
+                            />
+                            {draftLesionPromptBoxes[image.draft_id] ? (
+                              <div
+                                className="lesion-box-overlay"
+                                style={{
+                                  left: `${(draftLesionPromptBoxes[image.draft_id]?.x0 ?? 0) * 100}%`,
+                                  top: `${(draftLesionPromptBoxes[image.draft_id]?.y0 ?? 0) * 100}%`,
+                                  width: `${((draftLesionPromptBoxes[image.draft_id]?.x1 ?? 0) - (draftLesionPromptBoxes[image.draft_id]?.x0 ?? 0)) * 100}%`,
+                                  height: `${((draftLesionPromptBoxes[image.draft_id]?.y1 ?? 0) - (draftLesionPromptBoxes[image.draft_id]?.y0 ?? 0)) * 100}%`,
+                                }}
+                              />
+                            ) : null}
                           </div>
                           <div className="image-card-body">
                             <div className="image-card-head">
-                              <strong>{image.file.name}</strong>
+                              <strong className="image-card-name" title={image.file.name}>{image.file.name}</strong>
                               <button className="text-button" type="button" onClick={() => removeDraftImage(image.draft_id)}>
                                 {pick(locale, "Remove", "제거")}
                               </button>
                             </div>
                             <div className="image-card-controls">
-                              <span>{pick(locale, "Stored as white view", "white 뷰로 저장")}</span>
+                              <span className="image-card-storage-label">{pick(locale, "Stored as White view", "White 뷰로 저장")}</span>
                               <button
                                 className={`toggle-pill ${image.is_representative ? "active" : ""}`}
                                 type="button"
@@ -2208,6 +3644,13 @@ export function CaseWorkspace({
                               >
                                 {image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Mark representative", "대표 이미지로 지정")}
                               </button>
+                            </div>
+                            <div className="panel-meta draft-lesion-meta">
+                              <span>
+                                {draftLesionPromptBoxes[image.draft_id]
+                                  ? pick(locale, "Local lesion box ready", "로컬 병변 박스 준비됨")
+                                  : pick(locale, "Draw lesion box", "병변 박스 그리기")}
+                              </span>
                             </div>
                           </div>
                         </article>
@@ -2246,26 +3689,49 @@ export function CaseWorkspace({
                       }}
                     />
                     <div className="drop-copy">
-                      <strong>{pick(locale, "Drop fluorescein photos here", "fluorescein 사진을 여기로 넣으세요")}</strong>
-                      <span>{pick(locale, "These files will be stored as the fluorescein view without auto-detection.", "자동 인식 없이 fluorescein 뷰로 저장됩니다.")}</span>
+                      <strong>{pick(locale, "Drop Fluorescein photos here", "Fluorescein 사진을 여기로 넣으세요")}</strong>
+                      <span>{pick(locale, "These files will be stored as the Fluorescein view.", "Fluorescein 뷰로 저장됩니다.")}</span>
                     </div>
                   </div>
                   {fluoresceinDraftImages.length > 0 ? (
-                    <div className="image-grid">
+                    <div className={`image-grid ${fluoresceinDraftImages.length === 1 ? "single" : ""}`}>
                       {fluoresceinDraftImages.map((image) => (
                         <article key={image.draft_id} className="image-card">
-                          <div className="image-preview-frame">
-                            <img src={image.preview_url} alt={image.file.name} className="image-preview" />
+                          <div
+                            className="image-preview-frame lesion-editor-surface draft-lesion-surface"
+                            onPointerDown={(event) => handleDraftLesionPointerDown(image.draft_id, event)}
+                            onPointerMove={(event) => handleDraftLesionPointerMove(image.draft_id, event)}
+                            onPointerUp={(event) => finishDraftLesionPointer(image.draft_id, event)}
+                            onPointerCancel={(event) => finishDraftLesionPointer(image.draft_id, event)}
+                          >
+                            <img
+                              src={image.preview_url}
+                              alt={image.file.name}
+                              className="image-preview lesion-editor-image"
+                              draggable={false}
+                              onDragStart={(event) => event.preventDefault()}
+                            />
+                            {draftLesionPromptBoxes[image.draft_id] ? (
+                              <div
+                                className="lesion-box-overlay"
+                                style={{
+                                  left: `${(draftLesionPromptBoxes[image.draft_id]?.x0 ?? 0) * 100}%`,
+                                  top: `${(draftLesionPromptBoxes[image.draft_id]?.y0 ?? 0) * 100}%`,
+                                  width: `${((draftLesionPromptBoxes[image.draft_id]?.x1 ?? 0) - (draftLesionPromptBoxes[image.draft_id]?.x0 ?? 0)) * 100}%`,
+                                  height: `${((draftLesionPromptBoxes[image.draft_id]?.y1 ?? 0) - (draftLesionPromptBoxes[image.draft_id]?.y0 ?? 0)) * 100}%`,
+                                }}
+                              />
+                            ) : null}
                           </div>
                           <div className="image-card-body">
                             <div className="image-card-head">
-                              <strong>{image.file.name}</strong>
+                              <strong className="image-card-name" title={image.file.name}>{image.file.name}</strong>
                               <button className="text-button" type="button" onClick={() => removeDraftImage(image.draft_id)}>
                                 {pick(locale, "Remove", "제거")}
                               </button>
                             </div>
                             <div className="image-card-controls">
-                              <span>{pick(locale, "Stored as fluorescein view", "fluorescein 뷰로 저장")}</span>
+                              <span className="image-card-storage-label">{pick(locale, "Stored as Fluorescein view", "Fluorescein 뷰로 저장")}</span>
                               <button
                                 className={`toggle-pill ${image.is_representative ? "active" : ""}`}
                                 type="button"
@@ -2273,6 +3739,13 @@ export function CaseWorkspace({
                               >
                                 {image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Mark representative", "대표 이미지로 지정")}
                               </button>
+                            </div>
+                            <div className="panel-meta draft-lesion-meta">
+                              <span>
+                                {draftLesionPromptBoxes[image.draft_id]
+                                  ? pick(locale, "Local lesion box ready", "로컬 병변 박스 준비됨")
+                                  : pick(locale, "Draw lesion box", "병변 박스 그리기")}
+                              </span>
                             </div>
                           </div>
                         </article>
@@ -2297,6 +3770,7 @@ export function CaseWorkspace({
               </>
             ) : null}
           </section>
+          )}
 
           <aside className={`workspace-panel ${panelOpen ? "open" : ""}`}>
             <div className="workspace-panel-head">
@@ -2311,60 +3785,6 @@ export function CaseWorkspace({
 
             {selectedCase ? (
               <div className="panel-stack">
-                <section className="panel-card">
-                  <div className="panel-card-head">
-                    <strong className="case-list-title">
-                      {isFavoriteCase(selectedCase.case_id) ? <span className="favorite-indicator" aria-hidden="true">★</span> : null}
-                      <span>{formatCaseTitle(selectedCase)}</span>
-                    </strong>
-                    <div className="panel-card-actions">
-                      <button
-                        className={`ghost-button favorite-toggle ${isFavoriteCase(selectedCase.case_id) ? "active" : ""}`}
-                        type="button"
-                        onClick={() => toggleFavoriteCase(selectedCase.case_id)}
-                      >
-                        {isFavoriteCase(selectedCase.case_id) ? pick(locale, "Favorited", "즐겨찾기됨") : pick(locale, "Favorite", "즐겨찾기")}
-                      </button>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => void handleRunValidation()}
-                        disabled={validationBusy || !canRunValidation}
-                      >
-                        {validationBusy ? pick(locale, "Validating...", "검증 중...") : pick(locale, "Run AI validation", "AI 검증 실행")}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="panel-meta">
-                    <span>{selectedCase.patient_id}</span>
-                    <span>{displayVisitReference(locale, selectedCase.visit_date)}</span>
-                    {selectedCase.actual_visit_date ? <span>{selectedCase.actual_visit_date}</span> : null}
-                    <span>{visitPhaseCopy(locale, selectedCase.is_initial_visit)}</span>
-                    <span>{translateOption(locale, "cultureCategory", selectedCase.culture_category)}</span>
-                  </div>
-                  <p>
-                    {pick(
-                      locale,
-                      `${organismDetailLabel(selectedCase.culture_category, selectedCase.culture_species, selectedCase.additional_organisms)} with ${selectedCase.image_count} uploaded images. Current status is ${translateOption(locale, "visitStatus", selectedCase.visit_status)}.`,
-                      `${organismDetailLabel(selectedCase.culture_category, selectedCase.culture_species, selectedCase.additional_organisms)} · 업로드 이미지 ${selectedCase.image_count}장 · 현재 상태 ${translateOption(locale, "visitStatus", selectedCase.visit_status)}`
-                    )}
-                  </p>
-                  {selectedCase.polymicrobial || (selectedCase.additional_organisms?.length ?? 0) > 0 ? (
-                    <div className="organism-chip-row">
-                      {listOrganisms(
-                        selectedCase.culture_category,
-                        selectedCase.culture_species,
-                        selectedCase.additional_organisms
-                      ).map((organism) => (
-                        <span key={`selected-${organismKey(organism)}`} className="organism-chip static">
-                          {organism.culture_species}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                  {!canRunValidation ? <p>{pick(locale, "Viewer accounts can inspect saved images, but validation remains disabled.", "뷰어 계정은 저장된 이미지를 볼 수 있지만 검증은 실행할 수 없습니다.")}</p> : null}
-                </section>
-
                 {selectedCompletion ? (
                   <section className="panel-card completion-card">
                     <div className="panel-card-head">
@@ -2400,83 +3820,21 @@ export function CaseWorkspace({
                 ) : null}
 
                 <section className="panel-card">
-                  <div className="panel-card-head">
-                    <strong>{pick(locale, "Image strip", "이미지 스트립")}</strong>
-                    <span>{panelBusy ? common.loading : `${selectedCaseImages.length} ${pick(locale, "loaded", "불러옴")}`}</span>
-                  </div>
-                  <div className="panel-image-stack">
-                    {selectedCaseImages.map((image) => (
-                      <div key={image.image_id} className="panel-image-card">
-                        {image.preview_url ? (
-                          <img src={image.preview_url} alt={image.image_id} className="panel-image-preview" />
-                        ) : (
-                          <div className="panel-image-fallback">{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
-                        )}
-                        <div className="panel-image-copy">
-                          <strong>{translateOption(locale, "view", image.view)}</strong>
-                          <span>{image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="panel-card">
-                  <div className="panel-card-head">
-                    <strong>{pick(locale, "ROI preview", "ROI 미리보기")}</strong>
-                    <button
-                      className="ghost-button"
-                      type="button"
-                      onClick={() => void handleRunRoiPreview()}
-                      disabled={roiPreviewBusy || !canRunRoiPreview}
-                    >
-                      {roiPreviewBusy ? pick(locale, "Preparing...", "준비 중...") : pick(locale, "Preview ROI", "ROI 미리보기 실행")}
-                    </button>
-                  </div>
-                  {!canRunRoiPreview ? <p>{pick(locale, "Viewer accounts can inspect images, but ROI preview remains disabled.", "뷰어 계정은 이미지는 볼 수 있지만 ROI 미리보기는 실행할 수 없습니다.")}</p> : null}
-                  {canRunRoiPreview && roiPreviewItems.length === 0 ? (
-                    <p>{pick(locale, "Generate a preview to compare the saved source images with their ROI crops.", "저장된 원본 이미지와 ROI crop을 비교하려면 미리보기를 생성하세요.")}</p>
-                  ) : null}
-                  {roiPreviewItems.length > 0 ? (
-                    <div className="panel-image-stack">
-                      {roiPreviewItems.map((item) => (
-                        <div key={`${item.image_id ?? item.source_image_path}:roi`} className="panel-image-card">
-                          <div className="panel-card-head">
-                            <strong>{translateOption(locale, "view", item.view)}</strong>
-                            <span>{item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
-                          </div>
-                          <div className="panel-preview-grid">
-                            <div>
-                              {item.source_preview_url ? (
-                                <img src={item.source_preview_url} alt={`${item.view} source`} className="panel-image-preview" />
-                              ) : (
-                                <div className="panel-image-fallback">{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
-                              )}
-                              <div className="panel-image-copy">
-                                <strong>{pick(locale, "Source", "원본")}</strong>
-                              </div>
-                            </div>
-                            <div>
-                              {item.roi_crop_url ? (
-                                <img src={item.roi_crop_url} alt={`${item.view} ROI`} className="panel-image-preview" />
-                              ) : (
-                                <div className="panel-image-fallback">{pick(locale, "ROI crop unavailable", "ROI crop을 표시할 수 없습니다")}</div>
-                              )}
-                              <div className="panel-image-copy">
-                                <strong>{pick(locale, "ROI crop", "ROI crop")}</strong>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                  <div className="panel-card-head validation-panel-head">
+                    <strong className="validation-panel-title">{pick(locale, "Validation insight", "검증 인사이트")}</strong>
+                    <div className="validation-panel-actions">
+                      <span className="validation-panel-id">
+                        {validationResult ? validationResult.summary.validation_id : pick(locale, "Not run yet", "아직 실행되지 않음")}
+                      </span>
+                      <button
+                        type="button"
+                        className="ghost-button compact-ghost-button validation-run-button"
+                        onClick={() => void handleRunValidation()}
+                        disabled={validationBusy || !selectedCase || !canRunValidation}
+                      >
+                        {validationBusy ? pick(locale, "Validating...", "검증 중...") : pick(locale, "Run AI validation", "AI 검증 실행")}
+                      </button>
                     </div>
-                  ) : null}
-                </section>
-
-                <section className="panel-card">
-                  <div className="panel-card-head">
-                    <strong>{pick(locale, "Validation insight", "검증 인사이트")}</strong>
-                    <span>{validationResult ? validationResult.summary.validation_id : pick(locale, "Not run yet", "아직 실행되지 않음")}</span>
                   </div>
                   {validationResult ? (
                     <div className="panel-stack">
@@ -2536,6 +3894,10 @@ export function CaseWorkspace({
                       <p>
                         {pick(locale, "Model", "모델")} {validationResult.model_version.version_name} ({validationResult.model_version.architecture})
                         {" · "}
+                        {validationResult.model_version.crop_mode
+                          ? pick(locale, `mode ${validationResult.model_version.crop_mode}`, `모드 ${validationResult.model_version.crop_mode}`)
+                          : null}
+                        {validationResult.model_version.crop_mode ? " · " : ""}
                         {validationResult.summary.is_correct
                           ? pick(locale, "prediction matched culture", "예측이 배양 결과와 일치합니다")
                           : pick(locale, "prediction diverged from culture", "예측이 배양 결과와 다릅니다")}
@@ -2543,10 +3905,10 @@ export function CaseWorkspace({
                       <div className="panel-image-stack">
                         {validationArtifacts.roi_crop ? (
                           <div className="panel-image-card">
-                            <img src={validationArtifacts.roi_crop} alt={pick(locale, "ROI crop", "ROI crop")} className="panel-image-preview" />
+                            <img src={validationArtifacts.roi_crop} alt={pick(locale, "Cornea crop", "각막 crop")} className="panel-image-preview" />
                             <div className="panel-image-copy">
-                              <strong>{pick(locale, "ROI crop", "ROI crop")}</strong>
-                              <span>{pick(locale, "MedSAM-ready crop", "MedSAM 준비용 crop")}</span>
+                              <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
+                              <span>{pick(locale, "Cornea-focused crop", "각막 중심 crop")}</span>
                             </div>
                           </div>
                         ) : null}
@@ -2561,20 +3923,52 @@ export function CaseWorkspace({
                         ) : null}
                         {validationArtifacts.medsam_mask ? (
                           <div className="panel-image-card">
-                            <img src={validationArtifacts.medsam_mask} alt={pick(locale, "MedSAM mask", "MedSAM mask")} className="panel-image-preview" />
+                            <MaskOverlayPreview
+                              sourceUrl={representativeSavedImage?.preview_url}
+                              maskUrl={validationArtifacts.medsam_mask}
+                              alt={pick(locale, "Cornea mask overlay", "각막 mask 오버레이")}
+                              tint={[231, 211, 111]}
+                            />
                             <div className="panel-image-copy">
-                              <strong>{pick(locale, "MedSAM mask", "MedSAM mask")}</strong>
-                              <span>{pick(locale, "Segmentation proxy", "분할 프록시")}</span>
+                              <strong>{pick(locale, "Cornea mask", "각막 mask")}</strong>
+                              <span>{pick(locale, "Cornea segmentation", "각막 분할")}</span>
                             </div>
                           </div>
                         ) : null}
-                        {!validationArtifacts.roi_crop && !validationArtifacts.gradcam && !validationArtifacts.medsam_mask ? (
+                        {validationArtifacts.lesion_crop ? (
+                          <div className="panel-image-card">
+                            <img src={validationArtifacts.lesion_crop} alt={pick(locale, "Lesion crop", "병변 crop")} className="panel-image-preview" />
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
+                              <span>{pick(locale, "Lesion-centered crop", "병변 중심 crop")}</span>
+                            </div>
+                          </div>
+                        ) : null}
+                        {validationArtifacts.lesion_mask ? (
+                          <div className="panel-image-card">
+                            <MaskOverlayPreview
+                              sourceUrl={representativeSavedImage?.preview_url}
+                              maskUrl={validationArtifacts.lesion_mask}
+                              alt={pick(locale, "Lesion mask overlay", "병변 mask 오버레이")}
+                              tint={[242, 164, 154]}
+                            />
+                            <div className="panel-image-copy">
+                              <strong>{pick(locale, "Lesion mask", "병변 mask")}</strong>
+                              <span>{pick(locale, "Lesion segmentation", "병변 분할")}</span>
+                            </div>
+                          </div>
+                        ) : null}
+                        {!validationArtifacts.roi_crop &&
+                        !validationArtifacts.gradcam &&
+                        !validationArtifacts.medsam_mask &&
+                        !validationArtifacts.lesion_crop &&
+                        !validationArtifacts.lesion_mask ? (
                           <div className="panel-image-fallback">{pick(locale, "No validation artifacts were produced for this run.", "이 실행에서는 검증 아티팩트가 생성되지 않았습니다.")}</div>
                         ) : null}
                       </div>
                     </div>
                   ) : (
-                    <p>{pick(locale, "Run validation from this panel to generate ROI, Grad-CAM, and a saved case-level prediction.", "이 패널에서 검증을 실행하면 ROI, Grad-CAM, 케이스 단위 예측을 생성할 수 있습니다.")}</p>
+                    <p>{pick(locale, "Run validation from this panel to generate crop artifacts, Grad-CAM, and a saved case-level prediction.", "이 패널에서 검증을 실행하면 crop 아티팩트, Grad-CAM, 케이스 단위 예측을 생성할 수 있습니다.")}</p>
                   )}
                 </section>
 
@@ -2689,17 +4083,6 @@ export function CaseWorkspace({
             ) : (
               <div className="panel-stack">
                 <section className="panel-card">
-                  <strong>{pick(locale, "Draft checklist", "초안 체크리스트")}</strong>
-                  <div className="panel-checklist">
-                    <div className={draft.patient_id.trim() ? "complete" : ""}>{pick(locale, "Patient identity", "환자 정보")}</div>
-                    <div className={draft.intake_completed ? "complete" : ""}>{pick(locale, "Core intake complete", "기본 입력 완료")}</div>
-                    <div className={draft.intake_completed ? "complete" : ""}>{pick(locale, "Visit timing open", "방문 시점 입력 가능")}</div>
-                    <div className={draft.culture_species.trim() ? "complete" : ""}>{pick(locale, "Organism metadata", "균종 메타데이터")}</div>
-                    <div className={draftImages.length > 0 ? "complete" : ""}>{pick(locale, "Image blocks", "이미지 블록")}</div>
-                  </div>
-                </section>
-
-                <section className="panel-card">
                   <div className="panel-card-head">
                     <strong>{pick(locale, "Selected hospital", "선택된 병원")}</strong>
                     <span>{selectedSiteId ?? pick(locale, "none", "없음")}</span>
@@ -2737,4 +4120,21 @@ export function CaseWorkspace({
       ) : null}
     </main>
   );
+}
+
+function caseTimestamp(caseRecord: CaseSummaryRecord): number {
+  const rawValue = caseRecord.latest_image_uploaded_at ?? caseRecord.created_at ?? "";
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return 0;
+  }
+  return parsed.getTime();
+}
+
+function visitTimestamp(visitRecord: VisitRecord): number {
+  const parsed = new Date(visitRecord.created_at ?? "");
+  if (Number.isNaN(parsed.getTime())) {
+    return 0;
+  }
+  return parsed.getTime();
 }
