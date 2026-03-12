@@ -457,6 +457,51 @@ export type ModelUpdateRecord = {
       mask_thumbnail_path?: string | null;
     };
   };
+  quality_summary?: {
+    quality_score?: number | null;
+    recommendation?: string | null;
+    image_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      mean_brightness?: number | null;
+      contrast_stddev?: number | null;
+      edge_density?: number | null;
+    };
+    crop_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      roi_area_ratio?: number | null;
+    };
+    delta_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      l2_norm?: number | null;
+      parameter_count?: number | null;
+      message?: string | null;
+    };
+    validation_consistency?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      predicted_label?: string | null;
+      true_label?: string | null;
+      prediction_probability?: number | null;
+      decision_threshold?: number | null;
+      is_correct?: boolean | null;
+    };
+    policy_checks?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      has_additional_organisms?: boolean | null;
+      training_policy?: string | null;
+    };
+    risk_flags?: string[];
+    strengths?: string[];
+  } | null;
 };
 
 export type AggregationRecord = {

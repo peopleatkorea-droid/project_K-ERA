@@ -51,12 +51,16 @@ class ResearchWorkflowService:
         crop_path: Path,
         mask_key: str = "medsam_mask_path",
         crop_key: str = "roi_crop_path",
+        expected_backend: str | None = None,
     ) -> dict[str, Any] | None:
         if not (crop_path.exists() and mask_path.exists() and metadata_path.exists()):
             return None
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         backend = str(metadata.get("backend") or "").strip() or "unknown"
         if backend == "unknown" or backend.startswith("fallback_after_medsam_error"):
+            return None
+        normalized_expected_backend = str(expected_backend or "").strip().lower()
+        if normalized_expected_backend and backend.startswith("external_") and normalized_expected_backend not in backend.lower():
             return None
         return {
             mask_key: str(mask_path),
@@ -80,7 +84,12 @@ class ResearchWorkflowService:
         crop_path = site_store.roi_crop_dir / f"{artifact_name}_crop.png"
         metadata_dir = self._crop_metadata_dir(site_store, "roi")
         metadata_path = metadata_dir / f"{artifact_name}.json"
-        cached = self._load_cached_crop(metadata_path=metadata_path, mask_path=mask_path, crop_path=crop_path)
+        cached = self._load_cached_crop(
+            metadata_path=metadata_path,
+            mask_path=mask_path,
+            crop_path=crop_path,
+            expected_backend=self.medsam_service.backend,
+        )
         if cached:
             return cached
         result = self.medsam_service.generate_roi(image_path, mask_path, crop_path)
@@ -122,6 +131,7 @@ class ResearchWorkflowService:
             crop_path=crop_path,
             mask_key="lesion_mask_path",
             crop_key="lesion_crop_path",
+            expected_backend=self.medsam_service.backend,
         )
         if cached:
             return cached

@@ -289,6 +289,8 @@ def _visible_model_updates(
         updates = [item for item in updates if item.get("site_id") in accessible_site_ids]
     if status_filter:
         updates = [item for item in updates if item.get("status") == status_filter]
+    for update in updates:
+        update["quality_summary"] = _backfill_update_quality_summary(cp, update)
     return updates
 
 
@@ -304,6 +306,134 @@ def _load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
     if not report_path:
         return {}
     return read_json(Path(report_path), {})
+
+
+def _backfill_update_quality_summary(cp: ControlPlaneStore, update: dict[str, Any]) -> dict[str, Any]:
+    existing = update.get("quality_summary")
+    if isinstance(existing, dict):
+        return existing
+
+    report = _load_approval_report(update)
+    qa_metrics = report.get("qa_metrics") if isinstance(report, dict) else {}
+    source_metrics = qa_metrics.get("source") if isinstance(qa_metrics, dict) else {}
+    roi_area_ratio = qa_metrics.get("roi_area_ratio") if isinstance(qa_metrics, dict) else None
+
+    brightness = float(source_metrics.get("mean_brightness", 0.0) or 0.0)
+    contrast = float(source_metrics.get("contrast_stddev", 0.0) or 0.0)
+    edge_density = float(source_metrics.get("edge_density", 0.0) or 0.0)
+
+    image_flags: list[str] = []
+    image_score = 25
+    if brightness and (brightness < 35 or brightness > 225):
+        image_flags.append("brightness_out_of_range")
+        image_score -= 8
+    if contrast and contrast < 18:
+        image_flags.append("low_contrast")
+        image_score -= 8
+    if edge_density and edge_density < 5:
+        image_flags.append("low_edge_density")
+        image_score -= 9
+    image_score = max(0, image_score)
+
+    crop_flags: list[str] = []
+    crop_score = 25
+    if roi_area_ratio is None:
+        crop_flags.append("crop_ratio_missing")
+        crop_score -= 12
+    else:
+        ratio_value = float(roi_area_ratio)
+        if ratio_value < 0.03:
+            crop_flags.append("crop_too_tight")
+            crop_score -= 12
+        elif ratio_value > 0.95:
+            crop_flags.append("crop_too_wide")
+            crop_score -= 12
+    crop_score = max(0, crop_score)
+
+    delta_path = str(update.get("central_artifact_path") or update.get("artifact_path") or "").strip()
+    if not delta_path or not Path(delta_path).exists():
+        delta_summary: dict[str, Any] = {
+            "score": 0,
+            "status": "missing",
+            "flags": ["delta_missing"],
+            "l2_norm": None,
+            "parameter_count": None,
+            "message": "Delta artifact is missing.",
+        }
+    else:
+        try:
+            import torch as _torch
+
+            checkpoint = _torch.load(delta_path, map_location="cpu", weights_only=True)
+            delta_state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+            if not isinstance(delta_state, dict):
+                raise ValueError("Delta file has no readable state_dict.")
+            workflow = _get_workflow(cp)
+            workflow.model_manager._validate_deltas([delta_state])
+            total_norm = 0.0
+            parameter_count = 0
+            for tensor in delta_state.values():
+                t = tensor.float()
+                total_norm += float(t.norm().item()) ** 2
+                parameter_count += int(t.numel())
+            delta_summary = {
+                "score": 25,
+                "status": "ok",
+                "flags": [],
+                "l2_norm": round(total_norm ** 0.5, 6),
+                "parameter_count": parameter_count,
+                "message": "Delta integrity and norm look valid.",
+            }
+        except Exception as exc:
+            delta_summary = {
+                "score": 0,
+                "status": "invalid",
+                "flags": ["delta_invalid"],
+                "l2_norm": None,
+                "parameter_count": None,
+                "message": str(exc),
+            }
+
+    total_score = max(0, min(100, image_score + crop_score + int(delta_summary.get("score") or 0)))
+    recommendation = "approve_candidate" if total_score >= 70 and not delta_summary.get("flags") else "needs_review"
+    return {
+        "quality_score": total_score,
+        "recommendation": recommendation,
+        "image_quality": {
+            "score": image_score,
+            "status": "ok" if not image_flags else "review",
+            "flags": image_flags,
+            "mean_brightness": round(brightness, 3) if brightness else None,
+            "contrast_stddev": round(contrast, 3) if contrast else None,
+            "edge_density": round(edge_density, 3) if edge_density else None,
+        },
+        "crop_quality": {
+            "score": crop_score,
+            "status": "ok" if not crop_flags else "review",
+            "flags": crop_flags,
+            "roi_area_ratio": round(float(roi_area_ratio), 4) if roi_area_ratio is not None else None,
+        },
+        "delta_quality": delta_summary,
+        "validation_consistency": {
+            "score": None,
+            "status": "not_available",
+            "flags": [],
+            "predicted_label": None,
+            "true_label": None,
+            "prediction_probability": None,
+            "decision_threshold": None,
+            "is_correct": None,
+        },
+        "policy_checks": {
+            "score": None,
+            "status": "not_available",
+            "flags": [],
+            "has_additional_organisms": None,
+            "training_policy": "exclude_polymicrobial",
+        },
+        "risk_flags": image_flags + crop_flags + list(delta_summary.get("flags") or []),
+        "strengths": [],
+    }
 
 
 def _embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | None:

@@ -193,6 +193,36 @@ function createSiteForm(projectId = "") {
   };
 }
 
+function formatQualityRecommendation(locale: "en" | "ko", recommendation: string | null | undefined): string {
+  switch (recommendation) {
+    case "approve_candidate":
+      return pick(locale, "Approve candidate", "승인 권장");
+    case "needs_review":
+      return pick(locale, "Needs review", "추가 검토");
+    case "reject_candidate":
+      return pick(locale, "Reject candidate", "반려 권장");
+    default:
+      return pick(locale, "Unrated", "미평가");
+  }
+}
+
+function translateQualityFlag(locale: "en" | "ko", flag: string): string {
+  const labels: Record<string, [string, string]> = {
+    brightness_out_of_range: ["Brightness out of range", "밝기 범위 이탈"],
+    low_contrast: ["Low contrast", "대비 부족"],
+    low_edge_density: ["Low edge density", "경계 정보 부족"],
+    crop_ratio_missing: ["Crop ratio missing", "crop 비율 없음"],
+    crop_too_tight: ["Crop too tight", "crop 너무 좁음"],
+    crop_too_wide: ["Crop too wide", "crop 너무 넓음"],
+    validation_mismatch: ["Validation mismatch", "검증 불일치"],
+    delta_invalid: ["Delta invalid", "delta 이상"],
+    delta_missing: ["Delta missing", "delta 없음"],
+    polymicrobial_excluded: ["Polymicrobial excluded", "다균종 학습 제외"],
+  };
+  const pair = labels[flag];
+  return pair ? pick(locale, pair[0], pair[1]) : flag;
+}
+
 export function AdminWorkspace({
   token,
   user,
@@ -1359,6 +1389,49 @@ export function AdminWorkspace({
                 <section className="ops-card">
                   <div className="panel-card-head"><strong>{pick(locale, "Selected update", "선택한 업데이트")}</strong><span>{selectedModelUpdate.status ?? common.notAvailable}</span></div>
                   <div className="panel-meta"><span>{selectedModelUpdate.site_id ?? common.notAvailable}</span><span>{selectedModelUpdate.case_reference_id ?? common.notAvailable}</span><span>{selectedModelUpdate.architecture ?? common.notAvailable}</span></div>
+                  {selectedModelUpdate.quality_summary ? (
+                    <section className="update-quality-card">
+                      <div className="panel-card-head">
+                        <strong>{pick(locale, "Automatic quality summary", "자동 품질 요약")}</strong>
+                        <span>{formatQualityRecommendation(locale, selectedModelUpdate.quality_summary.recommendation)}</span>
+                      </div>
+                      <p className="update-quality-help">
+                        {pick(
+                          locale,
+                          "Image 25 + crop 25 + delta 25 + validation 25. Policy mismatch or invalid delta lowers the recommendation.",
+                          "이미지 25 + crop 25 + delta 25 + 검증 25점 기준입니다. 정책 불일치나 delta 이상이 있으면 권장 수준이 내려갑니다.",
+                        )}
+                      </p>
+                      <div className="panel-metric-grid">
+                        <div><strong>{selectedModelUpdate.quality_summary.quality_score ?? common.notAvailable}</strong><span>{pick(locale, "quality score", "품질 점수")}</span></div>
+                        <div><strong>{selectedModelUpdate.quality_summary.image_quality?.score ?? common.notAvailable}</strong><span>{pick(locale, "image", "이미지")}</span></div>
+                        <div><strong>{selectedModelUpdate.quality_summary.crop_quality?.score ?? common.notAvailable}</strong><span>{pick(locale, "crop", "crop")}</span></div>
+                        <div><strong>{selectedModelUpdate.quality_summary.delta_quality?.score ?? common.notAvailable}</strong><span>{pick(locale, "delta", "delta")}</span></div>
+                        <div><strong>{selectedModelUpdate.quality_summary.validation_consistency?.status ?? common.notAvailable}</strong><span>{pick(locale, "validation", "검증")}</span></div>
+                        <div><strong>{selectedModelUpdate.quality_summary.delta_quality?.l2_norm ?? common.notAvailable}</strong><span>{pick(locale, "delta norm", "delta norm")}</span></div>
+                      </div>
+                      <div className="panel-meta">
+                        <span>{pick(locale, "Brightness", "밝기")}: {formatMetric(selectedModelUpdate.quality_summary.image_quality?.mean_brightness, common.notAvailable)}</span>
+                        <span>{pick(locale, "Contrast", "대비")}: {formatMetric(selectedModelUpdate.quality_summary.image_quality?.contrast_stddev, common.notAvailable)}</span>
+                        <span>{pick(locale, "Edge density", "경계 밀도")}: {formatMetric(selectedModelUpdate.quality_summary.image_quality?.edge_density, common.notAvailable)}</span>
+                        <span>{pick(locale, "Crop ratio", "crop 비율")}: {formatMetric(selectedModelUpdate.quality_summary.crop_quality?.roi_area_ratio, common.notAvailable)}</span>
+                      </div>
+                      {selectedModelUpdate.quality_summary.validation_consistency?.predicted_label ? (
+                        <div className="panel-meta">
+                          <span>{pick(locale, "Predicted", "예측")}: {selectedModelUpdate.quality_summary.validation_consistency.predicted_label}</span>
+                          <span>{pick(locale, "Culture", "배양")}: {selectedModelUpdate.quality_summary.validation_consistency.true_label ?? common.notAvailable}</span>
+                          <span>{pick(locale, "Confidence", "신뢰도")}: {formatMetric(selectedModelUpdate.quality_summary.validation_consistency.prediction_probability, common.notAvailable)}</span>
+                        </div>
+                      ) : null}
+                      {selectedModelUpdate.quality_summary.risk_flags && selectedModelUpdate.quality_summary.risk_flags.length > 0 ? (
+                        <div className="review-checklist-tags">
+                          {selectedModelUpdate.quality_summary.risk_flags.map((flag) => (
+                            <span key={flag} className="review-checklist-tag quality-risk-tag">{translateQualityFlag(locale, flag)}</span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
                   <div className="ops-gallery-triptych">
                     <div className="panel-image-card">{selectedUpdatePreviewUrls.source ? <img src={selectedUpdatePreviewUrls.source} alt="Source thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Source unavailable", "원본 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Source", "원본")}</strong></div></div>
                     <div className="panel-image-card">{selectedUpdatePreviewUrls.roi ? <img src={selectedUpdatePreviewUrls.roi} alt="Cornea crop thumbnail" className="panel-image-preview" /> : <div className="panel-image-fallback">{pick(locale, "Cornea crop unavailable", "각막 crop 썸네일 없음")}</div>}<div className="panel-image-copy"><strong>{pick(locale, "Cornea crop", "각막 crop")}</strong></div></div>

@@ -251,7 +251,8 @@ def main() -> int:
 
     image_array = _load_image(image_path)
     height, width = image_array.shape[:2]
-    prompt_box = _parse_prompt_box(args.prompt_box, width, height) or _default_cornea_box(width, height)
+    parsed_prompt_box = _parse_prompt_box(args.prompt_box, width, height)
+    prompt_box = parsed_prompt_box if parsed_prompt_box is not None else _default_cornea_box(width, height)
 
     model = _build_model(backend_root, checkpoint_path, device)
     image_embedding, fs, new_size = _encode_image(image_array, model, device)

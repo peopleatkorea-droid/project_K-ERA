@@ -13,22 +13,22 @@ if (-not $env:KERA_GOOGLE_CLIENT_ID -and $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
     $env:KERA_GOOGLE_CLIENT_ID = $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID
 }
 
-if (-not $env:KERA_SEGMENTATION_BACKEND -and -not $env:SEGMENTATION_BACKEND) {
-    $swinRoots = @(
-        (Join-Path $repoRoot "Swin_LiteMedSAM"),
-        (Join-Path $repoRoot "Swin_LiteMedSAM-main")
-    )
-    foreach ($candidateRoot in $swinRoots) {
-        $candidateInfer = Join-Path $candidateRoot "infer.py"
-        $candidateCheckpoint = Join-Path $candidateRoot "workdir\Swin_LiteMedSAM.pth"
-        if ((Test-Path $candidateInfer) -and (Test-Path $candidateCheckpoint)) {
-            $env:KERA_SEGMENTATION_BACKEND = "swin_litemedsam"
-            $env:KERA_SEGMENTATION_ROOT = $candidateRoot
-            $env:KERA_SEGMENTATION_CHECKPOINT = $candidateCheckpoint
-            Write-Host "[K-ERA] Auto-configured Swin-LiteMedSAM backend from $candidateRoot" -ForegroundColor Cyan
-            break
-        }
-    }
+# Force the API process back onto the original MedSAM path unless the code is
+# changed again intentionally. This also clears stale Swin-LiteMedSAM overrides
+# that may still be inherited from an older shell session.
+$env:KERA_SEGMENTATION_BACKEND = "medsam"
+$env:SEGMENTATION_BACKEND = "medsam"
+foreach ($name in @(
+    "KERA_SEGMENTATION_ROOT",
+    "SEGMENTATION_ROOT",
+    "KERA_SEGMENTATION_SCRIPT",
+    "SEGMENTATION_SCRIPT",
+    "KERA_SEGMENTATION_CHECKPOINT",
+    "SEGMENTATION_CHECKPOINT",
+    "MEDSAM_SCRIPT",
+    "MEDSAM_CHECKPOINT"
+)) {
+    [Environment]::SetEnvironmentVariable($name, $null, "Process")
 }
 
 if (-not (Test-Path $venvPython)) {
@@ -46,7 +46,8 @@ $env:PYTHONPATH = "src"
 Write-Host "[K-ERA] Starting API server on port $Port ..." -ForegroundColor Cyan
 
 try {
-    & $venvPython -m uvicorn kera_research.api.app:app --host $HostAddress --port $Port --reload
+    # Avoid uvicorn reload worker re-spawning under a different interpreter.
+    & $venvPython -m uvicorn kera_research.api.app:app --host $HostAddress --port $Port
 } catch {
     Write-Host ""
     Write-Host "[ERROR] API server failed: $_" -ForegroundColor Red
