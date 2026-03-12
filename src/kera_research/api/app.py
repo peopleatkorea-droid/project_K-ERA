@@ -5,6 +5,7 @@ import inspect
 import io
 import mimetypes
 import os
+import threading
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel, Field
 
-from kera_research.config import MODEL_DIR
+from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DIR
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
@@ -56,6 +57,13 @@ API_SECRET = _load_or_create_api_secret()
 API_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = 2
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+
+# ---------------------------------------------------------------------------
+# Background aggregation job tracker
+# ---------------------------------------------------------------------------
+_AGG_JOBS: dict[str, dict[str, Any]] = {}
+_AGG_JOBS_LOCK = threading.Lock()
+_AGG_RUNNING = threading.Event()  # set while an aggregation is in progress
 IMPORT_TEMPLATE_ROWS = [
     "patient_id,chart_alias,local_case_code,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
     "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative",
@@ -890,6 +898,17 @@ def create_app() -> FastAPI:
             "uses_custom_root": cp.instance_storage_root() != default_root,
         }
 
+    @app.get("/api/admin/system/salt-fingerprint")
+    def get_salt_fingerprint(
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        """Returns the salt fingerprint for this node.
+        All nodes in the same federation must return the same value.
+        Compare across sites before the first federation aggregation.
+        """
+        _require_platform_admin(user)
+        return {"salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT}
+
     @app.get("/api/admin/model-versions")
     def list_model_versions(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -897,6 +916,20 @@ def create_app() -> FastAPI:
     ) -> list[dict[str, Any]]:
         _require_admin_workspace_permission(user)
         return cp.list_model_versions()
+
+    @app.delete("/api/admin/model-versions/{version_id}")
+    def archive_model_version(
+        version_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only platform admin can delete models.")
+        try:
+            return {"model_version": cp.archive_model_version(version_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @app.get("/api/admin/model-updates")
     def list_model_updates(
@@ -924,6 +957,48 @@ def create_app() -> FastAPI:
         site_id = str(update_record.get("site_id") or "").strip()
         if site_id:
             _require_site_access(cp, user, site_id)
+
+        # ------------------------------------------------------------------
+        # Delta content validation on approval — prevents a compromised admin
+        # from approving a poisoned or malformed delta file.
+        # ------------------------------------------------------------------
+        if payload.decision.strip().lower() == "approved":
+            delta_path = str(
+                update_record.get("central_artifact_path")
+                or update_record.get("artifact_path")
+                or ""
+            )
+            if not delta_path or not Path(delta_path).exists():
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Delta artifact file is missing — cannot approve.",
+                )
+            try:
+                import torch as _torch
+                checkpoint = _torch.load(delta_path, map_location="cpu", weights_only=True)
+                delta_state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+                if delta_state is None:
+                    raise ValueError("Delta file has no state_dict key.")
+                workflow = _get_workflow(cp)
+                workflow.model_manager._validate_deltas([delta_state])
+            except ValueError as exc:
+                # Auto-reject so it cannot be resubmitted without fixing
+                cp.review_model_update(
+                    update_id,
+                    reviewer_user_id=user["user_id"],
+                    decision="rejected",
+                    reviewer_notes=f"[Auto-rejected by validation] {exc}",
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Delta validation failed — update auto-rejected: {exc}",
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Delta file could not be loaded: {exc}",
+                ) from exc
+
         try:
             reviewed = cp.review_model_update(
                 update_id,
@@ -991,6 +1066,16 @@ def create_app() -> FastAPI:
         cp: ControlPlaneStore = Depends(get_control_plane),
     ) -> dict[str, Any]:
         _require_platform_admin(user)
+
+        # ------------------------------------------------------------------
+        # Prevent concurrent aggregation runs
+        # ------------------------------------------------------------------
+        if _AGG_RUNNING.is_set():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another aggregation job is already running. Poll /api/admin/aggregations/jobs to check status.",
+            )
+
         workflow = _get_workflow(cp)
 
         selected_ids = set(payload.update_ids)
@@ -1003,6 +1088,17 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No approved updates are available for aggregation.",
+            )
+
+        site_update_counts: dict[str, int] = {}
+        for item in approved_updates:
+            site_key = str(item.get("site_id") or "unknown")
+            site_update_counts[site_key] = site_update_counts.get(site_key, 0) + 1
+        duplicate_sites = sorted(site_id for site_id, count in site_update_counts.items() if count > 1)
+        if duplicate_sites:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Only one approved update per site can be aggregated at a time. Duplicate sites: {', '.join(duplicate_sites)}.",
             )
 
         architectures = {item.get("architecture") for item in approved_updates}
@@ -1049,40 +1145,88 @@ def create_app() -> FastAPI:
             site_weights[site_key] = site_weights.get(site_key, 0) + n_cases
             delta_weights.append(n_cases)
 
-        output_path = MODEL_DIR / f"global_{architecture}_{make_id('agg')}.pth"
-        try:
-            workflow.model_manager.aggregate_weight_deltas(
-                delta_paths,
-                output_path,
-                weights=delta_weights,
-                base_model_path=base_model["model_path"],
-            )
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Federated aggregation is unavailable: {exc}",
-            ) from exc
-
         new_version_name = (payload.new_version_name or "").strip() or f"global-{architecture}-fedavg-{make_id('v')[:6]}"
-        aggregation = cp.register_aggregation(
-            base_model_version_id=base_model["version_id"],
-            new_model_path=str(output_path),
-            new_version_name=new_version_name,
-            architecture=str(architecture or base_model.get("architecture") or "unknown"),
-            site_weights=site_weights,
-            requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
-        )
-        cp.update_model_update_statuses([item["update_id"] for item in approved_updates], "aggregated")
-        model_version = next(
-            (item for item in cp.list_model_versions() if item.get("aggregation_id") == aggregation["aggregation_id"]),
-            cp.current_global_model(),
-        )
+        output_path = MODEL_DIR / f"global_{architecture}_{make_id('agg')}.pth"
+        update_ids = [item["update_id"] for item in approved_updates]
 
-        return {
-            "aggregation": aggregation,
-            "model_version": model_version,
-            "aggregated_update_ids": [item["update_id"] for item in approved_updates],
+        job_id = make_id("job")
+        job_record: dict[str, Any] = {
+            "job_id": job_id,
+            "status": "running",
+            "result": None,
+            "error": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
         }
+        with _AGG_JOBS_LOCK:
+            _AGG_JOBS[job_id] = job_record
+
+        def _run() -> None:
+            _AGG_RUNNING.set()
+            try:
+                workflow.model_manager.aggregate_weight_deltas(
+                    delta_paths,
+                    output_path,
+                    weights=delta_weights,
+                    base_model_path=base_model["model_path"],
+                )
+                aggregation = cp.register_aggregation(
+                    base_model_version_id=base_model["version_id"],
+                    new_model_path=str(output_path),
+                    new_version_name=new_version_name,
+                    architecture=str(architecture or base_model.get("architecture") or "unknown"),
+                    site_weights=site_weights,
+                    requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
+                )
+                cp.update_model_update_statuses(update_ids, "aggregated")
+                model_version = next(
+                    (item for item in cp.list_model_versions() if item.get("aggregation_id") == aggregation["aggregation_id"]),
+                    cp.current_global_model(),
+                )
+                with _AGG_JOBS_LOCK:
+                    _AGG_JOBS[job_id].update({
+                        "status": "done",
+                        "result": {
+                            "aggregation": aggregation,
+                            "model_version": model_version,
+                            "aggregated_update_ids": update_ids,
+                        },
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            except Exception as exc:
+                with _AGG_JOBS_LOCK:
+                    _AGG_JOBS[job_id].update({
+                        "status": "failed",
+                        "error": str(exc),
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            finally:
+                _AGG_RUNNING.clear()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        return {"job_id": job_id, "status": "running"}
+
+    @app.get("/api/admin/aggregations/jobs")
+    def list_aggregation_jobs(
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> list[dict[str, Any]]:
+        _require_platform_admin(user)
+        with _AGG_JOBS_LOCK:
+            return list(_AGG_JOBS.values())
+
+    @app.get("/api/admin/aggregations/jobs/{job_id}")
+    def get_aggregation_job(
+        job_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_platform_admin(user)
+        with _AGG_JOBS_LOCK:
+            job = _AGG_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aggregation job not found.")
+        return job
 
     @app.get("/api/admin/projects")
     def list_projects(
@@ -1532,25 +1676,8 @@ def create_app() -> FastAPI:
                 detail=f"Initial training supports only these architectures: {', '.join(TRAINING_ARCHITECTURES)}",
             )
 
-        output_path = MODEL_DIR / f"global_{payload.architecture}_{make_id('init')[:8]}.pth"
         try:
             execution_device = _resolve_execution_device(payload.execution_mode)
-            result = _call_with_supported_kwargs(
-                workflow.run_initial_training,
-                site_store=site_store,
-                architecture=payload.architecture,
-                output_model_path=str(output_path),
-                execution_device=execution_device,
-                crop_mode=payload.crop_mode,
-                epochs=int(payload.epochs),
-                learning_rate=float(payload.learning_rate),
-                batch_size=int(payload.batch_size),
-                val_split=float(payload.val_split),
-                test_split=float(payload.test_split),
-                use_pretrained=bool(payload.use_pretrained),
-                use_medsam_crops=True,
-                regenerate_split=bool(payload.regenerate_split),
-            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -1559,12 +1686,120 @@ def create_app() -> FastAPI:
                 detail=f"Initial training is unavailable: {exc}",
             ) from exc
 
+        output_path = MODEL_DIR / f"global_{payload.architecture}_{make_id('init')[:8]}.pth"
+        job = site_store.enqueue_job(
+            "initial_training",
+            {
+                "architecture": payload.architecture,
+                "execution_mode": payload.execution_mode,
+                "execution_device": execution_device,
+                "crop_mode": payload.crop_mode,
+                "epochs": int(payload.epochs),
+                "learning_rate": float(payload.learning_rate),
+                "batch_size": int(payload.batch_size),
+                "val_split": float(payload.val_split),
+                "test_split": float(payload.test_split),
+                "use_pretrained": bool(payload.use_pretrained),
+                "regenerate_split": bool(payload.regenerate_split),
+            },
+        )
+
+        site_store.update_job_status(
+            job["job_id"],
+            "running",
+            {
+                "progress": {
+                    "stage": "queued",
+                    "message": "Training job queued.",
+                    "percent": 0,
+                    "crop_mode": payload.crop_mode,
+                }
+            },
+        )
+
+        def run_training_job() -> None:
+            def update_progress(progress_payload: dict[str, Any]) -> None:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "running",
+                    {
+                        "progress": progress_payload,
+                    },
+                )
+
+            try:
+                result = _call_with_supported_kwargs(
+                    workflow.run_initial_training,
+                    site_store=site_store,
+                    architecture=payload.architecture,
+                    output_model_path=str(output_path),
+                    execution_device=execution_device,
+                    crop_mode=payload.crop_mode,
+                    epochs=int(payload.epochs),
+                    learning_rate=float(payload.learning_rate),
+                    batch_size=int(payload.batch_size),
+                    val_split=float(payload.val_split),
+                    test_split=float(payload.test_split),
+                    use_pretrained=bool(payload.use_pretrained),
+                    use_medsam_crops=True,
+                    regenerate_split=bool(payload.regenerate_split),
+                    progress_callback=update_progress,
+                )
+                response = {
+                    "site_id": site_id,
+                    "execution_device": execution_device,
+                    "result": result,
+                    "model_version": result.get("model_version"),
+                }
+                site_store.update_job_status(
+                    job["job_id"],
+                    "completed",
+                    {
+                        "progress": {
+                            "stage": "completed",
+                            "message": "Initial training completed.",
+                            "percent": 100,
+                            "crop_mode": payload.crop_mode,
+                        },
+                        "response": response,
+                    },
+                )
+            except Exception as exc:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "failed",
+                    {
+                        "progress": {
+                            "stage": "failed",
+                            "message": "Initial training failed.",
+                            "percent": 100,
+                            "crop_mode": payload.crop_mode,
+                        },
+                        "error": str(exc),
+                    },
+                )
+
+        threading.Thread(target=run_training_job, daemon=True).start()
+
         return {
             "site_id": site_id,
             "execution_device": execution_device,
-            "result": result,
-            "model_version": result.get("model_version"),
+            "job": site_store.get_job(job["job_id"]) or job,
         }
+
+    @app.get("/api/sites/{site_id}/jobs/{job_id}")
+    def get_site_job(
+        site_id: str,
+        job_id: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        job = site_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        return job
 
     @app.get("/api/sites/{site_id}/training/cross-validation")
     def list_cross_validation_reports(
@@ -1596,21 +1831,6 @@ def create_app() -> FastAPI:
         output_dir = MODEL_DIR / f"cross_validation_{make_id('cvdir')[:8]}"
         try:
             execution_device = _resolve_execution_device(payload.execution_mode)
-            report = _call_with_supported_kwargs(
-                workflow.run_cross_validation,
-                site_store=site_store,
-                architecture=payload.architecture,
-                output_dir=str(output_dir),
-                execution_device=execution_device,
-                crop_mode=payload.crop_mode,
-                num_folds=int(payload.num_folds),
-                epochs=int(payload.epochs),
-                learning_rate=float(payload.learning_rate),
-                batch_size=int(payload.batch_size),
-                val_split=float(payload.val_split),
-                use_pretrained=bool(payload.use_pretrained),
-                use_medsam_crops=True,
-            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -1619,10 +1839,100 @@ def create_app() -> FastAPI:
                 detail=f"Cross-validation is unavailable: {exc}",
             ) from exc
 
+        job = site_store.enqueue_job(
+            "cross_validation",
+            {
+                "architecture": payload.architecture,
+                "execution_mode": payload.execution_mode,
+                "execution_device": execution_device,
+                "crop_mode": payload.crop_mode,
+                "num_folds": int(payload.num_folds),
+                "epochs": int(payload.epochs),
+                "learning_rate": float(payload.learning_rate),
+                "batch_size": int(payload.batch_size),
+                "val_split": float(payload.val_split),
+                "use_pretrained": bool(payload.use_pretrained),
+            },
+        )
+        site_store.update_job_status(
+            job["job_id"],
+            "running",
+            {
+                "progress": {
+                    "stage": "queued",
+                    "message": "Cross-validation job queued.",
+                    "percent": 0,
+                    "crop_mode": payload.crop_mode,
+                }
+            },
+        )
+
+        def run_cross_validation_job() -> None:
+            def update_progress(progress_payload: dict[str, Any]) -> None:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "running",
+                    {
+                        "progress": progress_payload,
+                    },
+                )
+
+            try:
+                report = _call_with_supported_kwargs(
+                    workflow.run_cross_validation,
+                    site_store=site_store,
+                    architecture=payload.architecture,
+                    output_dir=str(output_dir),
+                    execution_device=execution_device,
+                    crop_mode=payload.crop_mode,
+                    num_folds=int(payload.num_folds),
+                    epochs=int(payload.epochs),
+                    learning_rate=float(payload.learning_rate),
+                    batch_size=int(payload.batch_size),
+                    val_split=float(payload.val_split),
+                    use_pretrained=bool(payload.use_pretrained),
+                    use_medsam_crops=True,
+                    progress_callback=update_progress,
+                )
+                response = {
+                    "site_id": site_id,
+                    "execution_device": execution_device,
+                    "report": report,
+                }
+                site_store.update_job_status(
+                    job["job_id"],
+                    "completed",
+                    {
+                        "progress": {
+                            "stage": "completed",
+                            "message": "Cross-validation completed.",
+                            "percent": 100,
+                            "crop_mode": payload.crop_mode,
+                        },
+                        "response": response,
+                    },
+                )
+            except Exception as exc:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "failed",
+                    {
+                        "progress": {
+                            "stage": "failed",
+                            "message": "Cross-validation failed.",
+                            "percent": 100,
+                            "crop_mode": payload.crop_mode,
+                        },
+                        "error": str(exc),
+                    },
+                )
+
+        threading.Thread(target=run_cross_validation_job, daemon=True).start()
+
         return {
             "site_id": site_id,
             "execution_device": execution_device,
-            "report": report,
+            "job": site_store.get_job(job["job_id"]) or job,
         }
 
     @app.get("/api/sites/{site_id}/cases")
@@ -1774,6 +2084,20 @@ def create_app() -> FastAPI:
                 smear_result=payload.smear_result,
                 polymicrobial=payload.polymicrobial,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.delete("/api/sites/{site_id}/visits")
+    def delete_visit(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        try:
+            return site_store.delete_visit(patient_id, visit_date)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

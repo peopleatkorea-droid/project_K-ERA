@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
+from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
@@ -975,6 +976,7 @@ class ResearchWorkflowService:
             "n_cases": 1,
             "contributed_by": user_id,
             "case_reference_id": case_reference_id,
+            "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
             "created_at": utc_now(),
             "crop_mode": crop_mode,
             "training_input_policy": "medsam_cornea_crop_only" if crop_mode == "automated" else "medsam_lesion_crop_only",
@@ -1019,14 +1021,47 @@ class ResearchWorkflowService:
         if not use_medsam_crops:
             raise ValueError("Initial training is MedSAM cornea-crop-only.")
         normalized_crop_mode = self._normalize_crop_mode(crop_mode)
+        training_modes = ["automated", "manual"] if normalized_crop_mode == "both" else [normalized_crop_mode]
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                    "crop_mode": normalized_crop_mode,
+                    "component_crop_mode": payload.get("component_crop_mode"),
+                    "component_index": payload.get("component_index"),
+                    "component_count": len(training_modes),
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "train_loss": payload.get("train_loss"),
+                    "val_acc": payload.get("val_acc"),
+                }
+            )
+
+        emit_progress(
+            stage="preparing_data",
+            message="Preparing manifest and patient split.",
+            percent=3,
+        )
 
         saved_split = None if regenerate_split else site_store.load_patient_split() or None
-        crop_modes_to_train = ["automated", "manual"] if normalized_crop_mode == "both" else [normalized_crop_mode]
+        crop_modes_to_train = training_modes
         created_versions: list[dict[str, Any]] = []
         component_results: list[dict[str, Any]] = []
         shared_patient_split: dict[str, Any] | None = saved_split
 
-        for component_crop_mode in crop_modes_to_train:
+        for component_index, component_crop_mode in enumerate(crop_modes_to_train, start=1):
+            emit_progress(
+                stage="preparing_component",
+                message=f"Preparing {component_crop_mode} training set.",
+                percent=8 if len(crop_modes_to_train) == 1 else 5 + int(((component_index - 1) / len(crop_modes_to_train)) * 10),
+                component_crop_mode=component_crop_mode,
+                component_index=component_index,
+            )
             records = self._prepare_records_for_model(
                 site_store,
                 manifest_df.to_dict("records"),
@@ -1036,6 +1071,25 @@ class ResearchWorkflowService:
             if normalized_crop_mode == "both":
                 output = Path(output_model_path)
                 component_output_path = str(output.with_name(f"{output.stem}_{component_crop_mode}{output.suffix}"))
+
+            training_start_percent = 10 + int(((component_index - 1) * 70) / len(crop_modes_to_train))
+            training_end_percent = 10 + int((component_index * 70) / len(crop_modes_to_train))
+
+            def component_progress_callback(epoch: int, total_epochs: int, train_loss: float, val_acc: float) -> None:
+                progress_ratio = epoch / max(1, total_epochs)
+                percent = training_start_percent + int((training_end_percent - training_start_percent) * progress_ratio)
+                emit_progress(
+                    stage="training_component",
+                    message=f"Training {component_crop_mode} model.",
+                    percent=percent,
+                    component_crop_mode=component_crop_mode,
+                    component_index=component_index,
+                    epoch=epoch,
+                    epochs=total_epochs,
+                    train_loss=round(float(train_loss), 4),
+                    val_acc=round(float(val_acc), 4),
+                )
+
             result = self.model_manager.initial_train(
                 records=records,
                 architecture=architecture,
@@ -1048,7 +1102,7 @@ class ResearchWorkflowService:
                 test_split=test_split,
                 use_pretrained=use_pretrained,
                 saved_split=shared_patient_split,
-                progress_callback=progress_callback,
+                progress_callback=component_progress_callback,
             )
             patient_split = {
                 **result["patient_split"],
@@ -1091,13 +1145,32 @@ class ResearchWorkflowService:
                 "ready": True,
             }
             created_versions.append(self.control_plane.ensure_model_version(new_version))
+            emit_progress(
+                stage="registering_component",
+                message=f"Registering {component_crop_mode} model version.",
+                percent=training_end_percent,
+                component_crop_mode=component_crop_mode,
+                component_index=component_index,
+            )
             result["version_name"] = version_name
             result["model_version"] = created_versions[-1]
             component_results.append(result)
 
         if normalized_crop_mode != "both":
+            emit_progress(
+                stage="completed",
+                message="Initial training completed.",
+                percent=100,
+                component_crop_mode=normalized_crop_mode,
+                component_index=1,
+            )
             return component_results[0]
 
+        emit_progress(
+            stage="selecting_ensemble",
+            message="Optimizing ensemble weights on validation split.",
+            percent=88,
+        )
         val_patient_ids = set(str(patient_id) for patient_id in (shared_patient_split or {}).get("val_patient_ids", []))
         validation_records = [
             record
@@ -1157,6 +1230,16 @@ class ResearchWorkflowService:
                 "ready": True,
             }
         )
+        emit_progress(
+            stage="finalizing",
+            message="Finalizing ensemble model registration.",
+            percent=97,
+        )
+        emit_progress(
+            stage="completed",
+            message="Initial training completed.",
+            percent=100,
+        )
         return {
             "training_id": make_id("train"),
             "crop_mode": "both",
@@ -1185,6 +1268,7 @@ class ResearchWorkflowService:
         val_split: float = 0.2,
         use_pretrained: bool = True,
         use_medsam_crops: bool = True,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         manifest_df = site_store.generate_manifest()
         if manifest_df.empty:
@@ -1200,6 +1284,63 @@ class ResearchWorkflowService:
             manifest_df.to_dict("records"),
             crop_mode=normalized_crop_mode,
         )
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                    "crop_mode": normalized_crop_mode,
+                    "fold_index": payload.get("fold_index"),
+                    "num_folds": payload.get("num_folds", num_folds),
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "train_loss": payload.get("train_loss"),
+                    "val_acc": payload.get("val_acc"),
+                }
+            )
+
+        emit_progress(
+            stage="preparing_data",
+            message="Preparing cross-validation splits.",
+            percent=3,
+        )
+
+        def on_cross_validation_progress(progress: dict[str, Any]) -> None:
+            stage = str(progress.get("stage") or "running")
+            fold_index = int(progress.get("fold_index") or 1)
+            total_folds = int(progress.get("num_folds") or num_folds)
+            if stage == "preparing_fold":
+                percent = 8 + int(((fold_index - 1) / max(1, total_folds)) * 80)
+                emit_progress(
+                    stage="preparing_fold",
+                    message=f"Preparing fold {fold_index}/{total_folds}.",
+                    percent=percent,
+                    fold_index=fold_index,
+                    num_folds=total_folds,
+                )
+                return
+            epoch = int(progress.get("epoch") or 0)
+            total_epochs = int(progress.get("epochs") or epochs)
+            fold_base = 10 + int(((fold_index - 1) * 80) / max(1, total_folds))
+            fold_end = 10 + int((fold_index * 80) / max(1, total_folds))
+            epoch_ratio = epoch / max(1, total_epochs)
+            percent = fold_base + int((fold_end - fold_base) * epoch_ratio)
+            emit_progress(
+                stage="training_fold",
+                message=f"Running fold {fold_index}/{total_folds}.",
+                percent=percent,
+                fold_index=fold_index,
+                num_folds=total_folds,
+                epoch=epoch,
+                epochs=total_epochs,
+                train_loss=round(float(progress.get("train_loss") or 0.0), 4),
+                val_acc=round(float(progress.get("val_acc") or 0.0), 4),
+            )
+
         result = self.model_manager.cross_validate(
             records=records,
             architecture=architecture,
@@ -1211,6 +1352,12 @@ class ResearchWorkflowService:
             batch_size=batch_size,
             val_split=val_split,
             use_pretrained=use_pretrained,
+            progress_callback=on_cross_validation_progress,
+        )
+        emit_progress(
+            stage="finalizing",
+            message="Saving cross-validation report.",
+            percent=96,
         )
         report = {
             **result,
@@ -1221,6 +1368,11 @@ class ResearchWorkflowService:
         report_path = site_store.validation_dir / f"{report['cross_validation_id']}.json"
         write_json(report_path, report)
         report["report_path"] = str(report_path)
+        emit_progress(
+            stage="completed",
+            message="Cross-validation completed.",
+            percent=100,
+        )
         return report
 
     def run_local_fine_tuning(

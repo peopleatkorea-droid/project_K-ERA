@@ -78,7 +78,7 @@ If a species is missing, users can request it. Administrators approve requests a
 ## Local storage path
 
 ```text
-storage/sites/<site_id>/data/raw/<patient_id>/<visit_date>/image_file.jpg
+<storage_root>/sites/<site_id>/data/raw/<patient_id>/<visit_date>/image_file.jpg
 ```
 
 ## Minimum manifest schema

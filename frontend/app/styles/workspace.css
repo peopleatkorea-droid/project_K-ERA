@@ -83,6 +83,21 @@
   margin-bottom: 18px;
 }
 
+.workspace-brand-rail {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.workspace-brand-rail h1 {
+  white-space: nowrap;
+}
+
+.workspace-brand-rail .ghost-button {
+  width: 100%;
+  justify-content: center;
+}
+
 .workspace-brand-actions {
   display: flex;
   align-items: center;
@@ -1170,6 +1185,14 @@
   padding: 7px 10px;
 }
 
+.panel-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .validation-panel-head {
   align-items: flex-start;
   flex-wrap: wrap;
@@ -1262,6 +1285,11 @@
 .image-preview-frame {
   aspect-ratio: 4 / 3;
   background: rgba(255, 255, 255, 0.04);
+}
+
+.image-preview-frame.lesion-editor-surface,
+.panel-image-annotation-surface {
+  aspect-ratio: auto;
 }
 
 .image-preview,
@@ -1376,6 +1404,34 @@
   background: rgba(255, 255, 255, 0.04);
 }
 
+.training-progress-card {
+  margin-top: 14px;
+}
+
+.training-progress-bar {
+  height: 10px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.training-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(125, 211, 195, 0.72), rgba(205, 214, 131, 0.88));
+  transition: width 180ms ease;
+}
+
+.training-progress-grid {
+  margin-top: 12px;
+}
+
+.training-progress-copy {
+  margin: 12px 0 0;
+  color: var(--workspace-muted);
+}
+
 .selected-case-chip-strip {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.8fr) minmax(0, 1.1fr);
@@ -1487,6 +1543,7 @@
 
 .lesion-editor-surface {
   position: relative;
+  display: block;
   overflow: hidden;
   border: 1px solid var(--workspace-line);
   border-radius: var(--workspace-radius-item);
@@ -1731,6 +1788,12 @@
   padding: 16px;
 }
 
+.ops-item-active {
+  border-color: rgba(125, 211, 195, 0.42);
+  background: linear-gradient(135deg, rgba(125, 211, 195, 0.12), rgba(231, 211, 111, 0.08));
+  box-shadow: 0 10px 24px rgba(20, 32, 43, 0.08);
+}
+
 .ops-form-grid,
 .ops-dual-grid {
   display: grid;
@@ -1878,6 +1941,95 @@
   color: var(--workspace-muted);
 }
 
+.review-checklist {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--workspace-radius-item);
+  border: 1px solid var(--workspace-line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.review-checklist-block {
+  display: grid;
+  gap: 8px;
+}
+
+.review-checklist-block strong {
+  font-size: 0.9rem;
+}
+
+.review-checklist-block ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--workspace-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.review-checklist-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-checklist-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: var(--workspace-radius-pill);
+  border: 1px solid var(--workspace-line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--workspace-muted);
+  font-size: 0.82rem;
+}
+
+.storage-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.92fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+.storage-settings-copy {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.storage-settings-copy p {
+  margin: 0;
+  color: var(--workspace-muted);
+  line-height: 1.45;
+}
+
+.storage-settings-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.storage-settings-meta strong {
+  font-size: 0.84rem;
+}
+
+.storage-settings-meta span {
+  color: var(--workspace-muted);
+  overflow-wrap: anywhere;
+}
+
+.storage-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
 @media (max-width: 1260px) {
   .workspace-shell,
   .workspace-center,
@@ -1956,6 +2108,11 @@
 
   .selected-case-chip-strip {
     grid-template-columns: 1fr;
+  }
+
+  .storage-settings-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
   }
 
 }

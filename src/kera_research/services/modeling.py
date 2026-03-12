@@ -454,7 +454,7 @@ class ModelManager:
         require_torch()
         architecture = model_reference.get("architecture", "cnn")
         model_path = model_reference["model_path"]
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         model = self.build_model(architecture).to(device)
         state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
         strict = architecture not in DENSENET_VARIANTS
@@ -1126,6 +1126,7 @@ class ModelManager:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         patient_labels = {
             str(record["patient_id"]): str(record["culture_category"])
@@ -1146,6 +1147,29 @@ class ModelManager:
 
         for fold in folds:
             fold_output_path = output_root / f"{architecture}_fold{fold['fold_index']}.pth"
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "preparing_fold",
+                        "fold_index": fold["fold_index"],
+                        "num_folds": num_folds,
+                    }
+                )
+
+            def fold_progress_callback(epoch: int, total_epochs: int, train_loss: float, val_acc: float) -> None:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "training_fold",
+                            "fold_index": fold["fold_index"],
+                            "num_folds": num_folds,
+                            "epoch": epoch,
+                            "epochs": total_epochs,
+                            "train_loss": train_loss,
+                            "val_acc": val_acc,
+                        }
+                    )
+
             train_result = self.initial_train(
                 records=records,
                 architecture=architecture,
@@ -1158,6 +1182,7 @@ class ModelManager:
                 test_split=fold["test_split"],
                 use_pretrained=use_pretrained,
                 saved_split=fold,
+                progress_callback=fold_progress_callback,
             )
             fold_results.append(
                 {
@@ -1209,9 +1234,9 @@ class ModelManager:
         output_delta_path: str | Path,
     ) -> str:
         require_torch()
-        tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu", weights_only=False)
+        tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu", weights_only=True)
         architecture = tuned_checkpoint.get("architecture", "cnn") if isinstance(tuned_checkpoint, dict) else "cnn"
-        base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=False)
+        base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)
         base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
         tuned_state = self._extract_state_dict_from_checkpoint(tuned_checkpoint, architecture)
         delta_state = {key: tuned_state[key] - base_state[key] for key in base_state}
@@ -1226,6 +1251,33 @@ class ModelManager:
         )
         return str(output)
 
+    def _validate_deltas(self, deltas: list[dict]) -> None:
+        """Reject deltas containing NaN/Inf or statistical outliers (poisoning guard)."""
+        if not deltas:
+            return
+        reference_keys = set(deltas[0].keys())
+        norms: list[float] = []
+        for i, delta in enumerate(deltas):
+            if set(delta.keys()) != reference_keys:
+                raise ValueError(f"Delta {i} has mismatched layer keys — cannot aggregate.")
+            total_norm = 0.0
+            for key, tensor in delta.items():
+                t = tensor.float()
+                if torch.isnan(t).any() or torch.isinf(t).any():
+                    raise ValueError(f"Delta {i} contains NaN or Inf in layer '{key}' — rejecting.")
+                total_norm += float(t.norm().item()) ** 2
+            norms.append(total_norm ** 0.5)
+
+        if len(norms) >= 2:
+            median_norm = float(np.median(norms))
+            if median_norm > 0:
+                for i, norm in enumerate(norms):
+                    if norm > 10.0 * median_norm:
+                        raise ValueError(
+                            f"Delta {i} L2 norm ({norm:.4f}) is more than 10× the median norm "
+                            f"({median_norm:.4f}). Possible poisoning — rejecting aggregation."
+                        )
+
     def aggregate_weight_deltas(
         self,
         delta_paths: list[str | Path],
@@ -1236,8 +1288,9 @@ class ModelManager:
         require_torch()
         if not delta_paths:
             raise ValueError("At least one delta path is required.")
-        delta_checkpoints = [torch.load(path, map_location="cpu", weights_only=False) for path in delta_paths]
+        delta_checkpoints = [torch.load(path, map_location="cpu", weights_only=True) for path in delta_paths]
         deltas = [checkpoint["state_dict"] for checkpoint in delta_checkpoints]
+        self._validate_deltas(deltas)
         keys = deltas[0].keys()
         if weights is None:
             weights_tensor = torch.full((len(deltas),), 1.0 / len(deltas), dtype=torch.float32)
@@ -1256,7 +1309,7 @@ class ModelManager:
         architecture = delta_checkpoints[0].get("architecture", "cnn")
         state_dict_to_save = aggregated
         if base_model_path is not None:
-            base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=False)
+            base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)
             base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
             state_dict_to_save = {
                 key: base_state[key] + aggregated[key]

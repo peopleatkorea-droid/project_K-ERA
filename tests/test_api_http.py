@@ -533,6 +533,32 @@ class ApiHttpTests(unittest.TestCase):
             self.assertNotIn("patient_id", activity_payload["recent_contributions"][0])
             self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
 
+    def test_delete_visit_removes_patient_when_last_visit_http(self):
+        token = self._login("http_researcher", "research123")
+        self._seed_case(token)
+
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+        self.assertTrue(delete_response.json()["deleted_patient"])
+        self.assertEqual(delete_response.json()["remaining_visit_count"], 0)
+
+        patients_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(patients_response.status_code, 200, patients_response.text)
+        self.assertEqual(patients_response.json(), [])
+
+        visits_response = self.client.get(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(visits_response.status_code, 200, visits_response.text)
+        self.assertEqual(visits_response.json(), [])
+
     def test_admin_model_update_artifact_can_be_served_from_embedded_thumbnail(self):
         admin_token = self._login("admin", "admin123")
         update_id = self.app_module.make_id("update")
@@ -609,7 +635,23 @@ class ApiHttpTests(unittest.TestCase):
                 json={"architecture": "convnext_tiny", "execution_mode": "cpu", "epochs": 2},
             )
             self.assertEqual(training_response.status_code, 200, training_response.text)
-            self.assertEqual(training_response.json()["result"]["version_name"], "global-convnext_tiny-http")
+            training_job_id = training_response.json()["job"]["job_id"]
+            training_result = None
+            for _ in range(30):
+                training_job_response = self.client.get(
+                    f"/api/sites/{self.site_id}/jobs/{training_job_id}",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+                self.assertEqual(training_job_response.status_code, 200, training_job_response.text)
+                training_job = training_job_response.json()
+                if training_job["status"] == "completed":
+                    training_result = training_job["result"]["response"]
+                    break
+                if training_job["status"] == "failed":
+                    self.fail(training_job["result"].get("error") or "initial training job failed")
+                time.sleep(0.05)
+            self.assertIsNotNone(training_result)
+            self.assertEqual(training_result["result"]["version_name"], "global-convnext_tiny-http")
 
             cv_response = self.client.post(
                 f"/api/sites/{self.site_id}/training/cross-validation",
@@ -617,6 +659,22 @@ class ApiHttpTests(unittest.TestCase):
                 json={"architecture": "convnext_tiny", "execution_mode": "cpu", "num_folds": 3},
             )
             self.assertEqual(cv_response.status_code, 200, cv_response.text)
+            cv_job_id = cv_response.json()["job"]["job_id"]
+            cv_result = None
+            for _ in range(30):
+                cv_job_response = self.client.get(
+                    f"/api/sites/{self.site_id}/jobs/{cv_job_id}",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+                self.assertEqual(cv_job_response.status_code, 200, cv_job_response.text)
+                cv_job = cv_job_response.json()
+                if cv_job["status"] == "completed":
+                    cv_result = cv_job["result"]["response"]
+                    break
+                if cv_job["status"] == "failed":
+                    self.fail(cv_job["result"].get("error") or "cross validation job failed")
+                time.sleep(0.05)
+            self.assertIsNotNone(cv_result)
 
             list_response = self.client.get(
                 f"/api/sites/{self.site_id}/training/cross-validation",
@@ -633,7 +691,7 @@ class ApiHttpTests(unittest.TestCase):
                 registered_update = self.cp.register_model_update(
                     {
                         "update_id": self.app_module.make_id("update"),
-                        "site_id": self.site_id,
+                        "site_id": self.site_id if index == 0 else "SITE-B",
                         "base_model_version_id": base_model["version_id"],
                         "architecture": base_model["architecture"],
                         "upload_type": "weight delta",
@@ -659,6 +717,69 @@ class ApiHttpTests(unittest.TestCase):
             aggregations_response = self.client.get("/api/admin/aggregations", headers={"Authorization": f"Bearer {admin_token}"})
             self.assertEqual(aggregations_response.status_code, 200, aggregations_response.text)
             self.assertEqual(len(aggregations_response.json()), 1)
+
+    def test_aggregation_rejects_multiple_updates_from_same_site_http(self):
+        admin_token = self._login("admin", "admin123")
+        base_model = self.cp.current_global_model()
+        for index in range(2):
+            delta_path = self.site_store.update_dir / f"dup_site_{index}.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": self.site_id,
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": 1,
+                    "created_at": f"2026-03-11T00:5{index}:00+00:00",
+                    "status": "approved",
+                }
+            )
+
+        aggregation_response = self.client.post(
+            "/api/admin/aggregations/run",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={},
+        )
+        self.assertEqual(aggregation_response.status_code, 400, aggregation_response.text)
+        self.assertIn("Only one approved update per site can be aggregated at a time.", aggregation_response.text)
+
+    def test_model_version_delete_soft_delete_rules_http(self):
+        admin_token = self._login("admin", "admin123")
+        archived_candidate = self.cp.ensure_model_version(
+            {
+                "version_id": self.app_module.make_id("model"),
+                "version_name": "global-delete-me",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "created_at": "2026-03-12T00:00:00+00:00",
+                "ready": True,
+                "is_current": False,
+            }
+        )
+
+        delete_response = self.client.delete(
+            f"/api/admin/model-versions/{archived_candidate['version_id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+        self.assertTrue(delete_response.json()["model_version"]["archived"])
+        visible_versions = self.client.get(
+            "/api/admin/model-versions",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        ).json()
+        self.assertNotIn(archived_candidate["version_id"], [item["version_id"] for item in visible_versions])
+
+        current_model = self.cp.current_global_model()
+        current_delete_response = self.client.delete(
+            f"/api/admin/model-versions/{current_model['version_id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(current_delete_response.status_code, 400, current_delete_response.text)
 
     def test_access_request_review_http(self):
         requester_token = self._login("http_viewer", "viewer123")

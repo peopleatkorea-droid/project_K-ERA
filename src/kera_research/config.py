@@ -1,12 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
 import bcrypt
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-STORAGE_DIR = BASE_DIR / "storage"
+
+
+def _resolve_storage_dir() -> Path:
+    configured = os.getenv("KERA_STORAGE_DIR", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = (BASE_DIR / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        return candidate
+    return (BASE_DIR.parent / "KERA_DATA").resolve()
+
+
+STORAGE_DIR = _resolve_storage_dir()
 CONTROL_PLANE_DIR = STORAGE_DIR / "control_plane"
 CONTROL_PLANE_CASE_DIR = CONTROL_PLANE_DIR / "validation_cases"
 CONTROL_PLANE_ARTIFACT_DIR = Path(
@@ -17,8 +32,11 @@ CASE_REFERENCE_SALT = (
     or os.getenv("KERA_API_SECRET", "").strip()
     or "kera-case-reference-v1"
 )
+# First 16 hex chars of SHA256(salt) — safe to transmit, never reveals the actual salt.
+# All nodes in the same federation must produce the same fingerprint.
+CASE_REFERENCE_SALT_FINGERPRINT = hashlib.sha256(CASE_REFERENCE_SALT.encode()).hexdigest()[:16]
 SITE_ROOT_DIR = STORAGE_DIR / "sites"
-MODEL_DIR = BASE_DIR / "models"
+MODEL_DIR = STORAGE_DIR / "models"
 DOCS_DIR = BASE_DIR / "docs"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 LOCAL_MEDSAM_ROOT = BASE_DIR / "MedSAM-main"

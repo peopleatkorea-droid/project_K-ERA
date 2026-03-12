@@ -11,7 +11,7 @@
 - `frontend/`: Next.js 15 + React 19 웹 UI
 - `src/kera_research/api/app.py`: FastAPI API 서버
 - `storage/`: SQLite DB, 사이트별 원본 이미지, validation artifact, model update 저장
-- `models/`: 로컬 학습/검증에 사용하는 모델 파일 저장 위치
+- `<기본 저장 루트>/models/`: 로컬 학습/검증에 사용하는 모델 파일 저장 위치
 - `scripts/run_local_node.ps1`: API와 웹 프론트엔드를 함께 띄우는 기본 런처
 
 이 저장소는 더 이상 Streamlit 기반 앱을 기본 경로로 사용하지 않습니다. 현재 사용자 흐름과 실행 스크립트는 모두 웹 스택 기준입니다.
@@ -116,7 +116,7 @@
    +-- storage/sites/<SITE_ID>/artifacts
    +-- storage/sites/<SITE_ID>/validation
    +-- storage/sites/<SITE_ID>/model_updates
-   +-- models/
+   +-- <기본 저장 루트>/models/
 ```
 
 메타데이터는 기본적으로 SQLite에 저장되고, 원본 이미지와 파생 artifact는 파일 시스템에 저장됩니다.
@@ -165,6 +165,7 @@
 - `KERA_CONTROL_PLANE_DATABASE_URL`
 - `KERA_CONTROL_PLANE_ARTIFACT_DIR`
 - `KERA_DATA_PLANE_DATABASE_URL`
+- `KERA_STORAGE_DIR`
 - `KERA_DATABASE_URL`
 - `DATABASE_URL`
 - `MEDSAM_SCRIPT`
@@ -177,8 +178,9 @@
 - `KERA_CONTROL_PLANE_DATABASE_URL`를 지정하면 로그인/권한/프로젝트/모델 레지스트리 같은 중앙 control plane 메타데이터를 별도 DB로 분리할 수 있습니다.
 - `KERA_CONTROL_PLANE_ARTIFACT_DIR`를 지정하면 delta/중앙 검토 산출물 같은 control plane 파일 아티팩트를 별도 경로에 저장할 수 있습니다.
 - `KERA_DATA_PLANE_DATABASE_URL`를 지정하면 환자/방문/이미지와 같은 로컬 data plane 메타데이터를 별도 DB로 둘 수 있습니다.
+- `KERA_STORAGE_DIR`를 지정하면 기본 SQLite DB, 사이트 원본 이미지, validation artifact 저장 루트를 지정한 경로로 옮길 수 있습니다.
 - 두 변수를 지정하지 않으면 기존과 동일하게 `KERA_DATABASE_URL` 또는 `DATABASE_URL` 하나를 공용 DB로 사용합니다.
-- 아무 DB도 지정하지 않으면 기본값은 `storage/kera.db`입니다.
+- 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\\KERA_DATA\\kera.db`입니다.
 
 ### 3. 앱 실행
 
@@ -204,21 +206,27 @@
 
 ## 저장 구조
 
-기본 저장 위치는 `storage/`입니다.
+기본 저장 위치는 `앱 폴더의 상위 디렉토리\\KERA_DATA\\`입니다.
+
+권장:
+
+- 설치형 배포나 실제 운영에서는 기본값을 그대로 쓰거나, 필요하면 `KERA_STORAGE_DIR`로 별도 경로를 지정하는 편이 좋습니다.
+- 예: `KERA_STORAGE_DIR=D:\KERA_DATA`
+- 이렇게 하면 원본 이미지, SQLite DB, validation artifact가 Git 작업 폴더 밖에 저장됩니다.
 
 이미지 저장 정책:
 
 - 업로드 시 EXIF 메타데이터를 제거합니다.
 - 저장 파일명은 원본 파일명이 아니라 생성된 `image_id` 기반 이름을 사용합니다.
 
-- `storage/kera.db`: 기본 SQLite DB. control plane / data plane 분리 변수를 지정하지 않으면 공용 DB로 사용됩니다.
-- `storage/control_plane/`: validation case JSON, aggregation 메타데이터 등
-- `storage/sites/<SITE_ID>/data/raw/`: 원본 이미지
-- `storage/sites/<SITE_ID>/artifacts/gradcam/`: Grad-CAM 결과
-- `storage/sites/<SITE_ID>/artifacts/roi_crops/`: ROI crop
-- `storage/sites/<SITE_ID>/artifacts/medsam_masks/`: MedSAM mask
-- `storage/sites/<SITE_ID>/validation/`: validation 결과 및 cross-validation 리포트
-- `storage/sites/<SITE_ID>/model_updates/`: 로컬 contribution 결과물
+- `<기본 저장 루트>/kera.db`: 기본 SQLite DB. control plane / data plane 분리 변수를 지정하지 않으면 공용 DB로 사용됩니다.
+- `<기본 저장 루트>/control_plane/`: validation case JSON, aggregation 메타데이터 등
+- `<기본 저장 루트>/sites/<SITE_ID>/data/raw/`: 원본 이미지
+- `<기본 저장 루트>/sites/<SITE_ID>/artifacts/gradcam/`: Grad-CAM 결과
+- `<기본 저장 루트>/sites/<SITE_ID>/artifacts/roi_crops/`: ROI crop
+- `<기본 저장 루트>/sites/<SITE_ID>/artifacts/medsam_masks/`: MedSAM mask
+- `<기본 저장 루트>/sites/<SITE_ID>/validation/`: validation 결과 및 cross-validation 리포트
+- `<기본 저장 루트>/sites/<SITE_ID>/model_updates/`: 로컬 contribution 결과물
 
 기본 DB는 SQLAlchemy를 사용하며 PostgreSQL 연결도 가능하도록 구성되어 있습니다.
 
@@ -226,7 +234,8 @@
 
 기본 동작:
 
-- 별도 설정이 없으면 사이트 데이터는 `storage/sites/<SITE_ID>/` 아래에 저장됩니다.
+- 별도 설정이 없으면 사이트 데이터는 `앱 폴더의 상위 디렉토리\\KERA_DATA\\sites\\<SITE_ID>\\` 아래에 저장됩니다.
+- `KERA_STORAGE_DIR`를 지정하면 기본 루트가 `<KERA_STORAGE_DIR>/sites/<SITE_ID>/`로 바뀝니다.
 
 운영 화면에서 가능한 작업:
 

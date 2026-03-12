@@ -208,7 +208,7 @@ const optionLabels = {
     sex: {
       female: "female",
       male: "male",
-      other: "other",
+      other: "unknown",
       unknown: "unknown",
     },
     contactLens: {
@@ -253,7 +253,7 @@ const optionLabels = {
     sex: {
       female: "여성",
       male: "남성",
-      other: "기타",
+      other: "미상",
       unknown: "미상",
     },
     contactLens: {

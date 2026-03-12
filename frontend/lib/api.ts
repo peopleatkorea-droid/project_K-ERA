@@ -495,9 +495,56 @@ export type InitialTrainingResponse = {
   model_version?: ModelVersionRecord;
 };
 
+export type TrainingJobProgress = {
+  stage?: string | null;
+  message?: string | null;
+  percent?: number | null;
+  crop_mode?: "automated" | "manual" | "both" | string | null;
+  component_crop_mode?: "automated" | "manual" | string | null;
+  component_index?: number | null;
+  component_count?: number | null;
+  fold_index?: number | null;
+  num_folds?: number | null;
+  epoch?: number | null;
+  epochs?: number | null;
+  train_loss?: number | null;
+  val_acc?: number | null;
+};
+
+export type SiteJobRecord = {
+  job_id: string;
+  job_type: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result?: {
+    progress?: TrainingJobProgress | null;
+    response?: InitialTrainingResponse | CrossValidationRunResponse | null;
+    error?: string | null;
+  } | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type InitialTrainingJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type CrossValidationJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
 export type CrossValidationMetricSummary = {
   mean?: number | null;
   std?: number | null;
+};
+
+export type ConfusionMatrixRecord = {
+  labels?: string[];
+  matrix?: number[][];
 };
 
 export type CrossValidationFoldRecord = {
@@ -510,8 +557,8 @@ export type CrossValidationFoldRecord = {
   n_val: number;
   n_test: number;
   best_val_acc?: number;
-  val_metrics?: Record<string, number | null>;
-  test_metrics?: Record<string, number | null>;
+  val_metrics?: Record<string, number | null | ConfusionMatrixRecord>;
+  test_metrics?: Record<string, number | null | ConfusionMatrixRecord>;
   patient_split?: Record<string, unknown>;
 };
 
@@ -931,6 +978,10 @@ export async function fetchModelVersions(token: string) {
   return request<ModelVersionRecord[]>("/api/admin/model-versions", {}, token);
 }
 
+export async function deleteModelVersion(versionId: string, token: string) {
+  return request<{ model_version: ModelVersionRecord }>(`/api/admin/model-versions/${versionId}`, { method: "DELETE" }, token);
+}
+
 export async function fetchModelUpdates(
   token: string,
   options: {
@@ -1151,6 +1202,20 @@ export async function updateVisit(
     },
     token
   );
+}
+
+export async function deleteVisit(siteId: string, token: string, patientId: string, visitDate: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<{
+    patient_id: string;
+    visit_date: string;
+    deleted_images: number;
+    deleted_patient: boolean;
+    remaining_visit_count: number;
+  }>(`/api/sites/${siteId}/visits?${params.toString()}`, { method: "DELETE" }, token);
 }
 
 export async function fetchImages(siteId: string, token: string, patientId?: string, visitDate?: string) {
@@ -1516,7 +1581,7 @@ export async function runInitialTraining(
     regenerate_split?: boolean;
   } = {}
 ) {
-  return request<InitialTrainingResponse>(
+  return request<InitialTrainingJobResponse>(
     `/api/sites/${siteId}/training/initial`,
     {
       method: "POST",
@@ -1538,6 +1603,10 @@ export async function runInitialTraining(
   );
 }
 
+export async function fetchSiteJob(siteId: string, jobId: string, token: string) {
+  return request<SiteJobRecord>(`/api/sites/${siteId}/jobs/${jobId}`, {}, token);
+}
+
 export async function fetchCrossValidationReports(siteId: string, token: string) {
   return request<CrossValidationReport[]>(`/api/sites/${siteId}/training/cross-validation`, {}, token);
 }
@@ -1557,7 +1626,7 @@ export async function runCrossValidation(
     use_pretrained?: boolean;
   } = {}
 ) {
-  return request<CrossValidationRunResponse>(
+  return request<CrossValidationJobResponse>(
     `/api/sites/${siteId}/training/cross-validation`,
     {
       method: "POST",

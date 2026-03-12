@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 from uuid import uuid4
 
-SEX_OPTIONS = ["female", "male", "other", "unknown"]
+SEX_OPTIONS = ["female", "male", "unknown"]
 CONTACT_LENS_OPTIONS = [
     "none",
     "soft contact lens",
@@ -34,6 +34,7 @@ CULTURE_SPECIES = {
     "bacterial": [
         "Staphylococcus aureus",
         "Staphylococcus epidermidis",
+        "Staphylococcus hominis",
         "Coagulase-negative Staphylococcus",
         "Streptococcus pneumoniae",
         "Streptococcus viridans group",

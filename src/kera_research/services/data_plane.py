@@ -422,6 +422,45 @@ class SiteStore:
             )
         return len(existing_images)
 
+    def delete_visit(self, patient_id: str, visit_date: str) -> dict[str, Any]:
+        existing_visit = self.get_visit(patient_id, visit_date)
+        if existing_visit is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+
+        deleted_images = self.delete_images_for_visit(patient_id, visit_date)
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                delete(db_visits).where(
+                    and_(
+                        db_visits.c.site_id == self.site_id,
+                        db_visits.c.patient_id == patient_id,
+                        db_visits.c.visit_date == visit_date,
+                    )
+                )
+            )
+
+        remaining_visits = self.list_visits_for_patient(patient_id)
+        deleted_patient = False
+        if not remaining_visits:
+            with DATA_PLANE_ENGINE.begin() as conn:
+                conn.execute(
+                    delete(db_patients).where(
+                        and_(
+                            db_patients.c.site_id == self.site_id,
+                            db_patients.c.patient_id == patient_id,
+                        )
+                    )
+                )
+            deleted_patient = True
+
+        return {
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "deleted_images": deleted_images,
+            "deleted_patient": deleted_patient,
+            "remaining_visit_count": len(remaining_visits),
+        }
+
     def update_representative_flags(self, updates: dict[str, bool]) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:
             for image_id, is_representative in updates.items():
@@ -680,6 +719,23 @@ class SiteStore:
             }
             for row in rows
         ]
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with DATA_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+            ).mappings().first()
+        if row is None:
+            return None
+        return {
+            "job_id": row["job_id"],
+            "job_type": row["job_type"],
+            "status": row["status"],
+            "payload": row["payload_json"],
+            "result": row["result_json"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:

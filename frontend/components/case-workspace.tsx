@@ -8,12 +8,12 @@ import {
   type CaseContributionResponse,
   type LesionPreviewRecord,
   type OrganismRecord,
-  type PatientRecord,
   type RoiPreviewRecord,
   type SiteActivityResponse,
   type SiteValidationRunRecord,
   createPatient,
   createVisit,
+  deleteVisit,
   deleteVisitImages,
   fetchCaseHistory,
   fetchCaseLesionPreview,
@@ -23,7 +23,6 @@ import {
   clearImageLesionBox,
   fetchCases,
   fetchImageBlob,
-  fetchPatients,
   fetchVisits,
   fetchValidationArtifactBlob,
   fetchImages,
@@ -37,6 +36,7 @@ import {
   type SiteSummary,
   type VisitRecord,
   runSiteValidation,
+  setRepresentativeImage as setRepresentativeImageOnServer,
   updateVisit,
   runCaseContribution,
   runCaseValidation,
@@ -44,7 +44,7 @@ import {
   uploadImage,
 } from "../lib/api";
 
-const SEX_OPTIONS = ["female", "male", "other", "unknown"];
+const SEX_OPTIONS = ["male", "female", "unknown"];
 const CONTACT_LENS_OPTIONS = [
   "none",
   "soft contact lens",
@@ -65,9 +65,11 @@ const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
     "Staphylococcus aureus",
     "Staphylococcus epidermidis",
+    "Staphylococcus hominis",
     "Coagulase-negative Staphylococcus",
     "Streptococcus pneumoniae",
     "Streptococcus viridans group",
+    "Enterococcus faecalis",
     "Pseudomonas aeruginosa",
     "Moraxella",
     "Corynebacterium",
@@ -448,16 +450,18 @@ function listOrganisms(
 function organismSummaryLabel(
   cultureCategory: string,
   cultureSpecies: string,
-  additionalOrganisms: OrganismRecord[] | undefined
+  additionalOrganisms: OrganismRecord[] | undefined,
+  maxVisibleSpecies = 1
 ): string {
   const organisms = listOrganisms(cultureCategory, cultureSpecies, additionalOrganisms);
   if (!organisms.length) {
     return "";
   }
-  if (organisms.length === 1) {
-    return organisms[0].culture_species;
+  if (organisms.length <= maxVisibleSpecies) {
+    return organisms.map((organism) => organism.culture_species).join(" · ");
   }
-  return `${organisms[0].culture_species} + ${organisms.length - 1}`;
+  const visible = organisms.slice(0, Math.max(1, maxVisibleSpecies)).map((organism) => organism.culture_species).join(" · ");
+  return `${visible} + ${organisms.length - Math.max(1, maxVisibleSpecies)}`;
 }
 
 function organismDetailLabel(
@@ -475,6 +479,16 @@ function formatProbability(value: number | null | undefined, emptyLabel = "n/a")
     return emptyLabel;
   }
   return `${Math.round(value * 100)}%`;
+}
+
+function predictedClassConfidence(predictedLabel: string | null | undefined, probability: number | null | undefined): number | null {
+  if (typeof probability !== "number" || Number.isNaN(probability)) {
+    return null;
+  }
+  if (predictedLabel === "bacterial") {
+    return 1 - probability;
+  }
+  return probability;
 }
 
 function formatDateTime(value: string | null | undefined, localeTag: string, emptyLabel: string): string {
@@ -662,11 +676,10 @@ export function CaseWorkspace({
   });
   const [showAdditionalOrganismForm, setShowAdditionalOrganismForm] = useState(false);
   const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
-  const [patientRecords, setPatientRecords] = useState<PatientRecord[]>([]);
-  const [patientsLoading, setPatientsLoading] = useState(false);
   const [cases, setCases] = useState<CaseSummaryRecord[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [editDraftBusy, setEditDraftBusy] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [railView, setRailView] = useState<"cases" | "patients">("cases");
   const [selectedCase, setSelectedCase] = useState<CaseSummaryRecord | null>(null);
@@ -689,6 +702,7 @@ export function CaseWorkspace({
   const [lesionPromptSaved, setLesionPromptSaved] = useState<LesionBoxMap>({});
   const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
   const [lesionBoxBusyImageId, setLesionBoxBusyImageId] = useState<string | null>(null);
+  const [representativeBusyImageId, setRepresentativeBusyImageId] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [caseHistory, setCaseHistory] = useState<CaseHistoryResponse | null>(null);
   const [contributionBusy, setContributionBusy] = useState(false);
@@ -713,7 +727,6 @@ export function CaseWorkspace({
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const deferredSearch = useDeferredValue(caseSearch);
   const copy = {
-    unableLoadPatients: pick(locale, "Unable to load patients.", "환자 목록을 불러오지 못했습니다."),
     recoveredDraft: pick(locale, "Recovered the last saved draft properties for this hospital. Re-attach image files before saving.", "이 병원의 마지막 초안 속성을 복구했습니다. 저장 전 이미지 파일은 다시 첨부해 주세요."),
     unableLoadRecentCases: pick(locale, "Unable to load recent cases.", "최근 케이스를 불러오지 못했습니다."),
     unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "병원 활동을 불러오지 못했습니다."),
@@ -755,10 +768,7 @@ export function CaseWorkspace({
     draftUnsaved: pick(locale, "Draft changes live only in this tab", "초안 변경 내용은 현재 탭에만 유지됩니다"),
     patients: pick(locale, "patients", "환자"),
     savedCases: pick(locale, "saved cases", "저장된 케이스"),
-    loadingPatients: pick(locale, "Loading patients...", "환자 목록을 불러오는 중..."),
     loadingSavedCases: pick(locale, "Loading saved cases...", "저장된 케이스를 불러오는 중..."),
-    noPatients: pick(locale, "No patients have been registered in this hospital yet.", "이 병원에는 아직 등록된 환자가 없습니다."),
-    noMyPatients: pick(locale, "You have not registered any patients in this hospital yet.", "이 병원에 내가 등록한 환자가 아직 없습니다."),
     noSavedCases: pick(locale, "No saved cases for this hospital yet.", "이 병원에는 아직 저장된 케이스가 없습니다."),
     allRecords: pick(locale, "All records", "전체"),
     myPatientsOnly: pick(locale, "My patients", "내 환자"),
@@ -766,10 +776,15 @@ export function CaseWorkspace({
       pick(locale, `Showing all hospital patients (${count}).`, `병원 전체 환자 ${count}명을 표시합니다.`),
     patientScopeMine: (count: number) =>
       pick(locale, `Showing only patients registered by you (${count}).`, `내가 등록한 환자 ${count}명만 표시합니다.`),
-    usePatientForDraft: pick(locale, "Use for draft", "초안에 사용"),
-    mineBadge: pick(locale, "mine", "내 등록"),
     favoriteAdded: pick(locale, "Case added to favorites.", "케이스를 즐겨찾기에 추가했습니다."),
     favoriteRemoved: pick(locale, "Case removed from favorites.", "케이스 즐겨찾기를 해제했습니다."),
+    visitDeleted: (patientId: string, visitDate: string) =>
+      pick(locale, `Deleted ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 방문을 삭제했습니다.`),
+    patientDeleted: (patientId: string) =>
+      pick(locale, `Deleted patient ${patientId}.`, `${patientId} 환자를 삭제했습니다.`),
+    deleteVisitFailed: pick(locale, "Unable to delete the visit.", "방문 삭제에 실패했습니다."),
+    representativeUpdated: pick(locale, "Representative image updated.", "대표 이미지를 변경했습니다."),
+    representativeUpdateFailed: pick(locale, "Unable to update the representative image.", "대표 이미지 변경에 실패했습니다."),
     listViewHeaderCopy: pick(locale, "Browse saved patients and open the latest case.", "저장 환자를 보고 최신 케이스를 엽니다."),
     caseAuthoringHeaderCopy: pick(locale, "Create, review, and contribute cases from this workspace.", "이 작업공간에서 증례 작성, 검토, 기여를 진행할 수 있습니다."),
   };
@@ -927,7 +942,6 @@ export function CaseWorkspace({
 
   useEffect(() => {
     if (!selectedSiteId) {
-      setPatientRecords([]);
       setCases([]);
       setSiteActivity(null);
       setSiteValidationRuns([]);
@@ -939,17 +953,12 @@ export function CaseWorkspace({
     let cancelled = false;
     async function loadRecords() {
       setCasesLoading(true);
-      setPatientsLoading(true);
       try {
-        const [nextCases, nextPatients] = await Promise.all([
-          fetchCases(currentSiteId, token, { mine: showOnlyMine }),
-          fetchPatients(currentSiteId, token, { mine: showOnlyMine }),
-        ]);
+        const nextCases = await fetchCases(currentSiteId, token, { mine: showOnlyMine });
         if (cancelled) {
           return;
         }
         setCases(nextCases);
-        setPatientRecords(nextPatients);
         setSelectedCase((current) => {
           if (!current) {
             return nextCases[0] ?? null;
@@ -958,16 +967,14 @@ export function CaseWorkspace({
         });
       } catch (nextError) {
         if (!cancelled) {
-          setPatientRecords([]);
           setToast({
             tone: "error",
-            message: describeError(nextError, copy.unableLoadPatients),
+            message: describeError(nextError, copy.unableLoadRecentCases),
           });
         }
       } finally {
         if (!cancelled) {
           setCasesLoading(false);
-          setPatientsLoading(false);
         }
       }
     }
@@ -1024,7 +1031,7 @@ export function CaseWorkspace({
     showOnlyMine,
     token,
     copy.recoveredDraft,
-    copy.unableLoadPatients,
+    copy.unableLoadRecentCases,
     copy.unableLoadSiteActivity,
     copy.unableLoadSiteValidationHistory,
   ]);
@@ -1238,72 +1245,6 @@ export function CaseWorkspace({
     setDraftSavedAt(null);
   }
 
-  async function prefillDraftFromPatient(patient: PatientRecord) {
-    setSelectedCase(null);
-    setPanelOpen(true);
-    setRailView("cases");
-    const applyPatientOnly = () => {
-      setDraft((current) => ({
-        ...current,
-        patient_id: patient.patient_id,
-        sex: patient.sex || current.sex,
-        age: String(patient.age ?? current.age),
-        chart_alias: patient.chart_alias ?? current.chart_alias,
-        local_case_code: patient.local_case_code ?? current.local_case_code,
-        intake_completed: true,
-      }));
-    };
-    applyPatientOnly();
-    if (!selectedSiteId) {
-      return;
-    }
-    try {
-      const visits = await fetchVisits(selectedSiteId, token, patient.patient_id);
-      const latestVisit = [...visits].sort((left, right) => visitTimestamp(right) - visitTimestamp(left))[0];
-      if (!latestVisit) {
-        return;
-      }
-      const followUpMatch = String(latestVisit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
-      setDraft((current) => ({
-        ...current,
-        patient_id: patient.patient_id,
-        sex: patient.sex || current.sex,
-        age: String(patient.age ?? current.age),
-        chart_alias: patient.chart_alias ?? current.chart_alias,
-        local_case_code: patient.local_case_code ?? current.local_case_code,
-        actual_visit_date: latestVisit.actual_visit_date?.trim() || current.actual_visit_date,
-        culture_category: latestVisit.culture_category || current.culture_category,
-        culture_species: latestVisit.culture_species || current.culture_species,
-        additional_organisms: normalizeAdditionalOrganisms(
-          latestVisit.culture_category,
-          latestVisit.culture_species,
-          latestVisit.additional_organisms
-        ),
-        contact_lens_use: latestVisit.contact_lens_use || current.contact_lens_use,
-        visit_status: latestVisit.visit_status || current.visit_status,
-        is_initial_visit: latestVisit.is_initial_visit,
-        follow_up_number: followUpMatch ? String(Number(followUpMatch[1]) || 1) : current.follow_up_number,
-        predisposing_factor: latestVisit.predisposing_factor ?? current.predisposing_factor,
-        other_history: latestVisit.other_history ?? current.other_history,
-        intake_completed: true,
-      }));
-      if (latestVisit.culture_category) {
-        setPendingOrganism({
-          culture_category: latestVisit.culture_category,
-          culture_species:
-            latestVisit.additional_organisms?.[0]?.culture_species ||
-            (CULTURE_SPECIES[latestVisit.culture_category]?.[0] ?? pendingOrganism.culture_species),
-        });
-      }
-      setShowAdditionalOrganismForm(false);
-    } catch (nextError) {
-      setToast({
-        tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to load the latest visit details for this patient.", "이 환자의 최근 방문 정보를 불러오지 못했습니다.")),
-      });
-    }
-  }
-
   async function startFollowUpDraftFromSelectedCase() {
     if (!selectedCase) {
       return;
@@ -1414,6 +1355,116 @@ export function CaseWorkspace({
     }
   }
 
+  async function startEditDraftFromSelectedCase() {
+    if (!selectedCase) {
+      return;
+    }
+
+    const caseToEdit = selectedCase;
+    setEditDraftBusy(true);
+    try {
+      let nextDraftImages: DraftImage[] = [];
+      let nextDraftBoxes: LesionBoxMap = {};
+      let selectedVisit: VisitRecord | null = null;
+
+      if (selectedSiteId) {
+        const [savedImages, savedVisits] = await Promise.all([
+          fetchImages(selectedSiteId, token, caseToEdit.patient_id, caseToEdit.visit_date),
+          fetchVisits(selectedSiteId, token, caseToEdit.patient_id),
+        ]);
+        selectedVisit =
+          savedVisits.find((visit) => visit.visit_date === caseToEdit.visit_date) ?? null;
+        nextDraftImages = await Promise.all(
+          savedImages.map(async (image) => {
+            const blob = await fetchImageBlob(selectedSiteId, image.image_id, token);
+            const mediaType = blob.type || "image/jpeg";
+            const extension =
+              mediaType === "image/png"
+                ? "png"
+                : mediaType === "image/webp"
+                  ? "webp"
+                  : mediaType === "image/bmp"
+                    ? "bmp"
+                    : mediaType === "image/tiff"
+                      ? "tiff"
+                      : "jpg";
+            const file = new File([blob], `${image.image_id}.${extension}`, { type: mediaType });
+            const draftId = createDraftId();
+            nextDraftBoxes[draftId] =
+              image.lesion_prompt_box && typeof image.lesion_prompt_box === "object"
+                ? normalizeBox(image.lesion_prompt_box)
+                : null;
+            return {
+              draft_id: draftId,
+              file,
+              preview_url: URL.createObjectURL(blob),
+              view: image.view,
+              is_representative: image.is_representative,
+            };
+          })
+        );
+      }
+
+      clearDraftStorage();
+      clearValidationArtifacts();
+      clearRoiPreview();
+      clearLesionPreview();
+      setValidationResult(null);
+      setCaseHistory(null);
+      setContributionResult(null);
+      setPanelOpen(true);
+      setRailView("cases");
+      setSelectedCase(null);
+      setSelectedCaseImages([]);
+      replaceDraftImages(nextDraftImages);
+      setDraftLesionPromptBoxes(nextDraftBoxes);
+      setDraft((current) => ({
+        ...current,
+        patient_id: caseToEdit.patient_id,
+        sex: caseToEdit.sex || current.sex,
+        age: String(caseToEdit.age ?? current.age),
+        chart_alias: caseToEdit.chart_alias ?? current.chart_alias,
+        local_case_code: caseToEdit.local_case_code ?? current.local_case_code,
+        actual_visit_date: caseToEdit.actual_visit_date?.trim() || "",
+        culture_category: caseToEdit.culture_category || current.culture_category,
+        culture_species: caseToEdit.culture_species || current.culture_species,
+        additional_organisms: normalizeAdditionalOrganisms(
+          caseToEdit.culture_category,
+          caseToEdit.culture_species,
+          selectedVisit?.additional_organisms ?? caseToEdit.additional_organisms
+        ),
+        contact_lens_use: selectedVisit?.contact_lens_use || caseToEdit.contact_lens_use || current.contact_lens_use,
+        visit_status: selectedVisit?.visit_status || caseToEdit.visit_status || current.visit_status,
+        is_initial_visit: /^initial$/i.test(caseToEdit.visit_date),
+        follow_up_number: (() => {
+          const followUpMatch = String(caseToEdit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+          return followUpMatch ? String(Number(followUpMatch[1]) || 1) : current.follow_up_number;
+        })(),
+        predisposing_factor: selectedVisit?.predisposing_factor ?? current.predisposing_factor,
+        other_history: selectedVisit?.other_history ?? current.other_history,
+        intake_completed: false,
+      }));
+      setPendingOrganism({
+        culture_category: caseToEdit.culture_category || "bacterial",
+        culture_species:
+          caseToEdit.additional_organisms?.[0]?.culture_species ||
+          caseToEdit.culture_species ||
+          (CULTURE_SPECIES[caseToEdit.culture_category || "bacterial"]?.[0] ?? ""),
+      });
+      setShowAdditionalOrganismForm(false);
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(
+          nextError,
+          pick(locale, "Unable to open this saved case in edit mode.", "이 저장 케이스를 수정 모드로 열지 못했습니다.")
+        ),
+      });
+    } finally {
+      setEditDraftBusy(false);
+    }
+  }
+
   function resetDraft() {
     setRailView("cases");
     replaceDraftImages([]);
@@ -1462,6 +1513,64 @@ export function CaseWorkspace({
     setPanelOpen(true);
     setRailView(nextView);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleDeleteSavedCase(caseRecord: CaseSummaryRecord) {
+    if (!selectedSiteId) {
+      return;
+    }
+    const samePatientCases = cases.filter((item) => item.patient_id === caseRecord.patient_id);
+    const confirmMessage = samePatientCases.length <= 1
+      ? pick(
+          locale,
+          `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?\n\nThis is the only visit for the patient, so the patient record will also be removed.`,
+          `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 방문을 삭제할까요?\n\n이 환자의 마지막 방문이라 환자 기록도 함께 삭제됩니다.`
+        )
+      : pick(
+          locale,
+          `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?`,
+          `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 방문을 삭제할까요?`
+        );
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      const deleted = await deleteVisit(selectedSiteId, token, caseRecord.patient_id, caseRecord.visit_date);
+      const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
+      setCases(nextCases);
+
+      if (deleted.deleted_patient) {
+        setSelectedCase(null);
+        setSelectedCaseImages([]);
+        setPatientVisitGallery({});
+        clearValidationArtifacts();
+        clearRoiPreview();
+        clearLesionPreview();
+        setValidationResult(null);
+        setCaseHistory(null);
+        setContributionResult(null);
+        setRailView("patients");
+        setToast({ tone: "success", message: copy.patientDeleted(caseRecord.patient_id) });
+        return;
+      }
+
+      const preservedCurrentCase =
+        selectedCase && selectedCase.case_id !== caseRecord.case_id
+          ? nextCases.find((item) => item.case_id === selectedCase.case_id) ?? null
+          : null;
+      const remainingSamePatientCase = nextCases
+        .filter((item) => item.patient_id === caseRecord.patient_id)
+        .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))[0] ?? null;
+      const nextSelectedCase = preservedCurrentCase ?? remainingSamePatientCase ?? nextCases[0] ?? null;
+      setSelectedCase(nextSelectedCase);
+      setToast({ tone: "success", message: copy.visitDeleted(caseRecord.patient_id, caseRecord.visit_date) });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, copy.deleteVisitFailed),
+      });
+    }
   }
 
   function updatePrimaryOrganism(cultureCategory: string, cultureSpecies: string) {
@@ -1981,6 +2090,46 @@ export function CaseWorkspace({
     }
   }
 
+  async function handleSetSavedRepresentative(imageId: string) {
+    if (!selectedSiteId || !selectedCase) {
+      setToast({ tone: "error", message: copy.selectSiteForCase });
+      return;
+    }
+    const targetImage = selectedCaseImages.find((image) => image.image_id === imageId);
+    if (!targetImage || targetImage.is_representative) {
+      return;
+    }
+
+    setRepresentativeBusyImageId(imageId);
+    try {
+      await setRepresentativeImageOnServer(selectedSiteId, token, {
+        patient_id: selectedCase.patient_id,
+        visit_date: selectedCase.visit_date,
+        representative_image_id: imageId,
+      });
+      const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
+      setCases(nextCases);
+      const refreshedCase =
+        nextCases.find((item) => item.case_id === selectedCase.case_id) ??
+        nextCases.find(
+          (item) => item.patient_id === selectedCase.patient_id && item.visit_date === selectedCase.visit_date
+        ) ??
+        null;
+      setSelectedCase(refreshedCase);
+      setToast({
+        tone: "success",
+        message: copy.representativeUpdated,
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, copy.representativeUpdateFailed),
+      });
+    } finally {
+      setRepresentativeBusyImageId(null);
+    }
+  }
+
   async function handleRunRoiPreview() {
     if (!selectedSiteId || !selectedCase) {
       setToast({ tone: "error", message: copy.selectSavedCaseForRoi });
@@ -2253,12 +2402,8 @@ export function CaseWorkspace({
     };
     const finalizeSavedCase = async (visitReference: string) => {
       await onSiteDataChanged(selectedSiteId!);
-      const [nextCases, nextPatients] = await Promise.all([
-        fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
-        fetchPatients(selectedSiteId!, token, { mine: showOnlyMine }),
-      ]);
+      const nextCases = await fetchCases(selectedSiteId!, token, { mine: showOnlyMine });
       setCases(nextCases);
-      setPatientRecords(nextPatients);
       const createdCase = nextCases.find(
         (item) => item.patient_id === patientId && item.visit_date === visitReference
       );
@@ -2416,15 +2561,12 @@ export function CaseWorkspace({
         patient_id: patientId,
         latest_case: latestCase,
         case_count: groupedCases.length,
-        organism_summary: Array.from(
-          new Set(
-            sortedCases
-              .flatMap((item) => listOrganisms(item.culture_category, item.culture_species, item.additional_organisms))
-              .map((organism) => organism.culture_species)
-          )
-        )
-          .slice(0, 3)
-          .join(" · "),
+        organism_summary: organismSummaryLabel(
+          latestCase.culture_category,
+          latestCase.culture_species,
+          latestCase.additional_organisms,
+          2
+        ),
         representative_thumbnails: sortedCases
           .filter((item) => item.representative_image_id)
           .slice(0, 3)
@@ -2492,13 +2634,17 @@ export function CaseWorkspace({
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const momentumPercent = cases.length === 0 ? 18 : Math.min(100, 18 + cases.length * 12);
-  const patientScopeCopy = showOnlyMine ? copy.patientScopeMine(patientRecords.length) : copy.patientScopeAll(patientRecords.length);
+  const patientScopeCopy = showOnlyMine ? copy.patientScopeMine(patientListRows.length) : copy.patientScopeAll(patientListRows.length);
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
   const canRunRoiPreview = canRunValidation;
   const canContributeSelectedCase =
     canRunValidation && Boolean(selectedCase) && selectedCase?.visit_status === "active";
   const latestSiteValidation = siteValidationRuns[0] ?? null;
-  const validationConfidence = confidencePercent(validationResult?.summary.prediction_probability);
+  const validationPredictedConfidence = predictedClassConfidence(
+    validationResult?.summary.predicted_label,
+    validationResult?.summary.prediction_probability
+  );
+  const validationConfidence = confidencePercent(validationPredictedConfidence);
   const validationConfidenceTone = confidenceTone(validationConfidence);
   const selectedCompletion =
     selectedCase &&
@@ -2665,56 +2811,6 @@ export function CaseWorkspace({
           {!canRunValidation ? <p className="rail-copy">{pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "뷰어 계정은 지표만 확인할 수 있고 병원 검증은 실행할 수 없습니다.")}</p> : null}
         </section>
 
-        <section className="workspace-card rail-section">
-          <div className="rail-section-head">
-            <span className="rail-label">{copy.patients}</span>
-            <strong>{patientRecords.length}</strong>
-          </div>
-          <div className="segmented-toggle" role="group" aria-label={copy.patients}>
-            <button
-              className={`toggle-pill ${!showOnlyMine ? "active" : ""}`}
-              type="button"
-              onClick={() => setShowOnlyMine(false)}
-            >
-              {copy.allRecords}
-            </button>
-            <button
-              className={`toggle-pill ${showOnlyMine ? "active" : ""}`}
-              type="button"
-              onClick={() => setShowOnlyMine(true)}
-            >
-              {copy.myPatientsOnly}
-            </button>
-          </div>
-          <p className="rail-copy">{patientScopeCopy}</p>
-          <div className="rail-case-list">
-            {patientsLoading ? <div className="empty-surface">{copy.loadingPatients}</div> : null}
-            {!patientsLoading && patientRecords.length === 0 ? (
-              <div className="empty-surface">{showOnlyMine ? copy.noMyPatients : copy.noPatients}</div>
-            ) : null}
-            {patientRecords.map((patient) => (
-              <button
-                key={patient.patient_id}
-                className={`case-list-item ${draft.patient_id.trim() === patient.patient_id ? "active" : ""}`}
-                type="button"
-                onClick={() => prefillDraftFromPatient(patient)}
-              >
-                <div className="case-list-head">
-                  <strong>{patient.local_case_code || patient.patient_id}</strong>
-                  <span>{copy.usePatientForDraft}</span>
-                </div>
-                <div className="case-list-meta">
-                  <span>{patient.patient_id}</span>
-                  <span>{translateOption(locale, "sex", patient.sex)}</span>
-                  <span>{patient.age}</span>
-                  {patient.created_by_user_id === user.user_id ? <span>{copy.mineBadge}</span> : null}
-                </div>
-                <div className="case-list-tagline">{formatDateTime(patient.created_at, localeTag, common.notAvailable)}</div>
-              </button>
-            ))}
-          </div>
-        </section>
-
       </aside>
 
       <section className="workspace-main">
@@ -2760,6 +2856,23 @@ export function CaseWorkspace({
                 </div>
               </div>
               <div className="doc-badge-row">
+                <div className="segmented-toggle compact" role="group" aria-label={copy.patients}>
+                  <button
+                    className={`toggle-pill ${!showOnlyMine ? "active" : ""}`}
+                    type="button"
+                    onClick={() => setShowOnlyMine(false)}
+                  >
+                    {copy.allRecords}
+                  </button>
+                  <button
+                    className={`toggle-pill ${showOnlyMine ? "active" : ""}`}
+                    type="button"
+                    onClick={() => setShowOnlyMine(true)}
+                  >
+                    {copy.myPatientsOnly}
+                  </button>
+                </div>
+                <span className="doc-site-badge">{patientScopeCopy}</span>
                 <span className="doc-site-badge">
                   {pick(
                     locale,
@@ -2852,6 +2965,14 @@ export function CaseWorkspace({
                   <div className="doc-section-label">{pick(locale, "Case summary", "케이스 요약")}</div>
                 </div>
                 <div className="workspace-actions">
+                  <button
+                    className="ghost-button saved-case-action-button"
+                    type="button"
+                    onClick={() => void startEditDraftFromSelectedCase()}
+                    disabled={editDraftBusy}
+                  >
+                    {editDraftBusy ? common.loading : pick(locale, "Edit", "수정")}
+                  </button>
                   <button className="ghost-button saved-case-action-button" type="button" onClick={() => void startFollowUpDraftFromSelectedCase()}>
                     {pick(locale, "Add F/U", "재진 추가")}
                   </button>
@@ -2879,7 +3000,7 @@ export function CaseWorkspace({
                 </div>
                 <div className="intake-summary-block intake-summary-block-wide">
                   <div className="intake-summary-inline intake-summary-inline-organism">
-                    <strong>{`${translateOption(locale, "cultureCategory", selectedCase.culture_category)} · ${selectedCase.culture_species}`}</strong>
+                    <strong>{`${translateOption(locale, "cultureCategory", selectedCase.culture_category)} · ${organismSummaryLabel(selectedCase.culture_category, selectedCase.culture_species, selectedCase.additional_organisms, 2)}`}</strong>
                     {(selectedCase.additional_organisms?.length ?? 0) > 0 ? (
                       <div className="organism-chip-row">
                         {selectedCase.additional_organisms.map((organism) => (
@@ -2923,13 +3044,22 @@ export function CaseWorkspace({
                       >
                         <div className="panel-card-head">
                           <strong>{displayVisitReference(locale, caseItem.visit_date)}</strong>
-                          <button
-                            type="button"
-                            className={`toggle-pill compact ${selectedCase.case_id === caseItem.case_id ? "active" : ""}`}
-                            onClick={() => openSavedCase(caseItem, "cases")}
-                          >
-                            {selectedCase.case_id === caseItem.case_id ? pick(locale, "Current visit", "현재 방문") : pick(locale, "Open visit", "방문 열기")}
-                          </button>
+                          <div className="panel-card-actions">
+                            <button
+                              type="button"
+                              className={`toggle-pill compact ${selectedCase.case_id === caseItem.case_id ? "active" : ""}`}
+                              onClick={() => openSavedCase(caseItem, "cases")}
+                            >
+                              {selectedCase.case_id === caseItem.case_id ? pick(locale, "Current visit", "현재 방문") : pick(locale, "Open visit", "방문 열기")}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button compact-ghost-button"
+                              onClick={() => void handleDeleteSavedCase(caseItem)}
+                            >
+                              {pick(locale, "Delete visit", "방문 삭제")}
+                            </button>
+                          </div>
                         </div>
                         <div className="panel-meta">
                           <span>{formatDateTime(caseItem.latest_image_uploaded_at ?? caseItem.created_at, localeTag, common.notAvailable)}</span>
@@ -3018,6 +3148,18 @@ export function CaseWorkspace({
                             : pick(locale, "Box saved", "박스 저장됨")
                           : pick(locale, "No box", "박스 없음")}
                       </span>
+                      <button
+                        className={`ghost-button compact-ghost-button ${image.is_representative ? "favorite-toggle active" : ""}`}
+                        type="button"
+                        onClick={() => void handleSetSavedRepresentative(image.image_id)}
+                        disabled={representativeBusyImageId === image.image_id || image.is_representative}
+                      >
+                        {representativeBusyImageId === image.image_id
+                          ? common.loading
+                          : image.is_representative
+                            ? pick(locale, "Representative", "대표 이미지")
+                            : pick(locale, "Set representative", "대표 이미지로 지정")}
+                      </button>
                     </div>
                   </section>
                 ))}
@@ -3462,7 +3604,7 @@ export function CaseWorkspace({
                 </div>
                 <div className="intake-summary-block intake-summary-block-wide">
                   <div className="intake-summary-inline intake-summary-inline-organism">
-                    <strong>{`${translateOption(locale, "cultureCategory", draft.culture_category)} · ${draft.culture_species}`}</strong>
+                    <strong>{`${translateOption(locale, "cultureCategory", draft.culture_category)} · ${organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 2)}`}</strong>
                     {draft.additional_organisms.length > 0 ? (
                       <div className="organism-chip-row">
                         {intakeOrganisms.slice(1).map((organism) => (
@@ -3772,17 +3914,7 @@ export function CaseWorkspace({
           </section>
           )}
 
-          <aside className={`workspace-panel ${panelOpen ? "open" : ""}`}>
-            <div className="workspace-panel-head">
-              <div>
-                <div className="doc-section-label">{pick(locale, "Slide-over", "슬라이드오버")}</div>
-                <h4>{selectedCase ? pick(locale, "Saved case preview", "저장된 케이스 미리보기") : pick(locale, "Draft insight", "초안 인사이트")}</h4>
-              </div>
-              <button className="ghost-button" type="button" onClick={() => setPanelOpen((current) => !current)}>
-                {panelOpen ? pick(locale, "Hide", "숨기기") : pick(locale, "Show", "보기")}
-              </button>
-            </div>
-
+          <aside className="workspace-panel open">
             {selectedCase ? (
               <div className="panel-stack">
                 {selectedCompletion ? (
@@ -3864,7 +3996,7 @@ export function CaseWorkspace({
                         </div>
                         <div className="validation-gauge-meta">
                           <span>{pick(locale, "Model confidence", "모델 신뢰도")}</span>
-                          <strong>{formatProbability(validationResult.summary.prediction_probability, common.notAvailable)}</strong>
+                          <strong>{formatProbability(validationPredictedConfidence, common.notAvailable)}</strong>
                         </div>
                         <div className="validation-gauge" aria-hidden="true">
                           <div
@@ -3883,7 +4015,7 @@ export function CaseWorkspace({
                           <span>{pick(locale, "culture label", "배양 라벨")}</span>
                         </div>
                         <div>
-                          <strong>{formatProbability(validationResult.summary.prediction_probability, common.notAvailable)}</strong>
+                          <strong>{formatProbability(validationPredictedConfidence, common.notAvailable)}</strong>
                           <span>{pick(locale, "confidence", "신뢰도")}</span>
                         </div>
                         <div>

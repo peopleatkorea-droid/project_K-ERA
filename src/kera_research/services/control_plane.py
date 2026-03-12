@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from sqlalchemy import and_, delete, select, update
 from kera_research.config import (
     BASE_DIR,
     CASE_REFERENCE_SALT,
+    CASE_REFERENCE_SALT_FINGERPRINT,
     CONTROL_PLANE_ARTIFACT_DIR,
     CONTROL_PLANE_CASE_DIR,
     CONTROL_PLANE_DIR,
@@ -88,6 +90,9 @@ def _replace_path_prefix_in_value(value: Any, old_root: Path, new_root: Path) ->
         relative_part = text[len(str(old_root)):].lstrip("\\/")
         return str(new_root / Path(relative_part))
     return value
+
+
+_MODEL_VERSION_LOCK = threading.Lock()
 
 
 class ControlPlaneStore:
@@ -921,8 +926,12 @@ class ControlPlaneStore:
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(select(model_versions).order_by(model_versions.c.created_at)).all()
         return [
-            _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
-            for row in rows
+            item
+            for item in (
+                _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
+                for row in rows
+            )
+            if not item.get("archived", False)
         ]
 
     def _set_model_current_flag(
@@ -946,7 +955,7 @@ class ControlPlaneStore:
         merged = dict(model_metadata)
         merged.setdefault("ready", True)
         merged.setdefault("is_current", False)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
+        with _MODEL_VERSION_LOCK, CONTROL_PLANE_ENGINE.begin() as conn:
             if merged.get("stage") == "global" and merged.get("ready", True) and merged.get("is_current"):
                 current_rows = conn.execute(
                     select(model_versions.c.version_id).where(model_versions.c.stage == "global")
@@ -1006,7 +1015,57 @@ class ControlPlaneStore:
             return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
         return sorted(versions, key=lambda item: item.get("created_at", ""))[-1]
 
+    def archive_model_version(self, version_id: str) -> dict[str, Any]:
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(select(model_versions).where(model_versions.c.version_id == version_id)).first()
+            if row is None:
+                raise ValueError(f"Unknown model version: {version_id}")
+            payload = _payload_record(
+                row,
+                "payload_json",
+                ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"],
+            )
+            if payload.get("is_current"):
+                raise ValueError("The current active model cannot be deleted.")
+            all_versions = [
+                _payload_record(item, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
+                for item in conn.execute(select(model_versions)).all()
+            ]
+            all_aggregations = [
+                _payload_record(item, "payload_json", ["aggregation_id", "base_model_version_id", "new_version_name", "architecture", "created_at", "total_cases"])
+                for item in conn.execute(select(aggregations)).all()
+            ]
+            if any(str(item.get("base_model_version_id") or "") == version_id for item in all_aggregations):
+                raise ValueError("This model is referenced by an aggregation and cannot be deleted.")
+            for item in all_versions:
+                component_ids = [str(component_id) for component_id in item.get("component_model_version_ids", [])]
+                if version_id in component_ids:
+                    raise ValueError("This model is referenced by an ensemble model and cannot be deleted.")
+                if str(item.get("base_version_id") or "") == version_id:
+                    raise ValueError("This model is referenced as a base model and cannot be deleted.")
+
+            payload["archived"] = True
+            payload["archived_at"] = utc_now()
+            conn.execute(
+                update(model_versions)
+                .where(model_versions.c.version_id == version_id)
+                .values(
+                    is_current=False,
+                    payload_json=payload,
+                )
+            )
+        return payload
+
     def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
+        incoming_fingerprint = str(update_metadata.get("salt_fingerprint") or "").strip()
+        if incoming_fingerprint and incoming_fingerprint != CASE_REFERENCE_SALT_FINGERPRINT:
+            raise ValueError(
+                f"Salt fingerprint mismatch: the submitting site uses a different "
+                f"KERA_CASE_REFERENCE_SALT (site fingerprint: {incoming_fingerprint!r}, "
+                f"server fingerprint: {CASE_REFERENCE_SALT_FINGERPRINT!r}). "
+                "All nodes in a federation must share the same KERA_CASE_REFERENCE_SALT "
+                "environment variable to ensure consistent case reference IDs."
+            )
         record = self._normalize_case_reference(update_metadata)
         artifact_path = str(record.get("artifact_path") or "").strip()
         if artifact_path and not str(record.get("central_artifact_path") or "").strip():
