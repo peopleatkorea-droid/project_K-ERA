@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 def _parse_args() -> argparse.Namespace:
@@ -39,8 +40,91 @@ def _resolve_backend_root(explicit_root: str) -> Path:
     return Path(__file__).resolve().parents[1] / "Swin_LiteMedSAM"
 
 
+def _load_backend_components(backend_root: Path):
+    if not backend_root.exists():
+        raise RuntimeError(f"Swin-LiteMedSAM repository not found: {backend_root}")
+    if str(backend_root) not in sys.path:
+        sys.path.insert(0, str(backend_root))
+    try:
+        from models import MaskDecoder_Prompt, PromptEncoder, SwinTransformer, TwoWayTransformer
+    except Exception as exc:
+        raise RuntimeError(f"Unable to import Swin-LiteMedSAM modules from {backend_root}") from exc
+    return SwinTransformer, PromptEncoder, TwoWayTransformer, MaskDecoder_Prompt
+
+
+class SwinLiteMedSAMModel(nn.Module):
+    def __init__(self, image_encoder, mask_decoder, prompt_encoder) -> None:
+        super().__init__()
+        self.image_encoder = image_encoder
+        self.mask_decoder = mask_decoder
+        self.prompt_encoder = prompt_encoder
+
+    @torch.no_grad()
+    def postprocess_masks(self, masks: torch.Tensor, new_size: tuple[int, int], original_size: tuple[int, int]) -> torch.Tensor:
+        masks = masks[..., : new_size[0], : new_size[1]]
+        masks = F.interpolate(
+            masks,
+            size=(original_size[0], original_size[1]),
+            mode="bilinear",
+            align_corners=False,
+        )
+        return masks
+
+
+def _build_model(backend_root: Path, checkpoint_path: Path, device: str) -> SwinLiteMedSAMModel:
+    SwinTransformer, PromptEncoder, TwoWayTransformer, MaskDecoder_Prompt = _load_backend_components(backend_root)
+    image_encoder = SwinTransformer()
+    prompt_encoder = PromptEncoder(
+        embed_dim=256,
+        image_embedding_size=(64, 64),
+        input_image_size=(256, 256),
+        mask_in_chans=16,
+    )
+    mask_decoder = MaskDecoder_Prompt(
+        num_multimask_outputs=3,
+        transformer=TwoWayTransformer(
+            depth=2,
+            embedding_dim=256,
+            mlp_dim=2048,
+            num_heads=8,
+        ),
+        transformer_dim=256,
+        iou_head_depth=3,
+        iou_head_hidden_dim=256,
+    )
+    model = SwinLiteMedSAMModel(image_encoder=image_encoder, mask_decoder=mask_decoder, prompt_encoder=prompt_encoder)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    try:
+        model.load_state_dict(checkpoint)
+    except Exception:
+        payload = checkpoint.get("model") if isinstance(checkpoint, dict) else None
+        if not isinstance(payload, dict):
+            raise
+        model.load_state_dict(payload)
+    model.to(device)
+    model.eval()
+    return model
+
+
 def _load_image(image_path: Path) -> np.ndarray:
     return np.asarray(Image.open(image_path).convert("RGB"))
+
+
+def _resize_longest_side(image: np.ndarray, target_length: int = 256) -> np.ndarray:
+    old_h, old_w = image.shape[:2]
+    scale = target_length / max(old_h, old_w)
+    new_h = int(old_h * scale + 0.5)
+    new_w = int(old_w * scale + 0.5)
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def _pad_image(image: np.ndarray, target_size: int = 256) -> np.ndarray:
+    h, w = image.shape[:2]
+    pad_h = target_size - h
+    pad_w = target_size - w
+    if image.ndim == 3:
+        return np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)))
+    return np.pad(image, ((0, pad_h), (0, pad_w)))
 
 
 def _default_cornea_box(width: int, height: int) -> np.ndarray:
@@ -50,7 +134,7 @@ def _default_cornea_box(width: int, height: int) -> np.ndarray:
     y0 = margin_y
     x1 = max(width - margin_x, x0 + 1)
     y1 = max(height - margin_y, y0 + 1)
-    return np.array([x0, y0, x1, y1], dtype=np.int32)
+    return np.array([x0, y0, x1, y1], dtype=np.float32)
 
 
 def _parse_prompt_box(value: str, width: int, height: int) -> np.ndarray | None:
@@ -65,7 +149,52 @@ def _parse_prompt_box(value: str, width: int, height: int) -> np.ndarray | None:
     y0 = min(max(y0, 0.0), max(height - 1, 0))
     x1 = min(max(x1, x0 + 1.0), float(width))
     y1 = min(max(y1, y0 + 1.0), float(height))
-    return np.array([x0, y0, x1, y1], dtype=np.int32)
+    return np.array([x0, y0, x1, y1], dtype=np.float32)
+
+
+def _resize_box_to_256(box: np.ndarray, original_size: tuple[int, int]) -> np.ndarray:
+    ratio = 256 / max(original_size)
+    return box * ratio
+
+
+def _encode_image(image_array: np.ndarray, model: SwinLiteMedSAMModel, device: str) -> tuple[torch.Tensor, Any, tuple[int, int]]:
+    resized = _resize_longest_side(image_array, 256)
+    new_h, new_w = resized.shape[:2]
+    normalized = (resized - resized.min()) / np.clip(resized.max() - resized.min(), a_min=1e-8, a_max=None)
+    padded = _pad_image(normalized, 256)
+    image_tensor = torch.tensor(padded).float().permute(2, 0, 1).unsqueeze(0).to(device)
+    with torch.no_grad():
+        image_embedding, fs = model.image_encoder(image_tensor)
+    return image_embedding, fs, (new_h, new_w)
+
+
+def _infer_mask(
+    model: SwinLiteMedSAMModel,
+    image_embedding: torch.Tensor,
+    fs: Any,
+    box_256: np.ndarray,
+    new_size: tuple[int, int],
+    original_size: tuple[int, int],
+    device: str,
+) -> np.ndarray:
+    box_torch = torch.as_tensor(box_256[None, None, ...], dtype=torch.float32, device=device)
+    sparse_embeddings, dense_embeddings = model.prompt_encoder(
+        points=None,
+        boxes=box_torch,
+        masks=None,
+        tokens=None,
+    )
+    low_res_logits, _ = model.mask_decoder(
+        fs,
+        image_embeddings=image_embedding,
+        image_pe=model.prompt_encoder.get_dense_pe(),
+        sparse_prompt_embeddings=sparse_embeddings,
+        dense_prompt_embeddings=dense_embeddings,
+        multimask_output=False,
+    )
+    low_res_pred = model.postprocess_masks(low_res_logits, new_size, original_size)
+    mask = torch.sigmoid(low_res_pred).squeeze().cpu().numpy()
+    return mask > 0.5
 
 
 def _save_outputs(
@@ -113,61 +242,29 @@ def main() -> int:
     mask_output_path = Path(args.mask_out).expanduser().resolve()
     crop_output_path = Path(args.crop_out).expanduser().resolve()
     backend_root = _resolve_backend_root(args.backend_root)
-    infer_script = backend_root / "infer.py"
     device = _resolve_device(args.device)
 
     if not image_path.exists():
         raise RuntimeError(f"Input image not found: {image_path}")
     if not checkpoint_path.exists():
         raise RuntimeError(f"Swin-LiteMedSAM checkpoint not found: {checkpoint_path}")
-    if not infer_script.exists():
-        raise RuntimeError(f"Swin-LiteMedSAM infer.py not found: {infer_script}")
 
     image_array = _load_image(image_path)
     height, width = image_array.shape[:2]
     prompt_box = _parse_prompt_box(args.prompt_box, width, height) or _default_cornea_box(width, height)
 
-    with tempfile.TemporaryDirectory(prefix="kera-swin-input-") as input_dir_str, tempfile.TemporaryDirectory(
-        prefix="kera-swin-output-"
-    ) as output_dir_str:
-        input_dir = Path(input_dir_str)
-        output_dir = Path(output_dir_str)
-        input_npz = input_dir / f"{image_path.stem}.npz"
-        np.savez_compressed(
-            input_npz,
-            imgs=image_array,
-            boxes=np.asarray([prompt_box], dtype=np.int32),
-        )
-
-        command = [
-            sys.executable,
-            str(infer_script),
-            "-i",
-            str(input_dir),
-            "-o",
-            str(output_dir),
-            "-l",
-            str(checkpoint_path),
-            "-device",
-            device,
-        ]
-        subprocess.run(command, check=True, cwd=str(backend_root))
-
-        output_npz = output_dir / input_npz.name
-        if not output_npz.exists():
-            raise RuntimeError(f"Swin-LiteMedSAM output not found: {output_npz}")
-
-        output_data = np.load(output_npz, allow_pickle=False)
-        segmentation = np.asarray(output_data["segs"])
-        mask = segmentation > 0
-        _save_outputs(
-            image_array,
-            mask,
-            prompt_box,
-            mask_output_path,
-            crop_output_path,
-            expand_ratio=max(1.0, float(args.expand_ratio)),
-        )
+    model = _build_model(backend_root, checkpoint_path, device)
+    image_embedding, fs, new_size = _encode_image(image_array, model, device)
+    box_256 = _resize_box_to_256(prompt_box, (height, width))
+    mask = _infer_mask(model, image_embedding, fs, box_256, new_size, (height, width), device)
+    _save_outputs(
+        image_array,
+        mask,
+        prompt_box,
+        mask_output_path,
+        crop_output_path,
+        expand_ratio=max(1.0, float(args.expand_ratio)),
+    )
     return 0
 
 

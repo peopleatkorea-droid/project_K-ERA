@@ -884,9 +884,13 @@ class ControlPlaneStore:
     ) -> dict[str, Any]:
         case_path = CONTROL_PLANE_CASE_DIR / f"{summary['validation_id']}.json"
         write_json(case_path, case_predictions)
+        try:
+            case_predictions_path = str(case_path.relative_to(BASE_DIR))
+        except ValueError:
+            case_predictions_path = str(case_path)
         payload = {
             **summary,
-            "case_predictions_path": str(case_path.relative_to(BASE_DIR)),
+            "case_predictions_path": case_predictions_path,
         }
         record = {
             "validation_id": summary["validation_id"],
@@ -1244,6 +1248,9 @@ class ControlPlaneStore:
         architecture: str,
         site_weights: dict[str, int],
         requires_medsam_crop: bool = False,
+        decision_threshold: float | None = None,
+        threshold_selection_metric: str | None = None,
+        threshold_selection_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         agg_id = make_id("agg")
         record = {
@@ -1278,6 +1285,9 @@ class ControlPlaneStore:
             "aggregation_id": agg_id,
             "requires_medsam_crop": bool(requires_medsam_crop),
             "training_input_policy": "medsam_cornea_crop_only" if requires_medsam_crop else "raw_or_model_defined",
+            "decision_threshold": float(decision_threshold) if decision_threshold is not None else 0.5,
+            "threshold_selection_metric": threshold_selection_metric or "inherited_from_base_model",
+            "threshold_selection_metrics": threshold_selection_metrics,
             "is_current": True,
             "ready": True,
             "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",

@@ -1177,6 +1177,12 @@ def create_app() -> FastAPI:
                     architecture=str(architecture or base_model.get("architecture") or "unknown"),
                     site_weights=site_weights,
                     requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
+                    decision_threshold=base_model.get("decision_threshold"),
+                    threshold_selection_metric="inherited_from_base_model",
+                    threshold_selection_metrics={
+                        "source_model_version_id": base_model.get("version_id"),
+                        "source_decision_threshold": base_model.get("decision_threshold"),
+                    },
                 )
                 cp.update_model_update_statuses(update_ids, "aggregated")
                 model_version = next(
@@ -1205,6 +1211,17 @@ def create_app() -> FastAPI:
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+        t.join(timeout=0.25)
+
+        with _AGG_JOBS_LOCK:
+            job_snapshot = dict(_AGG_JOBS.get(job_id) or {})
+        if job_snapshot.get("status") == "done" and isinstance(job_snapshot.get("result"), dict):
+            return job_snapshot["result"]
+        if job_snapshot.get("status") == "failed":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(job_snapshot.get("error") or "Aggregation job failed."),
+            )
 
         return {"job_id": job_id, "status": "running"}
 

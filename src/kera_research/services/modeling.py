@@ -411,6 +411,8 @@ class ModelManager:
                             "training_input_policy": (
                                 "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                             ),
+                            "decision_threshold": 0.5,
+                            "threshold_selection_metric": "default",
                             "is_current": template.get("is_current", False),
                             "created_at": utc_now(),
                             "notes": template["notes"],
@@ -440,6 +442,8 @@ class ModelManager:
                     "training_input_policy": (
                         "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                     ),
+                    "decision_threshold": 0.5,
+                    "threshold_selection_metric": "default",
                     "is_current": template.get("is_current", False),
                     "created_at": utc_now(),
                     "notes": template["notes"],
@@ -870,16 +874,23 @@ class ModelManager:
             "created_at": utc_now(),
         }
 
-    def _evaluate_loader(
+    def _predicted_labels_from_threshold(
+        self,
+        positive_probabilities: list[float],
+        threshold: float = 0.5,
+    ) -> list[int]:
+        normalized_threshold = min(max(float(threshold), 0.0), 1.0)
+        return [1 if float(probability) >= normalized_threshold else 0 for probability in positive_probabilities]
+
+    def _collect_loader_outputs(
         self,
         model: nn.Module,
         loader: DataLoader,
         device: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, list[float] | list[int]]:
         require_torch()
         model.eval()
         true_labels: list[int] = []
-        predicted_labels: list[int] = []
         positive_probabilities: list[float] = []
         with torch.no_grad():
             for batch_inputs, batch_labels in loader:
@@ -887,13 +898,76 @@ class ModelManager:
                 batch_labels = batch_labels.to(device)
                 logits = model(batch_inputs)
                 probabilities = torch.softmax(logits, dim=1)
-                predictions = torch.argmax(probabilities, dim=1)
                 true_labels.extend(int(value) for value in batch_labels.tolist())
-                predicted_labels.extend(int(value) for value in predictions.tolist())
                 positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
-        metrics = self.classification_metrics(true_labels, predicted_labels, positive_probabilities)
+        return {
+            "true_labels": true_labels,
+            "positive_probabilities": positive_probabilities,
+        }
+
+    def _evaluate_loader(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+        threshold: float = 0.5,
+    ) -> dict[str, Any]:
+        outputs = self._collect_loader_outputs(model, loader, device)
+        true_labels = [int(value) for value in outputs["true_labels"]]
+        positive_probabilities = [float(value) for value in outputs["positive_probabilities"]]
+        predicted_labels = self._predicted_labels_from_threshold(positive_probabilities, threshold=threshold)
+        metrics = self.classification_metrics(
+            true_labels,
+            predicted_labels,
+            positive_probabilities,
+            threshold=threshold,
+        )
         metrics["n_samples"] = len(true_labels)
         return metrics
+
+    def select_decision_threshold(
+        self,
+        true_labels: list[int],
+        positive_probabilities: list[float],
+    ) -> dict[str, Any]:
+        if not true_labels or not positive_probabilities or len(true_labels) != len(positive_probabilities):
+            metrics = self.classification_metrics(true_labels, [], positive_probabilities, threshold=0.5)
+            return {
+                "decision_threshold": 0.5,
+                "selection_metric": "default",
+                "selection_metrics": metrics,
+            }
+
+        unique_probabilities = sorted({min(max(float(value), 0.0), 1.0) for value in positive_probabilities})
+        threshold_candidates: set[float] = {0.5}
+        threshold_candidates.update(unique_probabilities)
+        threshold_candidates.update(
+            round((left + right) / 2.0, 6)
+            for left, right in zip(unique_probabilities, unique_probabilities[1:])
+        )
+
+        best_result: dict[str, Any] | None = None
+        for threshold in sorted(threshold_candidates):
+            metrics = self.classification_metrics(true_labels, [], positive_probabilities, threshold=threshold)
+            score_tuple = (
+                float(metrics.get("balanced_accuracy") or 0.0),
+                float(metrics.get("F1") or 0.0),
+                float(metrics.get("accuracy") or 0.0),
+                float(metrics["AUROC"]) if metrics.get("AUROC") is not None else -1.0,
+                -abs(float(threshold) - 0.5),
+            )
+            candidate = {
+                "decision_threshold": float(threshold),
+                "selection_metric": "balanced_accuracy",
+                "selection_metrics": metrics,
+                "score_tuple": score_tuple,
+            }
+            if best_result is None or candidate["score_tuple"] > best_result["score_tuple"]:
+                best_result = candidate
+
+        assert best_result is not None
+        best_result.pop("score_tuple", None)
+        return best_result
 
     def _build_cross_validation_splits(
         self,
@@ -1091,8 +1165,20 @@ class ModelManager:
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         model.load_state_dict(best_state)
-        val_metrics = self._evaluate_loader(model, val_loader, device)
-        test_metrics = self._evaluate_loader(model, test_loader, device)
+        val_outputs = self._collect_loader_outputs(model, val_loader, device)
+        threshold_selection = self.select_decision_threshold(
+            [int(value) for value in val_outputs["true_labels"]],
+            [float(value) for value in val_outputs["positive_probabilities"]],
+        )
+        decision_threshold = float(threshold_selection["decision_threshold"])
+        val_metrics = self.classification_metrics(
+            [int(value) for value in val_outputs["true_labels"]],
+            [],
+            [float(value) for value in val_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
+        val_metrics["n_samples"] = len(val_outputs["true_labels"])
+        test_metrics = self._evaluate_loader(model, test_loader, device, threshold=decision_threshold)
         torch.save({"architecture": architecture, "state_dict": best_state}, output)
 
         return {
@@ -1110,6 +1196,9 @@ class ModelManager:
             "use_pretrained": use_pretrained,
             "history": history,
             "patient_split": patient_split,
+            "decision_threshold": decision_threshold,
+            "threshold_selection_metric": threshold_selection["selection_metric"],
+            "threshold_selection_metrics": threshold_selection["selection_metrics"],
             "val_metrics": val_metrics,
             "test_metrics": test_metrics,
         }
@@ -1332,7 +1421,10 @@ class ModelManager:
         true_labels: list[int],
         predicted_labels: list[int],
         positive_probabilities: list[float],
+        threshold: float | None = None,
     ) -> dict[str, Any]:
+        if threshold is not None:
+            predicted_labels = self._predicted_labels_from_threshold(positive_probabilities, threshold=threshold)
         accuracy = float(accuracy_score(true_labels, predicted_labels)) if true_labels else 0.0
         f1 = float(f1_score(true_labels, predicted_labels, zero_division=0)) if true_labels else 0.0
 
@@ -1343,6 +1435,7 @@ class ModelManager:
 
         sensitivity = true_positive / (true_positive + false_negative) if (true_positive + false_negative) else 0.0
         specificity = true_negative / (true_negative + false_positive) if (true_negative + false_positive) else 0.0
+        balanced_accuracy = float((sensitivity + specificity) / 2.0)
         confusion = confusion_matrix(true_labels, predicted_labels, labels=[0, 1]).tolist() if true_labels else [[0, 0], [0, 0]]
 
         auroc = None
@@ -1364,7 +1457,9 @@ class ModelManager:
             "accuracy": accuracy,
             "sensitivity": float(sensitivity),
             "specificity": float(specificity),
+            "balanced_accuracy": balanced_accuracy,
             "F1": f1,
+            "decision_threshold": float(threshold) if threshold is not None else None,
             "confusion_matrix": {
                 "labels": ["bacterial", "fungal"],
                 "matrix": confusion,

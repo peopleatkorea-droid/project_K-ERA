@@ -380,6 +380,9 @@ export type ModelVersionRecord = {
   ensemble_mode?: string | null;
   component_model_version_ids?: string[];
   ensemble_weights?: Record<string, number> | null;
+  decision_threshold?: number | null;
+  threshold_selection_metric?: string | null;
+  threshold_selection_metrics?: Record<string, unknown> | null;
 };
 
 export type ModelUpdateRecord = {

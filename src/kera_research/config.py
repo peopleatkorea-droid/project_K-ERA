@@ -41,6 +41,7 @@ DOCS_DIR = BASE_DIR / "docs"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 LOCAL_MEDSAM_ROOT = BASE_DIR / "MedSAM-main"
 LOCAL_SWIN_LITEMEDSAM_ROOT = BASE_DIR / "Swin_LiteMedSAM"
+LOCAL_SWIN_LITEMEDSAM_ROOT_ALT = BASE_DIR / "Swin_LiteMedSAM-main"
 
 APP_NAME = "K-ERA Research Platform"
 
@@ -117,7 +118,7 @@ def _resolve_segmentation_root(backend: str) -> str:
     if configured:
         return configured
     if backend == "swin_litemedsam":
-        return _resolve_existing_path(LOCAL_SWIN_LITEMEDSAM_ROOT)
+        return _resolve_existing_path(LOCAL_SWIN_LITEMEDSAM_ROOT, LOCAL_SWIN_LITEMEDSAM_ROOT_ALT)
     return _resolve_existing_path(LOCAL_MEDSAM_ROOT)
 
 
@@ -145,6 +146,7 @@ def _resolve_segmentation_checkpoint(backend: str) -> str:
     if backend == "swin_litemedsam":
         return _resolve_existing_path(
             LOCAL_SWIN_LITEMEDSAM_ROOT / "workdir" / "Swin_LiteMedSAM.pth",
+            LOCAL_SWIN_LITEMEDSAM_ROOT_ALT / "workdir" / "Swin_LiteMedSAM.pth",
             BASE_DIR / "workdir" / "Swin_LiteMedSAM.pth",
         )
     return _resolve_existing_path(

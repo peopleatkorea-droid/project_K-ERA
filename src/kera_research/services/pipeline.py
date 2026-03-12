@@ -181,6 +181,14 @@ class ResearchWorkflowService:
             grouped.setdefault((str(record["patient_id"]), str(record["visit_date"])), []).append(record)
         return list(grouped.values())
 
+    def _resolve_model_threshold(self, model_version: dict[str, Any]) -> float:
+        raw_threshold = model_version.get("decision_threshold")
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError):
+            threshold = 0.5
+        return min(max(threshold, 0.0), 1.0)
+
     def _predict_case_probability_with_loaded_model(
         self,
         site_store: SiteStore,
@@ -197,12 +205,14 @@ class ResearchWorkflowService:
             image_probabilities.append(float(prediction.probability))
         predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
         true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
+        decision_threshold = self._resolve_model_threshold(model_version)
         return {
             "patient_id": str(case_records[0]["patient_id"]),
             "visit_date": str(case_records[0]["visit_date"]),
             "true_index": true_index,
             "predicted_probability": predicted_probability,
-            "predicted_index": 1 if predicted_probability >= 0.5 else 0,
+            "predicted_index": 1 if predicted_probability >= decision_threshold else 0,
+            "decision_threshold": decision_threshold,
             "crop_mode": crop_mode,
             "n_model_inputs": len(prepared_records),
         }
@@ -259,6 +269,9 @@ class ResearchWorkflowService:
                 "ensemble_weights": {"automated": 0.5, "manual": 0.5},
                 "selection_metric": "default_no_overlap",
                 "selection_metrics": None,
+                "decision_threshold": 0.5,
+                "threshold_selection_metric": "default_no_overlap",
+                "threshold_selection_metrics": None,
                 "n_validation_cases": 0,
             }
 
@@ -267,7 +280,6 @@ class ResearchWorkflowService:
             automated_weight = round(index * 0.05, 2)
             manual_weight = round(1.0 - automated_weight, 2)
             true_labels: list[int] = []
-            predicted_labels: list[int] = []
             positive_probabilities: list[float] = []
             for case_key in common_case_keys:
                 automated_probability = float(automated_predictions[case_key]["predicted_probability"])
@@ -276,12 +288,23 @@ class ResearchWorkflowService:
                 true_index = int(automated_predictions[case_key]["true_index"])
                 true_labels.append(true_index)
                 positive_probabilities.append(blended_probability)
-                predicted_labels.append(1 if blended_probability >= 0.5 else 0)
-            metrics = self.model_manager.classification_metrics(true_labels, predicted_labels, positive_probabilities)
+            threshold_selection = self.model_manager.select_decision_threshold(true_labels, positive_probabilities)
+            decision_threshold = float(threshold_selection["decision_threshold"])
+            predicted_labels = self.model_manager._predicted_labels_from_threshold(
+                positive_probabilities,
+                threshold=decision_threshold,
+            )
+            metrics = self.model_manager.classification_metrics(
+                true_labels,
+                predicted_labels,
+                positive_probabilities,
+                threshold=decision_threshold,
+            )
             score_tuple = (
-                float(metrics["AUROC"]) if metrics.get("AUROC") is not None else -1.0,
-                float(metrics.get("accuracy") or 0.0),
+                float(metrics.get("balanced_accuracy") or 0.0),
                 float(metrics.get("F1") or 0.0),
+                float(metrics.get("accuracy") or 0.0),
+                float(metrics["AUROC"]) if metrics.get("AUROC") is not None else -1.0,
                 -abs(automated_weight - 0.5),
             )
             candidate = {
@@ -289,8 +312,11 @@ class ResearchWorkflowService:
                     "automated": automated_weight,
                     "manual": manual_weight,
                 },
-                "selection_metric": "AUROC",
+                "selection_metric": "balanced_accuracy",
                 "selection_metrics": metrics,
+                "decision_threshold": decision_threshold,
+                "threshold_selection_metric": threshold_selection["selection_metric"],
+                "threshold_selection_metrics": threshold_selection["selection_metrics"],
                 "n_validation_cases": len(common_case_keys),
                 "score_tuple": score_tuple,
             }
@@ -458,6 +484,171 @@ class ResearchWorkflowService:
         write_json(report_path, report)
         return report, report_path
 
+    def _compute_delta_quality_summary(self, delta_path: str | Path) -> dict[str, Any]:
+        try:
+            require_torch()
+            checkpoint = torch.load(delta_path, map_location="cpu", weights_only=True)
+            delta_state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+            if not isinstance(delta_state, dict):
+                raise ValueError("Delta file has no readable state_dict.")
+            self.model_manager._validate_deltas([delta_state])
+            total_norm = 0.0
+            parameter_count = 0
+            for tensor in delta_state.values():
+                t = tensor.float()
+                total_norm += float(t.norm().item()) ** 2
+                parameter_count += int(t.numel())
+            l2_norm = total_norm ** 0.5
+            return {
+                "score": 25,
+                "status": "ok",
+                "flags": [],
+                "l2_norm": round(float(l2_norm), 6),
+                "parameter_count": parameter_count,
+                "message": "Delta integrity and norm look valid.",
+            }
+        except Exception as exc:
+            return {
+                "score": 0,
+                "status": "invalid",
+                "flags": ["delta_invalid"],
+                "l2_norm": None,
+                "parameter_count": None,
+                "message": str(exc),
+            }
+
+    def _build_update_quality_summary(
+        self,
+        site_store: SiteStore,
+        case_records: list[dict[str, Any]],
+        model_version: dict[str, Any],
+        execution_device: str,
+        delta_path: str | Path,
+        approval_report: dict[str, Any],
+    ) -> dict[str, Any]:
+        qa_metrics = approval_report.get("qa_metrics") if isinstance(approval_report, dict) else {}
+        source_metrics = qa_metrics.get("source") if isinstance(qa_metrics, dict) else {}
+        roi_area_ratio = qa_metrics.get("roi_area_ratio") if isinstance(qa_metrics, dict) else None
+
+        image_flags: list[str] = []
+        image_strengths: list[str] = []
+        brightness = float(source_metrics.get("mean_brightness", 0.0) or 0.0)
+        contrast = float(source_metrics.get("contrast_stddev", 0.0) or 0.0)
+        edge_density = float(source_metrics.get("edge_density", 0.0) or 0.0)
+        image_score = 25
+        if brightness and (brightness < 35 or brightness > 225):
+            image_flags.append("brightness_out_of_range")
+            image_score -= 8
+        else:
+            image_strengths.append("brightness_ok")
+        if contrast and contrast < 18:
+            image_flags.append("low_contrast")
+            image_score -= 8
+        else:
+            image_strengths.append("contrast_ok")
+        if edge_density and edge_density < 5:
+            image_flags.append("low_edge_density")
+            image_score -= 9
+        else:
+            image_strengths.append("edge_density_ok")
+        image_score = max(0, image_score)
+
+        crop_flags: list[str] = []
+        crop_strengths: list[str] = []
+        crop_score = 25
+        if roi_area_ratio is None:
+            crop_flags.append("crop_ratio_missing")
+            crop_score -= 12
+        else:
+            ratio_value = float(roi_area_ratio)
+            if ratio_value < 0.03:
+                crop_flags.append("crop_too_tight")
+                crop_score -= 12
+            elif ratio_value > 0.95:
+                crop_flags.append("crop_too_wide")
+                crop_score -= 12
+            else:
+                crop_strengths.append("crop_ratio_ok")
+        crop_score = max(0, crop_score)
+
+        validation_result = self._predict_case(
+            site_store,
+            case_records,
+            model_version,
+            execution_device,
+            generate_gradcam=False,
+            generate_medsam=False,
+        )
+        validation_flags: list[str] = []
+        validation_strengths: list[str] = []
+        validation_score = 25 if bool(validation_result.get("predicted_index")) == bool(validation_result.get("true_index")) else 8
+        if validation_result.get("predicted_index") == validation_result.get("true_index"):
+            validation_strengths.append("validation_match")
+            validation_status = "match"
+        else:
+            validation_flags.append("validation_mismatch")
+            validation_status = "mismatch"
+
+        delta_summary = self._compute_delta_quality_summary(delta_path)
+
+        policy_flags: list[str] = []
+        policy_score = 25
+        has_additional_organisms = any(bool(record.get("additional_organisms")) for record in case_records)
+        if has_additional_organisms:
+            policy_flags.append("polymicrobial_excluded")
+            policy_score = 0
+
+        strengths = image_strengths + crop_strengths + validation_strengths
+        risk_flags = image_flags + crop_flags + validation_flags + list(delta_summary.get("flags") or []) + policy_flags
+        total_score = max(0, min(100, image_score + crop_score + validation_score + int(delta_summary.get("score") or 0) + policy_score))
+        if "delta_invalid" in risk_flags or "polymicrobial_excluded" in risk_flags:
+            recommendation = "reject_candidate"
+        elif total_score >= 80:
+            recommendation = "approve_candidate"
+        elif total_score >= 60:
+            recommendation = "needs_review"
+        else:
+            recommendation = "reject_candidate"
+
+        return {
+            "quality_score": total_score,
+            "recommendation": recommendation,
+            "image_quality": {
+                "score": image_score,
+                "status": "ok" if not image_flags else "review",
+                "flags": image_flags,
+                "mean_brightness": round(brightness, 3) if brightness else None,
+                "contrast_stddev": round(contrast, 3) if contrast else None,
+                "edge_density": round(edge_density, 3) if edge_density else None,
+            },
+            "crop_quality": {
+                "score": crop_score,
+                "status": "ok" if not crop_flags else "review",
+                "flags": crop_flags,
+                "roi_area_ratio": round(float(roi_area_ratio), 4) if roi_area_ratio is not None else None,
+            },
+            "delta_quality": delta_summary,
+            "validation_consistency": {
+                "score": validation_score,
+                "status": validation_status,
+                "flags": validation_flags,
+                "predicted_label": INDEX_TO_LABEL[int(validation_result["predicted_index"])],
+                "true_label": INDEX_TO_LABEL[int(validation_result["true_index"])],
+                "prediction_probability": round(float(validation_result["predicted_probability"]), 4),
+                "decision_threshold": round(float(validation_result.get("decision_threshold") or 0.5), 4),
+                "is_correct": bool(validation_result["predicted_index"] == validation_result["true_index"]),
+            },
+            "policy_checks": {
+                "score": policy_score,
+                "status": "blocked" if policy_flags else "ok",
+                "flags": policy_flags,
+                "has_additional_organisms": has_additional_organisms,
+                "training_policy": "exclude_polymicrobial",
+            },
+            "risk_flags": risk_flags,
+            "strengths": strengths,
+        }
+
     def _resolve_ensemble_components(self, model_version: dict[str, Any]) -> tuple[list[dict[str, Any]], list[float]]:
         component_ids = list(model_version.get("component_model_version_ids") or [])
         if len(component_ids) < 2:
@@ -550,7 +741,8 @@ class ResearchWorkflowService:
             image_probabilities.append(prediction.probability)
 
         predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
-        predicted_index = 1 if predicted_probability >= 0.5 else 0
+        decision_threshold = self._resolve_model_threshold(model_version)
+        predicted_index = 1 if predicted_probability >= decision_threshold else 0
         true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
 
         artifact_refs = self._artifact_refs_for_case(
@@ -572,6 +764,7 @@ class ResearchWorkflowService:
             "true_index": true_index,
             "predicted_index": predicted_index,
             "predicted_probability": predicted_probability,
+            "decision_threshold": decision_threshold,
             "crop_mode": crop_mode,
             "n_source_images": len(case_records),
             "n_model_inputs": len(prepared_records),
@@ -619,7 +812,8 @@ class ResearchWorkflowService:
         predicted_probability = float(
             sum(weight * float(prediction["predicted_probability"]) for weight, prediction in zip(weights, component_predictions))
         )
-        predicted_index = 1 if predicted_probability >= 0.5 else 0
+        decision_threshold = self._resolve_model_threshold(model_version)
+        predicted_index = 1 if predicted_probability >= decision_threshold else 0
         true_index = int(component_predictions[0]["true_index"])
 
         merged_artifacts = {
@@ -636,6 +830,7 @@ class ResearchWorkflowService:
             "true_index": true_index,
             "predicted_index": predicted_index,
             "predicted_probability": predicted_probability,
+            "decision_threshold": decision_threshold,
             "crop_mode": "both",
             "n_source_images": len(case_records),
             "n_model_inputs": sum(int(item.get("n_model_inputs", 0)) for item in component_predictions),
@@ -963,6 +1158,14 @@ class ResearchWorkflowService:
             patient_id,
             visit_date,
         )
+        quality_summary = self._build_update_quality_summary(
+            site_store,
+            case_df.to_dict("records"),
+            model_version,
+            execution_device,
+            delta_path,
+            approval_report,
+        )
 
         update_metadata: dict[str, Any] = {
             "update_id": update_id,
@@ -982,6 +1185,7 @@ class ResearchWorkflowService:
             "training_input_policy": "medsam_cornea_crop_only" if crop_mode == "automated" else "medsam_lesion_crop_only",
             "training_summary": result,
             "approval_report": approval_report,
+            "quality_summary": quality_summary,
             "status": "pending_review",
         }
         self.control_plane.register_model_update(update_metadata)
@@ -1125,6 +1329,9 @@ class ResearchWorkflowService:
                 "training_input_policy": (
                     "medsam_cornea_crop_only" if component_crop_mode == "automated" else "medsam_lesion_crop_only"
                 ),
+                "decision_threshold": result.get("decision_threshold", 0.5),
+                "threshold_selection_metric": result.get("threshold_selection_metric"),
+                "threshold_selection_metrics": result.get("threshold_selection_metrics"),
                 "created_at": utc_now(),
                 "is_current": normalized_crop_mode != "both" and component_crop_mode == normalized_crop_mode,
                 "notes": (
@@ -1207,6 +1414,9 @@ class ResearchWorkflowService:
                 "component_model_version_ids": [item["version_id"] for item in created_versions],
                 "ensemble_weights": ensemble_selection["ensemble_weights"],
                 "training_input_policy": "medsam_cornea_plus_lesion_ensemble",
+                "decision_threshold": ensemble_selection["decision_threshold"],
+                "threshold_selection_metric": ensemble_selection["threshold_selection_metric"],
+                "threshold_selection_metrics": ensemble_selection["threshold_selection_metrics"],
                 "created_at": utc_now(),
                 "is_current": True,
                 "notes": (
@@ -1247,6 +1457,9 @@ class ResearchWorkflowService:
             "ensemble_weights": ensemble_selection["ensemble_weights"],
             "ensemble_selection_metric": ensemble_selection["selection_metric"],
             "ensemble_selection_metrics": ensemble_selection["selection_metrics"],
+            "decision_threshold": ensemble_selection["decision_threshold"],
+            "threshold_selection_metric": ensemble_selection["threshold_selection_metric"],
+            "threshold_selection_metrics": ensemble_selection["threshold_selection_metrics"],
             "ensemble_validation_case_count": ensemble_selection["n_validation_cases"],
             "model_versions": created_versions + [ensemble_version],
             "model_version": ensemble_version,
