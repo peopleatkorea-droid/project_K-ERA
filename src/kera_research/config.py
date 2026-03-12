@@ -40,6 +40,7 @@ MODEL_DIR = STORAGE_DIR / "models"
 DOCS_DIR = BASE_DIR / "docs"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 LOCAL_MEDSAM_ROOT = BASE_DIR / "MedSAM-main"
+LOCAL_SWIN_LITEMEDSAM_ROOT = BASE_DIR / "Swin_LiteMedSAM"
 
 APP_NAME = "K-ERA Research Platform"
 
@@ -98,25 +99,68 @@ def _resolve_existing_path(*candidates: Path) -> str:
     return ""
 
 
-def _resolve_medsam_script() -> str:
-    configured = os.getenv("MEDSAM_SCRIPT", "").strip()
+def _resolve_segmentation_backend() -> str:
+    configured = (
+        os.getenv("KERA_SEGMENTATION_BACKEND", "").strip()
+        or os.getenv("SEGMENTATION_BACKEND", "").strip()
+    ).lower()
+    if configured in {"medsam", "swin_litemedsam"}:
+        return configured
+    return "medsam"
+
+
+def _resolve_segmentation_root(backend: str) -> str:
+    configured = (
+        os.getenv("KERA_SEGMENTATION_ROOT", "").strip()
+        or os.getenv("SEGMENTATION_ROOT", "").strip()
+    )
     if configured:
         return configured
+    if backend == "swin_litemedsam":
+        return _resolve_existing_path(LOCAL_SWIN_LITEMEDSAM_ROOT)
+    return _resolve_existing_path(LOCAL_MEDSAM_ROOT)
+
+
+def _resolve_segmentation_script(backend: str) -> str:
+    configured = (
+        os.getenv("KERA_SEGMENTATION_SCRIPT", "").strip()
+        or os.getenv("SEGMENTATION_SCRIPT", "").strip()
+        or os.getenv("MEDSAM_SCRIPT", "").strip()
+    )
+    if configured:
+        return configured
+    if backend == "swin_litemedsam":
+        return _resolve_existing_path(SCRIPTS_DIR / "swin_litemedsam_auto_roi.py")
     return _resolve_existing_path(SCRIPTS_DIR / "medsam_auto_roi.py")
 
 
-def _resolve_medsam_checkpoint() -> str:
-    configured = os.getenv("MEDSAM_CHECKPOINT", "").strip()
+def _resolve_segmentation_checkpoint(backend: str) -> str:
+    configured = (
+        os.getenv("KERA_SEGMENTATION_CHECKPOINT", "").strip()
+        or os.getenv("SEGMENTATION_CHECKPOINT", "").strip()
+        or os.getenv("MEDSAM_CHECKPOINT", "").strip()
+    )
     if configured:
         return configured
+    if backend == "swin_litemedsam":
+        return _resolve_existing_path(
+            LOCAL_SWIN_LITEMEDSAM_ROOT / "workdir" / "Swin_LiteMedSAM.pth",
+            BASE_DIR / "workdir" / "Swin_LiteMedSAM.pth",
+        )
     return _resolve_existing_path(
         LOCAL_MEDSAM_ROOT / "work_dir" / "MedSAM" / "medsam_vit_b.pth",
         BASE_DIR / "work_dir" / "MedSAM" / "medsam_vit_b.pth",
     )
 
 
-MEDSAM_SCRIPT = _resolve_medsam_script()
-MEDSAM_CHECKPOINT = _resolve_medsam_checkpoint()
+SEGMENTATION_BACKEND = _resolve_segmentation_backend()
+SEGMENTATION_ROOT = _resolve_segmentation_root(SEGMENTATION_BACKEND)
+SEGMENTATION_SCRIPT = _resolve_segmentation_script(SEGMENTATION_BACKEND)
+SEGMENTATION_CHECKPOINT = _resolve_segmentation_checkpoint(SEGMENTATION_BACKEND)
+
+# Legacy aliases kept for compatibility with existing imports and env names.
+MEDSAM_SCRIPT = SEGMENTATION_SCRIPT
+MEDSAM_CHECKPOINT = SEGMENTATION_CHECKPOINT
 
 def _env_seed_user(
     *,

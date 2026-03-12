@@ -8,13 +8,22 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
-from kera_research.config import MEDSAM_CHECKPOINT, MEDSAM_SCRIPT
+from kera_research.config import SEGMENTATION_BACKEND, SEGMENTATION_CHECKPOINT, SEGMENTATION_ROOT, SEGMENTATION_SCRIPT
 
 
 class MedSAMService:
-    def __init__(self, medsam_script: str | None = None, medsam_checkpoint: str | None = None) -> None:
-        self.medsam_script = medsam_script or MEDSAM_SCRIPT
-        self.medsam_checkpoint = medsam_checkpoint or MEDSAM_CHECKPOINT
+    def __init__(
+        self,
+        medsam_script: str | None = None,
+        medsam_checkpoint: str | None = None,
+        *,
+        backend: str | None = None,
+        backend_root: str | None = None,
+    ) -> None:
+        self.backend = (backend or SEGMENTATION_BACKEND or "medsam").strip().lower() or "medsam"
+        self.backend_root = backend_root or SEGMENTATION_ROOT
+        self.medsam_script = medsam_script or SEGMENTATION_SCRIPT
+        self.medsam_checkpoint = medsam_checkpoint or SEGMENTATION_CHECKPOINT
 
     def generate_roi(
         self,
@@ -28,7 +37,7 @@ class MedSAMService:
             crop_output_path=crop_output_path,
             prompt_box=None,
             expand_ratio=1.0,
-            external_backend="external_medsam",
+            external_backend=self._external_backend_label(prompt_box=None),
             fallback_backend="fallback_ellipse_mask",
         )
 
@@ -47,9 +56,13 @@ class MedSAMService:
             crop_output_path=crop_output_path,
             prompt_box=prompt_box,
             expand_ratio=expand_ratio,
-            external_backend="external_medsam_lesion_box",
+            external_backend=self._external_backend_label(prompt_box=prompt_box),
             fallback_backend="fallback_prompt_box_mask",
         )
+
+    def _external_backend_label(self, *, prompt_box: list[float] | None) -> str:
+        base = f"external_{self.backend}" if self.backend else "external_segmentation"
+        return f"{base}_lesion_box" if prompt_box else base
 
     def _generate_with_prompt(
         self,
@@ -127,6 +140,10 @@ class MedSAMService:
             "--expand-ratio",
             str(max(1.0, float(expand_ratio))),
         ]
+        if self.backend:
+            command.extend(["--backend-name", self.backend])
+        if self.backend_root:
+            command.extend(["--backend-root", str(self.backend_root)])
         if prompt_box:
             command.extend(["--prompt-box", ",".join(str(float(value)) for value in prompt_box)])
         subprocess.run(command, check=True)

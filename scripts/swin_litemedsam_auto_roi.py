@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,17 +12,16 @@ import torch
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate MedSAM cornea mask and cornea crop artifacts for one image.")
+    parser = argparse.ArgumentParser(description="Generate Swin-LiteMedSAM mask and crop artifacts for one image.")
     parser.add_argument("--image", required=True, help="Input image path")
-    parser.add_argument("--checkpoint", required=True, help="MedSAM checkpoint path")
+    parser.add_argument("--checkpoint", required=True, help="Swin-LiteMedSAM checkpoint path")
     parser.add_argument("--mask-out", required=True, help="Output mask path")
     parser.add_argument("--crop-out", required=True, help="Output crop path")
     parser.add_argument("--prompt-box", default="", help="Optional x0,y0,x1,y1 box prompt in pixel coordinates")
     parser.add_argument("--expand-ratio", type=float, default=1.0, help="Bounding box expansion ratio for the saved crop")
     parser.add_argument("--device", default="auto", help="auto, cpu, or cuda device id")
-    parser.add_argument("--backend-name", default="medsam", help="Segmentation backend label for compatibility")
-    parser.add_argument("--backend-root", default="", help="Optional backend root path for compatibility")
-    parser.add_argument("--medsam-root", default="", help="Path to local MedSAM repository")
+    parser.add_argument("--backend-name", default="swin_litemedsam", help="Segmentation backend label for compatibility")
+    parser.add_argument("--backend-root", default="", help="Path to local Swin-LiteMedSAM repository")
     return parser.parse_args()
 
 
@@ -33,22 +33,10 @@ def _resolve_device(requested: str) -> str:
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
-def _resolve_medsam_root(explicit_root: str) -> Path:
+def _resolve_backend_root(explicit_root: str) -> Path:
     if explicit_root:
         return Path(explicit_root).expanduser().resolve()
-    return Path(__file__).resolve().parents[1] / "MedSAM-main"
-
-
-def _load_medsam_components(medsam_root: Path):
-    if not medsam_root.exists():
-        raise RuntimeError(f"MedSAM repository not found: {medsam_root}")
-    if str(medsam_root) not in sys.path:
-        sys.path.insert(0, str(medsam_root))
-    try:
-        from segment_anything import SamPredictor, sam_model_registry
-    except Exception as exc:  # pragma: no cover - import error details are surfaced to caller
-        raise RuntimeError(f"Unable to import MedSAM from {medsam_root}") from exc
-    return SamPredictor, sam_model_registry
+    return Path(__file__).resolve().parents[1] / "Swin_LiteMedSAM"
 
 
 def _load_image(image_path: Path) -> np.ndarray:
@@ -62,46 +50,22 @@ def _default_cornea_box(width: int, height: int) -> np.ndarray:
     y0 = margin_y
     x1 = max(width - margin_x, x0 + 1)
     y1 = max(height - margin_y, y0 + 1)
-    return np.array([x0, y0, x1, y1], dtype=np.float32)
+    return np.array([x0, y0, x1, y1], dtype=np.int32)
 
 
 def _parse_prompt_box(value: str, width: int, height: int) -> np.ndarray | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-    normalized = raw
-    if normalized.startswith("["):
-        parsed = json.loads(normalized)
-    else:
-        parsed = [float(part.strip()) for part in normalized.split(",")]
+    parsed = [float(part.strip()) for part in raw.split(",")]
     if len(parsed) != 4:
         raise RuntimeError("Prompt box must contain exactly four numeric values.")
-    x0, y0, x1, y1 = [float(item) for item in parsed]
+    x0, y0, x1, y1 = parsed
     x0 = min(max(x0, 0.0), max(width - 1, 0))
     y0 = min(max(y0, 0.0), max(height - 1, 0))
     x1 = min(max(x1, x0 + 1.0), float(width))
     y1 = min(max(y1, y0 + 1.0), float(height))
-    return np.array([x0, y0, x1, y1], dtype=np.float32)
-
-
-def _select_mask(
-    masks: np.ndarray,
-    scores: np.ndarray,
-    fallback_box: np.ndarray,
-    width: int,
-    height: int,
-) -> np.ndarray:
-    if masks.ndim == 3 and masks.shape[0] > 0:
-        ranked_indices = np.argsort(scores)[::-1]
-        for index in ranked_indices:
-            candidate = masks[index].astype(bool)
-            if candidate.any():
-                return candidate
-
-    mask = np.zeros((height, width), dtype=bool)
-    x0, y0, x1, y1 = fallback_box.astype(int)
-    mask[y0:y1, x0:x1] = True
-    return mask
+    return np.array([x0, y0, x1, y1], dtype=np.int32)
 
 
 def _save_outputs(
@@ -148,42 +112,62 @@ def main() -> int:
     checkpoint_path = Path(args.checkpoint).expanduser().resolve()
     mask_output_path = Path(args.mask_out).expanduser().resolve()
     crop_output_path = Path(args.crop_out).expanduser().resolve()
-    medsam_root = _resolve_medsam_root(args.medsam_root)
+    backend_root = _resolve_backend_root(args.backend_root)
+    infer_script = backend_root / "infer.py"
     device = _resolve_device(args.device)
 
     if not image_path.exists():
         raise RuntimeError(f"Input image not found: {image_path}")
     if not checkpoint_path.exists():
-        raise RuntimeError(f"MedSAM checkpoint not found: {checkpoint_path}")
-
-    SamPredictor, sam_model_registry = _load_medsam_components(medsam_root)
-
-    model = sam_model_registry["vit_b"](checkpoint=str(checkpoint_path))
-    model = model.to(device)
-    model.eval()
-    predictor = SamPredictor(model)
+        raise RuntimeError(f"Swin-LiteMedSAM checkpoint not found: {checkpoint_path}")
+    if not infer_script.exists():
+        raise RuntimeError(f"Swin-LiteMedSAM infer.py not found: {infer_script}")
 
     image_array = _load_image(image_path)
     height, width = image_array.shape[:2]
-    parsed_prompt_box = _parse_prompt_box(args.prompt_box, width, height)
-    prompt_box = parsed_prompt_box if parsed_prompt_box is not None else _default_cornea_box(width, height)
+    prompt_box = _parse_prompt_box(args.prompt_box, width, height) or _default_cornea_box(width, height)
 
-    with torch.inference_mode():
-        predictor.set_image(image_array)
-        masks, scores, _ = predictor.predict(
-            box=prompt_box,
-            multimask_output=True,
+    with tempfile.TemporaryDirectory(prefix="kera-swin-input-") as input_dir_str, tempfile.TemporaryDirectory(
+        prefix="kera-swin-output-"
+    ) as output_dir_str:
+        input_dir = Path(input_dir_str)
+        output_dir = Path(output_dir_str)
+        input_npz = input_dir / f"{image_path.stem}.npz"
+        np.savez_compressed(
+            input_npz,
+            imgs=image_array,
+            boxes=np.asarray([prompt_box], dtype=np.int32),
         )
 
-    mask = _select_mask(masks, scores, prompt_box, width, height)
-    _save_outputs(
-        image_array,
-        mask,
-        prompt_box,
-        mask_output_path,
-        crop_output_path,
-        expand_ratio=max(1.0, float(args.expand_ratio)),
-    )
+        command = [
+            sys.executable,
+            str(infer_script),
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-l",
+            str(checkpoint_path),
+            "-device",
+            device,
+        ]
+        subprocess.run(command, check=True, cwd=str(backend_root))
+
+        output_npz = output_dir / input_npz.name
+        if not output_npz.exists():
+            raise RuntimeError(f"Swin-LiteMedSAM output not found: {output_npz}")
+
+        output_data = np.load(output_npz, allow_pickle=False)
+        segmentation = np.asarray(output_data["segs"])
+        mask = segmentation > 0
+        _save_outputs(
+            image_array,
+            mask,
+            prompt_box,
+            mask_output_path,
+            crop_output_path,
+            expand_ratio=max(1.0, float(args.expand_ratio)),
+        )
     return 0
 
 

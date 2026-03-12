@@ -6,7 +6,14 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from kera_research.config import MEDSAM_CHECKPOINT, MEDSAM_SCRIPT
+from kera_research.config import (
+    MEDSAM_CHECKPOINT,
+    MEDSAM_SCRIPT,
+    SEGMENTATION_BACKEND,
+    SEGMENTATION_CHECKPOINT,
+    SEGMENTATION_ROOT,
+    SEGMENTATION_SCRIPT,
+)
 from kera_research.services.hardware import detect_hardware
 
 REQUIRED_PACKAGES = {
@@ -36,13 +43,14 @@ def detect_local_node_status() -> dict[str, Any]:
     package_versions = {name: package_version(name) for name in REQUIRED_PACKAGES}
     missing_packages = [name for name, item in package_versions.items() if item is None]
     hardware = detect_hardware()
-    medsam_script = MEDSAM_SCRIPT or ""
-    medsam_checkpoint = MEDSAM_CHECKPOINT or ""
-    medsam_ready = bool(
-        medsam_script
-        and medsam_checkpoint
-        and Path(medsam_script).exists()
-        and Path(medsam_checkpoint).exists()
+    segmentation_script = SEGMENTATION_SCRIPT or ""
+    segmentation_checkpoint = SEGMENTATION_CHECKPOINT or ""
+    segmentation_root = SEGMENTATION_ROOT or ""
+    segmentation_ready = bool(
+        segmentation_script
+        and segmentation_checkpoint
+        and Path(segmentation_script).exists()
+        and Path(segmentation_checkpoint).exists()
     )
     ai_engine_ready = hardware["torch_available"]
 
@@ -59,9 +67,15 @@ def detect_local_node_status() -> dict[str, Any]:
         "gpu_name": hardware["gpu_name"],
         "cpu_name": hardware["cpu_name"],
         "cuda_version": hardware["cuda_version"],
-        "medsam_ready": medsam_ready,
-        "medsam_script": medsam_script,
-        "medsam_checkpoint": medsam_checkpoint,
+        "segmentation_backend": SEGMENTATION_BACKEND,
+        "segmentation_ready": segmentation_ready,
+        "segmentation_script": segmentation_script,
+        "segmentation_checkpoint": segmentation_checkpoint,
+        "segmentation_root": segmentation_root,
+        # Legacy keys preserved for existing clients.
+        "medsam_ready": segmentation_ready,
+        "medsam_script": MEDSAM_SCRIPT,
+        "medsam_checkpoint": MEDSAM_CHECKPOINT,
         "setup_script": str(setup_script),
         "run_script": str(run_script),
     }
