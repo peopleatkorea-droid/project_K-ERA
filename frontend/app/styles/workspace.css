@@ -1861,6 +1861,132 @@
   background: rgba(125, 211, 195, 0.12);
 }
 
+.roc-compare-stack {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.roc-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.roc-run-button {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--workspace-radius-item);
+  border: 1px solid var(--workspace-line);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    opacity 180ms ease;
+}
+
+.roc-run-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.roc-run-button.active {
+  border-color: rgba(125, 211, 195, 0.42);
+  background: linear-gradient(135deg, rgba(125, 211, 195, 0.14), rgba(231, 211, 111, 0.08));
+}
+
+.roc-run-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.roc-run-button strong,
+.roc-legend-item strong {
+  display: block;
+}
+
+.roc-run-button span,
+.roc-legend-item span {
+  color: var(--workspace-muted);
+  font-size: 0.82rem;
+}
+
+.roc-compare-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(240px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.roc-chart-shell,
+.roc-legend-list {
+  border: 1px solid var(--workspace-line);
+  border-radius: var(--workspace-radius-item);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.roc-chart-shell {
+  padding: 10px;
+}
+
+.roc-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.roc-grid-line {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+}
+
+.roc-axis-line {
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 1.2;
+}
+
+.roc-reference-line {
+  stroke: rgba(255, 255, 255, 0.34);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 6;
+}
+
+.roc-axis-tick,
+.roc-axis-label {
+  fill: var(--workspace-muted);
+  font-size: 12px;
+}
+
+.roc-axis-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.roc-legend-list {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.roc-legend-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.roc-legend-swatch {
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  border-radius: 999px;
+}
+
 .ops-gallery-grid {
   display: grid;
   gap: 12px;
@@ -2103,6 +2229,10 @@
   }
 
   .ops-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .roc-compare-layout {
     grid-template-columns: 1fr;
   }
 

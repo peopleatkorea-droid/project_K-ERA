@@ -323,6 +323,12 @@ export type SiteActivityResponse = {
   recent_contributions: SiteActivityContributionRecord[];
 };
 
+export type RocCurveRecord = {
+  fpr?: number[] | null;
+  tpr?: number[] | null;
+  thresholds?: Array<number | null> | null;
+};
+
 export type SiteValidationRunRecord = {
   validation_id: string;
   project_id: string;
@@ -339,6 +345,7 @@ export type SiteValidationRunRecord = {
   sensitivity?: number | null;
   specificity?: number | null;
   F1?: number | null;
+  roc_curve?: RocCurveRecord | null;
 };
 
 export type SiteValidationRunResponse = {

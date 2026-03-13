@@ -69,6 +69,12 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "densenet201", label: "DenseNet201" },
 ];
 
+const ROC_CURVE_COLORS = ["#2a8f5b", "#f39c12", "#2e6cff", "#8f2bb3", "#d64545"];
+const ROC_CHART_WIDTH = 420;
+const ROC_CHART_HEIGHT = 320;
+const ROC_CHART_PADDING = { top: 18, right: 18, bottom: 42, left: 48 };
+const ROC_AXIS_TICKS = [0, 0.25, 0.5, 0.75, 1];
+
 type ReviewDraft = {
   assigned_role: string;
   assigned_site_id: string;
@@ -177,6 +183,64 @@ function sumCrossValidationConfusionMatrices(folds: CrossValidationFoldRecord[])
   );
 }
 
+function clampUnitInterval(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function getValidationRunRocPoints(run: SiteValidationRunRecord | null | undefined): Array<{ x: number; y: number }> {
+  const fpr = run?.roc_curve?.fpr;
+  const tpr = run?.roc_curve?.tpr;
+  if (!Array.isArray(fpr) || !Array.isArray(tpr) || fpr.length !== tpr.length || fpr.length < 2) {
+    return [];
+  }
+  const points = fpr
+    .map((falsePositiveRate, index) => {
+      const truePositiveRate = tpr[index];
+      if (typeof falsePositiveRate !== "number" || typeof truePositiveRate !== "number") {
+        return null;
+      }
+      return {
+        x: clampUnitInterval(falsePositiveRate),
+        y: clampUnitInterval(truePositiveRate),
+      };
+    })
+    .filter((point): point is { x: number; y: number } => point !== null)
+    .sort((left, right) => left.x - right.x || left.y - right.y);
+  return points.length >= 2 ? points : [];
+}
+
+function buildRocPath(points: Array<{ x: number; y: number }>): string {
+  const plotWidth = ROC_CHART_WIDTH - ROC_CHART_PADDING.left - ROC_CHART_PADDING.right;
+  const plotHeight = ROC_CHART_HEIGHT - ROC_CHART_PADDING.top - ROC_CHART_PADDING.bottom;
+  return points
+    .map((point, index) => {
+      const x = ROC_CHART_PADDING.left + point.x * plotWidth;
+      const y = ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom - point.y * plotHeight;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function getDefaultRocSelection(runs: SiteValidationRunRecord[]): string[] {
+  const selectedIds: string[] = [];
+  const seenModelKeys = new Set<string>();
+  for (const run of runs) {
+    if (!getValidationRunRocPoints(run).length) {
+      continue;
+    }
+    const modelKey = `${run.model_version_id}:${run.model_version}`;
+    if (seenModelKeys.has(modelKey)) {
+      continue;
+    }
+    seenModelKeys.add(modelKey);
+    selectedIds.push(run.validation_id);
+    if (selectedIds.length >= 4) {
+      break;
+    }
+  }
+  return selectedIds;
+}
+
 function createUserForm(): UserFormState {
   return {
     username: "",
@@ -260,6 +324,7 @@ export function AdminWorkspace({
   const [selectedValidationId, setSelectedValidationId] = useState<string | null>(null);
   const [baselineValidationId, setBaselineValidationId] = useState<string | null>(null);
   const [compareValidationId, setCompareValidationId] = useState<string | null>(null);
+  const [rocValidationIds, setRocValidationIds] = useState<string[]>([]);
   const [misclassifiedCases, setMisclassifiedCases] = useState<DashboardCasePreview[]>([]);
   const [dashboardBusy, setDashboardBusy] = useState(false);
   const [bulkCsvFile, setBulkCsvFile] = useState<File | null>(null);
@@ -333,6 +398,18 @@ export function AdminWorkspace({
   const selectedValidationRun = siteValidationRuns.find((item) => item.validation_id === selectedValidationId) ?? null;
   const baselineValidationRun = siteValidationRuns.find((item) => item.validation_id === baselineValidationId) ?? null;
   const compareValidationRun = siteValidationRuns.find((item) => item.validation_id === compareValidationId) ?? null;
+  const rocEligibleRuns = siteValidationRuns.filter((item) => getValidationRunRocPoints(item).length > 0);
+  const selectedRocRuns = rocValidationIds
+    .map((validationId) => rocEligibleRuns.find((item) => item.validation_id === validationId) ?? null)
+    .filter((item): item is SiteValidationRunRecord => item !== null);
+  const rocSeries = selectedRocRuns.map((run, index) => ({
+    run,
+    color: ROC_CURVE_COLORS[index % ROC_CURVE_COLORS.length],
+    points: getValidationRunRocPoints(run),
+  }));
+  const rocSelectionLimitReached = selectedRocRuns.length >= ROC_CURVE_COLORS.length;
+  const rocCohortKeys = new Set(selectedRocRuns.map((run) => `${run.n_patients}:${run.n_cases}:${run.n_images}`));
+  const rocHasCohortMismatch = rocCohortKeys.size > 1;
   const modelComparisonRows = Object.entries(
     siteValidationRuns.reduce<Record<string, { count: number; accuracy: number; sensitivity: number; specificity: number; f1: number; auroc: number; aurocCount: number }>>(
       (accumulator, run) => {
@@ -452,6 +529,17 @@ export function AdminWorkspace({
         return pick(locale, "In progress", "진행 중");
     }
   };
+  const toggleRocValidationSelection = (validationId: string) => {
+    setRocValidationIds((current) => {
+      if (current.includes(validationId)) {
+        return current.filter((item) => item !== validationId);
+      }
+      if (current.length >= ROC_CURVE_COLORS.length) {
+        return current;
+      }
+      return [...current, validationId];
+    });
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -564,12 +652,19 @@ export function AdminWorkspace({
       setSelectedValidationId(null);
       setBaselineValidationId(null);
       setCompareValidationId(null);
+      setRocValidationIds([]);
       setMisclassifiedCases([]);
       return;
     }
     setSelectedValidationId((current) => current ?? siteValidationRuns[0]?.validation_id ?? null);
     setCompareValidationId((current) => current ?? siteValidationRuns[0]?.validation_id ?? null);
     setBaselineValidationId((current) => current ?? siteValidationRuns[1]?.validation_id ?? siteValidationRuns[0]?.validation_id ?? null);
+    setRocValidationIds((current) => {
+      const validIds = current.filter((validationId) =>
+        siteValidationRuns.some((run) => run.validation_id === validationId && getValidationRunRocPoints(run).length > 0)
+      );
+      return validIds.length ? validIds : getDefaultRocSelection(siteValidationRuns);
+    });
   }, [siteValidationRuns]);
 
   useEffect(() => {
@@ -1186,6 +1281,98 @@ export function AdminWorkspace({
                   <section className="ops-card">
                     <div className="panel-card-head"><strong>{pick(locale, "Model version comparison", "모델 버전 비교")}</strong><span>{modelComparisonRows.length} {pick(locale, "version(s)", "버전")}</span></div>
                     {modelComparisonRows.length === 0 ? <div className="empty-surface">{pick(locale, "Run a hospital validation first to build comparison history.", "비교 이력을 만들려면 먼저 병원 검증을 실행하세요.")}</div> : <div className="ops-table"><div className="ops-table-row ops-table-head"><span>{pick(locale, "model", "모델")}</span><span>{pick(locale, "runs", "실행 수")}</span><span>AUROC</span><span>{pick(locale, "accuracy", "정확도")}</span><span>{pick(locale, "sensitivity", "민감도")}</span><span>F1</span></div>{modelComparisonRows.map((item) => <div key={item.modelVersion} className="ops-table-row"><span>{item.modelVersion}</span><span>{item.count}</span><span>{formatMetric(item.AUROC, common.notAvailable)}</span><span>{formatMetric(item.accuracy, common.notAvailable)}</span><span>{formatMetric(item.sensitivity, common.notAvailable)}</span><span>{formatMetric(item.F1, common.notAvailable)}</span></div>)}</div>}
+                  </section>
+                  <section className="ops-card">
+                    <div className="panel-card-head"><strong>{pick(locale, "ROC curve comparison", "ROC 커브 비교")}</strong><span>{selectedRocRuns.length} {pick(locale, "selected", "선택됨")}</span></div>
+                    {rocEligibleRuns.length === 0 ? (
+                      <div className="empty-surface">{pick(locale, "No saved validation run contains ROC curve data yet.", "저장된 검증 실행 중 ROC 커브 데이터가 있는 항목이 아직 없습니다.")}</div>
+                    ) : (
+                      <div className="roc-compare-stack">
+                        <div className="panel-meta">
+                          <span>{pick(locale, "Select up to five validation runs. For fair model comparison, use runs generated from the same hospital cohort.", "검증 실행은 최대 5개까지 선택할 수 있습니다. 공정한 모델 비교를 위해 같은 병원 코호트에서 생성된 실행을 사용하세요.")}</span>
+                          <span>{rocHasCohortMismatch ? pick(locale, "Selected runs have different patient/case counts.", "선택한 실행의 환자 수 또는 케이스 수가 서로 다릅니다.") : pick(locale, "Selected runs currently share the same patient/case/image counts.", "선택한 실행의 환자 수, 케이스 수, 이미지 수가 현재 동일합니다.")}</span>
+                        </div>
+                        <div className="roc-run-grid">
+                          {rocEligibleRuns.map((run) => {
+                            const isActive = rocValidationIds.includes(run.validation_id);
+                            const isDisabled = !isActive && rocSelectionLimitReached;
+                            return (
+                              <button
+                                key={run.validation_id}
+                                className={`roc-run-button ${isActive ? "active" : ""}`}
+                                type="button"
+                                disabled={isDisabled}
+                                onClick={() => toggleRocValidationSelection(run.validation_id)}
+                              >
+                                <strong>{run.model_version}</strong>
+                                <span>{formatDateTime(run.run_date, localeTag, common.notAvailable)}</span>
+                                <span>{pick(locale, "Cases", "케이스")} {run.n_cases} · AUROC {formatMetric(run.AUROC, common.notAvailable)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {rocSeries.length === 0 ? (
+                          <div className="empty-surface">{pick(locale, "Select at least one validation run to draw the ROC chart.", "ROC 차트를 그리려면 검증 실행을 하나 이상 선택하세요.")}</div>
+                        ) : (
+                          <div className="roc-compare-layout">
+                            <div className="roc-chart-shell">
+                              <svg viewBox={`0 0 ${ROC_CHART_WIDTH} ${ROC_CHART_HEIGHT}`} className="roc-chart" role="img" aria-label={pick(locale, "ROC curve comparison chart", "ROC 커브 비교 차트")}>
+                                {ROC_AXIS_TICKS.map((tick) => {
+                                  const x = ROC_CHART_PADDING.left + tick * (ROC_CHART_WIDTH - ROC_CHART_PADDING.left - ROC_CHART_PADDING.right);
+                                  const y = ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom - tick * (ROC_CHART_HEIGHT - ROC_CHART_PADDING.top - ROC_CHART_PADDING.bottom);
+                                  return (
+                                    <g key={tick}>
+                                      <line className="roc-grid-line" x1={ROC_CHART_PADDING.left} y1={y} x2={ROC_CHART_WIDTH - ROC_CHART_PADDING.right} y2={y} />
+                                      <line className="roc-grid-line" x1={x} y1={ROC_CHART_PADDING.top} x2={x} y2={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom} />
+                                      <text className="roc-axis-tick" x={ROC_CHART_PADDING.left - 10} y={y + 4} textAnchor="end">{tick.toFixed(1)}</text>
+                                      <text className="roc-axis-tick" x={x} y={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom + 18} textAnchor="middle">{tick.toFixed(1)}</text>
+                                    </g>
+                                  );
+                                })}
+                                <line className="roc-axis-line" x1={ROC_CHART_PADDING.left} y1={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom} x2={ROC_CHART_WIDTH - ROC_CHART_PADDING.right} y2={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom} />
+                                <line className="roc-axis-line" x1={ROC_CHART_PADDING.left} y1={ROC_CHART_PADDING.top} x2={ROC_CHART_PADDING.left} y2={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom} />
+                                <line className="roc-reference-line" x1={ROC_CHART_PADDING.left} y1={ROC_CHART_HEIGHT - ROC_CHART_PADDING.bottom} x2={ROC_CHART_WIDTH - ROC_CHART_PADDING.right} y2={ROC_CHART_PADDING.top} />
+                                {rocSeries.map((series) => (
+                                  <path
+                                    key={series.run.validation_id}
+                                    d={buildRocPath(series.points)}
+                                    fill="none"
+                                    stroke={series.color}
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                ))}
+                                <text className="roc-axis-label" x={(ROC_CHART_WIDTH + ROC_CHART_PADDING.left - ROC_CHART_PADDING.right) / 2} y={ROC_CHART_HEIGHT - 8} textAnchor="middle">
+                                  1-Specificity
+                                </text>
+                                <text
+                                  className="roc-axis-label"
+                                  x={18}
+                                  y={(ROC_CHART_HEIGHT + ROC_CHART_PADDING.top - ROC_CHART_PADDING.bottom) / 2}
+                                  textAnchor="middle"
+                                  transform={`rotate(-90 18 ${(ROC_CHART_HEIGHT + ROC_CHART_PADDING.top - ROC_CHART_PADDING.bottom) / 2})`}
+                                >
+                                  Sensitivity
+                                </text>
+                              </svg>
+                            </div>
+                            <div className="roc-legend-list">
+                              {rocSeries.map((series) => (
+                                <div key={series.run.validation_id} className="roc-legend-item">
+                                  <span className="roc-legend-swatch" style={{ backgroundColor: series.color }} aria-hidden="true" />
+                                  <div>
+                                    <strong>{series.run.model_version}</strong>
+                                    <span>{formatDateTime(series.run.run_date, localeTag, common.notAvailable)}</span>
+                                    <span>AUC = {formatMetric(series.run.AUROC, common.notAvailable)} · {pick(locale, "Cases", "케이스")} {series.run.n_cases}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </section>
                   <section className="ops-card">
                     <div className="panel-card-head"><strong>{pick(locale, "Validation run comparison", "검증 실행 비교")}</strong><span>{siteValidationRuns.length} {pick(locale, "run(s)", "회")}</span></div>
