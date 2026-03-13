@@ -27,7 +27,7 @@ VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 DENSENET_VARIANTS = ["densenet121", "densenet161", "densenet169", "densenet201"]
-TRAINING_ARCHITECTURES = [*DENSENET_VARIANTS, "convnext_tiny"]
+TRAINING_ARCHITECTURES = ["cnn", "vit", "swin", *DENSENET_VARIANTS, "convnext_tiny"]
 MODEL_ARCHITECTURES = ["cnn", "vit", "swin", *TRAINING_ARCHITECTURES]
 
 CULTURE_SPECIES = {

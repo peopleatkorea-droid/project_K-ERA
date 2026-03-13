@@ -59,6 +59,9 @@ import {
 } from "../lib/api";
 
 const TRAINING_ARCHITECTURE_OPTIONS = [
+  { value: "cnn", label: "CNN" },
+  { value: "vit", label: "ViT" },
+  { value: "swin", label: "Swin" },
   { value: "convnext_tiny", label: "ConvNeXt-Tiny" },
   { value: "densenet121", label: "DenseNet121" },
   { value: "densenet161", label: "DenseNet161" },
