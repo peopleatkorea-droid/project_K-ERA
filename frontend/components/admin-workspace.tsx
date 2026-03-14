@@ -32,6 +32,8 @@ import {
   runCrossValidation,
   runFederatedAggregation,
   runInitialTraining,
+  runInitialTrainingBenchmark,
+  runSiteValidation,
   updateAdminSite,
   updateAdminSiteStorageRoot,
   updateStorageSettings,
@@ -43,6 +45,7 @@ import {
   type BulkImportResponse,
   type CrossValidationFoldRecord,
   type CrossValidationReport,
+  type InitialTrainingBenchmarkResponse,
   type InitialTrainingResponse,
   type SiteJobRecord,
   type ManagedSiteRecord,
@@ -68,6 +71,7 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "densenet169", label: "DenseNet169" },
   { value: "densenet201", label: "DenseNet201" },
 ];
+const BENCHMARK_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121"];
 
 const ROC_CURVE_COLORS = ["#2a8f5b", "#f39c12", "#2e6cff", "#8f2bb3", "#d64545"];
 const ROC_CHART_WIDTH = 420;
@@ -81,7 +85,7 @@ type ReviewDraft = {
   reviewer_notes: string;
 };
 
-type WorkspaceSection =
+export type WorkspaceSection =
   | "dashboard"
   | "imports"
   | "requests"
@@ -112,6 +116,7 @@ type AdminWorkspaceProps = {
   selectedSiteId: string | null;
   summary: SiteSummary | null;
   theme: "dark" | "light";
+  initialSection?: WorkspaceSection;
   onSelectSite: (siteId: string) => void;
   onOpenCanvas: () => void;
   onLogout: () => void;
@@ -297,6 +302,7 @@ export function AdminWorkspace({
   selectedSiteId,
   summary,
   theme,
+  initialSection,
   onSelectSite,
   onOpenCanvas,
   onLogout,
@@ -307,7 +313,7 @@ export function AdminWorkspace({
   const { locale, localeTag, common } = useI18n();
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
-  const [section, setSection] = useState<WorkspaceSection>("dashboard");
+  const [section, setSection] = useState<WorkspaceSection>(initialSection ?? "dashboard");
   const [toast, setToast] = useState<ToastState>(null);
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
   const [storageSettings, setStorageSettings] = useState<StorageSettingsRecord | null>(null);
@@ -340,8 +346,14 @@ export function AdminWorkspace({
   const [initialBusy, setInitialBusy] = useState(false);
   const [initialResult, setInitialResult] = useState<InitialTrainingResponse | null>(null);
   const [initialJob, setInitialJob] = useState<SiteJobRecord | null>(null);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [benchmarkResult, setBenchmarkResult] = useState<InitialTrainingBenchmarkResponse | null>(null);
+  const [benchmarkJob, setBenchmarkJob] = useState<SiteJobRecord | null>(null);
   const [crossValidationBusy, setCrossValidationBusy] = useState(false);
   const [crossValidationJob, setCrossValidationJob] = useState<SiteJobRecord | null>(null);
+  const [siteValidationBusy, setSiteValidationBusy] = useState(false);
+  const [validationExportBusy, setValidationExportBusy] = useState(false);
+  const [crossValidationExportBusy, setCrossValidationExportBusy] = useState(false);
   const [crossValidationReports, setCrossValidationReports] = useState<CrossValidationReport[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [selectedModelUpdateId, setSelectedModelUpdateId] = useState<string | null>(null);
@@ -499,8 +511,15 @@ export function AdminWorkspace({
   };
   const initialProgress = initialJob?.result?.progress ?? null;
   const progressPercent = Math.max(0, Math.min(100, Math.round(initialProgress?.percent ?? 0)));
+  const benchmarkProgress = benchmarkJob?.result?.progress ?? null;
+  const benchmarkPercent = Math.max(0, Math.min(100, Math.round(benchmarkProgress?.percent ?? 0)));
   const crossValidationProgress = crossValidationJob?.result?.progress ?? null;
   const crossValidationPercent = Math.max(0, Math.min(100, Math.round(crossValidationProgress?.percent ?? 0)));
+  useEffect(() => {
+    if (initialSection) {
+      setSection(initialSection);
+    }
+  }, [initialSection]);
   const formatTrainingStage = (stage: string | null | undefined) => {
     switch (stage) {
       case "queued":
@@ -916,6 +935,57 @@ export function AdminWorkspace({
     }
   }
 
+  async function handleBenchmarkTraining() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForInitial });
+      return;
+    }
+    setBenchmarkBusy(true);
+    setBenchmarkJob(null);
+    try {
+      const started = await runInitialTrainingBenchmark(selectedSiteId, token, {
+        architectures: BENCHMARK_ARCHITECTURES,
+        execution_mode: initialForm.execution_mode,
+        crop_mode: initialForm.crop_mode,
+        epochs: initialForm.epochs,
+        learning_rate: initialForm.learning_rate,
+        batch_size: initialForm.batch_size,
+        val_split: initialForm.val_split,
+        test_split: initialForm.test_split,
+        use_pretrained: initialForm.use_pretrained,
+        regenerate_split: initialForm.regenerate_split,
+      });
+      setBenchmarkJob(started.job);
+      let latestJob = started.job;
+      while (latestJob.status === "queued" || latestJob.status === "running") {
+        await sleep(1000);
+        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
+        setBenchmarkJob(latestJob);
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(latestJob.result?.error || pick(locale, "Benchmark training failed.", "벤치마크 학습에 실패했습니다."));
+      }
+      const result = latestJob.result?.response;
+      if (!result || !("results" in result)) {
+        throw new Error(pick(locale, "Benchmark training result is missing.", "벤치마크 학습 결과가 없습니다."));
+      }
+      setBenchmarkResult(result);
+      await refreshWorkspace(true);
+      setSection("registry");
+      setToast({
+        tone: "success",
+        message: pick(locale, `Benchmark completed for ${result.results.length} architecture(s).`, `${result.results.length}개 아키텍처 벤치마크가 완료되었습니다.`),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Benchmark training failed.", "벤치마크 학습에 실패했습니다.")),
+      });
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  }
+
   async function handleCrossValidation() {
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForCrossValidation });
@@ -947,6 +1017,124 @@ export function AdminWorkspace({
       setToast({ tone: "error", message: describeError(nextError, copy.crossValidationFailed) });
     } finally {
       setCrossValidationBusy(false);
+    }
+  }
+
+  async function handleSiteValidation() {
+    if (!selectedSiteId) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select a hospital before running hospital validation.", "병원 검증을 실행하려면 병원을 선택하세요."),
+      });
+      return;
+    }
+    setSiteValidationBusy(true);
+    try {
+      const started = await runSiteValidation(selectedSiteId, token);
+      let latestJob = started.job;
+      while (latestJob.status === "queued" || latestJob.status === "running") {
+        await sleep(1000);
+        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(latestJob.result?.error || pick(locale, "Hospital validation failed.", "병원 검증에 실패했습니다."));
+      }
+      const result = latestJob.result?.response;
+      if (!result || !("summary" in result)) {
+        throw new Error(pick(locale, "Hospital validation finished without a saved report.", "병원 검증이 끝났지만 저장된 리포트를 받지 못했습니다."));
+      }
+      setSiteValidationRuns((current) => [
+        result.summary,
+        ...current.filter((item) => item.validation_id !== result.summary.validation_id),
+      ]);
+      setSelectedValidationId(result.summary.validation_id);
+      await refreshWorkspace(true);
+      setSection("dashboard");
+      setToast({
+        tone: "success",
+        message: pick(locale, `Saved validation ${result.summary.validation_id}.`, `${result.summary.validation_id} 검증 결과를 저장했습니다.`),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Hospital validation failed.", "병원 검증에 실패했습니다.")),
+      });
+    } finally {
+      setSiteValidationBusy(false);
+    }
+  }
+
+  async function handleExportValidationReport() {
+    if (!selectedSiteId || !selectedValidationId || !selectedValidationRun) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select a validation run before exporting.", "내보내기 전에 검증 실행을 선택하세요."),
+      });
+      return;
+    }
+    setValidationExportBusy(true);
+    try {
+      const casePredictions = await fetchValidationCases(selectedSiteId, selectedValidationId, token);
+      const payload = {
+        summary: selectedValidationRun,
+        case_predictions: casePredictions,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${selectedValidationId}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setToast({
+        tone: "success",
+        message: pick(locale, `Exported ${selectedValidationId}.json.`, `${selectedValidationId}.json 파일을 내보냈습니다.`),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Validation report export failed.", "검증 리포트 내보내기에 실패했습니다.")),
+      });
+    } finally {
+      setValidationExportBusy(false);
+    }
+  }
+
+  async function handleExportCrossValidationReport() {
+    if (!selectedReport) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select a cross-validation report before exporting.", "내보내기 전에 교차 검증 리포트를 선택하세요."),
+      });
+      return;
+    }
+    setCrossValidationExportBusy(true);
+    try {
+      const blob = new Blob([JSON.stringify(selectedReport, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${selectedReport.cross_validation_id}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setToast({
+        tone: "success",
+        message: pick(
+          locale,
+          `Exported ${selectedReport.cross_validation_id}.json.`,
+          `${selectedReport.cross_validation_id}.json 파일을 내보냈습니다.`,
+        ),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(
+          nextError,
+          pick(locale, "Cross-validation report export failed.", "교차 검증 리포트 내보내기에 실패했습니다."),
+        ),
+      });
+    } finally {
+      setCrossValidationExportBusy(false);
     }
   }
 
@@ -1266,6 +1454,14 @@ export function AdminWorkspace({
           {section === "dashboard" ? (
             <section className="doc-surface">
               <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Dashboard", "대시보드")}</div><h3>{pick(locale, "Validation trends, comparison, and misclassifications", "검증 추이, 비교, 오분류 검토")}</h3></div><div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div></div>
+              <div className="workspace-actions section-launch-actions">
+                <button className="ghost-button compact-ghost-button" type="button" disabled={validationExportBusy || !selectedValidationRun} onClick={() => void handleExportValidationReport()}>
+                  {validationExportBusy ? pick(locale, "Exporting...", "내보내는 중...") : pick(locale, "Export validation JSON", "검증 JSON 내보내기")}
+                </button>
+                <button className="primary-workspace-button" type="button" disabled={siteValidationBusy || !selectedSiteId} onClick={() => void handleSiteValidation()}>
+                  {siteValidationBusy ? pick(locale, "Running...", "실행 중...") : pick(locale, "Run hospital validation", "병원 검증 실행")}
+                </button>
+              </div>
               {selectedSiteId ? (
                 <div className="ops-stack">
                   <div className="ops-dual-grid">
@@ -1430,6 +1626,11 @@ export function AdminWorkspace({
           {section === "training" ? (
             <section className="doc-surface">
               <div className="doc-title-row"><div><div className="doc-eyebrow">{pick(locale, "Initial training", "초기 학습")}</div><h3>{pick(locale, "Register the next global baseline", "다음 글로벌 기준 모델 등록")}</h3></div><div className="doc-site-badge">{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div></div>
+              <div className="workspace-actions section-launch-actions">
+                <button className="ghost-button compact-ghost-button" type="button" disabled={crossValidationExportBusy || !selectedReport} onClick={() => void handleExportCrossValidationReport()}>
+                  {crossValidationExportBusy ? pick(locale, "Exporting...", "내보내는 중...") : pick(locale, "Export selected report", "선택 리포트 내보내기")}
+                </button>
+              </div>
               <div className="ops-form-grid ops-form-grid-wide">
                 <label className="inline-field"><span>{pick(locale, "Architecture", "아키텍처")}</span><select value={initialForm.architecture} onChange={(event) => setInitialForm((current) => ({ ...current, architecture: event.target.value }))}>{TRAINING_ARCHITECTURE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 <label className="inline-field"><span>{pick(locale, "Execution mode", "실행 모드")}</span><select value={initialForm.execution_mode} onChange={(event) => setInitialForm((current) => ({ ...current, execution_mode: event.target.value as "auto" | "cpu" | "gpu" }))}><option value="auto">{pick(locale, "auto", "자동")}</option><option value="cpu">CPU</option><option value="gpu">GPU</option></select></label>
@@ -1441,7 +1642,7 @@ export function AdminWorkspace({
                 <label className="inline-field"><span>{pick(locale, "Test split", "테스트 비율")}</span><input type="number" min={0.1} max={0.4} step="0.05" value={initialForm.test_split} onChange={(event) => setInitialForm((current) => ({ ...current, test_split: Number(event.target.value) }))} /></label>
               </div>
               <div className="workspace-actions"><button className={`toggle-pill ${initialForm.use_pretrained ? "active" : ""}`} type="button" onClick={() => setInitialForm((current) => ({ ...current, use_pretrained: !current.use_pretrained }))}>{initialForm.use_pretrained ? pick(locale, "Pretrained init", "사전학습 초기화") : pick(locale, "Scratch init", "처음부터 학습")}</button><button className={`toggle-pill ${!initialForm.regenerate_split ? "active" : ""}`} type="button" onClick={() => setInitialForm((current) => ({ ...current, regenerate_split: !current.regenerate_split }))}>{initialForm.regenerate_split ? pick(locale, "Regenerate split", "분할 재생성") : pick(locale, "Reuse split", "기존 분할 재사용")}</button></div>
-              <div className="doc-footer"><div><strong>{pick(locale, "DenseNet / ConvNeXt + MedSAM crop only", "DenseNet / ConvNeXt + MedSAM crop 전용")}</strong><p>{pick(locale, "The existing Python pipeline still executes the actual training.", "실제 학습 실행은 기존 Python 파이프라인이 계속 담당합니다.")}</p></div><button className="primary-workspace-button" type="button" disabled={initialBusy || !selectedSiteId} onClick={() => void handleInitialTraining()}>{initialBusy ? pick(locale, "Training...", "학습 중...") : pick(locale, "Run initial training", "초기 학습 실행")}</button></div>
+              <div className="doc-footer"><div><strong>{pick(locale, "DenseNet / ConvNeXt / Swin / ViT benchmark ready", "DenseNet / ConvNeXt / Swin / ViT 벤치마크 지원")}</strong><p>{pick(locale, "Single-model training and 4-model benchmark both reuse the Python training pipeline.", "단일 학습과 4모델 벤치마크 모두 기존 Python 학습 파이프라인을 재사용합니다.")}</p></div><div className="workspace-actions"><button className="ghost-button" type="button" disabled={benchmarkBusy || !selectedSiteId} onClick={() => void handleBenchmarkTraining()}>{benchmarkBusy ? pick(locale, "Benchmarking...", "벤치마크 중...") : pick(locale, "Run 4-model benchmark", "4모델 벤치마크 실행")}</button><button className="primary-workspace-button" type="button" disabled={initialBusy || !selectedSiteId} onClick={() => void handleInitialTraining()}>{initialBusy ? pick(locale, "Training...", "학습 중...") : pick(locale, "Run initial training", "초기 학습 실행")}</button></div></div>
               {initialJob ? (
                 <div className="ops-card training-progress-card">
                   <div className="panel-card-head">
@@ -1464,6 +1665,29 @@ export function AdminWorkspace({
                   </p>
                 </div>
               ) : null}
+              {benchmarkJob ? (
+                <div className="ops-card training-progress-card">
+                  <div className="panel-card-head">
+                    <strong>{pick(locale, "Benchmark progress", "벤치마크 진행 상태")}</strong>
+                    <span>{formatTrainingStage(benchmarkProgress?.stage)}</span>
+                  </div>
+                  <div className="training-progress-bar" aria-hidden="true">
+                    <div className="training-progress-fill" style={{ width: `${benchmarkPercent}%` }} />
+                  </div>
+                  <div className="panel-metric-grid training-progress-grid">
+                    <div><strong>{benchmarkPercent}%</strong><span>{pick(locale, "progress", "진행률")}</span></div>
+                    <div><strong>{benchmarkProgress?.architecture ?? common.notAvailable}</strong><span>{pick(locale, "architecture", "아키텍처")}</span></div>
+                    <div><strong>{benchmarkProgress?.architecture_index && benchmarkProgress?.architecture_count ? `${benchmarkProgress.architecture_index} / ${benchmarkProgress.architecture_count}` : common.notAvailable}</strong><span>{pick(locale, "sequence", "순서")}</span></div>
+                    <div><strong>{benchmarkProgress?.component_crop_mode ?? benchmarkProgress?.crop_mode ?? common.notAvailable}</strong><span>{pick(locale, "mode", "모드")}</span></div>
+                  </div>
+                  <p className="training-progress-copy">
+                    {benchmarkProgress?.message
+                      ? benchmarkProgress.message
+                      : pick(locale, "Waiting for the benchmark worker to report progress.", "벤치마크 작업 상태를 기다리는 중입니다.")}
+                  </p>
+                </div>
+              ) : null}
+              {benchmarkResult ? <div className="ops-card"><div className="panel-card-head"><strong>{pick(locale, "Benchmark summary", "벤치마크 요약")}</strong><span>{benchmarkResult.best_architecture ?? common.notAvailable}</span></div><div className="ops-table"><div className="ops-table-row ops-table-head"><span>{pick(locale, "architecture", "아키텍처")}</span><span>{pick(locale, "status", "상태")}</span><span>{pick(locale, "best val acc", "최고 검증 정확도")}</span><span>{pick(locale, "version", "버전")}</span></div>{benchmarkResult.results.map((entry) => <div key={entry.architecture} className="ops-table-row"><span>{entry.architecture}</span><span>{entry.status}</span><span>{formatMetric(entry.result?.best_val_acc, common.notAvailable)}</span><span>{entry.model_version?.version_name ?? common.notAvailable}</span></div>)}{benchmarkResult.failures.map((entry) => <div key={`failed-${entry.architecture}`} className="ops-table-row"><span>{entry.architecture}</span><span>{entry.status}</span><span>{common.notAvailable}</span><span>{entry.error}</span></div>)}</div></div> : null}
               {initialResult ? <div className="panel-metric-grid"><div><strong>{initialResult.result.n_train_patients}</strong><span>{pick(locale, "train patients", "학습 환자")}</span></div><div><strong>{initialResult.result.n_val_patients}</strong><span>{pick(locale, "val patients", "검증 환자")}</span></div><div><strong>{initialResult.result.n_test_patients}</strong><span>{pick(locale, "test patients", "테스트 환자")}</span></div><div><strong>{formatMetric(initialResult.result.best_val_acc, common.notAvailable)}</strong><span>{pick(locale, "best val acc", "최고 검증 정확도")}</span></div></div> : null}
             </section>
           ) : null}

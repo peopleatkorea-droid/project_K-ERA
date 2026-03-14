@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $apiScript = Join-Path $repoRoot "scripts\run_api_server.ps1"
 $webScript = Join-Path $repoRoot "scripts\run_web_frontend.ps1"
+$workerScript = Join-Path $repoRoot "scripts\run_job_worker.ps1"
 
 $powershellExe = $null
 foreach ($candidate in @("powershell", "pwsh")) {
@@ -52,10 +53,16 @@ if ($resolvedWebPort -ne $WebPort) {
 # Wrap script paths in quotes to handle spaces in directory names
 $quotedApiScript = "`"$apiScript`""
 $quotedWebScript = "`"$webScript`""
+$quotedWorkerScript = "`"$workerScript`""
 
 Write-Host "[K-ERA] Starting API server..." -ForegroundColor Cyan
 Start-Process -FilePath $powershellExe -ArgumentList @(
     "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $quotedApiScript, "-Port", $resolvedApiPort
+)
+
+Write-Host "[K-ERA] Starting job worker..." -ForegroundColor Cyan
+Start-Process -FilePath $powershellExe -ArgumentList @(
+    "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $quotedWorkerScript
 )
 
 Write-Host "[K-ERA] Starting frontend..." -ForegroundColor Cyan

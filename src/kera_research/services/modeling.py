@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 from dataclasses import dataclass
@@ -47,6 +49,10 @@ def seed_everything(seed: int = 42) -> None:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+
+
+DEFAULT_IMAGE_SIZE = 224
+DEFAULT_NUM_CLASSES = len(LABEL_TO_INDEX)
 
 
 if nn is not None:
@@ -324,7 +330,7 @@ else:  # pragma: no cover - dependency guard
         pass
 
 
-def preprocess_image(image_path: str | Path, image_size: int = 224) -> tuple[Image.Image, torch.Tensor]:
+def preprocess_image(image_path: str | Path, image_size: int = DEFAULT_IMAGE_SIZE) -> tuple[Image.Image, torch.Tensor]:
     require_torch()
     image = Image.open(image_path).convert("RGB")
     resized = image.resize((image_size, image_size))
@@ -375,6 +381,95 @@ class ModelManager:
     def __init__(self) -> None:
         seed_everything()
 
+    def preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
+        return {
+            "color_mode": "RGB",
+            "resize": [int(image_size), int(image_size)],
+            "scaling": "0_1",
+        }
+
+    def preprocess_signature(self, image_size: int = DEFAULT_IMAGE_SIZE) -> str:
+        payload = json.dumps(self.preprocess_metadata(image_size=image_size), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+    def build_artifact_metadata(
+        self,
+        *,
+        architecture: str,
+        artifact_type: str = "model",
+        crop_mode: str | None = None,
+        training_input_policy: str | None = None,
+        image_size: int = DEFAULT_IMAGE_SIZE,
+        num_classes: int = DEFAULT_NUM_CLASSES,
+    ) -> dict[str, Any]:
+        metadata = {
+            "artifact_format": "kera_model_artifact_v1",
+            "artifact_type": artifact_type,
+            "architecture": architecture,
+            "num_classes": int(num_classes),
+            "label_schema": {
+                "index_to_label": {str(key): value for key, value in INDEX_TO_LABEL.items()},
+                "label_to_index": LABEL_TO_INDEX,
+            },
+            "preprocess": self.preprocess_metadata(image_size=image_size),
+            "preprocess_signature": self.preprocess_signature(image_size=image_size),
+            "saved_at": utc_now(),
+        }
+        if crop_mode is not None:
+            metadata["crop_mode"] = str(crop_mode)
+        if training_input_policy is not None:
+            metadata["training_input_policy"] = str(training_input_policy)
+        return metadata
+
+    def _checkpoint_metadata(self, checkpoint: Any) -> dict[str, Any]:
+        if not isinstance(checkpoint, dict):
+            return {}
+        metadata = checkpoint.get("artifact_metadata")
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
+    def validate_model_artifact(
+        self,
+        model_reference: dict[str, Any],
+        checkpoint: Any,
+    ) -> dict[str, Any]:
+        architecture = str(model_reference.get("architecture") or "cnn")
+        metadata = self._checkpoint_metadata(checkpoint)
+        checkpoint_architecture = str((metadata.get("architecture") or checkpoint.get("architecture") or "")).strip()
+        if checkpoint_architecture and checkpoint_architecture != architecture:
+            raise ValueError(
+                f"Checkpoint architecture mismatch: expected {architecture}, found {checkpoint_architecture}."
+            )
+
+        expected_num_classes = int(model_reference.get("num_classes") or DEFAULT_NUM_CLASSES)
+        checkpoint_num_classes = metadata.get("num_classes")
+        if checkpoint_num_classes is not None and int(checkpoint_num_classes) != expected_num_classes:
+            raise ValueError(
+                f"Checkpoint class count mismatch: expected {expected_num_classes}, found {checkpoint_num_classes}."
+            )
+
+        expected_policy = str(model_reference.get("training_input_policy") or "").strip()
+        checkpoint_policy = str(metadata.get("training_input_policy") or "").strip()
+        if expected_policy and checkpoint_policy and checkpoint_policy != expected_policy:
+            raise ValueError(
+                f"Checkpoint input policy mismatch: expected {expected_policy}, found {checkpoint_policy}."
+            )
+
+        expected_crop_mode = str(model_reference.get("crop_mode") or "").strip()
+        checkpoint_crop_mode = str(metadata.get("crop_mode") or "").strip()
+        if expected_crop_mode and checkpoint_crop_mode and checkpoint_crop_mode != expected_crop_mode:
+            raise ValueError(
+                f"Checkpoint crop mode mismatch: expected {expected_crop_mode}, found {checkpoint_crop_mode}."
+            )
+
+        expected_signature = str(model_reference.get("preprocess_signature") or self.preprocess_signature()).strip()
+        checkpoint_signature = str(metadata.get("preprocess_signature") or "").strip()
+        if checkpoint_signature and checkpoint_signature != expected_signature:
+            raise ValueError(
+                f"Checkpoint preprocess signature mismatch: expected {expected_signature}, found {checkpoint_signature}."
+            )
+
+        return metadata
+
     def build_model(self, architecture: str) -> nn.Module:
         require_torch()
         if architecture == "cnn":
@@ -411,6 +506,8 @@ class ModelManager:
                             "training_input_policy": (
                                 "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                             ),
+                            "preprocess_signature": self.preprocess_signature(),
+                            "num_classes": DEFAULT_NUM_CLASSES,
                             "decision_threshold": 0.5,
                             "threshold_selection_metric": "default",
                             "is_current": template.get("is_current", False),
@@ -427,6 +524,15 @@ class ModelManager:
                     {
                         "architecture": template["architecture"],
                         "state_dict": model.state_dict(),
+                        "artifact_metadata": self.build_artifact_metadata(
+                            architecture=template["architecture"],
+                            crop_mode="automated" if template.get("requires_medsam_crop", False) else "raw",
+                            training_input_policy=(
+                                "medsam_cornea_crop_only"
+                                if template.get("requires_medsam_crop", False)
+                                else "raw_or_model_defined"
+                            ),
+                        ),
                     },
                     model_path,
                 )
@@ -442,6 +548,8 @@ class ModelManager:
                     "training_input_policy": (
                         "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                     ),
+                    "preprocess_signature": self.preprocess_signature(),
+                    "num_classes": DEFAULT_NUM_CLASSES,
                     "decision_threshold": 0.5,
                     "threshold_selection_metric": "default",
                     "is_current": template.get("is_current", False),
@@ -458,7 +566,10 @@ class ModelManager:
         require_torch()
         architecture = model_reference.get("architecture", "cnn")
         model_path = model_reference["model_path"]
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"Model artifact not found: {model_path}")
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+        self.validate_model_artifact(model_reference, checkpoint)
         model = self.build_model(architecture).to(device)
         state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
         strict = architecture not in DENSENET_VARIANTS
@@ -514,6 +625,51 @@ class ModelManager:
             probability=float(probabilities[1].item()),
             logits=[float(value) for value in logits.squeeze(0).tolist()],
         )
+
+    def extract_image_embedding(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any],
+        image_path: str | Path,
+        device: str,
+    ) -> np.ndarray:
+        require_torch()
+        _, tensor = preprocess_image(image_path)
+        tensor = tensor.to(device)
+        model.eval()
+        architecture = str(model_reference.get("architecture") or "cnn")
+
+        classifier_module: nn.Module
+        if architecture == "cnn":
+            classifier_module = model.classifier
+        elif architecture == "vit":
+            classifier_module = model.head
+        elif architecture == "swin":
+            classifier_module = model.head
+        elif architecture == "convnext_tiny":
+            classifier_module = model.classifier[-1]
+        elif architecture in DENSENET_VARIANTS:
+            classifier_module = model.classifier
+        else:
+            raise ValueError(f"Unsupported embedding extraction architecture: {architecture}")
+
+        captured_inputs: list[torch.Tensor] = []
+
+        def capture_pre_classifier_input(_module: nn.Module, inputs: tuple[torch.Tensor, ...]) -> None:
+            if inputs:
+                captured_inputs.append(inputs[0].detach())
+
+        hook_handle = classifier_module.register_forward_pre_hook(capture_pre_classifier_input)
+        try:
+            with torch.no_grad():
+                _ = model(tensor)
+        finally:
+            hook_handle.remove()
+
+        if not captured_inputs:
+            raise RuntimeError("Unable to extract the penultimate feature embedding from the model.")
+        embedding = captured_inputs[0].reshape(captured_inputs[0].shape[0], -1)[0].cpu().numpy().astype(np.float32)
+        return embedding
 
     def generate_explanation(
         self,
@@ -697,6 +853,12 @@ class ModelManager:
             {
                 "architecture": architecture,
                 "state_dict": model.state_dict(),
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model",
+                    crop_mode=str(base_model_reference.get("crop_mode") or ""),
+                    training_input_policy=str(base_model_reference.get("training_input_policy") or ""),
+                ),
             },
             output,
         )
@@ -1047,6 +1209,8 @@ class ModelManager:
         test_split: float = 0.2,
         use_pretrained: bool = True,
         saved_split: dict[str, Any] | None = None,
+        crop_mode: str | None = None,
+        training_input_policy: str | None = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
         """처음부터 학습 가능한 backbone을 학습합니다 (ImageNet pretrained 권장).
@@ -1179,7 +1343,19 @@ class ModelManager:
         )
         val_metrics["n_samples"] = len(val_outputs["true_labels"])
         test_metrics = self._evaluate_loader(model, test_loader, device, threshold=decision_threshold)
-        torch.save({"architecture": architecture, "state_dict": best_state}, output)
+        torch.save(
+            {
+                "architecture": architecture,
+                "state_dict": best_state,
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model",
+                    crop_mode=crop_mode,
+                    training_input_policy=training_input_policy,
+                ),
+            },
+            output,
+        )
 
         return {
             "training_id": make_id("train"),
@@ -1291,7 +1467,7 @@ class ModelManager:
             )
 
         aggregate_metrics: dict[str, dict[str, float | None]] = {}
-        for metric_name in ["AUROC", "accuracy", "sensitivity", "specificity", "F1"]:
+        for metric_name in ["AUROC", "accuracy", "sensitivity", "specificity", "F1", "balanced_accuracy", "brier_score", "ece"]:
             metric_values = [
                 float(fold["test_metrics"][metric_name])
                 for fold in fold_results
@@ -1335,6 +1511,10 @@ class ModelManager:
             {
                 "architecture": architecture,
                 "state_dict": delta_state,
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="weight_delta",
+                ),
             },
             output,
         )
@@ -1411,6 +1591,10 @@ class ModelManager:
             {
                 "architecture": architecture,
                 "state_dict": state_dict_to_save,
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model" if base_model_path is not None else "weight_delta",
+                ),
             },
             output,
         )
@@ -1452,6 +1636,47 @@ class ModelManager:
                 ],
             }
 
+        brier_score = (
+            float(np.mean([(float(probability) - float(label)) ** 2 for label, probability in zip(true_labels, positive_probabilities)]))
+            if true_labels
+            else None
+        )
+        calibration_bins: list[dict[str, Any]] = []
+        ece = 0.0
+        if true_labels and positive_probabilities:
+            n_bins = 10
+            total = len(true_labels)
+            for bin_index in range(n_bins):
+                lower = bin_index / n_bins
+                upper = (bin_index + 1) / n_bins
+                if bin_index == n_bins - 1:
+                    members = [
+                        (float(probability), int(label))
+                        for label, probability in zip(true_labels, positive_probabilities)
+                        if lower <= float(probability) <= upper
+                    ]
+                else:
+                    members = [
+                        (float(probability), int(label))
+                        for label, probability in zip(true_labels, positive_probabilities)
+                        if lower <= float(probability) < upper
+                    ]
+                if not members:
+                    continue
+                mean_confidence = float(np.mean([member[0] for member in members]))
+                positive_rate = float(np.mean([member[1] for member in members]))
+                fraction = len(members) / total
+                ece += fraction * abs(positive_rate - mean_confidence)
+                calibration_bins.append(
+                    {
+                        "bin_start": round(lower, 4),
+                        "bin_end": round(upper, 4),
+                        "count": len(members),
+                        "mean_confidence": round(mean_confidence, 4),
+                        "positive_rate": round(positive_rate, 4),
+                    }
+                )
+
         return {
             "AUROC": auroc,
             "accuracy": accuracy,
@@ -1459,10 +1684,16 @@ class ModelManager:
             "specificity": float(specificity),
             "balanced_accuracy": balanced_accuracy,
             "F1": f1,
+            "brier_score": brier_score,
+            "ece": round(float(ece), 6) if calibration_bins else None,
             "decision_threshold": float(threshold) if threshold is not None else None,
             "confusion_matrix": {
                 "labels": ["bacterial", "fungal"],
                 "matrix": confusion,
             },
             "roc_curve": roc,
+            "calibration": {
+                "n_bins": 10,
+                "bins": calibration_bins,
+            },
         }

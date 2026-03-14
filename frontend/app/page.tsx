@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import Script from "next/script";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
@@ -19,11 +20,9 @@ import {
   fetchSiteSummary,
   fetchSites,
   googleLogin,
-  login,
   reviewAccessRequest,
   submitAccessRequest,
   type AccessRequestRecord,
-  type AuthResponse,
   type AuthState,
   type AuthUser,
   type SiteRecord,
@@ -51,6 +50,22 @@ type ReviewDraft = {
 const TOKEN_KEY = "kera_web_token";
 const WORKSPACE_THEME_KEY = "kera_workspace_theme";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+type OperationsSection = "dashboard" | "training" | "cross_validation";
+
+function parseOperationsLaunchFromSearch(): { mode: "canvas" | "operations"; section: OperationsSection } | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("workspace") !== "operations") {
+    return null;
+  }
+  const section = params.get("section");
+  if (section === "training" || section === "cross_validation" || section === "dashboard") {
+    return { mode: "operations", section };
+  }
+  return { mode: "operations", section: "dashboard" };
+}
 
 function statusCopy(locale: "en" | "ko", status: AuthState): string {
   if (status === "pending") {
@@ -90,7 +105,6 @@ export default function HomePage() {
   const [reviewBusyById, setReviewBusyById] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
-  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [patientForm, setPatientForm] = useState({
     patient_id: "",
     sex: "female",
@@ -104,7 +118,9 @@ export default function HomePage() {
     message: "",
   });
   const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
+  const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
   const [workspaceTheme, setWorkspaceTheme] = useState<"dark" | "light">("dark");
+  const [launchTarget, setLaunchTarget] = useState<{ mode: "canvas" | "operations"; section: OperationsSection } | null>(null);
 
   const approved = user?.approval_status === "approved";
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
@@ -192,6 +208,21 @@ export default function HomePage() {
       "초기 설정과 장애 대응을 위한 로컬 관리자 경로는 유지됩니다."
     ),
   };
+  const adminRecoveryLinkLabel = pick(locale, "Open administrator recovery", "관리자 복구 열기");
+  const adminLaunchLinks = [
+    {
+      label: pick(locale, "Admin training", "관리자 학습"),
+      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining",
+    },
+    {
+      label: pick(locale, "Admin cross-validation", "관리자 교차 검증"),
+      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dcross_validation",
+    },
+    {
+      label: pick(locale, "Admin hospital validation", "관리자 병원 검증"),
+      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard",
+    },
+  ];
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
 
@@ -200,6 +231,7 @@ export default function HomePage() {
     if (stored) {
       setToken(stored);
     }
+    setLaunchTarget(parseOperationsLaunchFromSearch());
   }, []);
 
   useEffect(() => {
@@ -212,6 +244,14 @@ export default function HomePage() {
   useEffect(() => {
     window.localStorage.setItem(WORKSPACE_THEME_KEY, workspaceTheme);
   }, [workspaceTheme]);
+
+  useEffect(() => {
+    if (!approved || !canOpenOperations || !launchTarget || launchTarget.mode !== "operations") {
+      return;
+    }
+    setOperationsSection(launchTarget.section);
+    setWorkspaceMode("operations");
+  }, [approved, canOpenOperations, launchTarget]);
 
   useEffect(() => {
     void fetchPublicSites()
@@ -345,12 +385,6 @@ export default function HomePage() {
     });
   }, [googleReady, token, copy.googleLoginFailed, copy.googleNoCredential]);
 
-  async function applyAuth(auth: AuthResponse) {
-    window.localStorage.setItem(TOKEN_KEY, auth.access_token);
-    setToken(auth.access_token);
-    setUser(auth.user);
-  }
-
   async function refreshSiteData(siteId: string, currentToken: string) {
     const [nextSummary, nextPatients] = await Promise.all([
       fetchSiteSummary(siteId, currentToken),
@@ -364,19 +398,6 @@ export default function HomePage() {
     const nextSites = await fetchSites(currentToken);
     setSites(nextSites);
     setSelectedSiteId((current) => current ?? nextSites[0]?.site_id ?? null);
-  }
-
-  async function handleLocalLogin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setAuthBusy(true);
-    setError(null);
-    try {
-      await applyAuth(await login(loginForm.username, loginForm.password));
-    } catch (nextError) {
-      setError(describeError(nextError, copy.loginFailed));
-    } finally {
-      setAuthBusy(false);
-    }
   }
 
   async function handleCreatePatient(event: FormEvent<HTMLFormElement>) {
@@ -461,6 +482,7 @@ export default function HomePage() {
     setToken(null);
     setUser(null);
     setWorkspaceMode("canvas");
+    setOperationsSection("dashboard");
     setSites([]);
     setSelectedSiteId(null);
     setSummary(null);
@@ -523,30 +545,18 @@ export default function HomePage() {
             ) : (
               <div className="empty">{copy.googleDisabled}</div>
             )}
+            {error ? <div className="error">{error}</div> : null}
             <div className="divider-line">{copy.adminRecoveryOnly}</div>
-            <form className="stack" onSubmit={handleLocalLogin}>
-              <div className="field">
-                <label htmlFor="username">{copy.username}</label>
-                <input
-                  id="username"
-                  value={loginForm.username}
-                  onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="password">{copy.password}</label>
-                <input
-                  id="password"
-                  type="password"
-                  value={loginForm.password}
-                  onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
-                />
-              </div>
-              {error ? <div className="error">{error}</div> : null}
-              <button className="primary-button" type="submit" disabled={authBusy}>
-                {authBusy ? copy.connecting : copy.enterAdminRecovery}
-              </button>
-            </form>
+            <Link href="/admin-login" className="secondary-button">
+              {adminRecoveryLinkLabel}
+            </Link>
+            <div className="login-utility-links">
+              {adminLaunchLinks.map((item) => (
+                <Link key={item.href} href={item.href} className="text-button">
+                  {item.label}
+                </Link>
+              ))}
+            </div>
           </section>
         </section>
       </main>
@@ -662,7 +672,10 @@ export default function HomePage() {
         onSelectSite={setSelectedSiteId}
         onExportManifest={handleManifestDownload}
         onLogout={handleLogout}
-        onOpenOperations={() => setWorkspaceMode("operations")}
+        onOpenOperations={(section) => {
+          setOperationsSection(section ?? "dashboard");
+          setWorkspaceMode("operations");
+        }}
         onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
         theme={workspaceTheme}
         onToggleTheme={() => setWorkspaceTheme((current) => (current === "dark" ? "light" : "dark"))}
@@ -678,6 +691,7 @@ export default function HomePage() {
         sites={sites}
         selectedSiteId={selectedSiteId}
         summary={summary}
+        initialSection={operationsSection}
         onSelectSite={setSelectedSiteId}
         onOpenCanvas={() => setWorkspaceMode("canvas")}
         onLogout={handleLogout}

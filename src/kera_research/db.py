@@ -188,6 +188,18 @@ model_updates = Table(
     Column("payload_json", JSON, nullable=False),
 )
 
+experiments = Table(
+    "experiments",
+    CONTROL_PLANE_METADATA,
+    Column("experiment_id", String(64), primary_key=True),
+    Column("site_id", String(64), nullable=True, index=True),
+    Column("experiment_type", String(64), nullable=False, index=True),
+    Column("status", String(64), nullable=False, index=True),
+    Column("model_version_id", String(64), nullable=True, index=True),
+    Column("created_at", String(64), nullable=False, index=True),
+    Column("payload_json", JSON, nullable=False),
+)
+
 contributions = Table(
     "contributions",
     CONTROL_PLANE_METADATA,
@@ -266,6 +278,7 @@ images = Table(
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False, index=True),
     Column("visit_date", String(32), nullable=False, index=True),
+    Column("created_by_user_id", String(64), nullable=True, index=True),
     Column("view", String(32), nullable=False, index=True),
     Column("image_path", Text, nullable=False),
     Column("is_representative", Boolean, nullable=False, default=False),
@@ -287,7 +300,17 @@ site_jobs = Table(
     Column("job_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("job_type", String(64), nullable=False, index=True),
+    Column("queue_name", String(64), nullable=False, index=True, default="default"),
+    Column("priority", Integer, nullable=False, default=100),
     Column("status", String(64), nullable=False, index=True),
+    Column("attempt_count", Integer, nullable=False, default=0),
+    Column("max_attempts", Integer, nullable=False, default=1),
+    Column("claimed_by", String(128), nullable=True, index=True),
+    Column("claimed_at", String(64), nullable=True),
+    Column("heartbeat_at", String(64), nullable=True),
+    Column("available_at", String(64), nullable=True, index=True),
+    Column("started_at", String(64), nullable=True),
+    Column("finished_at", String(64), nullable=True),
     Column("payload_json", JSON, nullable=False),
     Column("result_json", JSON, nullable=True),
     Column("created_at", String(64), nullable=False),
@@ -358,5 +381,41 @@ def _migrate_data_plane_schema() -> None:
 
         if "images" in table_names:
             image_columns = {column["name"] for column in inspector.get_columns("images")}
+            if "created_by_user_id" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN created_by_user_id VARCHAR(64)"))
             if "lesion_prompt_box" not in image_columns:
                 conn.execute(text("ALTER TABLE images ADD COLUMN lesion_prompt_box JSON"))
+
+        if "site_jobs" in table_names:
+            job_columns = {column["name"] for column in inspector.get_columns("site_jobs")}
+            if "queue_name" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN queue_name VARCHAR(64) NOT NULL DEFAULT 'default'"))
+            if "priority" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 100"))
+            if "updated_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN updated_at VARCHAR(64)"))
+            if "attempt_count" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"))
+            if "max_attempts" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 1"))
+            if "claimed_by" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN claimed_by VARCHAR(128)"))
+            if "claimed_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN claimed_at VARCHAR(64)"))
+            if "heartbeat_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN heartbeat_at VARCHAR(64)"))
+            if "available_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN available_at VARCHAR(64)"))
+            if "started_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN started_at VARCHAR(64)"))
+            if "finished_at" not in job_columns:
+                conn.execute(text("ALTER TABLE site_jobs ADD COLUMN finished_at VARCHAR(64)"))
+
+            if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_site_jobs_queue_status_available "
+                        "ON site_jobs (queue_name, status, available_at)"
+                    )
+                )
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_site_jobs_claimed_by ON site_jobs (claimed_by)"))

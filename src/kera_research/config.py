@@ -24,6 +24,8 @@ def _resolve_storage_dir() -> Path:
 STORAGE_DIR = _resolve_storage_dir()
 CONTROL_PLANE_DIR = STORAGE_DIR / "control_plane"
 CONTROL_PLANE_CASE_DIR = CONTROL_PLANE_DIR / "validation_cases"
+CONTROL_PLANE_REPORT_DIR = CONTROL_PLANE_DIR / "validation_reports"
+CONTROL_PLANE_EXPERIMENT_DIR = CONTROL_PLANE_DIR / "experiments"
 CONTROL_PLANE_ARTIFACT_DIR = Path(
     os.getenv("KERA_CONTROL_PLANE_ARTIFACT_DIR", "").strip() or (CONTROL_PLANE_DIR / "artifacts")
 )
@@ -214,6 +216,8 @@ def ensure_base_directories() -> None:
         STORAGE_DIR,
         CONTROL_PLANE_DIR,
         CONTROL_PLANE_CASE_DIR,
+        CONTROL_PLANE_REPORT_DIR,
+        CONTROL_PLANE_EXPERIMENT_DIR,
         CONTROL_PLANE_ARTIFACT_DIR,
         SITE_ROOT_DIR,
         MODEL_DIR,

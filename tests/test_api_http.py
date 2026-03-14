@@ -14,6 +14,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"
@@ -75,6 +76,9 @@ class FakeWorkflow:
         self.control_plane = control_plane
         self.model_manager = FakeModelManager()
 
+    def _lesion_prompt_box_signature(self, lesion_prompt_box):
+        return "fakeprompt001"
+
     def run_case_validation(
         self,
         project_id,
@@ -107,6 +111,10 @@ class FakeWorkflow:
             "true_label": "bacterial",
             "is_correct": True,
             "prediction_probability": 0.91,
+            "balanced_accuracy": 1.0,
+            "brier_score": 0.0081,
+            "ece": 0.09,
+            "calibration": {"n_bins": 10, "bins": []},
         }
         case_prediction = {
             "validation_id": summary["validation_id"],
@@ -121,6 +129,22 @@ class FakeWorkflow:
             "medsam_mask_path": None,
         }
         self.control_plane.save_validation_run(summary, [case_prediction])
+        self.control_plane.save_experiment(
+            {
+                "experiment_id": self.app_module.make_id("exp"),
+                "site_id": site_store.site_id,
+                "experiment_type": "case_validation",
+                "status": "completed",
+                "model_version_id": model_version["version_id"],
+                "created_at": "2026-03-11T00:00:00+00:00",
+                "execution_device": execution_device,
+                "metrics": {
+                    "accuracy": 1.0,
+                    "balanced_accuracy": 1.0,
+                },
+                "report_path": "",
+            }
+        )
         return summary, [case_prediction]
 
     def contribute_case(self, site_store, patient_id, visit_date, model_version, execution_device, user_id):
@@ -192,9 +216,11 @@ class FakeWorkflow:
                 "is_current": True,
                 "ready": True,
                 "requires_medsam_crop": True,
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
             }
         )
-        return {
+        result = {
             "training_id": self.app_module.make_id("train"),
             "version_name": model_version["version_name"],
             "output_model_path": str(output_path),
@@ -206,10 +232,28 @@ class FakeWorkflow:
             "n_test_patients": 2,
             "best_val_acc": 0.88,
             "use_pretrained": use_pretrained,
-            "test_metrics": {"accuracy": 0.84},
+            "val_metrics": {"accuracy": 0.86, "balanced_accuracy": 0.86},
+            "test_metrics": {"accuracy": 0.84, "balanced_accuracy": 0.84},
             "patient_split": {"split_id": self.app_module.make_id("split")},
             "model_version": model_version,
         }
+        result["experiment"] = self.control_plane.save_experiment(
+            {
+                "experiment_id": self.app_module.make_id("exp"),
+                "site_id": site_store.site_id,
+                "experiment_type": "initial_training",
+                "status": "completed",
+                "model_version_id": model_version["version_id"],
+                "created_at": "2026-03-11T00:20:00+00:00",
+                "execution_device": execution_device,
+                "metrics": {
+                    "best_val_acc": 0.88,
+                    "accuracy": 0.84,
+                },
+                "report_path": "",
+            }
+        )
+        return result
 
     def run_cross_validation(
         self,
@@ -240,6 +284,9 @@ class FakeWorkflow:
             "aggregate_metrics": {
                 "accuracy": {"mean": 0.82, "std": 0.03},
                 "AUROC": {"mean": 0.9, "std": 0.02},
+                "balanced_accuracy": {"mean": 0.81, "std": 0.02},
+                "brier_score": {"mean": 0.14, "std": 0.01},
+                "ece": {"mean": 0.06, "std": 0.01},
             },
             "fold_results": [
                 {
@@ -257,7 +304,44 @@ class FakeWorkflow:
         report_path = site_store.validation_dir / f"{report['cross_validation_id']}.json"
         report_path.write_text(json.dumps(report), encoding="utf-8")
         report["report_path"] = str(report_path)
+        report["experiment"] = self.control_plane.save_experiment(
+            {
+                "experiment_id": self.app_module.make_id("exp"),
+                "site_id": site_store.site_id,
+                "experiment_type": "cross_validation",
+                "status": "completed",
+                "created_at": "2026-03-11T00:30:00+00:00",
+                "execution_device": execution_device,
+                "metrics": report["aggregate_metrics"],
+                "report_path": str(report_path),
+            }
+        )
         return report
+
+    def preview_image_lesion(self, site_store, image_id, *, lesion_prompt_box=None):
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise ValueError("Image not found.")
+        artifact_name = Path(str(image["image_path"])).stem
+        mask_path = site_store.lesion_mask_dir / f"{artifact_name}_mask.png"
+        crop_path = site_store.lesion_crop_dir / f"{artifact_name}_crop.png"
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+        crop_path.parent.mkdir(parents=True, exist_ok=True)
+        mask_path.write_bytes(b"mask")
+        crop_path.write_bytes(b"crop")
+        return {
+            "patient_id": image["patient_id"],
+            "visit_date": image["visit_date"],
+            "view": image.get("view", "slit"),
+            "is_representative": bool(image.get("is_representative")),
+            "source_image_path": image["image_path"],
+            "lesion_mask_path": str(mask_path),
+            "lesion_crop_path": str(crop_path),
+            "backend": "fake_medsam",
+            "medsam_error": None,
+            "lesion_prompt_box": lesion_prompt_box if lesion_prompt_box is not None else image.get("lesion_prompt_box"),
+            "prompt_signature": "fakeprompt001",
+        }
 
     def run_external_validation(
         self,
@@ -310,11 +394,198 @@ class FakeWorkflow:
             "sensitivity": 0.5,
             "specificity": 0.5,
             "F1": 0.5,
+            "balanced_accuracy": 0.5,
+            "brier_score": 0.2669,
+            "ece": 0.12,
+            "calibration": {"n_bins": 10, "bins": []},
+            "site_metrics": [
+                {
+                    "site_id": site_store.site_id,
+                    "n_cases": len(case_predictions),
+                    "accuracy": 0.5,
+                    "sensitivity": 0.5,
+                    "specificity": 0.5,
+                    "F1": 0.5,
+                    "AUROC": 0.81,
+                    "balanced_accuracy": 0.5,
+                    "brier_score": 0.2669,
+                    "ece": 0.12,
+                }
+            ],
         }
         for prediction in case_predictions:
             prediction["validation_id"] = summary["validation_id"]
-        self.control_plane.save_validation_run(summary, case_predictions)
-        return summary, case_predictions, {"accuracy": 0.5}
+        saved_summary = self.control_plane.save_validation_run(summary, case_predictions)
+        saved_summary["experiment"] = self.control_plane.save_experiment(
+            {
+                "experiment_id": self.app_module.make_id("exp"),
+                "site_id": site_store.site_id,
+                "experiment_type": "external_validation",
+                "status": "completed",
+                "model_version_id": model_version["version_id"],
+                "created_at": "2026-03-11T01:00:00+00:00",
+                "execution_device": execution_device,
+                "metrics": {
+                    "accuracy": 0.5,
+                    "AUROC": 0.81,
+                    "balanced_accuracy": 0.5,
+                },
+                "report_path": "",
+            }
+        )
+        return saved_summary, case_predictions, {"accuracy": 0.5}
+
+
+class FakeSemanticPromptScorer:
+    def score_image(self, image_path, *, view, top_k=3):
+        return {
+            "model_name": "BiomedCLIP",
+            "model_id": "fake/biomedclip",
+            "image_path": str(image_path),
+            "view": view,
+            "dictionary_name": "fluorescein" if str(view).lower() == "fluorescein" else "standard",
+            "top_k": top_k,
+            "overall_top_matches": [
+                {
+                    "prompt_id": "fungal_keratitis",
+                    "label": "Fungal keratitis",
+                    "prompt": "a slit lamp photograph of fungal keratitis",
+                    "layer_id": "diagnosis",
+                    "layer_label": "Diagnosis",
+                    "score": 0.8123,
+                },
+                {
+                    "prompt_id": "feathery_borders",
+                    "label": "Feathery borders",
+                    "prompt": "a slit lamp photograph of a corneal ulcer with feathery borders",
+                    "layer_id": "morphology",
+                    "layer_label": "Morphology",
+                    "score": 0.7542,
+                },
+            ],
+            "layers": [
+                {
+                    "layer_id": "diagnosis",
+                    "layer_label": "Diagnosis",
+                    "matches": [
+                        {
+                            "prompt_id": "fungal_keratitis",
+                            "label": "Fungal keratitis",
+                            "prompt": "a slit lamp photograph of fungal keratitis",
+                            "layer_id": "diagnosis",
+                            "layer_label": "Diagnosis",
+                            "score": 0.8123,
+                        }
+                    ],
+                },
+                {
+                    "layer_id": "morphology",
+                    "layer_label": "Morphology",
+                    "matches": [
+                        {
+                            "prompt_id": "feathery_borders",
+                            "label": "Feathery borders",
+                            "prompt": "a slit lamp photograph of a corneal ulcer with feathery borders",
+                            "layer_id": "morphology",
+                            "layer_label": "Morphology",
+                            "score": 0.7542,
+                        }
+                    ],
+                },
+            ],
+        }
+
+    def run_external_validation(
+        self,
+        project_id,
+        site_store,
+        model_version,
+        execution_device,
+        generate_gradcam=True,
+        generate_medsam=True,
+    ):
+        cases = site_store.list_case_summaries()
+        if not cases:
+            raise ValueError("No cases available for validation.")
+        artifact_dir = site_store.validation_dir / "http_site"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        case_predictions = []
+        for index, case in enumerate(cases[:2]):
+            roi_path = artifact_dir / f"{case['patient_id']}_{case['visit_date']}_roi_{index}.png"
+            gradcam_path = artifact_dir / f"{case['patient_id']}_{case['visit_date']}_gradcam_{index}.png"
+            roi_path.write_bytes(b"roi")
+            gradcam_path.write_bytes(b"gradcam")
+            is_correct = index == 0
+            case_predictions.append(
+                {
+                    "validation_id": "",
+                    "patient_id": case["patient_id"],
+                    "visit_date": case["visit_date"],
+                    "true_label": case["culture_category"],
+                    "predicted_label": case["culture_category"] if is_correct else "fungal",
+                    "prediction_probability": 0.91 if is_correct else 0.37,
+                    "is_correct": is_correct,
+                    "roi_crop_path": str(roi_path),
+                    "gradcam_path": str(gradcam_path),
+                    "medsam_mask_path": None,
+                }
+            )
+        summary = {
+            "validation_id": self.app_module.make_id("validation"),
+            "project_id": project_id,
+            "site_id": site_store.site_id,
+            "model_version": model_version["version_name"],
+            "model_version_id": model_version["version_id"],
+            "model_architecture": model_version["architecture"],
+            "run_date": "2026-03-11T01:00:00+00:00",
+            "n_patients": len({item["patient_id"] for item in case_predictions}),
+            "n_cases": len(case_predictions),
+            "n_images": len(case_predictions),
+            "AUROC": 0.81,
+            "accuracy": 0.5,
+            "sensitivity": 0.5,
+            "specificity": 0.5,
+            "F1": 0.5,
+            "balanced_accuracy": 0.5,
+            "brier_score": 0.2669,
+            "ece": 0.12,
+            "calibration": {"n_bins": 10, "bins": []},
+            "site_metrics": [
+                {
+                    "site_id": site_store.site_id,
+                    "n_cases": len(case_predictions),
+                    "accuracy": 0.5,
+                    "sensitivity": 0.5,
+                    "specificity": 0.5,
+                    "F1": 0.5,
+                    "AUROC": 0.81,
+                    "balanced_accuracy": 0.5,
+                    "brier_score": 0.2669,
+                    "ece": 0.12,
+                }
+            ],
+        }
+        for prediction in case_predictions:
+            prediction["validation_id"] = summary["validation_id"]
+        saved_summary = self.control_plane.save_validation_run(summary, case_predictions)
+        saved_summary["experiment"] = self.control_plane.save_experiment(
+            {
+                "experiment_id": self.app_module.make_id("exp"),
+                "site_id": site_store.site_id,
+                "experiment_type": "external_validation",
+                "status": "completed",
+                "model_version_id": model_version["version_id"],
+                "created_at": "2026-03-11T01:00:00+00:00",
+                "execution_device": execution_device,
+                "metrics": {
+                    "accuracy": 0.5,
+                    "AUROC": 0.81,
+                    "balanced_accuracy": 0.5,
+                },
+                "report_path": "",
+            }
+        )
+        return saved_summary, case_predictions, {"accuracy": 0.5}
 
 
 class ApiHttpTests(unittest.TestCase):
@@ -364,6 +635,16 @@ class ApiHttpTests(unittest.TestCase):
                 "password": "siteadmin123",
                 "role": "site_admin",
                 "full_name": "HTTP Site Admin",
+                "site_ids": [self.site_id],
+            }
+        )
+        self.other_researcher = self.cp.upsert_user(
+            {
+                "user_id": self.app_module.make_id("user"),
+                "username": "http_researcher_other",
+                "password": "research456",
+                "role": "researcher",
+                "full_name": "HTTP Researcher Other",
                 "site_ids": [self.site_id],
             }
         )
@@ -445,6 +726,105 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["access_token"]
 
+    def _token_for_username(self, username: str) -> str:
+        user = self.cp.get_user_by_username(username)
+        self.assertIsNotNone(user)
+        return self.app_module._create_access_token(user)
+
+    def _make_test_image_bytes(self, image_format: str = "PNG", color: tuple[int, int, int] = (32, 96, 160)) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGB", (24, 24), color=color).save(buffer, format=image_format)
+        return buffer.getvalue()
+
+    def _run_site_jobs(self, *, workflow=None, max_jobs: int = 1, site_id: str | None = None) -> int:
+        from kera_research.services.job_runner import SiteJobWorker
+
+        workflow_factory = (lambda _cp: workflow) if workflow is not None else None
+        worker = SiteJobWorker(
+            self.cp,
+            worker_id="test-worker",
+            workflow_factory=workflow_factory,
+        )
+        return worker.run_until_idle(max_jobs=max_jobs, site_id=site_id or self.site_id)
+
+    def test_local_login_is_admin_only_http(self):
+        response = self.client.post("/api/auth/login", json={"username": "http_researcher", "password": "research123"})
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("restricted to platform admins", response.text)
+
+    def test_local_login_can_be_disabled_http(self):
+        os.environ["KERA_LOCAL_LOGIN_ENABLED"] = "false"
+        try:
+            response = self.client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertIn("disabled", response.text)
+        finally:
+            os.environ.pop("KERA_LOCAL_LOGIN_ENABLED", None)
+
+    def test_non_admin_null_site_ids_do_not_expand_access_http(self):
+        legacy_user = self.cp.upsert_user(
+            {
+                "user_id": self.app_module.make_id("user"),
+                "username": "legacy_null_site_user",
+                "password": "legacy123",
+                "role": "researcher",
+                "full_name": "Legacy Null Site User",
+                "site_ids": [],
+            }
+        )
+        self.assertEqual(legacy_user["site_ids"], [])
+
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.users.update()
+                .where(self.db_module.users.c.user_id == legacy_user["user_id"])
+                .values(site_ids=None)
+            )
+
+        repaired_store = self.app_module.ControlPlaneStore()
+        repaired_user = repaired_store.get_user_by_id(legacy_user["user_id"])
+        self.assertIsNotNone(repaired_user)
+        self.assertEqual(repaired_user["site_ids"], [])
+        self.assertEqual(repaired_store.accessible_sites_for_user(repaired_user), [])
+        self.assertFalse(repaired_store.user_can_access_site(repaired_user, self.site_id))
+
+    def test_plaintext_password_rows_are_migrated_to_bcrypt_http(self):
+        legacy_admin_id = self.app_module.make_id("user")
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.users.insert().values(
+                    user_id=legacy_admin_id,
+                    username="legacy_plain_admin",
+                    password="plain-admin-pass",
+                    role="admin",
+                    full_name="Legacy Plain Admin",
+                    site_ids=[],
+                    google_sub=None,
+                )
+            )
+
+        migrated_store = self.app_module.ControlPlaneStore()
+        raw_user = migrated_store._load_user_by_username("legacy_plain_admin")
+        self.assertIsNotNone(raw_user)
+        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
+        self.assertIsNotNone(migrated_store.authenticate("legacy_plain_admin", "plain-admin-pass"))
+
+    def test_upsert_user_hashes_plaintext_password_http(self):
+        created = self.cp.upsert_user(
+            {
+                "user_id": self.app_module.make_id("user"),
+                "username": "hashed_on_upsert_admin",
+                "password": "admin-pass-123",
+                "role": "admin",
+                "full_name": "Hashed On Upsert Admin",
+                "site_ids": [],
+            }
+        )
+        raw_user = self.cp._load_user_by_id(created["user_id"])
+        self.assertIsNotNone(raw_user)
+        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
+        self.assertIsNotNone(self.cp.authenticate("hashed_on_upsert_admin", "admin-pass-123"))
+
     def _seed_case(self, token: str):
         patient_response = self.client.post(
             f"/api/sites/{self.site_id}/patients",
@@ -476,12 +856,144 @@ class ApiHttpTests(unittest.TestCase):
                 "view": "slit",
                 "is_representative": "true",
             },
-            files={"file": ("slit.png", b"fake-image", "image/png")},
+            files={"file": ("slit.png", self._make_test_image_bytes("PNG"), "image/png")},
         )
         self.assertEqual(image_response.status_code, 200, image_response.text)
+        return image_response.json()["image_id"]
+
+    def test_invalid_image_upload_is_rejected_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+
+        response = self.client.post(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "view": "slit",
+                "is_representative": "false",
+            },
+            files={"file": ("not-really.jpg", b"not-an-image", "image/jpeg")},
+        )
+        self.assertEqual(response.status_code, 415, response.text)
+        self.assertIn("Invalid image file", response.text)
+
+    def test_image_semantic_prompt_review_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        with patch.object(self.app_module, "_get_semantic_prompt_scorer", return_value=FakeSemanticPromptScorer()):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/images/{image_id}/semantic-prompts?top_k=3",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["image_id"], image_id)
+        self.assertEqual(payload["view"], "slit")
+        self.assertEqual(payload["input_mode"], "source")
+        self.assertEqual(payload["dictionary_name"], "standard")
+        self.assertEqual(payload["overall_top_matches"][0]["prompt_id"], "fungal_keratitis")
+        self.assertEqual(payload["layers"][0]["layer_id"], "diagnosis")
+
+    def test_live_lesion_preview_job_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.7},
+        )
+        self.assertEqual(lesion_box_response.status_code, 200, lesion_box_response.text)
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(start_response.status_code, 200, start_response.text)
+            start_payload = start_response.json()
+            self.assertEqual(start_payload["image_id"], image_id)
+            self.assertIn(start_payload["status"], {"running", "done"})
+            self.assertTrue(start_payload["job_id"])
+
+            job_response = self.client.get(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview/jobs/{start_payload['job_id']}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(job_response.status_code, 200, job_response.text)
+            job_payload = job_response.json()
+            self.assertEqual(job_payload["image_id"], image_id)
+            self.assertIn(job_payload["status"], {"running", "done"})
+            self.assertIn("prompt_signature", job_payload)
+
+    def test_non_owner_cannot_modify_or_delete_other_researcher_case_http(self):
+        owner_token = self._token_for_username("http_researcher")
+        other_token = self._token_for_username("http_researcher_other")
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(owner_token)
+
+        update_visit_response = self.client.patch(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {other_token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "culture_category": "bacterial",
+                "culture_species": "Staphylococcus aureus",
+                "contact_lens_use": "soft",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(update_visit_response.status_code, 403, update_visit_response.text)
+
+        representative_response = self.client.post(
+            f"/api/sites/{self.site_id}/images/representative",
+            headers={"Authorization": f"Bearer {other_token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "representative_image_id": image_id,
+            },
+        )
+        self.assertEqual(representative_response.status_code, 403, representative_response.text)
+
+        lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+            headers={"Authorization": f"Bearer {other_token}"},
+            json={"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5},
+        )
+        self.assertEqual(lesion_box_response.status_code, 403, lesion_box_response.text)
+
+        delete_images_response = self.client.delete(
+            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {other_token}"},
+        )
+        self.assertEqual(delete_images_response.status_code, 403, delete_images_response.text)
+
+        delete_visit_response = self.client.delete(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {other_token}"},
+        )
+        self.assertEqual(delete_visit_response.status_code, 403, delete_visit_response.text)
+
+        admin_lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5},
+        )
+        self.assertEqual(admin_lesion_box_response.status_code, 200, admin_lesion_box_response.text)
+
+        admin_delete_visit_response = self.client.delete(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(admin_delete_visit_response.status_code, 200, admin_delete_visit_response.text)
 
     def test_case_validation_and_contribution_http(self):
-        token = self._login("http_researcher", "research123")
+        token = self._token_for_username("http_researcher")
         self._seed_case(token)
         fake_workflow = FakeWorkflow(self.app_module, self.cp)
         with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
@@ -534,7 +1046,7 @@ class ApiHttpTests(unittest.TestCase):
             self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
 
     def test_delete_visit_removes_patient_when_last_visit_http(self):
-        token = self._login("http_researcher", "research123")
+        token = self._token_for_username("http_researcher")
         self._seed_case(token)
 
         delete_response = self.client.delete(
@@ -591,7 +1103,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(response.headers.get("content-type"), "image/jpeg")
 
     def test_visit_auto_marks_polymicrobial_when_multiple_organisms_are_added(self):
-        token = self._login("http_researcher", "research123")
+        token = self._token_for_username("http_researcher")
         patient_response = self.client.post(
             f"/api/sites/{self.site_id}/patients",
             headers={"Authorization": f"Bearer {token}"},
@@ -636,6 +1148,7 @@ class ApiHttpTests(unittest.TestCase):
             )
             self.assertEqual(training_response.status_code, 200, training_response.text)
             training_job_id = training_response.json()["job"]["job_id"]
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
             training_result = None
             for _ in range(30):
                 training_job_response = self.client.get(
@@ -660,6 +1173,7 @@ class ApiHttpTests(unittest.TestCase):
             )
             self.assertEqual(cv_response.status_code, 200, cv_response.text)
             cv_job_id = cv_response.json()["job"]["job_id"]
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
             cv_result = None
             for _ in range(30):
                 cv_job_response = self.client.get(
@@ -682,6 +1196,22 @@ class ApiHttpTests(unittest.TestCase):
             )
             self.assertEqual(list_response.status_code, 200, list_response.text)
             self.assertEqual(len(list_response.json()), 1)
+
+            experiments_response = self.client.get(
+                f"/api/admin/experiments?site_id={self.site_id}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(experiments_response.status_code, 200, experiments_response.text)
+            experiments_payload = experiments_response.json()
+            self.assertGreaterEqual(len(experiments_payload), 2)
+            experiment_types = {item["experiment_type"] for item in experiments_payload}
+            self.assertIn("initial_training", experiment_types)
+            self.assertIn("cross_validation", experiment_types)
+            experiment_detail_response = self.client.get(
+                f"/api/admin/experiments/{experiments_payload[0]['experiment_id']}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(experiment_detail_response.status_code, 200, experiment_detail_response.text)
 
             base_model = self.cp.current_global_model()
             for index in range(2):
@@ -782,7 +1312,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(current_delete_response.status_code, 400, current_delete_response.text)
 
     def test_access_request_review_http(self):
-        requester_token = self._login("http_viewer", "viewer123")
+        requester_token = self._token_for_username("http_viewer")
         access_response = self.client.post(
             "/api/auth/request-access",
             headers={"Authorization": f"Bearer {requester_token}"},
@@ -874,8 +1404,8 @@ class ApiHttpTests(unittest.TestCase):
         ).encode("utf-8")
         archive_buffer = io.BytesIO()
         with zipfile.ZipFile(archive_buffer, "w") as archive:
-            archive.writestr("ops_001_white.jpg", b"image-1")
-            archive.writestr("ops_002_slit.jpg", b"image-2")
+            archive.writestr("ops_001_white.jpg", self._make_test_image_bytes("JPEG", (180, 70, 40)))
+            archive.writestr("ops_002_slit.jpg", self._make_test_image_bytes("JPEG", (40, 120, 180)))
 
         import_response = self.client.post(
             "/api/sites/OPS_HTTP/import/bulk",
@@ -898,7 +1428,17 @@ class ApiHttpTests(unittest.TestCase):
                 json={"execution_mode": "cpu"},
             )
             self.assertEqual(validation_response.status_code, 200, validation_response.text)
-            validation_id = validation_response.json()["summary"]["validation_id"]
+            validation_job_id = validation_response.json()["job"]["job_id"]
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id="OPS_HTTP")
+
+        job_response = self.client.get(
+            f"/api/sites/OPS_HTTP/jobs/{validation_job_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(job_response.status_code, 200, job_response.text)
+        job_payload = job_response.json()
+        self.assertEqual(job_payload["status"], "completed", job_response.text)
+        validation_id = job_payload["result"]["response"]["summary"]["validation_id"]
 
         cases_response = self.client.get(
             f"/api/sites/OPS_HTTP/validations/{validation_id}/cases?misclassified_only=true&limit=4",
@@ -918,7 +1458,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(any(item["site_id"] == "OPS_HTTP" for item in comparison_response.json()))
 
     def test_site_admin_can_manage_storage_settings_and_empty_site_root(self):
-        site_admin_token = self._login("http_site_admin", "siteadmin123")
+        site_admin_token = self._token_for_username("http_site_admin")
         temp_storage_root = Path(self.tempdir.name) / "instance-storage-root"
         site_storage_root = temp_storage_root / self.site_id
 
@@ -954,7 +1494,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIn("Storage root can only be changed", blocked_response.json()["detail"])
 
     def test_site_storage_root_migration_rewrites_existing_paths(self):
-        site_admin_token = self._login("http_site_admin", "siteadmin123")
+        site_admin_token = self._token_for_username("http_site_admin")
         original_root = Path(self.tempdir.name) / "site-original-root" / self.site_id
         migrated_root = Path(self.tempdir.name) / "site-migrated-root" / self.site_id
 

@@ -2,9 +2,12 @@
 
 import { type PointerEvent as ReactPointerEvent, useDeferredValue, useEffect, useRef, useState } from "react";
 
-import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n } from "../lib/i18n";
+import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n, type Locale } from "../lib/i18n";
 import {
+  type AiClinicResponse,
+  type AiClinicSimilarCaseRecord,
   type CaseHistoryResponse,
+  type CaseValidationCompareResponse,
   type CaseContributionResponse,
   type LesionPreviewRecord,
   type OrganismRecord,
@@ -23,23 +26,34 @@ import {
   clearImageLesionBox,
   fetchCases,
   fetchImageBlob,
+  fetchLiveLesionPreviewJob,
+  fetchImageSemanticPromptScores,
   fetchVisits,
   fetchValidationArtifactBlob,
   fetchImages,
+  fetchSiteJob,
   fetchSiteActivity,
+  fetchSiteModelVersions,
   fetchSiteValidations,
   type AuthUser,
   type CaseSummaryRecord,
   type CaseValidationResponse,
   type ImageRecord,
+  type LiveLesionPreviewJobResponse,
+  type ModelVersionRecord,
+  type SemanticPromptInputMode,
+  type SemanticPromptReviewResponse,
   type SiteRecord,
   type SiteSummary,
   type VisitRecord,
   runSiteValidation,
   setRepresentativeImage as setRepresentativeImageOnServer,
+  startLiveLesionPreview,
   updateVisit,
+  runCaseAiClinic,
   runCaseContribution,
   runCaseValidation,
+  runCaseValidationCompare,
   updateImageLesionBox,
   uploadImage,
 } from "../lib/api";
@@ -61,6 +75,7 @@ const PREDISPOSING_FACTOR_OPTIONS = [
   "unknown",
 ];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
+const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121"];
 const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
     "Staphylococcus aureus",
@@ -102,6 +117,10 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Other",
   ],
 };
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 type DraftImage = {
   draft_id: string;
@@ -150,10 +169,108 @@ type NormalizedBox = {
 };
 
 type LesionBoxMap = Record<string, NormalizedBox | null>;
+type SemanticPromptReviewMap = Record<string, SemanticPromptReviewResponse>;
+type SemanticPromptErrorMap = Record<string, string>;
+type SemanticPromptInputOption = {
+  value: SemanticPromptInputMode;
+  label: string;
+};
+type LiveLesionPreviewState = {
+  job_id: string | null;
+  status: "idle" | "running" | "done" | "failed";
+  error: string | null;
+  backend: string | null;
+  prompt_signature: string | null;
+  lesion_mask_url: string | null;
+  lesion_crop_url: string | null;
+};
+type LiveLesionPreviewMap = Record<string, LiveLesionPreviewState>;
 
 type ValidationArtifactKind = "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask";
 
 type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
+
+type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
+  preview_url: string | null;
+};
+
+type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
+  similar_cases: AiClinicSimilarCasePreview[];
+};
+
+function LiveCropPreview({
+  sourceUrl,
+  box,
+  alt,
+}: {
+  sourceUrl: string | null | undefined;
+  box: NormalizedBox | null | undefined;
+  alt: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [previewReady, setPreviewReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function renderPreview() {
+      if (!canvasRef.current || !sourceUrl || !box) {
+        setPreviewReady(false);
+        return;
+      }
+
+      try {
+        const sourceImage = await loadHtmlImage(sourceUrl);
+        if (cancelled || !canvasRef.current) {
+          return;
+        }
+
+        const cropWidth = Math.max(1, Math.round((box.x1 - box.x0) * (sourceImage.naturalWidth || sourceImage.width)));
+        const cropHeight = Math.max(1, Math.round((box.y1 - box.y0) * (sourceImage.naturalHeight || sourceImage.height)));
+        const cropX = Math.max(0, Math.round(box.x0 * (sourceImage.naturalWidth || sourceImage.width)));
+        const cropY = Math.max(0, Math.round(box.y0 * (sourceImage.naturalHeight || sourceImage.height)));
+        const scale = Math.min(1, 480 / Math.max(cropWidth, cropHeight));
+
+        const canvas = canvasRef.current;
+        canvas.width = Math.max(1, Math.round(cropWidth * scale));
+        canvas.height = Math.max(1, Math.round(cropHeight * scale));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setPreviewReady(false);
+          return;
+        }
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(sourceImage, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+        setPreviewReady(true);
+      } catch {
+        if (!cancelled) {
+          setPreviewReady(false);
+        }
+      }
+    }
+
+    void renderPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [box, sourceUrl]);
+
+  if (!sourceUrl || !box) {
+    return <div className="panel-image-fallback">{alt}</div>;
+  }
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        className={`panel-image-preview live-crop-preview-canvas${previewReady ? " ready" : ""}`}
+        aria-label={alt}
+      />
+      {!previewReady ? <img src={sourceUrl} alt={alt} className="panel-image-preview live-crop-preview-fallback" /> : null}
+    </>
+  );
+}
 
 type DraftState = {
   patient_id: string;
@@ -208,7 +325,7 @@ type CaseWorkspaceProps = {
   onSelectSite: (siteId: string) => void;
   onExportManifest: () => void;
   onLogout: () => void;
-  onOpenOperations: () => void;
+  onOpenOperations: (section?: "dashboard" | "training" | "cross_validation") => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onToggleTheme: () => void;
 };
@@ -481,6 +598,55 @@ function formatProbability(value: number | null | undefined, emptyLabel = "n/a")
   return `${Math.round(value * 100)}%`;
 }
 
+function formatSemanticScore(value: number | null | undefined, emptyLabel = "n/a"): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return emptyLabel;
+  }
+  return value.toFixed(3);
+}
+
+function formatImageQualityScore(value: number | null | undefined, emptyLabel = "n/a"): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return emptyLabel;
+  }
+  return `${value.toFixed(1)}`;
+}
+
+function formatAiClinicMetadataField(locale: Locale, field: string): string {
+  switch (field) {
+    case "representative_view":
+      return pick(locale, "view", "view");
+    case "visit_status":
+      return pick(locale, "status", "status");
+    case "active_stage":
+      return pick(locale, "active stage", "active stage");
+    case "contact_lens_use":
+      return pick(locale, "contact lens", "contact lens");
+    case "predisposing_factor":
+      return pick(locale, "predisposing", "predisposing");
+    case "smear_result":
+      return pick(locale, "smear", "smear");
+    case "polymicrobial":
+      return pick(locale, "polymicrobial", "polymicrobial");
+    default:
+      return field.replaceAll("_", " ");
+  }
+}
+
+function defaultModelCompareSelection(modelVersions: ModelVersionRecord[]): string[] {
+  const selected: string[] = [];
+  const sorted = [...modelVersions].reverse();
+  for (const architecture of MODEL_COMPARE_ARCHITECTURES) {
+    const match = sorted.find(
+      (item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture
+    );
+    if (match?.version_id) {
+      selected.push(match.version_id);
+    }
+  }
+  return Array.from(new Set(selected));
+}
+
 function predictedClassConfidence(predictedLabel: string | null | undefined, probability: number | null | undefined): number | null {
   if (typeof probability !== "number" || Number.isNaN(probability)) {
     return null;
@@ -693,11 +859,24 @@ export function CaseWorkspace({
   const [siteValidationRuns, setSiteValidationRuns] = useState<SiteValidationRunRecord[]>([]);
   const [validationBusy, setValidationBusy] = useState(false);
   const [validationResult, setValidationResult] = useState<CaseValidationResponse | null>(null);
+  const [siteModelVersions, setSiteModelVersions] = useState<ModelVersionRecord[]>([]);
+  const [modelCompareBusy, setModelCompareBusy] = useState(false);
+  const [modelCompareResult, setModelCompareResult] = useState<CaseValidationCompareResponse | null>(null);
+  const [selectedCompareModelVersionIds, setSelectedCompareModelVersionIds] = useState<string[]>([]);
   const [validationArtifacts, setValidationArtifacts] = useState<ValidationArtifactPreviews>({});
+  const [aiClinicBusy, setAiClinicBusy] = useState(false);
+  const [aiClinicResult, setAiClinicResult] = useState<AiClinicPreviewResponse | null>(null);
   const [roiPreviewBusy, setRoiPreviewBusy] = useState(false);
   const [roiPreviewItems, setRoiPreviewItems] = useState<RoiPreviewCard[]>([]);
   const [lesionPreviewBusy, setLesionPreviewBusy] = useState(false);
   const [lesionPreviewItems, setLesionPreviewItems] = useState<LesionPreviewCard[]>([]);
+  const [semanticPromptBusyImageId, setSemanticPromptBusyImageId] = useState<string | null>(null);
+  const [semanticPromptReviews, setSemanticPromptReviews] = useState<SemanticPromptReviewMap>({});
+  const [semanticPromptErrors, setSemanticPromptErrors] = useState<SemanticPromptErrorMap>({});
+  const [semanticPromptOpenImageIds, setSemanticPromptOpenImageIds] = useState<string[]>([]);
+  const [semanticPromptInputMode, setSemanticPromptInputMode] = useState<SemanticPromptInputMode>("source");
+  const [liveLesionCropEnabled, setLiveLesionCropEnabled] = useState(false);
+  const [liveLesionPreviews, setLiveLesionPreviews] = useState<LiveLesionPreviewMap>({});
   const [lesionPromptDrafts, setLesionPromptDrafts] = useState<LesionBoxMap>({});
   const [lesionPromptSaved, setLesionPromptSaved] = useState<LesionBoxMap>({});
   const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
@@ -718,8 +897,11 @@ export function CaseWorkspace({
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const draftImagesRef = useRef<DraftImage[]>([]);
   const validationArtifactUrlsRef = useRef<string[]>([]);
+  const aiClinicPreviewUrlsRef = useRef<string[]>([]);
   const roiPreviewUrlsRef = useRef<string[]>([]);
   const lesionPreviewUrlsRef = useRef<string[]>([]);
+  const liveLesionPreviewUrlsRef = useRef<Record<string, string[]>>({});
+  const liveLesionPreviewRequestRef = useRef<Record<string, number>>({});
   const patientListThumbUrlsRef = useRef<string[]>([]);
   const patientVisitGalleryUrlsRef = useRef<string[]>([]);
   const railListSectionRef = useRef<HTMLElement | null>(null);
@@ -744,6 +926,11 @@ export function CaseWorkspace({
     validationSaved: (patientId: string, visitDate: string) =>
       pick(locale, `Validation saved for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 검증이 저장되었습니다.`),
     validationFailed: pick(locale, "Validation failed.", "검증에 실패했습니다."),
+    selectValidationBeforeAiClinic: pick(locale, "Run validation before opening AI Clinic retrieval.", "AI Clinic 검색을 열기 전에 먼저 검증을 실행하세요."),
+    aiClinicReady: (count: number) =>
+      pick(locale, `AI Clinic found ${count} similar patient case(s).`, `AI Clinic이 유사 환자 케이스 ${count}건을 찾았습니다.`),
+    aiClinicFailed: pick(locale, "AI Clinic retrieval failed.", "AI Clinic 검색에 실패했습니다."),
+    aiClinicTextUnavailable: pick(locale, "BiomedCLIP text retrieval is currently unavailable in this runtime.", "현재 실행 환경에서는 BiomedCLIP 텍스트 검색을 사용할 수 없습니다."),
     selectSavedCaseForContribution: pick(locale, "Select a saved case before contributing.", "기여를 실행하려면 저장된 케이스를 선택하세요."),
     activeOnly: pick(locale, "Only active visits are enabled for contribution under the current policy.", "현재 정책에서는 active 방문만 기여할 수 있습니다."),
     contributionQueued: (patientId: string, visitDate: string) =>
@@ -788,6 +975,11 @@ export function CaseWorkspace({
     listViewHeaderCopy: pick(locale, "Browse saved patients and open the latest case.", "저장 환자를 보고 최신 케이스를 엽니다."),
     caseAuthoringHeaderCopy: pick(locale, "Create, review, and contribute cases from this workspace.", "이 작업공간에서 증례 작성, 검토, 기여를 진행할 수 있습니다."),
   };
+  const semanticPromptInputOptions: SemanticPromptInputOption[] = [
+    { value: "source", label: pick(locale, "Whole image", "원본 이미지") },
+    { value: "roi_crop", label: pick(locale, "Cornea crop", "각막 crop") },
+    { value: "lesion_crop", label: pick(locale, "Lesion crop", "병변 crop") },
+  ];
   const whiteDraftImages = draftImages.filter((image) => image.view === "white");
   const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
 
@@ -806,6 +998,14 @@ export function CaseWorkspace({
   useEffect(() => {
     return () => {
       for (const url of validationArtifactUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const url of aiClinicPreviewUrlsRef.current) {
         URL.revokeObjectURL(url);
       }
     };
@@ -839,6 +1039,16 @@ export function CaseWorkspace({
     return () => {
       for (const url of lesionPreviewUrlsRef.current) {
         URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const urls of Object.values(liveLesionPreviewUrlsRef.current)) {
+        for (const url of urls) {
+          URL.revokeObjectURL(url);
+        }
       }
     };
   }, []);
@@ -908,11 +1118,37 @@ export function CaseWorkspace({
   }, [selectedSiteId, user.user_id]);
 
   useEffect(() => {
+    setSemanticPromptBusyImageId(null);
+    setSemanticPromptReviews({});
+    setSemanticPromptErrors({});
+    setSemanticPromptOpenImageIds([]);
+    clearLiveLesionPreview();
+  }, [selectedCase?.case_id, selectedSiteId, semanticPromptInputMode]);
+
+  useEffect(() => {
+    if (!liveLesionCropEnabled) {
+      clearLiveLesionPreview();
+    }
+  }, [liveLesionCropEnabled]);
+
+  useEffect(() => {
     if (!selectedSiteId) {
       return;
     }
     window.localStorage.setItem(favoriteStorageKey(user.user_id, selectedSiteId), JSON.stringify(favoriteCaseIds));
   }, [favoriteCaseIds, selectedSiteId, user.user_id]);
+
+  useEffect(() => {
+    if (validationResult) {
+      return;
+    }
+    for (const url of aiClinicPreviewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    aiClinicPreviewUrlsRef.current = [];
+    setAiClinicResult(null);
+    setModelCompareResult(null);
+  }, [validationResult]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -1020,9 +1256,24 @@ export function CaseWorkspace({
         }
       }
     }
+    async function loadSiteModels() {
+      try {
+        const nextVersions = await fetchSiteModelVersions(currentSiteId, token);
+        if (!cancelled) {
+          setSiteModelVersions(nextVersions);
+          setSelectedCompareModelVersionIds((current) => (current.length > 0 ? current : defaultModelCompareSelection(nextVersions)));
+        }
+      } catch {
+        if (!cancelled) {
+          setSiteModelVersions([]);
+          setSelectedCompareModelVersionIds([]);
+        }
+      }
+    }
     void loadRecords();
     void loadActivity();
     void loadSiteValidations();
+    void loadSiteModels();
     return () => {
       cancelled = true;
     };
@@ -1041,7 +1292,12 @@ export function CaseWorkspace({
       URL.revokeObjectURL(url);
     }
     validationArtifactUrlsRef.current = [];
+    for (const url of aiClinicPreviewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    aiClinicPreviewUrlsRef.current = [];
     setValidationArtifacts({});
+    setAiClinicResult(null);
     clearRoiPreview();
     clearLesionPreview();
     setValidationResult(null);
@@ -1234,6 +1490,30 @@ export function CaseWorkspace({
     }
     lesionPreviewUrlsRef.current = [];
     setLesionPreviewItems([]);
+  }
+
+  function clearLiveLesionPreview(imageId?: string) {
+    if (imageId) {
+      for (const url of liveLesionPreviewUrlsRef.current[imageId] ?? []) {
+        URL.revokeObjectURL(url);
+      }
+      delete liveLesionPreviewUrlsRef.current[imageId];
+      delete liveLesionPreviewRequestRef.current[imageId];
+      setLiveLesionPreviews((current) => {
+        const next = { ...current };
+        delete next[imageId];
+        return next;
+      });
+      return;
+    }
+    for (const urls of Object.values(liveLesionPreviewUrlsRef.current)) {
+      for (const url of urls) {
+        URL.revokeObjectURL(url);
+      }
+    }
+    liveLesionPreviewUrlsRef.current = {};
+    liveLesionPreviewRequestRef.current = {};
+    setLiveLesionPreviews({});
   }
 
   function clearDraftStorage(siteId: string | null = selectedSiteId) {
@@ -1833,6 +2113,256 @@ export function CaseWorkspace({
     }
   }
 
+  async function hydrateLiveLesionPreview(
+    imageId: string,
+    job: LiveLesionPreviewJobResponse,
+    requestVersion: number
+  ) {
+    if (!selectedSiteId || liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+      return;
+    }
+
+    const nextUrls: string[] = [];
+    let lesionMaskUrl: string | null = null;
+    let lesionCropUrl: string | null = null;
+
+    if (job.has_lesion_mask) {
+      try {
+        const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+          selectedSiteId,
+          job.patient_id,
+          job.visit_date,
+          imageId,
+          "lesion_mask",
+          token
+        );
+        lesionMaskUrl = URL.createObjectURL(maskBlob);
+        nextUrls.push(lesionMaskUrl);
+      } catch {
+        lesionMaskUrl = null;
+      }
+    }
+
+    if (job.has_lesion_crop) {
+      try {
+        const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+          selectedSiteId,
+          job.patient_id,
+          job.visit_date,
+          imageId,
+          "lesion_crop",
+          token
+        );
+        lesionCropUrl = URL.createObjectURL(cropBlob);
+        nextUrls.push(lesionCropUrl);
+      } catch {
+        lesionCropUrl = null;
+      }
+    }
+
+    if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+      for (const url of nextUrls) {
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+
+    for (const url of liveLesionPreviewUrlsRef.current[imageId] ?? []) {
+      URL.revokeObjectURL(url);
+    }
+    liveLesionPreviewUrlsRef.current[imageId] = nextUrls;
+    setLiveLesionPreviews((current) => ({
+      ...current,
+      [imageId]: {
+        job_id: job.job_id,
+        status: "done",
+        error: null,
+        backend: job.backend ?? null,
+        prompt_signature: job.prompt_signature ?? null,
+        lesion_mask_url: lesionMaskUrl,
+        lesion_crop_url: lesionCropUrl,
+      },
+    }));
+  }
+
+  async function pollLiveLesionPreview(imageId: string, jobId: string, requestVersion: number) {
+    if (!selectedSiteId) {
+      return;
+    }
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+        return;
+      }
+      try {
+        const job = await fetchLiveLesionPreviewJob(selectedSiteId, imageId, jobId, token);
+        if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+          return;
+        }
+        if (job.status === "running") {
+          setLiveLesionPreviews((current) => ({
+            ...current,
+            [imageId]: {
+              ...(current[imageId] ?? {
+                job_id: job.job_id,
+                lesion_mask_url: null,
+                lesion_crop_url: null,
+              }),
+              job_id: job.job_id,
+              status: "running",
+              error: null,
+              backend: job.backend ?? null,
+              prompt_signature: job.prompt_signature ?? null,
+              lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+              lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+            },
+          }));
+          continue;
+        }
+        if (job.status === "failed") {
+          setLiveLesionPreviews((current) => ({
+            ...current,
+            [imageId]: {
+              ...(current[imageId] ?? {
+                lesion_mask_url: null,
+                lesion_crop_url: null,
+              }),
+              job_id: job.job_id,
+              status: "failed",
+              error: job.error ?? pick(locale, "Live MedSAM preview failed.", "실시간 MedSAM 미리보기에 실패했습니다."),
+              backend: job.backend ?? null,
+              prompt_signature: job.prompt_signature ?? null,
+              lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+              lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+            },
+          }));
+          return;
+        }
+        await hydrateLiveLesionPreview(imageId, job, requestVersion);
+        return;
+      } catch (nextError) {
+        if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+          return;
+        }
+        setLiveLesionPreviews((current) => ({
+          ...current,
+          [imageId]: {
+            ...(current[imageId] ?? {
+              lesion_mask_url: null,
+              lesion_crop_url: null,
+            }),
+            job_id: jobId,
+            status: "failed",
+            error: describeError(
+              nextError,
+              pick(locale, "Unable to check live MedSAM preview status.", "실시간 MedSAM 상태를 확인하지 못했습니다.")
+            ),
+            backend: current[imageId]?.backend ?? null,
+            prompt_signature: current[imageId]?.prompt_signature ?? null,
+            lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+            lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+          },
+        }));
+        return;
+      }
+    }
+
+    if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+      return;
+    }
+    setLiveLesionPreviews((current) => ({
+      ...current,
+      [imageId]: {
+        ...(current[imageId] ?? {
+          lesion_mask_url: null,
+          lesion_crop_url: null,
+        }),
+        job_id: jobId,
+        status: "failed",
+        error: pick(locale, "Live MedSAM preview timed out.", "실시간 MedSAM 미리보기가 시간 초과되었습니다."),
+        backend: current[imageId]?.backend ?? null,
+        prompt_signature: current[imageId]?.prompt_signature ?? null,
+        lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+        lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+      },
+    }));
+  }
+
+  async function triggerLiveLesionPreview(imageId: string, options: { quiet?: boolean } = {}) {
+    if (!liveLesionCropEnabled || !selectedSiteId) {
+      return;
+    }
+    const requestVersion = (liveLesionPreviewRequestRef.current[imageId] ?? 0) + 1;
+    liveLesionPreviewRequestRef.current[imageId] = requestVersion;
+    setLiveLesionPreviews((current) => ({
+      ...current,
+      [imageId]: {
+        job_id: current[imageId]?.job_id ?? null,
+        status: "running",
+        error: null,
+        backend: current[imageId]?.backend ?? null,
+        prompt_signature: current[imageId]?.prompt_signature ?? null,
+        lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+        lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+      },
+    }));
+
+    try {
+      const job = await startLiveLesionPreview(selectedSiteId, imageId, token);
+      if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+        return;
+      }
+      if (job.status === "done") {
+        await hydrateLiveLesionPreview(imageId, job, requestVersion);
+        return;
+      }
+      setLiveLesionPreviews((current) => ({
+        ...current,
+        [imageId]: {
+          ...(current[imageId] ?? {
+            lesion_mask_url: null,
+            lesion_crop_url: null,
+          }),
+          job_id: job.job_id,
+          status: "running",
+          error: null,
+          backend: job.backend ?? null,
+          prompt_signature: job.prompt_signature ?? null,
+          lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+          lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+        },
+      }));
+      void pollLiveLesionPreview(imageId, job.job_id, requestVersion);
+    } catch (nextError) {
+      if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+        return;
+      }
+      const message = describeError(
+        nextError,
+        pick(locale, "Unable to start live MedSAM preview.", "실시간 MedSAM 미리보기를 시작하지 못했습니다.")
+      );
+      setLiveLesionPreviews((current) => ({
+        ...current,
+        [imageId]: {
+          ...(current[imageId] ?? {
+            lesion_mask_url: null,
+            lesion_crop_url: null,
+          }),
+          job_id: null,
+          status: "failed",
+          error: message,
+          backend: current[imageId]?.backend ?? null,
+          prompt_signature: current[imageId]?.prompt_signature ?? null,
+          lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+          lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+        },
+      }));
+      if (!options.quiet) {
+        setToast({ tone: "error", message });
+      }
+    }
+  }
+
   const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
   const lesionBoxChangedImageIds = selectedCaseImages
     .map((image) => image.image_id)
@@ -1859,6 +2389,9 @@ export function CaseWorkspace({
       );
       setLesionPromptSaved((current) => ({ ...current, [imageId]: normalized }));
       setLesionPromptDrafts((current) => ({ ...current, [imageId]: normalized }));
+      if (liveLesionCropEnabled) {
+        void triggerLiveLesionPreview(imageId, { quiet: true });
+      }
       return normalized;
     } finally {
       setLesionBoxBusyImageId(null);
@@ -1881,6 +2414,7 @@ export function CaseWorkspace({
       );
       setLesionPromptSaved((current) => ({ ...current, [imageId]: null }));
       setLesionPromptDrafts((current) => ({ ...current, [imageId]: null }));
+      clearLiveLesionPreview(imageId);
     } finally {
       setLesionBoxBusyImageId(null);
     }
@@ -2130,6 +2664,55 @@ export function CaseWorkspace({
     }
   }
 
+  async function handleReviewSemanticPrompts(imageId: string) {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForCase });
+      return;
+    }
+    if (semanticPromptOpenImageIds.includes(imageId) && semanticPromptReviews[imageId]) {
+      setSemanticPromptOpenImageIds((current) => current.filter((item) => item !== imageId));
+      return;
+    }
+    if (semanticPromptReviews[imageId]) {
+      setSemanticPromptErrors((current) => {
+        const next = { ...current };
+        delete next[imageId];
+        return next;
+      });
+      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+      return;
+    }
+
+    setSemanticPromptBusyImageId(imageId);
+    setSemanticPromptErrors((current) => {
+      const next = { ...current };
+      delete next[imageId];
+      return next;
+    });
+    try {
+      const review = await fetchImageSemanticPromptScores(selectedSiteId, imageId, token, {
+        top_k: 3,
+        input_mode: semanticPromptInputMode,
+      });
+      setSemanticPromptReviews((current) => ({
+        ...current,
+        [imageId]: review,
+      }));
+      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+    } catch (nextError) {
+      const fallback = pick(locale, "Semantic prompt review failed.", "Semantic prompt review ?붿껌???ㅽ뙣?덉뒿?덈떎.");
+      const message = describeError(nextError, fallback);
+      setSemanticPromptErrors((current) => ({
+        ...current,
+        [imageId]: message,
+      }));
+      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+      setToast({ tone: "error", message });
+    } finally {
+      setSemanticPromptBusyImageId((current) => (current === imageId ? null : current));
+    }
+  }
+
   async function handleRunRoiPreview() {
     if (!selectedSiteId || !selectedCase) {
       setToast({ tone: "error", message: copy.selectSavedCaseForRoi });
@@ -2224,7 +2807,19 @@ export function CaseWorkspace({
 
     setSiteValidationBusy(true);
     try {
-      const result = await runSiteValidation(selectedSiteId, token);
+      const started = await runSiteValidation(selectedSiteId, token);
+      let latestJob = started.job;
+      while (latestJob.status === "queued" || latestJob.status === "running") {
+        await sleep(1000);
+        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(latestJob.result?.error || copy.siteValidationFailed);
+      }
+      const result = latestJob.result?.response;
+      if (!result || !("summary" in result)) {
+        throw new Error(copy.siteValidationFailed);
+      }
       await onSiteDataChanged(selectedSiteId);
       await loadSiteActivity(selectedSiteId);
       await loadSiteValidationRuns(selectedSiteId);
@@ -2309,6 +2904,106 @@ export function CaseWorkspace({
       });
     } finally {
       setValidationBusy(false);
+    }
+  }
+
+  async function handleRunModelCompare() {
+    if (!selectedSiteId || !selectedCase) {
+      setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
+      return;
+    }
+    if (selectedCompareModelVersionIds.length === 0) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select at least one model version for comparison.", "비교할 모델 버전을 하나 이상 선택하세요."),
+      });
+      return;
+    }
+
+    setModelCompareBusy(true);
+    setModelCompareResult(null);
+    setPanelOpen(true);
+    try {
+      const result = await runCaseValidationCompare(selectedSiteId, token, {
+        patient_id: selectedCase.patient_id,
+        visit_date: selectedCase.visit_date,
+        model_version_ids: selectedCompareModelVersionIds,
+        execution_mode: executionModeFromDevice(validationResult?.execution_device),
+      });
+      setModelCompareResult(result);
+      setToast({
+        tone: "success",
+        message: pick(locale, `Compared ${result.comparisons.length} model(s).`, `${result.comparisons.length}개 모델 비교를 완료했습니다.`),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to compare models for this case.", "이 케이스의 모델 비교를 실행할 수 없습니다.")),
+      });
+    } finally {
+      setModelCompareBusy(false);
+    }
+  }
+
+  async function handleRunAiClinic() {
+    if (!selectedSiteId || !selectedCase) {
+      setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
+      return;
+    }
+    if (!validationResult) {
+      setToast({ tone: "error", message: copy.selectValidationBeforeAiClinic });
+      return;
+    }
+
+    setAiClinicBusy(true);
+    for (const url of aiClinicPreviewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    aiClinicPreviewUrlsRef.current = [];
+    setAiClinicResult(null);
+    setPanelOpen(true);
+    try {
+      const result = await runCaseAiClinic(selectedSiteId, token, {
+        patient_id: selectedCase.patient_id,
+        visit_date: selectedCase.visit_date,
+        execution_mode: executionModeFromDevice(validationResult.execution_device),
+        model_version_id: validationResult.model_version.version_id,
+        top_k: 3,
+        retrieval_backend: "hybrid",
+      });
+      const similarCases = await Promise.all(
+        result.similar_cases.map(async (item) => {
+          let previewUrl: string | null = null;
+          if (item.representative_image_id) {
+            try {
+              const blob = await fetchImageBlob(selectedSiteId, item.representative_image_id, token);
+              previewUrl = URL.createObjectURL(blob);
+              aiClinicPreviewUrlsRef.current.push(previewUrl);
+            } catch {
+              previewUrl = null;
+            }
+          }
+          return {
+            ...item,
+            preview_url: previewUrl,
+          };
+        })
+      );
+      setAiClinicResult({
+        ...result,
+        similar_cases: similarCases,
+      });
+      setToast({
+        tone: "success",
+        message: copy.aiClinicReady(similarCases.length),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, copy.aiClinicFailed),
+      });
+    } finally {
+      setAiClinicBusy(false);
     }
   }
 
@@ -2637,6 +3332,12 @@ export function CaseWorkspace({
   const patientScopeCopy = showOnlyMine ? copy.patientScopeMine(patientListRows.length) : copy.patientScopeAll(patientListRows.length);
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
   const canRunRoiPreview = canRunValidation;
+  const canRunAiClinic = canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
+  const compareModelCandidates = MODEL_COMPARE_ARCHITECTURES.map((architecture) =>
+    [...siteModelVersions]
+      .reverse()
+      .find((item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture)
+  ).filter((item): item is ModelVersionRecord => Boolean(item?.version_id));
   const canContributeSelectedCase =
     canRunValidation && Boolean(selectedCase) && selectedCase?.visit_status === "active";
   const latestSiteValidation = siteValidationRuns[0] ?? null;
@@ -2829,7 +3530,7 @@ export function CaseWorkspace({
               {theme === "dark" ? pick(locale, "Light mode", "라이트 모드") : pick(locale, "Dark mode", "다크 모드")}
             </button>
             {canOpenOperations ? (
-              <button className="ghost-button" type="button" onClick={onOpenOperations}>
+              <button className="ghost-button" type="button" onClick={() => onOpenOperations()}>
                 {pick(locale, "Operations", "운영 화면")}
               </button>
             ) : null}
@@ -2841,6 +3542,30 @@ export function CaseWorkspace({
               </button>
           </div>
         </header>
+
+        {canOpenOperations ? (
+          <section className="workspace-card research-launch-strip">
+            <div className="research-launch-copy">
+              <div className="doc-eyebrow">{pick(locale, "Research runs", "연구 실행")}</div>
+              <strong>{pick(locale, "Open training and validation tools directly", "학습과 검증 도구 바로 열기")}</strong>
+              <span>{pick(locale, "You no longer need to find the Python CLI manually.", "이제 Python CLI 실행 파일을 따로 찾을 필요가 없습니다.")}</span>
+            </div>
+            <div className="research-launch-actions">
+              <button className="ghost-button" type="button" onClick={() => onOpenOperations("training")}>
+                {pick(locale, "Initial training", "초기 학습")}
+              </button>
+              <button className="ghost-button" type="button" onClick={() => onOpenOperations("cross_validation")}>
+                {pick(locale, "Cross-validation", "교차 검증")}
+              </button>
+              <button className="ghost-button" type="button" onClick={() => onOpenOperations("dashboard")}>
+                {pick(locale, "Hospital validation", "병원 검증")}
+              </button>
+              <button className="ghost-button" type="button" onClick={() => onOpenOperations("cross_validation")}>
+                {pick(locale, "Report export", "리포트 내보내기")}
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         <div className="workspace-center">
           {railView === "patients" ? (
@@ -3080,6 +3805,7 @@ export function CaseWorkspace({
                                 <div className="patient-visit-image-meta">
                                   <strong>{translateOption(locale, "view", image.view)}</strong>
                                   <span>{image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting", "보조 이미지")}</span>
+                                  <span>{pick(locale, "Q-score", "Q-score")} {formatImageQualityScore(image.quality_scores?.quality_score, common.notAvailable)}</span>
                                 </div>
                               </div>
                             ))}
@@ -3102,6 +3828,21 @@ export function CaseWorkspace({
                     {pick(locale, "Review the uploaded images and edit lesion boxes directly here", "업로드된 이미지를 확인하고 여기서 바로 lesion box를 수정")}</h4>
                 </div>
                 <span className="doc-site-badge">{panelBusy ? common.loading : `${selectedCaseImages.length} ${pick(locale, "images", "이미지")}`}</span>
+              </div>
+              <div className="saved-case-image-toolbar">
+                <label className="live-crop-toggle">
+                  <input
+                    type="checkbox"
+                    checked={liveLesionCropEnabled}
+                    onChange={(event) => setLiveLesionCropEnabled(event.target.checked)}
+                  />
+                  <span>{pick(locale, "Live lesion crop preview", "실시간 병변 crop 미리보기")}</span>
+                </label>
+                <span className="saved-case-image-toolbar-copy">
+                  {liveLesionCropEnabled
+                    ? pick(locale, "Client-side crop preview is on.", "클라이언트 crop 미리보기가 켜져 있습니다.")
+                    : pick(locale, "Turn this on only when needed on lower-spec machines.", "저사양 환경에서는 필요할 때만 켜는 것이 좋습니다.")}
+                </span>
               </div>
               <div className="ops-stack saved-case-image-board">
                 {selectedCaseImages.map((image) => (
@@ -3136,9 +3877,89 @@ export function CaseWorkspace({
                     ) : (
                       <div className="panel-image-fallback">{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
                     )}
+                    {false && liveLesionCropEnabled ? (
+                      <div className="panel-image-annotation-actions live-crop-preview-section">
+                        <div className="panel-image-card live-crop-card">
+                          <LiveCropPreview
+                            sourceUrl={image.preview_url}
+                            box={lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null}
+                            alt={pick(locale, "Live lesion crop preview", "실시간 병변 crop 미리보기")}
+                          />
+                          <div className="panel-image-copy">
+                            <strong>{pick(locale, "Live lesion crop", "실시간 병변 crop")}</strong>
+                            <span>
+                              {lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id]
+                                ? pick(locale, "Updates as you draw or adjust the lesion box.", "병변 박스를 그리거나 조정하면 바로 갱신됩니다.")
+                                : pick(locale, "Draw a lesion box to preview the crop here.", "병변 박스를 그리면 이곳에 crop가 표시됩니다.")}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                    {liveLesionCropEnabled ? (
+                      <div className="panel-image-annotation-actions live-crop-preview-section">
+                        <div className="panel-image-card live-crop-card">
+                          {liveLesionPreviews[image.image_id]?.lesion_mask_url || liveLesionPreviews[image.image_id]?.lesion_crop_url ? (
+                            <div className="panel-preview-grid">
+                              <div>
+                                {liveLesionPreviews[image.image_id]?.lesion_mask_url ? (
+                                  <MaskOverlayPreview
+                                    sourceUrl={image.preview_url}
+                                    maskUrl={liveLesionPreviews[image.image_id]?.lesion_mask_url}
+                                    alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
+                                    tint={[242, 164, 154]}
+                                  />
+                                ) : (
+                                  <div className="panel-image-fallback">{pick(locale, "Mask preview unavailable", "mask 미리보기를 표시할 수 없습니다.")}</div>
+                                )}
+                                <div className="panel-image-copy">
+                                  <strong>{pick(locale, "Mask", "Mask")}</strong>
+                                </div>
+                              </div>
+                              <div>
+                                {liveLesionPreviews[image.image_id]?.lesion_crop_url ? (
+                                  <img
+                                    src={liveLesionPreviews[image.image_id]?.lesion_crop_url ?? ""}
+                                    alt={pick(locale, "Live MedSAM crop", "실시간 MedSAM crop")}
+                                    className="panel-image-preview"
+                                  />
+                                ) : (
+                                  <div className="panel-image-fallback">{pick(locale, "Crop preview unavailable", "crop 미리보기를 표시할 수 없습니다.")}</div>
+                                )}
+                                <div className="panel-image-copy">
+                                  <strong>{pick(locale, "Crop", "Crop")}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="panel-image-fallback">
+                              {!lesionPromptDrafts[image.image_id] && !lesionPromptSaved[image.image_id]
+                                ? pick(locale, "Draw a lesion box to request MedSAM preview.", "병변 박스를 그리면 MedSAM 미리보기를 요청합니다.")
+                                : liveLesionPreviews[image.image_id]?.status === "failed"
+                                  ? liveLesionPreviews[image.image_id]?.error ?? pick(locale, "Live MedSAM preview failed.", "실시간 MedSAM 미리보기에 실패했습니다.")
+                                  : liveLesionPreviews[image.image_id]?.status === "running"
+                                    ? pick(locale, "Generating MedSAM preview...", "MedSAM 미리보기를 생성 중입니다...")
+                                    : pick(locale, "Save or adjust the lesion box to generate MedSAM preview.", "병변 박스를 저장하거나 조정하면 MedSAM 미리보기가 생성됩니다.")}
+                            </div>
+                          )}
+                          <div className="panel-image-copy">
+                            <strong>{pick(locale, "Live MedSAM preview", "실시간 MedSAM 미리보기")}</strong>
+                            <span>
+                              {liveLesionPreviews[image.image_id]?.status === "running"
+                                ? pick(locale, "Background inference is running for the latest saved box.", "가장 최근 저장된 박스 기준으로 백그라운드 추론이 실행 중입니다.")
+                                : liveLesionPreviews[image.image_id]?.status === "done"
+                                  ? pick(locale, "Mask and crop reflect the latest completed MedSAM job.", "mask와 crop는 가장 최근 완료된 MedSAM 작업 결과입니다.")
+                                  : pick(locale, "The preview starts after the lesion box is saved.", "병변 박스가 저장되면 미리보기가 시작됩니다.")}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="panel-meta panel-image-inline-meta">
                       <strong className="panel-image-inline-label">{translateOption(locale, "view", image.view)}</strong>
                       <span>{image.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}</span>
+                      <span>{pick(locale, "Q-score", "Q-score")} {formatImageQualityScore(image.quality_scores?.quality_score, common.notAvailable)}</span>
+                      <span>{pick(locale, "View score", "View score")} {formatImageQualityScore(image.quality_scores?.view_score, common.notAvailable)}</span>
                       <span>
                         {lesionBoxBusyImageId === image.image_id
                           ? pick(locale, "Saving box...", "박스 자동 저장 중...")
@@ -3160,7 +3981,90 @@ export function CaseWorkspace({
                             ? pick(locale, "Representative", "대표 이미지")
                             : pick(locale, "Set representative", "대표 이미지로 지정")}
                       </button>
+                      <label className="visit-context-select">
+                        <span>{pick(locale, "Prompt input", "Prompt 입력")}</span>
+                        <select
+                          value={semanticPromptInputMode}
+                          onChange={(event) => setSemanticPromptInputMode(event.target.value as SemanticPromptInputMode)}
+                        >
+                          {semanticPromptInputOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className={`ghost-button compact-ghost-button ${semanticPromptOpenImageIds.includes(image.image_id) ? "favorite-toggle active" : ""}`}
+                        type="button"
+                        onClick={() => void handleReviewSemanticPrompts(image.image_id)}
+                        disabled={semanticPromptBusyImageId === image.image_id}
+                      >
+                        {semanticPromptBusyImageId === image.image_id
+                          ? common.loading
+                          : semanticPromptOpenImageIds.includes(image.image_id)
+                            ? pick(locale, "Hide prompt review", "Prompt review 닫기")
+                            : pick(locale, "Review prompts", "Prompt review")}
+                      </button>
                     </div>
+                    {semanticPromptOpenImageIds.includes(image.image_id) ? (
+                      <div className="semantic-prompt-review">
+                        {semanticPromptErrors[image.image_id] ? (
+                          <div className="empty-surface">{semanticPromptErrors[image.image_id]}</div>
+                        ) : semanticPromptReviews[image.image_id] ? (
+                          <>
+                            <div className="semantic-prompt-review-head">
+                              <strong>{pick(locale, "BiomedCLIP prompt ranking", "BiomedCLIP prompt ranking")}</strong>
+                              <span>
+                                {semanticPromptReviews[image.image_id].dictionary_name} · {semanticPromptReviews[image.image_id].model_name}
+                              </span>
+                            </div>
+                            <div className="semantic-prompt-layer">
+                              <div className="semantic-prompt-layer-head">
+                                <strong>{pick(locale, "Overall top 3", "Overall top 3")}</strong>
+                              </div>
+                              <div className="semantic-prompt-match-list">
+                                {semanticPromptReviews[image.image_id].overall_top_matches.map((match, index) => (
+                                  <div key={`${image.image_id}-overall-${match.prompt_id}`} className="semantic-prompt-match">
+                                    <div className="semantic-prompt-rank">{index + 1}</div>
+                                    <div className="semantic-prompt-copy">
+                                      <strong>{match.label}</strong>
+                                      <span>{match.prompt}</span>
+                                    </div>
+                                    <div className="semantic-prompt-score">{formatSemanticScore(match.score, common.notAvailable)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="semantic-prompt-grid">
+                              {semanticPromptReviews[image.image_id].layers.map((layer) => (
+                                <div key={`${image.image_id}-${layer.layer_id}`} className="semantic-prompt-layer">
+                                  <div className="semantic-prompt-layer-head">
+                                    <strong>{layer.layer_label}</strong>
+                                  </div>
+                                  <div className="semantic-prompt-match-list">
+                                    {layer.matches.map((match, index) => (
+                                      <div key={`${image.image_id}-${layer.layer_id}-${match.prompt_id}`} className="semantic-prompt-match">
+                                        <div className="semantic-prompt-rank">{index + 1}</div>
+                                        <div className="semantic-prompt-copy">
+                                          <strong>{match.label}</strong>
+                                          <span>{match.prompt}</span>
+                                        </div>
+                                        <div className="semantic-prompt-score">{formatSemanticScore(match.score, common.notAvailable)}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="empty-surface">
+                            {pick(locale, "Run the review once to inspect the top-ranked prompt matches.", "Top-ranked prompt score를 보려면 review를 실행하세요.")}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </section>
                 ))}
               </div>
@@ -4101,6 +5005,384 @@ export function CaseWorkspace({
                     </div>
                   ) : (
                     <p>{pick(locale, "Run validation from this panel to generate crop artifacts, Grad-CAM, and a saved case-level prediction.", "이 패널에서 검증을 실행하면 crop 아티팩트, Grad-CAM, 케이스 단위 예측을 생성할 수 있습니다.")}</p>
+                  )}
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-card-head">
+                    <strong>{pick(locale, "Model compare", "Model compare")}</strong>
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => void handleRunModelCompare()}
+                      disabled={modelCompareBusy || !selectedCase || selectedCompareModelVersionIds.length === 0}
+                    >
+                      {modelCompareBusy ? pick(locale, "Comparing...", "비교 중...") : pick(locale, "Compare selected models", "선택 모델 비교")}
+                    </button>
+                  </div>
+                  <p>
+                    {pick(
+                      locale,
+                      "Run the same case through the latest ViT, Swin, ConvNeXt-Tiny, and DenseNet121 versions to inspect prediction differences.",
+                      "같은 케이스를 최신 ViT, Swin, ConvNeXt-Tiny, DenseNet121 버전으로 동시에 돌려 예측 차이를 확인합니다."
+                    )}
+                  </p>
+                  <div className="panel-meta">
+                    {compareModelCandidates.map((modelVersion) => (
+                      <label key={modelVersion.version_id} className="toggle-pill">
+                        <input
+                          type="checkbox"
+                          checked={selectedCompareModelVersionIds.includes(modelVersion.version_id)}
+                          onChange={(event) =>
+                            setSelectedCompareModelVersionIds((current) =>
+                              event.target.checked
+                                ? [...current, modelVersion.version_id]
+                                : current.filter((item) => item !== modelVersion.version_id)
+                            )
+                          }
+                        />
+                        <span>{modelVersion.architecture}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {modelCompareResult ? (
+                    <div className="ops-list">
+                      {modelCompareResult.comparisons.map((item, index) => (
+                        <article key={item.model_version?.version_id ?? item.model_version_id ?? `compare-${index}`} className="ops-item">
+                          <div className="panel-card-head">
+                            <strong>{item.model_version?.version_name ?? item.model_version?.architecture ?? item.model_version_id ?? common.notAvailable}</strong>
+                            <span>{item.model_version?.architecture ?? common.notAvailable}</span>
+                          </div>
+                          {item.error ? (
+                            <div className="panel-image-fallback">{item.error}</div>
+                          ) : (
+                            <>
+                              <div className="panel-meta">
+                                <span>{pick(locale, "Predicted", "예측")} {item.summary?.predicted_label ?? common.notAvailable}</span>
+                                <span>{pick(locale, "Culture", "배양")} {item.summary?.true_label ?? common.notAvailable}</span>
+                                <span>{pick(locale, "Confidence", "신뢰도")} {formatProbability(item.summary?.prediction_probability, common.notAvailable)}</span>
+                                <span>{pick(locale, "Validation", "검증")} {item.summary?.is_correct ? pick(locale, "match", "일치") : pick(locale, "mismatch", "불일치")}</span>
+                              </div>
+                              <div className="panel-meta">
+                                <span>{pick(locale, "Crop", "Crop")} {item.model_version?.crop_mode ?? common.notAvailable}</span>
+                                <span>{pick(locale, "Artifacts", "Artifacts")} {item.artifact_availability?.gradcam ? "Grad-CAM" : pick(locale, "compare-only", "비교 전용")}</span>
+                                <span>{pick(locale, "Validation ID", "Validation ID")} {item.summary?.validation_id ?? common.notAvailable}</span>
+                              </div>
+                            </>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-card-head">
+                    <strong>{pick(locale, "AI Clinic", "AI Clinic")}</strong>
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() => void handleRunAiClinic()}
+                      disabled={aiClinicBusy || !canRunAiClinic}
+                    >
+                      {aiClinicBusy ? pick(locale, "Searching...", "검색 중...") : pick(locale, "Find similar patients", "유사 환자 찾기")}
+                    </button>
+                  </div>
+                  {!validationResult ? (
+                    <p>{pick(locale, "Run validation first, then AI Clinic will retrieve up to three similar patients using the configured visual retrieval backend.", "먼저 검증을 실행하면 AI Clinic이 설정된 visual retrieval backend로 최대 3명의 유사 환자를 검색합니다.")}</p>
+                  ) : aiClinicResult ? (
+                    <div className="panel-stack">
+                      <div className="panel-metric-grid">
+                        <div>
+                          <strong>{aiClinicResult.similar_cases.length}</strong>
+                          <span>{pick(locale, "similar patients", "유사 환자")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.eligible_candidate_count}</strong>
+                          <span>{pick(locale, "eligible cases", "검색 가능 케이스")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.model_version.version_name ?? common.notAvailable}</strong>
+                          <span>{pick(locale, "retrieval model", "검색 모델")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.execution_device}</strong>
+                          <span>{pick(locale, "device", "디바이스")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.retrieval_mode}</strong>
+                          <span>{pick(locale, "retrieval mode", "검색 모드")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.vector_index_mode ?? common.notAvailable}</strong>
+                          <span>{pick(locale, "vector index", "벡터 인덱스")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.text_evidence.length}</strong>
+                          <span>{pick(locale, "text evidence", "텍스트 근거")}</span>
+                        </div>
+                        <div>
+                          <strong>{aiClinicResult.text_retrieval_mode ?? common.notAvailable}</strong>
+                          <span>{pick(locale, "text retrieval", "텍스트 검색")}</span>
+                        </div>
+                      </div>
+                      <p>
+                        {pick(
+                          locale,
+                          "Top-K retrieval is limited to one case per patient, so the result list stays patient-diverse.",
+                          "Top-K 검색은 환자당 1개 케이스만 남기도록 제한해 결과 목록이 환자 다양성을 유지합니다."
+                        )}
+                      </p>
+                      {aiClinicResult.text_retrieval_mode === "unavailable" ? (
+                        <div className="panel-image-fallback">
+                          {aiClinicResult.text_retrieval_error
+                            ? `${copy.aiClinicTextUnavailable} (${aiClinicResult.text_retrieval_error})`
+                            : copy.aiClinicTextUnavailable}
+                        </div>
+                      ) : null}
+                      {aiClinicResult.retrieval_warning ? (
+                        <div className="panel-image-fallback">{aiClinicResult.retrieval_warning}</div>
+                      ) : null}
+                      {aiClinicResult.similar_cases.length === 0 ? (
+                        <div className="panel-image-fallback">{pick(locale, "No eligible similar patient was found for this model and crop setup yet.", "현재 모델과 crop 설정 기준으로 검색 가능한 유사 환자가 아직 없습니다.")}</div>
+                      ) : (
+                        <div className="ops-list">
+                          {aiClinicResult.similar_cases.map((item, index) => (
+                            <article key={`${item.patient_id}-${item.visit_date}`} className="ops-item">
+                              <div className="panel-card-head">
+                                <strong>{pick(locale, `Patient ${index + 1}`, `환자 ${index + 1}`)}</strong>
+                                <span>{displayVisitReference(locale, item.visit_date)}</span>
+                              </div>
+                              <div className="panel-meta">
+                                <span>{item.local_case_code || item.chart_alias || item.patient_id}</span>
+                                <span>{pick(locale, "Similarity", "유사도")} {formatSemanticScore(item.similarity, common.notAvailable)}</span>
+                                {typeof item.classifier_similarity === "number" ? (
+                                  <span>{pick(locale, "Classifier", "분류기")} {formatSemanticScore(item.classifier_similarity, common.notAvailable)}</span>
+                                ) : null}
+                                {typeof item.dinov2_similarity === "number" ? (
+                                  <span>DINOv2 {formatSemanticScore(item.dinov2_similarity, common.notAvailable)}</span>
+                                ) : null}
+                                <span>{translateOption(locale, "cultureCategory", item.culture_category)}</span>
+                              </div>
+                              <div className="panel-meta">
+                                {typeof item.base_similarity === "number" ? (
+                                  <span>{pick(locale, "Base", "湲곕낯")} {formatSemanticScore(item.base_similarity, common.notAvailable)}</span>
+                                ) : null}
+                                {typeof item.metadata_reranking?.adjustment === "number" ? (
+                                  <span>
+                                    {pick(locale, "Metadata", "Metadata")} {item.metadata_reranking.adjustment >= 0 ? "+" : ""}
+                                    {formatSemanticScore(item.metadata_reranking.adjustment, common.notAvailable)}
+                                  </span>
+                                ) : null}
+                                <span>{item.culture_species || common.notAvailable}</span>
+                                <span>{`${translateOption(locale, "sex", item.sex ?? "unknown")} · ${item.age ?? common.notAvailable}`}</span>
+                                <span>{translateOption(locale, "view", item.representative_view ?? "white")}</span>
+                                <span>{translateOption(locale, "visitStatus", item.visit_status ?? "active")}</span>
+                                <span>{pick(locale, "Q-score", "Q-score")} {formatImageQualityScore(item.quality_score, common.notAvailable)}</span>
+                                <span>{translateOption(locale, "contactLens", item.contact_lens_use ?? "unknown")}</span>
+                                {item.smear_result ? <span>{pick(locale, "Smear", "Smear")} {item.smear_result}</span> : null}
+                                {item.polymicrobial ? <span>{pick(locale, "Polymicrobial", "Polymicrobial")}</span> : null}
+                                {item.predisposing_factor && item.predisposing_factor.length > 0 ? (
+                                  <span>
+                                    {item.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" · ")}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {item.metadata_reranking?.alignment ? (
+                                <div className="panel-meta">
+                                  {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0 ? (
+                                    <span>
+                                      {pick(locale, "Matched", "Matched")}{" "}
+                                      {(item.metadata_reranking.alignment.matched_fields ?? [])
+                                        .map((field) => formatAiClinicMetadataField(locale, field))
+                                        .join(", ")}
+                                    </span>
+                                  ) : null}
+                                  {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0 ? (
+                                    <span>
+                                      {pick(locale, "Conflicts", "Conflicts")}{" "}
+                                      {(item.metadata_reranking.alignment.conflicted_fields ?? [])
+                                        .map((field) => formatAiClinicMetadataField(locale, field))
+                                        .join(", ")}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                              {item.preview_url ? (
+                                <div className="panel-image-card">
+                                  <img src={item.preview_url} alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)} className="panel-image-preview" />
+                                  <div className="panel-image-copy">
+                                    <strong>{pick(locale, "Representative image", "대표 이미지")}</strong>
+                                    <span>{item.culture_species || common.notAvailable}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="panel-image-fallback">{pick(locale, "Representative image preview is unavailable.", "대표 이미지 미리보기를 불러올 수 없습니다.")}</div>
+                              )}
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                      {aiClinicResult.text_evidence.length > 0 ? (
+                        <div className="panel-stack">
+                          <div className="panel-card-head">
+                            <strong>{pick(locale, "Retrieved text evidence", "검색된 텍스트 근거")}</strong>
+                            <span>
+                              {pick(
+                                locale,
+                                `${aiClinicResult.eligible_text_count ?? aiClinicResult.text_evidence.length} indexed cases`,
+                                `색인 케이스 ${aiClinicResult.eligible_text_count ?? aiClinicResult.text_evidence.length}건`
+                              )}
+                            </span>
+                          </div>
+                          <div className="ops-list">
+                            {aiClinicResult.text_evidence.map((item, index) => (
+                              <article key={`${item.patient_id}-${item.visit_date}-text`} className="ops-item">
+                                <div className="panel-card-head">
+                                  <strong>{pick(locale, `Evidence ${index + 1}`, `근거 ${index + 1}`)}</strong>
+                                  <span>{displayVisitReference(locale, item.visit_date)}</span>
+                                </div>
+                                <div className="panel-meta">
+                                  <span>{item.local_case_code || item.chart_alias || item.patient_id}</span>
+                                  <span>{pick(locale, "Similarity", "유사도")} {formatSemanticScore(item.similarity, common.notAvailable)}</span>
+                                  <span>{translateOption(locale, "cultureCategory", item.culture_category)}</span>
+                                  <span>{item.culture_species || common.notAvailable}</span>
+                                </div>
+                                <p>{item.text}</p>
+                              </article>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {aiClinicResult.differential ? (
+                        <div className="panel-stack">
+                          <div className="panel-card-head">
+                            <strong>{pick(locale, "Differential ranking", "Differential ranking")}</strong>
+                            <span>{aiClinicResult.differential.engine}</span>
+                          </div>
+                          <div className="panel-meta">
+                            <span>
+                              {pick(locale, "Top label", "Top label")}{" "}
+                              {aiClinicResult.differential.top_label
+                                ? translateOption(locale, "cultureCategory", aiClinicResult.differential.top_label)
+                                : common.notAvailable}
+                            </span>
+                            <span>
+                              {pick(locale, "Uncertainty", "Uncertainty")} {aiClinicResult.differential.overall_uncertainty}
+                            </span>
+                            <span>
+                              {pick(locale, "Generated", "Generated")}{" "}
+                              {aiClinicResult.differential.generated_at ?? common.notAvailable}
+                            </span>
+                          </div>
+                          <div className="ops-list">
+                            {aiClinicResult.differential.differential.map((item, index) => (
+                              <article key={`differential-${item.label}`} className="ops-item">
+                                <div className="panel-card-head">
+                                  <strong>
+                                    {index + 1}. {translateOption(locale, "cultureCategory", item.label)}
+                                  </strong>
+                                  <span>{item.confidence_band}</span>
+                                </div>
+                                <div className="panel-meta">
+                                  <span>{pick(locale, "Score", "Score")} {formatProbability(item.score, common.notAvailable)}</span>
+                                  <span>{pick(locale, "Classifier", "Classifier")} {formatSemanticScore(item.component_scores.classifier, common.notAvailable)}</span>
+                                  <span>{pick(locale, "Retrieval", "Retrieval")} {formatSemanticScore(item.component_scores.retrieval, common.notAvailable)}</span>
+                                  <span>{pick(locale, "Text", "Text")} {formatSemanticScore(item.component_scores.text, common.notAvailable)}</span>
+                                  <span>{pick(locale, "Metadata", "Metadata")} {formatSemanticScore(item.component_scores.metadata, common.notAvailable)}</span>
+                                  <span>{pick(locale, "Penalty", "Penalty")} {formatSemanticScore(item.component_scores.quality_penalty, common.notAvailable)}</span>
+                                </div>
+                                {item.supporting_evidence.length > 0 ? (
+                                  <div className="panel-stack">
+                                    <strong>{pick(locale, "Supporting evidence", "Supporting evidence")}</strong>
+                                    <div className="ops-list">
+                                      {item.supporting_evidence.map((entry, evidenceIndex) => (
+                                        <article key={`differential-support-${item.label}-${evidenceIndex}`} className="ops-item">
+                                          <p>{entry}</p>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                                {item.conflicting_evidence.length > 0 ? (
+                                  <div className="panel-stack">
+                                    <strong>{pick(locale, "Conflicting evidence", "Conflicting evidence")}</strong>
+                                    <div className="ops-list">
+                                      {item.conflicting_evidence.map((entry, evidenceIndex) => (
+                                        <article key={`differential-conflict-${item.label}-${evidenceIndex}`} className="ops-item">
+                                          <p>{entry}</p>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </article>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {aiClinicResult.workflow_recommendation ? (
+                        <div className="panel-stack">
+                          <div className="panel-card-head">
+                            <strong>{pick(locale, "Workflow recommendation", "워크플로 추천")}</strong>
+                            <span>{aiClinicResult.workflow_recommendation.mode}</span>
+                          </div>
+                          <div className="panel-meta">
+                            <span>
+                              {pick(locale, "LLM model", "LLM 모델")}{" "}
+                              {aiClinicResult.workflow_recommendation.model ?? common.notAvailable}
+                            </span>
+                            <span>
+                              {pick(locale, "Generated", "생성 시각")}{" "}
+                              {aiClinicResult.workflow_recommendation.generated_at ?? common.notAvailable}
+                            </span>
+                          </div>
+                          {aiClinicResult.workflow_recommendation.llm_error ? (
+                            <div className="panel-image-fallback">
+                              {pick(
+                                locale,
+                                `LLM generation failed and AI Clinic used the local fallback instead. ${aiClinicResult.workflow_recommendation.llm_error}`,
+                                `LLM 생성에 실패해 로컬 fallback recommendation을 사용했습니다. ${aiClinicResult.workflow_recommendation.llm_error}`
+                              )}
+                            </div>
+                          ) : null}
+                          <p>{aiClinicResult.workflow_recommendation.summary}</p>
+                          <div className="ops-list">
+                            {aiClinicResult.workflow_recommendation.recommended_steps.map((step, index) => (
+                              <article key={`workflow-step-${index}`} className="ops-item">
+                                <div className="panel-card-head">
+                                  <strong>{pick(locale, `Step ${index + 1}`, `단계 ${index + 1}`)}</strong>
+                                </div>
+                                <p>{step}</p>
+                              </article>
+                            ))}
+                          </div>
+                          <div className="panel-stack">
+                            <div className="panel-card-head">
+                              <strong>{pick(locale, "Flags to review", "우선 확인 플래그")}</strong>
+                            </div>
+                            <div className="ops-list">
+                              {aiClinicResult.workflow_recommendation.flags_to_review.map((flag, index) => (
+                                <article key={`workflow-flag-${index}`} className="ops-item">
+                                  <p>{flag}</p>
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                          <p>
+                            <strong>{pick(locale, "Rationale", "근거")}</strong>{" "}
+                            {aiClinicResult.workflow_recommendation.rationale}
+                          </p>
+                          <p>
+                            <strong>{pick(locale, "Uncertainty", "불확실성")}</strong>{" "}
+                            {aiClinicResult.workflow_recommendation.uncertainty}
+                          </p>
+                          <p>{aiClinicResult.workflow_recommendation.disclaimer}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p>{pick(locale, "AI Clinic will use the validated model version to retrieve similar patient cases from the local hospital dataset.", "AI Clinic은 검증에 사용된 모델 버전으로 병원 내부 데이터셋에서 유사 환자 케이스를 검색합니다.")}</p>
                   )}
                 </section>
 

@@ -106,6 +106,56 @@ export type ImageRecord = {
     y1: number;
   } | null;
   uploaded_at: string;
+  quality_scores?: {
+    quality_score: number;
+    view_score: number;
+    component_scores?: {
+      blur?: number | null;
+      exposure?: number | null;
+      contrast?: number | null;
+      resolution?: number | null;
+      view_consistency?: number | null;
+    } | null;
+    image_stats?: {
+      width?: number | null;
+      height?: number | null;
+      brightness_mean?: number | null;
+      contrast_std?: number | null;
+      blur_variance?: number | null;
+      green_ratio?: number | null;
+      saturation_mean?: number | null;
+    } | null;
+  } | null;
+};
+
+export type SemanticPromptMatch = {
+  prompt_id: string;
+  label: string;
+  prompt: string;
+  layer_id: string;
+  layer_label: string;
+  score: number;
+};
+
+export type SemanticPromptLayerResult = {
+  layer_id: string;
+  layer_label: string;
+  matches: SemanticPromptMatch[];
+};
+
+export type SemanticPromptInputMode = "source" | "roi_crop" | "lesion_crop";
+
+export type SemanticPromptReviewResponse = {
+  image_id: string;
+  image_path: string;
+  view: string;
+  input_mode: SemanticPromptInputMode;
+  dictionary_name: string;
+  model_name: string;
+  model_id: string;
+  top_k: number;
+  overall_top_matches: SemanticPromptMatch[];
+  layers: SemanticPromptLayerResult[];
 };
 
 export type CaseSummaryRecord = {
@@ -123,7 +173,10 @@ export type CaseSummaryRecord = {
   culture_species: string;
   additional_organisms: OrganismRecord[];
   contact_lens_use: string;
+  predisposing_factor?: string[];
+  other_history?: string;
   visit_status: string;
+  active_stage?: boolean;
   is_initial_visit: boolean;
   smear_result: string;
   polymicrobial: boolean;
@@ -200,6 +253,158 @@ export type CaseValidationResponse = {
   };
 };
 
+export type CaseValidationCompareItem = {
+  summary?: CaseValidationSummary | null;
+  case_prediction?: CaseValidationPrediction | null;
+  model_version?: CaseValidationResponse["model_version"] | null;
+  artifact_availability?: CaseValidationResponse["artifact_availability"] | null;
+  error?: string | null;
+  model_version_id?: string | null;
+};
+
+export type CaseValidationCompareResponse = {
+  patient_id: string;
+  visit_date: string;
+  execution_device: string;
+  comparisons: CaseValidationCompareItem[];
+};
+
+export type AiClinicSimilarCaseRecord = {
+  patient_id: string;
+  visit_date: string;
+  case_id: string;
+  representative_image_id: string | null;
+  representative_view?: string | null;
+  chart_alias?: string;
+  local_case_code?: string;
+  sex?: string | null;
+  age?: number | null;
+  culture_category: string;
+  culture_species: string;
+  image_count: number;
+  visit_status?: string;
+  active_stage?: boolean | null;
+  contact_lens_use?: string | null;
+  predisposing_factor?: string[];
+  smear_result?: string | null;
+  polymicrobial?: boolean | null;
+  quality_score?: number | null;
+  view_score?: number | null;
+  base_similarity?: number | null;
+  metadata_reranking?: {
+    adjustment?: number | null;
+    details?: Record<string, number>;
+    alignment?: {
+      matched_fields?: string[];
+      conflicted_fields?: string[];
+    };
+  } | null;
+  similarity: number;
+  classifier_similarity?: number | null;
+  dinov2_similarity?: number | null;
+};
+
+export type AiClinicTextEvidenceRecord = {
+  case_id: string;
+  patient_id: string;
+  visit_date: string;
+  culture_category: string;
+  culture_species: string;
+  local_case_code?: string;
+  chart_alias?: string;
+  text: string;
+  similarity: number;
+};
+
+export type AiClinicWorkflowRecommendation = {
+  mode: string;
+  model?: string | null;
+  generated_at?: string | null;
+  summary: string;
+  recommended_steps: string[];
+  flags_to_review: string[];
+  rationale: string;
+  uncertainty: string;
+  disclaimer: string;
+  llm_error?: string | null;
+};
+
+export type AiClinicDifferentialItem = {
+  label: string;
+  score: number;
+  confidence_band: string;
+  component_scores: {
+    classifier: number;
+    retrieval: number;
+    text: number;
+    metadata: number;
+    quality_penalty: number;
+  };
+  supporting_evidence: string[];
+  conflicting_evidence: string[];
+};
+
+export type AiClinicDifferential = {
+  engine: string;
+  generated_at?: string | null;
+  overall_uncertainty: string;
+  top_label?: string | null;
+  differential: AiClinicDifferentialItem[];
+};
+
+export type AiClinicResponse = {
+  query_case: {
+    patient_id: string;
+    visit_date: string;
+    case_id: string;
+    sex?: string | null;
+    age?: number | null;
+    representative_view?: string | null;
+    visit_status?: string | null;
+    active_stage?: boolean | null;
+    is_initial_visit?: boolean | null;
+    contact_lens_use?: string | null;
+    predisposing_factor?: string[];
+    smear_result?: string | null;
+    polymicrobial?: boolean | null;
+    image_count?: number | null;
+    quality_score?: number | null;
+    view_score?: number | null;
+  };
+  model_version: {
+    version_id?: string | null;
+    version_name?: string | null;
+    architecture?: string | null;
+    crop_mode?: string | null;
+  };
+  execution_device: string;
+  retrieval_mode: string;
+  vector_index_mode?: string | null;
+  metadata_reranking?: string | null;
+  retrieval_backends_used?: string[];
+  retrieval_warning?: string | null;
+  top_k: number;
+  eligible_candidate_count: number;
+  similar_cases: AiClinicSimilarCaseRecord[];
+  text_retrieval_mode?: string | null;
+  text_embedding_model?: string | null;
+  eligible_text_count?: number;
+  text_evidence: AiClinicTextEvidenceRecord[];
+  text_retrieval_error?: string | null;
+  classification_context?: {
+    validation_id?: string | null;
+    run_date?: string | null;
+    model_version_id?: string | null;
+    model_version?: string | null;
+    predicted_label?: string | null;
+    true_label?: string | null;
+    prediction_probability?: number | null;
+    is_correct?: boolean | null;
+  } | null;
+  differential?: AiClinicDifferential | null;
+  workflow_recommendation?: AiClinicWorkflowRecommendation | null;
+};
+
 export type ContributionStats = {
   total_contributions: number;
   user_contributions: number;
@@ -256,6 +461,28 @@ export type LesionPreviewRecord = {
   has_lesion_crop: boolean;
   has_lesion_mask: boolean;
   backend: string;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
+};
+
+export type LiveLesionPreviewJobResponse = {
+  job_id: string;
+  site_id: string;
+  image_id: string;
+  patient_id: string;
+  visit_date: string;
+  status: "running" | "done" | "failed";
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  prompt_signature?: string | null;
+  backend?: string | null;
+  has_lesion_crop?: boolean;
+  has_lesion_mask?: boolean;
   lesion_prompt_box?: {
     x0: number;
     y0: number;
@@ -356,6 +583,17 @@ export type SiteValidationRunResponse = {
     version_name: string;
     architecture: string;
   };
+};
+
+export type SiteValidationJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  job: SiteJobRecord;
 };
 
 export type AdminOverviewResponse = {
@@ -550,10 +788,35 @@ export type InitialTrainingResponse = {
   model_version?: ModelVersionRecord;
 };
 
+export type InitialTrainingBenchmarkEntry = {
+  architecture: string;
+  status: string;
+  result?: InitialTrainingResult | null;
+  model_version?: ModelVersionRecord | null;
+  error?: string | null;
+};
+
+export type InitialTrainingBenchmarkResponse = {
+  site_id: string;
+  execution_device: string;
+  architectures: string[];
+  results: InitialTrainingBenchmarkEntry[];
+  failures: Array<{
+    architecture: string;
+    status: string;
+    error: string;
+  }>;
+  best_architecture?: string | null;
+  best_model_version?: ModelVersionRecord | null;
+};
+
 export type TrainingJobProgress = {
   stage?: string | null;
   message?: string | null;
   percent?: number | null;
+  architecture?: string | null;
+  architecture_index?: number | null;
+  architecture_count?: number | null;
   crop_mode?: "automated" | "manual" | "both" | string | null;
   component_crop_mode?: "automated" | "manual" | string | null;
   component_index?: number | null;
@@ -569,11 +832,21 @@ export type TrainingJobProgress = {
 export type SiteJobRecord = {
   job_id: string;
   job_type: string;
+  site_id?: string;
+  queue_name?: string;
+  priority?: number;
   status: string;
   payload: Record<string, unknown>;
+  attempt_count?: number;
+  max_attempts?: number;
+  claimed_by?: string | null;
+  claimed_at?: string | null;
+  heartbeat_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
   result?: {
     progress?: TrainingJobProgress | null;
-    response?: InitialTrainingResponse | CrossValidationRunResponse | null;
+    response?: InitialTrainingResponse | InitialTrainingBenchmarkResponse | CrossValidationRunResponse | SiteValidationRunResponse | null;
     error?: string | null;
   } | null;
   created_at: string;
@@ -586,9 +859,26 @@ export type InitialTrainingJobResponse = {
   job: SiteJobRecord;
 };
 
+export type InitialTrainingBenchmarkJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
 export type CrossValidationJobResponse = {
   site_id: string;
   execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type EmbeddingBackfillJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
   job: SiteJobRecord;
 };
 
@@ -1356,6 +1646,25 @@ export async function fetchImageBlob(siteId: string, imageId: string, token: str
   return response.blob();
 }
 
+export async function fetchImageSemanticPromptScores(
+  siteId: string,
+  imageId: string,
+  token: string,
+  options: {
+    top_k?: number;
+    input_mode?: SemanticPromptInputMode;
+  } = {}
+) {
+  const params = new URLSearchParams();
+  params.set("top_k", String(options.top_k ?? 3));
+  params.set("input_mode", options.input_mode ?? "source");
+  return request<SemanticPromptReviewResponse>(
+    `/api/sites/${siteId}/images/${imageId}/semantic-prompts?${params.toString()}`,
+    {},
+    token
+  );
+}
+
 export async function downloadImportTemplate(siteId: string, token: string) {
   const response = await fetch(buildApiUrl(`/api/sites/${siteId}/import/template.csv`), {
     headers: {
@@ -1416,6 +1725,87 @@ export async function runCaseValidation(
     },
     token
   );
+}
+
+export async function runCaseValidationCompare(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    model_version_ids: string[];
+    execution_mode?: "auto" | "cpu" | "gpu";
+    generate_gradcam?: boolean;
+    generate_medsam?: boolean;
+  }
+) {
+  return request<CaseValidationCompareResponse>(
+    `/api/sites/${siteId}/cases/validate/compare`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        generate_gradcam: false,
+        generate_medsam: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function runCaseAiClinic(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    top_k?: number;
+    retrieval_backend?: "classifier" | "dinov2" | "hybrid";
+  }
+) {
+  return request<AiClinicResponse>(
+    `/api/sites/${siteId}/cases/ai-clinic`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        top_k: 3,
+        retrieval_backend: "hybrid",
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function backfillAiClinicEmbeddings(
+  siteId: string,
+  token: string,
+  payload?: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    force_refresh?: boolean;
+  }
+) {
+  return request<EmbeddingBackfillJobResponse>(
+    `/api/sites/${siteId}/ai-clinic/embeddings/backfill`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        force_refresh: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function fetchSiteModelVersions(siteId: string, token: string) {
+  return request<ModelVersionRecord[]>(`/api/sites/${siteId}/model-versions`, {}, token);
 }
 
 export async function fetchValidationArtifactBlob(
@@ -1486,6 +1876,24 @@ export async function fetchCaseLesionPreview(siteId: string, patientId: string, 
     visit_date: visitDate,
   });
   return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview?${params.toString()}`, {}, token);
+}
+
+export async function startLiveLesionPreview(siteId: string, imageId: string, token: string) {
+  return request<LiveLesionPreviewJobResponse>(
+    `/api/sites/${siteId}/images/${imageId}/lesion-live-preview`,
+    {
+      method: "POST",
+    },
+    token
+  );
+}
+
+export async function fetchLiveLesionPreviewJob(siteId: string, imageId: string, jobId: string, token: string) {
+  return request<LiveLesionPreviewJobResponse>(
+    `/api/sites/${siteId}/images/${imageId}/lesion-live-preview/jobs/${jobId}`,
+    {},
+    token
+  );
 }
 
 export async function fetchCaseRoiPreviewArtifactBlob(
@@ -1605,7 +2013,7 @@ export async function runSiteValidation(
     model_version_id?: string;
   } = {}
 ) {
-  return request<SiteValidationRunResponse>(
+  return request<SiteValidationJobResponse>(
     `/api/sites/${siteId}/validations/run`,
     {
       method: "POST",
@@ -1642,6 +2050,43 @@ export async function runInitialTraining(
       method: "POST",
       body: JSON.stringify({
         architecture: "convnext_tiny",
+        execution_mode: "auto",
+        crop_mode: "automated",
+        epochs: 30,
+        learning_rate: 1e-4,
+        batch_size: 16,
+        val_split: 0.2,
+        test_split: 0.2,
+        use_pretrained: true,
+        regenerate_split: false,
+        ...payload,
+      }),
+    },
+    token
+  );
+}
+
+export async function runInitialTrainingBenchmark(
+  siteId: string,
+  token: string,
+  payload: {
+    architectures: string[];
+    execution_mode?: "auto" | "cpu" | "gpu";
+    crop_mode?: "automated" | "manual" | "both";
+    epochs?: number;
+    learning_rate?: number;
+    batch_size?: number;
+    val_split?: number;
+    test_split?: number;
+    use_pretrained?: boolean;
+    regenerate_split?: boolean;
+  }
+) {
+  return request<InitialTrainingBenchmarkJobResponse>(
+    `/api/sites/${siteId}/training/initial/benchmark`,
+    {
+      method: "POST",
+      body: JSON.stringify({
         execution_mode: "auto",
         crop_mode: "automated",
         epochs: 30,

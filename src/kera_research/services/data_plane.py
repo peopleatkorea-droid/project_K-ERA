@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 
 from kera_research.config import BASE_DIR, SITE_ROOT_DIR, ensure_base_directories
 from kera_research.db import (
@@ -23,6 +23,13 @@ from kera_research.db import (
 )
 from kera_research.domain import MANIFEST_COLUMNS, VISIT_STATUS_OPTIONS, make_id, utc_now
 from kera_research.storage import ensure_dir, write_csv
+
+_ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF", "BMP", "WEBP"}
+_MAX_IMAGE_PIXELS = 40_000_000
+
+
+class InvalidImageUploadError(ValueError):
+    pass
 
 
 def _normalize_organism_entry(entry: dict[str, Any] | None) -> dict[str, str] | None:
@@ -59,13 +66,22 @@ def _normalize_additional_organisms(
 
 
 def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
-    suffix = Path(file_name).suffix.lower() or ".jpg"
     try:
         with Image.open(BytesIO(content)) as image:
+            format_name = str(image.format or "").upper()
+            if format_name not in _ALLOWED_IMAGE_FORMATS:
+                raise InvalidImageUploadError("Unsupported image format.")
+            if getattr(image, "n_frames", 1) != 1:
+                raise InvalidImageUploadError("Animated or multi-frame images are not supported.")
+            image.load()
+            width, height = image.size
+            if width <= 0 or height <= 0:
+                raise InvalidImageUploadError("Image dimensions are invalid.")
+            if width * height > _MAX_IMAGE_PIXELS:
+                raise InvalidImageUploadError("Image is too large.")
             normalized = ImageOps.exif_transpose(image)
             output = BytesIO()
-            format_name = (normalized.format or image.format or "").upper()
-            if format_name == "PNG" or suffix == ".png":
+            if format_name == "PNG" or "A" in normalized.getbands():
                 if normalized.mode not in {"RGB", "RGBA", "L"}:
                     normalized = normalized.convert("RGBA" if "A" in normalized.getbands() else "RGB")
                 normalized.save(output, format="PNG")
@@ -75,8 +91,10 @@ def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
                 normalized = normalized.convert("RGB")
             normalized.save(output, format="JPEG", quality=95, optimize=True)
             return output.getvalue(), ".jpg"
-    except (UnidentifiedImageError, OSError, ValueError):
-        return content, suffix
+    except InvalidImageUploadError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise InvalidImageUploadError("Invalid image file.") from exc
 
 
 def _resolve_site_storage_root(site_id: str) -> Path:
@@ -112,6 +130,7 @@ class SiteStore:
         self.roi_crop_dir = self.artifact_dir / "roi_crops"
         self.lesion_mask_dir = self.artifact_dir / "lesion_masks"
         self.lesion_crop_dir = self.artifact_dir / "lesion_crops"
+        self.embedding_dir = self.artifact_dir / "embeddings"
         self.validation_dir = self.site_dir / "validation"
         self.update_dir = self.site_dir / "model_updates"
         self._seed_defaults()
@@ -125,6 +144,7 @@ class SiteStore:
             self.roi_crop_dir,
             self.lesion_mask_dir,
             self.lesion_crop_dir,
+            self.embedding_dir,
             self.validation_dir,
             self.update_dir,
         ):
@@ -378,6 +398,7 @@ class SiteStore:
         is_representative: bool,
         file_name: str,
         content: bytes,
+        created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
         visit = self.get_visit(patient_id, visit_date)
         if visit is None:
@@ -394,6 +415,7 @@ class SiteStore:
             "site_id": self.site_id,
             "patient_id": patient_id,
             "visit_date": visit_date,
+            "created_by_user_id": created_by_user_id,
             "view": view,
             "image_path": str(destination),
             "is_representative": bool(is_representative),
@@ -620,7 +642,10 @@ class SiteStore:
                     "culture_species": visit.get("culture_species", ""),
                     "additional_organisms": visit.get("additional_organisms", []) or [],
                     "contact_lens_use": visit.get("contact_lens_use", ""),
+                    "predisposing_factor": visit.get("predisposing_factor", []) or [],
+                    "other_history": visit.get("other_history", "") or "",
                     "visit_status": visit.get("visit_status", "active"),
+                    "active_stage": bool(visit.get("active_stage", visit.get("visit_status", "active") == "active")),
                     "is_initial_visit": bool(visit.get("is_initial_visit", False)),
                     "smear_result": visit.get("smear_result", ""),
                     "polymicrobial": bool(
@@ -680,26 +705,63 @@ class SiteStore:
     def clear_patient_split(self) -> None:
         self.save_patient_split({})
 
-    def enqueue_job(self, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _job_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "job_id": row["job_id"],
+            "site_id": row["site_id"],
+            "job_type": row["job_type"],
+            "queue_name": row.get("queue_name", "default"),
+            "priority": int(row.get("priority") or 100),
+            "status": row["status"],
+            "attempt_count": int(row.get("attempt_count") or 0),
+            "max_attempts": int(row.get("max_attempts") or 1),
+            "claimed_by": row.get("claimed_by"),
+            "claimed_at": row.get("claimed_at"),
+            "heartbeat_at": row.get("heartbeat_at"),
+            "available_at": row.get("available_at"),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "payload": row["payload_json"],
+            "result": row["result_json"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def enqueue_job(
+        self,
+        job_type: str,
+        payload: dict[str, Any],
+        *,
+        queue_name: str = "default",
+        priority: int = 100,
+        max_attempts: int = 1,
+        available_at: str | None = None,
+    ) -> dict[str, Any]:
+        created_at = utc_now()
         record = {
             "job_id": make_id("job"),
             "site_id": self.site_id,
             "job_type": job_type,
             "status": "queued",
+            "queue_name": queue_name,
+            "priority": int(priority),
+            "attempt_count": 0,
+            "max_attempts": max(1, int(max_attempts)),
+            "claimed_by": None,
+            "claimed_at": None,
+            "heartbeat_at": None,
+            "available_at": available_at or created_at,
+            "started_at": None,
+            "finished_at": None,
             "payload_json": payload,
             "result_json": None,
-            "created_at": utc_now(),
+            "created_at": created_at,
             "updated_at": None,
         }
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(site_jobs.insert().values(**record))
-        return {
-            "job_id": record["job_id"],
-            "job_type": record["job_type"],
-            "status": record["status"],
-            "payload": payload,
-            "created_at": record["created_at"],
-        }
+        return self._job_row_to_dict(record)
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
         query = select(site_jobs).where(site_jobs.c.site_id == self.site_id).order_by(site_jobs.c.created_at.desc())
@@ -707,18 +769,7 @@ class SiteStore:
             query = query.where(site_jobs.c.status == status)
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [
-            {
-                "job_id": row["job_id"],
-                "job_type": row["job_type"],
-                "status": row["status"],
-                "payload": row["payload_json"],
-                "result": row["result_json"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            }
-            for row in rows
-        ]
+        return [self._job_row_to_dict(row) for row in rows]
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -727,15 +778,7 @@ class SiteStore:
             ).mappings().first()
         if row is None:
             return None
-        return {
-            "job_id": row["job_id"],
-            "job_type": row["job_type"],
-            "status": row["status"],
-            "payload": row["payload_json"],
-            "result": row["result_json"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return self._job_row_to_dict(row)
 
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -745,15 +788,126 @@ class SiteStore:
             if existing is None:
                 return
             result_json = result if result is not None else existing["result_json"]
+            values: dict[str, Any] = {
+                "status": status,
+                "result_json": result_json,
+                "updated_at": utc_now(),
+            }
+            if status == "running":
+                values["heartbeat_at"] = values["updated_at"]
+                values["started_at"] = existing.get("started_at") or values["updated_at"]
+            if status in {"completed", "failed", "cancelled"}:
+                values["finished_at"] = values["updated_at"]
             conn.execute(
                 update(site_jobs)
                 .where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+                .values(**values)
+            )
+
+    @staticmethod
+    def claim_next_job(
+        worker_id: str,
+        *,
+        queue_names: list[str] | None = None,
+        site_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        with DATA_PLANE_ENGINE.begin() as conn:
+            query = select(site_jobs).where(
+                and_(
+                    site_jobs.c.status == "queued",
+                    or_(site_jobs.c.available_at.is_(None), site_jobs.c.available_at <= now),
+                )
+            )
+            if queue_names:
+                query = query.where(site_jobs.c.queue_name.in_(queue_names))
+            if site_id:
+                query = query.where(site_jobs.c.site_id == site_id)
+            query = query.order_by(site_jobs.c.priority.asc(), site_jobs.c.created_at.asc())
+            candidates = conn.execute(query.limit(20)).mappings().all()
+            for candidate in candidates:
+                updated = conn.execute(
+                    update(site_jobs)
+                    .where(and_(site_jobs.c.job_id == candidate["job_id"], site_jobs.c.status == "queued"))
+                    .values(
+                        status="running",
+                        attempt_count=int(candidate.get("attempt_count") or 0) + 1,
+                        claimed_by=worker_id,
+                        claimed_at=now,
+                        heartbeat_at=now,
+                        started_at=candidate.get("started_at") or now,
+                        updated_at=now,
+                    )
+                )
+                if int(updated.rowcount or 0) <= 0:
+                    continue
+                row = conn.execute(select(site_jobs).where(site_jobs.c.job_id == candidate["job_id"])).mappings().first()
+                if row is not None:
+                    return SiteStore._job_row_to_dict(row)
+        return None
+
+    @staticmethod
+    def heartbeat_job(job_id: str, worker_id: str) -> None:
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(site_jobs)
+                .where(
+                    and_(
+                        site_jobs.c.job_id == job_id,
+                        site_jobs.c.status == "running",
+                        site_jobs.c.claimed_by == worker_id,
+                    )
+                )
                 .values(
-                    status=status,
-                    result_json=result_json,
+                    heartbeat_at=utc_now(),
                     updated_at=utc_now(),
                 )
             )
+
+    @staticmethod
+    def requeue_stale_jobs(*, heartbeat_before: str) -> int:
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(
+                select(site_jobs).where(
+                    and_(
+                        site_jobs.c.status == "running",
+                        site_jobs.c.heartbeat_at.is_not(None),
+                        site_jobs.c.heartbeat_at < heartbeat_before,
+                    )
+                )
+            ).mappings().all()
+            requeued = 0
+            for row in rows:
+                attempt_count = int(row.get("attempt_count") or 0)
+                max_attempts = int(row.get("max_attempts") or 1)
+                if attempt_count < max_attempts:
+                    conn.execute(
+                        update(site_jobs)
+                        .where(site_jobs.c.job_id == row["job_id"])
+                        .values(
+                            status="queued",
+                            claimed_by=None,
+                            claimed_at=None,
+                            heartbeat_at=None,
+                            available_at=utc_now(),
+                            updated_at=utc_now(),
+                        )
+                    )
+                else:
+                    failure_result = dict(row.get("result_json") or {})
+                    failure_result.setdefault("error", "Job lease expired.")
+                    conn.execute(
+                        update(site_jobs)
+                        .where(site_jobs.c.job_id == row["job_id"])
+                        .values(
+                            status="failed",
+                            result_json=failure_result,
+                            finished_at=utc_now(),
+                            updated_at=utc_now(),
+                        )
+                    )
+                requeued += 1
+        return requeued
 
     def artifact_files(self, artifact_type: str) -> list[Path]:
         mapping = {

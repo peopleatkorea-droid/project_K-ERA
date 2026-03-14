@@ -198,6 +198,23 @@
   transform: translateY(-1px);
 }
 
+.login-utility-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 14px;
+}
+
+.login-utility-links .text-button {
+  color: var(--muted);
+  font-size: 0.88rem;
+  text-decoration: none;
+}
+
+.login-utility-links .text-button:hover {
+  color: var(--accent);
+}
+
 .page-grid {
   display: grid;
   grid-template-columns: 280px 1fr;

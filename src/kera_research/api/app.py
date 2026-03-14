@@ -23,13 +23,15 @@ from pydantic import BaseModel, Field
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DIR
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
+from kera_research.services.job_runner import queue_name_for_job_type
+from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
-from kera_research.services.data_plane import SiteStore
+from kera_research.services.data_plane import InvalidImageUploadError, SiteStore
 from kera_research.services.pipeline import ResearchWorkflowService
+from kera_research.services.semantic_prompts import SemanticPromptScoringService
 from kera_research.storage import read_json
 
 
-_ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"}
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 def _load_or_create_api_secret() -> str:
@@ -64,6 +66,9 @@ GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 _AGG_JOBS: dict[str, dict[str, Any]] = {}
 _AGG_JOBS_LOCK = threading.Lock()
 _AGG_RUNNING = threading.Event()  # set while an aggregation is in progress
+_LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
+_LESION_PREVIEW_JOBS_LOCK = threading.Lock()
+_SEMANTIC_PROMPT_SCORER: SemanticPromptScoringService | None = None
 IMPORT_TEMPLATE_ROWS = [
     "patient_id,chart_alias,local_case_code,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
     "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative",
@@ -80,6 +85,11 @@ def _google_client_id() -> str:
         or os.getenv("GOOGLE_CLIENT_ID", "").strip()
         or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", "").strip()
     )
+
+
+def _local_login_enabled() -> bool:
+    value = os.getenv("KERA_LOCAL_LOGIN_ENABLED", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 def _create_access_token(user: dict[str, Any]) -> str:
@@ -208,6 +218,39 @@ def _get_workflow(cp: ControlPlaneStore) -> ResearchWorkflowService:
         ) from exc
 
 
+def _get_semantic_prompt_scorer() -> SemanticPromptScoringService:
+    global _SEMANTIC_PROMPT_SCORER
+    if _SEMANTIC_PROMPT_SCORER is None:
+        _SEMANTIC_PROMPT_SCORER = SemanticPromptScoringService()
+    return _SEMANTIC_PROMPT_SCORER
+
+
+def _serialize_lesion_preview_job(job: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "job_id": job.get("job_id"),
+        "site_id": job.get("site_id"),
+        "image_id": job.get("image_id"),
+        "patient_id": job.get("patient_id"),
+        "visit_date": job.get("visit_date"),
+        "status": job.get("status"),
+        "error": job.get("error"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "prompt_signature": job.get("prompt_signature"),
+        "lesion_prompt_box": job.get("lesion_prompt_box"),
+    }
+    result = job.get("result")
+    if isinstance(result, dict):
+        payload.update(
+            {
+                "backend": result.get("backend"),
+                "has_lesion_crop": bool(result.get("lesion_crop_path")),
+                "has_lesion_mask": bool(result.get("lesion_mask_path")),
+            }
+        )
+    return payload
+
+
 def _resolve_execution_device(selection: str) -> str:
     normalized = selection.strip().lower()
     ui_selection = {
@@ -216,6 +259,11 @@ def _resolve_execution_device(selection: str) -> str:
         "auto": "Auto",
     }.get(normalized, "Auto")
     return resolve_execution_mode(ui_selection, detect_hardware())
+
+
+def _preferred_embedding_execution_device() -> str:
+    hardware = detect_hardware()
+    return "cuda" if hardware.get("gpu_available") else "cpu"
 
 
 def _call_with_supported_kwargs(func: Any, /, **kwargs: Any) -> Any:
@@ -257,6 +305,65 @@ def _require_platform_admin(user: dict[str, Any]) -> None:
     )
 
 
+def _has_site_wide_write_access(user: dict[str, Any]) -> bool:
+    return user.get("role") in {"admin", "site_admin"}
+
+
+def _require_record_owner(user: dict[str, Any], owner_user_id: str | None, *, detail: str) -> None:
+    if _has_site_wide_write_access(user):
+        return
+    if not owner_user_id or owner_user_id != user.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+def _visit_owner_user_id(site_store: SiteStore, patient_id: str, visit_date: str) -> str | None:
+    visit = site_store.get_visit(patient_id, visit_date)
+    if visit is None:
+        return None
+    return str(visit.get("created_by_user_id") or "").strip() or None
+
+
+def _image_owner_user_id(site_store: SiteStore, image: dict[str, Any]) -> str | None:
+    image_owner = str(image.get("created_by_user_id") or "").strip()
+    if image_owner:
+        return image_owner
+    return _visit_owner_user_id(
+        site_store,
+        str(image.get("patient_id") or ""),
+        str(image.get("visit_date") or ""),
+    )
+
+
+def _require_visit_write_access(site_store: SiteStore, user: dict[str, Any], patient_id: str, visit_date: str) -> None:
+    _require_record_owner(
+        user,
+        _visit_owner_user_id(site_store, patient_id, visit_date),
+        detail="Only the creator or a site admin can modify this visit.",
+    )
+
+
+def _require_visit_image_write_access(
+    site_store: SiteStore,
+    user: dict[str, Any],
+    *,
+    patient_id: str,
+    visit_date: str,
+) -> None:
+    if _has_site_wide_write_access(user):
+        return
+    images = site_store.list_images_for_visit(patient_id, visit_date)
+    if not images:
+        _require_visit_write_access(site_store, user, patient_id, visit_date)
+        return
+    for image in images:
+        owner_user_id = _image_owner_user_id(site_store, image)
+        if owner_user_id != user.get("user_id"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the creator or a site admin can modify these images.",
+            )
+
+
 def _get_model_version(cp: ControlPlaneStore, model_version_id: str | None) -> dict[str, Any] | None:
     if model_version_id:
         return next(
@@ -274,6 +381,210 @@ def _load_cross_validation_reports(site_store: SiteStore) -> list[dict[str, Any]
             reports.append(report)
     reports.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     return reports
+
+
+def _queue_case_embedding_refresh(
+    cp: ControlPlaneStore,
+    site_store: SiteStore,
+    *,
+    patient_id: str,
+    visit_date: str,
+    trigger: str,
+) -> None:
+    model_version = cp.current_global_model()
+    if model_version is None or not model_version.get("ready", True):
+        return
+    execution_device = _preferred_embedding_execution_device()
+    job = site_store.enqueue_job(
+        "ai_clinic_embedding_index",
+        {
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "trigger": trigger,
+            "model_version_id": model_version.get("version_id"),
+            "model_version_name": model_version.get("version_name"),
+            "execution_device": execution_device,
+        },
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "running",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "AI Clinic embedding indexing queued.",
+                "percent": 0,
+            }
+        },
+    )
+
+    def run_index_job() -> None:
+        try:
+            workflow = ResearchWorkflowService(cp)
+            result = workflow.index_case_embedding(
+                site_store,
+                patient_id=patient_id,
+                visit_date=visit_date,
+                model_version=model_version,
+                execution_device=execution_device,
+            )
+            site_store.update_job_status(
+                job["job_id"],
+                "completed",
+                {
+                    "progress": {
+                        "stage": "completed",
+                        "message": "AI Clinic embedding indexing completed.",
+                        "percent": 100,
+                    },
+                    "response": result,
+                },
+            )
+        except Exception as exc:
+            site_store.update_job_status(
+                job["job_id"],
+                "failed",
+                {
+                    "progress": {
+                        "stage": "failed",
+                        "message": "AI Clinic embedding indexing failed.",
+                        "percent": 100,
+                    },
+                    "error": str(exc),
+                },
+            )
+
+    threading.Thread(target=run_index_job, daemon=True).start()
+
+
+def _queue_site_embedding_backfill(
+    cp: ControlPlaneStore,
+    site_store: SiteStore,
+    *,
+    model_version: dict[str, Any],
+    execution_device: str,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    case_summaries = site_store.list_case_summaries()
+    job = site_store.enqueue_job(
+        "ai_clinic_embedding_backfill",
+        {
+            "model_version_id": model_version.get("version_id"),
+            "model_version_name": model_version.get("version_name"),
+            "execution_device": execution_device,
+            "force_refresh": bool(force_refresh),
+            "total_cases": len(case_summaries),
+        },
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "running",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "AI Clinic embedding backfill queued.",
+                "percent": 0,
+                "completed_cases": 0,
+                "total_cases": len(case_summaries),
+                "indexed_cases": 0,
+                "failed_cases": 0,
+            }
+        },
+    )
+
+    def run_backfill_job() -> None:
+        workflow = ResearchWorkflowService(cp)
+        indexed_cases = 0
+        failed_cases = 0
+        failed_case_refs: list[str] = []
+        total_cases = len(case_summaries)
+        for index, summary in enumerate(case_summaries, start=1):
+            patient_id = str(summary.get("patient_id") or "")
+            visit_date = str(summary.get("visit_date") or "")
+            case_id = str(summary.get("case_id") or f"{patient_id}::{visit_date}")
+            try:
+                workflow.index_case_embedding(
+                    site_store,
+                    patient_id=patient_id,
+                    visit_date=visit_date,
+                    model_version=model_version,
+                    execution_device=execution_device,
+                    force_refresh=force_refresh,
+                    update_index=False,
+                )
+                indexed_cases += 1
+            except Exception:
+                failed_cases += 1
+                if len(failed_case_refs) < 20:
+                    failed_case_refs.append(case_id)
+            percent = 100 if total_cases <= 0 else int((index / total_cases) * 100)
+            site_store.update_job_status(
+                job["job_id"],
+                "running",
+                {
+                    "progress": {
+                        "stage": "running",
+                        "message": "AI Clinic embedding backfill in progress.",
+                        "percent": percent,
+                        "completed_cases": index,
+                        "total_cases": total_cases,
+                        "indexed_cases": indexed_cases,
+                        "failed_cases": failed_cases,
+                    }
+                },
+            )
+
+        vector_index: dict[str, Any] | None = None
+        vector_index_error: str | None = None
+        try:
+            vector_index = {
+                "classifier": workflow.rebuild_case_vector_index(
+                    site_store,
+                    model_version=model_version,
+                    backend="classifier",
+                )
+            }
+            dinov2_meta = site_store.embedding_dir / str(model_version.get("version_id") or "unknown") / "dinov2"
+            if dinov2_meta.exists():
+                vector_index["dinov2"] = workflow.rebuild_case_vector_index(
+                    site_store,
+                    model_version=model_version,
+                    backend="dinov2",
+                )
+        except Exception as exc:
+            vector_index_error = str(exc)
+
+        status = "completed" if failed_cases == 0 else "completed"
+        site_store.update_job_status(
+            job["job_id"],
+            status,
+            {
+                "progress": {
+                    "stage": "completed",
+                    "message": "AI Clinic embedding backfill completed.",
+                    "percent": 100,
+                    "completed_cases": total_cases,
+                    "total_cases": total_cases,
+                    "indexed_cases": indexed_cases,
+                    "failed_cases": failed_cases,
+                },
+                "response": {
+                    "model_version_id": model_version.get("version_id"),
+                    "model_version_name": model_version.get("version_name"),
+                    "execution_device": execution_device,
+                    "force_refresh": bool(force_refresh),
+                    "total_cases": total_cases,
+                    "indexed_cases": indexed_cases,
+                    "failed_cases": failed_cases,
+                    "failed_case_ids": failed_case_refs,
+                    "vector_index": vector_index,
+                    "vector_index_error": vector_index_error,
+                },
+            },
+        )
+
+    threading.Thread(target=run_backfill_job, daemon=True).start()
+    return site_store.get_job(job["job_id"]) or job
 
 
 def _visible_model_updates(
@@ -449,6 +760,21 @@ def _embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | N
     return Response(content=content, media_type=media_type)
 
 
+def _attach_image_quality_scores(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scored_images: list[dict[str, Any]] = []
+    for image in images:
+        payload = dict(image)
+        try:
+            payload["quality_scores"] = score_slit_lamp_image(
+                str(image.get("image_path") or ""),
+                view=str(image.get("view") or "white"),
+            )
+        except Exception:
+            payload["quality_scores"] = None
+        scored_images.append(payload)
+    return scored_images
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -523,6 +849,15 @@ class CaseValidationRequest(BaseModel):
     generate_medsam: bool = True
 
 
+class CaseAiClinicRequest(BaseModel):
+    patient_id: str
+    visit_date: str
+    execution_mode: str = "auto"
+    model_version_id: str | None = None
+    top_k: int = 3
+    retrieval_backend: str = "hybrid"
+
+
 class CaseContributionRequest(BaseModel):
     patient_id: str
     visit_date: str
@@ -550,6 +885,19 @@ class InitialTrainingRequest(BaseModel):
     regenerate_split: bool = False
 
 
+class InitialTrainingBenchmarkRequest(BaseModel):
+    architectures: list[str] = Field(default_factory=lambda: ["vit", "swin", "convnext_tiny", "densenet121"])
+    execution_mode: str = "auto"
+    crop_mode: str = "automated"
+    epochs: int = 30
+    learning_rate: float = 1e-4
+    batch_size: int = 16
+    val_split: float = 0.2
+    test_split: float = 0.2
+    use_pretrained: bool = True
+    regenerate_split: bool = False
+
+
 class CrossValidationRunRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
@@ -560,6 +908,21 @@ class CrossValidationRunRequest(BaseModel):
     batch_size: int = 16
     val_split: float = 0.2
     use_pretrained: bool = True
+
+
+class CaseValidationCompareRequest(BaseModel):
+    patient_id: str
+    visit_date: str
+    model_version_ids: list[str] = Field(default_factory=list)
+    execution_mode: str = "auto"
+    generate_gradcam: bool = False
+    generate_medsam: bool = False
+
+
+class EmbeddingBackfillRequest(BaseModel):
+    execution_mode: str = "auto"
+    model_version_id: str | None = None
+    force_refresh: bool = False
 
 
 class AggregationRunRequest(BaseModel):
@@ -880,9 +1243,19 @@ def create_app() -> FastAPI:
 
     @app.post("/api/auth/login")
     def login(payload: LoginRequest, cp: ControlPlaneStore = Depends(get_control_plane)) -> dict[str, Any]:
+        if not _local_login_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Local username/password login is disabled. Use Google sign-in.",
+            )
         user = cp.authenticate(payload.username.strip().lower(), payload.password)
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
+        if user.get("role") != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Local username/password login is restricted to platform admins. Use Google sign-in.",
+            )
         return _build_auth_response(cp, user)
 
     @app.post("/api/auth/google")
@@ -1046,6 +1419,37 @@ def create_app() -> FastAPI:
     ) -> list[dict[str, Any]]:
         _require_admin_workspace_permission(user)
         return cp.list_model_versions()
+
+    @app.get("/api/admin/experiments")
+    def list_experiments(
+        site_id: str | None = None,
+        experiment_type: str | None = None,
+        status_filter: str | None = None,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> list[dict[str, Any]]:
+        _require_admin_workspace_permission(user)
+        experiments = cp.list_experiments(site_id=site_id, experiment_type=experiment_type, status_filter=status_filter)
+        if user.get("role") == "admin":
+            return experiments
+        accessible_site_ids = {site["site_id"] for site in cp.accessible_sites_for_user(user)}
+        return [item for item in experiments if item.get("site_id") in accessible_site_ids]
+
+    @app.get("/api/admin/experiments/{experiment_id}")
+    def get_experiment(
+        experiment_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp: ControlPlaneStore = Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        experiment = cp.get_experiment(experiment_id)
+        if experiment is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Experiment not found.")
+        if user.get("role") != "admin":
+            accessible_site_ids = {site["site_id"] for site in cp.accessible_sites_for_user(user)}
+            if experiment.get("site_id") not in accessible_site_ids:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Experiment not found.")
+        return experiment
 
     @app.delete("/api/admin/model-versions/{version_id}")
     def archive_model_version(
@@ -1695,6 +2099,7 @@ def create_app() -> FastAPI:
                     is_representative=_bool_from_value(row.get("is_representative"), False),
                     file_name=file_name,
                     content=image_bytes[file_name],
+                    created_by_user_id=user["user_id"],
                 )
                 image_cache.add((patient_id, visit_date, Path(saved_image["image_path"]).name))
                 imported_images += 1
@@ -1769,7 +2174,6 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         _require_validation_permission(user)
         site_store = _require_site_access(cp, user, site_id)
-        workflow = _get_workflow(cp)
 
         model_version = _get_model_version(cp, payload.model_version_id)
         if model_version is None or not model_version.get("ready", True):
@@ -1780,14 +2184,6 @@ def create_app() -> FastAPI:
 
         try:
             execution_device = _resolve_execution_device(payload.execution_mode)
-            summary, _, _ = workflow.run_external_validation(
-                project_id=_project_id_for_site(cp, site_id),
-                site_store=site_store,
-                model_version=model_version,
-                execution_device=execution_device,
-                generate_gradcam=payload.generate_gradcam,
-                generate_medsam=payload.generate_medsam,
-            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -1795,10 +2191,34 @@ def create_app() -> FastAPI:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Site validation is unavailable: {exc}",
             ) from exc
+        job = site_store.enqueue_job(
+            "site_validation",
+            {
+                "project_id": _project_id_for_site(cp, site_id),
+                "model_version_id": model_version.get("version_id"),
+                "execution_mode": payload.execution_mode,
+                "execution_device": execution_device,
+                "generate_gradcam": bool(payload.generate_gradcam),
+                "generate_medsam": bool(payload.generate_medsam),
+            },
+            queue_name=queue_name_for_job_type("site_validation"),
+        )
+        site_store.update_job_status(
+            job["job_id"],
+            "queued",
+            {
+                "progress": {
+                    "stage": "queued",
+                    "message": "Hospital validation job queued.",
+                    "percent": 0,
+                }
+            },
+        )
 
         return {
-            "summary": summary,
+            "site_id": site_id,
             "execution_device": execution_device,
+            "job": site_store.get_job(job["job_id"]) or job,
             "model_version": {
                 "version_id": model_version.get("version_id"),
                 "version_name": model_version.get("version_name"),
@@ -1815,7 +2235,6 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         _require_admin_workspace_permission(user)
         site_store = _require_site_access(cp, user, site_id)
-        workflow = _get_workflow(cp)
 
         if payload.architecture not in TRAINING_ARCHITECTURES:
             raise HTTPException(
@@ -1848,12 +2267,14 @@ def create_app() -> FastAPI:
                 "test_split": float(payload.test_split),
                 "use_pretrained": bool(payload.use_pretrained),
                 "regenerate_split": bool(payload.regenerate_split),
+                "output_model_path": str(output_path),
             },
+            queue_name=queue_name_for_job_type("initial_training"),
         )
 
         site_store.update_job_status(
             job["job_id"],
-            "running",
+            "queued",
             {
                 "progress": {
                     "stage": "queued",
@@ -1864,69 +2285,74 @@ def create_app() -> FastAPI:
             },
         )
 
-        def run_training_job() -> None:
-            def update_progress(progress_payload: dict[str, Any]) -> None:
-                site_store.update_job_status(
-                    job["job_id"],
-                    "running",
-                    {
-                        "progress": progress_payload,
-                    },
-                )
+        return {
+            "site_id": site_id,
+            "execution_device": execution_device,
+            "job": site_store.get_job(job["job_id"]) or job,
+        }
 
-            try:
-                result = _call_with_supported_kwargs(
-                    workflow.run_initial_training,
-                    site_store=site_store,
-                    architecture=payload.architecture,
-                    output_model_path=str(output_path),
-                    execution_device=execution_device,
-                    crop_mode=payload.crop_mode,
-                    epochs=int(payload.epochs),
-                    learning_rate=float(payload.learning_rate),
-                    batch_size=int(payload.batch_size),
-                    val_split=float(payload.val_split),
-                    test_split=float(payload.test_split),
-                    use_pretrained=bool(payload.use_pretrained),
-                    use_medsam_crops=True,
-                    regenerate_split=bool(payload.regenerate_split),
-                    progress_callback=update_progress,
-                )
-                response = {
-                    "site_id": site_id,
-                    "execution_device": execution_device,
-                    "result": result,
-                    "model_version": result.get("model_version"),
+    @app.post("/api/sites/{site_id}/training/initial/benchmark")
+    def run_initial_training_benchmark(
+        site_id: str,
+        payload: InitialTrainingBenchmarkRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+
+        architectures = [str(item).strip() for item in payload.architectures if str(item).strip()]
+        architectures = list(dict.fromkeys(architectures))
+        if not architectures:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one architecture is required.")
+        unsupported = [item for item in architectures if item not in TRAINING_ARCHITECTURES]
+        if unsupported:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported architectures: {', '.join(unsupported)}. Supported: {', '.join(TRAINING_ARCHITECTURES)}",
+            )
+
+        try:
+            execution_device = _resolve_execution_device(payload.execution_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Initial benchmark training is unavailable: {exc}",
+            ) from exc
+
+        job = site_store.enqueue_job(
+            "initial_training_benchmark",
+            {
+                "architectures": architectures,
+                "execution_mode": payload.execution_mode,
+                "execution_device": execution_device,
+                "crop_mode": payload.crop_mode,
+                "epochs": int(payload.epochs),
+                "learning_rate": float(payload.learning_rate),
+                "batch_size": int(payload.batch_size),
+                "val_split": float(payload.val_split),
+                "test_split": float(payload.test_split),
+                "use_pretrained": bool(payload.use_pretrained),
+                "regenerate_split": bool(payload.regenerate_split),
+            },
+            queue_name=queue_name_for_job_type("initial_training_benchmark"),
+        )
+
+        site_store.update_job_status(
+            job["job_id"],
+            "queued",
+            {
+                "progress": {
+                    "stage": "queued",
+                    "message": "Benchmark training job queued.",
+                    "percent": 0,
+                    "crop_mode": payload.crop_mode,
+                    "architecture_count": len(architectures),
                 }
-                site_store.update_job_status(
-                    job["job_id"],
-                    "completed",
-                    {
-                        "progress": {
-                            "stage": "completed",
-                            "message": "Initial training completed.",
-                            "percent": 100,
-                            "crop_mode": payload.crop_mode,
-                        },
-                        "response": response,
-                    },
-                )
-            except Exception as exc:
-                site_store.update_job_status(
-                    job["job_id"],
-                    "failed",
-                    {
-                        "progress": {
-                            "stage": "failed",
-                            "message": "Initial training failed.",
-                            "percent": 100,
-                            "crop_mode": payload.crop_mode,
-                        },
-                        "error": str(exc),
-                    },
-                )
-
-        threading.Thread(target=run_training_job, daemon=True).start()
+            },
+        )
 
         return {
             "site_id": site_id,
@@ -1948,6 +2374,48 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
         return job
 
+    @app.post("/api/sites/{site_id}/ai-clinic/embeddings/backfill")
+    def backfill_ai_clinic_embeddings(
+        site_id: str,
+        payload: EmbeddingBackfillRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_admin_workspace_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        model_version = _get_model_version(cp, payload.model_version_id)
+        if model_version is None or not model_version.get("ready", True):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No ready model version is available for AI Clinic embedding backfill.",
+            )
+        try:
+            execution_device = _resolve_execution_device(payload.execution_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"AI Clinic embedding backfill is unavailable: {exc}",
+            ) from exc
+        job = _queue_site_embedding_backfill(
+            cp,
+            site_store,
+            model_version=model_version,
+            execution_device=execution_device,
+            force_refresh=bool(payload.force_refresh),
+        )
+        return {
+            "site_id": site_id,
+            "job": job,
+            "model_version": {
+                "version_id": model_version.get("version_id"),
+                "version_name": model_version.get("version_name"),
+                "architecture": model_version.get("architecture"),
+            },
+            "execution_device": execution_device,
+        }
+
     @app.get("/api/sites/{site_id}/training/cross-validation")
     def list_cross_validation_reports(
         site_id: str,
@@ -1967,7 +2435,6 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         _require_admin_workspace_permission(user)
         site_store = _require_site_access(cp, user, site_id)
-        workflow = _get_workflow(cp)
 
         if payload.architecture not in TRAINING_ARCHITECTURES:
             raise HTTPException(
@@ -1999,11 +2466,13 @@ def create_app() -> FastAPI:
                 "batch_size": int(payload.batch_size),
                 "val_split": float(payload.val_split),
                 "use_pretrained": bool(payload.use_pretrained),
+                "output_dir": str(output_dir),
             },
+            queue_name=queue_name_for_job_type("cross_validation"),
         )
         site_store.update_job_status(
             job["job_id"],
-            "running",
+            "queued",
             {
                 "progress": {
                     "stage": "queued",
@@ -2013,68 +2482,6 @@ def create_app() -> FastAPI:
                 }
             },
         )
-
-        def run_cross_validation_job() -> None:
-            def update_progress(progress_payload: dict[str, Any]) -> None:
-                site_store.update_job_status(
-                    job["job_id"],
-                    "running",
-                    {
-                        "progress": progress_payload,
-                    },
-                )
-
-            try:
-                report = _call_with_supported_kwargs(
-                    workflow.run_cross_validation,
-                    site_store=site_store,
-                    architecture=payload.architecture,
-                    output_dir=str(output_dir),
-                    execution_device=execution_device,
-                    crop_mode=payload.crop_mode,
-                    num_folds=int(payload.num_folds),
-                    epochs=int(payload.epochs),
-                    learning_rate=float(payload.learning_rate),
-                    batch_size=int(payload.batch_size),
-                    val_split=float(payload.val_split),
-                    use_pretrained=bool(payload.use_pretrained),
-                    use_medsam_crops=True,
-                    progress_callback=update_progress,
-                )
-                response = {
-                    "site_id": site_id,
-                    "execution_device": execution_device,
-                    "report": report,
-                }
-                site_store.update_job_status(
-                    job["job_id"],
-                    "completed",
-                    {
-                        "progress": {
-                            "stage": "completed",
-                            "message": "Cross-validation completed.",
-                            "percent": 100,
-                            "crop_mode": payload.crop_mode,
-                        },
-                        "response": response,
-                    },
-                )
-            except Exception as exc:
-                site_store.update_job_status(
-                    job["job_id"],
-                    "failed",
-                    {
-                        "progress": {
-                            "stage": "failed",
-                            "message": "Cross-validation failed.",
-                            "percent": 100,
-                            "crop_mode": payload.crop_mode,
-                        },
-                        "error": str(exc),
-                    },
-                )
-
-        threading.Thread(target=run_cross_validation_job, daemon=True).start()
 
         return {
             "site_id": site_id,
@@ -2092,6 +2499,20 @@ def create_app() -> FastAPI:
         site_store = _require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
         return site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+
+    @app.get("/api/sites/{site_id}/model-versions")
+    def list_site_model_versions(
+        site_id: str,
+        ready_only: bool = True,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> list[dict[str, Any]]:
+        _require_validation_permission(user)
+        _require_site_access(cp, user, site_id)
+        versions = cp.list_model_versions()
+        if ready_only:
+            versions = [item for item in versions if item.get("ready", True)]
+        return versions
 
     @app.get("/api/sites/{site_id}/patients")
     def list_patients(
@@ -2213,6 +2634,7 @@ def create_app() -> FastAPI:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
+        _require_visit_write_access(site_store, user, patient_id, visit_date)
         try:
             return site_store.update_visit(
                 patient_id=patient_id,
@@ -2243,6 +2665,7 @@ def create_app() -> FastAPI:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
+        _require_visit_write_access(site_store, user, patient_id, visit_date)
         try:
             return site_store.delete_visit(patient_id, visit_date)
         except ValueError as exc:
@@ -2258,8 +2681,8 @@ def create_app() -> FastAPI:
     ) -> list[dict[str, Any]]:
         site_store = _require_site_access(cp, user, site_id)
         if patient_id and visit_date:
-            return site_store.list_images_for_visit(patient_id, visit_date)
-        return site_store.list_images()
+            return _attach_image_quality_scores(site_store.list_images_for_visit(patient_id, visit_date))
+        return _attach_image_quality_scores(site_store.list_images())
 
     @app.post("/api/sites/{site_id}/images")
     async def upload_image(
@@ -2276,18 +2699,33 @@ def create_app() -> FastAPI:
         content = await file.read()
         if len(content) > _MAX_IMAGE_BYTES:
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 20 MB limit.")
-        mime = mimetypes.guess_type(file.filename or "")[0] or ""
-        if mime not in _ALLOWED_IMAGE_MIMES:
-            raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only JPEG, PNG, TIFF, BMP, or WebP images are allowed.")
         try:
-            return site_store.add_image(
+            saved_image = site_store.add_image(
                 patient_id=patient_id,
                 visit_date=visit_date,
                 view=view,
                 is_representative=is_representative,
                 file_name=file.filename or "upload.bin",
                 content=content,
+                created_by_user_id=user["user_id"],
             )
+            try:
+                saved_image["quality_scores"] = score_slit_lamp_image(
+                    str(saved_image.get("image_path") or ""),
+                    view=str(saved_image.get("view") or "white"),
+                )
+            except Exception:
+                saved_image["quality_scores"] = None
+            _queue_case_embedding_refresh(
+                cp,
+                site_store,
+                patient_id=patient_id,
+                visit_date=visit_date,
+                trigger="image_upload",
+            )
+            return saved_image
+        except InvalidImageUploadError as exc:
+            raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -2300,6 +2738,7 @@ def create_app() -> FastAPI:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = _require_site_access(cp, user, site_id)
+        _require_visit_image_write_access(site_store, user, patient_id=patient_id, visit_date=visit_date)
         deleted_count = site_store.delete_images_for_visit(patient_id, visit_date)
         return {"deleted_count": deleted_count}
 
@@ -2314,6 +2753,12 @@ def create_app() -> FastAPI:
         visit_images = site_store.list_images_for_visit(payload.patient_id, payload.visit_date)
         if not visit_images:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No images found for this visit.")
+        _require_visit_image_write_access(
+            site_store,
+            user,
+            patient_id=payload.patient_id,
+            visit_date=payload.visit_date,
+        )
         if payload.representative_image_id not in {image["image_id"] for image in visit_images}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Representative image is not part of this visit.")
         site_store.update_representative_flags(
@@ -2321,6 +2766,13 @@ def create_app() -> FastAPI:
                 image["image_id"]: image["image_id"] == payload.representative_image_id
                 for image in visit_images
             }
+        )
+        _queue_case_embedding_refresh(
+            cp,
+            site_store,
+            patient_id=payload.patient_id,
+            visit_date=payload.visit_date,
+            trigger="representative_change",
         )
         return {
             "images": site_store.list_images_for_visit(payload.patient_id, payload.visit_date),
@@ -2338,6 +2790,11 @@ def create_app() -> FastAPI:
         image = site_store.get_image(image_id)
         if image is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        _require_record_owner(
+            user,
+            _image_owner_user_id(site_store, image),
+            detail="Only the creator or a site admin can modify this image.",
+        )
         lesion_prompt_box = {
             "x0": min(max(float(payload.x0), 0.0), 1.0),
             "y0": min(max(float(payload.y0), 0.0), 1.0),
@@ -2347,7 +2804,15 @@ def create_app() -> FastAPI:
         if lesion_prompt_box["x1"] <= lesion_prompt_box["x0"] or lesion_prompt_box["y1"] <= lesion_prompt_box["y0"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lesion box coordinates are invalid.")
         try:
-            return site_store.update_lesion_prompt_box(image_id, lesion_prompt_box)
+            updated = site_store.update_lesion_prompt_box(image_id, lesion_prompt_box)
+            _queue_case_embedding_refresh(
+                cp,
+                site_store,
+                patient_id=str(updated.get("patient_id") or image.get("patient_id") or ""),
+                visit_date=str(updated.get("visit_date") or image.get("visit_date") or ""),
+                trigger="lesion_box_update",
+            )
+            return updated
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -2383,6 +2848,142 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
         media_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
         return FileResponse(path=image_path, media_type=media_type, filename=image_path.name)
+
+    @app.post("/api/sites/{site_id}/images/{image_id}/lesion-live-preview")
+    def start_live_lesion_preview(
+        site_id: str,
+        image_id: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_validation_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        lesion_prompt_box = image.get("lesion_prompt_box")
+        if not isinstance(lesion_prompt_box, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This image requires a saved lesion box.")
+
+        workflow = _get_workflow(cp)
+        prompt_signature = workflow._lesion_prompt_box_signature(lesion_prompt_box)
+        job_id = make_id("lesionjob")
+        job_record: dict[str, Any] = {
+            "job_id": job_id,
+            "site_id": site_id,
+            "image_id": image_id,
+            "patient_id": image.get("patient_id"),
+            "visit_date": image.get("visit_date"),
+            "status": "running",
+            "error": None,
+            "result": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "prompt_signature": prompt_signature,
+            "lesion_prompt_box": lesion_prompt_box,
+        }
+        with _LESION_PREVIEW_JOBS_LOCK:
+            _LESION_PREVIEW_JOBS[job_id] = job_record
+
+        def _run() -> None:
+            try:
+                result = workflow.preview_image_lesion(site_store, image_id, lesion_prompt_box=dict(lesion_prompt_box))
+                with _LESION_PREVIEW_JOBS_LOCK:
+                    _LESION_PREVIEW_JOBS[job_id].update(
+                        {
+                            "status": "done",
+                            "result": result,
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+            except Exception as exc:
+                with _LESION_PREVIEW_JOBS_LOCK:
+                    _LESION_PREVIEW_JOBS[job_id].update(
+                        {
+                            "status": "failed",
+                            "error": str(exc),
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=0.25)
+
+        with _LESION_PREVIEW_JOBS_LOCK:
+            job_snapshot = dict(_LESION_PREVIEW_JOBS.get(job_id) or {})
+        if not job_snapshot:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Live lesion preview job disappeared.")
+        if job_snapshot.get("status") == "failed":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(job_snapshot.get("error") or "Live lesion preview failed."),
+            )
+        return _serialize_lesion_preview_job(job_snapshot)
+
+    @app.get("/api/sites/{site_id}/images/{image_id}/lesion-live-preview/jobs/{job_id}")
+    def get_live_lesion_preview_job(
+        site_id: str,
+        image_id: str,
+        job_id: str,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_validation_permission(user)
+        _require_site_access(cp, user, site_id)
+        with _LESION_PREVIEW_JOBS_LOCK:
+            job = dict(_LESION_PREVIEW_JOBS.get(job_id) or {})
+        if not job:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Live lesion preview job not found.")
+        if job.get("site_id") != site_id or job.get("image_id") != image_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Live lesion preview job not found for this image.")
+        return _serialize_lesion_preview_job(job)
+
+    @app.get("/api/sites/{site_id}/images/{image_id}/semantic-prompts")
+    def score_image_semantic_prompts(
+        site_id: str,
+        image_id: str,
+        top_k: int = 3,
+        input_mode: str = "source",
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = _require_site_access(cp, user, site_id)
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        try:
+            normalized_input_mode = str(input_mode or "source").strip().lower()
+            if normalized_input_mode not in {"source", "roi_crop", "lesion_crop"}:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown semantic prompt input mode.")
+            analysis_path = str(image["image_path"])
+            if normalized_input_mode != "source":
+                _require_validation_permission(user)
+                workflow = _get_workflow(cp)
+                if normalized_input_mode == "roi_crop":
+                    previews = workflow.preview_case_roi(site_store, image["patient_id"], image["visit_date"])
+                    preview = next((item for item in previews if item.get("source_image_path") == image.get("image_path")), None)
+                    if preview is None or not preview.get("roi_crop_path"):
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ROI crop is not available for this image.")
+                    analysis_path = str(preview["roi_crop_path"])
+                else:
+                    previews = workflow.preview_case_lesion(site_store, image["patient_id"], image["visit_date"])
+                    preview = next((item for item in previews if item.get("source_image_path") == image.get("image_path")), None)
+                    if preview is None or not preview.get("lesion_crop_path"):
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesion crop is not available for this image.")
+                    analysis_path = str(preview["lesion_crop_path"])
+            scorer = _get_semantic_prompt_scorer()
+            result = scorer.score_image(analysis_path, view=str(image.get("view") or "white"), top_k=top_k)
+            return {
+                "image_id": image_id,
+                "view": str(image.get("view") or "white"),
+                "input_mode": normalized_input_mode,
+                **result,
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     @app.post("/api/sites/{site_id}/cases/validate")
     def validate_case(
@@ -2442,6 +3043,132 @@ def create_app() -> FastAPI:
                 "lesion_mask": bool(case_prediction and case_prediction.get("lesion_mask_path")),
             },
         }
+
+    @app.post("/api/sites/{site_id}/cases/validate/compare")
+    def validate_case_compare(
+        site_id: str,
+        payload: CaseValidationCompareRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_validation_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        workflow = _get_workflow(cp)
+        requested_ids = list(dict.fromkeys(str(item).strip() for item in payload.model_version_ids if str(item).strip()))
+        if not requested_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one model version is required.")
+
+        try:
+            execution_device = _resolve_execution_device(payload.execution_mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Case comparison is unavailable: {exc}",
+            ) from exc
+
+        comparisons: list[dict[str, Any]] = []
+        for model_version_id in requested_ids[:8]:
+            model_version = _get_model_version(cp, model_version_id)
+            if model_version is None or not model_version.get("ready", True):
+                comparisons.append(
+                    {
+                        "model_version_id": model_version_id,
+                        "error": "Model version is not available or not ready.",
+                    }
+                )
+                continue
+            try:
+                summary, case_predictions = workflow.run_case_validation(
+                    project_id=_project_id_for_site(cp, site_id),
+                    site_store=site_store,
+                    patient_id=payload.patient_id,
+                    visit_date=payload.visit_date,
+                    model_version=model_version,
+                    execution_device=execution_device,
+                    generate_gradcam=payload.generate_gradcam,
+                    generate_medsam=payload.generate_medsam,
+                )
+                case_prediction = case_predictions[0] if case_predictions else None
+                comparisons.append(
+                    {
+                        "summary": summary,
+                        "case_prediction": case_prediction,
+                        "model_version": {
+                            "version_id": model_version.get("version_id"),
+                            "version_name": model_version.get("version_name"),
+                            "architecture": model_version.get("architecture"),
+                            "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
+                            "crop_mode": model_version.get("crop_mode"),
+                            "ensemble_mode": model_version.get("ensemble_mode"),
+                        },
+                        "artifact_availability": {
+                            "gradcam": bool(case_prediction and case_prediction.get("gradcam_path")),
+                            "roi_crop": bool(case_prediction and case_prediction.get("roi_crop_path")),
+                            "medsam_mask": bool(case_prediction and case_prediction.get("medsam_mask_path")),
+                            "lesion_crop": bool(case_prediction and case_prediction.get("lesion_crop_path")),
+                            "lesion_mask": bool(case_prediction and case_prediction.get("lesion_mask_path")),
+                        },
+                    }
+                )
+            except Exception as exc:
+                comparisons.append(
+                    {
+                        "model_version": {
+                            "version_id": model_version.get("version_id"),
+                            "version_name": model_version.get("version_name"),
+                            "architecture": model_version.get("architecture"),
+                            "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
+                            "crop_mode": model_version.get("crop_mode"),
+                            "ensemble_mode": model_version.get("ensemble_mode"),
+                        },
+                        "error": str(exc),
+                    }
+                )
+
+        return {
+            "patient_id": payload.patient_id,
+            "visit_date": payload.visit_date,
+            "execution_device": execution_device,
+            "comparisons": comparisons,
+        }
+
+    @app.post("/api/sites/{site_id}/cases/ai-clinic")
+    def run_case_ai_clinic(
+        site_id: str,
+        payload: CaseAiClinicRequest,
+        cp: ControlPlaneStore = Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        _require_validation_permission(user)
+        site_store = _require_site_access(cp, user, site_id)
+        workflow = _get_workflow(cp)
+        model_version = _get_model_version(cp, payload.model_version_id)
+        if model_version is None or not model_version.get("ready", True):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No ready model version is available for AI Clinic retrieval.",
+            )
+
+        try:
+            execution_device = _resolve_execution_device(payload.execution_mode)
+            return workflow.run_ai_clinic_report(
+                site_store,
+                patient_id=payload.patient_id,
+                visit_date=payload.visit_date,
+                model_version=model_version,
+                execution_device=execution_device,
+                top_k=payload.top_k,
+                retrieval_backend=payload.retrieval_backend,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"AI Clinic retrieval is unavailable: {exc}",
+            ) from exc
 
     @app.post("/api/sites/{site_id}/cases/contribute")
     def contribute_case(

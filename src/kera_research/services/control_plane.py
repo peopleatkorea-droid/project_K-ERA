@@ -17,6 +17,8 @@ from kera_research.config import (
     CONTROL_PLANE_ARTIFACT_DIR,
     CONTROL_PLANE_CASE_DIR,
     CONTROL_PLANE_DIR,
+    CONTROL_PLANE_EXPERIMENT_DIR,
+    CONTROL_PLANE_REPORT_DIR,
     DEFAULT_USERS,
     SITE_ROOT_DIR,
     ensure_base_directories,
@@ -28,6 +30,7 @@ from kera_research.db import (
     app_settings,
     aggregations,
     contributions,
+    experiments,
     images as db_images,
     init_control_plane_db,
     model_updates,
@@ -52,6 +55,13 @@ def _hash_password(plain: str) -> str:
 
 def _is_bcrypt_hash(value: str) -> bool:
     return value.startswith(("$2b$", "$2a$", "$2y$"))
+
+
+def _normalize_password_storage(value: str) -> str:
+    normalized = str(value or "")
+    if not normalized or normalized == GOOGLE_AUTH_SENTINEL or _is_bcrypt_hash(normalized):
+        return normalized
+    return _hash_password(normalized)
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -103,6 +113,8 @@ class ControlPlaneStore:
         self.artifact_root = CONTROL_PLANE_ARTIFACT_DIR
         ensure_dir(self.root)
         ensure_dir(CONTROL_PLANE_CASE_DIR)
+        ensure_dir(CONTROL_PLANE_REPORT_DIR)
+        ensure_dir(CONTROL_PLANE_EXPERIMENT_DIR)
         ensure_dir(self.artifact_root)
         self._seed_defaults()
 
@@ -244,6 +256,22 @@ class ControlPlaneStore:
                 if user_record["username"] not in existing_users:
                     conn.execute(users.insert().values(**user_record))
 
+            existing_password_rows = conn.execute(select(users.c.user_id, users.c.password)).all()
+            for user_id, stored_password in existing_password_rows:
+                normalized_password = _normalize_password_storage(str(stored_password or ""))
+                if normalized_password != str(stored_password or ""):
+                    conn.execute(
+                        update(users)
+                        .where(users.c.user_id == user_id)
+                        .values(password=normalized_password)
+                    )
+
+            conn.execute(
+                update(users)
+                .where(and_(users.c.role != "admin", users.c.site_ids.is_(None)))
+                .values(site_ids=[])
+            )
+
             conn.execute(
                 delete(organism_catalog).where(
                     and_(
@@ -278,21 +306,18 @@ class ControlPlaneStore:
         stored = user_record.get("password", "")
         if stored == GOOGLE_AUTH_SENTINEL:
             return None
-        if _is_bcrypt_hash(stored):
-            if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
-                return None
-        else:
-            # Plaintext fallback for migration: verify then upgrade
-            if stored != password:
-                return None
-            new_hash = _hash_password(password)
-            with CONTROL_PLANE_ENGINE.begin() as conn:
-                conn.execute(update(users).where(users.c.username == username).values(password=new_hash))
+        if not _is_bcrypt_hash(stored):
+            return None
+        if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
+            return None
         return self._serialize_user(user_record)
 
     def _serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         serialized = dict(user_record)
-        serialized["site_ids"] = serialized["site_ids"] if serialized.get("site_ids") is not None else None
+        if serialized.get("role") == "admin":
+            serialized["site_ids"] = list(serialized.get("site_ids") or [])
+        else:
+            serialized["site_ids"] = list(serialized.get("site_ids") or [])
         serialized["approval_status"] = self.user_approval_status(serialized)
         latest_request = self.latest_access_request(serialized["user_id"])
         serialized["latest_access_request"] = latest_request
@@ -343,6 +368,7 @@ class ControlPlaneStore:
             "username": user_record["username"].strip().lower(),
             "site_ids": normalized_site_ids,
         }
+        normalized["password"] = _normalize_password_storage(str(normalized.get("password") or ""))
         if "google_sub" in normalized:
             normalized["google_sub"] = str(normalized.get("google_sub") or "").strip() or None
         with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -548,9 +574,7 @@ class ControlPlaneStore:
         all_sites = self.list_sites()
         if user.get("role") == "admin":
             return all_sites
-        if user.get("site_ids") is None:
-            return all_sites
-        allowed_site_ids = set(user.get("site_ids", []))
+        allowed_site_ids = set(user.get("site_ids") or [])
         return [site for site in all_sites if site["site_id"] in allowed_site_ids]
 
     def user_can_access_site(self, user: dict[str, Any], site_id: str | None) -> bool:
@@ -558,9 +582,7 @@ class ControlPlaneStore:
             return False
         if user.get("role") == "admin":
             return True
-        if user.get("site_ids") is None:
-            return True
-        return site_id in set(user.get("site_ids", []))
+        return site_id in set(user.get("site_ids") or [])
 
     def list_projects(self) -> list[dict[str, Any]]:
         with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -884,6 +906,7 @@ class ControlPlaneStore:
     ) -> dict[str, Any]:
         case_path = CONTROL_PLANE_CASE_DIR / f"{summary['validation_id']}.json"
         write_json(case_path, case_predictions)
+        report_path = CONTROL_PLANE_REPORT_DIR / f"{summary['validation_id']}.json"
         try:
             case_predictions_path = str(case_path.relative_to(BASE_DIR))
         except ValueError:
@@ -892,6 +915,11 @@ class ControlPlaneStore:
             **summary,
             "case_predictions_path": case_predictions_path,
         }
+        try:
+            payload["report_path"] = str(report_path.relative_to(BASE_DIR))
+        except ValueError:
+            payload["report_path"] = str(report_path)
+        write_json(report_path, payload)
         record = {
             "validation_id": summary["validation_id"],
             "project_id": summary["project_id"],
@@ -925,6 +953,90 @@ class ControlPlaneStore:
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
         case_path = CONTROL_PLANE_CASE_DIR / f"{validation_id}.json"
         return read_json(case_path, [])
+
+    def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(experiment_record)
+        normalized.setdefault("status", "completed")
+        normalized.setdefault("created_at", utc_now())
+        experiment_id = str(normalized.get("experiment_id") or "").strip()
+        if not experiment_id:
+            raise ValueError("experiment_id is required.")
+        normalized["experiment_id"] = experiment_id
+
+        report_path_value = str(normalized.get("report_path") or "").strip()
+        if report_path_value:
+            report_path = Path(report_path_value)
+            if not report_path.is_absolute():
+                report_path = (BASE_DIR / report_path).resolve()
+            if not report_path.exists():
+                experiment_report_path = CONTROL_PLANE_EXPERIMENT_DIR / f"{experiment_id}.json"
+                write_json(experiment_report_path, normalized)
+                normalized["report_path"] = str(experiment_report_path)
+        else:
+            experiment_report_path = CONTROL_PLANE_EXPERIMENT_DIR / f"{experiment_id}.json"
+            write_json(experiment_report_path, normalized)
+            normalized["report_path"] = str(experiment_report_path)
+
+        values = {
+            "experiment_id": experiment_id,
+            "site_id": normalized.get("site_id"),
+            "experiment_type": str(normalized.get("experiment_type") or "unknown"),
+            "status": str(normalized.get("status") or "completed"),
+            "model_version_id": normalized.get("model_version_id"),
+            "created_at": normalized.get("created_at"),
+            "payload_json": normalized,
+        }
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(experiments.c.experiment_id).where(experiments.c.experiment_id == experiment_id)
+            ).first()
+            if existing:
+                conn.execute(update(experiments).where(experiments.c.experiment_id == experiment_id).values(**values))
+            else:
+                conn.execute(experiments.insert().values(**values))
+        return normalized
+
+    def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
+        normalized_id = experiment_id.strip()
+        if not normalized_id:
+            return None
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(experiments).where(experiments.c.experiment_id == normalized_id)
+            ).first()
+        if row is None:
+            return None
+        return _payload_record(
+            row,
+            "payload_json",
+            ["experiment_id", "site_id", "experiment_type", "status", "model_version_id", "created_at"],
+        )
+
+    def list_experiments(
+        self,
+        *,
+        site_id: str | None = None,
+        experiment_type: str | None = None,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = select(experiments)
+        if site_id:
+            query = query.where(experiments.c.site_id == site_id)
+        if experiment_type:
+            query = query.where(experiments.c.experiment_type == experiment_type)
+        if status_filter:
+            query = query.where(experiments.c.status == status_filter)
+        query = query.order_by(experiments.c.created_at.desc())
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).all()
+        return [
+            _payload_record(
+                row,
+                "payload_json",
+                ["experiment_id", "site_id", "experiment_type", "status", "model_version_id", "created_at"],
+            )
+            for row in rows
+        ]
 
     def list_model_versions(self) -> list[dict[str, Any]]:
         with CONTROL_PLANE_ENGINE.begin() as conn:

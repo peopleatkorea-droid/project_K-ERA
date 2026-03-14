@@ -6,9 +6,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from kera_research.config import SEGMENTATION_BACKEND, SEGMENTATION_CHECKPOINT, SEGMENTATION_ROOT, SEGMENTATION_SCRIPT
+
+CORNEA_CROP_STYLE = "bbox_rgb_v1"
+LESION_CROP_STYLE = "soft_masked_bbox_v1"
+LESION_CONTEXT_MIN_ALPHA = 0.28
+LESION_DILATION_RATIO = 0.12
+LESION_DILATION_MIN_PX = 6
+LESION_DILATION_MAX_PX = 24
+LESION_SOFT_EDGE_RATIO = 0.5
 
 
 class MedSAMService:
@@ -108,6 +116,85 @@ class MedSAMService:
             backend_label=fallback_backend,
         )
 
+    def _crop_style_for_prompt(self, *, prompt_box: list[float] | None) -> str:
+        return LESION_CROP_STYLE if prompt_box else CORNEA_CROP_STYLE
+
+    def _compute_crop_box(
+        self,
+        mask_array: np.ndarray,
+        image_size: tuple[int, int],
+        *,
+        fallback_box: np.ndarray | None = None,
+        expand_ratio: float,
+    ) -> tuple[int, int, int, int]:
+        width, height = image_size
+        ys, xs = np.where(mask_array > 0)
+        if xs.size == 0 or ys.size == 0:
+            if fallback_box is None:
+                raise ValueError("Crop box fallback is required when the mask is empty.")
+            x0, y0, x1, y1 = fallback_box.astype(int)
+        else:
+            x0 = int(xs.min())
+            x1 = int(xs.max()) + 1
+            y0 = int(ys.min())
+            y1 = int(ys.max()) + 1
+        if expand_ratio > 1.0:
+            box_width = max(1, x1 - x0)
+            box_height = max(1, y1 - y0)
+            center_x = x0 + box_width / 2.0
+            center_y = y0 + box_height / 2.0
+            expanded_width = box_width * expand_ratio
+            expanded_height = box_height * expand_ratio
+            x0 = max(0, int(round(center_x - expanded_width / 2.0)))
+            y0 = max(0, int(round(center_y - expanded_height / 2.0)))
+            x1 = min(width, int(round(center_x + expanded_width / 2.0)))
+            y1 = min(height, int(round(center_y + expanded_height / 2.0)))
+        return x0, y0, x1, y1
+
+    def _save_crop_from_mask(
+        self,
+        image_path: str | Path,
+        mask_array: np.ndarray,
+        crop_output_path: str | Path,
+        *,
+        fallback_box: np.ndarray | None,
+        expand_ratio: float,
+        crop_style: str,
+    ) -> None:
+        image = Image.open(image_path).convert("RGB")
+        width, height = image.size
+        x0, y0, x1, y1 = self._compute_crop_box(
+            mask_array,
+            (width, height),
+            fallback_box=fallback_box,
+            expand_ratio=expand_ratio,
+        )
+        crop_path = Path(crop_output_path)
+        crop_path.parent.mkdir(parents=True, exist_ok=True)
+        if crop_style == CORNEA_CROP_STYLE:
+            image.crop((x0, y0, x1, y1)).save(crop_path)
+            return
+
+        crop_rgb = np.asarray(image.crop((x0, y0, x1, y1)).convert("RGB"), dtype=np.float32)
+        lesion_mask = (mask_array > 0).astype(np.uint8) * 255
+        cropped_mask = Image.fromarray(lesion_mask, mode="L").crop((x0, y0, x1, y1))
+        crop_width = max(1, x1 - x0)
+        crop_height = max(1, y1 - y0)
+        dilation_px = int(round(min(crop_width, crop_height) * LESION_DILATION_RATIO))
+        dilation_px = max(LESION_DILATION_MIN_PX, min(LESION_DILATION_MAX_PX, dilation_px))
+        dilation_size = max(3, (dilation_px * 2) + 1)
+        if dilation_size % 2 == 0:
+            dilation_size += 1
+        context_mask = cropped_mask.filter(ImageFilter.MaxFilter(size=dilation_size))
+        blur_radius = max(2.0, float(dilation_px) * LESION_SOFT_EDGE_RATIO)
+        context_mask = context_mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        context_alpha = np.asarray(context_mask, dtype=np.float32) / 255.0
+        lesion_alpha = np.asarray(cropped_mask, dtype=np.float32) / 255.0
+        combined_alpha = np.maximum(context_alpha, lesion_alpha)
+        blended_alpha = LESION_CONTEXT_MIN_ALPHA + ((1.0 - LESION_CONTEXT_MIN_ALPHA) * combined_alpha)
+        soft_masked_crop = np.clip(crop_rgb * blended_alpha[..., None], 0.0, 255.0).astype(np.uint8)
+        Image.fromarray(soft_masked_crop, mode="RGB").save(crop_path)
+
     def _can_run_external_medsam(self) -> bool:
         return bool(
             self.medsam_script
@@ -147,6 +234,16 @@ class MedSAMService:
         if prompt_box:
             command.extend(["--prompt-box", ",".join(str(float(value)) for value in prompt_box)])
         subprocess.run(command, check=True)
+        if prompt_box:
+            mask_array = np.asarray(Image.open(mask_output_path).convert("L")) > 0
+            self._save_crop_from_mask(
+                image_path,
+                mask_array,
+                crop_output_path,
+                fallback_box=np.asarray(prompt_box, dtype=np.float32),
+                expand_ratio=expand_ratio,
+                crop_style=self._crop_style_for_prompt(prompt_box=prompt_box),
+            )
         return {
             "backend": backend_label,
             "medsam_mask_path": str(mask_output_path),
@@ -183,31 +280,20 @@ class MedSAMService:
             fallback_box = np.array([margin_x, margin_y, width - margin_x, height - margin_y], dtype=np.float32)
 
         mask_array = np.asarray(mask)
-        ys, xs = np.where(mask_array > 0)
-        x0 = int(xs.min())
-        x1 = int(xs.max()) + 1
-        y0 = int(ys.min())
-        y1 = int(ys.max()) + 1
-        if expand_ratio > 1.0:
-            box_width = max(1, x1 - x0)
-            box_height = max(1, y1 - y0)
-            center_x = x0 + box_width / 2.0
-            center_y = y0 + box_height / 2.0
-            expanded_width = box_width * expand_ratio
-            expanded_height = box_height * expand_ratio
-            x0 = max(0, int(round(center_x - expanded_width / 2.0)))
-            y0 = max(0, int(round(center_y - expanded_height / 2.0)))
-            x1 = min(width, int(round(center_x + expanded_width / 2.0)))
-            y1 = min(height, int(round(center_y + expanded_height / 2.0)))
-        crop = image.crop((x0, y0, x1, y1))
-
         mask_path = Path(mask_output_path)
         crop_path = Path(crop_output_path)
         mask_path.parent.mkdir(parents=True, exist_ok=True)
         crop_path.parent.mkdir(parents=True, exist_ok=True)
 
         mask.save(mask_path)
-        crop.save(crop_path)
+        self._save_crop_from_mask(
+            image_path,
+            mask_array,
+            crop_path,
+            fallback_box=fallback_box,
+            expand_ratio=expand_ratio,
+            crop_style=self._crop_style_for_prompt(prompt_box=prompt_box),
+        )
 
         return {
             "backend": backend_label,
