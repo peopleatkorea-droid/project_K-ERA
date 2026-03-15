@@ -2,10 +2,50 @@
 
 import type { Dispatch, SetStateAction } from "react";
 
-import { Button } from "../ui/button";
-import { Field } from "../ui/field";
 import type { OrganismRecord } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
+import { Button } from "../ui/button";
+import { Card } from "../ui/card";
+import { Field } from "../ui/field";
+import { MetricGrid, MetricItem } from "../ui/metric-grid";
+import { SectionHeader } from "../ui/section-header";
+import {
+  completeIntakeButtonClass,
+  docBadgeRowClass,
+  docFooterClass,
+  docSectionClass,
+  docSectionHeadClass,
+  docSectionLabelClass,
+  docSiteBadgeClass,
+  draftIntakeCardClass,
+  draftIntakeGridClass,
+  draftIntakeNoteClass,
+  factorListClass,
+  intakeSummaryMetricCardClass,
+  intakeSummaryMetricGridClass,
+  organismAddButtonClass,
+  organismChipClass,
+  organismChipCopyClass,
+  organismChipRemoveClass,
+  organismChipRowClass,
+  organismChipStaticClass,
+  propertyChipClass,
+  propertyHintClass,
+  segmentedToggleClass,
+  selectedCaseChipClass,
+  selectedCaseChipStripClass,
+  supportFieldClass,
+  supportHintClass,
+  supportLabelClass,
+  summaryNoteClass,
+  tagPillClass,
+  togglePillClass,
+  visitContextSelectClass,
+  visitIntakeMetaClass,
+  visitIntakeSummaryBadgeClass,
+  visitTimingGridClass,
+  visitTimingMetaClass,
+} from "../ui/workspace-patterns";
 
 type DraftState = {
   patient_id: string;
@@ -81,227 +121,329 @@ export function PatientVisitForm({
   removeAdditionalOrganism,
   onCompleteIntake,
 }: Props) {
+  const contactLensSummary =
+    draft.contact_lens_use !== "none"
+      ? translateOption(locale, "contactLens", draft.contact_lens_use)
+      : pick(locale, "No lens use", "렌즈 사용 없음");
+  const predisposingSummary =
+    draft.predisposing_factor.length > 0
+      ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" / ")
+      : pick(locale, "No predisposing factor selected", "선택된 선행 인자 없음");
+  const organismToneCopy =
+    draft.additional_organisms.length > 0
+      ? pick(locale, "Polymicrobial", "다균종")
+      : pick(locale, "Single organism", "단일 균종");
+  const organismCategorySummary = draft.culture_category
+    ? translateOption(locale, "cultureCategory", draft.culture_category)
+    : notAvailableLabel;
+  const primaryOrganismLabel = primaryOrganismSummary || draft.culture_species || notAvailableLabel;
+
   if (!draft.intake_completed) {
     return (
       <>
-        <section className="doc-section">
-          <div className="patient-inline-header">
-            <div className="doc-section-label">{pick(locale, "Patient identity", "환자 정보")}</div>
-            <label className="patient-inline-item patient-inline-item-id">
-              <strong>{pick(locale, "Patient ID", "환자 ID")}</strong>
-              <input
-                value={draft.patient_id}
-                onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
-                placeholder="KERA-2026-001"
-              />
-            </label>
-            <label className="patient-inline-item">
-              <strong>{pick(locale, "Sex", "성별")}</strong>
-              <select value={draft.sex} onChange={(event) => setDraft((current) => ({ ...current, sex: event.target.value }))}>
-                {sexOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {translateOption(locale, "sex", option)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="patient-inline-item patient-inline-item-age">
-              <strong>{pick(locale, "Age", "나이")}</strong>
-              <input
-                type="number"
-                min={0}
-                value={draft.age}
-                onChange={(event) => setDraft((current) => ({ ...current, age: event.target.value }))}
-              />
-            </label>
-            <span className="patient-inline-count">
-              {draftImagesCount} {pick(locale, "image blocks", "이미지 블록")}
-            </span>
-          </div>
-        </section>
-
-        <section className="doc-section">
-          <div className="doc-section-head">
-            <div className="visit-context-headline">
-              <div className="doc-section-label">{pick(locale, "Visit context", "방문 맥락")}</div>
-              <div className="property-hint visit-context-hint">
-                {pick(locale, "Select one or more risk factors below using the toggles.", "아래 위험 인자를 토글로 하나 이상 선택할 수 있습니다.")}
+        <section className={docSectionClass}>
+          <Card as="div" variant="nested" className={draftIntakeCardClass}>
+            <SectionHeader
+              className={docSectionHeadClass}
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Patient identity", "환자 기본 정보")}</div>}
+              title={pick(locale, "Anchor the case with the patient basics", "환자 정보로 케이스 기준점 고정")}
+              titleAs="h4"
+              description={pick(
+                locale,
+                "Start with the chart-level identifiers. Image authoring opens after the intake is locked.",
+                "차트 수준 기본 정보를 먼저 입력합니다. intake가 고정되면 이미지 작성 단계로 넘어갑니다."
+              )}
+              aside={
+                <div className={`${docBadgeRowClass} ${visitIntakeMetaClass}`}>
+                  <span className={docSiteBadgeClass}>{`${draftImagesCount} ${pick(locale, "image blocks", "이미지 블록")}`}</span>
+                  <span className={docSiteBadgeClass}>{`${pick(locale, "Visit reference", "방문 기준")} / ${resolvedVisitReferenceLabel}`}</span>
+                </div>
+              }
+            />
+            <div className={draftIntakeGridClass}>
+              <Field label={pick(locale, "Patient ID", "환자 ID")}>
+                <input
+                  value={draft.patient_id}
+                  onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
+                  placeholder="KERA-2026-001"
+                />
+              </Field>
+              <Field label={pick(locale, "Sex", "성별")}>
+                <select value={draft.sex} onChange={(event) => setDraft((current) => ({ ...current, sex: event.target.value }))}>
+                  {sexOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {translateOption(locale, "sex", option)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={pick(locale, "Age", "나이")}>
+                <input
+                  type="number"
+                  min={0}
+                  value={draft.age}
+                  onChange={(event) => setDraft((current) => ({ ...current, age: event.target.value }))}
+                />
+              </Field>
+              <div className={supportFieldClass}>
+                <span className={supportLabelClass}>{pick(locale, "Draft scope", "초안 상태")}</span>
+                <div className={selectedCaseChipStripClass}>
+                  <div className={selectedCaseChipClass}>
+                    <strong>{pick(locale, "Draft images", "초안 이미지")}</strong>
+                    <span>{draftImagesCount}</span>
+                  </div>
+                  <div className={selectedCaseChipClass}>
+                    <strong>{pick(locale, "Visit reference", "방문 기준")}</strong>
+                    <span>{resolvedVisitReferenceLabel}</span>
+                  </div>
+                </div>
+                <div className={supportHintClass}>
+                  {pick(locale, "Counts local images before the visit is saved.", "방문 저장 전 이 탭에만 있는 이미지를 집계합니다.")}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="visit-context-inline">
-            <Field className="visit-context-select" label={pick(locale, "Contact lens", "콘택트렌즈")}>
-              <select
-                value={draft.contact_lens_use}
-                onChange={(event) => setDraft((current) => ({ ...current, contact_lens_use: event.target.value }))}
-              >
-                {contactLensOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {translateOption(locale, "contactLens", option)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <div className="tag-cloud visit-context-tags">
-              {predisposingFactorOptions.map((factor) => (
-                <button
-                  key={factor}
-                  className={`tag-pill ${draft.predisposing_factor.includes(factor) ? "active" : ""}`}
-                  type="button"
-                  onClick={() => togglePredisposingFactor(factor)}
-                >
-                  {translateOption(locale, "predisposing", factor)}
-                </button>
-              ))}
-            </div>
-          </div>
-          <Field
-            className="notes-field"
-            label={pick(locale, "Case note", "케이스 메모")}
-            hint={pick(
-              locale,
-              "Freeform note space for ocular surface context, referral history, or procedural remarks.",
-              "안구 표면 상태, 전원 이력, 시술 관련 메모 등을 자유롭게 적을 수 있습니다."
-            )}
-          >
-            <textarea
-              rows={1}
-              value={draft.other_history}
-              onChange={(event) => setDraft((current) => ({ ...current, other_history: event.target.value }))}
-              placeholder={pick(
-                locale,
-                "Freeform note space for ocular surface context, referral history, or procedural remarks.",
-                "안구 표면 상태, 전원 이력, 시술 관련 메모 등을 자유롭게 적을 수 있습니다."
-              )}
-            />
-          </Field>
+          </Card>
         </section>
 
-        <section className="doc-section">
-          <div className="organism-inline-header">
-            <div className="organism-inline-meta">
-              <div className="doc-section-label">{pick(locale, "Organism", "균종")}</div>
-              <span className="organism-inline-state">
-                {draft.additional_organisms.length > 0 ? pick(locale, "Polymicrobial", "다균종") : pick(locale, "Single organism", "단일 균종")}
-              </span>
+        <section className={docSectionClass}>
+          <Card as="div" variant="nested" className={draftIntakeCardClass}>
+            <SectionHeader
+              className={docSectionHeadClass}
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Visit context", "방문 맥락")}</div>}
+              title={pick(locale, "Capture lens use, risk factors, and a short note", "렌즈 사용, 위험 인자, 메모 정리")}
+              titleAs="h4"
+              description={pick(
+                locale,
+                "This section frames the ocular surface context before you choose the organism and images.",
+                "원인균과 이미지를 고르기 전에 안표면 맥락을 먼저 고정하는 구간입니다."
+              )}
+            />
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+              <Field className={visitContextSelectClass} label={pick(locale, "Contact lens", "콘택트렌즈")}>
+                <select
+                  value={draft.contact_lens_use}
+                  onChange={(event) => setDraft((current) => ({ ...current, contact_lens_use: event.target.value }))}
+                >
+                  {contactLensOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {translateOption(locale, "contactLens", option)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div className={supportFieldClass}>
+                <span className={supportLabelClass}>{pick(locale, "Predisposing factors", "선행 인자")}</span>
+                <div className={factorListClass}>
+                  {predisposingFactorOptions.map((factor) => (
+                    <Button
+                      key={factor}
+                      className={tagPillClass(draft.predisposing_factor.includes(factor))}
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => togglePredisposingFactor(factor)}
+                    >
+                      {translateOption(locale, "predisposing", factor)}
+                    </Button>
+                  ))}
+                </div>
+                <div className={supportHintClass}>
+                  {pick(
+                    locale,
+                    "Select one or more risk factors. The summary card will reflect the active choices.",
+                    "하나 이상 선택할 수 있고, 완료 후 요약 카드에 그대로 반영됩니다."
+                  )}
+                </div>
+              </div>
             </div>
-            <label className="organism-inline-item">
-              <strong>{pick(locale, "Category", "분류")}</strong>
-              <select
-                value={draft.culture_category}
-                onChange={(event) => {
-                  updatePrimaryOrganism(event.target.value, "");
-                }}
-              >
-                <option value="">{pick(locale, "Select category", "분류 선택")}</option>
-                {Object.keys(cultureSpecies).map((option) => (
-                  <option key={option} value={option}>
-                    {translateOption(locale, "cultureCategory", option)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="organism-inline-item organism-inline-item-species">
-              <strong>{pick(locale, "Species", "세부 균종")}</strong>
-              <select
-                value={draft.culture_species}
-                disabled={!draft.culture_category}
-                onChange={(event) => updatePrimaryOrganism(draft.culture_category, event.target.value)}
-              >
-                <option value="">{pick(locale, "Select species", "균종 선택")}</option>
-                {speciesOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="organism-inline-item organism-inline-item-action">
-              <strong>{pick(locale, "Additional organisms", "추가 균종")}</strong>
-              <button className={`ghost-button ${showAdditionalOrganismForm ? "active" : ""}`} type="button" onClick={() => setShowAdditionalOrganismForm((current) => !current)}>
-                {showAdditionalOrganismForm ? pick(locale, "Hide mixed", "다균종 입력 닫기") : pick(locale, "Add mixed", "다균종 입력")}
-              </button>
-            </div>
-          </div>
-          <div className="property-hint organism-primary-hint">
-            {pick(locale, "This is the primary organism label for the case.", "이 값이 케이스의 주 균종 라벨로 저장됩니다.")}
-          </div>
-          {showAdditionalOrganismForm ? (
-            <div className="organism-add-grid">
+            <Field
+              className={draftIntakeNoteClass}
+              label={pick(locale, "Case note", "케이스 메모")}
+              hint={pick(
+                locale,
+                "Use this for ocular surface context, referral history, or any procedural note that should survive into review.",
+                "안표면 상태, 의뢰 경과, 시술 메모처럼 나중에 리뷰까지 남겨둘 내용을 적습니다."
+              )}
+            >
+              <textarea
+                rows={3}
+                value={draft.other_history}
+                onChange={(event) => setDraft((current) => ({ ...current, other_history: event.target.value }))}
+                placeholder={pick(
+                  locale,
+                  "Add concise clinical context for this visit.",
+                  "이 방문에 필요한 임상 맥락을 간단히 적어두세요."
+                )}
+              />
+            </Field>
+          </Card>
+        </section>
+
+        <section className={docSectionClass}>
+          <Card as="div" variant="nested" className={draftIntakeCardClass}>
+            <SectionHeader
+              className={docSectionHeadClass}
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Organism", "원인균")}</div>}
+              title={pick(locale, "Define the primary label before image work begins", "이미지 작업 전 기본 원인균 라벨 고정")}
+              titleAs="h4"
+              description={pick(
+                locale,
+                "Pick the primary culture label first. Mixed organisms can be added as supporting labels.",
+                "기본 배양 라벨을 먼저 정하고, 추가 균주는 보조 라벨로 이어서 붙입니다."
+              )}
+              aside={<span className={`${docSiteBadgeClass} ${visitIntakeSummaryBadgeClass}`}>{organismToneCopy}</span>}
+            />
+            <div className={draftIntakeGridClass}>
               <Field label={pick(locale, "Category", "분류")}>
                 <select
-                  value={pendingOrganism.culture_category}
+                  value={draft.culture_category}
                   onChange={(event) => {
-                    const nextCategory = event.target.value;
-                    setPendingOrganism({
-                      culture_category: nextCategory,
-                      culture_species: (cultureSpecies[nextCategory] ?? [pendingOrganism.culture_species])[0],
-                    });
+                    updatePrimaryOrganism(event.target.value, "");
                   }}
                 >
+                  <option value="">{pick(locale, "Select category", "분류 선택")}</option>
                   {Object.keys(cultureSpecies).map((option) => (
-                    <option key={`pending-${option}`} value={option}>
+                    <option key={option} value={option}>
                       {translateOption(locale, "cultureCategory", option)}
                     </option>
                   ))}
                 </select>
               </Field>
-              <Field label={pick(locale, "Species", "세부 균종")}>
+              <Field label={pick(locale, "Species", "균종")}>
                 <select
-                  value={pendingOrganism.culture_species}
-                  onChange={(event) =>
-                    setPendingOrganism((current) => ({
-                      ...current,
-                      culture_species: event.target.value,
-                    }))
-                  }
+                  value={draft.culture_species}
+                  disabled={!draft.culture_category}
+                  onChange={(event) => updatePrimaryOrganism(draft.culture_category, event.target.value)}
                 >
-                  {pendingSpeciesOptions.map((option) => (
-                    <option key={`pending-species-${option}`} value={option}>
+                  <option value="">{pick(locale, "Select species", "균종 선택")}</option>
+                  {speciesOptions.map((option) => (
+                    <option key={option} value={option}>
                       {option}
                     </option>
                   ))}
                 </select>
               </Field>
-              <Button className="ghost-button organism-add-button" type="button" variant="ghost" onClick={addAdditionalOrganism}>
-                {pick(locale, "Add organism", "균종 추가")}
-              </Button>
+              <div className={supportFieldClass}>
+                <span className={supportLabelClass}>{pick(locale, "Additional organisms", "추가 균주")}</span>
+                <Button
+                  className={showAdditionalOrganismForm ? "border-brand/20 bg-brand-soft text-brand" : ""}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowAdditionalOrganismForm((current) => !current)}
+                >
+                  {showAdditionalOrganismForm ? pick(locale, "Hide mixed", "혼합 균주 닫기") : pick(locale, "Add mixed", "혼합 균주 추가")}
+                </Button>
+                <div className={supportHintClass}>
+                  {pick(locale, "Open the mixed-culture form only when this visit includes more than one label.", "이 방문에 라벨이 둘 이상일 때만 추가 입력을 엽니다.")}
+                </div>
+              </div>
             </div>
-          ) : null}
+            <div className={`${propertyHintClass} -mt-1 whitespace-normal`}>
+              {pick(locale, "This primary organism becomes the main label for the case.", "여기서 고른 기본 균주가 케이스의 주 라벨이 됩니다.")}
+            </div>
+            {showAdditionalOrganismForm ? (
+              <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label={pick(locale, "Category", "분류")}>
+                    <select
+                      value={pendingOrganism.culture_category}
+                      onChange={(event) => {
+                        const nextCategory = event.target.value;
+                        setPendingOrganism({
+                          culture_category: nextCategory,
+                          culture_species: (cultureSpecies[nextCategory] ?? [pendingOrganism.culture_species])[0],
+                        });
+                      }}
+                    >
+                      {Object.keys(cultureSpecies).map((option) => (
+                        <option key={`pending-${option}`} value={option}>
+                          {translateOption(locale, "cultureCategory", option)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={pick(locale, "Species", "균종")}>
+                    <select
+                      value={pendingOrganism.culture_species}
+                      onChange={(event) =>
+                        setPendingOrganism((current) => ({
+                          ...current,
+                          culture_species: event.target.value,
+                        }))
+                      }
+                    >
+                      {pendingSpeciesOptions.map((option) => (
+                        <option key={`pending-species-${option}`} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <div className={supportFieldClass}>
+                    <span className={supportLabelClass}>{pick(locale, "Action", "실행")}</span>
+                    <Button className={organismAddButtonClass} type="button" size="sm" variant="primary" onClick={addAdditionalOrganism}>
+                      {pick(locale, "Add organism", "균주 추가")}
+                    </Button>
+                    <div className={supportHintClass}>
+                      {pick(locale, "Adds the pending organism to the review summary below.", "아래 요약 영역에 보조 균주를 추가합니다.")}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            ) : null}
+          </Card>
         </section>
 
         {draft.additional_organisms.length > 0 ? (
-          <section className="doc-section">
-            <div className="doc-section-head">
-              <div>
-                <div className="doc-section-label">{pick(locale, "Organism summary", "균종 요약")}</div>
-              </div>
-              <span>{pick(locale, "Polymicrobial", "다균종")}</span>
-            </div>
-            <div className="organism-chip-row">
-              {intakeOrganisms.map((organism, index) => (
-                <div key={`${organism.culture_category}-${organism.culture_species}-${index}`} className="organism-chip">
-                  <div className="organism-chip-copy">
-                    <strong>{organism.culture_species}</strong>
-                    <span>{index === 0 ? pick(locale, "Primary", "대표 균종") : translateOption(locale, "cultureCategory", organism.culture_category)}</span>
+          <section className={docSectionClass}>
+            <Card as="div" variant="nested" className={draftIntakeCardClass}>
+              <SectionHeader
+                className={docSectionHeadClass}
+                eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Organism summary", "균주 요약")}</div>}
+                title={pick(locale, "Review the mixed-culture label stack", "혼합 균주 라벨 스택 점검")}
+                titleAs="h4"
+                description={pick(
+                  locale,
+                  "The first chip remains the primary label. Additional chips stay removable until the intake is completed.",
+                  "첫 칩은 기본 라벨로 유지되고, intake 완료 전까지는 추가 균주를 계속 제거할 수 있습니다."
+                )}
+                aside={<span className={docSiteBadgeClass}>{pick(locale, "Polymicrobial", "다균종")}</span>}
+              />
+              <div className={organismChipRowClass}>
+                {intakeOrganisms.map((organism, index) => (
+                  <div key={`${organism.culture_category}-${organism.culture_species}-${index}`} className={organismChipClass}>
+                    <div className={organismChipCopyClass}>
+                      <strong>{organism.culture_species}</strong>
+                      <span>
+                        {index === 0
+                          ? pick(locale, "Primary", "기본 라벨")
+                          : translateOption(locale, "cultureCategory", organism.culture_category)}
+                      </span>
+                    </div>
+                    {index > 0 ? (
+                      <button
+                        className={organismChipRemoveClass}
+                        type="button"
+                        onClick={() => removeAdditionalOrganism(organism)}
+                        aria-label={pick(locale, "Remove organism", "균주 제거")}
+                      >
+                        {pick(locale, "Remove", "제거")}
+                      </button>
+                    ) : null}
                   </div>
-                  {index > 0 ? (
-                    <button className="organism-chip-remove" type="button" onClick={() => removeAdditionalOrganism(organism)} aria-label={pick(locale, "Remove organism", "균종 제거")}>
-                      {pick(locale, "Remove", "제거")}
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-            <div className="property-hint">
-              {pick(locale, "This visit will be saved as polymicrobial automatically.", "이 방문은 저장 시 자동으로 다균종으로 처리됩니다.")}
-            </div>
+                ))}
+              </div>
+              <div className={propertyHintClass}>
+                {pick(locale, "This visit will be saved as polymicrobial automatically.", "이 방문은 자동으로 다균종 케이스로 저장됩니다.")}
+              </div>
+            </Card>
           </section>
         ) : null}
 
-        <div className="doc-footer">
+        <div className={docFooterClass}>
           <div />
-          <Button className="primary-workspace-button complete-intake-button" type="button" variant="primary" onClick={onCompleteIntake}>
+          <Button className={completeIntakeButtonClass} type="button" variant="primary" onClick={onCompleteIntake}>
             {pick(locale, "Complete", "완료")}
           </Button>
         </div>
@@ -311,79 +453,109 @@ export function PatientVisitForm({
 
   return (
     <>
-      <section className="doc-section intake-summary-card">
-        <div className="doc-section-head">
-          <div>
-            <div className="doc-section-label">{pick(locale, "Core intake", "기본 입력")}</div>
+      <Card as="section" variant="nested" className="grid gap-5 p-5">
+        <SectionHeader
+          className={docSectionHeadClass}
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Core intake", "기본 intake")}</div>}
+          title={pick(locale, "Intake locked and ready for image authoring", "intake 고정 완료, 이미지 작성 준비됨")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "The core intake is fixed for this draft. Review the summary below or reopen editing if the case details need adjustment.",
+            "이 초안의 기본 intake는 고정되었습니다. 아래 요약을 확인하거나, 수정이 필요하면 편집으로 돌아가세요."
+          )}
+          aside={
+            <Button size="sm" variant="ghost" type="button" onClick={() => setDraft((current) => ({ ...current, intake_completed: false }))}>
+              {pick(locale, "Edit", "수정")}
+            </Button>
+          }
+        />
+        <MetricGrid columns={3} className={intakeSummaryMetricGridClass}>
+          <MetricItem
+            className={intakeSummaryMetricCardClass}
+            value={draft.patient_id.trim() || notAvailableLabel}
+            label={`${translateOption(locale, "sex", draft.sex)} / ${draft.age || notAvailableLabel}`}
+          />
+          <MetricItem
+            className={intakeSummaryMetricCardClass}
+            value={resolvedVisitReferenceLabel}
+            label={`${pick(locale, "Calendar date", "실제 날짜")} / ${actualVisitDateLabel}`}
+          />
+          <MetricItem
+            className={intakeSummaryMetricCardClass}
+            value={`${organismCategorySummary} / ${primaryOrganismLabel}`}
+            label={organismToneCopy}
+          />
+        </MetricGrid>
+        <div className={selectedCaseChipStripClass}>
+          <div className={selectedCaseChipClass}>
+            <strong>{pick(locale, "Contact lens", "콘택트렌즈")}</strong>
+            <span>{contactLensSummary}</span>
           </div>
-          <button className="ghost-button" type="button" onClick={() => setDraft((current) => ({ ...current, intake_completed: false }))}>
-            {pick(locale, "Edit", "수정")}
-          </button>
+          <div className={selectedCaseChipClass}>
+            <strong>{pick(locale, "Predisposing factors", "선행 인자")}</strong>
+            <span>{predisposingSummary}</span>
+          </div>
+          <div className={selectedCaseChipClass}>
+            <strong>{pick(locale, "Visit status", "방문 상태")}</strong>
+            <span>{translateOption(locale, "visitStatus", draft.visit_status)}</span>
+          </div>
         </div>
-        <div className="intake-summary-grid">
-          <div className="intake-summary-block">
-            <div className="intake-summary-inline">
-              <strong>{draft.patient_id.trim() || notAvailableLabel}</strong>
-              <p>{`${translateOption(locale, "sex", draft.sex)} · ${draft.age || notAvailableLabel}`}</p>
-            </div>
+        {draft.additional_organisms.length > 0 ? (
+          <div className={organismChipRowClass}>
+            {intakeOrganisms.slice(1).map((organism, index) => (
+              <span key={`summary-organism-${organism.culture_category}-${organism.culture_species}-${index}`} className={`${organismChipClass} ${organismChipStaticClass}`}>
+                {`${translateOption(locale, "cultureCategory", organism.culture_category)} / ${organism.culture_species}`}
+              </span>
+            ))}
           </div>
-          <div className="intake-summary-block">
-            <div className="intake-summary-inline">
-              {draft.contact_lens_use !== "none" ? <strong>{translateOption(locale, "contactLens", draft.contact_lens_use)}</strong> : null}
-              <p>
-                {draft.predisposing_factor.length > 0
-                  ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" · ")
-                  : pick(locale, "No predisposing factor selected", "선택된 선행 인자 없음")}
-              </p>
-            </div>
-          </div>
-          <div className="intake-summary-block intake-summary-block-wide">
-            <div className="intake-summary-inline intake-summary-inline-organism">
-              <strong>{`${translateOption(locale, "cultureCategory", draft.culture_category)} · ${primaryOrganismSummary}`}</strong>
-              {draft.additional_organisms.length > 0 ? (
-                <div className="organism-chip-row">
-                  {intakeOrganisms.slice(1).map((organism, index) => (
-                    <span key={`summary-organism-${organism.culture_category}-${organism.culture_species}-${index}`} className="organism-chip static">
-                      {`${translateOption(locale, "cultureCategory", organism.culture_category)} · ${organism.culture_species}`}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            {draft.other_history.trim() ? <p className="intake-summary-note">{draft.other_history.trim()}</p> : null}
-          </div>
-        </div>
-      </section>
+        ) : null}
+        {draft.other_history.trim() ? <p className={summaryNoteClass}>{draft.other_history.trim()}</p> : null}
+      </Card>
 
-      <section className="doc-section">
-        <div className="doc-section-head">
-          <div>
-            <div className="doc-section-label">{pick(locale, "Visit timing", "방문 시점")}</div>
-            <h4>{pick(locale, "Choose initial or follow-up, then add the date if needed", "초진/재진 선택 후 필요하면 날짜 입력")}</h4>
-          </div>
-          <div className="doc-badge-row visit-timing-meta">
-            <span className="doc-site-badge">
-              {pick(locale, "Visit reference", "방문 기준값")} · {resolvedVisitReferenceLabel}
-            </span>
-            <span className="doc-site-badge">
-              {pick(locale, "Calendar date", "실제 날짜")} · {actualVisitDateLabel}
-            </span>
-          </div>
-        </div>
-        <div className={`property-grid visit-timing-grid ${!draft.is_initial_visit ? "visit-timing-grid-follow-up" : ""}`}>
-          <div className="property-chip">
+      <section className={docSectionClass}>
+        <SectionHeader
+          className={docSectionHeadClass}
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Visit timing", "방문 시점")}</div>}
+          title={pick(locale, "Choose initial or follow-up, then add the date if needed", "초진/재진 선택 후 필요하면 날짜 입력")}
+          titleAs="h4"
+          aside={
+            <div className={`${docBadgeRowClass} ${visitTimingMetaClass}`}>
+              <span className={docSiteBadgeClass}>
+                {pick(locale, "Visit reference", "방문 기준")} / {resolvedVisitReferenceLabel}
+              </span>
+              <span className={docSiteBadgeClass}>
+                {pick(locale, "Calendar date", "실제 날짜")} / {actualVisitDateLabel}
+              </span>
+            </div>
+          }
+        />
+        <div className={visitTimingGridClass(!draft.is_initial_visit)}>
+          <div className={propertyChipClass}>
             <span>{pick(locale, "Visit phase", "초진/재진")}</span>
-            <div className="segmented-toggle" role="group" aria-label={pick(locale, "Visit phase", "초진/재진")}>
-              <button className={`toggle-pill phase-pill phase-initial ${draft.is_initial_visit ? "active" : ""}`} type="button" onClick={() => setDraft((current) => ({ ...current, is_initial_visit: true }))}>
+            <div className={segmentedToggleClass} role="group" aria-label={pick(locale, "Visit phase", "초진/재진")}>
+              <Button
+                className={togglePillClass(draft.is_initial_visit)}
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setDraft((current) => ({ ...current, is_initial_visit: true }))}
+              >
                 {pick(locale, "Initial", "초진")}
-              </button>
-              <button className={`toggle-pill phase-pill phase-followup ${!draft.is_initial_visit ? "active" : ""}`} type="button" onClick={() => setDraft((current) => ({ ...current, is_initial_visit: false }))}>
+              </Button>
+              <Button
+                className={togglePillClass(!draft.is_initial_visit)}
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setDraft((current) => ({ ...current, is_initial_visit: false }))}
+              >
                 {pick(locale, "Follow-up", "재진")}
-              </button>
+              </Button>
             </div>
           </div>
           {!draft.is_initial_visit ? (
-            <Field className="property-chip" label={pick(locale, "FU number", "FU 번호")}>
+            <Field className={propertyChipClass} label={pick(locale, "FU number", "FU 번호")}>
               <select value={draft.follow_up_number} onChange={(event) => setDraft((current) => ({ ...current, follow_up_number: event.target.value }))}>
                 {Array.from({ length: 15 }, (_, index) => String(index + 1)).map((option) => (
                   <option key={option} value={option}>
@@ -394,13 +566,17 @@ export function PatientVisitForm({
             </Field>
           ) : null}
           <Field
-            className="property-chip"
+            className={propertyChipClass}
             label={pick(locale, "Date (optional)", "날짜 (선택)")}
-            hint={pick(locale, "This uses the same date format as before and is stored separately from the visit reference.", "이전과 같은 날짜 형식을 사용하며 방문 기준값과 별도로 저장됩니다.")}
+            hint={pick(
+              locale,
+              "Stored separately from the visit reference and follows the same date format as before.",
+              "방문 기준과 별도로 저장되며 기존과 같은 날짜 형식을 사용합니다."
+            )}
           >
             <input type="date" value={draft.actual_visit_date} onChange={(event) => setDraft((current) => ({ ...current, actual_visit_date: event.target.value }))} />
           </Field>
-          <Field className="property-chip" label={pick(locale, "Status", "상태")}>
+          <Field className={propertyChipClass} label={pick(locale, "Status", "상태")}>
             <select value={draft.visit_status} onChange={(event) => setDraft((current) => ({ ...current, visit_status: event.target.value }))}>
               {visitStatusOptions.map((option) => (
                 <option key={option} value={option}>

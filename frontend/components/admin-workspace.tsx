@@ -1,5 +1,21 @@
-"use client";
+﻿"use client";
 
+import { Button } from "./ui/button";
+import { Card } from "./ui/card";
+import { MetricGrid, MetricItem } from "./ui/metric-grid";
+import { SectionHeader } from "./ui/section-header";
+import {
+  docSectionLabelClass,
+  docSiteBadgeClass,
+  railSiteButtonClass,
+  workspaceHeaderClass,
+  workspaceKickerClass,
+  workspaceMainClass,
+  workspaceNoiseClass,
+  workspaceRailClass,
+  workspaceShellClass,
+  workspaceToastClass,
+} from "./ui/workspace-patterns";
 import { CrossValidationSection } from "./admin-workspace/cross-validation-section";
 import { DashboardSection } from "./admin-workspace/dashboard-section";
 import { FederationSection } from "./admin-workspace/federation-section";
@@ -12,6 +28,7 @@ import { getFoldConfusionMatrix, useAdminWorkspaceState } from "./admin-workspac
 import { useAdminWorkspaceController } from "./admin-workspace/use-admin-workspace-controller";
 import { LocaleToggle, pick, translateRole } from "../lib/i18n";
 import { type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
+import { cn } from "../lib/cn";
 
 export type WorkspaceSection =
   | "dashboard"
@@ -66,28 +83,28 @@ function formatWeightPercent(value: number | null | undefined) {
 function formatQualityRecommendation(locale: "en" | "ko", recommendation: string | null | undefined): string {
   switch (recommendation) {
     case "approve_candidate":
-      return pick(locale, "Approve candidate", "승인 권장");
+      return pick(locale, "Approve candidate", "?뱀씤 沅뚯옣");
     case "needs_review":
       return pick(locale, "Needs review", "추가 검토");
     case "reject_candidate":
-      return pick(locale, "Reject candidate", "반려 권장");
+      return pick(locale, "Reject candidate", "諛섎젮 沅뚯옣");
     default:
-      return pick(locale, "Unrated", "미평가");
+      return pick(locale, "Unrated", "誘명룊媛");
   }
 }
 
 function translateQualityFlag(locale: "en" | "ko", flag: string): string {
   const labels: Record<string, [string, string]> = {
-    brightness_out_of_range: ["Brightness out of range", "밝기 범위 이탈"],
+    brightness_out_of_range: ["Brightness out of range", "諛앷린 踰붿쐞 ?댄깉"],
     low_contrast: ["Low contrast", "대비 부족"],
     low_edge_density: ["Low edge density", "경계 정보 부족"],
-    crop_ratio_missing: ["Crop ratio missing", "crop 비율 없음"],
-    crop_too_tight: ["Crop too tight", "crop 너무 좁음"],
-    crop_too_wide: ["Crop too wide", "crop 너무 넓음"],
+    crop_ratio_missing: ["Crop ratio missing", "crop 鍮꾩쑉 ?놁쓬"],
+    crop_too_tight: ["Crop too tight", "crop ?덈Т 醫곸쓬"],
+    crop_too_wide: ["Crop too wide", "crop ?덈Т ?볦쓬"],
     validation_mismatch: ["Validation mismatch", "검증 불일치"],
-    delta_invalid: ["Delta invalid", "delta 이상"],
-    delta_missing: ["Delta missing", "delta 없음"],
-    polymicrobial_excluded: ["Polymicrobial excluded", "다균종 학습 제외"],
+    delta_invalid: ["Delta invalid", "delta ?댁긽"],
+    delta_missing: ["Delta missing", "delta ?놁쓬"],
+    polymicrobial_excluded: ["Polymicrobial excluded", "?ㅺ퇏醫??숈뒿 ?쒖쇅"],
   };
   const pair = labels[flag];
   return pair ? pick(locale, pair[0], pair[1]) : flag;
@@ -293,72 +310,128 @@ export function AdminWorkspace({
 
 
   return (
-    <main className="workspace-shell" data-workspace-theme={theme}>
-      <div className="workspace-noise" />
-      <aside className="workspace-rail">
-        <div className="workspace-brand workspace-brand-rail">
-          <div>
-            <div className="workspace-kicker">{pick(locale, "Operations", "운영")}</div>
-            <h1>{pick(locale, "K-ERA Control", "K-ERA 운영")}</h1>
+    <main className={workspaceShellClass} data-workspace-theme={theme}>
+      <div className={workspaceNoiseClass} />
+      <aside className={workspaceRailClass}>
+        <div className="grid gap-5">
+          <div className="grid gap-3">
+            <div className={workspaceKickerClass}>{pick(locale, "Operations", "?댁쁺")}</div>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h1 className="m-0 font-serif text-[1.95rem] leading-none tracking-[-0.05em] text-ink">
+                  {pick(locale, "K-ERA Control", "K-ERA ?댁쁺")}
+                </h1>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  {pick(
+                    locale,
+                    "Review import, approval, training, and model movement from one operations rail.",
+                    "?꾪룷?? ?뱀씤, ?숈뒿, 紐⑤뜽 ?대룞???섎굹???댁쁺 ?덉씪?먯꽌 ?ㅻ９?덈떎."
+                  )}
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={onOpenCanvas}>
+                {pick(locale, "Case canvas", "케이스 캔버스")}
+              </Button>
+            </div>
           </div>
-          <button className="ghost-button" type="button" onClick={onOpenCanvas}>{pick(locale, "Case canvas", "케이스 캔버스")}</button>
-        </div>
-        <section className="workspace-card rail-section">
-          <div className="rail-section-head"><span className="rail-label">{pick(locale, "Hospitals", "병원")}</span><strong>{sites.length} {pick(locale, "linked", "연결됨")}</strong></div>
-          <div className="rail-site-list">
+
+          <Card as="section" variant="nested" className="grid gap-4 p-4">
+            <SectionHeader
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Hospitals", "蹂묒썝")}</div>}
+              title={pick(locale, "Linked sites", "?곌껐??蹂묒썝")}
+              titleAs="h4"
+              aside={<span className={docSiteBadgeClass}>{`${sites.length} ${pick(locale, "linked", "연결됨")}`}</span>}
+            />
+            <div className="grid gap-2">
             {sites.map((site) => (
-              <button key={site.site_id} className={`rail-site-button ${selectedSiteId === site.site_id ? "active" : ""}`} type="button" onClick={() => onSelectSite(site.site_id)}>
+              <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
                 <strong>{site.display_name}</strong><span>{site.hospital_name || site.site_id}</span>
               </button>
             ))}
-          </div>
-        </section>
-        <section className="workspace-card rail-section">
-          <div className="rail-section-head"><span className="rail-label">{pick(locale, "Sections", "섹션")}</span></div>
-          <div className="ops-nav-list">
+            </div>
+          </Card>
+
+          <Card as="section" variant="nested" className="grid gap-4 p-4">
+            <SectionHeader
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Sections", "?뱀뀡")}</div>}
+              title={pick(locale, "Operations flow", "?댁쁺 ?먮쫫")}
+              titleAs="h4"
+            />
+            <div className="grid gap-2">
             {[
               ["dashboard", pick(locale, "Dashboard", "대시보드")],
               ["imports", pick(locale, "Bulk import", "대량 임포트")],
-              ["requests", pick(locale, "Access requests", "접근 요청")],
-              ["training", pick(locale, "Initial training", "초기 학습")],
+              ["requests", pick(locale, "Access requests", "?묎렐 ?붿껌")],
+              ["training", pick(locale, "Initial training", "珥덇린 ?숈뒿")],
               ["cross_validation", pick(locale, "Cross-validation", "교차 검증")],
               ["registry", pick(locale, "Model registry", "모델 레지스트리")],
               ["management", pick(locale, "Management", "관리")],
-              ...(canAggregate ? [["federation", pick(locale, "Federation", "연합학습")]] : []),
+              ...(canAggregate ? [["federation", pick(locale, "Federation", "?고빀?숈뒿")]] : []),
             ].map(([value, label]) => (
-              <button key={value} className={`ops-nav-button ${section === value ? "active" : ""}`} type="button" onClick={() => setSection(value as typeof section)}>
+              <button
+                key={value}
+                className={cn(
+                  "w-full rounded-[18px] border border-border bg-white/6 px-4 py-3 text-left text-sm font-medium text-ink transition duration-150 ease-out hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted/80",
+                  section === value && "active",
+                  section === value && "border-brand/20 bg-brand-soft/70 shadow-card"
+                )}
+                type="button"
+                onClick={() => setSection(value as typeof section)}
+              >
                 {label}
               </button>
             ))}
-          </div>
-        </section>
-        <section className="workspace-card rail-section">
-          <div className="panel-metric-grid rail-metric-grid">
-            <div><strong>{overview?.pending_access_requests ?? pendingRequests.length}</strong><span>{pick(locale, "pending access", "대기 중 접근 요청")}</span></div>
-            <div><strong>{overview?.pending_model_updates ?? pendingReviewUpdates.length}</strong><span>{pick(locale, "pending updates", "대기 중 업데이트")}</span></div>
-            <div><strong>{overview?.model_version_count ?? modelVersions.length}</strong><span>{pick(locale, "models", "모델")}</span></div>
-            <div><strong>{overview?.current_model_version ?? currentModel?.version_name ?? common.notAvailable}</strong><span>{pick(locale, "current model", "현재 모델")}</span></div>
-          </div>
-          {summary ? <div className="ops-site-summary"><div className="panel-meta"><span>{selectedSiteId}</span><span>{summary.n_patients} {pick(locale, "patients", "환자")}</span><span>{summary.n_images} {pick(locale, "images", "이미지")}</span></div></div> : null}
-        </section>
+            </div>
+          </Card>
+
+          <Card as="section" variant="nested" className="grid gap-4 p-4">
+            <SectionHeader
+              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Snapshot", "?붿빟")}</div>}
+              title={pick(locale, "Queue overview", "?湲곗뿴 媛쒖슂")}
+              titleAs="h4"
+            />
+            <MetricGrid columns={2}>
+              <MetricItem value={overview?.pending_access_requests ?? pendingRequests.length} label={pick(locale, "Pending access", "?湲??묎렐 ?붿껌")} />
+              <MetricItem value={overview?.pending_model_updates ?? pendingReviewUpdates.length} label={pick(locale, "Pending updates", "?湲??낅뜲?댄듃")} />
+              <MetricItem value={overview?.model_version_count ?? modelVersions.length} label={pick(locale, "Models", "紐⑤뜽")} />
+              <MetricItem value={overview?.current_model_version ?? currentModel?.version_name ?? common.notAvailable} label={pick(locale, "Current model", "?꾩옱 紐⑤뜽")} />
+            </MetricGrid>
+            {summary ? (
+              <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
+                <div className="font-medium text-ink">{selectedSiteId}</div>
+                <div>{`${summary.n_patients} ${pick(locale, "patients", "?섏옄")} 쨌 ${summary.n_images} ${pick(locale, "images", "?대?吏")}`}</div>
+              </div>
+            ) : null}
+          </Card>
+        </div>
       </aside>
-      <section className="workspace-main">
-        <header className="workspace-header">
-          <div>
-            <div className="workspace-kicker">{pick(locale, "Control plane", "컨트롤 플레인")}</div>
-            <h2>{pick(locale, "Operate import, review, training, and model movement from the web workspace", "웹 워크스페이스에서 임포트, 승인 검토, 학습, 모델 이동을 운영")}</h2>
-            <p>{pick(locale, `Logged in as ${user.full_name} (${translateRole(locale, user.role)}). Admin and hospital operations now stay in this web workspace.`, `${user.full_name} (${translateRole(locale, user.role)}) 계정으로 로그인됨. 관리자 및 병원 운영 흐름이 이제 이 웹 워크스페이스 안에서 처리됩니다.`)}</p>
-          </div>
-          <div className="workspace-actions">
-            <LocaleToggle />
-            <button className="ghost-button" type="button" onClick={onToggleTheme}>
-              {theme === "dark" ? pick(locale, "Light mode", "라이트 모드") : pick(locale, "Dark mode", "다크 모드")}
-            </button>
-            <button className="ghost-button" type="button" onClick={onOpenCanvas}>{pick(locale, "Open case canvas", "케이스 캔버스 열기")}</button>
-            <button className="primary-workspace-button" type="button" onClick={onLogout}>{pick(locale, "Log out", "로그아웃")}</button>
-          </div>
-        </header>
-        <div className="ops-main-stack">
+      <section className={workspaceMainClass}>
+        <SectionHeader
+          className={workspaceHeaderClass}
+          eyebrow={<div className={workspaceKickerClass}>{pick(locale, "Control plane", "운영 허브")}</div>}
+          title={pick(locale, "Operate import, review, training, and model movement from the web workspace", "???뚰겕?ㅽ럹?댁뒪?먯꽌 ?꾪룷?? ?뱀씤 寃?? ?숈뒿, 紐⑤뜽 ?대룞???댁쁺")}
+          titleAs="h2"
+          description={pick(
+            locale,
+            `Logged in as ${user.full_name} (${translateRole(locale, user.role)}). Admin and hospital operations now stay in this web workspace.`,
+            `${user.full_name} (${translateRole(locale, user.role)}) 怨꾩젙?쇰줈 濡쒓렇?몃맖. 愿由ъ옄 諛?蹂묒썝 ?댁쁺 ?먮쫫???댁젣 ?????뚰겕?ㅽ럹?댁뒪 ?덉뿉??泥섎━?⑸땲??`
+          )}
+          aside={
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <LocaleToggle />
+              <Button type="button" variant="ghost" onClick={onToggleTheme}>
+                {theme === "dark" ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶") : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}
+              </Button>
+              <Button type="button" variant="ghost" onClick={onOpenCanvas}>
+                {pick(locale, "Open case canvas", "耳?댁뒪 罹붾쾭???닿린")}
+              </Button>
+              <Button type="button" variant="primary" onClick={onLogout}>
+                {pick(locale, "Log out", "濡쒓렇?꾩썐")}
+              </Button>
+            </div>
+          }
+        />
+        <div className="grid gap-4">
           {section === "dashboard" ? (
             <DashboardSection
               locale={locale}
@@ -551,7 +624,11 @@ export function AdminWorkspace({
           ) : null}
         </div>
       </section>
-      {toast ? <div className={`workspace-toast tone-${toast.tone}`}><strong>{toast.tone === "success" ? common.saved : common.actionNeeded}</strong><span>{toast.message}</span></div> : null}
+      {toast ? <div className={workspaceToastClass(toast.tone)}><strong>{toast.tone === "success" ? common.saved : common.actionNeeded}</strong><span>{toast.message}</span></div> : null}
     </main>
   );
 }
+
+
+
+

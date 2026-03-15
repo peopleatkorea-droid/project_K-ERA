@@ -1,5 +1,5 @@
 import { request } from "./api-core";
-import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, SiteRecord } from "./types";
+import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, PublicStatistics, SiteRecord } from "./types";
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>("/api/auth/login", {
@@ -25,6 +25,10 @@ export async function fetchSites(token: string) {
 
 export async function fetchPublicSites() {
   return request<SiteRecord[]>("/api/public/sites");
+}
+
+export async function fetchPublicStatistics() {
+  return request<PublicStatistics>("/api/public/statistics");
 }
 
 export async function fetchMyAccessRequests(token: string) {

@@ -256,6 +256,7 @@ describe("CaseWorkspace integration", () => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
     expect(await screen.findByText("Case KERA-2026-001 / Initial saved to hospital SITE_A.")).toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: "Live lesion crop preview" })).toBeChecked();
   });
 
   it("overwrites an existing visit when the user confirms overwrite", async () => {

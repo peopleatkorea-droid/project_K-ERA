@@ -811,6 +811,7 @@ class SiteStore:
         queue_names: list[str] | None = None,
         site_id: str | None = None,
     ) -> dict[str, Any] | None:
+        init_data_plane_db()
         now = utc_now()
         with DATA_PLANE_ENGINE.begin() as conn:
             query = select(site_jobs).where(
@@ -848,6 +849,7 @@ class SiteStore:
 
     @staticmethod
     def heartbeat_job(job_id: str, worker_id: str) -> None:
+        init_data_plane_db()
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 update(site_jobs)
@@ -866,6 +868,7 @@ class SiteStore:
 
     @staticmethod
     def requeue_stale_jobs(*, heartbeat_before: str) -> int:
+        init_data_plane_db()
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(
                 select(site_jobs).where(

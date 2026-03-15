@@ -19,6 +19,10 @@ def build_auth_router(support: Any) -> APIRouter:
     def public_sites(cp=Depends(get_control_plane)) -> list[dict[str, Any]]:
         return cp.list_sites()
 
+    @router.get("/api/public/statistics")
+    def public_statistics(cp=Depends(get_control_plane)) -> dict[str, Any]:
+        return cp.get_public_statistics()
+
     @router.post("/api/auth/login")
     def login(payload: LoginRequest, cp=Depends(get_control_plane)) -> dict[str, Any]:
         if not local_login_enabled():

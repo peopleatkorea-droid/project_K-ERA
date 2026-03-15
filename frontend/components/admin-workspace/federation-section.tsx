@@ -2,6 +2,12 @@
 
 import type { Dispatch, SetStateAction } from "react";
 
+import { Button } from "../ui/button";
+import { Card } from "../ui/card";
+import { Field } from "../ui/field";
+import { MetricGrid, MetricItem } from "../ui/metric-grid";
+import { SectionHeader } from "../ui/section-header";
+import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
 import type { AggregationRecord, ModelUpdateRecord } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
 
@@ -29,72 +35,112 @@ export function FederationSection({
   onAggregation,
 }: Props) {
   return (
-    <section className="doc-surface">
-      <div className="doc-title-row">
-        <div>
-          <div className="doc-eyebrow">{pick(locale, "Federation", "연합학습")}</div>
-          <h3>{pick(locale, "Aggregate approved hospital deltas", "승인된 병원 델타 집계")}</h3>
-        </div>
-        <div className="doc-site-badge">{approvedUpdates.length} {pick(locale, "approved", "승인됨")}</div>
-      </div>
-      <label className="inline-field">
-        <span>{pick(locale, "Optional version name", "선택적 버전 이름")}</span>
-        <input
-          value={newVersionName}
-          onChange={(event) => setNewVersionName(event.target.value)}
-          placeholder="global-densenet-fedavg-20260311"
+    <Card as="section" variant="surface" className="grid gap-5 p-6">
+      <SectionHeader
+        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Federation", "연합학습")}</div>}
+        title={pick(locale, "Aggregate approved hospital deltas", "승인된 병원 델타 집계")}
+        titleAs="h3"
+        description={pick(
+          locale,
+          "Aggregate the approved queue into a new global model version while preserving site-level traceability.",
+          "승인된 큐를 새로운 글로벌 모델 버전으로 집계하면서 병원 단위 추적성은 유지합니다."
+        )}
+        aside={<span className={docSiteBadgeClass}>{`${approvedUpdates.length} ${pick(locale, "approved", "승인")}`}</span>}
+      />
+
+      <Card as="div" variant="nested" className="grid gap-4 p-5">
+        <SectionHeader
+          title={pick(locale, "Aggregation launch", "집계 실행")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "The server aggregates only approved deltas that share the same architecture and compatible base version.",
+            "서버는 같은 아키텍처와 호환 가능한 기준 버전을 공유하는 승인 델타만 집계합니다."
+          )}
         />
-      </label>
-      <div className="doc-footer">
-        <div>
-          <strong>{pick(locale, "Aggregate the full approved queue", "승인 대기열 전체 집계")}</strong>
-          <p>{pick(locale, "The API now aggregates only approved deltas that share one architecture and base model.", "이제 API는 같은 아키텍처와 기준 모델을 공유하는 승인된 delta만 집계합니다.")}</p>
+        <Field label={pick(locale, "Optional version name", "선택 버전 이름")}>
+          <input
+            value={newVersionName}
+            onChange={(event) => setNewVersionName(event.target.value)}
+            placeholder="global-densenet-fedavg-20260311"
+          />
+        </Field>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm leading-6 text-muted">
+            {pick(
+              locale,
+              "Use a descriptive version name only when you need a human-readable checkpoint in the registry.",
+              "레지스트리에서 사람이 바로 읽을 수 있는 체크포인트가 필요할 때만 설명형 버전 이름을 사용하세요."
+            )}
+          </div>
+          <Button type="button" variant="primary" disabled={aggregationBusy || approvedUpdates.length === 0} onClick={onAggregation}>
+            {aggregationBusy ? pick(locale, "Aggregating...", "집계 중...") : pick(locale, "Run FedAvg aggregation", "FedAvg 집계 실행")}
+          </Button>
         </div>
-        <button className="primary-workspace-button" type="button" disabled={aggregationBusy || approvedUpdates.length === 0} onClick={onAggregation}>
-          {aggregationBusy ? pick(locale, "Aggregating...", "집계 중...") : pick(locale, "Run FedAvg aggregation", "FedAvg 집계 실행")}
-        </button>
-      </div>
-      <div className="ops-dual-grid">
-        <section className="ops-card">
+      </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Approved updates", "승인된 업데이트")}
+            titleAs="h4"
+            aside={<span className={docSiteBadgeClass}>{approvedUpdates.length}</span>}
+          />
           {approvedUpdates.length === 0 ? (
-            <div className="empty-surface">{pick(locale, "No approved updates are available for aggregation.", "집계할 승인된 업데이트가 없습니다.")}</div>
+            <div className={emptySurfaceClass}>
+              {pick(locale, "No approved updates are available for aggregation.", "집계 가능한 승인 업데이트가 없습니다.")}
+            </div>
           ) : (
-            <div className="ops-list">
+            <div className="grid gap-3">
               {approvedUpdates.map((item) => (
-                <div key={item.update_id} className="ops-item">
-                  <div className="panel-card-head"><strong>{item.update_id}</strong><span>{item.site_id}</span></div>
-                  <div className="panel-meta">
-                    <span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span>
-                    <span>{item.n_cases ?? 0} {pick(locale, "cases", "케이스")}</span>
-                    <span>{formatDateTime(item.created_at, notAvailableLabel)}</span>
-                  </div>
-                </div>
+                <Card key={item.update_id} as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                  <SectionHeader
+                    title={item.update_id}
+                    titleAs="h4"
+                    description={item.site_id ?? notAvailableLabel}
+                    aside={<span className={docSiteBadgeClass}>{formatDateTime(item.created_at, notAvailableLabel)}</span>}
+                  />
+                  <MetricGrid columns={3}>
+                    <MetricItem value={item.architecture ?? notAvailableLabel} label={pick(locale, "Architecture", "아키텍처")} />
+                    <MetricItem value={String(item.n_cases ?? 0)} label={pick(locale, "Cases", "케이스")} />
+                    <MetricItem value={item.status ?? notAvailableLabel} label={pick(locale, "Status", "상태")} />
+                  </MetricGrid>
+                </Card>
               ))}
             </div>
           )}
-        </section>
-        <section className="ops-card">
+        </Card>
+
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Aggregation history", "집계 이력")}
+            titleAs="h4"
+            aside={<span className={docSiteBadgeClass}>{aggregations.length}</span>}
+          />
           {aggregations.length === 0 ? (
-            <div className="empty-surface">{pick(locale, "No aggregation record has been registered yet.", "아직 등록된 집계 기록이 없습니다.")}</div>
+            <div className={emptySurfaceClass}>
+              {pick(locale, "No aggregation record has been registered yet.", "아직 등록된 집계 기록이 없습니다.")}
+            </div>
           ) : (
-            <div className="ops-list">
+            <div className="grid gap-3">
               {aggregations.map((item) => (
-                <div key={item.aggregation_id} className="ops-item">
-                  <div className="panel-card-head">
-                    <strong>{item.new_version_name}</strong>
-                    <span>{formatDateTime(item.created_at, notAvailableLabel)}</span>
-                  </div>
-                  <div className="panel-meta">
-                    <span>{item.architecture ?? pick(locale, "unknown architecture", "알 수 없는 아키텍처")}</span>
-                    <span>{item.total_cases ?? 0} {pick(locale, "cases", "케이스")}</span>
-                    <span>{Object.keys(item.site_weights ?? {}).length} {pick(locale, "hospitals", "병원")}</span>
-                  </div>
-                </div>
+                <Card key={item.aggregation_id} as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                  <SectionHeader
+                    title={item.new_version_name}
+                    titleAs="h4"
+                    description={formatDateTime(item.created_at, notAvailableLabel)}
+                  />
+                  <MetricGrid columns={3}>
+                    <MetricItem value={item.architecture ?? notAvailableLabel} label={pick(locale, "Architecture", "아키텍처")} />
+                    <MetricItem value={String(item.total_cases ?? 0)} label={pick(locale, "Cases", "케이스")} />
+                    <MetricItem value={String(Object.keys(item.site_weights ?? {}).length)} label={pick(locale, "Hospitals", "병원")} />
+                  </MetricGrid>
+                </Card>
               ))}
             </div>
           )}
-        </section>
+        </Card>
       </div>
-    </section>
+    </Card>
   );
 }

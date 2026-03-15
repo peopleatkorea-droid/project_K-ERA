@@ -4,8 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
-import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
+import { Button } from "../../components/ui/button";
+import { Card } from "../../components/ui/card";
+import { Field } from "../../components/ui/field";
+import { SectionHeader } from "../../components/ui/section-header";
 import { login } from "../../lib/api";
+import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
 
 const TOKEN_KEY = "kera_web_token";
 
@@ -23,7 +27,7 @@ export default function AdminLoginPage() {
     body: pick(
       locale,
       "Use this path only for administrator recovery, setup, or incident response. Research users should return to Google sign-in.",
-      "이 경로는 관리자 복구, 초기 설정, 장애 대응용으로만 사용하세요. 연구 사용자는 Google 로그인을 이용해야 합니다."
+      "이 경로는 관리자 복구, 초기 설정, 장애 대응 용도로만 사용하세요. 연구 사용자는 Google 로그인으로 돌아가야 합니다."
     ),
     username: pick(locale, "Username", "아이디"),
     password: pick(locale, "Password", "비밀번호"),
@@ -31,6 +35,18 @@ export default function AdminLoginPage() {
     signingIn: pick(locale, "Connecting...", "연결 중..."),
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
     backToMain: pick(locale, "Back to Google sign-in", "Google 로그인으로 돌아가기"),
+    safetyTitle: pick(locale, "Restricted entry", "제한된 진입"),
+    safetyBody: pick(
+      locale,
+      "This route bypasses the standard researcher flow. Treat it like an operational console, not a normal landing page.",
+      "이 경로는 일반 연구자 흐름을 우회합니다. 일반 랜딩 페이지가 아니라 운영 콘솔처럼 다뤄야 합니다."
+    ),
+    safetyFootnote: pick(
+      locale,
+      "Use only when account bootstrap, incident response, or emergency access is required.",
+      "계정 초기화, 장애 대응, 긴급 접근이 필요한 경우에만 사용하세요."
+    ),
+    researchUserSignIn: pick(locale, "Research user sign-in", "연구 사용자 로그인"),
   };
 
   const describeError = (nextError: unknown, fallback: string) =>
@@ -67,51 +83,84 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <main className="shell">
-      <div className="shell-toolbar">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_36%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto flex w-full max-w-6xl justify-end">
         <LocaleToggle />
       </div>
-      <section className="hero">
-        <article className="hero-card hero-copy">
-          <div>
-            <div className="eyebrow">{copy.eyebrow}</div>
-            <h1>{pick(locale, "Admin Access", "관리자 접근")}</h1>
-            <p>{copy.body}</p>
-          </div>
-        </article>
 
-        <section className="hero-card login-panel">
-          <div className="eyebrow">{copy.eyebrow}</div>
-          <h2>{copy.title}</h2>
-          <p className="muted">{copy.body}</p>
-          <form className="stack" onSubmit={handleLocalLogin}>
-            <div className="field">
-              <label htmlFor="username">{copy.username}</label>
+      <section className="mx-auto mt-6 grid w-full max-w-6xl gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+        <Card as="article" variant="surface" className="flex min-h-[540px] flex-col justify-between gap-8 p-6 sm:p-8">
+          <SectionHeader
+            eyebrow={
+              <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                {copy.eyebrow}
+              </span>
+            }
+            title={pick(locale, "Admin Access", "관리자 접근")}
+            description={copy.body}
+          />
+
+          <div className="grid gap-4">
+            <Card as="div" variant="nested" className="grid gap-3 p-5">
+              <strong className="text-sm font-semibold text-ink">{copy.safetyTitle}</strong>
+              <p className="m-0 text-sm leading-6 text-muted">{copy.safetyBody}</p>
+              <p className="m-0 text-sm leading-6 text-muted">{copy.safetyFootnote}</p>
+            </Card>
+          </div>
+        </Card>
+
+        <Card as="section" variant="panel" className="grid gap-6 p-6 sm:p-8">
+          <SectionHeader
+            title={copy.title}
+            description={copy.body}
+            eyebrow={
+              <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                {copy.eyebrow}
+              </span>
+            }
+          />
+
+          <form className="grid gap-4" onSubmit={handleLocalLogin}>
+            <Field as="div" label={copy.username} htmlFor="username">
               <input
                 id="username"
                 value={loginForm.username}
                 onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
               />
-            </div>
-            <div className="field">
-              <label htmlFor="password">{copy.password}</label>
+            </Field>
+
+            <Field as="div" label={copy.password} htmlFor="password">
               <input
                 id="password"
                 type="password"
                 value={loginForm.password}
                 onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
               />
-            </div>
-            {error ? <div className="error">{error}</div> : null}
-            <button className="primary-button" type="submit" disabled={authBusy}>
+            </Field>
+
+            {error ? (
+              <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">
+                {error}
+              </div>
+            ) : null}
+
+            <Button type="submit" variant="primary" fullWidth disabled={authBusy}>
               {authBusy ? copy.signingIn : copy.signIn}
-            </button>
+            </Button>
           </form>
-          <div className="divider-line">{pick(locale, "Research user sign-in", "연구 사용자 로그인")}</div>
-          <Link href="/" className="secondary-button">
-            {copy.backToMain}
-          </Link>
-        </section>
+
+          <div className="grid gap-3">
+            <div className="text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+              {copy.researchUserSignIn}
+            </div>
+            <Link
+              href="/"
+              className="inline-flex min-h-11 items-center justify-center rounded-full border border-border bg-white/55 px-[18px] text-sm font-semibold tracking-[-0.01em] text-ink transition duration-150 ease-out hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted dark:bg-white/4"
+            >
+              {copy.backToMain}
+            </Link>
+          </div>
+        </Card>
       </section>
     </main>
   );

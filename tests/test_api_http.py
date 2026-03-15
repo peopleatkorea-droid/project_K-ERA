@@ -749,6 +749,21 @@ class ApiHttpTests(unittest.TestCase):
         )
         return worker.run_until_idle(max_jobs=max_jobs, site_id=site_id or self.site_id)
 
+    def test_site_job_static_operations_run_data_plane_migration_first(self):
+        from kera_research.services.data_plane import SiteStore
+
+        with patch("kera_research.services.data_plane.init_data_plane_db") as mocked_init:
+            SiteStore.requeue_stale_jobs(heartbeat_before="9999-12-31T23:59:59+00:00")
+            self.assertTrue(mocked_init.called)
+
+        with patch("kera_research.services.data_plane.init_data_plane_db") as mocked_init:
+            SiteStore.claim_next_job("test-worker", queue_names=["training"], site_id=self.site_id)
+            self.assertTrue(mocked_init.called)
+
+        with patch("kera_research.services.data_plane.init_data_plane_db") as mocked_init:
+            SiteStore.heartbeat_job("missing-job", "test-worker")
+            self.assertTrue(mocked_init.called)
+
     def test_local_login_is_admin_only_http(self):
         response = self.client.post("/api/auth/login", json={"username": "http_researcher", "password": "research123"})
         self.assertEqual(response.status_code, 403, response.text)

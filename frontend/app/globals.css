@@ -1,6 +1,88 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-alt-sans: var(--font-inter), sans-serif;
+  --font-editorial: var(--font-eb-garamond), var(--font-noto-serif-kr), serif;
+  --font-mono-alt: var(--font-dm-mono), monospace;
+  --font-ko-sans: var(--font-noto-sans-kr), var(--font-dm-sans), sans-serif;
+  --font-ko-serif: var(--font-dm-serif-display), var(--font-noto-serif-kr), serif;
+
+  --color-app: var(--bg-canvas);
+  --color-app-muted: var(--bg-muted);
+  --color-surface: var(--surface-primary);
+  --color-surface-muted: var(--surface-secondary);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-border: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-ink: var(--text-primary);
+  --color-muted: var(--text-secondary);
+  --color-muted-soft: var(--text-tertiary);
+  --color-brand: var(--accent);
+  --color-brand-strong: var(--accent-strong);
+  --color-brand-soft: var(--surface-accent);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+
+  --radius-panel: var(--radius-xl);
+  --radius-card: var(--radius-lg);
+  --radius-field: var(--radius-md);
+  --radius-pill: var(--radius-pill);
+
+  --shadow-panel: var(--shadow-lg);
+  --shadow-card: var(--shadow-md);
+  --shadow-focus: var(--shadow-focus);
+}
+
 @import "./styles/tokens.css";
 @import "./styles/themes.css";
-@import "./styles/base.css";
-@import "./styles/public-shell.css";
-@import "./styles/workspace.css";
-@import "./styles/ui.css";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    margin: 0;
+    min-height: 100%;
+    background: var(--bg-canvas);
+  }
+
+  body {
+    min-height: 100%;
+    margin: 0;
+    background:
+      radial-gradient(circle at top, rgba(48, 88, 255, 0.12), transparent 24%),
+      linear-gradient(180deg, var(--bg-muted), var(--bg-canvas) 28%);
+    color: var(--text-primary);
+    font-family: var(--font-sans), sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: rgba(48, 88, 255, 0.2);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    color: inherit;
+  }
+
+  img {
+    max-width: 100%;
+  }
+}

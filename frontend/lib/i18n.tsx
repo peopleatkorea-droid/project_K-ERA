@@ -2,6 +2,8 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
+import { cn } from "./cn";
+
 export type Locale = "en" | "ko";
 
 const LOCALE_STORAGE_KEY = "kera_web_locale";
@@ -380,11 +382,31 @@ export function LocaleToggle({ className = "" }: { className?: string }) {
   const { locale, setLocale, common } = useI18n();
 
   return (
-    <div className={`locale-switcher ${className}`.trim()} aria-label={common.language}>
-      <button className={`locale-chip ${locale === "ko" ? "active" : ""}`} type="button" onClick={() => setLocale("ko")}>
+    <div
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border border-border bg-surface/80 p-1 shadow-card backdrop-blur-sm",
+        className
+      )}
+      aria-label={common.language}
+    >
+      <button
+        className={cn(
+          "inline-flex min-h-9 items-center justify-center rounded-full px-3 text-[0.78rem] font-semibold tracking-[0.02em] transition duration-150 ease-out",
+          locale === "ko" ? "bg-brand text-[var(--accent-contrast)] shadow-card" : "text-muted hover:text-ink"
+        )}
+        type="button"
+        onClick={() => setLocale("ko")}
+      >
         {common.korean}
       </button>
-      <button className={`locale-chip ${locale === "en" ? "active" : ""}`} type="button" onClick={() => setLocale("en")}>
+      <button
+        className={cn(
+          "inline-flex min-h-9 items-center justify-center rounded-full px-3 text-[0.78rem] font-semibold tracking-[0.02em] transition duration-150 ease-out",
+          locale === "en" ? "bg-brand text-[var(--accent-contrast)] shadow-card" : "text-muted hover:text-ink"
+        )}
+        type="button"
+        onClick={() => setLocale("en")}
+      >
         {common.english}
       </button>
     </div>

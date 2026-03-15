@@ -1,5 +1,9 @@
 "use client";
 
+import { Card } from "../ui/card";
+import { MetricGrid, MetricItem } from "../ui/metric-grid";
+import { SectionHeader } from "../ui/section-header";
+import { docSectionLabelClass, docSiteBadgeClass, panelMetricGridClass } from "../ui/workspace-patterns";
 import { pick, type Locale } from "../../lib/i18n";
 
 type CompletionStats = {
@@ -35,16 +39,25 @@ export function CompletionCard({
   }
 
   return (
-    <section className="panel-card completion-card">
-      <div className="panel-card-head">
-        <strong>
-          {completion.kind === "contributed"
-            ? pick(locale, "Contribution recorded", "기여 기록됨")
-            : pick(locale, "Case saved", "케이스 저장됨")}
-        </strong>
-        <span>{formatDateTime(completion.timestamp, notAvailableLabel)}</span>
-      </div>
-      <p>
+    <Card as="section" variant="panel" className="grid gap-4 p-5">
+      <SectionHeader
+        eyebrow={
+          <div className={docSectionLabelClass}>
+            {completion.kind === "contributed"
+              ? pick(locale, "Contribution", "기여")
+              : pick(locale, "Saved", "저장")}
+          </div>
+        }
+        title={
+          completion.kind === "contributed"
+            ? pick(locale, "Contribution recorded", "기여 기록 완료")
+            : pick(locale, "Case saved", "케이스 저장 완료")
+        }
+        titleAs="h4"
+        aside={<span className={docSiteBadgeClass}>{formatDateTime(completion.timestamp, notAvailableLabel)}</span>}
+      />
+
+      <p className="m-0 text-sm leading-6 text-muted">
         {completion.kind === "contributed"
           ? pick(
               locale,
@@ -57,26 +70,15 @@ export function CompletionCard({
               "환자, 방문, 이미지 세트가 선택한 병원 워크스페이스에 저장되었습니다."
             )}
       </p>
+
       {completion.kind === "contributed" && completion.stats ? (
-        <div className="panel-metric-grid">
-          <div>
-            <strong>{completion.stats.user_contributions}</strong>
-            <span>{pick(locale, "my contributions", "내 기여 수")}</span>
-          </div>
-          <div>
-            <strong>{completion.stats.total_contributions}</strong>
-            <span>{pick(locale, "global contributions", "전체 기여 수")}</span>
-          </div>
-          <div>
-            <strong>{completion.stats.user_contribution_pct}%</strong>
-            <span>{pick(locale, "my share", "내 비중")}</span>
-          </div>
-          <div>
-            <strong>{hospitalValidationCount}</strong>
-            <span>{pick(locale, "hospital validations", "병원 검증 수")}</span>
-          </div>
-        </div>
+        <MetricGrid className={panelMetricGridClass}>
+          <MetricItem value={completion.stats.user_contributions} label={pick(locale, "my contributions", "내 기여 수")} />
+          <MetricItem value={completion.stats.total_contributions} label={pick(locale, "global contributions", "전체 기여 수")} />
+          <MetricItem value={`${completion.stats.user_contribution_pct}%`} label={pick(locale, "my share", "내 비중")} />
+          <MetricItem value={hospitalValidationCount} label={pick(locale, "hospital validations", "병원 검증 수")} />
+        </MetricGrid>
       ) : null}
-    </section>
+    </Card>
   );
 }

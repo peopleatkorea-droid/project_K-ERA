@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { cn } from "../../lib/cn";
+
 type HeadingTag = "h2" | "h3" | "h4";
 
 export type SectionHeaderProps = {
@@ -11,10 +13,6 @@ export type SectionHeaderProps = {
   titleAs?: HeadingTag;
 };
 
-function joinClassNames(...values: Array<string | false | null | undefined>): string {
-  return values.filter(Boolean).join(" ");
-}
-
 export function SectionHeader({
   className,
   eyebrow,
@@ -25,13 +23,15 @@ export function SectionHeader({
 }: SectionHeaderProps) {
   const TitleTag = titleAs;
   return (
-    <div className={joinClassNames("ds-section-header", className)}>
-      <div className="ds-section-header__main">
-        {eyebrow ? <div className="ds-section-header__eyebrow">{eyebrow}</div> : null}
-        <TitleTag className="ds-section-header__title">{title}</TitleTag>
-        {description ? <p className="ds-section-header__description">{description}</p> : null}
+    <div className={cn("flex items-start justify-between gap-4 max-[900px]:flex-col", className)}>
+      <div className="grid min-w-0 gap-2.5">
+        {eyebrow ? <div className="w-fit">{eyebrow}</div> : null}
+        <TitleTag className="font-serif text-[clamp(1.45rem,2vw,2.1rem)] leading-[1.02] tracking-[-0.04em] text-ink">
+          {title}
+        </TitleTag>
+        {description ? <p className="m-0 max-w-3xl text-sm leading-6 text-muted">{description}</p> : null}
       </div>
-      {aside ? <div className="ds-section-header__aside">{aside}</div> : null}
+      {aside ? <div className="shrink-0 max-[900px]:w-full">{aside}</div> : null}
     </div>
   );
 }

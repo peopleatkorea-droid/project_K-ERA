@@ -1,6 +1,6 @@
 import React, { type ComponentProps } from "react";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { TrainingSection } from "./training-section";
@@ -69,10 +69,69 @@ describe("TrainingSection", () => {
     const updater = setInitialForm.mock.calls.at(-1)?.[0];
     expect(updater(buildProps().initialForm).use_pretrained).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Run multi-model benchmark" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run all 5 models" }));
+    expect(screen.getByRole("dialog", { name: "Batch training confirmation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start batch training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunInitialTraining).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows remaining models and payload-based settings during batch training", () => {
+    render(
+      <TrainingSection
+        {...buildProps({
+          benchmarkJob: {
+            job_id: "job-1",
+            job_type: "initial_training_benchmark",
+            site_id: "HTTP_SITE",
+            status: "running",
+            payload: {
+              architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s"],
+              execution_mode: "gpu",
+              crop_mode: "both",
+              epochs: 20,
+              learning_rate: 0.0003,
+              batch_size: 12,
+              val_split: 0.25,
+              test_split: 0.15,
+              use_pretrained: false,
+              regenerate_split: true,
+            },
+            result: {
+              progress: {
+                percent: 42,
+                stage: "training_component",
+                architecture: "vit",
+                architecture_index: 2,
+                architecture_count: 5,
+                crop_mode: "both",
+              },
+            },
+            created_at: "2026-03-15T00:00:00Z",
+          },
+          benchmarkProgress: {
+            percent: 42,
+            stage: "training_component",
+            architecture: "vit",
+            architecture_index: 2,
+            architecture_count: 5,
+            crop_mode: "both",
+          },
+          benchmarkPercent: 42,
+        })}
+      />
+    );
+
+    const settingsHeading = screen.getByText("Run settings");
+    const settingsPanel = screen.getByTestId("training-progress-settings");
+
+    expect(settingsHeading).toBeInTheDocument();
+    expect(screen.getByText("Loaded from the queued job payload.")).toBeInTheDocument();
+    expect(screen.getByText("remaining")).toBeInTheDocument();
+    expect(settingsPanel).not.toBeNull();
+    expect(within(settingsPanel as HTMLElement).getByText("GPU")).toBeInTheDocument();
+    expect(within(settingsPanel as HTMLElement).getByText("0.0003")).toBeInTheDocument();
   });
 });

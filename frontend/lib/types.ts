@@ -1005,3 +1005,11 @@ export type AuthResponse = {
   user: AuthUser;
 };
 
+export type PublicStatistics = {
+  site_count: number;
+  total_cases: number;
+  total_images: number;
+  current_model_version: string | null;
+  last_updated: string;
+};
+

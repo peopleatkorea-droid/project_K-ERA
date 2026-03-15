@@ -1408,3 +1408,38 @@ class ControlPlaneStore:
         }
         self.ensure_model_version(new_version)
         return record
+
+    def get_public_statistics(self) -> dict[str, Any]:
+        """Return aggregated public statistics (no auth required)."""
+        from sqlalchemy import func
+
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            # Count sites
+            site_count_result = conn.execute(select(func.count()).select_from(sites)).scalar() or 0
+
+            # Get current model version name
+            current_model_row = conn.execute(
+                select(model_versions.c.version_name)
+                .where(model_versions.c.is_current == True)
+                .order_by(model_versions.c.created_at.desc())
+                .limit(1)
+            ).first()
+            current_model = current_model_row[0] if current_model_row else None
+
+            # Sum validation run stats for total cases and images
+            validation_stats = conn.execute(
+                select(
+                    func.sum(validation_runs.c.n_cases),
+                    func.sum(validation_runs.c.n_images),
+                )
+            ).first()
+            total_cases = validation_stats[0] or 0 if validation_stats else 0
+            total_images = validation_stats[1] or 0 if validation_stats else 0
+
+        return {
+            "site_count": int(site_count_result),
+            "total_cases": int(total_cases),
+            "total_images": int(total_images),
+            "current_model_version": current_model,
+            "last_updated": utc_now(),
+        }

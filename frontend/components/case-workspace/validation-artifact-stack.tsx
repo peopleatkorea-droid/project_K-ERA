@@ -3,6 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import { pick, type Locale } from "../../lib/i18n";
+import {
+  panelImageCardClass,
+  panelImageCopyClass,
+  panelImageFallbackClass,
+  panelImageOverlayClass,
+  panelImageOverlayFallbackClass,
+  panelImagePreviewClass,
+  panelImageStackClass,
+} from "../ui/workspace-patterns";
 
 function loadHtmlImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -116,17 +125,13 @@ function MaskOverlayPreview({
   }, [maskUrl, sourceUrl, tint]);
 
   if (!sourceUrl || !maskUrl) {
-    return <div className="panel-image-fallback">{alt}</div>;
+    return <div className={panelImageFallbackClass}>{alt}</div>;
   }
 
   return (
     <>
-      <canvas
-        ref={canvasRef}
-        className={`panel-image-preview panel-image-overlay${overlayReady ? " ready" : ""}`}
-        aria-label={alt}
-      />
-      {!overlayReady ? <img src={sourceUrl} alt={alt} className="panel-image-preview panel-image-overlay-fallback" /> : null}
+      <canvas ref={canvasRef} className={panelImageOverlayClass(overlayReady)} aria-label={alt} />
+      {!overlayReady ? <img src={sourceUrl} alt={alt} className={panelImageOverlayFallbackClass(overlayReady)} /> : null}
     </>
   );
 }
@@ -151,64 +156,64 @@ export function ValidationArtifactStack({
   lesionMaskUrl,
 }: Props) {
   return (
-    <div className="panel-image-stack">
+    <div className={panelImageStackClass}>
       {roiCropUrl ? (
-        <div className="panel-image-card">
-          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className="panel-image-preview" />
-          <div className="panel-image-copy">
+        <div className={panelImageCardClass}>
+          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} />
+          <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
             <span>{pick(locale, "Cornea-focused crop", "각막 중심 crop")}</span>
           </div>
         </div>
       ) : null}
       {gradcamUrl ? (
-        <div className="panel-image-card">
-          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className="panel-image-preview" />
-          <div className="panel-image-copy">
+        <div className={panelImageCardClass}>
+          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} />
+          <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong>
             <span>{pick(locale, "Model evidence overlay", "모델 근거 오버레이")}</span>
           </div>
         </div>
       ) : null}
       {medsamMaskUrl ? (
-        <div className="panel-image-card">
+        <div className={panelImageCardClass}>
           <MaskOverlayPreview
             sourceUrl={representativePreviewUrl}
             maskUrl={medsamMaskUrl}
             alt={pick(locale, "Cornea mask overlay", "각막 mask 오버레이")}
             tint={[231, 211, 111]}
           />
-          <div className="panel-image-copy">
+          <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Cornea mask", "각막 mask")}</strong>
             <span>{pick(locale, "Cornea segmentation", "각막 분할")}</span>
           </div>
         </div>
       ) : null}
       {lesionCropUrl ? (
-        <div className="panel-image-card">
-          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className="panel-image-preview" />
-          <div className="panel-image-copy">
+        <div className={panelImageCardClass}>
+          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} />
+          <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
             <span>{pick(locale, "Lesion-centered crop", "병변 중심 crop")}</span>
           </div>
         </div>
       ) : null}
       {lesionMaskUrl ? (
-        <div className="panel-image-card">
+        <div className={panelImageCardClass}>
           <MaskOverlayPreview
             sourceUrl={representativePreviewUrl}
             maskUrl={lesionMaskUrl}
             alt={pick(locale, "Lesion mask overlay", "병변 mask 오버레이")}
             tint={[242, 164, 154]}
           />
-          <div className="panel-image-copy">
+          <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Lesion mask", "병변 mask")}</strong>
             <span>{pick(locale, "Lesion segmentation", "병변 분할")}</span>
           </div>
         </div>
       ) : null}
       {!roiCropUrl && !gradcamUrl && !medsamMaskUrl && !lesionCropUrl && !lesionMaskUrl ? (
-        <div className="panel-image-fallback">
+        <div className={panelImageFallbackClass}>
           {pick(locale, "No validation artifacts were produced for this run.", "이 실행에서는 검증 아티팩트가 생성되지 않았습니다.")}
         </div>
       ) : null}

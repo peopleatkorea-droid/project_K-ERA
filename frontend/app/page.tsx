@@ -1,10 +1,15 @@
-"use client";
+﻿"use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { AdminWorkspace } from "../components/admin-workspace";
 import { CaseWorkspace } from "../components/case-workspace";
 import { LandingV4 } from "../components/public/landing-v4";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Field } from "../components/ui/field";
+import { SectionHeader } from "../components/ui/section-header";
+import { cn } from "../lib/cn";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import {
   createPatient,
@@ -92,7 +97,6 @@ function isTokenExpired(token: string): boolean {
 function isAuthBootstrapError(message: string): boolean {
   return ["Invalid token.", "Missing bearer token.", "User no longer exists."].includes(message);
 }
-
 function statusCopy(locale: "en" | "ko", status: AuthState): string {
   if (status === "pending") {
     return pick(locale, "Your institution request is pending review.", "기관 접근 요청이 검토 대기 중입니다.");
@@ -105,7 +109,7 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
     );
   }
   if (status === "application_required") {
-    return pick(locale, "Submit your institution and role request to continue.", "계속하려면 기관과 역할 요청을 제출해 주세요.");
+    return pick(locale, "Submit your institution and role request to continue.", "기관과 역할 요청을 제출해 주세요.");
   }
   return pick(locale, "Approved", "승인됨");
 }
@@ -154,442 +158,442 @@ export default function HomePage() {
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
   const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
   const copy = {
-    unableLoadInstitutions: pick(locale, "Unable to load institutions.", "기관 목록을 불러오지 못했습니다."),
-    failedConnect: pick(locale, "Failed to connect.", "연결에 실패했습니다."),
-    failedLoadSiteData: pick(locale, "Failed to load hospital data.", "병원 데이터를 불러오지 못했습니다."),
-    failedLoadApprovalQueue: pick(locale, "Failed to load approval queue.", "승인 대기열을 불러오지 못했습니다."),
-    googleNoCredential: pick(locale, "Google login did not return a credential.", "Google 로그인 자격 정보가 반환되지 않았습니다."),
-    googleLoginFailed: pick(locale, "Google login failed.", "Google 로그인에 실패했습니다."),
-    googlePreparing: pick(locale, "Google login is still loading. Try again in a moment.", "Google 로그인을 불러오는 중입니다. 잠시 후 다시 시도해 주세요."),
-    loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
-    requestSubmissionFailed: pick(locale, "Request submission failed.", "요청 제출에 실패했습니다."),
-    connecting: pick(locale, "Connecting...", "연결 중..."),
-    submitting: pick(locale, "Submitting...", "제출 중..."),
-    heroEyebrow: pick(locale, "Clinical Research Workspace", "임상 연구 워크스페이스"),
+    unableLoadInstitutions: pick(locale, "Unable to load institutions.", "湲곌? 紐⑸줉??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
+    failedConnect: pick(locale, "Failed to connect.", "?곌껐???ㅽ뙣?덉뒿?덈떎."),
+    failedLoadSiteData: pick(locale, "Failed to load hospital data.", "蹂묒썝 ?곗씠?곕? 遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
+    failedLoadApprovalQueue: pick(locale, "Failed to load approval queue.", "?뱀씤 ?湲곗뿴??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
+    googleNoCredential: pick(locale, "Google login did not return a credential.", "Google 濡쒓렇???먭꺽 ?뺣낫媛 諛섑솚?섏? ?딆븯?듬땲??"),
+    googleLoginFailed: pick(locale, "Google login failed.", "Google 濡쒓렇?몄뿉 ?ㅽ뙣?덉뒿?덈떎."),
+    googlePreparing: pick(locale, "Google login is still loading. Try again in a moment.", "Google 濡쒓렇?몄쓣 遺덈윭?ㅻ뒗 以묒엯?덈떎. ?좎떆 ???ㅼ떆 ?쒕룄??二쇱꽭??"),
+    loginFailed: pick(locale, "Login failed.", "濡쒓렇?몄뿉 ?ㅽ뙣?덉뒿?덈떎."),
+    requestSubmissionFailed: pick(locale, "Request submission failed.", "?붿껌 ?쒖텧???ㅽ뙣?덉뒿?덈떎."),
+    connecting: pick(locale, "Connecting...", "?곌껐 以?.."),
+    submitting: pick(locale, "Submitting...", "?쒖텧 以?.."),
+    heroEyebrow: pick(locale, "Clinical Research Workspace", "?꾩긽 ?곌뎄 ?뚰겕?ㅽ럹?댁뒪"),
     heroBody: pick(
       locale,
       "Sign in with your institution account, request the right hospital once, and move directly into a document-style case canvas after approval.",
-      "기관 계정으로 로그인하고 한 번만 병원 접근을 요청하면, 승인 후 문서형 케이스 캔버스로 바로 이동할 수 있습니다."
+      "湲곌? 怨꾩젙?쇰줈 濡쒓렇?명븯怨???踰덈쭔 蹂묒썝 ?묎렐???붿껌?섎㈃, ?뱀씤 ??臾몄꽌??耳?댁뒪 罹붾쾭?ㅻ줈 諛붾줈 ?대룞?????덉뒿?덈떎."
     ),
     signIn: pick(locale, "Sign In", "로그인"),
-    enterWorkspace: pick(locale, "Enter the case workspace", "케이스 워크스페이스 입장"),
+    enterWorkspace: pick(locale, "Enter the case workspace", "耳?댁뒪 ?뚰겕?ㅽ럹?댁뒪 ?낆옣"),
     signInBody: pick(
       locale,
       "Google is the default path for researchers. Local username/password stays admin-only for recovery.",
-      "연구자는 Google 로그인이 기본 경로이며, 로컬 아이디/비밀번호는 관리자 복구용으로만 유지됩니다."
+      "?곌뎄?먮뒗 Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?대ŉ, 濡쒖뺄 ?꾩씠??鍮꾨?踰덊샇??愿由ъ옄 蹂듦뎄?⑹쑝濡쒕쭔 ?좎??⑸땲??"
     ),
     googleLogin: pick(locale, "Institution Google login", "기관 Google 로그인"),
     googleDisabled: pick(
       locale,
       "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.",
-      "`NEXT_PUBLIC_GOOGLE_CLIENT_ID`가 설정되기 전까지 Google 로그인이 비활성화됩니다."
+      "`NEXT_PUBLIC_GOOGLE_CLIENT_ID`媛 ?ㅼ젙?섍린 ?꾧퉴吏 Google 濡쒓렇?몄씠 鍮꾪솢?깊솕?⑸땲??"
     ),
-    adminRecoveryOnly: pick(locale, "Administrator recovery only", "관리자 복구 전용"),
+    adminRecoveryOnly: pick(locale, "Administrator recovery only", "愿由ъ옄 蹂듦뎄 ?꾩슜"),
     username: pick(locale, "Username", "아이디"),
-    password: pick(locale, "Password", "비밀번호"),
-    enterAdminRecovery: pick(locale, "Enter admin recovery", "관리자 복구로 입장"),
-    approvalRequired: pick(locale, "Approval Required", "승인 필요"),
-    institutionAccessRequest: pick(locale, "Institution access request", "기관 접근 요청"),
+    password: pick(locale, "Password", "鍮꾨?踰덊샇"),
+    enterAdminRecovery: pick(locale, "Enter admin recovery", "愿由ъ옄 蹂듦뎄濡??낆옣"),
+    approvalRequired: pick(locale, "Approval Required", "?뱀씤 ?꾩슂"),
+    institutionAccessRequest: pick(locale, "Institution access request", "湲곌? ?묎렐 ?붿껌"),
     signedInAs: (name: string, username: string) =>
-      pick(locale, `Signed in as ${name} (${username})`, `${name} (${username}) 계정으로 로그인됨`),
-    currentStatus: pick(locale, "Current Status", "현재 상태"),
+      pick(locale, `Signed in as ${name} (${username})`, `${name} (${username}) 怨꾩젙?쇰줈 濡쒓렇?몃맖`),
+    currentStatus: pick(locale, "Current Status", "?꾩옱 ?곹깭"),
     approvedBody: pick(
       locale,
       "Approved accounts receive hospital access and enter the clinician console automatically.",
-      "승인된 계정은 병원 접근 권한을 받고 바로 임상 콘솔에 들어갑니다."
+      "?뱀씤??怨꾩젙? 蹂묒썝 ?묎렐 沅뚰븳??諛쏄퀬 諛붾줈 ?꾩긽 肄섏넄???ㅼ뼱媛묐땲??"
     ),
-    noInstitutionRequest: pick(locale, "No institution request submitted yet.", "아직 기관 접근 요청을 제출하지 않았습니다."),
-    reviewerLabel: pick(locale, "Reviewer", "검토자"),
-    requestAccess: pick(locale, "Request Access", "접근 요청"),
-    chooseInstitutionRole: pick(locale, "Choose your institution and role", "기관과 역할 선택"),
-    hospital: pick(locale, "Hospital", "병원"),
-    requestedRole: pick(locale, "Requested role", "요청 역할"),
-    noteForReviewer: pick(locale, "Note for reviewer", "검토자 메모"),
+    noInstitutionRequest: pick(locale, "No institution request submitted yet.", "?꾩쭅 湲곌? ?묎렐 ?붿껌???쒖텧?섏? ?딆븯?듬땲??"),
+    reviewerLabel: pick(locale, "Reviewer", "寃?좎옄"),
+    requestAccess: pick(locale, "Request Access", "?묎렐 ?붿껌"),
+    chooseInstitutionRole: pick(locale, "Choose your institution and role", "湲곌?怨???븷 ?좏깮"),
+    hospital: pick(locale, "Hospital", "蹂묒썝"),
+    requestedRole: pick(locale, "Requested role", "?붿껌 ??븷"),
+    noteForReviewer: pick(locale, "Note for reviewer", "寃?좎옄 硫붾え"),
     requestPlaceholder: pick(
       locale,
       "Department, study role, or context for this request.",
-      "소속 부서, 연구 역할, 요청 배경을 적어주세요."
+      "?뚯냽 遺?? ?곌뎄 ??븷, ?붿껌 諛곌꼍???곸뼱二쇱꽭??"
     ),
-    submitInstitutionRequest: pick(locale, "Submit institution request", "기관 접근 요청 제출"),
-    logOut: pick(locale, "Log Out", "로그아웃"),
+    submitInstitutionRequest: pick(locale, "Submit institution request", "湲곌? ?묎렐 ?붿껌 ?쒖텧"),
+    logOut: pick(locale, "Log Out", "濡쒓렇?꾩썐"),
     highlightGoogleTitle: pick(locale, "Google Sign-In", "Google 로그인"),
     highlightGoogleBody: pick(
       locale,
       "Researchers can onboard with a verified institution-linked Google account.",
-      "연구자는 기관에 연결된 Google 계정으로 온보딩할 수 있습니다."
+      "?곌뎄?먮뒗 湲곌????곌껐??Google 怨꾩젙?쇰줈 ?⑤낫?⑺븷 ???덉뒿?덈떎."
     ),
-    highlightApprovalTitle: pick(locale, "Approval Queue", "승인 큐"),
+    highlightApprovalTitle: pick(locale, "Approval Queue", "승인 대기"),
     highlightApprovalBody: pick(
       locale,
       "Admins review institution and role requests before hospital access opens.",
-      "관리자가 기관과 역할 요청을 검토한 뒤 병원 접근이 열립니다."
+      "愿由ъ옄媛 湲곌?怨???븷 ?붿껌??寃?좏븳 ??蹂묒썝 ?묎렐???대┰?덈떎."
     ),
-    highlightCanvasTitle: pick(locale, "Case Authoring", "증례 작성"),
+    highlightCanvasTitle: pick(locale, "Case Authoring", "利앸? ?묒꽦"),
     highlightCanvasBody: pick(
       locale,
       "Create, validate, and contribute cases from one workspace.",
-      "하나의 작업공간에서 증례 작성, 검증, 기여를 처리합니다."
+      "?섎굹???묒뾽怨듦컙?먯꽌 利앸? ?묒꽦, 寃利? 湲곗뿬瑜?泥섎━?⑸땲??"
     ),
-    highlightRecoveryTitle: pick(locale, "Admin Recovery", "관리자 복구"),
+    highlightRecoveryTitle: pick(locale, "Admin Recovery", "愿由ъ옄 蹂듦뎄"),
     highlightRecoveryBody: pick(
       locale,
       "A local admin fallback remains available for setup and incident recovery.",
-      "초기 설정과 장애 대응을 위한 로컬 관리자 경로는 유지됩니다."
+      "珥덇린 ?ㅼ젙怨??μ븷 ??묒쓣 ?꾪븳 濡쒖뺄 愿由ъ옄 寃쎈줈???좎??⑸땲??"
     ),
-    landingBadge: pick(locale, "Corneal Research Network", "감염성 각막염 연구 네트워크"),
+    landingBadge: pick(locale, "Corneal Research Network", "媛먯뿼??媛곷쭑???곌뎄 ?ㅽ듃?뚰겕"),
     landingScene: pick(
       locale,
       "After clinic ends, the image is still asking for one more look.",
-      "외래가 끝난 뒤에도, 이미지는 한 번 더 들여다봐 달라고 말합니다."
+      "?몃옒媛 ?앸궃 ?ㅼ뿉?? ?대?吏????踰????ㅼ뿬?ㅻ킄 ?щ씪怨?留먰빀?덈떎."
     ),
-    landingTitle: pick(locale, "A softer entrance into the research workspace.", "조금 더 감성적인 연구 워크스페이스의 입구"),
+    landingTitle: pick(locale, "A softer entrance into the research workspace.", "議곌툑 ??媛먯꽦?곸씤 ?곌뎄 ?뚰겕?ㅽ럹?댁뒪???낃뎄"),
     landingBody: pick(
       locale,
       "Upload case images, review model evidence, and contribute cleaned cases from a single workspace that feels less like an admin gate and more like a quiet place to study.",
-      "증례 이미지를 올리고, 모델 근거를 검토하고, 정리된 케이스를 기여하는 흐름을 하나의 화면에 담았습니다. 관리 콘솔의 입구보다, 차분하게 연구를 시작하는 장소에 가깝게 구성했습니다."
+      "利앸? ?대?吏瑜??щ━怨? 紐⑤뜽 洹쇨굅瑜?寃?좏븯怨? ?뺣━??耳?댁뒪瑜?湲곗뿬?섎뒗 ?먮쫫???섎굹???붾㈃???댁븯?듬땲?? 愿由?肄섏넄???낃뎄蹂대떎, 李⑤텇?섍쾶 ?곌뎄瑜??쒖옉?섎뒗 ?μ냼??媛源앷쾶 援ъ꽦?덉뒿?덈떎."
     ),
-    landingPrimaryCta: pick(locale, "Start with Google", "Google로 연구 시작하기"),
-    landingSecondaryCta: pick(locale, "See how it flows", "어떻게 이어지는지 보기"),
+    landingPrimaryCta: pick(locale, "Start with Google", "Google濡??곌뎄 ?쒖옉?섍린"),
+    landingSecondaryCta: pick(locale, "See how it flows", "?대뼸寃??댁뼱吏?붿? 蹂닿린"),
     landingCtaNote: pick(
       locale,
       "Institution Google login remains the primary path. Admin recovery stays separate.",
-      "기관 Google 로그인이 기본 경로이며, 관리자 복구는 별도 경로로 유지됩니다."
+      "湲곌? Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?대ŉ, 愿由ъ옄 蹂듦뎄??蹂꾨룄 寃쎈줈濡??좎??⑸땲??"
     ),
-    landingAuthEyebrow: pick(locale, "Research access", "연구 접근"),
+    landingAuthEyebrow: pick(locale, "Research access", "?곌뎄 ?묎렐"),
     landingAuthTitle: pick(locale, "Move into the workspace with your institution account", "기관 계정으로 워크스페이스에 들어가기"),
     landingAuthBody: pick(
       locale,
       "The custom call-to-action leads here. The official Google button remains visible for a stable sign-in flow.",
-      "히어로 CTA는 이 영역으로 연결되고, 실제 로그인은 안정성을 위해 공식 Google 버튼으로 이어집니다."
+      "?덉뼱濡?CTA?????곸뿭?쇰줈 ?곌껐?섍퀬, ?ㅼ젣 濡쒓렇?몄? ?덉젙?깆쓣 ?꾪빐 怨듭떇 Google 踰꾪듉?쇰줈 ?댁뼱吏묐땲??"
     ),
-    landingAuthHint: pick(locale, "Use a hospital or institution-linked Google account.", "병원 또는 연구기관에 연결된 Google 계정을 사용하세요."),
-    landingStoryEyebrow: pick(locale, "Why this tone", "이 분위기가 필요한 이유"),
-    landingStoryTitle: pick(locale, "Research usually starts after the formal work is over.", "연구는 대개 공식 업무가 끝난 뒤에 시작됩니다."),
+    landingAuthHint: pick(locale, "Use a hospital or institution-linked Google account.", "蹂묒썝 ?먮뒗 ?곌뎄湲곌????곌껐??Google 怨꾩젙???ъ슜?섏꽭??"),
+    landingStoryEyebrow: pick(locale, "Why this tone", "??遺꾩쐞湲곌? ?꾩슂???댁쑀"),
+    landingStoryTitle: pick(locale, "Research usually starts after the formal work is over.", "?곌뎄???媛?怨듭떇 ?낅Т媛 ?앸궃 ?ㅼ뿉 ?쒖옉?⑸땲??"),
     landingStoryBody: pick(
       locale,
       "Keratitis cases often need a second pass: a cleaner crop, a calmer review, a better note, and a decision about whether the case is solid enough to contribute.",
-      "감염성 각막염 증례는 대개 두 번째 검토가 필요합니다. 더 정돈된 crop, 더 차분한 판독, 더 나은 메모, 그리고 실제로 기여할 만큼 충분히 단단한 증례인지에 대한 판단이 뒤따릅니다."
+      "媛먯뿼??媛곷쭑??利앸????媛???踰덉㎏ 寃?좉? ?꾩슂?⑸땲?? ???뺣룉??crop, ??李⑤텇???먮룆, ???섏? 硫붾え, 洹몃━怨??ㅼ젣濡?湲곗뿬??留뚰겮 異⑸텇???⑤떒??利앸??몄???????먮떒???ㅻ뵲由낅땲??"
     ),
     landingStoryQuote: pick(
       locale,
       "Not every useful research tool needs to feel like a control room. Sometimes it should feel like a desk lamp, a document, and one more careful question.",
-      "유용한 연구 도구가 항상 관제실처럼 느껴질 필요는 없습니다. 때로는 스탠드 조명 아래의 문서와, 한 번 더 조심스럽게 던지는 질문에 가까워야 합니다."
+      "?좎슜???곌뎄 ?꾧뎄媛 ??긽 愿?쒖떎泥섎읆 ?먭뺨吏??꾩슂???놁뒿?덈떎. ?뚮줈???ㅽ깲??議곕챸 ?꾨옒??臾몄꽌?, ??踰???議곗떖?ㅻ읇寃??섏???吏덈Ц??媛源뚯썙???⑸땲??"
     ),
-    landingWorkflowEyebrow: pick(locale, "Workflow", "워크플로우"),
-    landingWorkflowTitle: pick(locale, "One path from raw image to reusable case.", "원본 이미지에서 다시 쓸 수 있는 증례까지, 한 줄의 흐름으로"),
+    landingWorkflowEyebrow: pick(locale, "Workflow", "워크플로"),
+    landingWorkflowTitle: pick(locale, "One path from raw image to reusable case.", "?먮낯 ?대?吏?먯꽌 ?ㅼ떆 ?????덈뒗 利앸?源뚯?, ??以꾩쓽 ?먮쫫?쇰줈"),
     landingWorkflowBody: pick(
       locale,
       "The pre-login page should already explain the rhythm of the product: collect, review, and contribute under the same institutional context.",
-      "로그인 전 화면에서도 제품의 리듬이 보여야 합니다. 같은 기관 맥락 안에서 수집하고, 검토하고, 기여하는 흐름이 바로 읽혀야 합니다."
+      "濡쒓렇?????붾㈃?먯꽌???쒗뭹??由щ벉??蹂댁뿬???⑸땲?? 媛숈? 湲곌? 留λ씫 ?덉뿉???섏쭛?섍퀬, 寃?좏븯怨? 湲곗뿬?섎뒗 ?먮쫫??諛붾줈 ?쏀????⑸땲??"
     ),
-    landingTrustEyebrow: pick(locale, "Research guardrails", "연구를 위한 가드레일"),
-    landingTrustTitle: pick(locale, "Built to stay careful, not just fast.", "빠르기만 한 도구가 아니라, 조심스럽게 남는 도구"),
+    landingTrustEyebrow: pick(locale, "Research guardrails", "연구 가드레일"),
+    landingTrustTitle: pick(locale, "Built to stay careful, not just fast.", "鍮좊Ⅴ湲곕쭔 ???꾧뎄媛 ?꾨땲?? 議곗떖?ㅻ읇寃??⑤뒗 ?꾧뎄"),
     landingTrustBody: pick(
       locale,
       "Institution approval, case-level review, and contribution history still anchor the system even when the surface feels warmer.",
-      "표면의 분위기가 조금 더 부드러워져도, 기관 승인과 케이스 단위 검토, 기여 이력이라는 핵심 규율은 그대로 유지됩니다."
+      "?쒕㈃??遺꾩쐞湲곌? 議곌툑 ??遺?쒕윭?뚯졇?? 湲곌? ?뱀씤怨?耳?댁뒪 ?⑥쐞 寃?? 湲곗뿬 ?대젰?대씪???듭떖 洹쒖쑉? 洹몃?濡??좎??⑸땲??"
     ),
-    landingFinalTitle: pick(locale, "When you are ready, start with the same account your team already trusts.", "준비가 되면, 팀이 이미 신뢰하는 같은 계정으로 시작하면 됩니다."),
+    landingFinalTitle: pick(locale, "When you are ready, start with the same account your team already trusts.", "以鍮꾧? ?섎㈃, ????대? ?좊ː?섎뒗 媛숈? 怨꾩젙?쇰줈 ?쒖옉?섎㈃ ?⑸땲??"),
     landingFinalBody: pick(
       locale,
       "Google sign-in opens the same approval flow as before. Only the first impression changes.",
-      "Google 로그인 이후의 승인 흐름은 기존과 같습니다. 바뀌는 것은 첫인상뿐입니다."
+      "Google 濡쒓렇???댄썑???뱀씤 ?먮쫫? 湲곗〈怨?媛숈뒿?덈떎. 諛붾뚮뒗 寃껋? 泥レ씤?곷퓧?낅땲??"
     ),
-    landingFinalCta: pick(locale, "Open Google sign-in", "Google 로그인 열기"),
+    landingFinalCta: pick(locale, "Open Google sign-in", "Google 濡쒓렇???닿린"),
   };
   const landing = {
     navStory: pick(locale, "Origin", "시작 이야기"),
-    navAbout: pick(locale, "What It Is", "K-ERA란"),
-    navFeatures: pick(locale, "Features", "기능"),
-    navPrivacy: pick(locale, "Privacy", "보안"),
-    navJoin: pick(locale, "Join", "참여"),
+    navAbout: pick(locale, "What It Is", "K-ERA?"),
+    navFeatures: pick(locale, "Features", "湲곕뒫"),
+    navPrivacy: pick(locale, "Privacy", "蹂댁븞"),
+    navJoin: pick(locale, "Join", "李몄뿬"),
     navFaq: pick(locale, "FAQ", "FAQ"),
     heroBadge: pick(locale, "Infectious Keratitis AI Research Platform", "감염성 각막염 AI 연구 플랫폼"),
     heroScene: pick(
       locale,
       "After clinic, the room turns quiet. A few corneal images are still open on the screen.",
-      "외래가 끝난 뒤, 조용해진 진료실. 각막 사진 몇 장이 화면에 떠 있습니다."
+      "?몃옒媛 ?앸궃 ?? 議곗슜?댁쭊 吏꾨즺?? 媛곷쭑 ?ъ쭊 紐??μ씠 ?붾㈃?????덉뒿?덈떎."
     ),
-    heroLineOne: pick(locale, "Is this bacterial,", "\"이건 세균성일까,"),
-    heroLineTwo: pick(locale, "or fungal...", "곰팡이성일까…\""),
-    heroEmphasis: pick(locale, "A moment to ask AI", "AI에게 물어보는 시간"),
+    heroLineOne: pick(locale, "Is this bacterial,", "\"?닿굔 ?멸퇏?깆씪源?"),
+    heroLineTwo: pick(locale, "or fungal...", "아니면 진균성일까..."),
+    heroEmphasis: pick(locale, "A moment to ask AI", "AI?먭쾶 臾쇱뼱蹂대뒗 ?쒓컙"),
     heroBody: pick(
       locale,
       "No Python setup, no Excel manifest, no manual annotation marathon. Upload today's images and let K-ERA think with you.",
-      "파이썬도, 엑셀 manifest도, 수동 annotation도 필요 없습니다. 오늘 찍은 사진을 올리면, K-ERA가 함께 고민합니다."
+      "?뚯씠?щ룄, ?묒? manifest?? ?섎룞 annotation???꾩슂 ?놁뒿?덈떎. ?ㅻ뒛 李띿? ?ъ쭊???щ━硫? K-ERA媛 ?④퍡 怨좊??⑸땲??"
     ),
-    heroPrimary: pick(locale, "Start Research with Google", "Google로 연구 시작하기"),
-    heroSecondary: pick(locale, "How does it work?", "어떻게 작동하나요"),
+    heroPrimary: pick(locale, "Start Research with Google", "Google濡??곌뎄 ?쒖옉?섍린"),
+    heroSecondary: pick(locale, "How does it work?", "어떻게 작동하나요?"),
     heroScroll: pick(locale, "scroll", "scroll"),
-    accessEyebrow: pick(locale, "Research Access", "연구 참여"),
-    accessTitle: pick(locale, "Continue with your institution Google account", "기관 Google 계정으로 바로 시작하기"),
+    accessEyebrow: pick(locale, "Research Access", "?곌뎄 李몄뿬"),
+    accessTitle: pick(locale, "Continue with your institution Google account", "湲곌? Google 怨꾩젙?쇰줈 諛붾줈 ?쒖옉?섍린"),
     accessBody: pick(
       locale,
       "Researchers use Google as the main path. The official Google button stays here for the real sign-in flow, while hospital onboarding and admin recovery remain separate.",
-      "연구자는 Google 로그인이 기본 경로입니다. 실제 인증은 아래의 공식 Google 버튼으로 진행되고, 병원 참여 문의와 관리자 복구는 별도 경로로 유지됩니다."
+      "?곌뎄?먮뒗 Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?낅땲?? ?ㅼ젣 ?몄쬆? ?꾨옒??怨듭떇 Google 踰꾪듉?쇰줈 吏꾪뻾?섍퀬, 蹂묒썝 李몄뿬 臾몄쓽? 愿由ъ옄 蹂듦뎄??蹂꾨룄 寃쎈줈濡??좎??⑸땲??"
     ),
-    accessGoogleHint: pick(locale, "Use a hospital or institution-linked Google account.", "병원 또는 연구기관에 연결된 Google 계정을 사용하세요."),
-    accessRecruiting: pick(locale, "Hospitals can request onboarding separately.", "병원 단위 참여는 별도 문의로 시작합니다."),
-    accessMailCta: pick(locale, "Apply as a hospital", "병원 참여 신청하기"),
-    originLabel: pick(locale, "AI research was too punishing to do alone", "AI 연구, 의사가 직접 하기엔"),
-    originTitle: pick(locale, "It was a harsher process than it should have been.", "너무 가혹한 과정이었습니다"),
+    accessGoogleHint: pick(locale, "Use a hospital or institution-linked Google account.", "蹂묒썝 ?먮뒗 ?곌뎄湲곌????곌껐??Google 怨꾩젙???ъ슜?섏꽭??"),
+    accessRecruiting: pick(locale, "Hospitals can request onboarding separately.", "蹂묒썝 ?⑥쐞 李몄뿬??蹂꾨룄 臾몄쓽濡??쒖옉?⑸땲??"),
+    accessMailCta: pick(locale, "Apply as a hospital", "蹂묒썝 李몄뿬 ?좎껌?섍린"),
+    originLabel: pick(locale, "AI research was too punishing to do alone", "혼자 하기엔 너무 가혹했던 AI 연구"),
+    originTitle: pick(locale, "It was a harsher process than it should have been.", "필요 이상으로 거친 과정이었습니다."),
     originStory: pick(
       locale,
       "When we first tried to start AI research, the hardest part was not the deep learning model.\n\nIt was the Python environment, the image cleanup, and drawing ROI boxes one by one until the work itself began to ask a harder question.\n\n\"Is this really a study I can do on my own?\"\n\nThen came the emptiness of spending months on a model that failed on another hospital's data.\n\nAnd above all, the reality that privacy could keep all that effort from reaching actual care.",
-      "처음 AI 연구를 시작할 때, 가장 힘든 건 딥러닝 모델이 아니었습니다.\n\n파이썬 환경을 맞추고, 이미지를 정리하고, ROI를 하나하나 그리다 보면 어느 순간 이렇게 생각하게 됩니다.\n\n\"이걸 정말 내가 할 수 있는 연구일까?\"\n\n몇 달을 쏟아부어 만든 모델이 다른 병원에서는 형편없는 성적을 보일 때의 허탈함.\n\n그리고 무엇보다, 프라이버시 문제로 그 모든 노력의 결실을 실제 진료에서 쓸 수 없다는 것."
+      "泥섏쓬 AI ?곌뎄瑜??쒖옉???? 媛???섎뱺 嫄??λ윭??紐⑤뜽???꾨땲?덉뒿?덈떎.\n\n?뚯씠???섍꼍??留욎텛怨? ?대?吏瑜??뺣━?섍퀬, ROI瑜??섎굹?섎굹 洹몃━??蹂대㈃ ?대뒓 ?쒓컙 ?대젃寃??앷컖?섍쾶 ?⑸땲??\n\n\"?닿구 ?뺣쭚 ?닿? ?????덈뒗 ?곌뎄?쇨퉴?\"\n\n紐??ъ쓣 ?잛븘遺??留뚮뱺 紐⑤뜽???ㅻⅨ 蹂묒썝?먯꽌???뺥렪?녿뒗 ?깆쟻??蹂댁씪 ?뚯쓽 ?덊깉??\n\n洹몃━怨?臾댁뾿蹂대떎, ?꾨씪?대쾭??臾몄젣濡?洹?紐⑤뱺 ?몃젰??寃곗떎???ㅼ젣 吏꾨즺?먯꽌 ?????녿떎??寃?"
     ),
-    originSignature: pick(locale, "K-ERA developer note, Department of Ophthalmology", "K-ERA 개발자 노트, 제주대학교병원 안과"),
-    aboutLabel: pick(locale, "What is K-ERA", "K-ERA란"),
+    originSignature: pick(locale, "K-ERA developer note, Department of Ophthalmology", "K-ERA 媛쒕컻???명듃, ?쒖＜??숆탳蹂묒썝 ?덇낵"),
+    aboutLabel: pick(locale, "What is K-ERA", "K-ERA?"),
     aboutTitleLead: pick(locale, "Turn AI research from", "AI 연구를"),
-    aboutTitleAccent: pick(locale, "\"coding\"", "\"코딩\"이 아니라"),
-    aboutTitleTail: pick(locale, "into a clinical workflow", "\"임상 워크플로\"로"),
+    aboutTitleAccent: pick(locale, '"coding"', '"코딩"이 아니라'),
+    aboutTitleTail: pick(locale, "into a clinical workflow", "임상 워크플로로"),
     aboutBodyOne: pick(
       locale,
       "K-ERA is a research platform designed so clinicians can train, validate, and share keratitis AI without writing code. With a Google account, image upload and AI analysis stay inside one browser workflow.",
-      "K-ERA는 임상 안과의사가 코드 없이 각막염 AI를 학습, 검증, 공유할 수 있도록 설계된 연구 플랫폼입니다. Google 계정으로 로그인하면 사진 업로드부터 AI 분석까지 웹 브라우저 하나로 처리됩니다."
+      "K-ERA???꾩긽 ?덇낵?섏궗媛 肄붾뱶 ?놁씠 媛곷쭑??AI瑜??숈뒿, 寃利? 怨듭쑀?????덈룄濡??ㅺ퀎???곌뎄 ?뚮옯?쇱엯?덈떎. Google 怨꾩젙?쇰줈 濡쒓렇?명븯硫??ъ쭊 ?낅줈?쒕???AI 遺꾩꽍源뚯? ??釉뚮씪?곗? ?섎굹濡?泥섎━?⑸땲??"
     ),
     aboutBodyTwo: pick(
       locale,
       "The moment you register today's patient, the case starts becoming research data. As more hospitals join, the model learns from wider clinical environments while raw data never leaves the institution.",
-      "오늘 진료한 환자를 등록하는 순간, 그 케이스가 연구 데이터가 됩니다. 참여 병원이 늘어날수록 AI는 더 다양한 임상 환경을 학습하고, 원본 데이터는 병원 밖으로 절대 나가지 않습니다."
+      "?ㅻ뒛 吏꾨즺???섏옄瑜??깅줉?섎뒗 ?쒓컙, 洹?耳?댁뒪媛 ?곌뎄 ?곗씠?곌? ?⑸땲?? 李몄뿬 蹂묒썝???섏뼱?좎닔濡?AI?????ㅼ뼇???꾩긽 ?섍꼍???숈뒿?섍퀬, ?먮낯 ?곗씠?곕뒗 蹂묒썝 諛뽰쑝濡??덈? ?섍?吏 ?딆뒿?덈떎."
     ),
-    featuresLabel: pick(locale, "Core features", "핵심 기능"),
-    featuresTitle: pick(locale, "Hours of manual work, reduced to a few guided clicks.", "수십 시간의 수작업을 클릭 몇 번으로"),
+    featuresLabel: pick(locale, "Core features", "?듭떖 湲곕뒫"),
+    featuresTitle: pick(locale, "Hours of manual work, reduced to a few guided clicks.", "수시간의 수작업을 몇 번의 안내된 클릭으로 줄입니다."),
     featuresDesc: pick(
       locale,
       "K-ERA takes the repetitive and mechanical parts so the clinician can stay focused on interpretation.",
-      "반복적이고 기계적인 작업은 K-ERA가 처리합니다. 임상의는 판단에만 집중하면 됩니다."
+      "諛섎났?곸씠怨?湲곌퀎?곸씤 ?묒뾽? K-ERA媛 泥섎━?⑸땲?? ?꾩긽?섎뒗 ?먮떒?먮쭔 吏묒쨷?섎㈃ ?⑸땲??"
     ),
     federatedLabel: pick(locale, "Data privacy", "데이터 프라이버시"),
-    federatedTitle: pick(locale, "Keep data inside the hospital. Share the model's learning outside it.", "데이터는 병원 안에. 지식은 모두와 함께."),
+    federatedTitle: pick(locale, "Keep data inside the hospital. Share the model's learning outside it.", "?곗씠?곕뒗 蹂묒썝 ?덉뿉. 吏?앹? 紐⑤몢? ?④퍡."),
     federatedBodyOne: pick(
       locale,
       "The biggest barrier in multi-center AI research was always the same: hospitals cannot simply export data. K-ERA uses a different route.",
-      "기존 다기관 AI 연구의 가장 큰 벽은 데이터 자체를 꺼낼 수 없다는 점이었습니다. K-ERA는 다른 방법을 선택했습니다."
+      "湲곗〈 ?ㅺ린愿 AI ?곌뎄??媛????踰쎌? ?곗씠???먯껜瑜?爰쇰궪 ???녿떎???먯씠?덉뒿?덈떎. K-ERA???ㅻⅨ 諛⑸쾿???좏깮?덉뒿?덈떎."
     ),
     federatedBodyTwo: pick(
       locale,
       "Each hospital trains locally and shares only encrypted weight deltas with hashes. The original images, patient identifiers, and full-size crops remain inside the institution.",
-      "각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 weight delta만 해시와 함께 암호화해 전송합니다. 원본 이미지, 환자 ID, full-size crop은 병원 내부에 남습니다."
+      "媛?蹂묒썝???먯껜 ?섍꼍?먯꽌 紐⑤뜽???숈뒿?섍퀬, ?숈뒿 寃곌낵??weight delta留??댁떆? ?④퍡 ?뷀샇?뷀빐 ?꾩넚?⑸땲?? ?먮낯 ?대?吏, ?섏옄 ID, full-size crop? 蹂묒썝 ?대????⑥뒿?덈떎."
     ),
-    dreamLabel: pick(locale, "The scene we want", "우리가 그리는 장면"),
-    dreamTitle: pick(locale, "After clinic ends, with one cup of coffee.", "외래가 정리된 뒤, 커피 한 잔과 함께"),
+    dreamLabel: pick(locale, "The scene we want", "?곕━媛 洹몃━???λ㈃"),
+    dreamTitle: pick(locale, "After clinic ends, with one cup of coffee.", "?몃옒媛 ?뺣━???? 而ㅽ뵾 ???붽낵 ?④퍡"),
     dreamBox: pick(
       locale,
       "You close the final chart of the day and sit back down.\nA few corneal images remain on the screen.\n\nWhite, fluorescein, slit.\nYou look at the visit as a whole.\nDraw one box, and MedSAM catches the lesion.\n\nA moment later, AI replies:\n\"This visit pattern matches fungal keratitis at 76%.\nWould you like to review similar cases?\"\n\nThe decision still belongs to the doctor.\nBut now, the doctor does not have to reason alone.\nAnd one careful case can make someone else's model a little stronger.",
-      "오늘 마지막 환자의 차트를 닫고, 자리에 앉습니다.\n컴퓨터 화면에는 각막 사진 몇 장이 떠 있습니다.\n\nWhite, Fluorescein, Slit.\n세 장의 사진을 함께 봅니다.\n병변에 box를 그리면, MedSAM이 ROI를 잡아냅니다.\n\n잠시 후, AI가 말합니다.\n\"이 방문의 패턴은 Fungal keratitis와 76% 일치합니다.\n유사한 케이스를 함께 보시겠어요?\"\n\n판단은 여전히 의사가 합니다.\n다만 이제는, 혼자 판단하지 않아도 됩니다.\n그리고 그 케이스 하나가 다른 누군가의 AI를 조금 더 강하게 만듭니다."
+      "?ㅻ뒛 留덉?留??섏옄??李⑦듃瑜??リ퀬, ?먮━???됱뒿?덈떎.\n而댄벂???붾㈃?먮뒗 媛곷쭑 ?ъ쭊 紐??μ씠 ???덉뒿?덈떎.\n\nWhite, Fluorescein, Slit.\n???μ쓽 ?ъ쭊???④퍡 遊낅땲??\n蹂묐???box瑜?洹몃━硫? MedSAM??ROI瑜??≪븘?낅땲??\n\n?좎떆 ?? AI媛 留먰빀?덈떎.\n\"??諛⑸Ц???⑦꽩? Fungal keratitis? 76% ?쇱튂?⑸땲??\n?좎궗??耳?댁뒪瑜??④퍡 蹂댁떆寃좎뼱??\"\n\n?먮떒? ?ъ쟾???섏궗媛 ?⑸땲??\n?ㅻ쭔 ?댁젣?? ?쇱옄 ?먮떒?섏? ?딆븘???⑸땲??\n洹몃━怨?洹?耳?댁뒪 ?섎굹媛 ?ㅻⅨ ?꾧뎔媛??AI瑜?議곌툑 ??媛뺥븯寃?留뚮벊?덈떎."
     ),
-    dreamCta: pick(locale, "Join this scene", "이 장면에 함께하기"),
-    statsLabel: pick(locale, "So far", "지금까지"),
-    statsTitle: pick(locale, "Starting in Jeju, aiming for a national research network.", "제주에서 시작해, 한국 전체로"),
-    collectiveLabel: pick(locale, "Participating hospitals", "함께하는 병원들"),
-    collectiveTitle: pick(locale, "An experiment in collective intelligence.", "집단 지성을 믿어보는 실험"),
+    dreamCta: pick(locale, "Join this scene", "???λ㈃???④퍡?섍린"),
+    statsLabel: pick(locale, "So far", "吏湲덇퉴吏"),
+    statsTitle: pick(locale, "Starting in Jeju, aiming for a national research network.", "제주에서 시작해 전국 연구 네트워크를 목표로 합니다."),
+    collectiveLabel: pick(locale, "Participating hospitals", "참여 병원"),
+    collectiveTitle: pick(locale, "An experiment in collective intelligence.", "吏묐떒 吏?깆쓣 誘우뼱蹂대뒗 ?ㅽ뿕"),
     collectiveBody: pick(
       locale,
       "Every case contributed by a clinician becomes both research material and real-world external validation. Even without coding or manuscript writing, participation itself becomes research.",
-      "한국의 안과의사들이 각자의 케이스를 기여할 때마다, 그것은 동시에 실제 임상 환경에서의 external validation이 됩니다. 논문을 쓰지 않아도, 코딩을 몰라도, 참여 자체가 연구입니다."
+      "?쒓뎅???덇낵?섏궗?ㅼ씠 媛곸옄??耳?댁뒪瑜?湲곗뿬???뚮쭏?? 洹멸쾬? ?숈떆???ㅼ젣 ?꾩긽 ?섍꼍?먯꽌??external validation???⑸땲?? ?쇰Ц???곗? ?딆븘?? 肄붾뵫??紐곕씪?? 李몄뿬 ?먯껜媛 ?곌뎄?낅땲??"
     ),
-    collectiveUserCta: pick(locale, "Sign in and start", "로그인하고 시작하기"),
-    collectiveHospitalNote: pick(locale, "Any clinician can start with one Google account.", "임상 안과의사라면 누구나, Google 계정 1개로 시작"),
-    faqLabel: pick(locale, "FAQ", "자주 묻는 질문"),
-    faqTitle: pick(locale, "Questions you may already have.", "궁금한 점이 있으신가요?"),
-    finalTitleLead: pick(locale, "Research does not have to begin as a giant project.", "연구는 거대한 프로젝트가 아닙니다"),
-    finalBodyOne: pick(locale, "A single case from today's clinic can be enough.", "오늘 진료한 한 케이스, 그 사진 몇 장이면 충분합니다."),
+    collectiveUserCta: pick(locale, "Sign in and start", "濡쒓렇?명븯怨??쒖옉?섍린"),
+    collectiveHospitalNote: pick(locale, "Any clinician can start with one Google account.", "?꾩긽 ?덇낵?섏궗?쇰㈃ ?꾧뎄?? Google 怨꾩젙 1媛쒕줈 ?쒖옉"),
+    faqLabel: pick(locale, "FAQ", "?먯＜ 臾삳뒗 吏덈Ц"),
+    faqTitle: pick(locale, "Questions you may already have.", "沅곴툑???먯씠 ?덉쑝?좉???"),
+    finalTitleLead: pick(locale, "Research does not have to begin as a giant project.", "?곌뎄??嫄곕????꾨줈?앺듃媛 ?꾨떃?덈떎"),
+    finalBodyOne: pick(locale, "A single case from today's clinic can be enough.", "?ㅻ뒛 吏꾨즺????耳?댁뒪, 洹??ъ쭊 紐??μ씠硫?異⑸텇?⑸땲??"),
     finalBodyTwo: pick(
       locale,
       "After clinic, with a cup of coffee, ask AI what it thinks. K-ERA begins with that question.",
-      "외래가 끝난 뒤, 커피 한 잔을 들고 AI에게 물어보세요. \"너는 어떻게 생각해?\" K-ERA는 그 질문에서 시작됩니다."
+      "?몃옒媛 ?앸궃 ?? 而ㅽ뵾 ???붿쓣 ?ㅺ퀬 AI?먭쾶 臾쇱뼱蹂댁꽭?? \"?덈뒗 ?대뼸寃??앷컖??\" K-ERA??洹?吏덈Ц?먯꽌 ?쒖옉?⑸땲??"
     ),
-    finalCta: pick(locale, "Open Google sign-in", "Google 로그인 열기"),
+    finalCta: pick(locale, "Open Google sign-in", "Google 濡쒓렇???닿린"),
     finalNote: pick(locale, "Research begins with one case.", "Research begins with one case."),
     footerCopyright: pick(
       locale,
-      "© 2026 K-ERA Project · Jeju National University Hospital",
-      "© 2026 K-ERA Project · Jeju National University Hospital"
+      "짤 2026 K-ERA Project 쨌 Jeju National University Hospital",
+      "짤 2026 K-ERA Project 쨌 Jeju National University Hospital"
     ),
-    footerPrivacy: pick(locale, "Privacy Policy", "개인정보처리방침"),
-    footerTerms: pick(locale, "Terms", "이용약관"),
-    footerContact: pick(locale, "Contact", "문의"),
+    footerPrivacy: pick(locale, "Privacy Policy", "媛쒖씤?뺣낫泥섎━諛⑹묠"),
+    footerTerms: pick(locale, "Terms", "?댁슜?쎄?"),
+    footerContact: pick(locale, "Contact", "臾몄쓽"),
     viewLabelWhite: pick(locale, "White", "White"),
     viewLabelFluorescein: pick(locale, "Fluorescein", "Fluorescein"),
     viewLabelSlit: pick(locale, "Slit", "Slit"),
     viewVisitChip: pick(locale, "Sample Visit", "Sample Visit"),
-    viewVisitArrow: pick(locale, "Visit-level integrated review", "Visit 단위 종합 판독"),
-    viewVisitResult: pick(locale, "Fungal Keratitis · 76% probability", "Fungal Keratitis · 76% 확률"),
-    viewVisitSub: pick(locale, "MedSAM ROI extraction · Ensemble model", "MedSAM ROI 자동 추출 · Ensemble 모델"),
-    fedTopLabel: pick(locale, "Central Control Plane", "중앙 Control Plane"),
-    fedTopTitle: pick(locale, "Model versioning · FedAvg aggregation", "모델 버전 관리 · FedAvg 집계"),
-    fedMid: pick(locale, "Only encrypted weight deltas move upward. Raw data never does.", "Weight Delta만 암호화 전송 · 원본 데이터는 이동하지 않습니다."),
-    fedBottom: pick(locale, "Raw images, patient IDs, and full-size crops never leave the hospital.", "원본 이미지 · 환자 ID · full-size crop은 병원 밖으로 나가지 않습니다."),
+    viewVisitArrow: pick(locale, "Visit-level integrated review", "Visit ?⑥쐞 醫낇빀 ?먮룆"),
+    viewVisitResult: pick(locale, "Fungal Keratitis 쨌 76% probability", "Fungal Keratitis 쨌 76% ?뺣쪧"),
+    viewVisitSub: pick(locale, "MedSAM ROI extraction 쨌 Ensemble model", "MedSAM ROI ?먮룞 異붿텧 쨌 Ensemble 紐⑤뜽"),
+    fedTopLabel: pick(locale, "Central Control Plane", "以묒븰 Control Plane"),
+    fedTopTitle: pick(locale, "Model versioning 쨌 FedAvg aggregation", "紐⑤뜽 踰꾩쟾 愿由?쨌 FedAvg 吏묎퀎"),
+    fedMid: pick(locale, "Only encrypted weight deltas move upward. Raw data never does.", "Weight Delta留??뷀샇???꾩넚 쨌 ?먮낯 ?곗씠?곕뒗 ?대룞?섏? ?딆뒿?덈떎."),
+    fedBottom: pick(locale, "Raw images, patient IDs, and full-size crops never leave the hospital.", "?먮낯 ?대?吏 쨌 ?섏옄 ID 쨌 full-size crop? 蹂묒썝 諛뽰쑝濡??섍?吏 ?딆뒿?덈떎."),
   };
   const landingPainPoints = [
     {
       icon: "python",
-      title: pick(locale, "Everything started with environment setup again.", "매번 Python 환경 설정부터"),
+      title: pick(locale, "Everything started with environment setup again.", "모든 일은 또다시 환경 설정부터 시작됐습니다."),
       body: pick(
         locale,
         "Anaconda, conflicting libraries, terminal errors. Too many clinicians stop before the study itself begins.",
-        "Anaconda, 라이브러리 충돌, 터미널 에러. 이 과정에서 포기하는 임상의가 너무 많습니다."
+        "Anaconda, ?쇱씠釉뚮윭由?異⑸룎, ?곕????먮윭. ??怨쇱젙?먯꽌 ?ш린?섎뒗 ?꾩긽?섍? ?덈Т 留롮뒿?덈떎."
       ),
     },
     {
       icon: "roi",
-      title: pick(locale, "Thousands of images, all manually annotated.", "이미지 수천 장, 수동 annotation"),
+      title: pick(locale, "Thousands of images, all manually annotated.", "?대?吏 ?섏쿇 ?? ?섎룞 annotation"),
       body: pick(
         locale,
         "Drawing lesion ROI one image at a time turns a few hundred cases into hundreds of hours.",
-        "마우스로 병변 ROI를 하나씩 그리는 작업은 수백 장만 되어도 수백 시간으로 불어납니다."
+        "留덉슦?ㅻ줈 蹂묐? ROI瑜??섎굹??洹몃━???묒뾽? ?섎갚 ?λ쭔 ?섏뼱???섎갚 ?쒓컙?쇰줈 遺덉뼱?⑸땲??"
       ),
     },
     {
       icon: "single",
-      title: pick(locale, "Single-center data hits a hard wall.", "Single-center의 벽"),
+      title: pick(locale, "Single-center data hits a hard wall.", "단일 기관 데이터는 분명한 한계에 부딪힙니다."),
       body: pick(
         locale,
         "If data cannot leave the hospital, external validation becomes the hardest part of proving the model.",
-        "데이터를 병원 밖으로 꺼낼 수 없기 때문에, 힘들게 만든 AI도 external validation을 받기 어렵습니다."
+        "?곗씠?곕? 蹂묒썝 諛뽰쑝濡?爰쇰궪 ???녾린 ?뚮Ц?? ?섎뱾寃?留뚮뱺 AI??external validation??諛쏄린 ?대졄?듬땲??"
       ),
     },
     {
       icon: "privacy",
-      title: pick(locale, "Too many models end as papers only.", "논문만 쓰고 쓰지 못하는 AI"),
+      title: pick(locale, "Too many models end as papers only.", "?쇰Ц留??곌퀬 ?곗? 紐삵븯??AI"),
       body: pick(
         locale,
         "Research stays disconnected from care when privacy and deployment are treated as afterthoughts.",
-        "실제 진료에서 활용되지 못하는 연구, 연구와 임상 사이의 간극이 계속 남습니다."
+        "?ㅼ젣 吏꾨즺?먯꽌 ?쒖슜?섏? 紐삵븯???곌뎄, ?곌뎄? ?꾩긽 ?ъ씠??媛꾧레??怨꾩냽 ?⑥뒿?덈떎."
       ),
     },
   ];
   const landingFeatureCards = [
     {
       number: "01",
-      eyebrow: pick(locale, "Meta AI MedSAM · 2024", "Meta AI MedSAM · 2024"),
-      title: pick(locale, "Semi-automatic lesion segmentation with MedSAM", "MedSAM 기반 반자동 병변 분할"),
+      eyebrow: pick(locale, "Meta AI MedSAM 쨌 2024", "Meta AI MedSAM 쨌 2024"),
+      title: pick(locale, "Semi-automatic lesion segmentation with MedSAM", "MedSAM 湲곕컲 諛섏옄??蹂묐? 遺꾪븷"),
       body: pick(
         locale,
         "Upload an image and draw a loose box around the lesion. MedSAM creates a precise ROI mask in seconds, and Grad-CAM helps reveal why the model is attending there.",
-        "이미지를 올리고 병변 주변에 box만 그리면, MedSAM이 정밀한 ROI segmentation을 자동 생성합니다. Grad-CAM으로 AI의 판단 근거도 함께 확인할 수 있습니다."
+        "?대?吏瑜??щ━怨?蹂묐? 二쇰???box留?洹몃━硫? MedSAM???뺣???ROI segmentation???먮룞 ?앹꽦?⑸땲?? Grad-CAM?쇰줈 AI???먮떒 洹쇨굅???④퍡 ?뺤씤?????덉뒿?덈떎."
       ),
     },
     {
       number: "02",
       eyebrow: pick(locale, "Visit-level ensemble", "Visit-level Ensemble"),
-      title: pick(locale, "Integrated review across White, Fluorescein, and Slit views", "Visit 단위 멀티모달 종합 판독"),
+      title: pick(locale, "Integrated review across White, Fluorescein, and Slit views", "Visit ?⑥쐞 硫?곕え??醫낇빀 ?먮룆"),
       body: pick(
         locale,
         "Instead of trusting a single photo, K-ERA reads the visit as a unit. Multiple views and ensemble logic reduce sensitivity to one noisy capture.",
-        "실제 진료처럼 White, Fluorescein, Slit 세 가지 view를 함께 봅니다. 한 방문의 이미지를 통합해 판단하므로 사진 한 장의 잡음에 덜 흔들립니다."
+        "?ㅼ젣 吏꾨즺泥섎읆 White, Fluorescein, Slit ??媛吏 view瑜??④퍡 遊낅땲?? ??諛⑸Ц???대?吏瑜??듯빀???먮떒?섎?濡??ъ쭊 ???μ쓽 ?≪쓬?????붾뱾由쎈땲??"
       ),
     },
     {
       number: "03",
       eyebrow: pick(locale, "Privacy-preserving", "Privacy-preserving"),
-      title: pick(locale, "Federated learning for multi-center collaboration", "Federated Learning 다기관 협력"),
+      title: pick(locale, "Federated learning for multi-center collaboration", "Federated Learning ?ㅺ린愿 ?묐젰"),
       body: pick(
         locale,
         "Each hospital trains locally and shares only model deltas. Aggregated models return to all participants without exporting raw clinical images.",
-        "각 병원이 자체 환경에서 학습 후 weight delta만 전달합니다. FedAvg로 집계된 모델은 참여 병원 모두에 배포되고, 원본 이미지는 병원 밖으로 나가지 않습니다."
+        "媛?蹂묒썝???먯껜 ?섍꼍?먯꽌 ?숈뒿 ??weight delta留??꾨떖?⑸땲?? FedAvg濡?吏묎퀎??紐⑤뜽? 李몄뿬 蹂묒썝 紐⑤몢??諛고룷?섍퀬, ?먮낯 ?대?吏??蹂묒썝 諛뽰쑝濡??섍?吏 ?딆뒿?덈떎."
       ),
     },
   ];
   const landingFederatedPoints = [
     {
-      title: pick(locale, "What reaches the center", "중앙에 올라가는 것"),
+      title: pick(locale, "What reaches the center", "중앙으로 올라오는 것"),
       body: pick(
         locale,
         "Encrypted weight deltas and only lightweight review assets when policy allows them.",
-        "암호화된 weight delta와, 정책상 허용된 경우에 한해 가벼운 검토용 자산만 전달됩니다."
+        "?뷀샇?붾맂 weight delta?, ?뺤콉???덉슜??寃쎌슦???쒗빐 媛踰쇱슫 寃?좎슜 ?먯궛留??꾨떖?⑸땲??"
       ),
     },
     {
-      title: pick(locale, "What stays inside the hospital", "병원 밖으로 나가지 않는 것"),
+      title: pick(locale, "What stays inside the hospital", "병원 안에 남는 것"),
       body: pick(
         locale,
         "Original images, patient identifiers, full-size crops, and detailed clinical records.",
-        "원본 이미지, 환자 ID, full-size crop, 상세 임상 기록."
+        "?먮낯 ?대?吏, ?섏옄 ID, full-size crop, ?곸꽭 ?꾩긽 湲곕줉."
       ),
     },
     {
-      title: pick(locale, "What happens as more hospitals join", "참여 병원이 늘어날수록"),
+      title: pick(locale, "What happens as more hospitals join", "병원이 더 참여할수록 생기는 일"),
       body: pick(
         locale,
         "New sites naturally become broader external validation environments for the shared model.",
-        "새로운 병원의 합류 자체가 더 넓은 external validation 환경으로 이어집니다."
+        "?덈줈??蹂묒썝???⑸쪟 ?먯껜媛 ???볦? external validation ?섍꼍?쇰줈 ?댁뼱吏묐땲??"
       ),
     },
   ];
   const landingStats = [
     {
       value: "77%",
-      label: pick(locale, "Pilot single-center 5-fold accuracy", "단일 기관 초기 모델 5-fold cross-validation accuracy"),
+      label: pick(locale, "Pilot single-center 5-fold accuracy", "?⑥씪 湲곌? 珥덇린 紐⑤뜽 5-fold cross-validation accuracy"),
     },
     {
       value: "85%+",
-      label: pick(locale, "Targeted accuracy at larger BK/FK scale", "BK · FK 각 5,000장 규모 달성 시 예상 accuracy"),
+      label: pick(locale, "Targeted accuracy at larger BK/FK scale", "BK 쨌 FK 媛?5,000??洹쒕え ?ъ꽦 ???덉긽 accuracy"),
     },
     {
       value: "3",
-      label: pick(locale, "White · Fluorescein · Slit modalities", "White · Fluorescein · Slit 멀티모달 이미지 지원"),
+      label: pick(locale, "White · Fluorescein · Slit modalities", "White · Fluorescein · Slit 이미지 지원"),
     },
     {
       value: "0",
-      label: pick(locale, "Known raw-data leaks outside participating hospitals", "원본 데이터 외부 유출"),
+      label: pick(locale, "Known raw-data leaks outside participating hospitals", "?먮낯 ?곗씠???몃? ?좎텧"),
     },
   ];
   const landingFaqItems = [
     {
-      question: pick(locale, "Does K-ERA write the AI model for me?", "K-ERA는 AI 모델을 대신 만들어 주나요?"),
+      question: pick(locale, "Does K-ERA write the AI model for me?", "K-ERA??AI 紐⑤뜽?????留뚮뱾??二쇰굹??"),
       answer: pick(
         locale,
         "No. K-ERA automates repetitive steps such as case registration, lesion segmentation, and training execution, but clinical judgment still belongs to the researcher.",
-        "아니요. K-ERA의 원칙은 대체가 아니라 보조입니다. 케이스 등록, 병변 분할, 학습 실행 같은 반복 작업을 자동화하지만 판단은 언제나 임상의가 합니다."
+        "?꾨땲?? K-ERA???먯튃? ?泥닿? ?꾨땲??蹂댁“?낅땲?? 耳?댁뒪 ?깅줉, 蹂묐? 遺꾪븷, ?숈뒿 ?ㅽ뻾 媛숈? 諛섎났 ?묒뾽???먮룞?뷀븯吏留??먮떒? ?몄젣???꾩긽?섍? ?⑸땲??"
       ),
     },
     {
-      question: pick(locale, "Can I use it without coding?", "코딩을 전혀 몰라도 쓸 수 있나요?"),
+      question: pick(locale, "Can I use it without coding?", "肄붾뵫???꾪? 紐곕씪???????덈굹??"),
       answer: pick(
         locale,
         "Yes. Python setup, CSV manifests, and most repetitive preparation steps are hidden behind the web workflow and Google sign-in.",
-        "물론입니다. Python 설치도, CSV 작성도 필요 없습니다. Google 계정으로 로그인한 뒤 웹 UI에서 주요 기능을 사용할 수 있도록 설계했습니다."
+        "臾쇰줎?낅땲?? Python ?ㅼ튂?? CSV ?묒꽦???꾩슂 ?놁뒿?덈떎. Google 怨꾩젙?쇰줈 濡쒓렇?명븳 ????UI?먯꽌 二쇱슂 湲곕뒫???ъ슜?????덈룄濡??ㅺ퀎?덉뒿?덈떎."
       ),
     },
     {
-      question: pick(locale, "Does patient data leave the hospital?", "환자 데이터가 외부로 유출되지 않나요?"),
+      question: pick(locale, "Does patient data leave the hospital?", "?섏옄 ?곗씠?곌? ?몃?濡??좎텧?섏? ?딅굹??"),
       answer: pick(
         locale,
         "Original images and patient identifiers remain inside the hospital. The federated path is designed around local training and lightweight model updates.",
-        "원본 이미지와 환자 정보는 병원 내부에만 존재합니다. 연합학습 경로는 로컬 학습과 경량 모델 업데이트 전송을 전제로 설계되어 있습니다."
+        "?먮낯 ?대?吏? ?섏옄 ?뺣낫??蹂묒썝 ?대??먮쭔 議댁옱?⑸땲?? ?고빀?숈뒿 寃쎈줈??濡쒖뺄 ?숈뒿怨?寃쎈웾 紐⑤뜽 ?낅뜲?댄듃 ?꾩넚???꾩젣濡??ㅺ퀎?섏뼱 ?덉뒿?덈떎."
       ),
     },
     {
-      question: pick(locale, "What do participating hospitals gain?", "참여하면 어떤 이점이 있나요?"),
+      question: pick(locale, "What do participating hospitals gain?", "李몄뿬?섎㈃ ?대뼡 ?댁젏???덈굹??"),
       answer: pick(
         locale,
         "Each contributed case becomes both research material and a wider validation environment, and participating sites benefit from the aggregated global model.",
-        "참여 기관의 케이스는 전국 규모 AI의 external validation 데이터가 되고, 집계된 글로벌 모델의 혜택도 함께 공유받게 됩니다."
+        "李몄뿬 湲곌???耳?댁뒪???꾧뎅 洹쒕え AI??external validation ?곗씠?곌? ?섍퀬, 吏묎퀎??湲濡쒕쾶 紐⑤뜽???쒗깮???④퍡 怨듭쑀諛쏄쾶 ?⑸땲??"
       ),
     },
     {
-      question: pick(locale, "Which architectures are currently supported?", "어떤 모델 아키텍처를 지원하나요?"),
+      question: pick(locale, "Which architectures are currently supported?", "?대뼡 紐⑤뜽 ?꾪궎?띿쿂瑜?吏?먰븯?섏슂?"),
       answer: pick(
         locale,
         "Current initial training supports DenseNet121, ConvNeXt-Tiny, ViT-B/16, Swin-T, and EfficientNetV2-S with official pretrained backbones.",
-        "현재 초기 학습은 DenseNet121, ConvNeXt-Tiny, ViT-B/16, Swin-T, EfficientNetV2-S를 official pretrained backbone 기준으로 지원합니다."
+        "?꾩옱 珥덇린 ?숈뒿? DenseNet121, ConvNeXt-Tiny, ViT-B/16, Swin-T, EfficientNetV2-S瑜?official pretrained backbone 湲곗??쇰줈 吏?먰빀?덈떎."
       ),
     },
     {
-      question: pick(locale, "Does hospital IT need heavy infrastructure?", "병원 IT 인프라가 복잡해야 하나요?"),
+      question: pick(locale, "Does hospital IT need heavy infrastructure?", "蹂묒썝 IT ?명봽?쇨? 蹂듭옟?댁빞 ?섎굹??"),
       answer: pick(
         locale,
         "No. The local node is intended to run on a hospital-side workstation or server without requiring a large deployment footprint.",
-        "아닙니다. Local Node는 병원 내부 워크스테이션 또는 서버 한 대에서도 운영할 수 있도록 설계되어 있습니다."
+        "?꾨떃?덈떎. Local Node??蹂묒썝 ?대? ?뚰겕?ㅽ뀒?댁뀡 ?먮뒗 ?쒕쾭 ????먯꽌???댁쁺?????덈룄濡??ㅺ퀎?섏뼱 ?덉뒿?덈떎."
       ),
     },
   ];
-  const adminRecoveryLinkLabel = pick(locale, "Open administrator recovery", "관리자 복구 열기");
+  const adminRecoveryLinkLabel = pick(locale, "Open administrator recovery", "愿由ъ옄 蹂듦뎄 ?닿린");
   const adminLaunchLinks = [
     {
-      label: pick(locale, "Admin training", "관리자 학습"),
+      label: pick(locale, "Admin training", "愿由ъ옄 ?숈뒿"),
       href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining",
     },
     {
@@ -826,7 +830,7 @@ export default function HomePage() {
       setPatientForm((current) => ({ ...current, patient_id: "", chart_alias: "", local_case_code: "" }));
       await refreshSiteData(selectedSiteId, token);
     } catch (nextError) {
-      setError(describeError(nextError, pick(locale, "Patient creation failed.", "환자 생성에 실패했습니다.")));
+      setError(describeError(nextError, pick(locale, "Patient creation failed.", "?섏옄 ?앹꽦???ㅽ뙣?덉뒿?덈떎.")));
     } finally {
       setPatientBusy(false);
     }
@@ -866,7 +870,7 @@ export default function HomePage() {
       });
       setAdminRequests(await fetchAccessRequests(token, "pending"));
     } catch (nextError) {
-      setError(describeError(nextError, pick(locale, "Review failed.", "검토에 실패했습니다.")));
+      setError(describeError(nextError, pick(locale, "Review failed.", "寃?좎뿉 ?ㅽ뙣?덉뒿?덈떎.")));
     } finally {
       setReviewBusyById((current) => ({ ...current, [requestId]: false }));
     }
@@ -956,101 +960,140 @@ export default function HomePage() {
 
   if (!approved) {
     return (
-      <main className="shell">
-        <div className="shell-toolbar">
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-6xl justify-end">
           <LocaleToggle />
         </div>
-        <section className="dashboard">
-          <div className="section-head">
-            <div>
-              <div className="eyebrow">{copy.approvalRequired}</div>
-              <h2>{copy.institutionAccessRequest}</h2>
-              <p className="muted">{copy.signedInAs(user.full_name, user.username)}</p>
-            </div>
-            <button className="secondary-button" type="button" onClick={handleLogout}>
-              {copy.logOut}
-            </button>
-          </div>
+        <section className="mx-auto mt-6 grid w-full max-w-6xl gap-5">
+          <Card as="section" variant="surface" className="grid gap-5 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {copy.approvalRequired}
+                </span>
+              }
+              title={copy.institutionAccessRequest}
+              description={copy.signedInAs(user.full_name, user.username)}
+              aside={
+                <Button type="button" variant="ghost" size="sm" onClick={handleLogout}>
+                  {copy.logOut}
+                </Button>
+              }
+            />
 
-          {error ? <div className="error">{error}</div> : null}
+            {error ? (
+              <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">
+                {error}
+              </div>
+            ) : null}
 
-          <section className="approval-grid">
-            <article className="content-card approval-status-card">
-              <div className="eyebrow">{copy.currentStatus}</div>
-              <h3>{statusCopy(locale, user.approval_status)}</h3>
-              <p className="muted">{copy.approvedBody}</p>
-              <div className={`status-chip tone-${user.approval_status}`}>{translateStatus(locale, user.approval_status)}</div>
-              {myRequests.length === 0 ? (
-                <div className="empty">{copy.noInstitutionRequest}</div>
-              ) : (
-                <div className="request-list">
-                  {myRequests.map((request) => (
-                    <div key={request.request_id} className="request-item">
-                      <strong>{request.requested_site_id}</strong>
-                      <div className="muted">
-                        {translateRole(locale, request.requested_role)} · {translateStatus(locale, request.status)}
-                      </div>
-                      {request.message ? <div className="muted">“{request.message}”</div> : null}
-                      {request.reviewer_notes ? <div className="muted">{copy.reviewerLabel}: {request.reviewer_notes}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="content-card approval-form-card">
-              <div className="eyebrow">{copy.requestAccess}</div>
-              <h3>{copy.chooseInstitutionRole}</h3>
-              <form className="stack" onSubmit={handleRequestAccess}>
-                <div className="field">
-                  <label htmlFor="requested_site_id">{copy.hospital}</label>
-                  <select
-                    id="requested_site_id"
-                    value={requestForm.requested_site_id}
-                    onChange={(event) =>
-                      setRequestForm((current) => ({ ...current, requested_site_id: event.target.value }))
-                    }
-                  >
-                    {publicSites.map((site) => (
-                      <option key={site.site_id} value={site.site_id}>
-                        {site.display_name}
-                      </option>
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+              <Card as="article" variant="panel" className="grid gap-5 p-5 sm:p-6">
+                <SectionHeader
+                  titleAs="h4"
+                  title={copy.currentStatus}
+                  description={statusCopy(locale, user.approval_status)}
+                  aside={
+                    <span
+                      className={cn(
+                        "inline-flex min-h-9 items-center rounded-full border px-3 text-[0.78rem] font-semibold",
+                        user.approval_status === "approved" &&
+                          "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                        user.approval_status === "pending" &&
+                          "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                        user.approval_status === "rejected" &&
+                          "border-danger/25 bg-danger/10 text-danger",
+                        user.approval_status === "application_required" &&
+                          "border-border bg-white/55 text-muted dark:bg-white/4"
+                      )}
+                    >
+                      {translateStatus(locale, user.approval_status)}
+                    </span>
+                  }
+                />
+                <p className="m-0 text-sm leading-6 text-muted">{copy.approvedBody}</p>
+                {myRequests.length === 0 ? (
+                  <div className="rounded-[20px] border border-dashed border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
+                    {copy.noInstitutionRequest}
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    {myRequests.map((request) => (
+                      <Card key={request.request_id} as="article" variant="nested" className="grid gap-3 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <strong className="text-sm font-semibold text-ink">{request.requested_site_id}</strong>
+                          <span className="rounded-full border border-border bg-white/55 px-3 py-1 text-[0.76rem] font-medium text-muted dark:bg-white/4">
+                            {translateStatus(locale, request.status)}
+                          </span>
+                        </div>
+                        <p className="m-0 text-sm leading-6 text-muted">
+                          {translateRole(locale, request.requested_role)}
+                        </p>
+                        {request.message ? <p className="m-0 text-sm leading-6 text-muted">{request.message}</p> : null}
+                        {request.reviewer_notes ? (
+                          <p className="m-0 text-sm leading-6 text-muted">
+                            {copy.reviewerLabel}: {request.reviewer_notes}
+                          </p>
+                        ) : null}
+                      </Card>
                     ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="requested_role">{copy.requestedRole}</label>
-                  <select
-                    id="requested_role"
-                    value={requestForm.requested_role}
-                    onChange={(event) => setRequestForm((current) => ({ ...current, requested_role: event.target.value }))}
-                  >
-                    <option value="researcher">{translateRole(locale, "researcher")}</option>
-                    <option value="viewer">{translateRole(locale, "viewer")}</option>
-                    <option value="site_admin">{translateRole(locale, "site_admin")}</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label htmlFor="message">{copy.noteForReviewer}</label>
-                  <textarea
-                    id="message"
-                    rows={4}
-                    value={requestForm.message}
-                    onChange={(event) => setRequestForm((current) => ({ ...current, message: event.target.value }))}
-                    placeholder={copy.requestPlaceholder}
-                  />
-                </div>
-                <button className="primary-button" type="submit" disabled={requestBusy || !requestForm.requested_site_id}>
-                  {requestBusy ? copy.submitting : copy.submitInstitutionRequest}
-                </button>
-              </form>
-            </article>
-          </section>
+                  </div>
+                )}
+              </Card>
+
+              <Card as="article" variant="panel" className="grid gap-5 p-5 sm:p-6">
+                <SectionHeader
+                  titleAs="h4"
+                  title={copy.chooseInstitutionRole}
+                  description={copy.requestAccess}
+                />
+                <form className="grid gap-4" onSubmit={handleRequestAccess}>
+                  <Field as="div" label={copy.hospital}>
+                    <select
+                      id="requested_site_id"
+                      value={requestForm.requested_site_id}
+                      onChange={(event) =>
+                        setRequestForm((current) => ({ ...current, requested_site_id: event.target.value }))
+                      }
+                    >
+                      {publicSites.map((site) => (
+                        <option key={site.site_id} value={site.site_id}>
+                          {site.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field as="div" label={copy.requestedRole}>
+                    <select
+                      id="requested_role"
+                      value={requestForm.requested_role}
+                      onChange={(event) => setRequestForm((current) => ({ ...current, requested_role: event.target.value }))}
+                    >
+                      <option value="researcher">{translateRole(locale, "researcher")}</option>
+                      <option value="viewer">{translateRole(locale, "viewer")}</option>
+                      <option value="site_admin">{translateRole(locale, "site_admin")}</option>
+                    </select>
+                  </Field>
+                  <Field as="div" label={copy.noteForReviewer}>
+                    <textarea
+                      id="message"
+                      rows={4}
+                      value={requestForm.message}
+                      onChange={(event) => setRequestForm((current) => ({ ...current, message: event.target.value }))}
+                      placeholder={copy.requestPlaceholder}
+                    />
+                  </Field>
+                  <Button type="submit" variant="primary" fullWidth disabled={requestBusy || !requestForm.requested_site_id}>
+                    {requestBusy ? copy.submitting : copy.submitInstitutionRequest}
+                  </Button>
+                </form>
+              </Card>
+            </div>
+          </Card>
         </section>
       </main>
     );
   }
-
   if (workspaceMode === "canvas" || !canOpenOperations) {
     return (
       <CaseWorkspace
