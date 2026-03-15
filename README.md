@@ -178,7 +178,7 @@ Retrieval backend: `classifier` / `dinov2` / `hybrid` 모드 지원
 | ROC curve 비교 | O | O |
 | Initial training 실행 | O | O |
 | Cross-validation 실행 및 리포트 조회 | O | O |
-| 4-model benchmark training | O | O |
+| Multi-model benchmark training | O | O |
 | Case-level multi-model compare | O | O |
 | Model registry 조회 | O | O |
 | Model update review | O | - |
@@ -334,7 +334,7 @@ python -m unittest tests.test_modeling
 ## 현재 한계와 주의사항
 
 - 케이스 단위 validation, AI Clinic retrieval/report 생성 등 일부 작업은 여전히 API 요청-응답 안에서 동기 실행됩니다.
-- 사이트 단위 validation, initial training, 4-model benchmark, cross-validation은 `site_jobs`에 큐잉되며, 별도 worker(`python -m kera_research.worker`)가 처리합니다. `.\scripts\run_local_node.ps1`는 이 worker를 함께 실행하지만, API만 단독 실행하면 해당 작업은 `queued` 상태에 머무를 수 있습니다.
+- 사이트 단위 validation, initial training, multi-model benchmark, cross-validation은 `site_jobs`에 큐잉되며, 별도 worker(`python -m kera_research.worker`)가 처리합니다. `.\scripts\run_local_node.ps1`는 이 worker를 함께 실행하지만, API만 단독 실행하면 해당 작업은 `queued` 상태에 머무를 수 있습니다.
 - AI Clinic embedding indexing / backfill, lesion live preview, 관리자 aggregation은 현재 별도 외부 큐가 아니라 API 프로세스 내부 daemon thread로 실행됩니다. 따라서 API 프로세스 재시작이나 종료 시 해당 작업은 중단될 수 있습니다.
 - MedSAM은 로컬 스크립트와 체크포인트가 준비된 경우에만 사용하며, 그렇지 않으면 fallback ROI 경로를 사용합니다.
 - 프론트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.

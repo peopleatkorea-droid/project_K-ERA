@@ -432,7 +432,7 @@ class ModelManager:
         model_reference: dict[str, Any],
         checkpoint: Any,
     ) -> dict[str, Any]:
-        architecture = str(model_reference.get("architecture") or "cnn")
+        architecture = str(model_reference.get("architecture") or "densenet121")
         metadata = self._checkpoint_metadata(checkpoint)
         checkpoint_architecture = str((metadata.get("architecture") or checkpoint.get("architecture") or "")).strip()
         if checkpoint_architecture and checkpoint_architecture != architecture:
@@ -475,11 +475,28 @@ class ModelManager:
         if architecture == "cnn":
             return TinyKeratitisCNN()
         if architecture == "vit":
-            return TinyPatchViT()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for ViT. Run: pip install torchvision")
+            backbone = _torchvision_models.vit_b_16(weights=None)
+            in_features = backbone.heads.head.in_features
+            backbone.heads.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
+            return backbone
         if architecture == "swin":
-            return TinySwinLike()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for Swin. Run: pip install torchvision")
+            backbone = _torchvision_models.swin_t(weights=None)
+            in_features = backbone.head.in_features
+            backbone.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
+            return backbone
         if architecture == "convnext_tiny":
             return ConvNeXtTinyKeratitis()
+        if architecture == "efficientnet_v2_s":
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for EfficientNetV2-S. Run: pip install torchvision")
+            backbone = _torchvision_models.efficientnet_v2_s(weights=None)
+            in_features = backbone.classifier[-1].in_features
+            backbone.classifier[-1] = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
+            return backbone
         if architecture in DENSENET_VARIANTS:
             return DenseNetKeratitis(variant=architecture)
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -489,37 +506,9 @@ class ModelManager:
         baselines: list[dict[str, Any]] = []
         for template in DEFAULT_GLOBAL_MODELS:
             model_path = Path(template["model_path"])
-            # DenseNet 글로벌 모델은 .pth 파일로 제공됩니다.
-            # 파일이 없으면 등록은 하되, 랜덤 초기화 모델을 자동 생성하지 않습니다.
-            # (사용자가 직접 .pth 파일을 models/ 폴더에 넣어야 합니다.)
             if not model_path.exists():
-                if template["architecture"] in DENSENET_VARIANTS:
-                    baselines.append(
-                        {
-                            "version_id": template["version_id"],
-                            "version_name": template["version_name"],
-                            "architecture": template["architecture"],
-                            "stage": "global",
-                            "base_version_id": None,
-                            "model_path": str(model_path),
-                            "requires_medsam_crop": template.get("requires_medsam_crop", False),
-                            "training_input_policy": (
-                                "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
-                            ),
-                            "preprocess_signature": self.preprocess_signature(),
-                            "num_classes": DEFAULT_NUM_CLASSES,
-                            "decision_threshold": 0.5,
-                            "threshold_selection_metric": "default",
-                            "is_current": template.get("is_current", False),
-                            "created_at": utc_now(),
-                            "notes": template["notes"],
-                            "notes_ko": template.get("notes_ko", template["notes"]),
-                            "notes_en": template.get("notes_en", template["notes"]),
-                            "ready": False,
-                        }
-                    )
-                    continue
-                model = self.build_model(template["architecture"])
+                model_path.parent.mkdir(parents=True, exist_ok=True)
+                model = self.build_model_pretrained(template["architecture"])
                 torch.save(
                     {
                         "architecture": template["architecture"],
@@ -564,7 +553,7 @@ class ModelManager:
 
     def load_model(self, model_reference: dict[str, Any], device: str) -> nn.Module:
         require_torch()
-        architecture = model_reference.get("architecture", "cnn")
+        architecture = model_reference.get("architecture", "densenet121")
         model_path = model_reference["model_path"]
         if not Path(model_path).exists():
             raise FileNotFoundError(f"Model artifact not found: {model_path}")
@@ -637,21 +626,9 @@ class ModelManager:
         _, tensor = preprocess_image(image_path)
         tensor = tensor.to(device)
         model.eval()
-        architecture = str(model_reference.get("architecture") or "cnn")
+        architecture = str(model_reference.get("architecture") or "densenet121")
 
-        classifier_module: nn.Module
-        if architecture == "cnn":
-            classifier_module = model.classifier
-        elif architecture == "vit":
-            classifier_module = model.head
-        elif architecture == "swin":
-            classifier_module = model.head
-        elif architecture == "convnext_tiny":
-            classifier_module = model.classifier[-1]
-        elif architecture in DENSENET_VARIANTS:
-            classifier_module = model.classifier
-        else:
-            raise ValueError(f"Unsupported embedding extraction architecture: {architecture}")
+        classifier_module = self._classifier_module(model, architecture)
 
         captured_inputs: list[torch.Tensor] = []
 
@@ -680,55 +657,52 @@ class ModelManager:
         output_path: str | Path,
         target_class: int | None = None,
     ) -> str:
-        architecture = model_reference.get("architecture", "cnn")
+        architecture = model_reference.get("architecture", "densenet121")
+        return self._generate_cam_from_layer(
+            model=model,
+            image_path=image_path,
+            device=device,
+            output_path=output_path,
+            target_layer=self._gradcam_target_layer(model, architecture),
+            target_class=target_class,
+        )
+
+    def _classifier_module(self, model: nn.Module, architecture: str) -> nn.Module:
         if architecture == "cnn":
-            return self._generate_cam_from_layer(
-                model=model,
-                image_path=image_path,
-                device=device,
-                output_path=output_path,
-                target_layer=model.features[-2],
-                target_class=target_class,
-            )
+            return model.classifier
         if architecture == "vit":
-            return self._generate_cam_from_layer(
-                model=model,
-                image_path=image_path,
-                device=device,
-                output_path=output_path,
-                target_layer=model.patch_embed,
-                target_class=target_class,
-            )
+            return model.heads.head
         if architecture == "swin":
-            return self._generate_cam_from_layer(
-                model=model,
-                image_path=image_path,
-                device=device,
-                output_path=output_path,
-                target_layer=model.stage3[-1],
-                target_class=target_class,
-            )
+            return model.head
         if architecture == "convnext_tiny":
-            return self._generate_cam_from_layer(
-                model=model,
-                image_path=image_path,
-                device=device,
-                output_path=output_path,
-                target_layer=model.features[-1],
-                target_class=target_class,
-            )
+            return model.classifier[-1]
+        if architecture == "efficientnet_v2_s":
+            return model.classifier[-1]
         if architecture in DENSENET_VARIANTS:
-            # DenseNet: 마지막 denseblock의 마지막 레이어를 CAM 타겟으로 사용
-            target_layer = model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
-            return self._generate_cam_from_layer(
-                model=model,
-                image_path=image_path,
-                device=device,
-                output_path=output_path,
-                target_layer=target_layer,
-                target_class=target_class,
-            )
+            return model.classifier
         raise ValueError(f"Unsupported architecture: {architecture}")
+
+    def _gradcam_target_layer(self, model: nn.Module, architecture: str) -> nn.Module:
+        if architecture == "cnn":
+            return model.features[-2]
+        if architecture == "vit":
+            return model.conv_proj
+        if architecture == "swin":
+            return model.features[-1]
+        if architecture == "convnext_tiny":
+            return model.features[-1]
+        if architecture == "efficientnet_v2_s":
+            return model.features[-1]
+        if architecture in DENSENET_VARIANTS:
+            return model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
+        raise ValueError(f"Unsupported architecture: {architecture}")
+
+    def _normalize_cam_feature_map(self, tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.ndim != 3:
+            raise RuntimeError(f"Grad-CAM target layer must produce a 3D feature map, got shape {tuple(tensor.shape)}.")
+        if tensor.shape[0] <= tensor.shape[-1]:
+            return tensor
+        return tensor.permute(2, 0, 1).contiguous()
 
     def _generate_cam_from_layer(
         self,
@@ -770,8 +744,8 @@ class ModelManager:
         forward_handle.remove()
         backward_handle.remove()
 
-        activation = activations[-1][0]
-        gradient = gradients[-1][0]
+        activation = self._normalize_cam_feature_map(activations[-1][0])
+        gradient = self._normalize_cam_feature_map(gradients[-1][0])
         weights = gradient.mean(dim=(1, 2), keepdim=True)
         cam = torch.relu((weights * activation).sum(dim=0)).cpu().numpy()
         cam = cam - cam.min()
@@ -822,7 +796,7 @@ class ModelManager:
         loader = DataLoader(dataset, batch_size=min(8, len(records)), shuffle=True)
 
         model = self.load_model(base_model_reference, device)
-        architecture = base_model_reference.get("architecture", "cnn")
+        architecture = base_model_reference.get("architecture", "densenet121")
         if not full_finetune:
             self._freeze_backbone(model, architecture)
 
@@ -880,7 +854,7 @@ class ModelManager:
         if architecture == "vit":
             for parameter in model.parameters():
                 parameter.requires_grad = False
-            for parameter in model.head.parameters():
+            for parameter in model.heads.parameters():
                 parameter.requires_grad = True
             return
         if architecture == "swin":
@@ -890,6 +864,12 @@ class ModelManager:
                 parameter.requires_grad = True
             return
         if architecture == "convnext_tiny":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.classifier.parameters():
+                parameter.requires_grad = True
+            return
+        if architecture == "efficientnet_v2_s":
             for parameter in model.parameters():
                 parameter.requires_grad = False
             for parameter in model.classifier.parameters():
@@ -908,19 +888,25 @@ class ModelManager:
         require_torch()
         if not _TORCHVISION_AVAILABLE:
             raise RuntimeError("torchvision is required. Run: pip install torchvision")
+        if architecture == "vit":
+            from torchvision.models import ViT_B_16_Weights
+
+            backbone = _torchvision_models.vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
+            in_features = backbone.heads.head.in_features
+            backbone.heads.head = nn.Linear(in_features, num_classes)
+            return backbone
+        if architecture == "swin":
+            from torchvision.models import Swin_T_Weights
+
+            backbone = _torchvision_models.swin_t(weights=Swin_T_Weights.IMAGENET1K_V1)
+            in_features = backbone.head.in_features
+            backbone.head = nn.Linear(in_features, num_classes)
+            return backbone
         if architecture in DENSENET_VARIANTS:
-            from torchvision.models import (
-                DenseNet121_Weights,
-                DenseNet161_Weights,
-                DenseNet169_Weights,
-                DenseNet201_Weights,
-            )
+            from torchvision.models import DenseNet121_Weights
 
             weight_map = {
                 "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
-                "densenet161": DenseNet161_Weights.IMAGENET1K_V1,
-                "densenet169": DenseNet169_Weights.IMAGENET1K_V1,
-                "densenet201": DenseNet201_Weights.IMAGENET1K_V1,
             }
             builder = getattr(_torchvision_models, architecture)
             backbone = builder(weights=weight_map[architecture])
@@ -940,6 +926,13 @@ class ModelManager:
             nn.Module.__init__(model)
             model.model = backbone
             return model
+        if architecture == "efficientnet_v2_s":
+            from torchvision.models import EfficientNet_V2_S_Weights
+
+            backbone = _torchvision_models.efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+            in_features = backbone.classifier[-1].in_features
+            backbone.classifier[-1] = nn.Linear(in_features, num_classes)
+            return backbone
         raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
 
     def _split_ids_with_fallback(
@@ -1268,7 +1261,7 @@ class ModelManager:
         test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_records))), shuffle=False)
 
         # 모델 초기화
-        if use_pretrained and architecture in DENSENET_VARIANTS:
+        if use_pretrained and architecture in {"vit", "swin", "convnext_tiny", "efficientnet_v2_s", *DENSENET_VARIANTS}:
             model = self.build_model_pretrained(architecture).to(device)
         else:
             model = self.build_model(architecture).to(device)
@@ -1500,7 +1493,7 @@ class ModelManager:
     ) -> str:
         require_torch()
         tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu", weights_only=True)
-        architecture = tuned_checkpoint.get("architecture", "cnn") if isinstance(tuned_checkpoint, dict) else "cnn"
+        architecture = tuned_checkpoint.get("architecture", "densenet121") if isinstance(tuned_checkpoint, dict) else "densenet121"
         base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)
         base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
         tuned_state = self._extract_state_dict_from_checkpoint(tuned_checkpoint, architecture)
@@ -1575,7 +1568,7 @@ class ModelManager:
             view_shape = [len(deltas)] + [1] * (stacked.ndim - 1)
             aggregated[key] = (stacked * weights_tensor.view(*view_shape)).sum(dim=0)
 
-        architecture = delta_checkpoints[0].get("architecture", "cnn")
+        architecture = delta_checkpoints[0].get("architecture", "densenet121")
         state_dict_to_save = aggregated
         if base_model_path is not None:
             base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)

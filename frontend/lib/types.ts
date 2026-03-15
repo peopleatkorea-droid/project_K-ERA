@@ -1,0 +1,1007 @@
+export type AuthState = "approved" | "pending" | "rejected" | "application_required";
+
+export type SiteRecord = {
+  site_id: string;
+  display_name: string;
+  hospital_name: string;
+};
+
+export type ProjectRecord = {
+  project_id: string;
+  name: string;
+  description: string;
+  owner_user_id: string;
+  site_ids: string[];
+  created_at: string;
+};
+
+export type ManagedSiteRecord = SiteRecord & {
+  project_id: string;
+  local_storage_root?: string;
+  created_at?: string;
+};
+
+export type StorageSettingsRecord = {
+  storage_root: string;
+  default_storage_root: string;
+  uses_custom_root: boolean;
+};
+
+export type AccessRequestRecord = {
+  request_id: string;
+  user_id: string;
+  email: string;
+  requested_site_id: string;
+  requested_role: string;
+  message: string;
+  status: AuthState;
+  reviewed_by: string | null;
+  reviewer_notes: string;
+  created_at: string;
+  reviewed_at: string | null;
+};
+
+export type AuthUser = {
+  user_id: string;
+  username: string;
+  full_name: string;
+  role: string;
+  site_ids: string[] | null;
+  approval_status: AuthState;
+  latest_access_request?: AccessRequestRecord | null;
+};
+
+export type ManagedUserRecord = AuthUser & {
+  site_ids: string[] | null;
+};
+
+export type PatientRecord = {
+  patient_id: string;
+  created_by_user_id?: string | null;
+  sex: string;
+  age: number;
+  chart_alias?: string;
+  local_case_code?: string;
+  created_at?: string;
+};
+
+export type OrganismRecord = {
+  culture_category: string;
+  culture_species: string;
+};
+
+export type VisitRecord = {
+  visit_id: string;
+  patient_id: string;
+  created_by_user_id?: string | null;
+  visit_date: string;
+  actual_visit_date?: string | null;
+  culture_confirmed: boolean;
+  culture_category: string;
+  culture_species: string;
+  additional_organisms: OrganismRecord[];
+  contact_lens_use: string;
+  predisposing_factor: string[];
+  other_history: string;
+  visit_status: string;
+  active_stage: boolean;
+  is_initial_visit: boolean;
+  smear_result: string;
+  polymicrobial: boolean;
+  created_at: string;
+};
+
+export type ImageRecord = {
+  image_id: string;
+  visit_id: string;
+  patient_id: string;
+  visit_date: string;
+  view: string;
+  image_path: string;
+  is_representative: boolean;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
+  uploaded_at: string;
+  quality_scores?: {
+    quality_score: number;
+    view_score: number;
+    component_scores?: {
+      blur?: number | null;
+      exposure?: number | null;
+      contrast?: number | null;
+      resolution?: number | null;
+      view_consistency?: number | null;
+    } | null;
+    image_stats?: {
+      width?: number | null;
+      height?: number | null;
+      brightness_mean?: number | null;
+      contrast_std?: number | null;
+      blur_variance?: number | null;
+      green_ratio?: number | null;
+      saturation_mean?: number | null;
+    } | null;
+  } | null;
+};
+
+export type SemanticPromptMatch = {
+  prompt_id: string;
+  label: string;
+  prompt: string;
+  layer_id: string;
+  layer_label: string;
+  score: number;
+};
+
+export type SemanticPromptLayerResult = {
+  layer_id: string;
+  layer_label: string;
+  matches: SemanticPromptMatch[];
+};
+
+export type SemanticPromptInputMode = "source" | "roi_crop" | "lesion_crop";
+
+export type SemanticPromptReviewResponse = {
+  image_id: string;
+  image_path: string;
+  view: string;
+  input_mode: SemanticPromptInputMode;
+  dictionary_name: string;
+  model_name: string;
+  model_id: string;
+  top_k: number;
+  overall_top_matches: SemanticPromptMatch[];
+  layers: SemanticPromptLayerResult[];
+};
+
+export type CaseSummaryRecord = {
+  case_id: string;
+  visit_id: string;
+  patient_id: string;
+  created_by_user_id?: string | null;
+  visit_date: string;
+  actual_visit_date?: string | null;
+  chart_alias: string;
+  local_case_code: string;
+  sex: string;
+  age: number | null;
+  culture_category: string;
+  culture_species: string;
+  additional_organisms: OrganismRecord[];
+  contact_lens_use: string;
+  predisposing_factor?: string[];
+  other_history?: string;
+  visit_status: string;
+  active_stage?: boolean;
+  is_initial_visit: boolean;
+  smear_result: string;
+  polymicrobial: boolean;
+  image_count: number;
+  representative_image_id: string | null;
+  representative_view: string | null;
+  created_at: string | null;
+  latest_image_uploaded_at: string | null;
+};
+
+export type SiteSummary = {
+  site_id: string;
+  n_patients: number;
+  n_visits: number;
+  n_images: number;
+  n_active_visits: number;
+  n_validation_runs: number;
+  latest_validation?: Record<string, unknown> | null;
+};
+
+export type CaseValidationSummary = {
+  validation_id: string;
+  project_id: string;
+  site_id: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_date: string;
+  patient_id: string;
+  visit_date: string;
+  n_images: number;
+  predicted_label: string;
+  true_label: string;
+  is_correct: boolean;
+  prediction_probability: number;
+};
+
+export type CaseValidationPrediction = {
+  validation_id: string;
+  patient_id: string;
+  visit_date: string;
+  true_label: string;
+  predicted_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+  crop_mode?: "automated" | "manual" | "both";
+  gradcam_path?: string | null;
+  medsam_mask_path?: string | null;
+  roi_crop_path?: string | null;
+  lesion_mask_path?: string | null;
+  lesion_crop_path?: string | null;
+  ensemble_weights?: Record<string, number> | null;
+  ensemble_component_predictions?: Array<Record<string, unknown>> | null;
+};
+
+export type CaseValidationResponse = {
+  summary: CaseValidationSummary;
+  case_prediction: CaseValidationPrediction | null;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+    requires_medsam_crop: boolean;
+    crop_mode?: "automated" | "manual" | "both";
+    ensemble_mode?: string | null;
+  };
+  execution_device: string;
+  artifact_availability: {
+    gradcam: boolean;
+    roi_crop: boolean;
+    medsam_mask: boolean;
+    lesion_crop: boolean;
+    lesion_mask: boolean;
+  };
+};
+
+export type CaseValidationCompareItem = {
+  summary?: CaseValidationSummary | null;
+  case_prediction?: CaseValidationPrediction | null;
+  model_version?: CaseValidationResponse["model_version"] | null;
+  artifact_availability?: CaseValidationResponse["artifact_availability"] | null;
+  error?: string | null;
+  model_version_id?: string | null;
+};
+
+export type CaseValidationCompareResponse = {
+  patient_id: string;
+  visit_date: string;
+  execution_device: string;
+  comparisons: CaseValidationCompareItem[];
+};
+
+export type AiClinicSimilarCaseRecord = {
+  patient_id: string;
+  visit_date: string;
+  case_id: string;
+  representative_image_id: string | null;
+  representative_view?: string | null;
+  chart_alias?: string;
+  local_case_code?: string;
+  sex?: string | null;
+  age?: number | null;
+  culture_category: string;
+  culture_species: string;
+  image_count: number;
+  visit_status?: string;
+  active_stage?: boolean | null;
+  contact_lens_use?: string | null;
+  predisposing_factor?: string[];
+  smear_result?: string | null;
+  polymicrobial?: boolean | null;
+  quality_score?: number | null;
+  view_score?: number | null;
+  base_similarity?: number | null;
+  metadata_reranking?: {
+    adjustment?: number | null;
+    details?: Record<string, number>;
+    alignment?: {
+      matched_fields?: string[];
+      conflicted_fields?: string[];
+    };
+  } | null;
+  similarity: number;
+  classifier_similarity?: number | null;
+  dinov2_similarity?: number | null;
+};
+
+export type AiClinicTextEvidenceRecord = {
+  case_id: string;
+  patient_id: string;
+  visit_date: string;
+  culture_category: string;
+  culture_species: string;
+  local_case_code?: string;
+  chart_alias?: string;
+  text: string;
+  similarity: number;
+};
+
+export type AiClinicWorkflowRecommendation = {
+  mode: string;
+  model?: string | null;
+  generated_at?: string | null;
+  summary: string;
+  recommended_steps: string[];
+  flags_to_review: string[];
+  rationale: string;
+  uncertainty: string;
+  disclaimer: string;
+  llm_error?: string | null;
+};
+
+export type AiClinicDifferentialItem = {
+  label: string;
+  score: number;
+  confidence_band: string;
+  component_scores: {
+    classifier: number;
+    retrieval: number;
+    text: number;
+    metadata: number;
+    quality_penalty: number;
+  };
+  supporting_evidence: string[];
+  conflicting_evidence: string[];
+};
+
+export type AiClinicDifferential = {
+  engine: string;
+  generated_at?: string | null;
+  overall_uncertainty: string;
+  top_label?: string | null;
+  differential: AiClinicDifferentialItem[];
+};
+
+export type AiClinicResponse = {
+  query_case: {
+    patient_id: string;
+    visit_date: string;
+    case_id: string;
+    sex?: string | null;
+    age?: number | null;
+    representative_view?: string | null;
+    visit_status?: string | null;
+    active_stage?: boolean | null;
+    is_initial_visit?: boolean | null;
+    contact_lens_use?: string | null;
+    predisposing_factor?: string[];
+    smear_result?: string | null;
+    polymicrobial?: boolean | null;
+    image_count?: number | null;
+    quality_score?: number | null;
+    view_score?: number | null;
+  };
+  model_version: {
+    version_id?: string | null;
+    version_name?: string | null;
+    architecture?: string | null;
+    crop_mode?: string | null;
+  };
+  execution_device: string;
+  retrieval_mode: string;
+  vector_index_mode?: string | null;
+  metadata_reranking?: string | null;
+  retrieval_backends_used?: string[];
+  retrieval_warning?: string | null;
+  top_k: number;
+  eligible_candidate_count: number;
+  similar_cases: AiClinicSimilarCaseRecord[];
+  text_retrieval_mode?: string | null;
+  text_embedding_model?: string | null;
+  eligible_text_count?: number;
+  text_evidence: AiClinicTextEvidenceRecord[];
+  text_retrieval_error?: string | null;
+  classification_context?: {
+    validation_id?: string | null;
+    run_date?: string | null;
+    model_version_id?: string | null;
+    model_version?: string | null;
+    predicted_label?: string | null;
+    true_label?: string | null;
+    prediction_probability?: number | null;
+    is_correct?: boolean | null;
+  } | null;
+  differential?: AiClinicDifferential | null;
+  workflow_recommendation?: AiClinicWorkflowRecommendation | null;
+};
+
+export type ContributionStats = {
+  total_contributions: number;
+  user_contributions: number;
+  user_contribution_pct: number;
+  current_model_version: string;
+};
+
+export type CaseContributionResponse = {
+  update: {
+    update_id: string;
+    site_id: string;
+    base_model_version_id: string;
+    architecture: string;
+    upload_type: string;
+    execution_device: string;
+    artifact_path: string;
+    n_cases: number;
+    contributed_by: string;
+    case_reference_id?: string | null;
+    created_at: string;
+    training_input_policy: string;
+    training_summary: Record<string, unknown>;
+    status: string;
+  };
+  visit_status: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  stats: ContributionStats;
+};
+
+export type RoiPreviewRecord = {
+  patient_id: string;
+  visit_date: string;
+  image_id: string | null;
+  view: string;
+  is_representative: boolean;
+  source_image_path: string;
+  has_roi_crop: boolean;
+  has_medsam_mask: boolean;
+  backend: string;
+};
+
+export type LesionPreviewRecord = {
+  patient_id: string;
+  visit_date: string;
+  image_id: string | null;
+  view: string;
+  is_representative: boolean;
+  source_image_path: string;
+  has_lesion_crop: boolean;
+  has_lesion_mask: boolean;
+  backend: string;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
+};
+
+export type LiveLesionPreviewJobResponse = {
+  job_id: string;
+  site_id: string;
+  image_id: string;
+  patient_id: string;
+  visit_date: string;
+  status: "running" | "done" | "failed";
+  error?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  prompt_signature?: string | null;
+  backend?: string | null;
+  has_lesion_crop?: boolean;
+  has_lesion_mask?: boolean;
+  lesion_prompt_box?: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null;
+};
+
+export type CaseHistoryValidationRecord = {
+  validation_id: string;
+  run_date: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_scope: string;
+  predicted_label: string;
+  true_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+};
+
+export type CaseHistoryContributionRecord = {
+  contribution_id: string;
+  created_at: string;
+  user_id: string;
+  case_reference_id?: string | null;
+  update_id: string;
+  update_status: string | null;
+  upload_type: string | null;
+  architecture: string | null;
+  execution_device: string | null;
+  base_model_version_id: string | null;
+};
+
+export type CaseHistoryResponse = {
+  validations: CaseHistoryValidationRecord[];
+  contributions: CaseHistoryContributionRecord[];
+};
+
+export type SiteActivityValidationRecord = {
+  validation_id: string;
+  run_date: string;
+  model_version: string;
+  model_architecture: string;
+  n_cases: number;
+  n_images: number;
+  accuracy?: number | null;
+  AUROC?: number | null;
+  site_id: string;
+};
+
+export type SiteActivityContributionRecord = {
+  contribution_id: string;
+  created_at: string;
+  user_id: string;
+  case_reference_id?: string | null;
+  update_id: string;
+  update_status: string | null;
+  upload_type: string | null;
+};
+
+export type SiteActivityResponse = {
+  pending_updates: number;
+  recent_validations: SiteActivityValidationRecord[];
+  recent_contributions: SiteActivityContributionRecord[];
+};
+
+export type RocCurveRecord = {
+  fpr?: number[] | null;
+  tpr?: number[] | null;
+  thresholds?: Array<number | null> | null;
+};
+
+export type SiteValidationRunRecord = {
+  validation_id: string;
+  project_id: string;
+  site_id: string;
+  model_version: string;
+  model_version_id: string;
+  model_architecture: string;
+  run_date: string;
+  n_patients: number;
+  n_cases: number;
+  n_images: number;
+  AUROC?: number | null;
+  accuracy?: number | null;
+  sensitivity?: number | null;
+  specificity?: number | null;
+  F1?: number | null;
+  roc_curve?: RocCurveRecord | null;
+};
+
+export type SiteValidationRunResponse = {
+  summary: SiteValidationRunRecord;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+};
+
+export type SiteValidationJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  job: SiteJobRecord;
+};
+
+export type AdminOverviewResponse = {
+  site_count: number;
+  model_version_count: number;
+  pending_access_requests: number;
+  pending_model_updates: number;
+  current_model_version?: string | null;
+  aggregation_count?: number;
+};
+
+export type ModelVersionRecord = {
+  version_id: string;
+  version_name: string;
+  architecture: string;
+  stage?: string | null;
+  created_at?: string | null;
+  ready?: boolean;
+  is_current?: boolean;
+  notes?: string;
+  notes_ko?: string;
+  notes_en?: string;
+  model_path?: string;
+  aggregation_id?: string | null;
+  base_version_id?: string | null;
+  requires_medsam_crop?: boolean;
+  training_input_policy?: string;
+  crop_mode?: "automated" | "manual" | "both";
+  ensemble_mode?: string | null;
+  component_model_version_ids?: string[];
+  ensemble_weights?: Record<string, number> | null;
+  decision_threshold?: number | null;
+  threshold_selection_metric?: string | null;
+  threshold_selection_metrics?: Record<string, unknown> | null;
+};
+
+export type ModelUpdateRecord = {
+  update_id: string;
+  site_id?: string | null;
+  base_model_version_id?: string | null;
+  architecture?: string | null;
+  upload_type?: string | null;
+  execution_device?: string | null;
+  artifact_path?: string | null;
+  central_artifact_path?: string | null;
+  central_artifact_name?: string | null;
+  central_artifact_size_bytes?: number | null;
+  central_artifact_sha256?: string | null;
+  artifact_storage?: string | null;
+  n_cases?: number | null;
+  contributed_by?: string | null;
+  case_reference_id?: string | null;
+  created_at?: string | null;
+  training_input_policy?: string | null;
+  training_summary?: Record<string, unknown>;
+  status?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  reviewer_notes?: string | null;
+  approval_report_path?: string | null;
+  approval_report?: {
+    report_id?: string;
+    update_id?: string;
+    site_id?: string;
+    case_reference_id?: string;
+    generated_at?: string;
+    case_summary?: {
+      image_count?: number;
+      representative_view?: string | null;
+      views?: string[];
+      culture_category?: string | null;
+      culture_species?: string | null;
+      is_single_case_delta?: boolean;
+    };
+    qa_metrics?: {
+      source?: Record<string, number>;
+      roi_crop?: Record<string, number>;
+      medsam_mask?: Record<string, number>;
+      roi_area_ratio?: number | null;
+    };
+    privacy_controls?: {
+      source_thumbnail_max_side_px?: number;
+      derived_thumbnail_max_side_px?: number;
+      upload_exif_removed?: boolean;
+      stored_filename_policy?: string;
+      review_media_policy?: string;
+    };
+    artifacts?: {
+      source_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
+      roi_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
+      mask_thumbnail?: {
+        media_type?: string;
+        encoding?: string;
+        bytes_b64?: string;
+      } | null;
+      source_thumbnail_path?: string | null;
+      roi_thumbnail_path?: string | null;
+      mask_thumbnail_path?: string | null;
+    };
+  };
+  quality_summary?: {
+    quality_score?: number | null;
+    recommendation?: string | null;
+    image_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      mean_brightness?: number | null;
+      contrast_stddev?: number | null;
+      edge_density?: number | null;
+    };
+    crop_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      roi_area_ratio?: number | null;
+    };
+    delta_quality?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      l2_norm?: number | null;
+      parameter_count?: number | null;
+      message?: string | null;
+    };
+    validation_consistency?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      predicted_label?: string | null;
+      true_label?: string | null;
+      prediction_probability?: number | null;
+      decision_threshold?: number | null;
+      is_correct?: boolean | null;
+    };
+    policy_checks?: {
+      score?: number | null;
+      status?: string | null;
+      flags?: string[];
+      has_additional_organisms?: boolean | null;
+      training_policy?: string | null;
+    };
+    risk_flags?: string[];
+    strengths?: string[];
+  } | null;
+};
+
+export type AggregationRecord = {
+  aggregation_id: string;
+  base_model_version_id?: string | null;
+  new_version_name: string;
+  architecture?: string | null;
+  site_weights?: Record<string, number>;
+  total_cases?: number | null;
+  created_at?: string | null;
+};
+
+export type InitialTrainingResult = {
+  training_id: string;
+  version_name: string;
+  output_model_path: string;
+  n_train: number;
+  n_val: number;
+  n_test: number;
+  n_train_patients: number;
+  n_val_patients: number;
+  n_test_patients: number;
+  best_val_acc: number;
+  use_pretrained: boolean;
+  patient_split?: Record<string, unknown>;
+  history?: Array<Record<string, unknown>>;
+  val_metrics?: Record<string, number | null>;
+  test_metrics?: Record<string, number | null>;
+  model_version?: ModelVersionRecord;
+  crop_mode?: "automated" | "manual" | "both";
+  component_results?: Array<Record<string, unknown>>;
+  model_versions?: ModelVersionRecord[];
+};
+
+export type InitialTrainingResponse = {
+  site_id: string;
+  execution_device: string;
+  result: InitialTrainingResult;
+  model_version?: ModelVersionRecord;
+};
+
+export type InitialTrainingBenchmarkEntry = {
+  architecture: string;
+  status: string;
+  result?: InitialTrainingResult | null;
+  model_version?: ModelVersionRecord | null;
+  error?: string | null;
+};
+
+export type InitialTrainingBenchmarkResponse = {
+  site_id: string;
+  execution_device: string;
+  architectures: string[];
+  results: InitialTrainingBenchmarkEntry[];
+  failures: Array<{
+    architecture: string;
+    status: string;
+    error: string;
+  }>;
+  best_architecture?: string | null;
+  best_model_version?: ModelVersionRecord | null;
+};
+
+export type TrainingJobProgress = {
+  stage?: string | null;
+  message?: string | null;
+  percent?: number | null;
+  architecture?: string | null;
+  architecture_index?: number | null;
+  architecture_count?: number | null;
+  crop_mode?: "automated" | "manual" | "both" | string | null;
+  component_crop_mode?: "automated" | "manual" | string | null;
+  component_index?: number | null;
+  component_count?: number | null;
+  fold_index?: number | null;
+  num_folds?: number | null;
+  epoch?: number | null;
+  epochs?: number | null;
+  train_loss?: number | null;
+  val_acc?: number | null;
+};
+
+export type SiteJobRecord = {
+  job_id: string;
+  job_type: string;
+  site_id?: string;
+  queue_name?: string;
+  priority?: number;
+  status: string;
+  payload: Record<string, unknown>;
+  attempt_count?: number;
+  max_attempts?: number;
+  claimed_by?: string | null;
+  claimed_at?: string | null;
+  heartbeat_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  result?: {
+    progress?: TrainingJobProgress | null;
+    response?: InitialTrainingResponse | InitialTrainingBenchmarkResponse | CrossValidationRunResponse | SiteValidationRunResponse | null;
+    error?: string | null;
+  } | null;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+export type InitialTrainingJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type InitialTrainingBenchmarkJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type CrossValidationJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type EmbeddingBackfillJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture?: string | null;
+  };
+  job: SiteJobRecord;
+};
+
+export type AiClinicEmbeddingStatusResponse = {
+  site_id: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  total_cases: number;
+  total_images: number;
+  missing_case_count: number;
+  missing_image_count: number;
+  needs_backfill: boolean;
+  vector_index: {
+    classifier_available: boolean;
+    dinov2_embedding_available: boolean;
+    dinov2_index_available: boolean;
+  };
+  active_job: SiteJobRecord | null;
+};
+
+export type CrossValidationMetricSummary = {
+  mean?: number | null;
+  std?: number | null;
+};
+
+export type ConfusionMatrixRecord = {
+  labels?: string[];
+  matrix?: number[][];
+};
+
+export type CrossValidationFoldRecord = {
+  fold_index: number;
+  output_model_path?: string;
+  n_train_patients: number;
+  n_val_patients: number;
+  n_test_patients: number;
+  n_train: number;
+  n_val: number;
+  n_test: number;
+  best_val_acc?: number;
+  val_metrics?: Record<string, number | null | ConfusionMatrixRecord>;
+  test_metrics?: Record<string, number | null | ConfusionMatrixRecord>;
+  patient_split?: Record<string, unknown>;
+};
+
+export type CrossValidationReport = {
+  cross_validation_id: string;
+  site_id: string;
+  architecture: string;
+  execution_device?: string | null;
+  created_at?: string | null;
+  num_folds: number;
+  epochs: number;
+  learning_rate: number;
+  batch_size: number;
+  val_split: number;
+  use_pretrained: boolean;
+  aggregate_metrics: Record<string, CrossValidationMetricSummary>;
+  fold_results: CrossValidationFoldRecord[];
+  report_path?: string;
+  training_input_policy?: string;
+};
+
+export type CrossValidationRunResponse = {
+  site_id: string;
+  execution_device: string;
+  report: CrossValidationReport;
+};
+
+export type AggregationRunResponse = {
+  aggregation: AggregationRecord;
+  model_version?: ModelVersionRecord | null;
+  aggregated_update_ids: string[];
+};
+
+export type BulkImportResponse = {
+  site_id: string;
+  rows_received: number;
+  files_received: number;
+  created_patients: number;
+  created_visits: number;
+  imported_images: number;
+  skipped_images: number;
+  errors: string[];
+  file_sources: Record<string, string>;
+};
+
+export type SiteComparisonRecord = {
+  site_id: string;
+  display_name: string;
+  hospital_name: string;
+  run_count: number;
+  accuracy?: number | null;
+  sensitivity?: number | null;
+  specificity?: number | null;
+  F1?: number | null;
+  AUROC?: number | null;
+  latest_validation_id?: string | null;
+  latest_run_date?: string | null;
+};
+
+export type ValidationCasePredictionRecord = {
+  validation_id: string;
+  patient_id: string;
+  visit_date: string;
+  true_label: string;
+  predicted_label: string;
+  prediction_probability: number;
+  is_correct: boolean;
+  roi_crop_available: boolean;
+  gradcam_available: boolean;
+  medsam_mask_available: boolean;
+  representative_image_id?: string | null;
+  representative_view?: string | null;
+};
+
+export type AuthResponse = {
+  auth_state: AuthState;
+  access_token: string;
+  token_type: "bearer";
+  user: AuthUser;
+};
+

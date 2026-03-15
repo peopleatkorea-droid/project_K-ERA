@@ -1,0 +1,12 @@
+[data-theme="light"],
+[data-workspace-theme="light"] {
+  --ds-color-accent: var(--color-accent-light, #0f7b74);
+  --ds-color-accent-strong: var(--color-accent-light-strong, #08635d);
+  --ds-surface-panel: rgba(255, 255, 255, 0.82);
+  --ds-surface-panel-strong: rgba(255, 255, 255, 0.95);
+  --ds-surface-muted: rgba(20, 32, 43, 0.04);
+  --ds-border-subtle: rgba(20, 32, 43, 0.08);
+  --ds-text-primary: #16212d;
+  --ds-text-secondary: #627282;
+  --ds-shadow-card: 0 20px 70px rgba(20, 32, 43, 0.12);
+}

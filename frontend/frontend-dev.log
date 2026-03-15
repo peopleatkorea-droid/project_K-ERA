@@ -1,0 +1,52 @@
+
+> kera-web@0.1.0 dev
+> next dev --hostname 0.0.0.0 --port 3000
+
+   ▲ Next.js 15.5.12
+   - Local:        http://localhost:3000
+   - Network:      http://0.0.0.0:3000
+
+ ✓ Starting...
+ ✓ Ready in 1451ms
+ ○ Compiling / ...
+ ✓ Compiled / in 3.8s (710 modules)
+ GET / 200 in 4675ms
+ ✓ Compiled in 150ms (290 modules)
+ GET / 200 in 44ms
+ ✓ Compiled in 289ms (676 modules)
+ ✓ Compiled in 281ms (676 modules)
+ GET / 200 in 150ms
+ ✓ Compiled /admin-login in 366ms (685 modules)
+ GET /admin-login 200 in 475ms
+ ✓ Compiled in 592ms (681 modules)
+ GET / 200 in 376ms
+ GET / 200 in 48ms
+ GET / 200 in 62ms
+ ✓ Compiled in 372ms (296 modules)
+ ✓ Compiled in 274ms (681 modules)
+ GET / 200 in 69ms
+ ✓ Compiled in 257ms (681 modules)
+ ✓ Compiled /admin-login in 80ms (411 modules)
+ ⨯ Error: Cannot find module './357.js'
+Require stack:
+- C:\Users\USER\Downloads\project_K-ERA\frontend\.next\server\webpack-runtime.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\.next\server\app\admin-login\page.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\server\require.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\server\load-components.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\build\utils.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\build\swc\options.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\build\swc\index.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\build\analysis\parse-module.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\build\analysis\get-page-static-info.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\server\lib\router-utils\setup-dev-bundler.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\server\lib\router-server.js
+- C:\Users\USER\Downloads\project_K-ERA\frontend\node_modules\next\dist\server\lib\start-server.js
+    at <unknown> (C:\Users\USER\Downloads\project_K-ERA\frontend\.next\server\app\admin-login\page.js:2:11677)
+    at Object.<anonymous> (C:\Users\USER\Downloads\project_K-ERA\frontend\.next\server\app\admin-login\page.js:2:11733) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [Array],
+  page: '/admin-login'
+}
+ ○ Compiling /_error ...
+ ✓ Compiled /_error in 1296ms (1033 modules)
+ GET /admin-login 500 in 1873ms

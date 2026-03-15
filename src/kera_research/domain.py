@@ -26,9 +26,9 @@ SMEAR_RESULT_OPTIONS = ["not done", "positive", "negative", "unknown", "other"]
 VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
-DENSENET_VARIANTS = ["densenet121", "densenet161", "densenet169", "densenet201"]
-TRAINING_ARCHITECTURES = ["cnn", "vit", "swin", *DENSENET_VARIANTS, "convnext_tiny"]
-MODEL_ARCHITECTURES = ["cnn", "vit", "swin", *TRAINING_ARCHITECTURES]
+DENSENET_VARIANTS = ["densenet121"]
+TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s"]
+MODEL_ARCHITECTURES = list(dict.fromkeys(TRAINING_ARCHITECTURES))
 
 CULTURE_SPECIES = {
     "bacterial": [

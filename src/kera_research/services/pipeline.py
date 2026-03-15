@@ -1179,6 +1179,54 @@ class ResearchWorkflowService:
             backend=backend,
         )
 
+    def case_vector_index_exists(
+        self,
+        site_store: SiteStore,
+        *,
+        model_version: dict[str, Any],
+        backend: str,
+    ) -> bool:
+        return self.vector_index.index_exists(
+            site_store,
+            model_version_id=str(model_version.get("version_id") or "unknown"),
+            backend=backend,
+        )
+
+    def list_cases_requiring_embedding(
+        self,
+        site_store: SiteStore,
+        *,
+        model_version: dict[str, Any],
+        backend: str = "classifier",
+    ) -> list[dict[str, Any]]:
+        records_by_case: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for record in site_store.dataset_records():
+            patient_id = str(record.get("patient_id") or "")
+            visit_date = str(record.get("visit_date") or "")
+            if not patient_id or not visit_date:
+                continue
+            records_by_case.setdefault((patient_id, visit_date), []).append(record)
+
+        missing_cases: list[dict[str, Any]] = []
+        for summary in site_store.list_case_summaries():
+            patient_id = str(summary.get("patient_id") or "")
+            visit_date = str(summary.get("visit_date") or "")
+            case_records = records_by_case.get((patient_id, visit_date), [])
+            if not case_records:
+                continue
+            signature = self._case_embedding_signature(case_records, model_version, backend=backend)
+            cached = self._load_cached_case_embedding(
+                site_store,
+                patient_id=patient_id,
+                visit_date=visit_date,
+                model_version=model_version,
+                signature=signature,
+                backend=backend,
+            )
+            if cached is None:
+                missing_cases.append(summary)
+        return missing_cases
+
     def _prepare_case_embedding_with_loaded_model(
         self,
         site_store: SiteStore,
@@ -2228,7 +2276,7 @@ class ResearchWorkflowService:
             "site_id": site_store.site_id,
             "model_version": model_version["version_name"],
             "model_version_id": model_version["version_id"],
-            "model_architecture": model_version.get("architecture", "cnn"),
+            "model_architecture": model_version.get("architecture", "densenet121"),
             "run_date": utc_now(),
             "n_patients": int(manifest_df["patient_id"].nunique()),
             "n_cases": int(manifest_df[["patient_id", "visit_date"]].drop_duplicates().shape[0]),
@@ -3115,7 +3163,7 @@ class ResearchWorkflowService:
         if execution_device == "cpu":
             epochs = min(int(epochs), 3)
 
-        architecture = model_version.get("architecture", "cnn")
+        architecture = model_version.get("architecture", "densenet121")
         output_model_path = site_store.update_dir / f"{make_id(architecture)}_weights.pt"
         result = self.model_manager.fine_tune(
             records=records,

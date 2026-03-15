@@ -38,6 +38,7 @@ def reload_app_module(
         "KERA_LOCAL_DATABASE_URL",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
         "KERA_CASE_REFERENCE_SALT",
+        "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
     ):
         os.environ.pop(env_name, None)
 
@@ -52,6 +53,7 @@ def reload_app_module(
 
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
     os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
+    os.environ["KERA_DISABLE_CASE_EMBEDDING_REFRESH"] = "true"
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
     os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
@@ -825,19 +827,19 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
         self.assertIsNotNone(self.cp.authenticate("hashed_on_upsert_admin", "admin-pass-123"))
 
-    def _seed_case(self, token: str):
+    def _seed_case(self, token: str, *, patient_id: str = "HTTP-001", visit_date: str = "2026-03-11"):
         patient_response = self.client.post(
             f"/api/sites/{self.site_id}/patients",
             headers={"Authorization": f"Bearer {token}"},
-            json={"patient_id": "HTTP-001", "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+            json={"patient_id": patient_id, "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
         )
         self.assertEqual(patient_response.status_code, 200, patient_response.text)
         visit_response = self.client.post(
             f"/api/sites/{self.site_id}/visits",
             headers={"Authorization": f"Bearer {token}"},
             json={
-                "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "patient_id": patient_id,
+                "visit_date": visit_date,
                 "culture_category": "bacterial",
                 "culture_species": "Staphylococcus aureus",
                 "contact_lens_use": "none",
@@ -851,8 +853,8 @@ class ApiHttpTests(unittest.TestCase):
             f"/api/sites/{self.site_id}/images",
             headers={"Authorization": f"Bearer {token}"},
             data={
-                "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "patient_id": patient_id,
+                "visit_date": visit_date,
                 "view": "slit",
                 "is_representative": "true",
             },
@@ -860,6 +862,130 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(image_response.status_code, 200, image_response.text)
         return image_response.json()["image_id"]
+
+    def test_public_sites_and_accessible_site_list_http(self):
+        public_response = self.client.get("/api/public/sites")
+        self.assertEqual(public_response.status_code, 200, public_response.text)
+        public_site_ids = [item["site_id"] for item in public_response.json()]
+        self.assertIn(self.site_id, public_site_ids)
+
+        researcher_token = self._token_for_username("http_researcher")
+        sites_response = self.client.get(
+            "/api/sites",
+            headers={"Authorization": f"Bearer {researcher_token}"},
+        )
+        self.assertEqual(sites_response.status_code, 200, sites_response.text)
+        self.assertEqual([item["site_id"] for item in sites_response.json()], [self.site_id])
+
+    def test_site_summary_reports_case_counts_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
+
+        second_visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-20",
+                "culture_category": "bacterial",
+                "culture_species": "Staphylococcus aureus",
+                "contact_lens_use": "none",
+                "visit_status": "scar",
+                "is_initial_visit": False,
+            },
+        )
+        self.assertEqual(second_visit_response.status_code, 200, second_visit_response.text)
+
+        summary_response = self.client.get(
+            f"/api/sites/{self.site_id}/summary",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(summary_response.status_code, 200, summary_response.text)
+        payload = summary_response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["n_patients"], 1)
+        self.assertEqual(payload["n_visits"], 2)
+        self.assertEqual(payload["n_images"], 1)
+        self.assertEqual(payload["n_active_visits"], 1)
+        self.assertEqual(payload["n_validation_runs"], 0)
+        self.assertIsNone(payload["latest_validation"])
+
+    def test_embedding_backfill_reuses_running_job_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
+
+        class SlowEmbeddingWorkflow:
+            def __init__(self, _cp):
+                pass
+
+            def index_case_embedding(self, *args, **kwargs):
+                time.sleep(0.4)
+
+            def rebuild_case_vector_index(self, *args, **kwargs):
+                return {"index_path": "fake.index"}
+
+        with patch.object(self.app_module, "ResearchWorkflowService", SlowEmbeddingWorkflow):
+            first_response = self.client.post(
+                f"/api/sites/{self.site_id}/ai-clinic/embeddings/backfill",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"execution_mode": "cpu", "force_refresh": False},
+            )
+            self.assertEqual(first_response.status_code, 200, first_response.text)
+            first_payload = first_response.json()
+
+            second_response = self.client.post(
+                f"/api/sites/{self.site_id}/ai-clinic/embeddings/backfill",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"execution_mode": "gpu", "force_refresh": True},
+            )
+            self.assertEqual(second_response.status_code, 200, second_response.text)
+            second_payload = second_response.json()
+
+        self.assertEqual(first_payload["job"]["job_id"], second_payload["job"]["job_id"])
+        self.assertEqual(second_payload["execution_device"], "cpu")
+        embedding_jobs = [
+            job for job in self.site_store.list_jobs() if job.get("job_type") == "ai_clinic_embedding_backfill"
+        ]
+        self.assertEqual(len(embedding_jobs), 1)
+        self.assertEqual(embedding_jobs[0]["status"], "running")
+        for _ in range(30):
+            job = self.site_store.get_job(first_payload["job"]["job_id"])
+            if job is not None and job.get("status") == "completed":
+                break
+            time.sleep(0.1)
+
+    def test_embedding_status_reports_missing_images_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
+        self._seed_case(admin_token, patient_id="HTTP-002", visit_date="2026-03-12")
+
+        class FakeEmbeddingWorkflow:
+            def list_cases_requiring_embedding(self, site_store, *, model_version, backend="classifier"):
+                return [
+                    summary
+                    for summary in site_store.list_case_summaries()
+                    if summary["patient_id"] == "HTTP-002"
+                ]
+
+            def case_vector_index_exists(self, site_store, *, model_version, backend):
+                return backend == "classifier"
+
+        with patch.object(self.app_module, "_get_workflow", return_value=FakeEmbeddingWorkflow()):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/ai-clinic/embeddings/status",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["total_cases"], 2)
+        self.assertEqual(payload["missing_case_count"], 1)
+        self.assertEqual(payload["missing_image_count"], 1)
+        self.assertTrue(payload["needs_backfill"])
+        self.assertTrue(payload["vector_index"]["classifier_available"])
+        self.assertFalse(payload["vector_index"]["dinov2_embedding_available"])
+        self.assertIsNone(payload["active_job"])
 
     def test_invalid_image_upload_is_rejected_http(self):
         token = self._token_for_username("http_researcher")

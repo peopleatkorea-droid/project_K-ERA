@@ -1,0 +1,43 @@
+:root {
+  --ds-color-accent: var(--color-accent, #7dd3c3);
+  --ds-color-accent-strong: var(--color-accent-strong, #49b7a5);
+  --ds-color-accent-soft: var(--color-accent-soft, rgba(125, 211, 195, 0.14));
+  --ds-color-accent-light: var(--color-accent-light, #0f7b74);
+  --ds-color-accent-light-strong: var(--color-accent-light-strong, #08635d);
+  --ds-color-danger: var(--color-danger, #f4a49a);
+
+  --ds-surface-app: var(--surface-app-bg, #0f1318);
+  --ds-surface-panel: var(--surface-panel, rgba(21, 25, 33, 0.88));
+  --ds-surface-panel-strong: var(--surface-panel-strong, rgba(28, 33, 41, 0.96));
+  --ds-surface-muted: rgba(255, 255, 255, 0.04);
+  --ds-border-subtle: var(--surface-line, rgba(255, 255, 255, 0.09));
+
+  --ds-text-primary: var(--text-ink, #f4f7fb);
+  --ds-text-secondary: var(--text-muted, #96a3b3);
+
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-7: 32px;
+  --ds-space-8: 40px;
+
+  --ds-radius-sm: 10px;
+  --ds-radius-md: 14px;
+  --ds-radius-lg: 20px;
+  --ds-radius-xl: 28px;
+  --ds-radius-pill: 999px;
+
+  --ds-shadow-card: var(--shadow-elevated, 0 24px 80px rgba(0, 0, 0, 0.34));
+  --ds-shadow-overlay: 0 32px 90px rgba(0, 0, 0, 0.28);
+
+  --ds-font-size-label: 0.78rem;
+  --ds-font-size-body: 0.95rem;
+  --ds-font-size-title: 1.25rem;
+  --ds-font-size-display: clamp(2.8rem, 4vw, 4.8rem);
+
+  --ds-motion-fast: 160ms ease;
+  --ds-motion-base: 220ms ease;
+}

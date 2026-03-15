@@ -28,7 +28,7 @@ class ModelManagerTests(unittest.TestCase):
         manager = ModelManager()
         with tempfile.TemporaryDirectory() as tempdir:
             checkpoint_path = Path(tempdir) / "mismatch.pt"
-            model = manager.build_model("cnn")
+            model = manager.build_model("convnext_tiny")
             torch.save(
                 {
                     "architecture": "vit",
@@ -40,7 +40,7 @@ class ModelManagerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Checkpoint architecture mismatch"):
                 manager.load_model(
                     {
-                        "architecture": "cnn",
+                        "architecture": "convnext_tiny",
                         "model_path": str(checkpoint_path),
                         "preprocess_signature": manager.preprocess_signature(),
                         "num_classes": 2,
@@ -60,6 +60,16 @@ class ModelManagerTests(unittest.TestCase):
         self.assertIn("ece", metrics)
         self.assertIn("calibration", metrics)
         self.assertIsInstance(metrics["calibration"]["bins"], list)
+
+    def test_build_model_supports_torchvision_backbones(self):
+        manager = ModelManager()
+        vit_model = manager.build_model("vit")
+        swin_model = manager.build_model("swin")
+        efficientnet_model = manager.build_model("efficientnet_v2_s")
+
+        self.assertTrue(hasattr(vit_model, "heads"))
+        self.assertTrue(hasattr(swin_model, "head"))
+        self.assertTrue(hasattr(efficientnet_model, "classifier"))
 
 
 if __name__ == "__main__":

@@ -1915,6 +1915,10 @@
   align-items: start;
 }
 
+.embedding-status-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .ops-nav-button,
 .ops-card,
 .ops-item {

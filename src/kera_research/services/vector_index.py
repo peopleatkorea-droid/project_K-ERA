@@ -33,6 +33,16 @@ class FaissCaseIndexManager:
         index_dir = self._index_dir(site_store, model_version_id, backend)
         return index_dir / "cases.faiss", index_dir / "cases.meta.json"
 
+    def index_exists(
+        self,
+        site_store: SiteStore,
+        *,
+        model_version_id: str,
+        backend: str,
+    ) -> bool:
+        index_path, metadata_path = self._index_paths(site_store, model_version_id, backend)
+        return index_path.exists() and metadata_path.exists()
+
     def rebuild_index(
         self,
         site_store: SiteStore,
