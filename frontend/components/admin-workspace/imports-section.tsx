@@ -52,6 +52,8 @@ export function ImportsSection({
         <SectionHeader title={pick(locale, "Migration checklist", "이관 체크리스트")} titleAs="h4" />
         <ol className="grid gap-3 pl-5 text-sm leading-6 text-muted">
           <li>{pick(locale, "Download the CSV template and validate one small batch first.", "CSV 템플릿을 내려받고 작은 배치부터 먼저 검증하세요.")}</li>
+          <li>{pick(locale, "Use the local chart or MRN-style ID used inside your institution. Do not import patient names, and remember that the central registry converts these IDs to case_reference_id values.", "기관 내부 차트/MRN 형태 ID를 사용하세요. 환자 실명은 임포트하지 말고, 중앙 registry에는 이 값이 case_reference_id로 변환되어 저장된다는 점을 기억하세요.")}</li>
+          <li>{pick(locale, "Use visit labels such as Initial and FU #1. Keep exact dates only in actual_visit_date.", "visit_date는 Initial, FU #1 같은 라벨만 사용하고 실제 날짜는 actual_visit_date에만 넣으세요.")}</li>
           <li>{pick(locale, "Match image filenames with ZIP entries before uploading.", "업로드 전에 이미지 파일명과 ZIP 항목을 먼저 맞추세요.")}</li>
           <li>{pick(locale, "Start with two or three patients before a full backfill.", "전체 이관 전에 환자 2~3건으로 먼저 점검하세요.")}</li>
         </ol>
@@ -80,8 +82,8 @@ export function ImportsSection({
         <div className="text-sm leading-6 text-muted">
           {pick(
             locale,
-            "Run the importer only after both the metadata CSV and the image archive are ready.",
-            "메타데이터 CSV와 이미지 아카이브가 모두 준비된 뒤에만 임포터를 실행하세요."
+            "Run the importer only after both the metadata CSV and the image archive are ready. The CSV can use local patient IDs, but the central registry still stores only case_reference_id values plus visit labels.",
+            "메타데이터 CSV와 이미지 아카이브가 모두 준비된 뒤에만 임포터를 실행하세요. CSV에는 병원 내부 환자 ID를 써도 되지만, 중앙 registry에는 case_reference_id와 방문 라벨만 저장됩니다."
           )}
         </div>
         <Button

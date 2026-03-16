@@ -274,6 +274,11 @@ const apiErrorExact = {
     "Site code is required.": "병원 코드는 필수입니다.",
     "Site display name is required.": "병원 표시 이름은 필수입니다.",
     "Patient ID is required.": "환자 ID는 필수입니다.",
+    "Patient ID must use a local chart/MRN-style ID (letters, numbers, ., -, _ only).":
+      "환자 ID는 기관 내부 차트/MRN 형태 ID여야 합니다. 문자, 숫자, ., -, _만 사용할 수 있습니다.",
+    "Visit reference must be 'Initial' or 'FU #N'. Store the exact calendar date in actual_visit_date only.":
+      "방문 기준은 'Initial' 또는 'FU #N' 형식이어야 합니다. 정확한 날짜는 actual_visit_date에만 저장하세요.",
+    "Actual visit date must use YYYY-MM-DD format.": "실제 방문일은 YYYY-MM-DD 형식이어야 합니다.",
   },
 } as const;
 

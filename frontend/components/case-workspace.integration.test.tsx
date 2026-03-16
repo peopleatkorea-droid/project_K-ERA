@@ -256,7 +256,6 @@ describe("CaseWorkspace integration", () => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
     expect(await screen.findByText("Case KERA-2026-001 / Initial saved to hospital SITE_A.")).toBeInTheDocument();
-    expect(await screen.findByRole("checkbox", { name: "Live lesion crop preview" })).toBeChecked();
   });
 
   it("overwrites an existing visit when the user confirms overwrite", async () => {
@@ -294,7 +293,7 @@ describe("CaseWorkspace integration", () => {
       .mockRejectedValueOnce(new Error("Visit KERA-2026-001 / Initial already exists."))
       .mockResolvedValueOnce({
         patient_id: "KERA-2026-001",
-        visit_date: "F/U-03",
+        visit_date: "FU #3",
       });
     apiMocks.fetchVisits.mockResolvedValue([
       {
@@ -313,7 +312,7 @@ describe("CaseWorkspace integration", () => {
       },
       {
         patient_id: "KERA-2026-001",
-        visit_date: "F/U-01",
+        visit_date: "FU #1",
         actual_visit_date: null,
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
@@ -327,7 +326,7 @@ describe("CaseWorkspace integration", () => {
       },
       {
         patient_id: "KERA-2026-001",
-        visit_date: "F/U-02",
+        visit_date: "FU #2",
         actual_visit_date: null,
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
@@ -352,12 +351,12 @@ describe("CaseWorkspace integration", () => {
       expect(apiMocks.createVisit).toHaveBeenLastCalledWith(
         "SITE_A",
         "test-token",
-        expect.objectContaining({ visit_date: "F/U-03" })
+        expect.objectContaining({ visit_date: "FU #3" })
       );
       expect(apiMocks.uploadImage).toHaveBeenLastCalledWith(
         "SITE_A",
         "test-token",
-        expect.objectContaining({ visit_date: "F/U-03" })
+        expect.objectContaining({ visit_date: "FU #3" })
       );
     });
   });

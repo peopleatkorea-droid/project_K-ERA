@@ -13,6 +13,7 @@ import {
   emptySurfaceClass,
   lesionBoxOverlayClass,
   panelImageFallbackClass,
+  representativeImageTagClass,
   savedCaseActionButtonClass,
   savedImageActionBarClass,
   semanticPromptCopyClass,
@@ -176,7 +177,7 @@ export function SavedCaseImageBoard({
           <div className={docSectionLabelClass}>{pick(locale, "Saved images", "저장 이미지")}</div>
           <select
             aria-label={pick(locale, "Prompt input", "Prompt 입력")}
-            className="min-h-9 rounded-full border border-border bg-white/60 px-3.5 text-sm text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
+            className="min-h-8 rounded-[10px] border border-border bg-white/60 px-3 text-[0.82rem] text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
             value={semanticPromptInputMode}
             onChange={(event) => onSemanticPromptInputModeChange(event.target.value as SemanticPromptInputMode)}
           >
@@ -209,23 +210,29 @@ export function SavedCaseImageBoard({
                       : pick(locale, "Drag to segment", "드래그해서 분할");
 
             return (
-              <Card as="section" variant="panel" key={`doc-${image.image_id}`} className="grid content-start gap-3 p-3.5">
+              <Card as="section" variant="panel" key={`doc-${image.image_id}`} className="grid content-start gap-2.5 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="grid gap-1">
-                    <strong className="text-[1.12rem] font-semibold tracking-[-0.03em] text-ink">
+                  <div className="flex min-w-0 items-center gap-1.5 text-[0.88rem] leading-5 text-muted">
+                    <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
                       {translateOption(locale, "view", image.view)}
                     </strong>
-                    <span className="text-sm leading-6 text-muted">
-                      {image.is_representative ? pick(locale, "Representative image", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
-                    </span>
+                    {image.is_representative ? (
+                      <span className={`${representativeImageTagClass} shrink-0`}>
+                        {pick(locale, "Representative image", "대표 이미지")}
+                      </span>
+                    ) : (
+                      <span className="shrink-0">
+                        · {pick(locale, "Supporting image", "보조 이미지")}
+                      </span>
+                    )}
                   </div>
                   <span className={docSiteBadgeClass}>{statusCopy}</span>
                 </div>
 
                 {image.preview_url ? (
-                  <div className="grid min-h-[280px] place-items-center rounded-[20px] border border-border bg-surface-muted/45 p-2.5">
+                  <div className="grid min-h-[280px] place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2.5">
                     <div
-                      className="relative mx-auto w-fit max-w-full cursor-crosshair overflow-hidden rounded-[18px] border border-border/60 bg-surface-elevated touch-none"
+                      className="relative mx-auto w-fit max-w-full cursor-crosshair overflow-hidden rounded-[12px] border border-border/60 bg-surface-elevated touch-none"
                       onPointerDown={(event) => onLesionPointerDown(image.image_id, event)}
                       onPointerMove={(event) => onLesionPointerMove(image.image_id, event)}
                       onPointerUp={(event) => onFinishLesionPointer(image.image_id, event)}
@@ -237,14 +244,14 @@ export function SavedCaseImageBoard({
                           maskUrl={livePreview?.lesion_mask_url}
                           alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
                           tint={[242, 164, 154]}
-                          className="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[18px]"
-                          fallbackClassName="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[18px]"
+                          className="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
+                          fallbackClassName="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
                         />
                       ) : (
                         <img
                           src={image.preview_url}
                           alt={image.image_id}
-                          className="block max-h-[320px] w-auto max-w-full select-none rounded-[18px]"
+                          className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
                           draggable={false}
                           onDragStart={(event) => event.preventDefault()}
                         />
@@ -263,7 +270,7 @@ export function SavedCaseImageBoard({
                       ) : null}
 
                       {livePreview?.status === "running" ? (
-                        <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-ink/78 px-3 py-1 text-[0.72rem] font-semibold text-white">
+                        <div className="pointer-events-none absolute right-3 top-3 rounded-[8px] bg-ink/78 px-3 py-1 text-[0.72rem] font-semibold text-white">
                           {pick(locale, "MedSAM running", "MedSAM 실행 중")}
                         </div>
                       ) : null}
@@ -273,19 +280,19 @@ export function SavedCaseImageBoard({
                   <div className={panelImageFallbackClass}>{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
                 )}
 
-                <div className="flex flex-wrap gap-2 text-sm text-muted">
+                <div className="flex flex-wrap gap-2 text-[0.78rem] text-muted">
                   {image.quality_scores?.quality_score != null ? (
-                    <span className="rounded-full border border-border bg-surface px-3 py-1.5">
+                    <span className="rounded-[8px] border border-border bg-surface px-3 py-1.5">
                       Q {Number(image.quality_scores.quality_score).toFixed(2)}
                     </span>
                   ) : null}
                   {image.quality_scores?.view_score != null ? (
-                    <span className="rounded-full border border-border bg-surface px-3 py-1.5">
+                    <span className="rounded-[8px] border border-border bg-surface px-3 py-1.5">
                       View {Number(image.quality_scores.view_score).toFixed(2)}
                     </span>
                   ) : null}
                   {livePreview?.status === "failed" && livePreview.error ? (
-                    <span className="rounded-full border border-danger/30 bg-danger/8 px-3 py-1.5 text-danger">
+                    <span className="rounded-[8px] border border-danger/30 bg-danger/8 px-3 py-1.5 text-danger">
                       {livePreview.error}
                     </span>
                   ) : null}

@@ -25,13 +25,13 @@ export function Card({
       className={cn(
         "border border-border text-ink",
         variant === "surface" &&
-          "rounded-[24px] bg-surface shadow-[0_10px_32px_rgba(15,23,42,0.04)]",
+          "rounded-[16px] bg-surface shadow-[0_10px_32px_rgba(15,23,42,0.04)]",
         variant === "panel" &&
-          "rounded-[24px] bg-surface-elevated shadow-[0_10px_28px_rgba(15,23,42,0.04)]",
+          "rounded-[16px] bg-surface-elevated shadow-[0_10px_28px_rgba(15,23,42,0.04)]",
         variant === "nested" &&
-          "rounded-[18px] bg-surface-muted/55",
+          "rounded-[12px] bg-surface-muted/55",
         variant === "interactive" &&
-          "rounded-[18px] bg-surface-muted/55 transition duration-150 ease-out hover:border-brand/20 hover:bg-[rgba(48,88,255,0.04)]",
+          "rounded-[12px] bg-surface-muted/55 transition duration-150 ease-out hover:border-brand/20 hover:bg-[rgba(48,88,255,0.04)]",
         className
       )}
       data-variant={variant}

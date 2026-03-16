@@ -7,6 +7,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
+from kera_research.domain import normalize_actual_visit_date, normalize_patient_pseudonym, normalize_visit_label
 
 
 def build_sites_router(support: Any) -> APIRouter:
@@ -255,8 +256,9 @@ def build_sites_router(support: Any) -> APIRouter:
 
         for row_index, row in import_df.iterrows():
             try:
-                patient_id = coerce_text(row.get("patient_id"))
-                visit_date = coerce_text(row.get("visit_date"))
+                patient_id = normalize_patient_pseudonym(coerce_text(row.get("patient_id")))
+                visit_date = normalize_visit_label(coerce_text(row.get("visit_date")))
+                actual_visit_date = normalize_actual_visit_date(coerce_text(row.get("actual_visit_date")))
                 file_name = Path(coerce_text(row.get("image_filename"))).name
                 if not patient_id or not visit_date or not file_name:
                     errors.append(f"Row {row_index + 2}: patient_id, visit_date, image_filename are required.")
@@ -286,7 +288,7 @@ def build_sites_router(support: Any) -> APIRouter:
                     site_store.create_visit(
                         patient_id=patient_id,
                         visit_date=visit_date,
-                        actual_visit_date=None,
+                        actual_visit_date=actual_visit_date,
                         culture_confirmed=bool_from_value(row.get("culture_confirmed"), True),
                         culture_category=coerce_text(row.get("culture_category"), "bacterial") or "bacterial",
                         culture_species=coerce_text(row.get("culture_species"), "Other") or "Other",

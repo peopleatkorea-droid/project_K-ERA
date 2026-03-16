@@ -36,6 +36,20 @@ def site_level_validation_runs(validation_runs: list[dict[str, Any]]) -> list[di
     ]
 
 
+def _case_reference_lookup(cp: ControlPlaneStore, site_store: SiteStore) -> dict[str, dict[str, str]]:
+    lookup: dict[str, dict[str, str]] = {}
+    for visit in site_store.list_visits():
+        patient_id = str(visit.get("patient_id") or "").strip()
+        visit_date = str(visit.get("visit_date") or "").strip()
+        if not patient_id or not visit_date:
+            continue
+        lookup[cp.case_reference_id(site_store.site_id, patient_id, visit_date)] = {
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+        }
+    return lookup
+
+
 def validation_case_rows(
     cp: ControlPlaneStore,
     site_store: SiteStore,
@@ -45,12 +59,15 @@ def validation_case_rows(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     predictions = cp.load_case_predictions(validation_id)
+    case_lookup = _case_reference_lookup(cp, site_store)
     rows: list[dict[str, Any]] = []
     for prediction in predictions:
         if misclassified_only and prediction.get("is_correct", False):
             continue
-        patient_id = str(prediction.get("patient_id") or "").strip()
-        visit_date = str(prediction.get("visit_date") or "").strip()
+        case_reference_id = str(prediction.get("case_reference_id") or "").strip()
+        resolved_case = case_lookup.get(case_reference_id, {})
+        patient_id = str(prediction.get("patient_id") or resolved_case.get("patient_id") or "").strip()
+        visit_date = str(prediction.get("visit_date") or resolved_case.get("visit_date") or "").strip()
         visit_images = site_store.list_images_for_visit(patient_id, visit_date) if patient_id and visit_date else []
         representative = next((item for item in visit_images if item.get("is_representative")), None)
         if representative is None and visit_images:
@@ -58,6 +75,7 @@ def validation_case_rows(
         rows.append(
             {
                 "validation_id": validation_id,
+                "case_reference_id": case_reference_id,
                 "patient_id": patient_id,
                 "visit_date": visit_date,
                 "true_label": prediction.get("true_label"),
@@ -92,7 +110,8 @@ def build_case_history(
             (
                 item
                 for item in cp.load_case_predictions(run["validation_id"])
-                if item.get("patient_id") == patient_id and item.get("visit_date") == visit_date
+                if item.get("case_reference_id") == case_reference_id
+                or (item.get("patient_id") == patient_id and item.get("visit_date") == visit_date)
             ),
             None,
         )
@@ -105,7 +124,10 @@ def build_case_history(
                 "model_version": run.get("model_version"),
                 "model_version_id": run.get("model_version_id"),
                 "model_architecture": run.get("model_architecture"),
-                "run_scope": "case" if run.get("patient_id") == patient_id and run.get("visit_date") == visit_date else "site",
+                "run_scope": "case"
+                if run.get("case_reference_id") == case_reference_id
+                or (run.get("patient_id") == patient_id and run.get("visit_date") == visit_date)
+                else "site",
                 "predicted_label": case_prediction.get("predicted_label"),
                 "true_label": case_prediction.get("true_label"),
                 "prediction_probability": case_prediction.get("prediction_probability"),

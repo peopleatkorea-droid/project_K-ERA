@@ -12,10 +12,24 @@ import {
   emptySurfaceClass,
   patientVisitGalleryCardClass,
   patientVisitGalleryStackClass,
+  representativeImageTagClass,
   savedCaseActionButtonClass,
 } from "../ui/workspace-patterns";
 import { MaskOverlayPreview } from "./preview-media";
 import type { LesionBoxMap, LiveLesionPreviewMap, SavedImagePreview, TranslateOption } from "./shared";
+
+const savedCaseMintLabelClass =
+  "inline-flex min-h-9 items-center rounded-[10px] border border-brand/18 bg-brand-soft/80 px-4 text-[0.76rem] font-semibold tracking-[-0.01em] text-brand dark:border-brand/20 dark:bg-brand-soft/75 dark:text-brand";
+const savedCaseHeaderBadgeClass =
+  "inline-flex min-h-8 items-center rounded-[10px] border border-border bg-surface px-3.5 text-[0.76rem] font-medium text-muted";
+const savedCaseGhostActionClass =
+  "min-h-9 rounded-[10px] border border-border bg-surface px-4 text-[0.86rem] font-semibold text-ink hover:border-border/80 hover:bg-surface-muted";
+const savedCaseFollowUpActionClass =
+  "min-h-9 rounded-[10px] border border-brand/26 bg-brand text-[0.86rem] font-semibold text-[var(--accent-contrast)] hover:border-brand-strong hover:bg-brand-strong dark:border-brand/30 dark:bg-brand dark:text-[var(--accent-contrast)]";
+const savedCaseCurrentVisitActionClass =
+  "min-h-9 rounded-[10px] border border-brand/22 bg-brand-soft/85 px-4 text-[0.86rem] font-semibold text-brand hover:border-brand/30 hover:bg-brand-soft dark:border-brand/24 dark:bg-brand-soft/80 dark:text-brand dark:hover:border-brand/34 dark:hover:bg-brand-soft";
+const savedCaseSummaryBarClass =
+  "overflow-hidden rounded-[14px] border border-border bg-surface-muted/70 dark:border-white/8 dark:bg-surface-muted/70";
 
 type SavedCaseOverviewProps = {
   locale: Locale;
@@ -99,7 +113,7 @@ export function SavedCaseOverview({
 }: SavedCaseOverviewProps) {
   const caseNumber = selectedCase.local_case_code || caseTitle || selectedCase.patient_id;
   const selectedVisitLabel = resolveVisitLabel(locale, selectedCase.visit_date, selectedCase.is_initial_visit, pick, displayVisitReference);
-  const selectedOrganismLabel = `${translateOption(locale, "cultureCategory", selectedCase.culture_category)} / ${organismSummaryLabel(
+  const selectedOrganismLabel = `${translateOption(locale, "cultureCategory", selectedCase.culture_category)} · ${organismSummaryLabel(
     selectedCase.culture_category,
     selectedCase.culture_species,
     selectedCase.additional_organisms,
@@ -108,34 +122,21 @@ export function SavedCaseOverview({
 
   return (
     <>
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-3 lg:gap-4">
-          <div className={docSectionLabelClass}>{pick(locale, "Saved case", "저장 케이스")}</div>
-          <h3 className="m-0 text-[clamp(2.1rem,3.6vw,3rem)] font-semibold leading-none tracking-[-0.05em] text-ink">
-            {caseTitle}
-          </h3>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>
-          <span className={docSiteBadgeClass}>{selectedVisitLabel}</span>
-        </div>
-      </header>
-
-      <section className="grid gap-3 border-b border-border/70 pb-5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className={docSectionLabelClass}>{pick(locale, "Case summary", "케이스 요약")}</div>
+      <section className="grid gap-3.5 border-b border-border/70 pb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className={savedCaseMintLabelClass}>{pick(locale, "Case summary", "케이스 요약")}</div>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Button type="button" size="sm" variant="ghost" className="px-4" onClick={() => void onStartEditDraft()} disabled={editDraftBusy}>
+            <Button type="button" size="sm" variant="ghost" className={savedCaseGhostActionClass} onClick={() => void onStartEditDraft()} disabled={editDraftBusy}>
               {editDraftBusy ? commonLoading : pick(locale, "Edit", "수정")}
             </Button>
-            <Button type="button" size="sm" variant="ghost" className="px-4" onClick={() => void onStartFollowUpDraft()}>
+            <Button type="button" size="sm" variant="ghost" className={savedCaseFollowUpActionClass} onClick={() => void onStartFollowUpDraft()}>
               {pick(locale, "Add F/U", "재진 추가")}
             </Button>
             <Button
               type="button"
               size="sm"
               variant="ghost"
-              className={isFavoriteCase(selectedCase.case_id) ? savedCaseActionButtonClass(true) : "px-4"}
+              className={isFavoriteCase(selectedCase.case_id) ? savedCaseActionButtonClass(true) : savedCaseGhostActionClass}
               onClick={() => onToggleFavorite(selectedCase.case_id)}
             >
               {pick(locale, "Favorite", "즐겨찾기")}
@@ -143,22 +144,22 @@ export function SavedCaseOverview({
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-[18px] border border-border bg-surface">
+        <div className={savedCaseSummaryBarClass}>
           <div className="grid divide-y divide-border sm:grid-cols-[minmax(0,0.92fr)_minmax(0,1fr)_minmax(0,1.18fr)] sm:divide-x sm:divide-y-0">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-4">
-              <strong className="text-[clamp(1.5rem,2.1vw,2.1rem)] font-semibold tracking-[-0.04em] text-ink">{caseNumber}</strong>
-              <span className="text-[clamp(1rem,1.45vw,1.35rem)] text-muted">
-                {translateOption(locale, "sex", selectedCase.sex)} / {selectedCase.age ?? commonNotAvailable}
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-3.5">
+              <strong className="text-[clamp(0.96rem,1.02vw,1.14rem)] font-semibold tracking-[-0.02em] text-ink">{caseNumber}</strong>
+              <span className="text-[0.82rem] text-muted">
+                {translateOption(locale, "sex", selectedCase.sex)} · {selectedCase.age ?? commonNotAvailable}
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-4">
-              <strong className="text-[clamp(1.5rem,2.1vw,2.1rem)] font-semibold tracking-[-0.04em] text-ink">{selectedVisitLabel}</strong>
-              <span className="text-[clamp(1rem,1.45vw,1.35rem)] text-muted">
-                {translateOption(locale, "visitStatus", selectedCase.visit_status)} / {selectedVisitLabel}
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-3.5">
+              <strong className="text-[clamp(0.96rem,1.02vw,1.14rem)] font-semibold tracking-[-0.02em] text-ink">{selectedVisitLabel}</strong>
+              <span className="text-[0.82rem] text-muted">
+                {translateOption(locale, "visitStatus", selectedCase.visit_status)}
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-4">
-              <strong className="text-[clamp(1.35rem,1.85vw,1.9rem)] font-semibold tracking-[-0.04em] text-ink">{selectedOrganismLabel}</strong>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-3.5">
+              <strong className="text-[clamp(0.96rem,1.08vw,1.12rem)] font-semibold tracking-[-0.02em] text-ink">{selectedOrganismLabel}</strong>
             </div>
           </div>
         </div>
@@ -167,9 +168,9 @@ export function SavedCaseOverview({
       <section className="grid gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <div className={docSectionLabelClass}>{pick(locale, "Patient timeline", "환자 전체 방문")}</div>
+            <div className={savedCaseMintLabelClass}>{pick(locale, "Patient timeline", "환자 전체 방문")}</div>
           </div>
-          <span className={docSiteBadgeClass}>
+          <span className={savedCaseHeaderBadgeClass}>
             {patientVisitGalleryBusy ? commonLoading : `${selectedPatientCases.length} ${pick(locale, "visits", "방문")}`}
           </span>
         </div>
@@ -200,94 +201,98 @@ export function SavedCaseOverview({
                   as="section"
                   variant="nested"
                   key={`visit-gallery-${caseItem.case_id}`}
-                  className={`${patientVisitGalleryCardClass(isCurrentVisit)} grid gap-4 p-4`}
+                  className={`${patientVisitGalleryCardClass(isCurrentVisit)} grid gap-3 p-3.5`}
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-2.5">
-                    <div className="grid gap-1.5">
-                      <h5 className="m-0 text-[clamp(1.35rem,1.9vw,1.7rem)] font-semibold leading-[1.02] tracking-[-0.03em] text-ink">{visitLabel}</h5>
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.95rem] leading-5 text-muted">
-                        {visitMeta.map((item) => (
-                          <span key={`${caseItem.case_id}-${item}`}>{item}</span>
-                        ))}
-                      </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 md:flex-nowrap">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-[0.78rem] leading-5 text-muted md:flex-nowrap">
+                      <h5 className="m-0 shrink-0 text-[clamp(0.96rem,1vw,1.08rem)] font-semibold leading-none tracking-[-0.01em] text-ink">{visitLabel}</h5>
+                      {visitMeta.map((item) => (
+                        <span key={`${caseItem.case_id}-${item}`} className="whitespace-nowrap">
+                          {item}
+                        </span>
+                      ))}
                     </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex shrink-0 items-center gap-1.5">
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className={isCurrentVisit ? savedCaseActionButtonClass() : "px-3.5"}
+                        className={isCurrentVisit ? savedCaseCurrentVisitActionClass : savedCaseGhostActionClass}
                         onClick={() => onOpenSavedCase(caseItem, "cases")}
                       >
                         {isCurrentVisit ? pick(locale, "Current visit", "현재 방문") : pick(locale, "Open visit", "방문 열기")}
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" className="px-3.5" onClick={() => void onDeleteSavedCase(caseItem)}>
+                      <Button type="button" size="sm" variant="ghost" className={savedCaseGhostActionClass} onClick={() => void onDeleteSavedCase(caseItem)}>
                         {pick(locale, "Delete visit", "방문 삭제")}
                       </Button>
                     </div>
                   </div>
 
                   {visitImages.length > 0 ? (
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-x-3 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
                       {visitImages.map((image) => {
                         const livePreview = liveLesionPreviews[image.image_id];
                         const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
-                        const maskReady = Boolean(isCurrentVisit && livePreview?.status === "done" && livePreview?.lesion_mask_url);
+                        const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
 
                         return (
                           <div key={`timeline-${image.image_id}`} className="grid gap-2.5">
                             {image.preview_url ? (
-                              <div className="grid h-40 place-items-center rounded-[14px] border border-border/60 bg-surface p-2">
-                                <div
-                                  className={`relative w-fit max-w-full overflow-hidden rounded-[12px] ${isCurrentVisit ? "cursor-crosshair touch-none" : ""}`}
-                                  onPointerDown={isCurrentVisit ? (event) => onLesionPointerDown(image.image_id, event) : undefined}
-                                  onPointerMove={isCurrentVisit ? (event) => onLesionPointerMove(image.image_id, event) : undefined}
-                                  onPointerUp={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
-                                  onPointerCancel={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
-                                >
-                                  {maskReady ? (
-                                    <MaskOverlayPreview
-                                      sourceUrl={image.preview_url}
-                                      maskUrl={livePreview?.lesion_mask_url}
-                                      alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
-                                      tint={[242, 164, 154]}
-                                      className="pointer-events-none !aspect-auto block !h-36 !w-auto max-w-full object-contain select-none rounded-[12px]"
-                                      fallbackClassName="pointer-events-none !aspect-auto block !h-36 !w-auto max-w-full object-contain select-none rounded-[12px]"
-                                    />
-                                  ) : (
-                                    <img
-                                      src={image.preview_url}
-                                      alt={image.image_id}
-                                      className="block h-36 w-auto max-w-full rounded-[12px] object-contain"
-                                      draggable={false}
-                                      onDragStart={(event) => event.preventDefault()}
-                                    />
-                                  )}
-                                  {isCurrentVisit && draftBox && !maskReady ? (
-                                    <div
-                                      className="pointer-events-none absolute rounded-[10px] border-2 border-danger/70 bg-danger/10"
-                                      style={{
-                                        left: `${draftBox.x0 * 100}%`,
-                                        top: `${draftBox.y0 * 100}%`,
-                                        width: `${(draftBox.x1 - draftBox.x0) * 100}%`,
-                                        height: `${(draftBox.y1 - draftBox.y0) * 100}%`,
-                                      }}
-                                    />
-                                  ) : null}
-                                </div>
+                              <div
+                                className={`relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55 ${isCurrentVisit ? "cursor-crosshair touch-none" : ""}`}
+                                onPointerDown={isCurrentVisit ? (event) => onLesionPointerDown(image.image_id, event) : undefined}
+                                onPointerMove={isCurrentVisit ? (event) => onLesionPointerMove(image.image_id, event) : undefined}
+                                onPointerUp={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
+                                onPointerCancel={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
+                              >
+                                {maskReady ? (
+                                  <MaskOverlayPreview
+                                    sourceUrl={image.preview_url}
+                                    maskUrl={livePreview?.lesion_mask_url}
+                                    alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
+                                    tint={[242, 164, 154]}
+                                    className="pointer-events-none !aspect-square block !h-full !w-full object-cover select-none"
+                                    fallbackClassName="pointer-events-none !aspect-square block !h-full !w-full object-cover select-none"
+                                  />
+                                ) : (
+                                  <img
+                                    src={image.preview_url}
+                                    alt={image.image_id}
+                                    className="block h-full w-full object-cover"
+                                    draggable={false}
+                                    onDragStart={(event) => event.preventDefault()}
+                                  />
+                                )}
+                                {isCurrentVisit && draftBox && !maskReady ? (
+                                  <div
+                                    className="pointer-events-none absolute rounded-[14px] border-2 border-danger/70 bg-danger/10"
+                                    style={{
+                                      left: `${draftBox.x0 * 100}%`,
+                                      top: `${draftBox.y0 * 100}%`,
+                                      width: `${(draftBox.x1 - draftBox.x0) * 100}%`,
+                                      height: `${(draftBox.y1 - draftBox.y0) * 100}%`,
+                                    }}
+                                  />
+                                ) : null}
                               </div>
                             ) : (
-                              <div className="grid h-48 w-full place-items-center rounded-[20px] border border-border/60 bg-surface text-sm text-muted">
+                              <div className="grid aspect-square w-full place-items-center rounded-[18px] bg-surface-muted/55 text-sm text-muted">
                                 {translateOption(locale, "view", image.view)}
                               </div>
                             )}
-                          <div className="grid gap-0.5">
-                            <strong className="text-base font-semibold tracking-[-0.03em] text-ink">
+                          <div className="flex min-w-0 items-center gap-1.5 text-[0.84rem] leading-5 text-muted">
+                            <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
                               {translateOption(locale, "view", image.view)}
                             </strong>
-                            <span className="text-sm leading-5 text-muted">
-                              {image.is_representative ? pick(locale, "Representative image", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
-                            </span>
+                            {image.is_representative ? (
+                              <span className={`${representativeImageTagClass} shrink-0`}>
+                                {pick(locale, "Representative image", "대표 이미지")}
+                              </span>
+                            ) : (
+                              <span className="shrink-0">
+                                · {pick(locale, "Supporting image", "보조 이미지")}
+                              </span>
+                            )}
                           </div>
                         </div>
                         );

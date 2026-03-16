@@ -21,7 +21,15 @@ from kera_research.db import (
     sites as control_sites,
     visits as db_visits,
 )
-from kera_research.domain import MANIFEST_COLUMNS, VISIT_STATUS_OPTIONS, make_id, utc_now
+from kera_research.domain import (
+    MANIFEST_COLUMNS,
+    VISIT_STATUS_OPTIONS,
+    make_id,
+    normalize_actual_visit_date,
+    normalize_patient_pseudonym,
+    normalize_visit_label,
+    utc_now,
+)
 from kera_research.storage import ensure_dir, write_csv
 
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF", "BMP", "WEBP"}
@@ -197,9 +205,7 @@ class SiteStore:
         local_case_code: str = "",
         created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
-        if not patient_id.strip():
-            raise ValueError("Patient ID is required.")
-        normalized_patient_id = patient_id.strip()
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
         if self.get_patient(normalized_patient_id):
             raise ValueError(f"Patient {normalized_patient_id} already exists.")
         record = {
@@ -268,12 +274,15 @@ class SiteStore:
         polymicrobial: bool = False,
         created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
-        if not self.get_patient(patient_id):
-            raise ValueError(f"Patient {patient_id} does not exist.")
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        normalized_visit_date = normalize_visit_label(visit_date)
+        normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
+        if not self.get_patient(normalized_patient_id):
+            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
         if not culture_confirmed:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
-        if self.get_visit(patient_id, visit_date):
-            raise ValueError(f"Visit {patient_id} / {visit_date} already exists.")
+        if self.get_visit(normalized_patient_id, normalized_visit_date):
+            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} already exists.")
         normalized_category = culture_category.strip().lower()
         normalized_species = culture_species.strip()
         normalized_additional_organisms = _normalize_additional_organisms(
@@ -287,10 +296,10 @@ class SiteStore:
         record = {
             "visit_id": make_id("visit"),
             "site_id": self.site_id,
-            "patient_id": patient_id,
+            "patient_id": normalized_patient_id,
             "created_by_user_id": created_by_user_id,
-            "visit_date": visit_date,
-            "actual_visit_date": (actual_visit_date or "").strip() or None,
+            "visit_date": normalized_visit_date,
+            "actual_visit_date": normalized_actual_visit_date,
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
             "culture_species": normalized_species,
@@ -331,9 +340,12 @@ class SiteStore:
         smear_result: str = "",
         polymicrobial: bool = False,
     ) -> dict[str, Any]:
-        existing = self.get_visit(patient_id, visit_date)
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        normalized_visit_date = normalize_visit_label(visit_date)
+        normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
+        existing = self.get_visit(normalized_patient_id, normalized_visit_date)
         if existing is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
         if not culture_confirmed:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
         normalized_category = culture_category.strip().lower()
@@ -347,7 +359,7 @@ class SiteStore:
         if normalized_status not in VISIT_STATUS_OPTIONS:
             normalized_status = "active" if active_stage else "scar"
         values = {
-            "actual_visit_date": (actual_visit_date or "").strip() or None,
+            "actual_visit_date": normalized_actual_visit_date,
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
             "culture_species": normalized_species,
@@ -404,10 +416,12 @@ class SiteStore:
         content: bytes,
         created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
-        visit = self.get_visit(patient_id, visit_date)
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        normalized_visit_date = normalize_visit_label(visit_date)
+        visit = self.get_visit(normalized_patient_id, normalized_visit_date)
         if visit is None:
             raise ValueError("Visit must exist before image upload.")
-        visit_dir = ensure_dir(self.raw_dir / patient_id / visit_date)
+        visit_dir = ensure_dir(self.raw_dir / normalized_patient_id / normalized_visit_date)
         image_id = make_id("image")
         sanitized_content, normalized_suffix = _sanitize_image_bytes(content, file_name)
         destination = visit_dir / f"{image_id}{normalized_suffix}"
@@ -417,8 +431,8 @@ class SiteStore:
             "image_id": image_id,
             "visit_id": visit["visit_id"],
             "site_id": self.site_id,
-            "patient_id": patient_id,
-            "visit_date": visit_date,
+            "patient_id": normalized_patient_id,
+            "visit_date": normalized_visit_date,
             "created_by_user_id": created_by_user_id,
             "view": view,
             "image_path": str(destination),
@@ -687,9 +701,11 @@ class SiteStore:
         updated_by_user_id: str | None,
         source: str,
     ) -> dict[str, Any]:
-        existing = self.get_visit(patient_id, visit_date)
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        normalized_visit_date = normalize_visit_label(visit_date)
+        existing = self.get_visit(normalized_patient_id, normalized_visit_date)
         if existing is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
         normalized_status = str(status_value or "").strip().lower()
         if normalized_status not in {"analysis_only", "candidate", "included", "excluded"}:
             raise ValueError("Invalid registry status.")
@@ -705,15 +721,15 @@ class SiteStore:
                 .where(
                     and_(
                         db_visits.c.site_id == self.site_id,
-                        db_visits.c.patient_id == patient_id,
-                        db_visits.c.visit_date == visit_date,
+                        db_visits.c.patient_id == normalized_patient_id,
+                        db_visits.c.visit_date == normalized_visit_date,
                     )
                 )
                 .values(**values)
             )
-        refreshed = self.get_visit(patient_id, visit_date)
+        refreshed = self.get_visit(normalized_patient_id, normalized_visit_date)
         if refreshed is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
         return refreshed
 
     def generate_manifest(self) -> pd.DataFrame:

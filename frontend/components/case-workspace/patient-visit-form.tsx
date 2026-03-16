@@ -165,7 +165,8 @@ export function PatientVisitForm({
                 <input
                   value={draft.patient_id}
                   onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
-                  placeholder="KERA-2026-001"
+                  placeholder="17635992"
+                  spellCheck={false}
                 />
               </Field>
               <Field label={pick(locale, "Sex", "성별")}>
@@ -201,6 +202,13 @@ export function PatientVisitForm({
                   {pick(locale, "Counts local images before the visit is saved.", "방문 저장 전 이 탭에만 있는 이미지를 집계합니다.")}
                 </div>
               </div>
+            </div>
+            <div className={`${propertyHintClass} -mt-1 whitespace-normal`}>
+              {pick(
+                locale,
+                "Use the local chart or MRN-style ID used inside your institution. Patient names should not be entered here, and the central registry stores a case_reference_id instead of this raw value.",
+                "기관 내부에서 쓰는 차트/MRN 형태 ID를 입력하세요. 환자 실명은 여기에 넣지 않으며, 중앙 registry에는 이 값 대신 case_reference_id가 저장됩니다."
+              )}
             </div>
           </Card>
         </section>
@@ -570,8 +578,8 @@ export function PatientVisitForm({
             label={pick(locale, "Date (optional)", "날짜 (선택)")}
             hint={pick(
               locale,
-              "Stored separately from the visit reference and follows the same date format as before.",
-              "방문 기준과 별도로 저장되며 기존과 같은 날짜 형식을 사용합니다."
+              "Stored locally as YYYY-MM-DD only. The central registry uses the visit label instead of the exact calendar date.",
+              "YYYY-MM-DD 형식으로 로컬에만 저장됩니다. 중앙 registry에는 실제 날짜 대신 방문 라벨만 사용합니다."
             )}
           >
             <input type="date" value={draft.actual_visit_date} onChange={(event) => setDraft((current) => ({ ...current, actual_visit_date: event.target.value }))} />

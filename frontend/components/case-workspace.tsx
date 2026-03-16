@@ -83,6 +83,7 @@ import {
   workspaceBrandActionsClass,
   workspaceBrandClass,
   workspaceBrandCopyClass,
+  workspaceBrandTitleClass,
   workspaceCenterClass,
   workspaceHeaderClass,
   workspaceKickerClass,
@@ -528,7 +529,7 @@ function buildVisitReference(draft: DraftState): string {
   if (draft.is_initial_visit) {
     return "Initial";
   }
-  return `F/U-${draft.follow_up_number.padStart(2, "0")}`;
+  return `FU #${String(Number(draft.follow_up_number) || 1)}`;
 }
 
 function displayVisitReference(locale: "en" | "ko", visitReference: string): string {
@@ -864,6 +865,7 @@ export function CaseWorkspace({
     selectedSiteId,
     selectedCase,
     selectedCaseImages,
+    patientVisitGallery,
     selectedCompareModelVersionIds,
     showOnlyMine,
     copy,
@@ -1775,12 +1777,12 @@ export function CaseWorkspace({
       const usedVisitReferences = visits.map((item) => item.visit_date);
       let maxFollowUp = 0;
       for (const item of usedVisitReferences) {
-        const match = String(item).match(/^F\/U-(\d{2})$/i);
+        const match = String(item).match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
         if (match) {
           maxFollowUp = Math.max(maxFollowUp, Number(match[1]));
         }
       }
-      return `F/U-${String(maxFollowUp + 1).padStart(2, "0")}`;
+      return `FU #${String(maxFollowUp + 1)}`;
     };
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForCase });
@@ -2096,8 +2098,8 @@ export function CaseWorkspace({
       <aside className={workspaceRailClass}>
         <div className={workspaceBrandClass}>
           <div className={workspaceBrandCopyClass}>
-            <div className={workspaceKickerClass}>{pick(locale, "Case Studio", "耳?댁뒪 ?ㅽ뒠?붿삤")}</div>
-            <h1>{pick(locale, "K-ERA", "K-ERA")}</h1>
+            <h1 className={workspaceBrandTitleClass}>{pick(locale, "K-ERA", "K-ERA")}</h1>
+            <div className={workspaceKickerClass}>{pick(locale, "Case Studio", "케이스 스튜디오")}</div>
           </div>
           <div className={workspaceBrandActionsClass}>
             <Button className="min-w-[108px]" type="button" variant="primary" onClick={startNewCaseDraft}>
@@ -2303,7 +2305,6 @@ export function CaseWorkspace({
               patientListThumbsByPatient={patientListThumbs}
               caseSearch={caseSearch}
               showOnlyMine={showOnlyMine}
-              patientScopeCopy={patientScopeCopy}
               casesLoading={casesLoading}
               copyPatients={copy.patients}
               copyAllRecords={copy.allRecords}

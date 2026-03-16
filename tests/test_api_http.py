@@ -842,7 +842,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
         self.assertIsNotNone(self.cp.authenticate("hashed_on_upsert_admin", "admin-pass-123"))
 
-    def _seed_case(self, token: str, *, patient_id: str = "HTTP-001", visit_date: str = "2026-03-11"):
+    def _seed_case(self, token: str, *, patient_id: str = "HTTP-001", visit_date: str = "Initial"):
         patient_response = self.client.post(
             f"/api/sites/{self.site_id}/patients",
             headers={"Authorization": f"Bearer {token}"},
@@ -859,7 +859,7 @@ class ApiHttpTests(unittest.TestCase):
                 "culture_species": "Staphylococcus aureus",
                 "contact_lens_use": "none",
                 "visit_status": "active",
-                "is_initial_visit": True,
+                "is_initial_visit": visit_date == "Initial",
             },
         )
         self.assertEqual(visit_response.status_code, 200, visit_response.text)
@@ -894,14 +894,14 @@ class ApiHttpTests(unittest.TestCase):
 
     def test_site_summary_reports_case_counts_http(self):
         admin_token = self._login("admin", "admin123")
-        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
 
         second_visit_response = self.client.post(
             f"/api/sites/{self.site_id}/visits",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-20",
+                "visit_date": "FU #1",
                 "culture_category": "bacterial",
                 "culture_species": "Staphylococcus aureus",
                 "contact_lens_use": "none",
@@ -927,7 +927,7 @@ class ApiHttpTests(unittest.TestCase):
 
     def test_embedding_backfill_reuses_running_job_http(self):
         admin_token = self._login("admin", "admin123")
-        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
 
         class SlowEmbeddingWorkflow:
             def __init__(self, _cp):
@@ -971,8 +971,8 @@ class ApiHttpTests(unittest.TestCase):
 
     def test_embedding_status_reports_missing_images_http(self):
         admin_token = self._login("admin", "admin123")
-        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="2026-03-11")
-        self._seed_case(admin_token, patient_id="HTTP-002", visit_date="2026-03-12")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-002", visit_date="Initial")
 
         class FakeEmbeddingWorkflow:
             def list_cases_requiring_embedding(self, site_store, *, model_version, backend="classifier"):
@@ -1011,7 +1011,7 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
             data={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "visit_date": "Initial",
                 "view": "slit",
                 "is_representative": "false",
             },
@@ -1019,6 +1019,42 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 415, response.text)
         self.assertIn("Invalid image file", response.text)
+
+    def test_patient_id_accepts_local_chart_id_http(self):
+        token = self._token_for_username("http_researcher")
+        response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": "12345678", "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["patient_id"], "12345678")
+
+    def test_visit_reference_rejects_calendar_date_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": "HTTP-003", "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+
+        response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-003",
+                "visit_date": "2026-03-11",
+                "actual_visit_date": "2026-03-11",
+                "culture_category": "bacterial",
+                "culture_species": "Staphylococcus aureus",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Visit reference must be 'Initial' or 'FU #N'", response.text)
 
     def test_image_semantic_prompt_review_http(self):
         token = self._token_for_username("http_researcher")
@@ -1076,11 +1112,11 @@ class ApiHttpTests(unittest.TestCase):
         image_id = self._seed_case(owner_token)
 
         update_visit_response = self.client.patch(
-            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {other_token}"},
             json={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "visit_date": "Initial",
                 "culture_category": "bacterial",
                 "culture_species": "Staphylococcus aureus",
                 "contact_lens_use": "soft",
@@ -1095,7 +1131,7 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {other_token}"},
             json={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "visit_date": "Initial",
                 "representative_image_id": image_id,
             },
         )
@@ -1109,13 +1145,13 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(lesion_box_response.status_code, 403, lesion_box_response.text)
 
         delete_images_response = self.client.delete(
-            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {other_token}"},
         )
         self.assertEqual(delete_images_response.status_code, 403, delete_images_response.text)
 
         delete_visit_response = self.client.delete(
-            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {other_token}"},
         )
         self.assertEqual(delete_visit_response.status_code, 403, delete_visit_response.text)
@@ -1128,7 +1164,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(admin_lesion_box_response.status_code, 200, admin_lesion_box_response.text)
 
         admin_delete_visit_response = self.client.delete(
-            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         self.assertEqual(admin_delete_visit_response.status_code, 200, admin_delete_visit_response.text)
@@ -1141,17 +1177,21 @@ class ApiHttpTests(unittest.TestCase):
             validation_response = self.client.post(
                 f"/api/sites/{self.site_id}/cases/validate",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"patient_id": "HTTP-001", "visit_date": "2026-03-11", "execution_mode": "cpu"},
+                json={"patient_id": "HTTP-001", "visit_date": "Initial", "execution_mode": "cpu"},
             )
             self.assertEqual(validation_response.status_code, 200, validation_response.text)
             validation_payload = validation_response.json()
             self.assertEqual(validation_payload["summary"]["predicted_label"], "bacterial")
             self.assertTrue(validation_payload["artifact_availability"]["roi_crop"])
+            saved_predictions = self.cp.load_case_predictions(validation_payload["summary"]["validation_id"])
+            self.assertIn("case_reference_id", saved_predictions[0])
+            self.assertNotIn("patient_id", saved_predictions[0])
+            self.assertNotIn("visit_date", saved_predictions[0])
 
             contribution_response = self.client.post(
                 f"/api/sites/{self.site_id}/cases/contribute",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"patient_id": "HTTP-001", "visit_date": "2026-03-11", "execution_mode": "cpu"},
+                json={"patient_id": "HTTP-001", "visit_date": "Initial", "execution_mode": "cpu"},
             )
             self.assertEqual(contribution_response.status_code, 200, contribution_response.text)
             contribution_payload = contribution_response.json()
@@ -1162,7 +1202,7 @@ class ApiHttpTests(unittest.TestCase):
             self.assertNotIn("visit_date", contribution_payload["update"])
 
             history_response = self.client.get(
-                f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=2026-03-11",
+                f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=Initial",
                 headers={"Authorization": f"Bearer {token}"},
             )
             self.assertEqual(history_response.status_code, 200, history_response.text)
@@ -1211,7 +1251,7 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "visit_date": "Initial",
                 "action": "include",
                 "source": "test_auto_include",
             },
@@ -1232,7 +1272,7 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "patient_id": "HTTP-001",
-                "visit_date": "2026-03-11",
+                "visit_date": "Initial",
                 "action": "exclude",
                 "source": "test_manual_exclude",
             },
@@ -1253,7 +1293,7 @@ class ApiHttpTests(unittest.TestCase):
         self._seed_case(token)
 
         delete_response = self.client.delete(
-            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {token}"},
         )
         self.assertEqual(delete_response.status_code, 200, delete_response.text)
@@ -1600,10 +1640,10 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIn("patient_id", template_response.text)
 
         csv_content = (
-            "patient_id,chart_alias,local_case_code,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
+            "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_confirmed,culture_category,culture_species,"
             "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative\n"
-            "OPS-001,OPS-001,CASE-001,female,54,2026-03-11,TRUE,bacterial,Pseudomonas aeruginosa,none,trauma,active,TRUE,positive,FALSE,,ops_001_white.jpg,white,TRUE\n"
-            "OPS-002,OPS-002,CASE-002,male,63,2026-03-12,TRUE,bacterial,Staphylococcus aureus,none,trauma,active,TRUE,negative,FALSE,,ops_002_slit.jpg,slit,TRUE\n"
+            "OPS-001,OPS-001,CASE-001,female,54,Initial,2026-03-11,TRUE,bacterial,Pseudomonas aeruginosa,none,trauma,active,TRUE,positive,FALSE,,ops_001_white.jpg,white,TRUE\n"
+            "OPS-002,OPS-002,CASE-002,male,63,FU #1,2026-03-12,TRUE,bacterial,Staphylococcus aureus,none,trauma,active,TRUE,negative,FALSE,,ops_002_slit.jpg,slit,TRUE\n"
         ).encode("utf-8")
         archive_buffer = io.BytesIO()
         with zipfile.ZipFile(archive_buffer, "w") as archive:
@@ -1715,7 +1755,7 @@ class ApiHttpTests(unittest.TestCase):
             validation_response = self.client.post(
                 f"/api/sites/{self.site_id}/cases/validate",
                 headers={"Authorization": f"Bearer {site_admin_token}"},
-                json={"patient_id": "HTTP-001", "visit_date": "2026-03-11", "execution_mode": "cpu"},
+                json={"patient_id": "HTTP-001", "visit_date": "Initial", "execution_mode": "cpu"},
             )
             self.assertEqual(validation_response.status_code, 200, validation_response.text)
             validation_id = validation_response.json()["summary"]["validation_id"]
@@ -1737,7 +1777,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(migrated_root.exists())
 
         artifact_response = self.client.get(
-            f"/api/sites/{self.site_id}/validations/{validation_id}/artifacts/roi_crop?patient_id=HTTP-001&visit_date=2026-03-11",
+            f"/api/sites/{self.site_id}/validations/{validation_id}/artifacts/roi_crop?patient_id=HTTP-001&visit_date=Initial",
             headers={"Authorization": f"Bearer {site_admin_token}"},
         )
         self.assertEqual(artifact_response.status_code, 200, artifact_response.text)

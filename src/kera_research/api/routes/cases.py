@@ -1035,11 +1035,13 @@ def build_cases_router(support: Any) -> APIRouter:
         if validation_run is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation run not found.")
 
+        case_reference_id = cp.case_reference_id(site_id, patient_id, visit_date)
         case_prediction = next(
             (
                 item
                 for item in cp.load_case_predictions(validation_id)
-                if item.get("patient_id") == patient_id and item.get("visit_date") == visit_date
+                if item.get("case_reference_id") == case_reference_id
+                or (item.get("patient_id") == patient_id and item.get("visit_date") == visit_date)
             ),
             None,
         )

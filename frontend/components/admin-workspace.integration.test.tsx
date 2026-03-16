@@ -209,6 +209,7 @@ describe("AdminWorkspace integration", () => {
         site_code: "SITE_B",
         display_name: "Site B",
         hospital_name: "Hospital B",
+        research_registry_enabled: true,
       });
     });
     await waitFor(() => {

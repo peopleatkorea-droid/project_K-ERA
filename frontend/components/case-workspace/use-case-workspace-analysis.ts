@@ -70,6 +70,7 @@ type Args = {
   selectedSiteId: string | null;
   selectedCase: CaseSummaryRecord | null;
   selectedCaseImages: SavedImagePreview[];
+  patientVisitGallery: Record<string, SavedImagePreview[]>;
   selectedCompareModelVersionIds: string[];
   showOnlyMine: boolean;
   copy: AnalysisCopy;
@@ -108,6 +109,7 @@ export function useCaseWorkspaceAnalysis({
   selectedSiteId,
   selectedCase,
   selectedCaseImages,
+  patientVisitGallery,
   selectedCompareModelVersionIds,
   showOnlyMine,
   copy,
@@ -158,6 +160,7 @@ export function useCaseWorkspaceAnalysis({
   const lesionPreviewUrlsRef = useRef<string[]>([]);
   const liveLesionPreviewUrlsRef = useRef<Record<string, string[]>>({});
   const liveLesionPreviewRequestRef = useRef<Record<string, number>>({});
+  const liveLesionPreviewsRef = useRef<LiveLesionPreviewMap>({});
   const lesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
 
   const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
@@ -257,6 +260,10 @@ export function useCaseWorkspaceAnalysis({
   }, []);
 
   useEffect(() => {
+    liveLesionPreviewsRef.current = liveLesionPreviews;
+  }, [liveLesionPreviews]);
+
+  useEffect(() => {
     const nextBoxes = Object.fromEntries(
       selectedCaseImages.map((image) => [image.image_id, toNormalizedBox(image.lesion_prompt_box)])
     );
@@ -266,101 +273,127 @@ export function useCaseWorkspaceAnalysis({
 
   useEffect(() => {
     clearSemanticPromptState();
-    clearLiveLesionPreview();
   }, [selectedCase?.case_id, selectedSiteId, semanticPromptInputMode]);
+
+  useEffect(() => {
+    clearLiveLesionPreview();
+  }, [selectedSiteId]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function hydrateStoredCaseLesionPreviews() {
-      if (!liveLesionCropEnabled || !selectedSiteId || !selectedCase || selectedCaseImages.length === 0) {
+      if (!liveLesionCropEnabled || !selectedSiteId) {
         return;
       }
 
-      const boxedImages = selectedCaseImages.filter((image) => Boolean(toNormalizedBox(image.lesion_prompt_box)));
+      const visibleImages = [...selectedCaseImages, ...Object.values(patientVisitGallery).flat()];
+      const boxedImages = Array.from(
+        new Map(
+          visibleImages
+            .filter((image) => Boolean(toNormalizedBox(image.lesion_prompt_box)))
+            .map((image) => [image.image_id, image] as const)
+        ).values()
+      );
       if (boxedImages.length === 0) {
         return;
       }
 
-      try {
-        const previews = await fetchCaseLesionPreview(
-          selectedSiteId,
-          selectedCase.patient_id,
-          selectedCase.visit_date,
-          token
-        );
-        if (cancelled) {
-          return;
+      const boxedImagesByCase = boxedImages.reduce(
+        (groups, image) => {
+          const key = `${image.patient_id}::${image.visit_date}`;
+          const current = groups.get(key) ?? [];
+          current.push(image);
+          groups.set(key, current);
+          return groups;
+        },
+        new Map<string, SavedImagePreview[]>()
+      );
+
+      for (const [caseKey, caseImages] of boxedImagesByCase.entries()) {
+        const separatorIndex = caseKey.indexOf("::");
+        if (separatorIndex <= 0) {
+          continue;
         }
+        const patientId = caseKey.slice(0, separatorIndex);
+        const visitDate = caseKey.slice(separatorIndex + 2);
 
-        const previewByImageId = new Map(
-          previews
-            .filter((item) => item.image_id)
-            .map((item) => [String(item.image_id), item] as const)
-        );
-
-        for (const image of boxedImages) {
-          const preview = previewByImageId.get(image.image_id);
-          if (!preview?.has_lesion_mask) {
-            continue;
+        try {
+          const previews = await fetchCaseLesionPreview(selectedSiteId, patientId, visitDate, token);
+          if (cancelled) {
+            return;
           }
 
-          const nextUrls: string[] = [];
-          try {
-            const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
-              selectedSiteId,
-              selectedCase.patient_id,
-              selectedCase.visit_date,
-              image.image_id,
-              "lesion_mask",
-              token
-            );
-            const lesionMaskUrl = URL.createObjectURL(maskBlob);
-            nextUrls.push(lesionMaskUrl);
+          const previewByImageId = new Map(
+            previews
+              .filter((item) => item.image_id)
+              .map((item) => [String(item.image_id), item] as const)
+          );
 
-            let lesionCropUrl: string | null = null;
-            if (preview.has_lesion_crop) {
-              try {
-                const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
-                  selectedSiteId,
-                  selectedCase.patient_id,
-                  selectedCase.visit_date,
-                  image.image_id,
-                  "lesion_crop",
-                  token
-                );
-                lesionCropUrl = URL.createObjectURL(cropBlob);
-                nextUrls.push(lesionCropUrl);
-              } catch {
-                lesionCropUrl = null;
+          for (const image of caseImages) {
+            const preview = previewByImageId.get(image.image_id);
+            const existing = liveLesionPreviewsRef.current[image.image_id];
+            if (!preview?.has_lesion_mask || (existing?.status === "done" && existing.lesion_mask_url)) {
+              continue;
+            }
+
+            const nextUrls: string[] = [];
+            try {
+              const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+                selectedSiteId,
+                patientId,
+                visitDate,
+                image.image_id,
+                "lesion_mask",
+                token
+              );
+              const lesionMaskUrl = URL.createObjectURL(maskBlob);
+              nextUrls.push(lesionMaskUrl);
+
+              let lesionCropUrl: string | null = null;
+              if (preview.has_lesion_crop) {
+                try {
+                  const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+                    selectedSiteId,
+                    patientId,
+                    visitDate,
+                    image.image_id,
+                    "lesion_crop",
+                    token
+                  );
+                  lesionCropUrl = URL.createObjectURL(cropBlob);
+                  nextUrls.push(lesionCropUrl);
+                } catch {
+                  lesionCropUrl = null;
+                }
               }
-            }
 
-            if (cancelled) {
+              if (cancelled) {
+                revokeUrls(nextUrls);
+                return;
+              }
+
+              revokeUrls(liveLesionPreviewUrlsRef.current[image.image_id] ?? []);
+              liveLesionPreviewUrlsRef.current[image.image_id] = nextUrls;
+              setLiveLesionPreviews((current) => ({
+                ...current,
+                [image.image_id]: {
+                  job_id: current[image.image_id]?.job_id ?? null,
+                  status: "done",
+                  error: null,
+                  backend: preview.backend ?? current[image.image_id]?.backend ?? null,
+                  prompt_signature: current[image.image_id]?.prompt_signature ?? null,
+                  lesion_mask_url: lesionMaskUrl,
+                  lesion_crop_url: lesionCropUrl,
+                },
+              }));
+            } catch {
               revokeUrls(nextUrls);
-              return;
             }
-
-            revokeUrls(liveLesionPreviewUrlsRef.current[image.image_id] ?? []);
-            liveLesionPreviewUrlsRef.current[image.image_id] = nextUrls;
-            setLiveLesionPreviews((current) => ({
-              ...current,
-              [image.image_id]: {
-                job_id: current[image.image_id]?.job_id ?? null,
-                status: "done",
-                error: null,
-                backend: preview.backend ?? current[image.image_id]?.backend ?? null,
-                prompt_signature: current[image.image_id]?.prompt_signature ?? null,
-                lesion_mask_url: lesionMaskUrl,
-                lesion_crop_url: lesionCropUrl,
-              },
-            }));
-          } catch {
-            revokeUrls(nextUrls);
           }
+        } catch {
+          // Ignore quietly when there is no stored lesion preview yet or the role cannot access it.
         }
-      } catch {
-        // Ignore quietly when there is no stored lesion preview yet or the role cannot access it.
       }
     }
 
@@ -368,7 +401,7 @@ export function useCaseWorkspaceAnalysis({
     return () => {
       cancelled = true;
     };
-  }, [liveLesionCropEnabled, selectedSiteId, selectedCase?.case_id, selectedCase?.patient_id, selectedCase?.visit_date, selectedCaseImages.length, toNormalizedBox, token]);
+  }, [liveLesionCropEnabled, patientVisitGallery, selectedCaseImages, selectedSiteId, toNormalizedBox, token]);
 
   useEffect(() => {
     if (!liveLesionCropEnabled) {

@@ -110,6 +110,8 @@ FastAPI 서버와 Next.js 개발 서버를 함께 실행하고, 사용 가능한
 
 LLM 설정은 [docs/ai_clinic_llm_setup.md](docs/ai_clinic_llm_setup.md)를 참고하세요.
 
+IRB 제출용 초안은 [docs/irb/README.md](docs/irb/README.md)를 참고하세요.
+
 ---
 
 ## 현재 기능 범위
@@ -199,6 +201,48 @@ case_reference_id = SHA256(KERA_CASE_REFERENCE_SALT + site_id + patient_id + vis
 ```
 중앙 control plane에는 환자 ID 대신 이 해시 키만 저장됩니다.
 
+### 연구 registry / 가명처리 정책
+
+2026-03-16 기준으로 K-ERA는 `로컬 입력`과 `중앙 registry 저장`을 분리해서 다룹니다.
+
+- 병원 로컬 workspace에서는 내부 차트 ID / MRN 형태의 `patient_id`를 사용할 수 있습니다.
+- 다만 환자 **실명은 입력하지 않는 것**을 원칙으로 합니다.
+- `visit_date`는 중앙 공유용 기준값으로 `Initial`, `FU #1`, `FU #2` 같은 방문 라벨만 사용합니다.
+- 실제 달력 날짜가 필요하면 `actual_visit_date`에 저장하며, 이 값은 로컬 워크스페이스 기준으로만 보관합니다.
+- 중앙 control plane / 연구 registry에는 raw `patient_id`, 정확한 방문일, 원본 경로 대신 `case_reference_id` 중심으로 저장합니다.
+- 업로드 이미지는 저장 시 EXIF 메타데이터를 제거하고, 파일명은 원본명이 아닌 `image_id` 기반 이름으로 바뀝니다.
+
+즉, 현재 방향은 다음과 같습니다.
+
+- **로컬 병원 노드**: 내부 운영에 필요한 차트 ID와 실제 방문일을 보관
+- **중앙 registry / validation / contribution 이력**: `case_reference_id`와 방문 라벨 중심으로 저장
+
+이 구조는 중앙 저장본을 `익명정보`라기보다 `가명처리된 연구 데이터`에 가깝게 운영하기 위한 설계입니다.
+
+### Research Registry
+
+K-ERA는 `무료 분석 + 1회 registry opt-in + 이후 자동 포함 + 케이스별 opt-out` 방향으로 설계되어 있습니다.
+
+- 사이트(병원) 단위로 `research_registry_enabled`를 켜고 끌 수 있습니다.
+- 사용자는 사이트별로 한 번 research registry 동의를 등록할 수 있습니다.
+- registry가 활성화된 사이트에서, 사용자가 동의한 뒤 분석/검증된 케이스는 자동으로 registry 상태를 가질 수 있습니다.
+- 각 케이스는 `analysis_only`, `candidate`, `included`, `excluded` 같은 상태를 가집니다.
+- 케이스 화면에서는 `Included / Excluded` 상태를 확인하고, 케이스별 제외 또는 재포함을 제어할 수 있습니다.
+
+이 구조는 기존의 로컬 fine-tuning용 `weight delta contribution`과는 별개입니다.
+
+- **기존 contribution**: 로컬 학습 결과(weight delta)를 중앙에 업로드
+- **research registry**: 연구 데이터셋 후보 / 포함 상태를 관리
+
+### 기관 참여 방향
+
+현재 코드와 운영 방향을 함께 보면 다음처럼 가져가는 것이 권장됩니다.
+
+- **대학병원 / 승인된 기관**: research registry 활성화 후 자동 포함 흐름 사용 가능
+- **개인의원 / 소규모 기관**: 우선 `analysis-only`로 시작하고, 기관 정책 또는 승인 구조가 정리되면 registry 참여 확장
+
+즉, `무료 분석`은 넓게 열고, `중앙 연구 dataset 포함`은 사이트 정책과 동의 흐름을 거쳐 단계적으로 여는 방향입니다.
+
 ### 연구용 CLI
 
 HTTP API와 별개로 직접 실행 가능합니다.
@@ -277,6 +321,9 @@ KERA_STORAGE_DIR=D:\KERA_DATA
 
 - `GET /api/sites`
 - `GET /api/sites/{site_id}/summary`
+- `GET /api/sites/{site_id}/research-registry/settings`
+- `PATCH /api/sites/{site_id}/research-registry/settings`
+- `POST /api/sites/{site_id}/research-registry/consent`
 - `GET /api/sites/{site_id}/cases`
 - `POST /api/sites/{site_id}/patients`
 - `POST /api/sites/{site_id}/visits`

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -98,6 +99,11 @@ MANIFEST_COLUMNS = [
     "lesion_prompt_box",
 ]
 
+_PATIENT_LOCAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_VISIT_INITIAL_PATTERN = re.compile(r"^(?:initial|initial visit|초진)$", re.IGNORECASE)
+_VISIT_FOLLOW_UP_PATTERN = re.compile(r"^(?:F\/?U|FU)[-\s_#]*0*(\d+)$", re.IGNORECASE)
+_ACTUAL_VISIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 def make_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
@@ -114,6 +120,37 @@ def make_case_reference_id(site_id: str, patient_id: str, visit_date: str, salt:
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"caseref_{digest[:20]}"
+
+
+def normalize_patient_pseudonym(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("Patient ID is required.")
+    if not _PATIENT_LOCAL_ID_PATTERN.fullmatch(normalized):
+        raise ValueError("Patient ID must use a local chart/MRN-style ID (letters, numbers, ., -, _ only).")
+    return normalized
+
+
+def normalize_visit_label(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("Visit reference is required.")
+    if _VISIT_INITIAL_PATTERN.fullmatch(normalized):
+        return "Initial"
+    follow_up_match = _VISIT_FOLLOW_UP_PATTERN.fullmatch(normalized)
+    if follow_up_match:
+        follow_up_number = max(1, int(follow_up_match.group(1)))
+        return f"FU #{follow_up_number}"
+    raise ValueError("Visit reference must be 'Initial' or 'FU #N'. Store the exact calendar date in actual_visit_date only.")
+
+
+def normalize_actual_visit_date(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    if not _ACTUAL_VISIT_DATE_PATTERN.fullmatch(normalized):
+        raise ValueError("Actual visit date must use YYYY-MM-DD format.")
+    return normalized
 
 
 def utc_now() -> str:

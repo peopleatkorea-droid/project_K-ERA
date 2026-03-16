@@ -30,7 +30,7 @@ export function Button({
     <button
       {...rest}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-full border text-sm font-semibold tracking-[-0.01em] transition duration-150 ease-out focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.12)] disabled:pointer-events-none disabled:opacity-60",
+        "inline-flex items-center justify-center gap-2 rounded-[10px] border text-sm font-semibold tracking-[-0.01em] transition duration-150 ease-out focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.12)] disabled:pointer-events-none disabled:opacity-60",
         size === "sm" ? "min-h-9 px-3.5" : "min-h-11 px-[18px]",
         fullWidth && "w-full",
         variant === "ghost" &&

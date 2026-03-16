@@ -82,12 +82,12 @@ _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
 _SEMANTIC_PROMPT_SCORER: SemanticPromptScoringService | None = None
 IMPORT_TEMPLATE_ROWS = [
-    "patient_id,chart_alias,local_case_code,sex,age,visit_date,culture_confirmed,culture_category,culture_species,"
+    "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_confirmed,culture_category,culture_species,"
     "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative",
-    "P001,JNUH-001,2026-BK-001,female,45,2026-01-10,TRUE,bacterial,Pseudomonas aeruginosa,"
-    "none,trauma,active,TRUE,positive,FALSE,,P001_2026-01-10_white.jpg,white,TRUE",
-    "P001,JNUH-001,2026-BK-001,female,45,2026-01-10,TRUE,bacterial,Pseudomonas aeruginosa,"
-    "none,trauma,active,TRUE,positive,FALSE,,P001_2026-01-10_slit.jpg,slit,FALSE",
+    "17635992,JNUH-001,2026-BK-001,female,45,Initial,2026-01-10,TRUE,bacterial,Pseudomonas aeruginosa,"
+    "none,trauma,active,TRUE,positive,FALSE,,17635992_initial_white.jpg,white,TRUE",
+    "17635992,JNUH-001,2026-BK-001,female,45,FU #1,2026-01-17,TRUE,bacterial,Pseudomonas aeruginosa,"
+    "none,trauma,improving,FALSE,positive,FALSE,,17635992_fu1_slit.jpg,slit,FALSE",
 ]
 
 

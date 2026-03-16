@@ -5,15 +5,11 @@ import type { ChangeEvent } from "react";
 import type { CaseSummaryRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
-import { SectionHeader } from "../ui/section-header";
 import {
-  docBadgeRowClass,
   docEyebrowClass,
   docSectionClass,
   docSiteBadgeClass,
   docSurfaceClass,
-  docTitleMetaClass,
-  docTitleRowClass,
   emptySurfaceClass,
   listBoardSearchClass,
   listBoardStackClass,
@@ -41,7 +37,6 @@ type PatientListBoardProps = {
   patientListThumbsByPatient: Record<string, PatientListThumbnail[]>;
   caseSearch: string;
   showOnlyMine: boolean;
-  patientScopeCopy: string;
   casesLoading: boolean;
   copyPatients: string;
   copyAllRecords: string;
@@ -66,7 +61,6 @@ export function PatientListBoard({
   patientListThumbsByPatient,
   caseSearch,
   showOnlyMine,
-  patientScopeCopy,
   casesLoading,
   copyPatients,
   copyAllRecords,
@@ -82,20 +76,13 @@ export function PatientListBoard({
 }: PatientListBoardProps) {
   return (
     <section className={docSurfaceClass}>
-      <SectionHeader
-        className={docTitleRowClass}
-        eyebrow={<div className={docEyebrowClass}>{pick(locale, "Patient list", "환자 목록")}</div>}
-        title={pick(locale, "Saved patients", "저장 환자 목록")}
-        titleAs="h3"
-        aside={
-          <div className={docTitleMetaClass}>
-            <div className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</div>
-            <span className={docSiteBadgeClass}>{`${patientListRows.length} ${pick(locale, "patients", "환자")}`}</span>
-          </div>
-        }
-      />
-      <div className={docBadgeRowClass}>
-        <div className={segmentedToggleClass} role="group" aria-label={copyPatients}>
+      <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+        <div className={docEyebrowClass}>{pick(locale, "Patient list", "환자 목록")}</div>
+        <div className="shrink-0 text-[0.88rem] font-semibold tracking-[-0.02em] text-ink">
+          {selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}
+        </div>
+        <span className={`${docSiteBadgeClass} shrink-0 whitespace-nowrap`}>{`${patientListRows.length} ${pick(locale, "patients", "환자")}`}</span>
+        <div className={`${segmentedToggleClass} shrink-0`} role="group" aria-label={copyPatients}>
           <Button
             className={togglePillClass(!showOnlyMine)}
             type="button"
@@ -115,22 +102,14 @@ export function PatientListBoard({
             {copyMyPatientsOnly}
           </Button>
         </div>
-        <span className={docSiteBadgeClass}>{patientScopeCopy}</span>
-        <span className={docSiteBadgeClass}>
-          {pick(
-            locale,
-            "Each row is one patient. Click a row to load the latest saved case with images and lesion boxes.",
-            "각 행은 환자 1명입니다. 행을 누르면 최신 저장 케이스와 이미지, lesion box를 바로 불러옵니다."
-          )}
-        </span>
-      </div>
-      <section className={`${docSectionClass} grid gap-3`}>
         <input
-          className={`${listBoardSearchClass} min-h-12 rounded-[var(--radius-md)] border border-border bg-white/55 px-4 text-sm text-ink shadow-card outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4`}
+          className={`${listBoardSearchClass} ml-auto min-h-10 w-[320px] shrink-0 rounded-[var(--radius-md)] border border-border bg-white/55 px-4 text-sm text-ink shadow-card outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4`}
           value={caseSearch}
           onChange={(event: ChangeEvent<HTMLInputElement>) => onSearchChange(event.target.value)}
-          placeholder={pick(locale, "Search patient or organism", "환자 또는 균종 검색")}
+          placeholder={pick(locale, "Search patient or organism", "환자 / 균종 검색")}
         />
+      </div>
+      <section className={`${docSectionClass} grid gap-3`}>
         {casesLoading ? <div className={emptySurfaceClass}>{copyLoadingSavedCases}</div> : null}
         {!casesLoading && patientListRows.length === 0 ? (
           <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장 환자가 아직 없습니다.")}</div>

@@ -8,9 +8,10 @@ export const workspaceRailClass =
 export const workspaceMainClass = "relative z-10 px-4 py-6 sm:px-6 lg:px-8 lg:py-8";
 export const workspaceHeaderClass = "mb-7 flex items-start justify-between gap-4 max-[900px]:flex-col";
 export const workspaceKickerClass =
-  "text-[0.72rem] font-semibold uppercase tracking-[0.16em] text-muted";
+  "text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted";
 export const workspaceBrandClass = "mb-4 grid gap-4";
-export const workspaceBrandCopyClass = "grid gap-2";
+export const workspaceBrandCopyClass = "grid gap-1";
+export const workspaceBrandTitleClass = "m-0 text-[1.85rem] font-semibold tracking-[-0.045em] text-ink";
 export const workspaceBrandActionsClass = "flex flex-wrap gap-2";
 export const workspaceCenterClass = "grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]";
 export const workspacePanelClass = "grid gap-4";
@@ -19,7 +20,7 @@ export const workspaceTitleCopyClass = "text-sm leading-6 text-muted";
 
 export function workspaceToastClass(tone: "success" | "error") {
   return cn(
-    "fixed bottom-5 right-5 z-50 grid min-w-[260px] gap-1 rounded-[18px] border px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.08)]",
+    "fixed bottom-5 right-5 z-50 grid min-w-[260px] gap-1 rounded-[12px] border px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.08)]",
     tone === "success"
       ? "border-emerald-300/40 bg-emerald-500/12 text-emerald-50"
       : "border-danger/30 bg-danger/12 text-ink"
@@ -34,7 +35,7 @@ export const railLabelClass =
 export const railSiteListClass = "grid gap-2";
 export function railSiteButtonClass(active = false) {
   return cn(
-    "grid gap-1.5 rounded-[16px] border border-border bg-surface px-4 py-3 text-left text-sm transition duration-150 ease-out hover:border-brand/20 hover:bg-surface-muted/70",
+    "grid gap-1.5 rounded-[12px] border border-border bg-surface px-4 py-3 text-left text-sm transition duration-150 ease-out hover:border-brand/20 hover:bg-surface-muted/70",
     active && "border-brand/20 bg-[rgba(48,88,255,0.05)]"
   );
 }
@@ -44,11 +45,11 @@ export const railSummaryClass = "grid gap-0.5 text-right max-[560px]:text-left";
 export const railSummaryValueClass = "text-[1.15rem] font-semibold tracking-[-0.04em] text-ink";
 export const railSummaryMetaClass = "text-[0.76rem] text-muted";
 export const railMetricCardClass =
-  "grid gap-1 rounded-[18px] border border-border bg-surface px-4 py-3";
+  "grid gap-1 rounded-[12px] border border-border bg-surface px-4 py-3";
 export const railMetricValueClass = "text-[1.55rem] font-semibold tracking-[-0.04em] text-ink";
 export const railMetricLabelClass = "text-[0.72rem] uppercase tracking-[0.12em] text-muted";
 export const railActivityItemClass =
-  "grid gap-1 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted";
+  "grid gap-1 rounded-[12px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted";
 export const railActivityListClass = "grid gap-3";
 export const momentumTrackClass = "h-2.5 overflow-hidden rounded-full bg-brand/10";
 export const momentumFillClass = "h-full rounded-full bg-[linear-gradient(90deg,var(--accent-strong),var(--accent))]";
@@ -56,32 +57,32 @@ export const validationRailHeadClass = "items-start";
 export const railRunButtonClass = "min-w-[168px] justify-center max-[560px]:w-full";
 
 export const docSurfaceClass =
-  "grid gap-6 rounded-[24px] border border-border bg-surface p-6 shadow-[0_10px_32px_rgba(15,23,42,0.04)]";
+  "grid gap-6 rounded-[16px] border border-border bg-surface p-6 shadow-[0_10px_32px_rgba(15,23,42,0.04)]";
 export const docSectionClass = "grid gap-4";
 export const docTitleRowClass = "flex items-start justify-between gap-4 max-[900px]:flex-col";
 export const docEyebrowClass =
-  "inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted";
+  "inline-flex min-h-8 items-center rounded-[10px] border border-border bg-surface-muted/80 px-3 text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted";
 export const docTitleMetaClass = "flex flex-wrap items-center justify-end gap-2";
 export const docBadgeRowClass = "flex flex-wrap items-center gap-2";
 export const docSiteBadgeClass =
-  "inline-flex min-h-8 items-center rounded-full border border-border bg-surface px-3 text-[0.76rem] font-medium text-muted";
+  "inline-flex min-h-8 items-center rounded-[10px] border border-border bg-surface px-3 text-[0.76rem] font-medium text-muted";
 export const docSectionHeadClass = "flex items-start justify-between gap-4 max-[900px]:flex-col";
 export const docSectionLabelClass =
-  "inline-flex min-h-7 items-center rounded-full border border-border bg-surface-muted/70 px-2.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-muted";
+  "inline-flex min-h-7 items-center rounded-[10px] border border-border bg-surface-muted/70 px-2.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-muted";
 export const docFooterClass = "flex items-center justify-between gap-4 max-[900px]:flex-col";
 
 export const emptySurfaceClass =
-  "rounded-[16px] border border-dashed border-border bg-surface-muted/45 px-4 py-4 text-sm leading-6 text-muted";
+  "rounded-[12px] border border-dashed border-border bg-surface-muted/45 px-4 py-4 text-sm leading-6 text-muted";
 
 export const panelStackClass = "grid gap-4";
 export const panelMetricGridClass = "grid gap-3 sm:grid-cols-2 xl:grid-cols-4";
 export const panelImageStackClass = "grid gap-4";
-export const panelImageCardClass = "grid gap-3 rounded-[20px] border border-border bg-surface-muted/80 p-4";
+export const panelImageCardClass = "grid gap-3 rounded-[14px] border border-border bg-surface-muted/80 p-4";
 export const panelImageCopyClass = "grid gap-1";
 export const panelImageFallbackClass =
-  "grid min-h-[240px] place-items-center rounded-[18px] border border-dashed border-border bg-surface-muted/60 px-4 py-5 text-center text-sm leading-6 text-muted";
+  "grid min-h-[240px] place-items-center rounded-[12px] border border-dashed border-border bg-surface-muted/60 px-4 py-5 text-center text-sm leading-6 text-muted";
 export const panelImagePreviewClass =
-  "aspect-[4/3] w-full rounded-[18px] border border-border/60 bg-surface object-contain";
+  "aspect-[4/3] w-full rounded-[12px] border border-border/60 bg-surface object-contain";
 export const panelPreviewGridClass = "grid gap-4 xl:grid-cols-3";
 
 export const previewSectionHeadClass = "flex items-start justify-between gap-4 max-[900px]:flex-col";
@@ -89,15 +90,15 @@ export const previewSectionActionsClass = "flex flex-wrap items-center justify-e
 export const previewRunButtonClass = "min-w-[188px] justify-center";
 
 export const researchLaunchStripClass =
-  "grid gap-4 rounded-[18px] border border-border bg-surface-muted/55 p-5";
+  "grid gap-4 rounded-[12px] border border-border bg-surface-muted/55 p-5";
 export const researchLaunchCopyClass = "grid gap-1.5";
 export const researchLaunchActionsClass = "flex flex-wrap gap-2";
 
 export const segmentedToggleClass =
-  "inline-flex flex-wrap gap-2 rounded-full border border-border bg-surface-muted/70 p-1";
+  "inline-flex flex-wrap gap-2 rounded-[10px] border border-border bg-surface-muted/70 p-1";
 export function togglePillClass(active = false, compact = false) {
   return cn(
-    "rounded-full border border-transparent px-4 text-sm font-semibold transition duration-150 ease-out",
+    "rounded-[8px] border border-transparent px-4 text-sm font-semibold transition duration-150 ease-out",
     compact ? "min-h-9" : "min-h-10",
     active
       ? "border-brand/20 bg-[rgba(48,88,255,0.08)] text-brand"
@@ -107,14 +108,14 @@ export function togglePillClass(active = false, compact = false) {
 
 export const selectedCaseChipStripClass = "flex flex-wrap gap-3";
 export const selectedCaseChipClass =
-  "grid gap-1 rounded-[18px] border border-border bg-surface px-4 py-3";
+  "grid gap-1 rounded-[12px] border border-border bg-surface px-4 py-3";
 export const organismChipRowClass = "flex flex-wrap gap-2";
 export const organismChipClass =
-  "inline-flex items-center gap-3 rounded-full border border-border bg-surface px-4 py-2 text-sm";
+  "inline-flex items-center gap-3 rounded-[10px] border border-border bg-surface px-4 py-2 text-sm";
 export const organismChipStaticClass = "border-brand/12 bg-brand-soft/60";
 export const organismChipCopyClass = "grid gap-0.5";
 export const organismChipRemoveClass =
-  "inline-flex min-h-8 items-center rounded-full border border-border bg-white/55 px-3 text-[0.76rem] font-medium text-muted transition hover:border-danger/30 hover:text-danger dark:bg-white/4";
+  "inline-flex min-h-8 items-center rounded-[8px] border border-border bg-white/55 px-3 text-[0.76rem] font-medium text-muted transition hover:border-danger/30 hover:text-danger dark:bg-white/4";
 
 export const summaryNoteClass = "m-0 text-sm leading-6 text-muted";
 export const propertyHintClass = "text-sm leading-6 text-muted";
@@ -129,20 +130,22 @@ export const draftIntakeNoteClass = "grid gap-2";
 export const patientVisitGalleryStackClass = "grid gap-3";
 export function patientVisitGalleryCardClass(active = false) {
   return cn(
-    "rounded-[18px] border border-border bg-surface p-4 text-left transition duration-150 ease-out hover:border-brand/20",
+    "rounded-[12px] border border-border bg-surface p-4 text-left transition duration-150 ease-out hover:border-brand/20",
     active && "border-brand/24 bg-[rgba(48,88,255,0.04)]"
   );
 }
 export const patientVisitImageStripClass = "grid gap-3 sm:grid-cols-2 xl:grid-cols-3";
-export const patientVisitImageCardClass = "grid gap-2 rounded-[18px] border border-border bg-surface px-3 py-3";
+export const patientVisitImageCardClass = "grid gap-2 rounded-[12px] border border-border bg-surface px-3 py-3";
 export const patientVisitImageThumbClass =
   "aspect-[4/3] w-full rounded-[16px] border border-border/60 object-cover";
 export const patientVisitImageMetaClass = "grid gap-1 text-sm text-muted";
+export const representativeImageTagClass =
+  "inline-flex min-h-5 items-center rounded-[8px] border border-brand/18 bg-brand-soft/85 px-2 py-0.5 text-[0.72rem] font-medium leading-none text-brand dark:border-brand/22 dark:bg-brand-soft/70 dark:text-brand";
 
 export const listBoardStackClass = "grid gap-3";
 export function patientListRowClass(active = false) {
   return cn(
-    "grid gap-4 rounded-[18px] border border-border bg-surface px-4 py-4 text-left transition duration-150 ease-out hover:border-brand/20 md:grid-cols-[minmax(0,1fr)_auto] md:items-center",
+    "grid gap-4 rounded-[12px] border border-border bg-surface px-4 py-4 text-left transition duration-150 ease-out hover:border-brand/20 md:grid-cols-[minmax(0,1fr)_auto] md:items-center",
     active && "border-brand/24 bg-[rgba(48,88,255,0.04)]"
   );
 }
@@ -150,7 +153,7 @@ export const patientListRowMainClass = "grid min-w-0 gap-3";
 export const patientListRowChipsClass = "flex flex-wrap gap-2";
 export function patientListChipClass(strong = false) {
   return cn(
-    "inline-flex min-h-8 items-center rounded-full border border-border bg-surface px-3 text-[0.78rem] text-muted",
+    "inline-flex min-h-8 items-center rounded-[8px] border border-border bg-surface px-3 text-[0.78rem] text-muted",
     strong && "font-semibold text-ink"
   );
 }
@@ -159,14 +162,14 @@ export const patientListThumbnailsClass = "flex flex-wrap items-center gap-2 md:
 export const patientListThumbClass =
   "grid h-14 w-14 place-items-center rounded-[14px] border border-border bg-surface object-cover text-[0.72rem] text-muted";
 export const patientListThumbMoreClass =
-  "inline-flex h-10 items-center rounded-full border border-border bg-surface px-3 text-[0.76rem] font-medium text-muted";
+  "inline-flex h-10 items-center rounded-[8px] border border-border bg-surface px-3 text-[0.76rem] font-medium text-muted";
 
 export const savedCaseImageToolbarClass =
-  "grid gap-3 rounded-[20px] border border-border/80 bg-surface-muted/70 p-4";
+  "grid gap-3 rounded-[14px] border border-border/80 bg-surface-muted/70 p-4";
 export const savedCaseImageToolbarCopyClass = "text-sm leading-6 text-muted";
 export const savedCaseImageBoardClass = "grid gap-4";
 export const lesionEditorSurfaceClass =
-  "grid gap-4 rounded-[18px] border border-border bg-surface-muted/55 p-4";
+  "grid gap-4 rounded-[12px] border border-border bg-surface-muted/55 p-4";
 export const lesionEditorImageClass =
   "block max-h-[380px] w-full rounded-[14px] border border-border/60 object-contain";
 export const lesionBoxOverlayClass =
@@ -194,7 +197,7 @@ export const savedImageActionBarClass = "flex flex-wrap items-center gap-2.5";
 export const savedImageMetricGridClass = "gap-3";
 export const previewItemMetricGridClass = "mb-1";
 
-export const trainingProgressSettingsClass = "grid gap-4 rounded-[18px] border border-border bg-surface px-4 py-4";
+export const trainingProgressSettingsClass = "grid gap-4 rounded-[12px] border border-border bg-surface px-4 py-4";
 
 export const validationPanelHeadClass = "items-start";
 export const validationPanelActionsClass = "ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2.5";
@@ -223,10 +226,10 @@ export function visitTimingGridClass(followUp = false) {
     followUp && "xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.82fr)_minmax(0,1.15fr)_minmax(0,0.98fr)]"
   );
 }
-export const propertyChipClass = "grid gap-2.5 rounded-[20px] border border-border bg-surface-muted/70 p-4";
+export const propertyChipClass = "grid gap-2.5 rounded-[14px] border border-border bg-surface-muted/70 p-4";
 export function tagPillClass(active = false) {
   return cn(
-    "min-h-10 rounded-full border px-4 text-sm font-semibold transition duration-150 ease-out",
+    "min-h-10 rounded-[10px] border px-4 text-sm font-semibold transition duration-150 ease-out",
     active
       ? "border-brand/20 bg-brand-soft text-brand"
       : "border-border bg-surface text-muted hover:border-brand/15 hover:bg-surface-muted/80 hover:text-ink"
@@ -253,7 +256,7 @@ export const patientListThumbEmptyClass =
 
 export const listBoardSearchClass = "max-w-[420px]";
 export const workspaceUserBadgeClass =
-  "inline-flex min-h-10 items-center rounded-full border border-border bg-surface px-4 text-sm font-semibold text-ink";
+  "inline-flex min-h-10 items-center rounded-[10px] border border-border bg-surface px-4 text-sm font-semibold text-ink";
 export function savedCaseActionButtonClass(active = false) {
   return cn(
     "border-brand/20 bg-[rgba(48,88,255,0.06)] text-brand",
@@ -262,14 +265,14 @@ export function savedCaseActionButtonClass(active = false) {
 }
 
 export const semanticPromptReviewClass =
-  "grid gap-3 rounded-[18px] border border-border bg-surface-muted/55 p-4";
+  "grid gap-3 rounded-[12px] border border-border bg-surface-muted/55 p-4";
 export const semanticPromptReviewHeadClass = "flex flex-wrap items-start justify-between gap-3";
 export const semanticPromptGridClass = "grid gap-3 xl:grid-cols-3";
-export const semanticPromptLayerClass = "grid gap-3 rounded-[18px] border border-border bg-surface px-3 py-3";
+export const semanticPromptLayerClass = "grid gap-3 rounded-[12px] border border-border bg-surface px-3 py-3";
 export const semanticPromptLayerHeadClass = "flex items-start justify-between gap-3";
 export const semanticPromptMatchListClass = "grid gap-2";
 export const semanticPromptMatchClass =
-  "flex items-start justify-between gap-3 rounded-[16px] border border-border bg-surface-muted/60 px-3 py-3";
+  "flex items-start justify-between gap-3 rounded-[10px] border border-border bg-surface-muted/60 px-3 py-3";
 export const semanticPromptRankClass = "min-w-6 text-[0.84rem] font-bold text-brand";
 export const semanticPromptScoreClass = "text-[0.84rem] font-bold text-ink";
 export const semanticPromptCopyClass = "grid min-w-0 flex-1 gap-1";
@@ -277,7 +280,7 @@ export const semanticPromptCopyClass = "grid min-w-0 flex-1 gap-1";
 export const adminMenuClass = "relative";
 export function adminMenuTriggerClass(open = false) {
   return cn(
-    "inline-flex min-h-10 items-center gap-2 rounded-full border border-border bg-surface px-4 text-sm font-semibold text-ink transition duration-150 ease-out hover:border-brand/20 hover:bg-surface-muted/80",
+    "inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-border bg-surface px-4 text-sm font-semibold text-ink transition duration-150 ease-out hover:border-brand/20 hover:bg-surface-muted/80",
     open && "border-brand/20 bg-brand-soft/70 text-brand"
   );
 }
@@ -288,6 +291,6 @@ export function adminMenuCaretClass(open = false) {
   );
 }
 export const adminMenuDropdownClass =
-  "absolute right-0 top-[calc(100%+0.5rem)] z-40 grid min-w-[220px] gap-1 rounded-[18px] border border-border bg-surface p-2 shadow-[0_10px_24px_rgba(15,23,42,0.08)]";
+  "absolute right-0 top-[calc(100%+0.5rem)] z-40 grid min-w-[220px] gap-1 rounded-[12px] border border-border bg-surface p-2 shadow-[0_10px_24px_rgba(15,23,42,0.08)]";
 export const adminMenuItemClass =
-  "rounded-[14px] px-3 py-2 text-sm text-ink transition duration-150 ease-out hover:bg-surface-muted/80";
+  "rounded-[8px] px-3 py-2 text-sm text-ink transition duration-150 ease-out hover:bg-surface-muted/80";

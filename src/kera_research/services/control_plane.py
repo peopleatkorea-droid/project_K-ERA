@@ -1104,6 +1104,17 @@ class ControlPlaneStore:
 
         return normalized
 
+    def _normalize_validation_record(self, site_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(record)
+        patient_id = str(normalized.get("patient_id") or "").strip()
+        visit_date = str(normalized.get("visit_date") or "").strip()
+        case_reference_id = str(normalized.get("case_reference_id") or "").strip()
+        if not case_reference_id and site_id and patient_id and visit_date:
+            normalized["case_reference_id"] = self.case_reference_id(site_id, patient_id, visit_date)
+        normalized.pop("patient_id", None)
+        normalized.pop("visit_date", None)
+        return normalized
+
     def store_model_update_artifact(
         self,
         source_path: str | Path,
@@ -1447,15 +1458,20 @@ class ControlPlaneStore:
         summary: dict[str, Any],
         case_predictions: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        normalized_summary = self._normalize_validation_record(str(summary.get("site_id") or "").strip(), summary)
+        normalized_predictions = [
+            self._normalize_validation_record(str(summary.get("site_id") or "").strip(), prediction)
+            for prediction in case_predictions
+        ]
         case_path = CONTROL_PLANE_CASE_DIR / f"{summary['validation_id']}.json"
-        write_json(case_path, case_predictions)
+        write_json(case_path, normalized_predictions)
         report_path = CONTROL_PLANE_REPORT_DIR / f"{summary['validation_id']}.json"
         try:
             case_predictions_path = str(case_path.relative_to(BASE_DIR))
         except ValueError:
             case_predictions_path = str(case_path)
         payload = {
-            **summary,
+            **normalized_summary,
             "case_predictions_path": case_predictions_path,
         }
         try:
