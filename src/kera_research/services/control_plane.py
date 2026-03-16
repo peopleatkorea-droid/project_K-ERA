@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import bcrypt
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from kera_research.config import (
     BASE_DIR,
@@ -20,6 +20,7 @@ from kera_research.config import (
     CONTROL_PLANE_EXPERIMENT_DIR,
     CONTROL_PLANE_REPORT_DIR,
     DEFAULT_USERS,
+    HIRA_API_KEY,
     SITE_ROOT_DIR,
     ensure_base_directories,
 )
@@ -33,6 +34,7 @@ from kera_research.db import (
     experiments,
     images as db_images,
     init_control_plane_db,
+    institution_directory,
     model_updates,
     model_versions,
     organism_catalog,
@@ -43,6 +45,7 @@ from kera_research.db import (
     validation_runs,
 )
 from kera_research.domain import CULTURE_SPECIES, make_case_reference_id, make_id, utc_now
+from kera_research.services.institution_directory import HiraApiError, HiraInstitutionDirectoryClient
 from kera_research.storage import ensure_dir, read_json, write_json
 
 GOOGLE_AUTH_SENTINEL = "__google__"
@@ -294,7 +297,48 @@ class _ControlPlaneIdentityOps:
             return "application_required"
         return latest_request.get("status", "application_required")
 
-    def submit_access_request(self, user_id: str, requested_site_id: str, requested_role: str, message: str = "") -> dict[str, Any]:
+    def _serialize_access_request(self, request_record: dict[str, Any]) -> dict[str, Any]:
+        serialized = dict(request_record)
+        serialized["requested_site_label"] = str(serialized.get("requested_site_label") or "").strip()
+        serialized["requested_site_source"] = str(serialized.get("requested_site_source") or "site").strip() or "site"
+        serialized["resolved_site_id"] = None
+        serialized["resolved_site_label"] = None
+
+        requested_site_id = str(serialized.get("requested_site_id") or "").strip()
+        if not requested_site_id:
+            return serialized
+
+        site = self.store.get_site(requested_site_id)
+        if site is not None:
+            if not serialized["requested_site_label"]:
+                serialized["requested_site_label"] = str(site.get("display_name") or requested_site_id)
+            serialized["requested_site_source"] = "site"
+            serialized["resolved_site_id"] = str(site.get("site_id") or requested_site_id)
+            serialized["resolved_site_label"] = str(site.get("display_name") or requested_site_id)
+            return serialized
+
+        mapped_site = self.store.get_site_by_source_institution_id(requested_site_id)
+        if mapped_site is not None:
+            serialized["resolved_site_id"] = str(mapped_site.get("site_id") or "")
+            serialized["resolved_site_label"] = str(mapped_site.get("display_name") or serialized["resolved_site_id"])
+
+        institution = self.store.get_institution(requested_site_id)
+        if institution is not None:
+            if not serialized["requested_site_label"]:
+                serialized["requested_site_label"] = str(institution.get("name") or requested_site_id)
+            serialized["requested_site_source"] = "institution_directory"
+        return serialized
+
+    def submit_access_request(
+        self,
+        user_id: str,
+        requested_site_id: str,
+        requested_role: str,
+        message: str = "",
+        *,
+        requested_site_label: str = "",
+        requested_site_source: str = "site",
+    ) -> dict[str, Any]:
         user = self.get_user_by_id(user_id)
         if user is None:
             raise ValueError(f"Unknown user_id: {user_id}")
@@ -306,6 +350,8 @@ class _ControlPlaneIdentityOps:
             "user_id": user_id,
             "email": user["username"],
             "requested_site_id": requested_site_id,
+            "requested_site_label": requested_site_label.strip(),
+            "requested_site_source": requested_site_source.strip() or "site",
             "requested_role": requested_role,
             "message": message.strip(),
             "status": "pending",
@@ -316,13 +362,13 @@ class _ControlPlaneIdentityOps:
         }
         with CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(access_requests.insert().values(**request_record))
-        return request_record
+        return self._serialize_access_request(request_record)
 
     def latest_access_request(self, user_id: str) -> dict[str, Any] | None:
         query = select(access_requests).where(access_requests.c.user_id == user_id).order_by(access_requests.c.created_at.desc())
         with CONTROL_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
-        return dict(row) if row else None
+        return self._serialize_access_request(dict(row)) if row else None
 
     def list_access_requests(
         self,
@@ -340,7 +386,7 @@ class _ControlPlaneIdentityOps:
         query = query.order_by(access_requests.c.created_at.desc())
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        return [self._serialize_access_request(dict(row)) for row in rows]
 
     def review_access_request(
         self,
@@ -754,15 +800,20 @@ class _ControlPlaneWorkspaceOps:
     def get_site(self, site_id: str) -> dict[str, Any] | None:
         return self.store.get_site(site_id)
 
+    def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
+        return self.store.get_site_by_source_institution_id(source_institution_id)
+
     def create_site(
         self,
         project_id: str,
         site_code: str,
         display_name: str,
         hospital_name: str,
+        source_institution_id: str | None = None,
         research_registry_enabled: bool = True,
     ) -> dict[str, Any]:
         normalized_site_code = site_code.strip()
+        normalized_source_institution_id = str(source_institution_id or "").strip() or None
         if not normalized_site_code:
             raise ValueError("Site code is required.")
         if not display_name.strip():
@@ -772,6 +823,7 @@ class _ControlPlaneWorkspaceOps:
             "project_id": project_id,
             "display_name": display_name.strip(),
             "hospital_name": hospital_name.strip(),
+            "source_institution_id": normalized_source_institution_id,
             "local_storage_root": str(Path(self.store.instance_storage_root()) / normalized_site_code),
             "research_registry_enabled": bool(research_registry_enabled),
             "created_at": utc_now(),
@@ -780,6 +832,14 @@ class _ControlPlaneWorkspaceOps:
             existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
             if existing_site:
                 raise ValueError(f"Site {normalized_site_code} already exists.")
+            if normalized_source_institution_id:
+                existing_institution_site = conn.execute(
+                    select(sites.c.site_id).where(sites.c.source_institution_id == normalized_source_institution_id)
+                ).first()
+                if existing_institution_site:
+                    raise ValueError(
+                        f"Institution {normalized_source_institution_id} is already linked to site {existing_institution_site.site_id}."
+                    )
             project_row = conn.execute(select(projects).where(projects.c.project_id == project_id)).mappings().first()
             if project_row is None:
                 raise ValueError(f"Unknown project_id: {project_id}")
@@ -1235,8 +1295,18 @@ class ControlPlaneStore:
         requested_site_id: str,
         requested_role: str,
         message: str = "",
+        *,
+        requested_site_label: str = "",
+        requested_site_source: str = "site",
     ) -> dict[str, Any]:
-        return self.identity.submit_access_request(user_id, requested_site_id, requested_role, message)
+        return self.identity.submit_access_request(
+            user_id,
+            requested_site_id,
+            requested_role,
+            message,
+            requested_site_label=requested_site_label,
+            requested_site_source=requested_site_source,
+        )
 
     def latest_access_request(self, user_id: str) -> dict[str, Any] | None:
         return self.identity.latest_access_request(user_id)
@@ -1310,12 +1380,147 @@ class ControlPlaneStore:
             row = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
         return dict(row) if row else None
 
+    def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
+        normalized_source_institution_id = source_institution_id.strip()
+        if not normalized_source_institution_id:
+            return None
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(sites).where(sites.c.source_institution_id == normalized_source_institution_id)
+            ).mappings().first()
+        return dict(row) if row else None
+
+    def list_institutions(
+        self,
+        *,
+        search: str = "",
+        sido_code: str | None = None,
+        sggu_code: str | None = None,
+        open_only: bool = True,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized_search = search.strip().lower()
+        normalized_sido = str(sido_code or "").strip()
+        normalized_sggu = str(sggu_code or "").strip()
+        bounded_limit = max(1, min(limit, 50))
+
+        query = select(institution_directory)
+        if open_only:
+            query = query.where(institution_directory.c.open_status == "active")
+        if normalized_sido:
+            query = query.where(institution_directory.c.sido_code == normalized_sido)
+        if normalized_sggu:
+            query = query.where(institution_directory.c.sggu_code == normalized_sggu)
+        if normalized_search:
+            like_pattern = f"%{normalized_search}%"
+            id_pattern = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    func.lower(institution_directory.c.name).like(like_pattern),
+                    func.lower(institution_directory.c.address).like(like_pattern),
+                    institution_directory.c.institution_id.like(id_pattern),
+                )
+            )
+        query = query.order_by(institution_directory.c.name).limit(bounded_limit)
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_institution(self, institution_id: str) -> dict[str, Any] | None:
+        normalized_institution_id = institution_id.strip()
+        if not normalized_institution_id:
+            return None
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(institution_directory).where(institution_directory.c.institution_id == normalized_institution_id)
+            ).mappings().first()
+        return dict(row) if row else None
+
+    def upsert_institutions(self, records: list[dict[str, Any]]) -> int:
+        if not records:
+            return 0
+        upserted = 0
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            for raw_record in records:
+                institution_id = str(raw_record.get("institution_id") or "").strip()
+                if not institution_id:
+                    continue
+                record = {
+                    "institution_id": institution_id,
+                    "source": str(raw_record.get("source") or "hira").strip() or "hira",
+                    "name": str(raw_record.get("name") or institution_id).strip() or institution_id,
+                    "institution_type_code": str(raw_record.get("institution_type_code") or "").strip(),
+                    "institution_type_name": str(raw_record.get("institution_type_name") or "").strip(),
+                    "address": str(raw_record.get("address") or "").strip(),
+                    "phone": str(raw_record.get("phone") or "").strip(),
+                    "homepage": str(raw_record.get("homepage") or "").strip(),
+                    "sido_code": str(raw_record.get("sido_code") or "").strip(),
+                    "sggu_code": str(raw_record.get("sggu_code") or "").strip(),
+                    "emdong_name": str(raw_record.get("emdong_name") or "").strip(),
+                    "postal_code": str(raw_record.get("postal_code") or "").strip(),
+                    "x_pos": str(raw_record.get("x_pos") or "").strip(),
+                    "y_pos": str(raw_record.get("y_pos") or "").strip(),
+                    "ophthalmology_available": bool(raw_record.get("ophthalmology_available", True)),
+                    "open_status": str(raw_record.get("open_status") or "active").strip() or "active",
+                    "source_payload": dict(raw_record.get("source_payload") or {}),
+                    "synced_at": str(raw_record.get("synced_at") or utc_now()).strip() or utc_now(),
+                }
+                existing = conn.execute(
+                    select(institution_directory.c.institution_id).where(
+                        institution_directory.c.institution_id == institution_id
+                    )
+                ).first()
+                if existing:
+                    conn.execute(
+                        update(institution_directory)
+                        .where(institution_directory.c.institution_id == institution_id)
+                        .values(**record)
+                    )
+                else:
+                    conn.execute(institution_directory.insert().values(**record))
+                upserted += 1
+        return upserted
+
+    def sync_hira_ophthalmology_directory(
+        self,
+        *,
+        page_size: int = 100,
+        max_pages: int | None = None,
+        service_key: str | None = None,
+    ) -> dict[str, Any]:
+        client = HiraInstitutionDirectoryClient(service_key or HIRA_API_KEY)
+        page_no = 1
+        pages_synced = 0
+        total_count = 0
+        upserted = 0
+
+        while True:
+            page = client.fetch_ophthalmology_page(page_no=page_no, num_rows=page_size)
+            total_count = max(total_count, page.total_count)
+            if not page.items:
+                break
+            upserted += self.upsert_institutions(page.items)
+            pages_synced += 1
+            if max_pages is not None and pages_synced >= max_pages:
+                break
+            if page.total_count and page_no * page_size >= page.total_count:
+                break
+            page_no += 1
+
+        return {
+            "source": "hira",
+            "pages_synced": pages_synced,
+            "total_count": total_count,
+            "institutions_synced": upserted,
+        }
+
     def create_site(
         self,
         project_id: str,
         site_code: str,
         display_name: str,
         hospital_name: str,
+        source_institution_id: str | None = None,
         research_registry_enabled: bool = True,
     ) -> dict[str, Any]:
         return self.workspace.create_site(
@@ -1323,6 +1528,7 @@ class ControlPlaneStore:
             site_code,
             display_name,
             hospital_name,
+            source_institution_id=source_institution_id,
             research_registry_enabled=research_registry_enabled,
         )
 

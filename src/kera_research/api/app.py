@@ -866,6 +866,7 @@ class GoogleLoginRequest(BaseModel):
 
 class AccessRequestCreateRequest(BaseModel):
     requested_site_id: str
+    requested_site_label: str = ""
     requested_role: str
     message: str = ""
 
@@ -874,6 +875,12 @@ class AccessRequestReviewRequest(BaseModel):
     decision: str
     assigned_role: str | None = None
     assigned_site_id: str | None = None
+    create_site_if_missing: bool = False
+    project_id: str | None = None
+    site_code: str | None = None
+    display_name: str | None = None
+    hospital_name: str | None = None
+    research_registry_enabled: bool = True
     reviewer_notes: str = ""
 
 
@@ -1025,6 +1032,7 @@ class SiteCreateRequest(BaseModel):
     site_code: str
     display_name: str
     hospital_name: str = ""
+    source_institution_id: str | None = None
     research_registry_enabled: bool = True
 
 

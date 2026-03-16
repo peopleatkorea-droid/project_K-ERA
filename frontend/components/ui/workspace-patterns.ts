@@ -18,6 +18,72 @@ export const workspacePanelClass = "grid gap-4";
 export const workspaceTitleRowClass = "grid gap-2";
 export const workspaceTitleCopyClass = "text-sm leading-6 text-muted";
 
+export const canvasDocumentClass = "mx-auto grid w-full max-w-[920px] gap-6 lg:gap-7";
+export const canvasHeaderClass =
+  "relative overflow-hidden rounded-[28px] border border-border/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(255,252,247,0.8))] px-6 py-6 shadow-[0_18px_48px_rgba(15,23,42,0.06)] dark:bg-[linear-gradient(135deg,rgba(18,23,30,0.92),rgba(24,31,40,0.84))] lg:px-7 lg:py-7";
+export const canvasHeaderGlowClass =
+  "pointer-events-none absolute inset-x-[-12%] top-[-38%] h-[240px] bg-[radial-gradient(circle,rgba(48,88,255,0.12),transparent_62%)] dark:bg-[radial-gradient(circle,rgba(124,150,255,0.18),transparent_62%)]";
+export const canvasHeaderContentClass = "relative z-10 grid gap-6";
+export const canvasHeaderKickerClass =
+  "inline-flex min-h-8 items-center rounded-full border border-border/70 bg-white/55 px-3 text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted dark:bg-white/5";
+export const canvasHeaderTitleClass =
+  "m-0 max-w-3xl text-[clamp(2rem,4.6vw,3.35rem)] font-semibold leading-[0.96] tracking-[-0.05em] text-ink";
+export const canvasHeaderBodyClass = "m-0 max-w-2xl text-[0.98rem] leading-7 text-muted";
+export const canvasHeaderMetaRowClass = "flex flex-wrap items-center gap-2";
+export const canvasHeaderMetaChipClass =
+  "inline-flex min-h-9 items-center rounded-full border border-border/70 bg-white/60 px-3.5 text-[0.8rem] font-medium text-muted dark:bg-white/6";
+export const canvasSummaryGridClass = "grid gap-3 md:grid-cols-3";
+export const canvasSummaryCardClass =
+  "grid gap-1.5 rounded-[18px] border border-border/70 bg-white/58 px-4 py-4 backdrop-blur-sm dark:bg-white/4";
+export const canvasSummaryLabelClass = "text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-muted";
+export const canvasSummaryValueClass = "text-[1.05rem] font-semibold tracking-[-0.03em] text-ink";
+
+export function canvasBlockClass(active = false) {
+  return cn(
+    "grid gap-5 rounded-[24px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.86),rgba(255,252,247,0.78))] p-5 shadow-[0_12px_32px_rgba(15,23,42,0.04)] dark:bg-[linear-gradient(180deg,rgba(18,23,30,0.88),rgba(24,31,40,0.82))] lg:p-6",
+    active && "border-brand/20 shadow-[0_18px_44px_rgba(48,88,255,0.08)]"
+  );
+}
+
+export const canvasBlockHeadClass =
+  "flex flex-wrap items-start justify-between gap-4 max-[900px]:flex-col max-[900px]:items-stretch";
+export const canvasBlockCopyClass = "grid gap-2";
+export const canvasBlockEyebrowClass = "text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted";
+export const canvasBlockTitleClass = "m-0 text-[clamp(1.2rem,2vw,1.6rem)] font-semibold tracking-[-0.03em] text-ink";
+export const canvasBlockSummaryClass = "m-0 max-w-3xl text-sm leading-7 text-muted";
+export function canvasBlockStatusClass(tone: "complete" | "active" | "pending" = "pending") {
+  return cn(
+    "inline-flex min-h-9 items-center rounded-full border px-3.5 text-[0.78rem] font-semibold tracking-[-0.01em]",
+    tone === "complete" && "border-emerald-300/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    tone === "active" && "border-brand/20 bg-brand-soft text-brand",
+    tone === "pending" && "border-border/70 bg-white/58 text-muted dark:bg-white/4"
+  );
+}
+
+export const canvasPropertyGridClass = "grid gap-3 md:grid-cols-2 xl:grid-cols-3";
+export const canvasPropertyCardClass =
+  "grid gap-1.5 rounded-[18px] border border-border/70 bg-white/58 px-4 py-4 dark:bg-white/4";
+export const canvasPropertyLabelClass = "text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-muted";
+export const canvasPropertyValueClass = "text-sm font-medium leading-6 text-ink";
+export const canvasFooterClass =
+  "flex flex-wrap items-center justify-between gap-4 rounded-[20px] border border-border/70 bg-white/55 px-4 py-4 dark:bg-white/4";
+export const canvasFooterCopyClass = "grid gap-1";
+export const canvasFooterTitleClass = "text-sm font-semibold text-ink";
+export const canvasFooterBodyClass = "m-0 text-sm leading-6 text-muted";
+export const canvasSidebarClass = "grid gap-4 xl:sticky xl:top-6 xl:self-start";
+export const canvasSidebarCardClass =
+  "grid gap-4 rounded-[20px] border border-border/70 bg-surface px-5 py-5 shadow-[0_12px_30px_rgba(15,23,42,0.04)]";
+export const canvasSidebarSectionLabelClass =
+  "text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-muted";
+export const canvasSidebarMetricGridClass = "grid gap-3 sm:grid-cols-2";
+export const canvasSidebarMetricCardClass =
+  "grid gap-1 rounded-[16px] border border-border/70 bg-surface-muted/70 px-4 py-3";
+export const canvasSidebarMetricValueClass = "text-[1.3rem] font-semibold tracking-[-0.04em] text-ink";
+export const canvasSidebarMetricLabelClass = "text-[0.72rem] uppercase tracking-[0.12em] text-muted";
+export const canvasSidebarListClass = "grid gap-2.5";
+export const canvasSidebarItemClass =
+  "rounded-[14px] border border-border/70 bg-surface-muted/58 px-4 py-3 text-sm leading-6 text-muted";
+
 export function workspaceToastClass(tone: "success" | "error") {
   return cn(
     "fixed bottom-5 right-5 z-50 grid min-w-[260px] gap-1 rounded-[12px] border px-4 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.08)]",

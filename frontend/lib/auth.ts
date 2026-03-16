@@ -1,5 +1,13 @@
 import { request } from "./api-core";
-import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, PublicStatistics, SiteRecord } from "./types";
+import type {
+  AccessRequestRecord,
+  AuthResponse,
+  AuthState,
+  AuthUser,
+  PublicInstitutionRecord,
+  PublicStatistics,
+  SiteRecord,
+} from "./types";
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>("/api/auth/login", {
@@ -27,6 +35,24 @@ export async function fetchPublicSites() {
   return request<SiteRecord[]>("/api/public/sites");
 }
 
+export async function searchPublicInstitutions(
+  query: string,
+  options?: { sido_code?: string; sggu_code?: string; limit?: number },
+) {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set("q", query.trim());
+  }
+  if (options?.sido_code) {
+    params.set("sido_code", options.sido_code);
+  }
+  if (options?.sggu_code) {
+    params.set("sggu_code", options.sggu_code);
+  }
+  params.set("limit", String(options?.limit ?? 12));
+  return request<PublicInstitutionRecord[]>(`/api/public/institutions/search?${params.toString()}`);
+}
+
 export async function fetchPublicStatistics() {
   return request<PublicStatistics>("/api/public/statistics");
 }
@@ -39,6 +65,7 @@ export async function submitAccessRequest(
   token: string,
   payload: {
     requested_site_id: string;
+    requested_site_label?: string;
     requested_role: string;
     message?: string;
   },

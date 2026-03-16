@@ -161,6 +161,19 @@ SEGMENTATION_ROOT = _resolve_segmentation_root(SEGMENTATION_BACKEND)
 SEGMENTATION_SCRIPT = _resolve_segmentation_script(SEGMENTATION_BACKEND)
 SEGMENTATION_CHECKPOINT = _resolve_segmentation_checkpoint(SEGMENTATION_BACKEND)
 
+HIRA_API_KEY = (
+    os.getenv("KERA_HIRA_API_KEY", "").strip()
+    or os.getenv("HIRA_API_KEY", "").strip()
+)
+HIRA_HOSPITAL_INFO_URL = (
+    os.getenv("KERA_HIRA_HOSPITAL_INFO_URL", "").strip()
+    or "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
+)
+HIRA_API_TIMEOUT_SECONDS = float(
+    os.getenv("KERA_HIRA_API_TIMEOUT_SECONDS", "").strip()
+    or "30"
+)
+
 # Legacy aliases kept for compatibility with existing imports and env names.
 MEDSAM_SCRIPT = SEGMENTATION_SCRIPT
 MEDSAM_CHECKPOINT = SEGMENTATION_CHECKPOINT

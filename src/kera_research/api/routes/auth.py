@@ -19,6 +19,21 @@ def build_auth_router(support: Any) -> APIRouter:
     def public_sites(cp=Depends(get_control_plane)) -> list[dict[str, Any]]:
         return cp.list_sites()
 
+    @router.get("/api/public/institutions/search")
+    def public_institution_search(
+        q: str = "",
+        sido_code: str | None = None,
+        sggu_code: str | None = None,
+        limit: int = 12,
+        cp=Depends(get_control_plane),
+    ) -> list[dict[str, Any]]:
+        return cp.list_institutions(
+            search=q,
+            sido_code=sido_code,
+            sggu_code=sggu_code,
+            limit=limit,
+        )
+
     @router.get("/api/public/statistics")
     def public_statistics(cp=Depends(get_control_plane)) -> dict[str, Any]:
         return cp.get_public_statistics()
@@ -68,14 +83,26 @@ def build_auth_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         if payload.requested_role not in {"site_admin", "researcher", "viewer"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid requested role.")
-        requested_site = next((item for item in cp.list_sites() if item["site_id"] == payload.requested_site_id), None)
-        if requested_site is None:
+        requested_site_id = payload.requested_site_id.strip()
+        if not requested_site_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requested institution is required.")
+
+        requested_site = next((item for item in cp.list_sites() if item["site_id"] == requested_site_id), None)
+        requested_institution = cp.get_institution(requested_site_id)
+        if requested_site is None and requested_institution is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        requested_site_label = (
+            payload.requested_site_label.strip()
+            or str(requested_site.get("display_name") if requested_site is not None else requested_institution.get("name"))
+        )
+        requested_site_source = "site" if requested_site is not None else "institution_directory"
         request_record = cp.submit_access_request(
             user_id=user["user_id"],
-            requested_site_id=payload.requested_site_id,
+            requested_site_id=requested_site_id,
             requested_role=payload.requested_role,
             message=payload.message,
+            requested_site_label=requested_site_label,
+            requested_site_source=requested_site_source,
         )
         refreshed_user = cp.get_user_by_id(user["user_id"]) or user
         return {

@@ -6,7 +6,6 @@ import type { CaseSummaryRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import {
-  docEyebrowClass,
   docSectionClass,
   docSiteBadgeClass,
   docSurfaceClass,
@@ -77,7 +76,6 @@ export function PatientListBoard({
   return (
     <section className={docSurfaceClass}>
       <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-        <div className={docEyebrowClass}>{pick(locale, "Patient list", "환자 목록")}</div>
         <div className="shrink-0 text-[0.88rem] font-semibold tracking-[-0.02em] text-ink">
           {selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}
         </div>
@@ -112,7 +110,7 @@ export function PatientListBoard({
       <section className={`${docSectionClass} grid gap-3`}>
         {casesLoading ? <div className={emptySurfaceClass}>{copyLoadingSavedCases}</div> : null}
         {!casesLoading && patientListRows.length === 0 ? (
-          <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장 환자가 아직 없습니다.")}</div>
+          <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장된 환자가 아직 없습니다.")}</div>
         ) : null}
         <div className={listBoardStackClass}>
           {patientListRows.map((row) => (

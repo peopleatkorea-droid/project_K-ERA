@@ -66,21 +66,73 @@ def build_admin_router(support: Any) -> APIRouter:
         access_request = next((item for item in cp.list_access_requests() if item["request_id"] == request_id), None)
         if access_request is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown access request.")
-        target_site_id = payload.assigned_site_id or access_request["requested_site_id"]
-        assert_request_review_permission(cp, user, target_site_id)
         if payload.decision not in {"approved", "rejected"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid review decision.")
         if payload.decision == "approved" and payload.assigned_role not in {None, "site_admin", "researcher", "viewer"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assigned role.")
-        reviewed = cp.review_access_request(
-            request_id=request_id,
-            reviewer_user_id=user["user_id"],
-            decision=payload.decision,
-            assigned_role=payload.assigned_role,
-            assigned_site_id=payload.assigned_site_id,
-            reviewer_notes=payload.reviewer_notes,
+        created_site = None
+        target_site_id = (
+            payload.assigned_site_id
+            or access_request.get("resolved_site_id")
+            or access_request["requested_site_id"]
         )
-        return {"request": reviewed}
+
+        if payload.create_site_if_missing:
+            require_platform_admin(user)
+            if payload.decision != "approved":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Site creation during request review is only available for approvals.",
+                )
+            if access_request.get("requested_site_source") != "institution_directory":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Only institution-directory requests can create a new site during review.",
+                )
+            institution_id = str(access_request.get("requested_site_id") or "").strip()
+            mapped_site = cp.get_site_by_source_institution_id(institution_id)
+            if mapped_site is None:
+                if not payload.project_id or not payload.site_code or not payload.display_name:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="project_id, site_code, and display_name are required to create a site from this request.",
+                    )
+                institution = cp.get_institution(institution_id)
+                try:
+                    created_site = cp.create_site(
+                        payload.project_id,
+                        payload.site_code,
+                        payload.display_name,
+                        payload.hospital_name
+                        or str(institution.get("name") if institution is not None else access_request.get("requested_site_label") or ""),
+                        source_institution_id=institution_id,
+                        research_registry_enabled=payload.research_registry_enabled,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+                target_site_id = created_site["site_id"]
+            else:
+                target_site_id = mapped_site["site_id"]
+        elif cp.get_site(target_site_id) is not None:
+            assert_request_review_permission(cp, user, target_site_id)
+
+        if payload.decision == "approved" and cp.get_site(target_site_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approved access requests must be assigned to an existing site.",
+            )
+        try:
+            reviewed = cp.review_access_request(
+                request_id=request_id,
+                reviewer_user_id=user["user_id"],
+                decision=payload.decision,
+                assigned_role=payload.assigned_role,
+                assigned_site_id=target_site_id,
+                reviewer_notes=payload.reviewer_notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"request": reviewed, "created_site": created_site}
 
     @router.get("/api/admin/overview")
     def admin_overview(
@@ -550,6 +602,7 @@ def build_admin_router(support: Any) -> APIRouter:
                 payload.site_code,
                 payload.display_name,
                 payload.hospital_name,
+                source_institution_id=payload.source_institution_id,
                 research_registry_enabled=payload.research_registry_enabled,
             )
         except ValueError as exc:

@@ -10,6 +10,7 @@ from kera_research.config import MODEL_DIR
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
+from kera_research.services.institution_directory import HiraApiError
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.storage import read_json, write_json
 
@@ -127,6 +128,17 @@ def cmd_export_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_sync_ophthalmology_directory(args: argparse.Namespace) -> dict[str, Any]:
+    cp = ControlPlaneStore()
+    try:
+        return cp.sync_hira_ophthalmology_directory(
+            page_size=args.page_size,
+            max_pages=args.max_pages,
+        )
+    except HiraApiError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m kera_research.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -173,6 +185,14 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--cross-validation-id")
     export_parser.add_argument("--output", required=True)
     export_parser.set_defaults(func=cmd_export_report)
+
+    sync_parser = subparsers.add_parser(
+        "sync-ophthalmology-directory",
+        help="Sync the Korean ophthalmology institution directory from HIRA.",
+    )
+    sync_parser.add_argument("--page-size", type=int, default=100)
+    sync_parser.add_argument("--max-pages", type=int)
+    sync_parser.set_defaults(func=cmd_sync_ophthalmology_directory)
     return parser
 
 

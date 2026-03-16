@@ -611,7 +611,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 그것은 동시에 실제 임상 환경에서의 External Validation이 됩니다.
                 <br />
-                논문을 직접 쓰지 않아도, 코딩을 몰라도, 참여 자체가 연구 데이터와 모델 개선에 기여합니다.
+                논문을 직접 쓰지 않아도, 코딩을 몰라도,
+                <br />
+                참여 자체가 연구 데이터와 모델 개선에 기여합니다.
               </p>
             </div>
             <div

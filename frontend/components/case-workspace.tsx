@@ -37,6 +37,28 @@ import { Card } from "./ui/card";
 import { MetricGrid, MetricItem } from "./ui/metric-grid";
 import { SectionHeader } from "./ui/section-header";
 import {
+  canvasDocumentClass,
+  canvasHeaderBodyClass,
+  canvasHeaderClass,
+  canvasHeaderContentClass,
+  canvasHeaderGlowClass,
+  canvasHeaderKickerClass,
+  canvasHeaderMetaChipClass,
+  canvasHeaderMetaRowClass,
+  canvasHeaderTitleClass,
+  canvasSidebarCardClass,
+  canvasSidebarClass,
+  canvasSidebarItemClass,
+  canvasSidebarListClass,
+  canvasSidebarMetricCardClass,
+  canvasSidebarMetricGridClass,
+  canvasSidebarMetricLabelClass,
+  canvasSidebarMetricValueClass,
+  canvasSidebarSectionLabelClass,
+  canvasSummaryCardClass,
+  canvasSummaryGridClass,
+  canvasSummaryLabelClass,
+  canvasSummaryValueClass,
   docBadgeRowClass,
   docEyebrowClass,
   docSectionClass,
@@ -2026,6 +2048,42 @@ export function CaseWorkspace({
   const resolvedVisitReference = buildVisitReference(draft);
   const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
   const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
+  const isAuthoringCanvas = railView !== "patients" && !selectedCase;
+  const draftRepresentativeCount = draftImages.filter((image) => image.is_representative).length;
+  const draftLesionBoxCount = draftImages.filter((image) => Boolean(draftLesionPromptBoxes[image.draft_id])).length;
+  const draftChecklist = [
+    Boolean(draft.patient_id.trim() && draft.age.trim()),
+    Boolean(draft.visit_status && draft.contact_lens_use),
+    Boolean(draft.culture_category && draft.culture_species.trim()),
+    draftImages.length > 0,
+  ];
+  const draftCompletionCount = draftChecklist.filter(Boolean).length;
+  const draftCompletionPercent = Math.round((draftCompletionCount / draftChecklist.length) * 100);
+  const draftHeaderTitle = draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "제목 없는 각막염 케이스");
+  const draftPendingItems: string[] = [];
+  if (!selectedSiteId) {
+    draftPendingItems.push(pick(locale, "Select a hospital workspace.", "병원 워크스페이스를 선택하세요."));
+  }
+  if (!draft.patient_id.trim()) {
+    draftPendingItems.push(pick(locale, "Add a patient identifier.", "환자 식별자를 입력하세요."));
+  }
+  if (!draft.culture_species.trim()) {
+    draftPendingItems.push(pick(locale, "Choose the primary organism.", "기본 원인균을 선택하세요."));
+  }
+  if (!draft.intake_completed) {
+    draftPendingItems.push(pick(locale, "Complete the intake to unlock submission.", "제출을 열려면 intake를 완료하세요."));
+  }
+  if (draftImages.length === 0) {
+    draftPendingItems.push(pick(locale, "Add at least one image to the board.", "이미지를 한 장 이상 보드에 추가하세요."));
+  }
+  if (draftImages.length > 0 && draftRepresentativeCount === 0) {
+    draftPendingItems.push(pick(locale, "Mark one representative image.", "대표 이미지를 한 장 지정하세요."));
+  }
+  if (draftImages.length > draftLesionBoxCount) {
+    draftPendingItems.push(
+      pick(locale, "Draw lesion boxes on the key images.", "핵심 이미지에 lesion box를 그리세요.")
+    );
+  }
   const validationPanelContent = (
     <ValidationPanel
       locale={locale}
@@ -2086,11 +2144,23 @@ export function CaseWorkspace({
   const mainHeaderTitle =
     railView === "patients"
       ? pick(locale, "Patient list", "환자 목록")
-      : pick(locale, "Case Authoring", "케이스 작성");
+      : selectedCase
+        ? pick(locale, "Case review", "케이스 리뷰")
+        : pick(locale, "Case canvas", "케이스 캔버스");
   const mainHeaderCopy =
     railView === "patients"
       ? copy.listViewHeaderCopy
-      : copy.caseAuthoringHeaderCopy;
+      : selectedCase
+        ? pick(
+            locale,
+            "Review the saved visit, validation context, and contribution history in one place.",
+            "저장된 방문, 검증 맥락, 기여 이력을 한 곳에서 검토합니다."
+          )
+        : pick(
+            locale,
+            "A structured document canvas for one clinical case. Capture the intake, image board, and submission state without the dashboard noise.",
+            "한 건의 임상 케이스를 위한 구조화 문서 캔버스입니다. 대시보드 소음을 줄이고 intake, 이미지 보드, 제출 상태에 집중합니다."
+          );
 
   return (
     <main className={workspaceShellClass} data-workspace-theme={theme}>
@@ -2139,128 +2209,164 @@ export function CaseWorkspace({
           </div>
         </Card>
 
-        <Card as="section" variant="nested" className={railSectionClass}>
-          <div className={railSectionHeadClass}>
-            <span className={railLabelClass}>{pick(locale, "Momentum", "진행도")}</span>
-            <div className={railSummaryClass}>
-              <strong className={railSummaryValueClass}>{cases.length}</strong>
-              <span className={railSummaryMetaClass}>{copy.savedCases}</span>
+        {isAuthoringCanvas ? (
+          <Card as="section" variant="nested" className={railSectionClass}>
+            <div className={railSectionHeadClass}>
+              <span className={railLabelClass}>{pick(locale, "Canvas", "캔버스")}</span>
+              <div className={railSummaryClass}>
+                <strong className={railSummaryValueClass}>{`${draftCompletionPercent}%`}</strong>
+                <span className={railSummaryMetaClass}>{pick(locale, "structured", "구조화됨")}</span>
+              </div>
             </div>
-          </div>
-          <div className={momentumTrackClass}>
-            <div className={momentumFillClass} style={{ width: `${momentumPercent}%` }} />
-          </div>
-          <p className={railCopyClass}>
-            {pick(
-              locale,
-              "Each saved case expands the local dataset surface and keeps the migration grounded in real workflow.",
-              "??λ맂 耳?댁뒪媛 ?섏뼱?좎닔濡?濡쒖뺄 ?곗씠?곗뀑???뺤옣?섍퀬 ?ㅼ젣 ?뚰겕?뚮줈??湲곗????댁쟾???좎??⑸땲??"
-            )}
-          </p>
-        </Card>
-
-        <Card as="section" variant="nested" className={railSectionClass}>
-          <div className={railSectionHeadClass}>
-            <div className="grid gap-1">
-              <span className={railLabelClass}>{pick(locale, "Activity", "활동")}</span>
-              <p className="m-0 text-sm leading-6 text-muted">
-                {pick(locale, "Recent validation and contribution flow", "최근 검증 및 기여 흐름")}
+            <div className={momentumTrackClass}>
+              <div className={momentumFillClass} style={{ width: `${draftCompletionPercent}%` }} />
+            </div>
+            <p className={railCopyClass}>
+              {pick(
+                locale,
+                "The writing view stays focused on one clinical case. The dashboard metrics return once you switch back to list or review mode.",
+                "작성 화면은 한 건의 임상 케이스에만 집중합니다. 리스트나 리뷰 모드로 돌아가면 운영 지표가 다시 보입니다."
+              )}
+            </p>
+            <div className={railActivityListClass}>
+              <div className={railActivityItemClass}>
+                <strong>{pick(locale, "Draft images", "초안 이미지")}</strong>
+                <span>{`${draftImages.length} ${pick(locale, "files", "파일")}`}</span>
+                <span>{`${draftRepresentativeCount} ${pick(locale, "representative", "대표")}`}</span>
+              </div>
+              <div className={railActivityItemClass}>
+                <strong>{pick(locale, "Visit reference", "방문 기준")}</strong>
+                <span>{resolvedVisitReferenceLabel}</span>
+                <span>{draftStatusLabel}</span>
+              </div>
+            </div>
+          </Card>
+        ) : (
+          <>
+            <Card as="section" variant="nested" className={railSectionClass}>
+              <div className={railSectionHeadClass}>
+                <span className={railLabelClass}>{pick(locale, "Momentum", "진행도")}</span>
+                <div className={railSummaryClass}>
+                  <strong className={railSummaryValueClass}>{cases.length}</strong>
+                  <span className={railSummaryMetaClass}>{copy.savedCases}</span>
+                </div>
+              </div>
+              <div className={momentumTrackClass}>
+                <div className={momentumFillClass} style={{ width: `${momentumPercent}%` }} />
+              </div>
+              <p className={railCopyClass}>
+                {pick(
+                  locale,
+                  "Each saved case expands the local dataset surface and keeps the migration grounded in real workflow.",
+                  "??λ맂 耳?댁뒪媛 ?섏뼱?좎닔濡?濡쒖뺄 ?곗씠?곗뀑???뺤옣?섍퀬 ?ㅼ젣 ?뚰겕?뚮줈??湲곗????댁쟾???좎??⑸땲??"
+                )}
               </p>
-            </div>
-            <div className={railSummaryClass}>
-              <strong className={railSummaryValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
-              <span className={railSummaryMetaClass}>
-                {activityBusy ? pick(locale, "syncing", "동기화 중") : pick(locale, "pending", "대기")}
-              </span>
-            </div>
-          </div>
-          <MetricGrid className={railMetricGridClass} columns={2}>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "pending deltas", "대기 중 delta")}</span>
-            </div>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{siteActivity?.recent_validations.length ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "recent validations", "최근 검증")}</span>
-            </div>
-          </MetricGrid>
-          <div className="mt-4 grid gap-3">
-            {siteActivity?.recent_validations.slice(0, 2).map((item) => (
-              <div key={item.validation_id} className={railActivityItemClass}>
-                <strong>{item.model_version}</strong>
-                <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
-                <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${formatProbability(item.accuracy, common.notAvailable)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
-              </div>
-            ))}
-            {siteActivity?.recent_contributions.slice(0, 2).map((item) => (
-              <div key={item.contribution_id} className={railActivityItemClass}>
-                <strong>{item.case_reference_id ?? common.notAvailable}</strong>
-                <span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span>
-                <span>{item.update_status ?? pick(locale, "queued", "?湲곗뿴 ?깅줉")}</span>
-              </div>
-            ))}
-            {!activityBusy && !siteActivity?.recent_validations.length && !siteActivity?.recent_contributions.length ? (
-              <div className={emptySurfaceClass}>{pick(locale, "No hospital activity recorded yet.", "?꾩쭅 湲곕줉??蹂묒썝 ?쒕룞???놁뒿?덈떎.")}</div>
-            ) : null}
-          </div>
-        </Card>
+            </Card>
 
-        <Card as="section" variant="nested" className={railSectionClass}>
-          <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
-            <div className="grid gap-1">
-              <span className={railLabelClass}>{pick(locale, "Validation", "검증")}</span>
-              <p className="m-0 text-sm leading-6 text-muted">
-                {pick(locale, "Run the latest site-level check from here", "여기에서 최신 병원 단위 검증을 실행합니다")}
-              </p>
-            </div>
-            <Button
-              className={railRunButtonClass}
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => void handleRunSiteValidation()}
-              disabled={siteValidationBusy || !selectedSiteId || !canRunValidation}
-            >
-              {siteValidationBusy ? pick(locale, "Running...", "?ㅽ뻾 以?..") : pick(locale, "Run hospital validation", "蹂묒썝 寃利??ㅽ뻾")}
-            </Button>
-          </div>
-          {latestSiteValidation ? (
-            <div className={railMetricGridClass}>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>
-                  {typeof latestSiteValidation.AUROC === "number" ? latestSiteValidation.AUROC.toFixed(3) : common.notAvailable}
-                </strong>
-                <span className={railMetricLabelClass}>AUROC</span>
+            <Card as="section" variant="nested" className={railSectionClass}>
+              <div className={railSectionHeadClass}>
+                <div className="grid gap-1">
+                  <span className={railLabelClass}>{pick(locale, "Activity", "활동")}</span>
+                  <p className="m-0 text-sm leading-6 text-muted">
+                    {pick(locale, "Recent validation and contribution flow", "최근 검증 및 기여 흐름")}
+                  </p>
+                </div>
+                <div className={railSummaryClass}>
+                  <strong className={railSummaryValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
+                  <span className={railSummaryMetaClass}>
+                    {activityBusy ? pick(locale, "syncing", "동기화 중") : pick(locale, "pending", "대기")}
+                  </span>
+                </div>
               </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>
-                  {typeof latestSiteValidation.accuracy === "number" ? latestSiteValidation.accuracy.toFixed(3) : common.notAvailable}
-                </strong>
-                <span className={railMetricLabelClass}>{pick(locale, "accuracy", "정확도")}</span>
+              <MetricGrid className={railMetricGridClass} columns={2}>
+                <div className={railMetricCardClass}>
+                  <strong className={railMetricValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
+                  <span className={railMetricLabelClass}>{pick(locale, "pending deltas", "대기 중 delta")}</span>
+                </div>
+                <div className={railMetricCardClass}>
+                  <strong className={railMetricValueClass}>{siteActivity?.recent_validations.length ?? 0}</strong>
+                  <span className={railMetricLabelClass}>{pick(locale, "recent validations", "최근 검증")}</span>
+                </div>
+              </MetricGrid>
+              <div className="mt-4 grid gap-3">
+                {siteActivity?.recent_validations.slice(0, 2).map((item) => (
+                  <div key={item.validation_id} className={railActivityItemClass}>
+                    <strong>{item.model_version}</strong>
+                    <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
+                    <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${formatProbability(item.accuracy, common.notAvailable)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
+                  </div>
+                ))}
+                {siteActivity?.recent_contributions.slice(0, 2).map((item) => (
+                  <div key={item.contribution_id} className={railActivityItemClass}>
+                    <strong>{item.case_reference_id ?? common.notAvailable}</strong>
+                    <span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span>
+                    <span>{item.update_status ?? pick(locale, "queued", "?湲곗뿴 ?깅줉")}</span>
+                  </div>
+                ))}
+                {!activityBusy && !siteActivity?.recent_validations.length && !siteActivity?.recent_contributions.length ? (
+                  <div className={emptySurfaceClass}>{pick(locale, "No hospital activity recorded yet.", "?꾩쭅 湲곕줉??蹂묒썝 ?쒕룞???놁뒿?덈떎.")}</div>
+                ) : null}
               </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{latestSiteValidation.n_cases ?? 0}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "cases", "耳?댁뒪")}</span>
+            </Card>
+
+            <Card as="section" variant="nested" className={railSectionClass}>
+              <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
+                <div className="grid gap-1">
+                  <span className={railLabelClass}>{pick(locale, "Validation", "검증")}</span>
+                  <p className="m-0 text-sm leading-6 text-muted">
+                    {pick(locale, "Run the latest site-level check from here", "여기에서 최신 병원 단위 검증을 실행합니다")}
+                  </p>
+                </div>
+                <Button
+                  className={railRunButtonClass}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void handleRunSiteValidation()}
+                  disabled={siteValidationBusy || !selectedSiteId || !canRunValidation}
+                >
+                  {siteValidationBusy ? pick(locale, "Running...", "?ㅽ뻾 以?..") : pick(locale, "Run hospital validation", "蹂묒썝 寃利??ㅽ뻾")}
+                </Button>
               </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{latestSiteValidation.model_version}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "latest model", "理쒖떊 紐⑤뜽")}</span>
+              {latestSiteValidation ? (
+                <div className={railMetricGridClass}>
+                  <div className={railMetricCardClass}>
+                    <strong className={railMetricValueClass}>
+                      {typeof latestSiteValidation.AUROC === "number" ? latestSiteValidation.AUROC.toFixed(3) : common.notAvailable}
+                    </strong>
+                    <span className={railMetricLabelClass}>AUROC</span>
+                  </div>
+                  <div className={railMetricCardClass}>
+                    <strong className={railMetricValueClass}>
+                      {typeof latestSiteValidation.accuracy === "number" ? latestSiteValidation.accuracy.toFixed(3) : common.notAvailable}
+                    </strong>
+                    <span className={railMetricLabelClass}>{pick(locale, "accuracy", "정확도")}</span>
+                  </div>
+                  <div className={railMetricCardClass}>
+                    <strong className={railMetricValueClass}>{latestSiteValidation.n_cases ?? 0}</strong>
+                    <span className={railMetricLabelClass}>{pick(locale, "cases", "耳?댁뒪")}</span>
+                  </div>
+                  <div className={railMetricCardClass}>
+                    <strong className={railMetricValueClass}>{latestSiteValidation.model_version}</strong>
+                    <span className={railMetricLabelClass}>{pick(locale, "latest model", "理쒖떊 紐⑤뜽")}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "?꾩쭅 蹂묒썝 ?⑥쐞 寃利앹씠 ?ㅽ뻾?섏? ?딆븯?듬땲??")}</div>
+              )}
+              <div className={railActivityListClass}>
+                {siteValidationRuns.slice(0, 3).map((item) => (
+                  <div key={item.validation_id} className={railActivityItemClass}>
+                    <strong>{item.model_version}</strong>
+                    <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
+                    <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
+                  </div>
+                ))}
               </div>
-            </div>
-          ) : (
-            <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "?꾩쭅 蹂묒썝 ?⑥쐞 寃利앹씠 ?ㅽ뻾?섏? ?딆븯?듬땲??")}</div>
-          )}
-          <div className={railActivityListClass}>
-            {siteValidationRuns.slice(0, 3).map((item) => (
-              <div key={item.validation_id} className={railActivityItemClass}>
-                <strong>{item.model_version}</strong>
-                <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
-                <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
-              </div>
-            ))}
-          </div>
-          {!canRunValidation ? <p className={railCopyClass}>{pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "酉곗뼱 怨꾩젙? 吏?쒕쭔 ?뺤씤?????덇퀬 蹂묒썝 寃利앹? ?ㅽ뻾?????놁뒿?덈떎.")}</p> : null}
-        </Card>
+              {!canRunValidation ? <p className={railCopyClass}>{pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "酉곗뼱 怨꾩젙? 吏?쒕쭔 ?뺤씤?????덇퀬 蹂묒썝 寃利앹? ?ㅽ뻾?????놁뒿?덈떎.")}</p> : null}
+            </Card>
+          </>
+        )}
 
       </aside>
 
@@ -2416,31 +2522,50 @@ export function CaseWorkspace({
             </section>
           </section>
           ) : (
-          <section className={docSurfaceClass}>
-            <SectionHeader
-              className={docTitleRowClass}
-              eyebrow={<div className={docEyebrowClass}>{pick(locale, "Case Authoring", "利앸? ?묒꽦")}</div>}
-              title={draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "?쒕ぉ ?녿뒗 媛곷쭑??耳?댁뒪")}
-              titleAs="h3"
-              description={pick(
-                locale,
-                "Capture the intake first, then move into image upload and box authoring once the visit details are fixed.",
-                "癒쇱? 湲곕낯 intake瑜?留덉튂怨? 諛⑸Ц ?뺣낫媛 怨좎젙?섎㈃ ?대?吏 ?낅줈?쒖? box authoring ?④퀎濡??대룞?⑸땲??"
-              )}
-              aside={
-                <div className={docTitleMetaClass}>
-                  <div className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "蹂묒썝 ?좏깮")}</div>
-                  <span className={docSiteBadgeClass}>{draftStatusLabel}</span>
+          <article className={canvasDocumentClass}>
+            <section className={canvasHeaderClass}>
+              <div className={canvasHeaderGlowClass} />
+              <div className={canvasHeaderContentClass}>
+                <div className="grid gap-3">
+                  <span className={canvasHeaderKickerClass}>{pick(locale, "Structured case canvas", "구조화 케이스 캔버스")}</span>
+                  <div className={canvasHeaderMetaRowClass}>
+                    <span className={canvasHeaderMetaChipClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>
+                    <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
+                    <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
+                  </div>
+                  <h3 className={canvasHeaderTitleClass}>{draftHeaderTitle}</h3>
+                  <p className={canvasHeaderBodyClass}>
+                    {pick(
+                      locale,
+                      "A single-case authoring surface for patient intake, image organization, and hospital submission. The goal is a document that reads clearly while still capturing structured data.",
+                      "환자 intake, 이미지 정리, 병원 제출을 한 화면에서 다루는 단일 케이스 작성 캔버스입니다. 구조화 데이터는 유지하되, 읽히는 느낌은 문서에 가깝게 가져갑니다."
+                    )}
+                  </p>
                 </div>
-              }
-            />
-            <div className={docBadgeRowClass}>
-              <span className={docSiteBadgeClass}>{`${draftImages.length} ${pick(locale, "draft images", "?꾩떆 ?대?吏")}`}</span>
-              <span className={docSiteBadgeClass}>{`${pick(locale, "Visit reference", "방문 기준")}`}</span>
-              {draftImages.length > 0 ? (
-                <span className={docSiteBadgeClass}>{pick(locale, "Unsaved image files stay in this tab only", "저장되지 않은 이미지 파일은 현재 탭에만 유지됩니다")}</span>
-              ) : null}
-            </div>
+
+                <div className={canvasSummaryGridClass}>
+                  <div className={canvasSummaryCardClass}>
+                    <span className={canvasSummaryLabelClass}>{pick(locale, "Patient", "환자")}</span>
+                    <strong className={canvasSummaryValueClass}>
+                      {draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
+                    </strong>
+                  </div>
+                  <div className={canvasSummaryCardClass}>
+                    <span className={canvasSummaryLabelClass}>{pick(locale, "Visit", "방문")}</span>
+                    <strong className={canvasSummaryValueClass}>
+                      {`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
+                    </strong>
+                  </div>
+                  <div className={canvasSummaryCardClass}>
+                    <span className={canvasSummaryLabelClass}>{pick(locale, "Organism", "원인균")}</span>
+                    <strong className={canvasSummaryValueClass}>
+                      {organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
+                        pick(locale, "Choose primary organism", "기본 원인균 선택")}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </section>
 
             <PatientVisitForm
               locale={locale}
@@ -2469,27 +2594,28 @@ export function CaseWorkspace({
               removeAdditionalOrganism={removeAdditionalOrganism}
               onCompleteIntake={handleCompleteIntake}
             />
-            {draft.intake_completed ? (
-              <ImageManagerPanel
-                locale={locale}
-                whiteDraftImages={whiteDraftImages}
-                fluoresceinDraftImages={fluoresceinDraftImages}
-                draftLesionPromptBoxes={draftLesionPromptBoxes}
-                whiteFileInputRef={whiteFileInputRef}
-                fluoresceinFileInputRef={fluoresceinFileInputRef}
-                openFilePicker={openFilePicker}
-                appendFiles={appendFiles}
-                handleDraftLesionPointerDown={handleDraftLesionPointerDown}
-                handleDraftLesionPointerMove={handleDraftLesionPointerMove}
-                finishDraftLesionPointer={finishDraftLesionPointer}
-                removeDraftImage={removeDraftImage}
-                setRepresentativeImage={setRepresentativeImage}
-                onSaveCase={() => void handleSaveCase()}
-                saveBusy={saveBusy}
-                selectedSiteId={selectedSiteId}
-              />
-            ) : null}
-          </section>
+
+            <ImageManagerPanel
+              locale={locale}
+              intakeCompleted={draft.intake_completed}
+              resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
+              whiteDraftImages={whiteDraftImages}
+              fluoresceinDraftImages={fluoresceinDraftImages}
+              draftLesionPromptBoxes={draftLesionPromptBoxes}
+              whiteFileInputRef={whiteFileInputRef}
+              fluoresceinFileInputRef={fluoresceinFileInputRef}
+              openFilePicker={openFilePicker}
+              appendFiles={appendFiles}
+              handleDraftLesionPointerDown={handleDraftLesionPointerDown}
+              handleDraftLesionPointerMove={handleDraftLesionPointerMove}
+              finishDraftLesionPointer={finishDraftLesionPointer}
+              removeDraftImage={removeDraftImage}
+              setRepresentativeImage={setRepresentativeImage}
+              onSaveCase={() => void handleSaveCase()}
+              saveBusy={saveBusy}
+              selectedSiteId={selectedSiteId}
+            />
+          </article>
           )}
 
           <aside className={workspacePanelClass}>
@@ -2518,25 +2644,86 @@ export function CaseWorkspace({
                 />
               </div>
             ) : (
-              <div className={panelStackClass}>
-                <Card as="section" variant="panel" className="grid gap-4 p-5">
-                  <SectionHeader
-                    titleAs="h4"
-                    title={pick(locale, "Selected hospital", "선택한 병원")}
-                    aside={
-                      <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4">
-                        {selectedSiteId ?? pick(locale, "none", "없음")}
-                      </span>
-                    }
-                  />
-                  <MetricGrid columns={2}>
-                    <MetricItem value={summary?.n_patients ?? 0} label={pick(locale, "patients", "환자")} />
-                    <MetricItem value={summary?.n_visits ?? 0} label={pick(locale, "visits", "방문")} />
-                    <MetricItem value={summary?.n_images ?? 0} label={pick(locale, "images", "이미지")} />
-                    <MetricItem value={summary?.n_validation_runs ?? 0} label={pick(locale, "validations", "검증")} />
-                  </MetricGrid>
-                </Card>
-              </div>
+              isAuthoringCanvas ? (
+                <div className={canvasSidebarClass}>
+                  <section className={canvasSidebarCardClass}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="grid gap-1">
+                        <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Draft state", "초안 상태")}</span>
+                        <strong className="text-[1.1rem] font-semibold tracking-[-0.03em] text-ink">{draftStatusLabel}</strong>
+                      </div>
+                      <span className={canvasHeaderMetaChipClass}>{selectedSiteId ?? pick(locale, "No hospital", "병원 없음")}</span>
+                    </div>
+                    <div className={canvasSidebarMetricGridClass}>
+                      <div className={canvasSidebarMetricCardClass}>
+                        <strong className={canvasSidebarMetricValueClass}>{`${draftCompletionCount}/4`}</strong>
+                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "sections", "섹션")}</span>
+                      </div>
+                      <div className={canvasSidebarMetricCardClass}>
+                        <strong className={canvasSidebarMetricValueClass}>{draftImages.length}</strong>
+                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
+                      </div>
+                      <div className={canvasSidebarMetricCardClass}>
+                        <strong className={canvasSidebarMetricValueClass}>{draftRepresentativeCount}</strong>
+                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "representative", "대표")}</span>
+                      </div>
+                      <div className={canvasSidebarMetricCardClass}>
+                        <strong className={canvasSidebarMetricValueClass}>{draftLesionBoxCount}</strong>
+                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "lesion boxes", "lesion box")}</span>
+                      </div>
+                    </div>
+                    <div className={momentumTrackClass}>
+                      <div className={momentumFillClass} style={{ width: `${draftCompletionPercent}%` }} />
+                    </div>
+                  </section>
+
+                  <section className={canvasSidebarCardClass}>
+                    <div className="grid gap-1">
+                      <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Next up", "다음 작업")}</span>
+                      <p className="m-0 text-sm leading-6 text-muted">
+                        {pick(
+                          locale,
+                          "Keep the right rail focused on what blocks submission instead of on hospital analytics.",
+                          "우측 레일은 병원 분석보다 제출을 막는 항목에 집중합니다."
+                        )}
+                      </p>
+                    </div>
+                    <div className={canvasSidebarListClass}>
+                      {draftPendingItems.length > 0 ? (
+                        draftPendingItems.slice(0, 5).map((item) => (
+                          <div key={item} className={canvasSidebarItemClass}>
+                            {item}
+                          </div>
+                        ))
+                      ) : (
+                        <div className={canvasSidebarItemClass}>
+                          {pick(locale, "All core draft checks are in place. Review the image board and submit when ready.", "핵심 초안 체크가 모두 완료되었습니다. 이미지 보드를 검토한 뒤 준비되면 제출하세요.")}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <div className={panelStackClass}>
+                  <Card as="section" variant="panel" className="grid gap-4 p-5">
+                    <SectionHeader
+                      titleAs="h4"
+                      title={pick(locale, "Selected hospital", "선택한 병원")}
+                      aside={
+                        <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4">
+                          {selectedSiteId ?? pick(locale, "none", "없음")}
+                        </span>
+                      }
+                    />
+                    <MetricGrid columns={2}>
+                      <MetricItem value={summary?.n_patients ?? 0} label={pick(locale, "patients", "환자")} />
+                      <MetricItem value={summary?.n_visits ?? 0} label={pick(locale, "visits", "방문")} />
+                      <MetricItem value={summary?.n_images ?? 0} label={pick(locale, "images", "이미지")} />
+                      <MetricItem value={summary?.n_validation_runs ?? 0} label={pick(locale, "validations", "검증")} />
+                    </MetricGrid>
+                  </Card>
+                </div>
+              )
             )}
           </aside>
         </div>

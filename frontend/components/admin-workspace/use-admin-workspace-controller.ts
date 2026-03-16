@@ -63,6 +63,83 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function sanitizeSiteCodeSegment(value: string): string {
+  return value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
+function suggestedSiteCodeFromRequest(request: {
+  requested_site_label?: string;
+  requested_site_id: string;
+  requested_site_source?: string;
+}) {
+  const humanReadable = sanitizeSiteCodeSegment(request.requested_site_label ?? "");
+  if (humanReadable) {
+    return humanReadable;
+  }
+  const hash = Array.from(request.requested_site_id).reduce(
+    (accumulator, char) => ((accumulator * 31) + char.charCodeAt(0)) >>> 0,
+    7,
+  );
+  const sourcePrefix = request.requested_site_source === "institution_directory" ? "HIRA" : "SITE";
+  return `${sourcePrefix}_${hash.toString(16).toUpperCase()}`.slice(0, 32);
+}
+
+function createReviewDraft(
+  request: {
+    requested_role: string;
+    requested_site_id: string;
+    requested_site_label?: string;
+    requested_site_source?: string;
+    resolved_site_id?: string | null;
+  },
+  projectId: string,
+) {
+  const label = request.requested_site_label || request.requested_site_id;
+  const hasResolvedSite = Boolean(request.resolved_site_id);
+  const shouldCreateSite =
+    request.requested_site_source === "institution_directory" && !hasResolvedSite;
+  return {
+    assigned_role: request.requested_role,
+    assigned_site_id:
+      request.resolved_site_id ??
+      (request.requested_site_source === "site" ? request.requested_site_id : ""),
+    create_site_if_missing: shouldCreateSite,
+    project_id: projectId,
+    site_code: suggestedSiteCodeFromRequest(request),
+    display_name: label,
+    hospital_name: label,
+    research_registry_enabled: false,
+    reviewer_notes: "",
+  };
+}
+
+function mergeReviewDraft(
+  existingDraft: AdminWorkspaceState["reviewDrafts"][string] | undefined,
+  request: Parameters<typeof createReviewDraft>[0],
+  projectId: string,
+) {
+  const defaultDraft = createReviewDraft(request, projectId);
+  if (!existingDraft) {
+    return defaultDraft;
+  }
+  return {
+    ...defaultDraft,
+    ...existingDraft,
+    assigned_site_id: existingDraft.assigned_site_id || defaultDraft.assigned_site_id,
+    project_id: existingDraft.project_id || defaultDraft.project_id,
+    site_code: existingDraft.site_code || defaultDraft.site_code,
+    display_name: existingDraft.display_name || defaultDraft.display_name,
+    hospital_name: existingDraft.hospital_name || defaultDraft.hospital_name,
+    create_site_if_missing: defaultDraft.create_site_if_missing
+      ? existingDraft.create_site_if_missing
+      : false,
+  };
+}
+
 function getValidationRunRocPoints(
   run: { roc_curve?: { fpr?: number[] | null; tpr?: number[] | null } | null } | null | undefined,
 ): Array<{ x: number; y: number }> {
@@ -191,6 +268,8 @@ export function useAdminWorkspaceController({
     unableLoadEmbeddingStatus: pick(locale, "Unable to load embedding status.", "임베딩 상태를 불러오지 못했습니다."),
     requestReviewed: (decision: "approved" | "rejected") =>
       pick(locale, `Request ${decision}.`, `요청이 ${decision === "approved" ? "승인" : "반려"} 처리되었습니다.`),
+    requestReviewedAndSiteCreated: (siteId: string) =>
+      pick(locale, `Request approved and site ${siteId} created.`, `요청을 승인했고 ${siteId} site를 생성했습니다.`),
     unableReview: pick(locale, "Unable to review request.", "요청 검토에 실패했습니다."),
     selectSiteForInitial: pick(locale, "Select a hospital before starting initial training.", "초기 학습을 시작하려면 병원을 선택하세요."),
     registeredVersion: (name: string) => pick(locale, `Registered ${name}.`, `${name} 버전을 등록했습니다.`),
@@ -321,11 +400,7 @@ export function useAdminWorkspaceController({
         setReviewDrafts((current) => {
           const next = { ...current };
           for (const item of nextRequests) {
-            next[item.request_id] = next[item.request_id] ?? {
-              assigned_role: item.requested_role,
-              assigned_site_id: item.requested_site_id,
-              reviewer_notes: "",
-            };
+            next[item.request_id] = mergeReviewDraft(next[item.request_id], item, nextProjects[0]?.project_id ?? "");
           }
           return next;
         });
@@ -650,6 +725,13 @@ export function useAdminWorkspaceController({
     setCrossValidationReports(nextCrossValidationReports);
     setSiteValidationRuns(nextSiteValidationRuns);
     setPendingRequests(nextRequests);
+    setReviewDrafts((current) => {
+      const next = { ...current };
+      for (const item of nextRequests) {
+        next[item.request_id] = mergeReviewDraft(next[item.request_id], item, nextProjects[0]?.project_id ?? "");
+      }
+      return next;
+    });
     setInstanceStorageRootForm(nextStorageSettings.storage_root);
     if (siteScoped && selectedSiteId) {
       await onSiteDataChanged(selectedSiteId);
@@ -659,14 +741,25 @@ export function useAdminWorkspaceController({
   async function handleReview(requestId: string, decision: "approved" | "rejected") {
     const draft = reviewDrafts[requestId];
     try {
-      await reviewAccessRequest(requestId, token, {
+      const response = await reviewAccessRequest(requestId, token, {
         decision,
         assigned_role: draft?.assigned_role,
         assigned_site_id: draft?.assigned_site_id,
+        create_site_if_missing: draft?.create_site_if_missing,
+        project_id: draft?.project_id,
+        site_code: draft?.site_code,
+        display_name: draft?.display_name,
+        hospital_name: draft?.hospital_name,
+        research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
       });
       await refreshWorkspace();
-      setToast({ tone: "success", message: copy.requestReviewed(decision) });
+      if (response.created_site?.site_id) {
+        onSelectSite(response.created_site.site_id);
+        setToast({ tone: "success", message: copy.requestReviewedAndSiteCreated(response.created_site.site_id) });
+      } else {
+        setToast({ tone: "success", message: copy.requestReviewed(decision) });
+      }
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableReview) });
     }

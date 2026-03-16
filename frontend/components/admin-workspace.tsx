@@ -518,6 +518,8 @@ export function AdminWorkspace({
               notAvailableLabel={common.notAvailable}
               pendingRequests={pendingRequests}
               reviewDrafts={reviewDrafts}
+              canManagePlatform={canManagePlatform}
+              projects={projects}
               sites={sites}
               setReviewDrafts={setReviewDrafts}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}

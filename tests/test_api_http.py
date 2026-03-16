@@ -1578,6 +1578,120 @@ class ApiHttpTests(unittest.TestCase):
         refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
         self.assertIn(self.site_id, refreshed_user["site_ids"] or [])
 
+    def test_public_institution_search_and_access_request_http(self):
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "HIRA_EYE_001",
+                    "name": "Kim Eye Clinic",
+                    "institution_type_code": "31",
+                    "institution_type_name": "Clinic",
+                    "address": "Seoul Gangnam-gu",
+                    "phone": "02-123-4567",
+                    "sido_code": "11",
+                    "sggu_code": "680",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_001"},
+                }
+            ]
+        )
+
+        search_response = self.client.get("/api/public/institutions/search?q=Kim")
+        self.assertEqual(search_response.status_code, 200, search_response.text)
+        search_payload = search_response.json()
+        self.assertEqual(len(search_payload), 1)
+        self.assertEqual(search_payload[0]["institution_id"], "HIRA_EYE_001")
+
+        requester_token = self._token_for_username("http_viewer")
+        access_response = self.client.post(
+            "/api/auth/request-access",
+            headers={"Authorization": f"Bearer {requester_token}"},
+            json={
+                "requested_site_id": "HIRA_EYE_001",
+                "requested_site_label": "Kim Eye Clinic",
+                "requested_role": "researcher",
+                "message": "Need ophthalmology directory onboarding",
+            },
+        )
+        self.assertEqual(access_response.status_code, 200, access_response.text)
+        request_payload = access_response.json()["request"]
+        self.assertEqual(request_payload["requested_site_id"], "HIRA_EYE_001")
+        self.assertEqual(request_payload["requested_site_label"], "Kim Eye Clinic")
+        self.assertEqual(request_payload["requested_site_source"], "institution_directory")
+
+    def test_access_request_review_can_create_site_from_institution_request_http(self):
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "HIRA_EYE_002",
+                    "name": "Park Eye Hospital",
+                    "institution_type_code": "31",
+                    "institution_type_name": "Clinic",
+                    "address": "Busan Haeundae-gu",
+                    "phone": "051-123-4567",
+                    "sido_code": "26",
+                    "sggu_code": "710",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_002"},
+                }
+            ]
+        )
+
+        requester_token = self._token_for_username("http_viewer")
+        access_response = self.client.post(
+            "/api/auth/request-access",
+            headers={"Authorization": f"Bearer {requester_token}"},
+            json={
+                "requested_site_id": "HIRA_EYE_002",
+                "requested_site_label": "Park Eye Hospital",
+                "requested_role": "site_admin",
+                "message": "Need a new institution site",
+            },
+        )
+        self.assertEqual(access_response.status_code, 200, access_response.text)
+
+        admin_token = self._login("admin", "admin123")
+        queue_response = self.client.get("/api/admin/access-requests?status_filter=pending", headers={"Authorization": f"Bearer {admin_token}"})
+        self.assertEqual(queue_response.status_code, 200, queue_response.text)
+        matching_request = next(item for item in queue_response.json() if item["requested_site_id"] == "HIRA_EYE_002")
+        self.assertEqual(matching_request["requested_site_source"], "institution_directory")
+        self.assertIsNone(matching_request["resolved_site_id"])
+
+        project_id = self.cp.list_projects()[0]["project_id"]
+        review_response = self.client.post(
+            f"/api/admin/access-requests/{matching_request['request_id']}/review",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "decision": "approved",
+                "assigned_role": "site_admin",
+                "create_site_if_missing": True,
+                "project_id": project_id,
+                "site_code": "HIRA_PARK_EYE",
+                "display_name": "Park Eye Hospital",
+                "hospital_name": "Park Eye Hospital",
+                "research_registry_enabled": False,
+                "reviewer_notes": "created during approval",
+            },
+        )
+        self.assertEqual(review_response.status_code, 200, review_response.text)
+        review_payload = review_response.json()
+        self.assertEqual(review_payload["request"]["status"], "approved")
+        self.assertEqual(review_payload["request"]["requested_site_id"], "HIRA_PARK_EYE")
+        self.assertEqual(review_payload["request"]["resolved_site_id"], "HIRA_PARK_EYE")
+        self.assertIsNotNone(review_payload["created_site"])
+        self.assertEqual(review_payload["created_site"]["site_id"], "HIRA_PARK_EYE")
+        self.assertEqual(review_payload["created_site"]["source_institution_id"], "HIRA_EYE_002")
+        self.assertFalse(review_payload["created_site"]["research_registry_enabled"])
+
+        refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
+        self.assertIn("HIRA_PARK_EYE", refreshed_user["site_ids"] or [])
+        created_site = self.cp.get_site("HIRA_PARK_EYE")
+        self.assertIsNotNone(created_site)
+        self.assertEqual(created_site["source_institution_id"], "HIRA_EYE_002")
+        self.assertFalse(created_site["research_registry_enabled"])
+
     def test_management_bulk_import_and_dashboard_http(self):
         admin_token = self._login("admin", "admin123")
 

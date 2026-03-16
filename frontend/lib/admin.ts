@@ -68,6 +68,7 @@ export async function createAdminSite(
     site_code: string;
     display_name: string;
     hospital_name?: string;
+    source_institution_id?: string | null;
     research_registry_enabled?: boolean;
   },
 ) {
@@ -182,10 +183,16 @@ export async function reviewAccessRequest(
     decision: "approved" | "rejected";
     assigned_role?: string;
     assigned_site_id?: string;
+    create_site_if_missing?: boolean;
+    project_id?: string;
+    site_code?: string;
+    display_name?: string;
+    hospital_name?: string;
+    research_registry_enabled?: boolean;
     reviewer_notes?: string;
   },
 ) {
-  return request<{ request: AccessRequestRecord }>(
+  return request<{ request: AccessRequestRecord; created_site?: ManagedSiteRecord | null }>(
     `/api/admin/access-requests/${requestId}/review`,
     {
       method: "POST",

@@ -6,6 +6,26 @@ export type SiteRecord = {
   hospital_name: string;
 };
 
+export type PublicInstitutionRecord = {
+  institution_id: string;
+  source: string;
+  name: string;
+  institution_type_code: string;
+  institution_type_name: string;
+  address: string;
+  phone: string;
+  homepage: string;
+  sido_code: string;
+  sggu_code: string;
+  emdong_name: string;
+  postal_code: string;
+  x_pos: string;
+  y_pos: string;
+  ophthalmology_available: boolean;
+  open_status: string;
+  synced_at: string;
+};
+
 export type ProjectRecord = {
   project_id: string;
   name: string;
@@ -17,6 +37,7 @@ export type ProjectRecord = {
 
 export type ManagedSiteRecord = SiteRecord & {
   project_id: string;
+  source_institution_id?: string | null;
   local_storage_root?: string;
   created_at?: string;
   research_registry_enabled?: boolean;
@@ -33,6 +54,10 @@ export type AccessRequestRecord = {
   user_id: string;
   email: string;
   requested_site_id: string;
+  requested_site_label?: string;
+  requested_site_source?: string;
+  resolved_site_id?: string | null;
+  resolved_site_label?: string | null;
   requested_role: string;
   message: string;
   status: AuthState;
@@ -1041,4 +1066,3 @@ export type PublicStatistics = {
   current_model_version: string | null;
   last_updated: string;
 };
-

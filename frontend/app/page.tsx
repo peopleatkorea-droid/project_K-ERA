@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useDeferredValue, useEffect, useRef, useState } from "react";
 
 import { AdminWorkspace } from "../components/admin-workspace";
 import { CaseWorkspace } from "../components/case-workspace";
@@ -20,7 +20,9 @@ import {
   fetchMyAccessRequests,
   fetchPatients,
   fetchPublicSites,
+  searchPublicInstitutions,
   type PatientRecord,
+  type PublicInstitutionRecord,
   type SiteSummary,
   fetchSiteSummary,
   fetchSites,
@@ -121,6 +123,7 @@ export default function HomePage() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sites, setSites] = useState<SiteRecord[]>([]);
   const [publicSites, setPublicSites] = useState<SiteRecord[]>([]);
+  const [publicInstitutions, setPublicInstitutions] = useState<PublicInstitutionRecord[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
   const [summary, setSummary] = useState<SiteSummary | null>(null);
   const [patients, setPatients] = useState<PatientRecord[]>([]);
@@ -133,6 +136,7 @@ export default function HomePage() {
   const [siteBusy, setSiteBusy] = useState(false);
   const [patientBusy, setPatientBusy] = useState(false);
   const [requestBusy, setRequestBusy] = useState(false);
+  const [institutionSearchBusy, setInstitutionSearchBusy] = useState(false);
   const [reviewBusyById, setReviewBusyById] = useState<Record<string, boolean>>({});
   const [googleLaunchPulse, setGoogleLaunchPulse] = useState(false);
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
@@ -147,12 +151,15 @@ export default function HomePage() {
   });
   const [requestForm, setRequestForm] = useState({
     requested_site_id: "",
+    requested_site_label: "",
     requested_role: "researcher",
     message: "",
   });
+  const [institutionQuery, setInstitutionQuery] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
   const [launchTarget, setLaunchTarget] = useState<{ mode: "canvas" | "operations"; section: OperationsSection } | null>(null);
+  const deferredInstitutionQuery = useDeferredValue(institutionQuery);
 
   const approved = user?.approval_status === "approved";
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
@@ -206,6 +213,16 @@ export default function HomePage() {
     reviewerLabel: pick(locale, "Reviewer", "寃?좎옄"),
     requestAccess: pick(locale, "Request Access", "?묎렐 ?붿껌"),
     chooseInstitutionRole: pick(locale, "Choose your institution and role", "湲곌?怨???븷 ?좏깮"),
+    officialInstitutionSearch: pick(locale, "Official institution search (HIRA)", "공식 기관 검색 (HIRA)"),
+    officialInstitutionHint: pick(
+      locale,
+      "Search the synced Korean ophthalmology directory first. Existing K-ERA institutions remain available below as a fallback.",
+      "동기화된 국내 안과 기관 목록을 먼저 검색하세요. 기존 K-ERA 기관 선택은 아래에서 대체 경로로 계속 사용할 수 있습니다."
+    ),
+    officialInstitutionSearching: pick(locale, "Searching institutions...", "기관 검색 중..."),
+    officialInstitutionEmpty: pick(locale, "No synced institution matched this search yet.", "동기화된 기관 목록에서 일치하는 결과가 없습니다."),
+    selectedInstitution: pick(locale, "Selected institution", "선택한 기관"),
+    existingInstitutionFallback: pick(locale, "Existing K-ERA institution", "기존 K-ERA 기관"),
     hospital: pick(locale, "Hospital", "蹂묒썝"),
     requestedRole: pick(locale, "Requested role", "?붿껌 ??븷"),
     noteForReviewer: pick(locale, "Note for reviewer", "寃?좎옄 硫붾え"),
@@ -667,6 +684,41 @@ export default function HomePage() {
   }, [token, user, approved, copy.unableLoadInstitutions]);
 
   useEffect(() => {
+    if (!token || !user || approved) {
+      setPublicInstitutions([]);
+      setInstitutionSearchBusy(false);
+      return;
+    }
+    const query = deferredInstitutionQuery.trim();
+    if (query.length < 2) {
+      setPublicInstitutions([]);
+      setInstitutionSearchBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setInstitutionSearchBusy(true);
+    void searchPublicInstitutions(query, { limit: 8 })
+      .then((items) => {
+        if (!cancelled) {
+          setPublicInstitutions(items);
+        }
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setError(describeError(nextError, copy.unableLoadInstitutions));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setInstitutionSearchBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, user, approved, deferredInstitutionQuery, copy.unableLoadInstitutions]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }
@@ -901,19 +953,20 @@ export default function HomePage() {
       setError(copy.googlePreparing);
       return;
     }
+    const host = googleButtonRef.current;
+    const interactive =
+      host?.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]') ??
+      host?.querySelector<HTMLElement>("iframe");
+    if (!interactive) {
+      setError(copy.googlePreparing);
+      return;
+    }
     setError(null);
     setGoogleLaunchPulse(true);
+    interactive.click();
     window.setTimeout(() => {
       setGoogleLaunchPulse(false);
-      const host = googleButtonRef.current;
-      if (!host) {
-        return;
-      }
-      const interactive = host.querySelector<HTMLElement>('div[role="button"], iframe, [tabindex]');
-      if (interactive) {
-        interactive.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      }
-    }, 80);
+    }, 400);
   }
 
   const landingHospitalChips = [
@@ -1036,14 +1089,72 @@ export default function HomePage() {
                   description={copy.requestAccess}
                 />
                 <form className="grid gap-4" onSubmit={handleRequestAccess}>
-                  <Field as="div" label={copy.hospital}>
+                  <Field as="div" label={copy.officialInstitutionSearch} hint={copy.officialInstitutionHint}>
+                    <input
+                      id="official_institution_search"
+                      value={institutionQuery}
+                      onChange={(event) => setInstitutionQuery(event.target.value)}
+                      placeholder="Seoul, Asan, Kim's Eye..."
+                    />
+                  </Field>
+                  {deferredInstitutionQuery.trim().length >= 2 ? (
+                    institutionSearchBusy ? (
+                      <div className="rounded-[18px] border border-border/80 bg-surface-muted/80 px-4 py-3 text-sm text-muted">
+                        {copy.officialInstitutionSearching}
+                      </div>
+                    ) : publicInstitutions.length > 0 ? (
+                      <div className="grid gap-2">
+                        {publicInstitutions.map((institution) => (
+                          <button
+                            key={institution.institution_id}
+                            type="button"
+                            className={cn(
+                              "rounded-[18px] border px-4 py-3 text-left transition duration-150 ease-out hover:-translate-y-0.5",
+                              requestForm.requested_site_id === institution.institution_id
+                                ? "border-brand/35 bg-brand-soft/70"
+                                : "border-border/80 bg-surface-muted/80",
+                            )}
+                            onClick={() =>
+                              setRequestForm((current) => ({
+                                ...current,
+                                requested_site_id: institution.institution_id,
+                                requested_site_label: institution.name,
+                              }))
+                            }
+                          >
+                            <div className="text-sm font-semibold text-ink">{institution.name}</div>
+                            <div className="text-xs text-muted">
+                              {[institution.institution_type_name, institution.address].filter(Boolean).join(" / ")}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-[18px] border border-border/80 bg-surface-muted/80 px-4 py-3 text-sm text-muted">
+                        {copy.officialInstitutionEmpty}
+                      </div>
+                    )
+                  ) : null}
+                  {requestForm.requested_site_label ? (
+                    <div className="rounded-[18px] border border-brand/20 bg-brand-soft/60 px-4 py-3 text-sm text-ink">
+                      <strong>{copy.selectedInstitution}:</strong> {requestForm.requested_site_label}
+                    </div>
+                  ) : null}
+                  <Field as="div" label={copy.existingInstitutionFallback}>
                     <select
                       id="requested_site_id"
-                      value={requestForm.requested_site_id}
-                      onChange={(event) =>
-                        setRequestForm((current) => ({ ...current, requested_site_id: event.target.value }))
-                      }
+                      value={publicSites.some((site) => site.site_id === requestForm.requested_site_id) ? requestForm.requested_site_id : ""}
+                      onChange={(event) => {
+                        const nextSiteId = event.target.value;
+                        const nextSite = publicSites.find((site) => site.site_id === nextSiteId) ?? null;
+                        setRequestForm((current) => ({
+                          ...current,
+                          requested_site_id: nextSiteId,
+                          requested_site_label: nextSite?.display_name ?? current.requested_site_label,
+                        }));
+                      }}
                     >
+                      <option value="">{pick(locale, "No existing site selected", "기존 site 미선택")}</option>
                       {publicSites.map((site) => (
                         <option key={site.site_id} value={site.site_id}>
                           {site.display_name}

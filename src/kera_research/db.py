@@ -104,9 +104,33 @@ sites = Table(
     Column("project_id", String(64), nullable=False, index=True),
     Column("display_name", String(255), nullable=False),
     Column("hospital_name", String(255), nullable=False, default=""),
+    Column("source_institution_id", String(128), nullable=True, index=True),
     Column("local_storage_root", Text, nullable=False),
     Column("research_registry_enabled", Boolean, nullable=False, default=True),
     Column("created_at", String(64), nullable=False),
+)
+
+institution_directory = Table(
+    "institution_directory",
+    CONTROL_PLANE_METADATA,
+    Column("institution_id", String(128), primary_key=True),
+    Column("source", String(32), nullable=False, default="hira"),
+    Column("name", String(255), nullable=False, index=True),
+    Column("institution_type_code", String(32), nullable=False, default=""),
+    Column("institution_type_name", String(128), nullable=False, default=""),
+    Column("address", Text, nullable=False, default=""),
+    Column("phone", String(64), nullable=False, default=""),
+    Column("homepage", String(255), nullable=False, default=""),
+    Column("sido_code", String(16), nullable=False, default="", index=True),
+    Column("sggu_code", String(16), nullable=False, default="", index=True),
+    Column("emdong_name", String(128), nullable=False, default=""),
+    Column("postal_code", String(32), nullable=False, default=""),
+    Column("x_pos", String(64), nullable=False, default=""),
+    Column("y_pos", String(64), nullable=False, default=""),
+    Column("ophthalmology_available", Boolean, nullable=False, default=True),
+    Column("open_status", String(32), nullable=False, default="active", index=True),
+    Column("source_payload", JSON, nullable=False, default=dict),
+    Column("synced_at", String(64), nullable=False),
 )
 
 organism_catalog = Table(
@@ -137,7 +161,9 @@ access_requests = Table(
     Column("request_id", String(64), primary_key=True),
     Column("user_id", String(64), nullable=False, index=True),
     Column("email", String(255), nullable=False, index=True),
-    Column("requested_site_id", String(64), nullable=False, index=True),
+    Column("requested_site_id", String(128), nullable=False, index=True),
+    Column("requested_site_label", String(255), nullable=False, default=""),
+    Column("requested_site_source", String(32), nullable=False, default="site"),
     Column("requested_role", String(32), nullable=False),
     Column("message", Text, nullable=False, default=""),
     Column("status", String(32), nullable=False, index=True),
@@ -369,6 +395,38 @@ def _migrate_control_plane_schema() -> None:
                     conn.execute(text("ALTER TABLE sites ADD COLUMN research_registry_enabled BOOLEAN NOT NULL DEFAULT 1"))
                 else:
                     conn.execute(text("ALTER TABLE sites ADD COLUMN research_registry_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
+            if "source_institution_id" not in site_columns:
+                conn.execute(text("ALTER TABLE sites ADD COLUMN source_institution_id VARCHAR(128)"))
+
+        if "access_requests" in table_names:
+            access_request_columns = {column["name"] for column in inspector.get_columns("access_requests")}
+            access_request_id_column = next(
+                (column for column in inspector.get_columns("access_requests") if column["name"] == "requested_site_id"),
+                None,
+            )
+            if (
+                access_request_id_column is not None
+                and CONTROL_PLANE_ENGINE.dialect.name == "postgresql"
+                and getattr(access_request_id_column.get("type"), "length", None) is not None
+                and int(access_request_id_column["type"].length) < 128
+            ):
+                conn.execute(text("ALTER TABLE access_requests ALTER COLUMN requested_site_id TYPE VARCHAR(128)"))
+            if "requested_site_label" not in access_request_columns:
+                conn.execute(text("ALTER TABLE access_requests ADD COLUMN requested_site_label VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "requested_site_source" not in access_request_columns:
+                conn.execute(text("ALTER TABLE access_requests ADD COLUMN requested_site_source VARCHAR(32) NOT NULL DEFAULT 'site'"))
+
+        if "institution_directory" in table_names and CONTROL_PLANE_ENGINE.dialect.name == "postgresql":
+            institution_id_column = next(
+                (column for column in inspector.get_columns("institution_directory") if column["name"] == "institution_id"),
+                None,
+            )
+            if (
+                institution_id_column is not None
+                and getattr(institution_id_column.get("type"), "length", None) is not None
+                and int(institution_id_column["type"].length) < 128
+            ):
+                conn.execute(text("ALTER TABLE institution_directory ALTER COLUMN institution_id TYPE VARCHAR(128)"))
 
 
 def _migrate_data_plane_schema() -> None:
