@@ -1025,11 +1025,13 @@ class SiteCreateRequest(BaseModel):
     site_code: str
     display_name: str
     hospital_name: str = ""
+    research_registry_enabled: bool = True
 
 
 class SiteUpdateRequest(BaseModel):
     display_name: str
     hospital_name: str = ""
+    research_registry_enabled: bool = True
 
 
 class StorageSettingsUpdateRequest(BaseModel):

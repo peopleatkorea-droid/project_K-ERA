@@ -550,6 +550,7 @@ def build_admin_router(support: Any) -> APIRouter:
                 payload.site_code,
                 payload.display_name,
                 payload.hospital_name,
+                research_registry_enabled=payload.research_registry_enabled,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -563,7 +564,12 @@ def build_admin_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_platform_admin(user)
         try:
-            return cp.update_site_metadata(site_id, payload.display_name, payload.hospital_name)
+            return cp.update_site_metadata(
+                site_id,
+                payload.display_name,
+                payload.hospital_name,
+                research_registry_enabled=payload.research_registry_enabled,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

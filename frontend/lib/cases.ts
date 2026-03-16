@@ -1,6 +1,7 @@
 import { request } from "./api-core";
 import type {
   BulkImportResponse,
+  CaseResearchRegistryResponse,
   CaseContributionResponse,
   CaseHistoryResponse,
   CaseSummaryRecord,
@@ -9,6 +10,7 @@ import type {
   LiveLesionPreviewJobResponse,
   OrganismRecord,
   PatientRecord,
+  ResearchRegistrySettingsResponse,
   RoiPreviewRecord,
   SemanticPromptInputMode,
   SemanticPromptReviewResponse,
@@ -295,6 +297,43 @@ export async function runCaseContribution(
       method: "POST",
       body: JSON.stringify({
         execution_mode: "auto",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function enrollResearchRegistry(siteId: string, token: string, payload?: { version?: string }) {
+  return request<ResearchRegistrySettingsResponse>(
+    `/api/sites/${siteId}/research-registry/consent`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        version: "v1",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function updateCaseResearchRegistry(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    action: "include" | "exclude";
+    source?: string;
+  },
+) {
+  return request<CaseResearchRegistryResponse>(
+    `/api/sites/${siteId}/cases/research-registry`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source: "manual",
         ...payload,
       }),
     },

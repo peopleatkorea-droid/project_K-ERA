@@ -1047,6 +1047,7 @@ export function useAdminWorkspaceController({
       site_code: site.site_id,
       display_name: site.display_name,
       hospital_name: site.hospital_name ?? "",
+      research_registry_enabled: site.research_registry_enabled ?? true,
     });
   }
 
@@ -1077,6 +1078,7 @@ export function useAdminWorkspaceController({
       const updatedSite = await updateAdminSite(editingSiteId, token, {
         display_name: siteForm.display_name,
         hospital_name: siteForm.hospital_name,
+        research_registry_enabled: siteForm.research_registry_enabled,
       });
       handleResetSiteForm(updatedSite.project_id);
       await onRefreshSites();

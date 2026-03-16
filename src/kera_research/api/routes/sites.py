@@ -6,10 +6,17 @@ from typing import Any
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 
 def build_sites_router(support: Any) -> APIRouter:
     router = APIRouter()
+
+    class ResearchRegistrySettingsRequest(BaseModel):
+        research_registry_enabled: bool
+
+    class ResearchRegistryConsentRequest(BaseModel):
+        version: str = "v1"
 
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
@@ -63,7 +70,11 @@ def build_sites_router(support: Any) -> APIRouter:
         active_visits = [
             visit for visit in visits if visit.get("visit_status", "active" if visit.get("active_stage") else "scar") == "active"
         ]
+        included_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "included"]
+        excluded_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "excluded"]
         latest_run = validation_runs[0] if validation_runs else None
+        site_record = cp.get_site(site_id) or {}
+        consent = cp.get_registry_consent(user["user_id"], site_id)
         return {
             "site_id": site_id,
             "n_patients": len(patients),
@@ -72,6 +83,78 @@ def build_sites_router(support: Any) -> APIRouter:
             "n_active_visits": len(active_visits),
             "n_validation_runs": len(validation_runs),
             "latest_validation": latest_run,
+            "research_registry": {
+                "site_enabled": bool(site_record.get("research_registry_enabled", True)),
+                "user_enrolled": consent is not None,
+                "user_enrolled_at": consent.get("enrolled_at") if consent else None,
+                "included_cases": len(included_visits),
+                "excluded_cases": len(excluded_visits),
+            },
+        }
+
+    @router.get("/api/sites/{site_id}/research-registry/settings")
+    def get_research_registry_settings(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_site_access(cp, user, site_id)
+        site_record = cp.get_site(site_id)
+        if site_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        consent = cp.get_registry_consent(user["user_id"], site_id)
+        return {
+            "site_id": site_id,
+            "research_registry_enabled": bool(site_record.get("research_registry_enabled", True)),
+            "user_enrolled": consent is not None,
+            "user_enrolled_at": consent.get("enrolled_at") if consent else None,
+        }
+
+    @router.patch("/api/sites/{site_id}/research-registry/settings")
+    def update_research_registry_settings(
+        site_id: str,
+        payload: ResearchRegistrySettingsRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        require_site_access(cp, user, site_id)
+        site_record = cp.get_site(site_id)
+        if site_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        updated = cp.update_site_metadata(
+            site_id,
+            str(site_record.get("display_name") or site_id),
+            str(site_record.get("hospital_name") or ""),
+            research_registry_enabled=payload.research_registry_enabled,
+        )
+        return {
+            "site_id": site_id,
+            "research_registry_enabled": bool(updated.get("research_registry_enabled", True)),
+        }
+
+    @router.post("/api/sites/{site_id}/research-registry/consent")
+    def enroll_research_registry(
+        site_id: str,
+        payload: ResearchRegistryConsentRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_site_access(cp, user, site_id)
+        site_record = cp.get_site(site_id)
+        if site_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        if not bool(site_record.get("research_registry_enabled", True)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This site's research registry is disabled by the institution.",
+            )
+        updated_user = cp.set_registry_consent(user["user_id"], site_id, version=payload.version)
+        consent = cp.get_registry_consent(updated_user["user_id"], site_id)
+        return {
+            "site_id": site_id,
+            "user_enrolled": consent is not None,
+            "user_enrolled_at": consent.get("enrolled_at") if consent else None,
         }
 
     @router.get("/api/sites/{site_id}/import/template.csv")

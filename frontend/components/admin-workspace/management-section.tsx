@@ -16,6 +16,7 @@ type SiteFormState = {
   site_code: string;
   display_name: string;
   hospital_name: string;
+  research_registry_enabled: boolean;
 };
 
 type UserFormState = {
@@ -344,6 +345,26 @@ export function ManagementSection({
                   onChange={(event) => setSiteForm((current) => ({ ...current, hospital_name: event.target.value }))}
                   placeholder={pick(locale, "Jeju National University Hospital", "예: 제주대학교병원")}
                 />
+              </Field>
+              <Field
+                as="div"
+                label={pick(locale, "Research registry", "연구 레지스트리")}
+                hint={pick(
+                  locale,
+                  "Enable one-time clinician opt-in and automatic inclusion of eligible validated cases, while keeping case-level exclusion available.",
+                  "연구자의 1회 가입과 적격 검증 케이스의 자동 포함을 허용하되, 케이스별 제외는 계속 가능하게 합니다."
+                )}
+              >
+                <label className="inline-flex min-h-12 cursor-pointer items-center gap-3 rounded-[var(--radius-md)] border border-border bg-white/55 px-3.5 py-2.5 text-sm text-ink dark:bg-white/4">
+                  <input
+                    type="checkbox"
+                    checked={siteForm.research_registry_enabled}
+                    onChange={(event) =>
+                      setSiteForm((current) => ({ ...current, research_registry_enabled: event.target.checked }))
+                    }
+                  />
+                  <span>{pick(locale, "Enable research registry for this hospital", "이 병원의 연구 레지스트리 활성화")}</span>
+                </label>
               </Field>
               <div className="flex flex-wrap justify-end gap-3">
                 <Button type="button" variant="ghost" onClick={onResetSiteForm}>

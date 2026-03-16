@@ -34,11 +34,11 @@ export function Button({
         size === "sm" ? "min-h-9 px-3.5" : "min-h-11 px-[18px]",
         fullWidth && "w-full",
         variant === "ghost" &&
-          "border-border bg-white/50 text-ink shadow-card hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted dark:bg-white/4",
+          "border-border bg-surface text-ink hover:border-brand/20 hover:bg-surface-muted",
         variant === "primary" &&
-          "border-brand/20 bg-linear-to-b from-brand to-brand-strong text-[var(--accent-contrast)] shadow-[0_14px_28px_rgba(48,88,255,0.18)] hover:-translate-y-0.5 hover:shadow-[0_18px_34px_rgba(48,88,255,0.22)]",
+          "border-brand/20 bg-brand text-[var(--accent-contrast)] hover:border-brand-strong hover:bg-brand-strong",
         variant === "danger" &&
-          "border-danger/25 bg-linear-to-b from-danger/90 to-danger text-white shadow-[0_14px_28px_rgba(212,93,99,0.22)] hover:-translate-y-0.5",
+          "border-danger/25 bg-danger text-white hover:border-danger/50 hover:bg-danger/92",
         className
       )}
       data-full-width={fullWidth ? "true" : "false"}

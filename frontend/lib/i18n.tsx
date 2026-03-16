@@ -13,6 +13,129 @@ const localeTags: Record<Locale, string> = {
   ko: "ko-KR",
 };
 
+const koreanOverrides: Record<string, string> = {
+  "Access requests": "접근 요청",
+  "Administrator recovery only": "관리자 복구 전용",
+  "Approval Required": "승인 필요",
+  "Approved accounts receive hospital access and enter the clinician console automatically.":
+    "승인된 계정은 병원 접근 권한을 받고 임상 워크스페이스로 바로 들어갑니다.",
+  "Browse saved patients and open the latest case.": "저장된 환자 목록을 보고 최신 케이스를 열 수 있습니다.",
+  "Bulk import": "대량 임포트",
+  "Case Authoring": "케이스 작성",
+  "Case canvas": "케이스 캔버스",
+  "Case save failed.": "케이스 저장에 실패했습니다.",
+  "Case Studio": "케이스 스튜디오",
+  "Choose your institution and role": "기관과 역할 선택",
+  "Clinical Research Workspace": "임상 연구 워크스페이스",
+  "Connecting...": "연결 중...",
+  "Control plane": "운영 허브",
+  "Contribution failed.": "기여에 실패했습니다.",
+  "Cornea crop": "각막 crop",
+  "Create, review, and contribute cases from this workspace.": "이 워크스페이스에서 케이스를 작성하고 검토하고 기여할 수 있습니다.",
+  "Cross-validation": "교차 검증",
+  "Current model": "현재 모델",
+  "Current Status": "현재 상태",
+  "Dashboard": "대시보드",
+  "Dark mode": "다크 모드",
+  "draft images": "임시 이미지",
+  "Enter admin recovery": "관리자 복구로 입장",
+  "Enter the case workspace": "케이스 워크스페이스 입장",
+  "Export manifest": "매니페스트 내보내기",
+  "Failed to connect.": "연결에 실패했습니다.",
+  "Failed to load approval queue.": "승인 대기열을 불러오지 못했습니다.",
+  "Failed to load hospital data.": "병원 데이터를 불러오지 못했습니다.",
+  Federation: "연합 학습",
+  "Follow-up": "재진",
+  Hospital: "병원",
+  Hospitals: "병원",
+  images: "이미지",
+  Initial: "초진",
+  "Initial training": "초기 학습",
+  "Institution access request": "기관 접근 요청",
+  "K-ERA Control": "K-ERA 운영",
+  "Lesion crop": "병변 crop",
+  "Light mode": "라이트 모드",
+  "Linked sites": "연결된 병원",
+  "Loading saved cases...": "저장된 케이스를 불러오는 중...",
+  "Log Out": "로그아웃",
+  "Log out": "로그아웃",
+  Management: "관리",
+  "Model registry": "모델 레지스트리",
+  Models: "모델",
+  "My patients": "내 환자",
+  "New case": "새 케이스",
+  "No hospital activity recorded yet.": "아직 기록된 병원 활동이 없습니다.",
+  "No hospital-level validation has been run yet.": "아직 병원 단위 검증이 실행되지 않았습니다.",
+  "No institution request submitted yet.": "아직 기관 접근 요청을 제출하지 않았습니다.",
+  "No saved cases for this hospital yet.": "이 병원에는 아직 저장된 케이스가 없습니다.",
+  "Note for reviewer": "검토자 메모",
+  Operations: "운영",
+  "Operations flow": "운영 흐름",
+  "Open case canvas": "케이스 캔버스 열기",
+  "Open training and validation tools directly": "학습과 검증 도구를 바로 열기",
+  "Operate import, review, training, and model movement from the web workspace":
+    "웹 워크스페이스에서 임포트, 검토, 학습, 모델 이동을 운영합니다.",
+  patients: "환자",
+  "Patient creation failed.": "환자 생성에 실패했습니다.",
+  "Patient ID is required.": "환자 ID는 필수입니다.",
+  "Pending access": "대기 중 접근 요청",
+  "Pending updates": "대기 중 업데이트",
+  "Queue overview": "대기열 개요",
+  "Representative image updated.": "대표 이미지를 업데이트했습니다.",
+  "Request Access": "접근 요청",
+  "Request submission failed.": "요청 제출에 실패했습니다.",
+  "Requested role": "요청 역할",
+  "Research document": "연구 문서",
+  "Research runs": "연구 실행",
+  "Review import, approval, training, and model movement from one operations rail.":
+    "하나의 운영 레일에서 임포트, 승인, 학습, 모델 이동을 검토합니다.",
+  Reviewer: "검토자",
+  "Run hospital validation": "병원 검증 실행",
+  "saved cases": "저장된 케이스",
+  Sections: "섹션",
+  "Select a hospital": "병원 선택",
+  "Select a hospital before creating a case.": "케이스를 생성하기 전에 병원을 선택해 주세요.",
+  "Select a hospital before running hospital validation.": "병원 검증을 실행하기 전에 병원을 선택해 주세요.",
+  "Select a saved case before contributing.": "기여를 실행하기 전에 저장된 케이스를 선택해 주세요.",
+  "Select a saved case before running cornea preview.": "각막 미리보기를 실행하기 전에 저장된 케이스를 선택해 주세요.",
+  "Select a saved case before running validation.": "검증을 실행하기 전에 저장된 케이스를 선택해 주세요.",
+  "Select the primary organism.": "대표 균종을 선택해 주세요.",
+  "Selected hospital": "선택한 병원",
+  Snapshot: "스냅샷",
+  "Submitting...": "제출 중...",
+  "Submit institution request": "기관 접근 요청 제출",
+  "Unable to delete the visit.": "방문을 삭제하지 못했습니다.",
+  "Unable to load case history.": "케이스 이력을 불러오지 못했습니다.",
+  "Unable to load case images.": "케이스 이미지를 불러오지 못했습니다.",
+  "Unable to load hospital activity.": "병원 활동을 불러오지 못했습니다.",
+  "Unable to load hospital validation history.": "병원 검증 이력을 불러오지 못했습니다.",
+  "Unable to load institutions.": "기관 목록을 불러오지 못했습니다.",
+  "Unable to load recent cases.": "최근 케이스를 불러오지 못했습니다.",
+  "Unable to load this patient's visit gallery.": "이 환자의 방문 이미지 갤러리를 불러오지 못했습니다.",
+  "Unable to update the representative image.": "대표 이미지를 업데이트하지 못했습니다.",
+  "Untitled keratitis case": "제목 없는 각막염 케이스",
+  validations: "검증",
+  "Validation and AI Clinic": "검증 및 AI Clinic",
+  "Validation failed.": "검증에 실패했습니다.",
+  "Viewer accounts can review metrics but cannot run hospital validation.":
+    "뷰어 계정은 지표를 검토할 수 있지만 병원 검증은 실행할 수 없습니다.",
+  visits: "방문",
+  "Visit reference": "방문 기준",
+  "Visit reference is required.": "방문 기준은 필수입니다.",
+  "Whole image": "원본 이미지",
+  cases: "케이스",
+  linked: "연결됨",
+  queued: "대기열 등록",
+};
+
+function looksLikeBrokenKorean(value: string): boolean {
+  return /[一-龥豈-﫿]|쨌|\?\?|\?[가-힣A-Za-z]|[가-힣A-Za-z]\?(?=[가-힣A-Za-z])/.test(value);
+}
+
+function normalizeLocaleLabel(value: string): string {
+  return value.replaceAll(" 쨌 ", " / ");
+}
+
 const commonLabels = {
   en: {
     language: "Language",
@@ -325,7 +448,15 @@ function toLocale(value: string | null): Locale {
 }
 
 export function pick<T>(locale: Locale, en: T, ko: T): T {
-  return locale === "ko" ? ko : en;
+  if (locale !== "ko") {
+    return typeof en === "string" ? (normalizeLocaleLabel(en) as T) : en;
+  }
+  if (typeof en === "string" && typeof ko === "string") {
+    const override = koreanOverrides[en];
+    const resolved = override ?? (looksLikeBrokenKorean(ko) ? en : ko);
+    return normalizeLocaleLabel(resolved) as T;
+  }
+  return ko;
 }
 
 export function LocaleProvider({ children }: { children: React.ReactNode }) {

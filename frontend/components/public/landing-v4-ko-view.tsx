@@ -1,3 +1,8 @@
+"use client";
+
+import Image from "next/image";
+import { useEffect, useState } from "react";
+
 import type { SiteRecord } from "../../lib/api";
 
 type KoreanLandingViewProps = {
@@ -19,7 +24,7 @@ const koPainItems = [
   {
     icon: "✂️",
     title: "이미지 수천 장, 수동 Annotation",
-    body: "마우스로 병변 ROI를 하나씩 그리는 작업. 수백 장이면 수백 시간입니다.",
+    body: "병변 ROI를 직접 그려야 하는 반복 작업. 연구를 시작하기도 전에 피로가 커집니다.",
   },
   {
     icon: "🗂️",
@@ -45,6 +50,8 @@ const koFeatures = [
     title: "MedSAM 기반\n반자동 병변 분할",
     body: "이미지를 올리고 병변 주변에 box만 그리면, MedSAM이 정밀한 ROI segmentation을 자동 생성합니다. 수시간의 수동 annotation이 몇 초로. Grad-CAM으로 AI의 판단 근거도 함께 보여줍니다.",
     chip: "Meta AI MedSAM · 2024",
+    previewSrc: "/landing/medSAM.png",
+    previewAlt: "MedSAM 기반 반자동 병변 분할을 보여주는 이미지",
   },
   {
     number: "02",
@@ -52,6 +59,8 @@ const koFeatures = [
     title: "Visit 단위\n멀티모달 종합 판독",
     body: "실제 진료처럼 White · Fluorescein · Slit 세 가지 view를 함께 봅니다. 한 방문(Visit)의 이미지를 통합해 판단하므로, 사진 한 장의 빛 번짐에 흔들리지 않습니다. 두 모델이 넓게·집중적으로 나눠 보고 앙상블합니다.",
     chip: "Visit-level Ensemble",
+    previewSrc: "/landing/multi_modal.png",
+    previewAlt: "Visit 단위 멀티모달 종합 판독을 보여주는 이미지",
   },
   {
     number: "03",
@@ -59,7 +68,20 @@ const koFeatures = [
     title: "Federated Learning\n다기관 협력",
     body: "원본 이미지는 병원 밖으로 나가지 않습니다. 각 병원이 자체 환경에서 학습 후, Weight delta만 암호화해 전달합니다. FedAvg로 집계된 모델은 참여 병원 모두에 배포됩니다.",
     chip: "Privacy-preserving",
+    previewSrc: "/landing/federated.png",
+    previewAlt: "Federated Learning 다기관 협력을 보여주는 이미지",
   },
+];
+
+const koFeaturePreviewOptions = [
+  {
+    src: "/landing/workflow.png",
+    alt: "K-ERA 핵심 기능 워크플로를 보여주는 랜딩 이미지",
+  },
+  ...koFeatures.map((feature) => ({
+    src: feature.previewSrc,
+    alt: feature.previewAlt,
+  })),
 ];
 
 const koFedPoints = [
@@ -90,7 +112,7 @@ const koFaqs = [
   },
   {
     q: "참여하면 어떤 이점이 있나요?",
-    a: "참여 기관의 케이스는 전국 규모 AI의 external validation 데이터가 되며, 집계된 글로벌 모델의 혜택을 공유받습니다. 별도의 논문 작성 없이도 공동 연구 기여가 가능합니다.",
+    a: "참여 기관의 케이스는 전국 규모 AI의 external validation 데이터가 되며, 집계된 글로벌 모델의 혜택을 공유받습니다. 각 기관의 참여는 연구 데이터 축적과 모델 개선에 기여합니다.",
   },
   {
     q: "어떤 진단 범주를 지원하나요?",
@@ -106,6 +128,12 @@ const koSecondaryCtaClass =
   "inline-block rounded-[8px] border border-[rgba(45,212,192,0.28)] bg-[#24aa9e] px-8 py-3 text-[0.9rem] font-medium tracking-[0.04em] text-[#081116] shadow-[0_10px_24px_rgba(9,13,24,0.32)] transition hover:-translate-y-0.5 hover:border-[rgba(45,212,192,0.38)] hover:bg-[#209d92] hover:shadow-[0_12px_28px_rgba(9,13,24,0.38)]";
 
 export function KoreanLandingView(props: KoreanLandingViewProps) {
+  const [featurePreviewIndex, setFeaturePreviewIndex] = useState(0);
+  const [featurePreviewOverride, setFeaturePreviewOverride] = useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
+
   const hospitals = [
     ...props.publicSites.slice(0, 5).map((site) => ({ label: site.display_name, active: true })),
     ...Array.from({ length: Math.max(0, 5 - props.publicSites.slice(0, 5).length) }, () => ({
@@ -114,76 +142,123 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
     })),
   ];
 
+  useEffect(() => {
+    if (featurePreviewOverride) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setFeaturePreviewIndex((current) => (current + 1) % koFeaturePreviewOptions.length);
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, [featurePreviewOverride]);
+
+  const activeFeaturePreview = featurePreviewOverride ?? koFeaturePreviewOptions[featurePreviewIndex];
+
   return (
     <main className="bg-[#090d18] text-[#e4e8f5] font-ko-sans">
       <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between border-b border-[rgba(45,212,192,0.13)] bg-[rgba(9,13,24,0.88)] px-5 py-3 backdrop-blur-xl md:px-12 md:py-4">
-        <div className="text-[1.35rem] tracking-[0.04em] text-[#2dd4c0] font-ko-serif">
-          K<span className="text-[#7b88a8]">-</span>ERA
+        <div className="flex items-center gap-3">
+          <div className="text-[1.35rem] tracking-[0.04em] text-[#2dd4c0] font-ko-serif">
+            K<span className="text-[#7b88a8]">-</span>ERA
+          </div>
+          <div className="hidden rounded-full border border-[rgba(45,212,192,0.18)] bg-[rgba(45,212,192,0.08)] px-3 py-1 text-[0.68rem] tracking-[0.12em] text-[#9ddfd7] md:block">
+            감염성 각막염 AI 연구 플랫폼
+          </div>
         </div>
-        <div className="hidden items-center gap-7 md:flex">
-          <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#origin">
-            시작 이야기
-          </a>
-          <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#features">
-            기능
-          </a>
-          <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#federated">
-            보안
-          </a>
-          <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#collective">
-            참여
-          </a>
-          <button
-            className="cursor-pointer rounded-full border border-[rgba(45,212,192,0.13)] px-3 py-1 text-[0.75rem] tracking-[0.06em] text-[#3f4b6a] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]"
-            type="button"
-            onClick={() => props.onLocaleChange("en")}
+        <div className="flex items-center gap-3">
+          <div className="hidden items-center gap-7 md:flex">
+            <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#origin">
+              시작 이야기
+            </a>
+            <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#features">
+              기능
+            </a>
+            <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#federated">
+              보안
+            </a>
+            <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#collective">
+              참여
+            </a>
+            <button
+              className="cursor-pointer rounded-full border border-[rgba(45,212,192,0.13)] px-3 py-1 text-[0.75rem] tracking-[0.06em] text-[#3f4b6a] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]"
+              type="button"
+              onClick={() => props.onLocaleChange("en")}
+            >
+              KO / EN
+            </button>
+          </div>
+          <a
+            className="rounded-full px-2.5 py-1 text-[0.68rem] tracking-[0.08em] text-[#4d5874] transition hover:text-[#7b88a8]"
+            href="/admin-login"
           >
-            KO / EN
-          </button>
+            관리자
+          </a>
         </div>
       </nav>
 
-      <section className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pb-20 pt-24 text-center md:px-8">
+      <section className="relative overflow-hidden px-6 pb-20 pt-16 md:px-8">
         <div className="pointer-events-none absolute inset-0 [background:radial-gradient(ellipse_55%_45%_at_50%_30%,rgba(45,212,192,0.1)_0%,transparent_70%),radial-gradient(ellipse_35%_25%_at_80%_75%,rgba(245,158,11,0.06)_0%,transparent_60%)]" />
         <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(45,212,192,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(45,212,192,0.03)_1px,transparent_1px)] [background-size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_75%)]" />
 
-        <div className="relative z-10 mb-8 inline-flex items-center gap-2 rounded-full border border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] px-4 py-1.5 text-[0.7rem] uppercase tracking-[0.14em] text-[#2dd4c0]">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#2dd4c0]" />
-          감염성 각막염 AI 연구 플랫폼
+        <div className="mx-auto grid min-h-[calc(100vh-7rem)] max-w-[1180px] items-center gap-10 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-10">
+          <div className="relative z-10 text-center">
+            <p
+              className="landing-hero-fade mb-6 text-[clamp(0.9rem,1.6vw,1.1rem)] italic text-[#7b88a8] font-ko-serif"
+              style={{ animationDelay: "0s" }}
+            >
+              외래가 끝난 뒤, 조용해진 진료실. 각막 사진 몇 장이 화면에 떠 있습니다.
+            </p>
+
+            <h1
+              className="landing-hero-fade mx-auto mb-7 max-w-[760px] text-[clamp(1.85rem,4.45vw,3.3rem)] leading-[1.22] tracking-[-0.01em] font-ko-serif"
+              style={{ animationDelay: "0.05s" }}
+            >
+              "이건 세균성일까,
+              <br />
+              진균성일까…"
+              <br />
+              <em className="italic text-[#2dd4c0]">AI와 상의하는 시간</em>
+            </h1>
+
+            <p
+              className="landing-hero-fade mx-auto mb-12 max-w-[520px] text-base leading-[1.85] text-[#7b88a8]"
+              style={{ animationDelay: "0.13s" }}
+            >
+              파이썬도, 엑셀 manifest도, 수동 annotation도 필요 없습니다.
+              <br />
+              오늘 찍은 사진을 올리면, K-ERA가 함께 고민합니다.
+            </p>
+
+            <div
+              className="landing-hero-fade flex flex-wrap justify-center gap-3.5"
+              style={{ animationDelay: "0.21s" }}
+            >
+              <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
+                연구 참여하기
+              </button>
+              <a className="inline-block rounded-[8px] border border-[rgba(45,212,192,0.13)] px-7 py-3 text-[0.88rem] tracking-[0.04em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]" href="#features">
+                어떻게 작동하나요 →
+              </a>
+            </div>
+          </div>
+
+          <div className="landing-hero-fade relative z-10 lg:mx-auto lg:w-full lg:max-w-[640px]" style={{ animationDelay: "0.17s" }}>
+            <div className="relative overflow-hidden rounded-[32px] border border-[rgba(255,255,255,0.14)] bg-[rgba(13,20,38,0.72)] shadow-[0_28px_64px_rgba(6,10,20,0.34)]">
+              <Image
+                src="/landing/hero-clinic.png"
+                alt="외래가 끝난 진료실에서 각막 사진을 검토하는 장면"
+                width={1688}
+                height={949}
+                priority
+                className="h-auto w-full object-cover"
+              />
+            </div>
+          </div>
         </div>
 
-        <p
-          className="relative z-10 mb-6 text-[clamp(0.9rem,1.6vw,1.1rem)] italic text-[#7b88a8] font-ko-serif"
-        >
-          외래가 끝난 뒤, 조용해진 진료실. 각막 사진 몇 장이 화면에 떠 있습니다.
-        </p>
-
-        <h1
-          className="relative z-10 mb-7 max-w-[760px] text-[clamp(1.85rem,4.45vw,3.3rem)] leading-[1.22] tracking-[-0.01em] font-ko-serif"
-        >
-          "이건 세균성일까,
-          <br />
-          진균성일까…"
-          <br />
-          <em className="italic text-[#2dd4c0]">AI와 상의하는 시간</em>
-        </h1>
-
-        <p className="relative z-10 mb-12 max-w-[520px] text-base leading-[1.85] text-[#7b88a8]">
-          파이썬도, 엑셀 manifest도, 수동 annotation도 필요 없습니다.
-          <br />
-          오늘 찍은 사진을 올리면, K-ERA가 함께 고민합니다.
-        </p>
-
-        <div className="relative z-10 flex flex-wrap justify-center gap-3.5">
-          <a className={koSecondaryCtaClass} href="#collective">
-            연구 참여하기
-          </a>
-          <a className="inline-block rounded-[8px] border border-[rgba(45,212,192,0.13)] px-7 py-3 text-[0.88rem] tracking-[0.04em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]" href="#features">
-            어떻게 작동하나요 →
-          </a>
-        </div>
-
-        <div className="absolute bottom-8 z-10 flex flex-col items-center gap-2 text-[0.68rem] tracking-[0.12em] text-[#3f4b6a]">
+        <div className="landing-hero-fade absolute bottom-8 z-10 flex flex-col items-center gap-2 text-[0.68rem] tracking-[0.12em] text-[#3f4b6a]" style={{ animationDelay: "0.42s" }}>
           <div className="h-9 w-px animate-pulse bg-gradient-to-b from-[#3f4b6a] to-transparent" />
           scroll
         </div>
@@ -229,21 +304,44 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 실제 진료에서 쓸 수 없다는 것.</strong>
               </p>
               <p className="mt-7 text-[0.76rem] italic tracking-[0.04em] text-[#3f4b6a]">— K-ERA 개발자 노트, 제주대학교병원 안과</p>
+              <div className="landing-reveal mt-8 overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)]" data-reveal="" data-reveal-order={koPainItems.length}>
+                <Image
+                  src="/landing/pain%20point%201.png"
+                  alt="AI 연구 시작 단계의 현실적인 부담을 보여주는 이미지"
+                  width={1600}
+                  height={900}
+                  className="h-auto w-full object-cover"
+                />
+              </div>
             </div>
 
-            <div className="flex flex-col p-12">
+            <div className="flex flex-col px-12 pb-8 pt-7">
+              <div
+                className="landing-reveal mb-5 overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)]"
+                data-reveal=""
+                data-reveal-order={0}
+              >
+                <Image
+                  src="/landing/pain%20point%202.png"
+                  alt="수작업과 다기관 검증의 어려움을 보여주는 이미지"
+                  width={1600}
+                  height={900}
+                  className="h-auto w-full object-cover"
+                />
+              </div>
               {koPainItems.map((item) => (
                 <div
                   key={item.title}
-                  className="flex items-start gap-4 border-b border-white/4 py-6 last:border-b-0"
-                 
+                  className="landing-reveal flex items-start gap-4 border-b border-white/4 py-6 last:border-b-0"
+                  data-reveal=""
+                  data-reveal-order={koPainItems.findIndex((candidate) => candidate.title === item.title) + 1}
                 >
                   <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] bg-[rgba(245,158,11,0.14)] text-base">
                     {item.icon}
                   </div>
                   <div>
-                    <div className="mb-1 text-[0.87rem] font-medium">{item.title}</div>
-                    <div className="text-[0.81rem] leading-[1.65] text-[#7b88a8]">{item.body}</div>
+                    <div className="mb-1 text-[0.92rem] font-medium">{item.title}</div>
+                    <div className="text-[0.85rem] leading-[1.65] text-[#7b88a8]">{item.body}</div>
                   </div>
                 </div>
               ))}
@@ -302,20 +400,49 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
 
       <section className="bg-[#0e1426] px-6 py-24 md:px-8" id="features">
         <div className="mx-auto max-w-[1080px]">
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">핵심 기능</div>
-          <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-            수십 시간의 수작업을
-            <br />
-            클릭 몇 번으로
-          </h2>
-          <p className="max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">반복적이고 기계적인 작업은 K-ERA가 처리합니다. 임상의는 판단에만 집중하면 됩니다.</p>
+          <div className="grid items-center gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+            <div className="text-center">
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">핵심 기능</div>
+              <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
+                수십 시간의 수작업을
+                <br />
+                클릭 몇 번으로
+              </h2>
+              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">반복적이고 기계적인 작업은 K-ERA가 처리합니다. 임상의는 판단에만 집중하면 됩니다.</p>
+            </div>
+            <div
+              className="landing-reveal justify-self-center w-full max-w-[460px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[320px]"
+              data-reveal=""
+              data-reveal-order={0}
+            >
+              <Image
+                src={activeFeaturePreview.src}
+                alt={activeFeaturePreview.alt}
+                width={1200}
+                height={1200}
+                className="h-auto w-full object-cover"
+              />
+            </div>
+          </div>
 
           <div className="mt-13 grid overflow-hidden rounded-2xl border border-[rgba(45,212,192,0.13)] md:grid-cols-3">
             {koFeatures.map((feature) => (
               <div
                 key={feature.number}
-                className="relative border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-[30px] py-[38px] last:border-r-0 hover:bg-[rgba(13,20,38,0.88)]"
-               
+                className="landing-reveal relative border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-[30px] py-[38px] last:border-r-0 hover:bg-[rgba(13,20,38,0.88)]"
+                data-reveal=""
+                data-reveal-order={koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1}
+                onMouseEnter={() => {
+                  setFeaturePreviewIndex(koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1);
+                  setFeaturePreviewOverride({ src: feature.previewSrc, alt: feature.previewAlt });
+                }}
+                onMouseLeave={() => setFeaturePreviewOverride(null)}
+                onFocus={() => {
+                  setFeaturePreviewIndex(koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1);
+                  setFeaturePreviewOverride({ src: feature.previewSrc, alt: feature.previewAlt });
+                }}
+                onBlur={() => setFeaturePreviewOverride(null)}
+                tabIndex={0}
               >
                 <div className="mb-[18px] text-[3.2rem] leading-none text-[rgba(45,212,192,0.13)] font-ko-serif">
                   {feature.number}
@@ -367,7 +494,12 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 {koFedPoints.map((point) => {
                   const [strong, rest] = point.split(": ");
                   return (
-                    <div key={point} className="flex items-start gap-3">
+                    <div
+                      key={point}
+                      className="landing-reveal flex items-start gap-3"
+                      data-reveal=""
+                      data-reveal-order={koFedPoints.findIndex((candidate) => candidate === point)}
+                    >
                       <div className="mt-2 h-[7px] w-[7px] shrink-0 rounded-full bg-[#2dd4c0]" />
                       <div className="text-[0.83rem] leading-[1.7] text-[#7b88a8]">
                         <strong className="font-medium text-[#e4e8f5]">{strong}:</strong> {rest}
@@ -419,23 +551,41 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             <br />
             그리고 그 케이스 하나가, 다른 누군가의 AI를 조금 더 강하게 만듭니다.
           </div>
-          <a className={koSecondaryCtaClass} href="#collective">
+          <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
             이 연구에 함께하기
-          </a>
+          </button>
         </div>
       </section>
 
       <section className="bg-[#090d18] px-6 py-24 md:px-8">
         <div className="mx-auto max-w-[1080px]">
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">지금까지</div>
-          <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-            제주에서 시작해,
-            <br />
-            한국 전체로
-          </h2>
+          <div className="grid items-center gap-8 md:grid-cols-2">
+            <div className="text-center">
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">지금까지</div>
+              <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
+                제주에서 시작해,
+                <br />
+                한국 전체로
+              </h2>
+            </div>
+            <div className="landing-reveal justify-self-center w-full max-w-[420px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[280px]" data-reveal="" data-reveal-order={0}>
+              <Image
+                src="/landing/Jeju.png"
+                alt="제주를 상징하는 랜딩 이미지"
+                width={900}
+                height={900}
+                className="h-auto w-full object-cover"
+              />
+            </div>
+          </div>
           <div className="mt-12 grid overflow-hidden rounded-2xl border border-[rgba(45,212,192,0.13)] md:grid-cols-4">
             {koStats.map((stat) => (
-              <div key={stat.number + stat.label} className="border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-6 py-[38px] text-center last:border-r-0">
+              <div
+                key={stat.number + stat.label}
+                className="landing-reveal border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-6 py-[38px] text-center last:border-r-0"
+                data-reveal=""
+                data-reveal-order={koStats.findIndex((candidate) => candidate.number === stat.number) + 1}
+              >
                 <div className="mb-2 text-[2.5rem] leading-none text-[#2dd4c0] font-ko-serif">
                   {stat.number}
                 </div>
@@ -446,37 +596,57 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#0e1426] px-6 py-24 text-center md:px-8" id="collective">
-        <div className="mx-auto max-w-[640px]">
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">함께하는 병원들</div>
-          <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-            집단 지성이
-            <br />
-            만들어 나가는 연구
-          </h2>
-          <p className="mx-auto mb-11 max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-            한국의 안과의사들이 각자의 케이스를 기여할 때마다,
-            <br />
-            그것은 동시에 실제 임상 환경에서의 External Validation이 됩니다.
-            <br />
-            논문을 쓰지 않아도, 코딩을 몰라도, 참여 자체가 연구입니다.
-          </p>
-          <div className="mb-11 flex flex-wrap justify-center gap-2.5">
+      <section className="bg-[#0e1426] px-6 py-24 md:px-8" id="collective">
+        <div className="mx-auto max-w-[1080px]">
+          <div className="grid items-center gap-10 lg:grid-cols-2">
+            <div className="text-center">
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">함께하는 병원들</div>
+              <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
+                집단 지성이
+                <br />
+                만들어 나가는 연구
+              </h2>
+              <p className="mx-auto mb-11 max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">
+                한국의 안과의사들이 각자의 케이스를 기여할 때마다,
+                <br />
+                그것은 동시에 실제 임상 환경에서의 External Validation이 됩니다.
+                <br />
+                논문을 직접 쓰지 않아도, 코딩을 몰라도, 참여 자체가 연구 데이터와 모델 개선에 기여합니다.
+              </p>
+            </div>
+            <div
+              className="landing-reveal justify-self-center w-full max-w-[480px] overflow-hidden rounded-[28px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_24px_56px_rgba(6,10,20,0.28)] lg:max-w-[360px]"
+              data-reveal=""
+              data-reveal-order={0}
+            >
+              <Image
+                src="/landing/mass%20intelligence.png"
+                alt="집단 지성과 다기관 협력을 상징하는 이미지"
+                width={1600}
+                height={1200}
+                className="h-auto w-full object-cover"
+              />
+            </div>
+          </div>
+          <div className="mb-11 mt-11 flex flex-wrap justify-center gap-2.5">
             {hospitals.map((hospital, index) => (
               <div
                 key={`${hospital.label}-${index}`}
-                className={`flex items-center gap-2 rounded-full border px-4 py-[7px] text-[0.76rem] ${hospital.active ? "border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] text-[#e4e8f5]" : "border-[rgba(45,212,192,0.13)] border-dashed bg-white/[0.02] text-[#7b88a8] opacity-45"}`}
-               
+                className={`landing-reveal flex items-center gap-2 rounded-full border px-4 py-[7px] text-[0.76rem] ${hospital.active ? "border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] text-[#e4e8f5]" : "border-[rgba(45,212,192,0.13)] border-dashed bg-white/[0.02] text-[#7b88a8] opacity-45"}`}
+                data-reveal=""
+                data-reveal-order={index + 1}
               >
                 <span className="h-[5px] w-[5px] rounded-full bg-[#2dd4c0]" />
                 {hospital.label}
               </div>
             ))}
           </div>
-          <a className={koSecondaryCtaClass} href="mailto:kera-research@jnuh.ac.kr">
-            병원 참여 신청하기 →
-          </a>
-          <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">임상 안과의사라면 누구나 · Google 계정 1개로 시작</p>
+          <div className="text-center">
+            <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
+              병원 참여 신청하기 →
+            </button>
+            <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">임상 안과의사라면 누구나 · Google 계정 1개로 시작</p>
+          </div>
         </div>
       </section>
 
@@ -490,8 +660,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             {koFaqs.map((faq, index) => (
               <div
                 key={faq.q}
-                className="border-b border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-9 py-8 transition hover:bg-[rgba(45,212,192,0.04)] md:[&:nth-child(2n)]:border-r-0 md:[&:nth-last-child(-n+2)]:border-b-0"
-               
+                className="landing-reveal border-b border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-9 py-8 transition hover:bg-[rgba(45,212,192,0.04)] md:[&:nth-child(2n)]:border-r-0 md:[&:nth-last-child(-n+2)]:border-b-0"
+                data-reveal=""
+                data-reveal-order={index}
               >
                 <div className="mb-2.5 flex items-start gap-2.5 text-[0.88rem] font-medium">
                   <span className="mt-[3px] shrink-0 text-[0.72rem] tracking-[0.06em] text-[#2dd4c0]">Q{index + 1}</span>
@@ -504,38 +675,66 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="border-t border-[rgba(45,212,192,0.13)] bg-[#090d18] px-6 py-[120px] text-center md:px-8">
-        <div className="relative mx-auto max-w-[560px]">
-          <h2 className="mb-4 text-[clamp(1.7rem,3.2vw,2.6rem)] leading-[1.26] font-ko-serif">
-            연구는
-            <br />
-            거대한 프로젝트가
-            <br />
-            <em className="italic text-[#2dd4c0]">아닙니다</em>
-          </h2>
-          <p className="mb-3.5 text-[0.93rem] leading-[2] text-[#7b88a8]">
-            오늘 진료한 한 케이스.
-            <br />
-            그 사진 몇 장이면 충분합니다.
-          </p>
-          <p className="mb-10 text-[0.97rem] leading-[2] text-[#e4e8f5] italic">
-            외래가 끝난 뒤, 커피 한 잔을 들고
-            <br />
-            AI에게 물어보세요. "너는 어떻게 생각해?"
-            <br />
-            K-ERA는 그 질문에서 시작됩니다.
-          </p>
-          <button
-            className={`${koSecondaryCtaClass} ${props.googleLaunchPulse ? "ring-4 ring-[rgba(45,212,192,0.22)]" : ""}`}
-            type="button"
-            onClick={props.onGoogleLaunch}
-          >
-            {props.authBusy ? props.connectingLabel : "Google 로그인하여 연구 참여하기"}
-          </button>
-          <div className="absolute left-[-9999px] h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
-            <div data-google-slot />
+      <section className="border-t border-[rgba(45,212,192,0.13)] bg-[#090d18] px-6 py-[120px] md:px-8">
+        <div className="mx-auto grid max-w-[1080px] items-center gap-10 lg:grid-cols-2">
+          <div className="relative text-center">
+            <h2 className="mb-4 text-[clamp(1.7rem,3.2vw,2.6rem)] leading-[1.26] font-ko-serif">
+              연구는
+              <br />
+              거대한 프로젝트가
+              <br />
+              <em className="italic text-[#2dd4c0]">아닙니다</em>
+            </h2>
+            <p className="mb-3.5 text-[0.93rem] leading-[2] text-[#7b88a8]">
+              오늘 진료한 한 케이스.
+              <br />
+              그 사진 몇 장이면 충분합니다.
+            </p>
+            <p className="mb-10 text-[0.97rem] leading-[2] text-[#e4e8f5] italic">
+              외래가 끝난 뒤, 커피 한 잔을 들고
+              <br />
+              AI에게 물어보세요. "너는 어떻게 생각해?"
+              <br />
+              K-ERA는 그 질문에서 시작됩니다.
+            </p>
+            <button
+              className={`${koSecondaryCtaClass} ${props.googleLaunchPulse ? "ring-4 ring-[rgba(45,212,192,0.22)]" : ""}`}
+              type="button"
+              onClick={props.onGoogleLaunch}
+            >
+              {props.authBusy ? props.connectingLabel : "Google 로그인하여 연구 참여하기"}
+            </button>
+            <div className="absolute left-[-9999px] h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
+              <div data-google-slot />
+            </div>
+            <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">Research begins with one case.</p>
           </div>
-          <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">Research begins with one case.</p>
+          <div className="justify-self-center grid w-full max-w-[500px] gap-5 lg:max-w-[360px]">
+            <div className="landing-reveal overflow-hidden rounded-[28px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_24px_56px_rgba(6,10,20,0.28)]" data-reveal="" data-reveal-order={0}>
+              <Image
+                src="/landing/CTA1.png"
+                alt="K-ERA 최종 참여 안내 이미지"
+                width={1600}
+                height={1200}
+                className="h-auto w-full object-cover"
+              />
+            </div>
+            <button
+              className="landing-reveal overflow-hidden rounded-[28px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_24px_56px_rgba(6,10,20,0.28)] transition hover:border-[rgba(45,212,192,0.28)]"
+              data-reveal=""
+              data-reveal-order={1}
+              type="button"
+              onClick={props.onGoogleLaunch}
+            >
+              <Image
+                src="/landing/CTA3.png"
+                alt="K-ERA 연구 참여를 상징하는 보조 이미지"
+                width={1600}
+                height={1200}
+                className="h-auto w-full object-cover"
+              />
+            </button>
+          </div>
         </div>
       </section>
 
@@ -545,10 +744,10 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
         <div className="text-[0.73rem] text-[#3f4b6a]">© 2026 K-ERA Project · Jeju National University Hospital</div>
         <div className="flex gap-5">
-          <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="#">
+          <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="/privacy">
             개인정보처리방침
           </a>
-          <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="#">
+          <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="/terms">
             이용약관
           </a>
           <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="mailto:kera-research@jnuh.ac.kr">

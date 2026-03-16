@@ -39,7 +39,38 @@ export function LandingV4(props: LandingV4Props) {
     const googleSlot = root.querySelector<HTMLDivElement>("[data-google-slot]");
     props.googleButtonRef.current = googleSlot;
 
+    const revealTargets = Array.from(root.querySelectorAll<HTMLElement>("[data-reveal]"));
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    revealTargets.forEach((element) => {
+      const order = Number(element.dataset.revealOrder || "0");
+      element.style.transitionDelay = `${Math.max(0, order) * 50}ms`;
+    });
+
+    let observer: IntersectionObserver | null = null;
+    if (revealTargets.length > 0) {
+      if (reducedMotion || typeof IntersectionObserver === "undefined") {
+        revealTargets.forEach((element) => element.classList.add("is-visible"));
+      } else {
+        observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) {
+                return;
+              }
+              entry.target.classList.add("is-visible");
+              observer?.unobserve(entry.target);
+            });
+          },
+          { threshold: 0.08 },
+        );
+
+        revealTargets.forEach((element) => observer?.observe(element));
+      }
+    }
+
     return () => {
+      observer?.disconnect();
       props.googleButtonRef.current = null;
     };
   }, [props.googleButtonRef, props.locale]);

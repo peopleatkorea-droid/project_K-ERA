@@ -45,23 +45,23 @@ class SegmentationBackendConfigTests(unittest.TestCase):
         self.assertEqual(status["segmentation_backend"], "medsam")
         self.assertIn("segmentation_ready", status)
 
-    def test_swin_backend_uses_wrapper_and_explicit_checkpoint(self) -> None:
+    def test_unknown_backend_falls_back_to_medsam(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            checkpoint_path = temp_path / "Swin_LiteMedSAM.pth"
+            checkpoint_path = temp_path / "segmentation_checkpoint.pth"
             checkpoint_path.write_bytes(b"checkpoint")
 
-            os.environ["KERA_SEGMENTATION_BACKEND"] = "swin_litemedsam"
+            os.environ["KERA_SEGMENTATION_BACKEND"] = "deprecated_backend"
             os.environ["KERA_SEGMENTATION_ROOT"] = temp_dir
             os.environ["KERA_SEGMENTATION_CHECKPOINT"] = str(checkpoint_path)
 
             config, runtime = _reload_modules()
 
-            self.assertEqual(config.SEGMENTATION_BACKEND, "swin_litemedsam")
-            self.assertTrue(config.SEGMENTATION_SCRIPT.endswith("swin_litemedsam_auto_roi.py"))
+            self.assertEqual(config.SEGMENTATION_BACKEND, "medsam")
+            self.assertTrue(config.SEGMENTATION_SCRIPT.endswith("medsam_auto_roi.py"))
             self.assertEqual(Path(config.SEGMENTATION_CHECKPOINT), checkpoint_path)
             status = runtime.detect_local_node_status()
-            self.assertEqual(status["segmentation_backend"], "swin_litemedsam")
+            self.assertEqual(status["segmentation_backend"], "medsam")
             self.assertTrue(status["segmentation_ready"])
 
 

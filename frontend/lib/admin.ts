@@ -9,6 +9,7 @@ import type {
   ModelUpdateRecord,
   ModelVersionRecord,
   ProjectRecord,
+  ResearchRegistrySettingsResponse,
   SiteComparisonRecord,
   StorageSettingsRecord,
 } from "./types";
@@ -67,6 +68,7 @@ export async function createAdminSite(
     site_code: string;
     display_name: string;
     hospital_name?: string;
+    research_registry_enabled?: boolean;
   },
 ) {
   return request<ManagedSiteRecord>(
@@ -75,6 +77,7 @@ export async function createAdminSite(
       method: "POST",
       body: JSON.stringify({
         hospital_name: "",
+        research_registry_enabled: true,
         ...payload,
       }),
     },
@@ -88,6 +91,7 @@ export async function updateAdminSite(
   payload: {
     display_name: string;
     hospital_name?: string;
+    research_registry_enabled?: boolean;
   },
 ) {
   return request<ManagedSiteRecord>(
@@ -96,6 +100,7 @@ export async function updateAdminSite(
       method: "PATCH",
       body: JSON.stringify({
         hospital_name: "",
+        research_registry_enabled: true,
         ...payload,
       }),
     },
@@ -119,6 +124,21 @@ export async function migrateAdminSiteStorageRoot(siteId: string, token: string,
     `/api/admin/sites/${siteId}/storage-root/migrate`,
     {
       method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function updateResearchRegistrySettings(
+  siteId: string,
+  token: string,
+  payload: { research_registry_enabled: boolean },
+) {
+  return request<ResearchRegistrySettingsResponse>(
+    `/api/sites/${siteId}/research-registry/settings`,
+    {
+      method: "PATCH",
       body: JSON.stringify(payload),
     },
     token,

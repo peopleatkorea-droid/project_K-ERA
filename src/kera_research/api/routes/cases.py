@@ -6,10 +6,17 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 
 
 def build_cases_router(support: Any) -> APIRouter:
     router = APIRouter()
+
+    class CaseResearchRegistryRequest(BaseModel):
+        patient_id: str
+        visit_date: str
+        action: str
+        source: str = "manual"
 
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
@@ -385,6 +392,15 @@ def build_cases_router(support: Any) -> APIRouter:
 
         workflow = get_workflow(cp)
         prompt_signature = workflow._lesion_prompt_box_signature(lesion_prompt_box)
+        with lesion_preview_jobs_lock:
+            for existing in reversed(list(lesion_preview_jobs.values())):
+                if (
+                    existing.get("site_id") == site_id
+                    and existing.get("image_id") == image_id
+                    and existing.get("prompt_signature") == prompt_signature
+                    and existing.get("status") in {"running", "done"}
+                ):
+                    return serialize_lesion_preview_job(dict(existing))
         job_id = make_id("lesionjob")
         job_record: dict[str, Any] = {
             "job_id": job_id,
@@ -939,6 +955,67 @@ def build_cases_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_site_access(cp, user, site_id)
         return build_case_history(cp, site_id, patient_id, visit_date)
+
+    @router.post("/api/sites/{site_id}/cases/research-registry")
+    def update_case_research_registry(
+        site_id: str,
+        payload: CaseResearchRegistryRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = require_site_access(cp, user, site_id)
+        require_visit_write_access(site_store, user, payload.patient_id, payload.visit_date)
+        visit = site_store.get_visit(payload.patient_id, payload.visit_date)
+        if visit is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found.")
+        case_summary = next(
+            (
+                item
+                for item in site_store.list_case_summaries()
+                if item.get("patient_id") == payload.patient_id and item.get("visit_date") == payload.visit_date
+            ),
+            None,
+        )
+        if case_summary is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case summary not found.")
+
+        action = payload.action.strip().lower()
+        if action not in {"include", "exclude"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid research registry action.")
+
+        site_record = cp.get_site(site_id) or {}
+        if action == "include":
+            if not bool(site_record.get("research_registry_enabled", True)):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This site's research registry is disabled by the institution.",
+                )
+            if cp.get_registry_consent(user["user_id"], site_id) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Join the research registry before including this case.",
+                )
+            if int(case_summary.get("image_count") or 0) <= 0:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one image is required.")
+            next_status = "included"
+        else:
+            next_status = "excluded"
+
+        updated_visit = site_store.update_visit_registry_status(
+            payload.patient_id,
+            payload.visit_date,
+            status_value=next_status,
+            updated_by_user_id=user["user_id"],
+            source=payload.source,
+        )
+        return {
+            "patient_id": payload.patient_id,
+            "visit_date": payload.visit_date,
+            "research_registry_status": updated_visit.get("research_registry_status", next_status),
+            "research_registry_updated_at": updated_visit.get("research_registry_updated_at"),
+            "research_registry_updated_by": updated_visit.get("research_registry_updated_by"),
+            "research_registry_source": updated_visit.get("research_registry_source"),
+        }
 
     @router.get("/api/sites/{site_id}/validations/{validation_id}/artifacts/{artifact_kind}")
     def get_validation_artifact(

@@ -83,6 +83,7 @@ users = Table(
     Column("role", String(32), nullable=False),
     Column("full_name", String(255), nullable=False),
     Column("site_ids", JSON, nullable=True),
+    Column("registry_consents", JSON, nullable=True),
 )
 
 projects = Table(
@@ -104,6 +105,7 @@ sites = Table(
     Column("display_name", String(255), nullable=False),
     Column("hospital_name", String(255), nullable=False, default=""),
     Column("local_storage_root", Text, nullable=False),
+    Column("research_registry_enabled", Boolean, nullable=False, default=True),
     Column("created_at", String(64), nullable=False),
 )
 
@@ -266,6 +268,10 @@ visits = Table(
     Column("is_initial_visit", Boolean, nullable=False, default=False),
     Column("smear_result", String(64), nullable=False, default=""),
     Column("polymicrobial", Boolean, nullable=False, default=False),
+    Column("research_registry_status", String(32), nullable=False, default="analysis_only", index=True),
+    Column("research_registry_updated_at", String(64), nullable=True),
+    Column("research_registry_updated_by", String(64), nullable=True),
+    Column("research_registry_source", String(64), nullable=True),
     Column("created_at", String(64), nullable=False),
     UniqueConstraint("site_id", "patient_id", "visit_date", name="uq_visits_site_patient_date"),
 )
@@ -343,6 +349,8 @@ def _migrate_control_plane_schema() -> None:
     with CONTROL_PLANE_ENGINE.begin() as conn:
         if "google_sub" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)"))
+        if "registry_consents" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN registry_consents JSON"))
 
         if CONTROL_PLANE_ENGINE.dialect.name == "sqlite":
             conn.execute(
@@ -353,6 +361,14 @@ def _migrate_control_plane_schema() -> None:
             )
         elif CONTROL_PLANE_ENGINE.dialect.name == "postgresql":
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub)"))
+
+        if "sites" in table_names:
+            site_columns = {column["name"] for column in inspector.get_columns("sites")}
+            if "research_registry_enabled" not in site_columns:
+                if CONTROL_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE sites ADD COLUMN research_registry_enabled BOOLEAN NOT NULL DEFAULT 1"))
+                else:
+                    conn.execute(text("ALTER TABLE sites ADD COLUMN research_registry_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
 
 
 def _migrate_data_plane_schema() -> None:
@@ -373,6 +389,14 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
             if "actual_visit_date" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN actual_visit_date VARCHAR(32)"))
+            if "research_registry_status" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_status VARCHAR(32) NOT NULL DEFAULT 'analysis_only'"))
+            if "research_registry_updated_at" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_updated_at VARCHAR(64)"))
+            if "research_registry_updated_by" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_updated_by VARCHAR(64)"))
+            if "research_registry_source" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_source VARCHAR(64)"))
 
         if "patients" in table_names:
             patient_columns = {column["name"] for column in inspector.get_columns("patients")}

@@ -11,6 +11,7 @@ import { Field } from "../components/ui/field";
 import { SectionHeader } from "../components/ui/section-header";
 import { cn } from "../lib/cn";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
+import { useTheme } from "../lib/theme";
 import {
   createPatient,
   downloadManifest,
@@ -52,7 +53,6 @@ type ReviewDraft = {
 };
 
 const TOKEN_KEY = "kera_web_token";
-const WORKSPACE_THEME_KEY = "kera_workspace_theme";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 type OperationsSection = "dashboard" | "training" | "cross_validation";
 
@@ -116,6 +116,7 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
 
 export default function HomePage() {
   const { locale } = useI18n();
+  const { resolvedTheme, setTheme } = useTheme();
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sites, setSites] = useState<SiteRecord[]>([]);
@@ -151,7 +152,6 @@ export default function HomePage() {
   });
   const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
-  const [workspaceTheme, setWorkspaceTheme] = useState<"dark" | "light">("dark");
   const [launchTarget, setLaunchTarget] = useState<{ mode: "canvas" | "operations"; section: OperationsSection } | null>(null);
 
   const approved = user?.approval_status === "approved";
@@ -621,13 +621,6 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    const storedTheme = window.localStorage.getItem(WORKSPACE_THEME_KEY);
-    if (storedTheme === "dark" || storedTheme === "light") {
-      setWorkspaceTheme(storedTheme);
-    }
-  }, []);
-
-  useEffect(() => {
     function syncGoogleButtonWidth() {
       const viewportWidth = window.innerWidth;
       if (viewportWidth <= 560) {
@@ -647,10 +640,6 @@ export default function HomePage() {
       window.removeEventListener("resize", syncGoogleButtonWidth);
     };
   }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem(WORKSPACE_THEME_KEY, workspaceTheme);
-  }, [workspaceTheme]);
 
   useEffect(() => {
     if (!approved || !canOpenOperations || !launchTarget || launchTarget.mode !== "operations") {
@@ -914,18 +903,17 @@ export default function HomePage() {
     }
     setError(null);
     setGoogleLaunchPulse(true);
-    googleButtonRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     window.setTimeout(() => {
       setGoogleLaunchPulse(false);
       const host = googleButtonRef.current;
       if (!host) {
         return;
       }
-      const interactive = host.querySelector<HTMLElement>('div[role="button"], iframe');
+      const interactive = host.querySelector<HTMLElement>('div[role="button"], iframe, [tabindex]');
       if (interactive) {
-        interactive.click();
+        interactive.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
       }
-    }, 180);
+    }, 80);
   }
 
   const landingHospitalChips = [
@@ -1111,8 +1099,8 @@ export default function HomePage() {
           setWorkspaceMode("operations");
         }}
         onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
-        theme={workspaceTheme}
-        onToggleTheme={() => setWorkspaceTheme((current) => (current === "dark" ? "light" : "dark"))}
+        theme={resolvedTheme}
+        onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
       />
     );
   }
@@ -1131,8 +1119,8 @@ export default function HomePage() {
         onLogout={handleLogout}
         onRefreshSites={() => refreshApprovedSites(token)}
         onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
-        theme={workspaceTheme}
-        onToggleTheme={() => setWorkspaceTheme((current) => (current === "dark" ? "light" : "dark"))}
+        theme={resolvedTheme}
+        onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
       />
     );
   }

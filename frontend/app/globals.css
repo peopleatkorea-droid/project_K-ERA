@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, [data-workspace-theme="dark"], [data-workspace-theme="dark"] *));
 
 @theme inline {
   --font-sans: var(--font-sans);
@@ -84,5 +85,54 @@
 
   img {
     max-width: 100%;
+  }
+}
+
+@layer utilities {
+  @keyframes landing-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(22px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .landing-hero-fade {
+    opacity: 0;
+    transform: translateY(22px);
+    animation: landing-fade-up 0.85s ease forwards;
+  }
+
+  .landing-reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 0.55s ease,
+      transform 0.55s ease;
+    will-change: opacity, transform;
+  }
+
+  .landing-reveal.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .landing-hero-fade {
+      animation: none;
+      opacity: 1;
+      transform: none;
+    }
+
+    .landing-reveal,
+    .landing-reveal.is-visible {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
   }
 }

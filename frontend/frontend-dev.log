@@ -50,3 +50,11 @@ Require stack:
  ○ Compiling /_error ...
  ✓ Compiled /_error in 1296ms (1033 modules)
  GET /admin-login 500 in 1873ms
+ ⨯ ./app/globals.css
+Module not found: Can't resolve 'tailwindcss'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./app/globals.css
+^C^C

@@ -8,6 +8,9 @@ import {
   docSectionLabelClass,
   docSiteBadgeClass,
   railSiteButtonClass,
+  researchLaunchActionsClass,
+  researchLaunchCopyClass,
+  researchLaunchStripClass,
   workspaceHeaderClass,
   workspaceKickerClass,
   workspaceMainClass,
@@ -399,7 +402,7 @@ export function AdminWorkspace({
             {summary ? (
               <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
                 <div className="font-medium text-ink">{selectedSiteId}</div>
-                <div>{`${summary.n_patients} ${pick(locale, "patients", "?섏옄")} 쨌 ${summary.n_images} ${pick(locale, "images", "?대?吏")}`}</div>
+                <div>{`${summary.n_patients} ${pick(locale, "patients", "?섏옄")} / ${summary.n_images} ${pick(locale, "images", "?대?吏")}`}</div>
               </div>
             ) : null}
           </Card>
@@ -431,6 +434,27 @@ export function AdminWorkspace({
             </div>
           }
         />
+        <Card as="section" variant="nested" className={researchLaunchStripClass}>
+          <div className={researchLaunchCopyClass}>
+            <div className={docSectionLabelClass}>{pick(locale, "Research runs", "연구 실행")}</div>
+            <strong>{pick(locale, "Open training and validation tools directly", "학습과 검증 도구를 바로 열기")}</strong>
+            <span>{pick(locale, "You no longer need to find the Python CLI manually.", "You no longer need to find the Python CLI manually.")}</span>
+          </div>
+          <div className={researchLaunchActionsClass}>
+            <Button variant="ghost" type="button" onClick={() => setSection("training")}>
+              {pick(locale, "Initial training", "초기 학습")}
+            </Button>
+            <Button variant="ghost" type="button" onClick={() => setSection("cross_validation")}>
+              {pick(locale, "Cross-validation", "교차 검증")}
+            </Button>
+            <Button variant="ghost" type="button" onClick={() => setSection("dashboard")}>
+              {pick(locale, "Hospital validation", "병원 검증")}
+            </Button>
+            <Button variant="ghost" type="button" onClick={() => setSection("cross_validation")}>
+              {pick(locale, "Report export", "Report export")}
+            </Button>
+          </div>
+        </Card>
         <div className="grid gap-4">
           {section === "dashboard" ? (
             <DashboardSection

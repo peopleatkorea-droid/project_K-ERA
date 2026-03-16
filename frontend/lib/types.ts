@@ -19,6 +19,7 @@ export type ManagedSiteRecord = SiteRecord & {
   project_id: string;
   local_storage_root?: string;
   created_at?: string;
+  research_registry_enabled?: boolean;
 };
 
 export type StorageSettingsRecord = {
@@ -49,6 +50,7 @@ export type AuthUser = {
   site_ids: string[] | null;
   approval_status: AuthState;
   latest_access_request?: AccessRequestRecord | null;
+  registry_consents?: Record<string, { enrolled_at: string; version?: string }>;
 };
 
 export type ManagedUserRecord = AuthUser & {
@@ -180,6 +182,10 @@ export type CaseSummaryRecord = {
   is_initial_visit: boolean;
   smear_result: string;
   polymicrobial: boolean;
+  research_registry_status?: "analysis_only" | "candidate" | "included" | "excluded";
+  research_registry_updated_at?: string | null;
+  research_registry_updated_by?: string | null;
+  research_registry_source?: string | null;
   image_count: number;
   representative_image_id: string | null;
   representative_view: string | null;
@@ -195,6 +201,13 @@ export type SiteSummary = {
   n_active_visits: number;
   n_validation_runs: number;
   latest_validation?: Record<string, unknown> | null;
+  research_registry?: {
+    site_enabled: boolean;
+    user_enrolled: boolean;
+    user_enrolled_at?: string | null;
+    included_cases: number;
+    excluded_cases: number;
+  };
 };
 
 export type CaseValidationSummary = {
@@ -437,6 +450,22 @@ export type CaseContributionResponse = {
     architecture: string;
   };
   stats: ContributionStats;
+};
+
+export type CaseResearchRegistryResponse = {
+  patient_id: string;
+  visit_date: string;
+  research_registry_status: "analysis_only" | "candidate" | "included" | "excluded";
+  research_registry_updated_at?: string | null;
+  research_registry_updated_by?: string | null;
+  research_registry_source?: string | null;
+};
+
+export type ResearchRegistrySettingsResponse = {
+  site_id: string;
+  research_registry_enabled: boolean;
+  user_enrolled?: boolean;
+  user_enrolled_at?: string | null;
 };
 
 export type RoiPreviewRecord = {

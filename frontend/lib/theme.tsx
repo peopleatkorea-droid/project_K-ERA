@@ -59,6 +59,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!mounted) return;
     document.documentElement.setAttribute("data-theme", resolvedTheme);
+    document.documentElement.classList.toggle("dark", resolvedTheme === "dark");
   }, [resolvedTheme, mounted]);
 
   const setTheme = (newTheme: Theme) => {

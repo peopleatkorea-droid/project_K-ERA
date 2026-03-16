@@ -1186,6 +1186,68 @@ class ApiHttpTests(unittest.TestCase):
             self.assertNotIn("patient_id", activity_payload["recent_contributions"][0])
             self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
 
+    def test_research_registry_opt_in_and_case_include_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+
+        summary_before = self.client.get(
+            f"/api/sites/{self.site_id}/summary",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(summary_before.status_code, 200, summary_before.text)
+        self.assertFalse(summary_before.json()["research_registry"]["user_enrolled"])
+        self.assertTrue(summary_before.json()["research_registry"]["site_enabled"])
+
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+        self.assertTrue(consent_response.json()["user_enrolled"])
+
+        include_response = self.client.post(
+            f"/api/sites/{self.site_id}/cases/research-registry",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "action": "include",
+                "source": "test_auto_include",
+            },
+        )
+        self.assertEqual(include_response.status_code, 200, include_response.text)
+        self.assertEqual(include_response.json()["research_registry_status"], "included")
+
+        summary_after_include = self.client.get(
+            f"/api/sites/{self.site_id}/summary",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(summary_after_include.status_code, 200, summary_after_include.text)
+        self.assertEqual(summary_after_include.json()["research_registry"]["included_cases"], 1)
+        self.assertEqual(summary_after_include.json()["research_registry"]["excluded_cases"], 0)
+
+        exclude_response = self.client.post(
+            f"/api/sites/{self.site_id}/cases/research-registry",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "2026-03-11",
+                "action": "exclude",
+                "source": "test_manual_exclude",
+            },
+        )
+        self.assertEqual(exclude_response.status_code, 200, exclude_response.text)
+        self.assertEqual(exclude_response.json()["research_registry_status"], "excluded")
+
+        summary_after_exclude = self.client.get(
+            f"/api/sites/{self.site_id}/summary",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(summary_after_exclude.status_code, 200, summary_after_exclude.text)
+        self.assertEqual(summary_after_exclude.json()["research_registry"]["included_cases"], 0)
+        self.assertEqual(summary_after_exclude.json()["research_registry"]["excluded_cases"], 1)
+
     def test_delete_visit_removes_patient_when_last_visit_http(self):
         token = self._token_for_username("http_researcher")
         self._seed_case(token)

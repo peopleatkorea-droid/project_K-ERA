@@ -340,6 +340,28 @@ python -m unittest tests.test_modeling
 - 프론트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.
 - 배포용 인증, 비밀 관리, 감사 로깅, 장애 복구는 연구용 로컬 노드 수준으로만 구성되어 있습니다.
 
+### 프론트엔드 빌드/캐시 트러블슈팅
+
+개발 서버가 비정상 종료되었거나 Next 캐시가 꼬인 경우 아래 증상이 일시적으로 나타날 수 있습니다.
+
+- `/_error` 또는 `/500` prerender 실패
+- `.next` 내부 청크 누락 (`Cannot find module './xxx.js'`)
+- `app/globals.css`에서 `tailwindcss` 모듈 해석 실패
+
+이 경우 프론트엔드 디렉토리에서 캐시를 지우고 다시 빌드합니다.
+
+```powershell
+cd .\frontend
+npm run rebuild
+```
+
+개발 서버도 캐시를 비운 상태로 다시 띄울 수 있습니다.
+
+```powershell
+cd .\frontend
+npm run dev:clean
+```
+
 ---
 
 ## 관련 문서

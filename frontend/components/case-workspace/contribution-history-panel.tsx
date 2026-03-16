@@ -35,10 +35,16 @@ type Props = {
   canRunValidation: boolean;
   canContributeSelectedCase: boolean;
   hasValidationResult: boolean;
+  researchRegistryEnabled: boolean;
+  researchRegistryUserEnrolled: boolean;
+  researchRegistryBusy: boolean;
   contributionBusy: boolean;
   contributionResult: CaseContributionResponse | null;
   historyBusy: boolean;
   caseHistory: CaseHistoryResponse | null;
+  onJoinResearchRegistry: () => void;
+  onIncludeResearchCase: () => void;
+  onExcludeResearchCase: () => void;
   onContributeCase: () => void;
   completionContent: ReactNode;
   formatProbability: (value: number | null | undefined, emptyLabel?: string) => string;
@@ -51,10 +57,16 @@ export function ContributionHistoryPanel({
   canRunValidation,
   canContributeSelectedCase,
   hasValidationResult,
+  researchRegistryEnabled,
+  researchRegistryUserEnrolled,
+  researchRegistryBusy,
   contributionBusy,
   contributionResult,
   historyBusy,
   caseHistory,
+  onJoinResearchRegistry,
+  onIncludeResearchCase,
+  onExcludeResearchCase,
   onContributeCase,
   completionContent,
   formatProbability,
@@ -93,10 +105,89 @@ export function ContributionHistoryPanel({
   const organismModeLabel = selectedCase.polymicrobial
     ? pick(locale, "Polymicrobial", "다균종")
     : pick(locale, "Single organism", "단일 균종");
+  const researchRegistryStatus = selectedCase.research_registry_status ?? "analysis_only";
+  const researchRegistryStatusLabel =
+    {
+      analysis_only: pick(locale, "Analysis only", "분석 전용"),
+      candidate: pick(locale, "Candidate", "후보"),
+      included: pick(locale, "Included", "포함됨"),
+      excluded: pick(locale, "Excluded", "제외됨"),
+    }[researchRegistryStatus] ?? pick(locale, "Analysis only", "분석 전용");
 
   return (
     <>
       {completionContent}
+
+      <Card as="section" variant="panel" className={`grid gap-4 p-5 ${contributionPanelClass}`}>
+        <SectionHeader
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Research registry", "연구 레지스트리")}</div>}
+          title={pick(locale, "Control automatic dataset inclusion", "자동 데이터셋 포함 제어")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Validation remains free. Once you join the registry, eligible cases can be included automatically and each case can still be excluded here.",
+            "검증은 무료로 유지됩니다. 한 번 레지스트리에 가입하면 적격 케이스가 자동 포함될 수 있고, 각 케이스는 여기서 계속 제외할 수 있습니다."
+          )}
+        />
+
+        <div className={docBadgeRowClass}>
+          <span className={docSiteBadgeClass}>{`${pick(locale, "Site", "기관")} / ${
+            researchRegistryEnabled ? pick(locale, "Enabled", "사용 중") : pick(locale, "Disabled", "비활성")
+          }`}</span>
+          <span className={docSiteBadgeClass}>{`${pick(locale, "Me", "내 상태")} / ${
+            researchRegistryUserEnrolled ? pick(locale, "Joined", "가입 완료") : pick(locale, "Not joined", "미가입")
+          }`}</span>
+          <span className={docSiteBadgeClass}>{`${pick(locale, "Case", "케이스")} / ${researchRegistryStatusLabel}`}</span>
+        </div>
+
+        <Card as="div" variant="nested" className={contributionStatusCardClass}>
+          <p className="m-0 text-sm leading-6 text-muted">
+            {researchRegistryStatus === "included"
+              ? pick(
+                  locale,
+                  "This case is currently included in the site's research dataset flow.",
+                  "이 케이스는 현재 기관 연구 데이터셋 흐름에 포함되어 있습니다."
+                )
+              : researchRegistryStatus === "excluded"
+                ? pick(
+                    locale,
+                    "This case is excluded from the research dataset until you include it again.",
+                    "이 케이스는 다시 포함하기 전까지 연구 데이터셋에서 제외되어 있습니다."
+                  )
+                : pick(
+                    locale,
+                    "Join the registry once, then keep each case included or excluded explicitly from this panel.",
+                    "한 번 레지스트리에 가입한 뒤, 각 케이스를 이 패널에서 명시적으로 포함하거나 제외할 수 있습니다."
+                  )}
+          </p>
+        </Card>
+
+        <div className="flex flex-wrap gap-2">
+          {!researchRegistryUserEnrolled ? (
+            <Button type="button" variant="primary" size="sm" onClick={onJoinResearchRegistry} disabled={researchRegistryBusy || !researchRegistryEnabled}>
+              {researchRegistryBusy ? pick(locale, "Joining...", "가입 중...") : pick(locale, "Join research registry", "연구 레지스트리 가입")}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onIncludeResearchCase}
+            disabled={researchRegistryBusy || !researchRegistryEnabled || !researchRegistryUserEnrolled || researchRegistryStatus === "included"}
+          >
+            {researchRegistryBusy ? pick(locale, "Updating...", "업데이트 중...") : pick(locale, "Include this case", "이 케이스 포함")}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onExcludeResearchCase}
+            disabled={researchRegistryBusy || researchRegistryStatus === "excluded"}
+          >
+            {researchRegistryBusy ? pick(locale, "Updating...", "업데이트 중...") : pick(locale, "Exclude this case", "이 케이스 제외")}
+          </Button>
+        </div>
+      </Card>
 
       <Card as="section" variant="panel" className={`grid gap-4 p-5 ${contributionPanelClass}`}>
         <SectionHeader

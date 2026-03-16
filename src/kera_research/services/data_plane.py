@@ -303,6 +303,10 @@ class SiteStore:
             "is_initial_visit": bool(is_initial_visit),
             "smear_result": smear_result.strip(),
             "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
+            "research_registry_status": "analysis_only",
+            "research_registry_updated_at": utc_now(),
+            "research_registry_updated_by": created_by_user_id,
+            "research_registry_source": "visit_create",
             "created_at": utc_now(),
         }
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -651,6 +655,10 @@ class SiteStore:
                     "polymicrobial": bool(
                         visit.get("polymicrobial", False) or (visit.get("additional_organisms", []) or [])
                     ),
+                    "research_registry_status": visit.get("research_registry_status", "analysis_only"),
+                    "research_registry_updated_at": visit.get("research_registry_updated_at"),
+                    "research_registry_updated_by": visit.get("research_registry_updated_by"),
+                    "research_registry_source": visit.get("research_registry_source"),
                     "image_count": len(visit_images),
                     "representative_image_id": representative["image_id"] if representative else None,
                     "representative_view": representative["view"] if representative else None,
@@ -669,6 +677,44 @@ class SiteStore:
             reverse=True,
         )
         return summaries
+
+    def update_visit_registry_status(
+        self,
+        patient_id: str,
+        visit_date: str,
+        *,
+        status_value: str,
+        updated_by_user_id: str | None,
+        source: str,
+    ) -> dict[str, Any]:
+        existing = self.get_visit(patient_id, visit_date)
+        if existing is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        normalized_status = str(status_value or "").strip().lower()
+        if normalized_status not in {"analysis_only", "candidate", "included", "excluded"}:
+            raise ValueError("Invalid registry status.")
+        values = {
+            "research_registry_status": normalized_status,
+            "research_registry_updated_at": utc_now(),
+            "research_registry_updated_by": updated_by_user_id,
+            "research_registry_source": str(source or "").strip() or None,
+        }
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_visits)
+                .where(
+                    and_(
+                        db_visits.c.site_id == self.site_id,
+                        db_visits.c.patient_id == patient_id,
+                        db_visits.c.visit_date == visit_date,
+                    )
+                )
+                .values(**values)
+            )
+        refreshed = self.get_visit(patient_id, visit_date)
+        if refreshed is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        return refreshed
 
     def generate_manifest(self) -> pd.DataFrame:
         data_frame = pd.DataFrame(self.dataset_records(), columns=MANIFEST_COLUMNS)

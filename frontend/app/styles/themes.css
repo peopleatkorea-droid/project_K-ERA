@@ -1,6 +1,30 @@
 [data-theme="light"],
 [data-workspace-theme="light"] {
   color-scheme: light;
+
+  --bg-canvas: #f5f2ea;
+  --bg-muted: #ece8de;
+  --surface-primary: rgba(255, 255, 255, 0.88);
+  --surface-secondary: rgba(255, 252, 247, 0.92);
+  --surface-elevated: #ffffff;
+  --surface-accent: rgba(50, 84, 255, 0.08);
+
+  --border-subtle: rgba(22, 27, 35, 0.09);
+  --border-strong: rgba(22, 27, 35, 0.16);
+
+  --text-primary: #171b22;
+  --text-secondary: #5d6573;
+  --text-tertiary: #838b99;
+
+  --accent: #3058ff;
+  --accent-strong: #1f43d4;
+  --accent-contrast: #f8fbff;
+  --danger: #d45d63;
+  --success: #0d9472;
+
+  --shadow-md: 0 24px 60px rgba(24, 30, 41, 0.08);
+  --shadow-lg: 0 32px 90px rgba(24, 30, 41, 0.12);
+  --shadow-focus: 0 0 0 4px rgba(48, 88, 255, 0.12);
 }
 
 [data-theme="dark"],
@@ -27,46 +51,7 @@
   --danger: #ef7b81;
   --success: #39c39c;
 
-  --shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.22);
   --shadow-md: 0 24px 60px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.34);
   --shadow-focus: 0 0 0 4px rgba(124, 150, 255, 0.16);
-
-  --panel: var(--surface-primary);
-  --panel-strong: var(--surface-secondary);
-  --line: var(--border-subtle);
-  --ink: var(--text-primary);
-  --muted: var(--text-secondary);
-  --accent-soft: var(--surface-accent);
-  --shadow: var(--shadow-md);
-
-  --color-accent: var(--accent);
-  --color-accent-strong: var(--accent-strong);
-  --color-accent-soft: var(--surface-accent);
-  --color-accent-light: var(--accent);
-  --color-accent-light-strong: var(--accent-strong);
-  --color-danger: var(--danger);
-  --surface-app-bg: var(--bg-canvas);
-  --surface-panel: var(--surface-primary);
-  --surface-panel-strong: var(--surface-secondary);
-  --surface-line: var(--border-subtle);
-  --shadow-elevated: var(--shadow-md);
-  --text-ink: var(--text-primary);
-  --text-muted: var(--text-secondary);
-
-  --ds-color-accent: var(--accent);
-  --ds-color-accent-strong: var(--accent-strong);
-  --ds-color-accent-soft: var(--surface-accent);
-  --ds-color-accent-light: var(--accent);
-  --ds-color-accent-light-strong: var(--accent-strong);
-  --ds-color-danger: var(--danger);
-  --ds-surface-app: var(--bg-canvas);
-  --ds-surface-panel: var(--surface-primary);
-  --ds-surface-panel-strong: var(--surface-secondary);
-  --ds-surface-muted: rgba(255, 255, 255, 0.04);
-  --ds-border-subtle: var(--border-subtle);
-  --ds-text-primary: var(--text-primary);
-  --ds-text-secondary: var(--text-secondary);
-  --ds-shadow-card: var(--shadow-md);
-  --ds-shadow-overlay: var(--shadow-lg);
 }

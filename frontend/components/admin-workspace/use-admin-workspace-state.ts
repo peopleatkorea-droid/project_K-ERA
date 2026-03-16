@@ -155,6 +155,7 @@ export function createSiteForm(projectId = "") {
     site_code: "",
     display_name: "",
     hospital_name: "",
+    research_registry_enabled: true,
   };
 }
 

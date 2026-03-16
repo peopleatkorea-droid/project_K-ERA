@@ -13,9 +13,8 @@ if (-not $env:KERA_GOOGLE_CLIENT_ID -and $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
     $env:KERA_GOOGLE_CLIENT_ID = $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID
 }
 
-# Force the API process back onto the original MedSAM path unless the code is
-# changed again intentionally. This also clears stale Swin-LiteMedSAM overrides
-# that may still be inherited from an older shell session.
+# Force the API process onto the supported MedSAM path and clear any stale
+# segmentation override variables inherited from an older shell session.
 $env:KERA_SEGMENTATION_BACKEND = "medsam"
 $env:SEGMENTATION_BACKEND = "medsam"
 foreach ($name in @(
