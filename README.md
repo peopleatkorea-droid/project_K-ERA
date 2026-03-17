@@ -90,9 +90,21 @@ FastAPI 서버와 Next.js 개발 서버를 함께 실행하고, 사용 가능한
 | `KERA_GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (백엔드) |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (프론트엔드) |
 | `KERA_CONTROL_PLANE_DATABASE_URL` | 중앙 control plane DB (사용자, 권한, 프로젝트, 모델 레지스트리) |
+| `KERA_CONTROL_PLANE_DIR` | 중앙 control plane 파일 루트 (`validation_cases`, `validation_reports`, `experiments`, `artifacts`) |
 | `KERA_CONTROL_PLANE_ARTIFACT_DIR` | 중앙 delta 및 control plane 파일 아티팩트 저장 경로 |
 | `KERA_DATA_PLANE_DATABASE_URL` | 병원 로컬 data plane DB (환자, 방문, 이미지) |
 | `KERA_STORAGE_DIR` | 기본 저장 루트 경로 (예: `D:\KERA_DATA`) |
+| `KERA_MODEL_DIR` | 글로벌 모델 파일 공유 경로 |
+| `KERA_MODEL_SOURCE_PROVIDER` | 모델 아티팩트 제공자 라벨 (`local`, `onedrive_sharepoint` 등) |
+| `KERA_MODEL_AUTO_DOWNLOAD` | `download_url`이 있는 모델을 로컬 `KERA_MODEL_DIR` 캐시로 자동 다운로드할지 여부 |
+| `KERA_MODEL_KEEP_VERSIONS` | 로컬 캐시에 유지할 모델 버전 수 |
+| `KERA_MODEL_DOWNLOAD_TIMEOUT_SECONDS` | 모델 다운로드 타임아웃(초) |
+| `KERA_MODEL_DISTRIBUTION_MODE` | `local_path` 또는 `download_url`. `download_url`이면 새 글로벌 모델은 배포 URL 등록 전 `pending_upload` 상태로 유지 |
+| `KERA_ONEDRIVE_TENANT_ID` | OneDrive/SharePoint Graph app의 tenant ID |
+| `KERA_ONEDRIVE_CLIENT_ID` | OneDrive/SharePoint Graph app의 client ID |
+| `KERA_ONEDRIVE_CLIENT_SECRET` | OneDrive/SharePoint Graph app의 client secret |
+| `KERA_ONEDRIVE_DRIVE_ID` | 업로드 대상 document library 또는 drive ID |
+| `KERA_ONEDRIVE_ROOT_PATH` | drive 내부에서 K-ERA 모델/델타를 올릴 루트 폴더 경로 |
 | `KERA_DATABASE_URL` / `DATABASE_URL` | 단일 DB 방식 사용 시 (control/data plane 미분리) |
 | `KERA_CASE_REFERENCE_SALT` | case_reference_id 해시 salt (다기관 환경에서 모든 노드가 동일 값 사용 권장) |
 | `MEDSAM_SCRIPT` | MedSAM 실행 스크립트 경로 |
@@ -107,10 +119,15 @@ FastAPI 서버와 Next.js 개발 서버를 함께 실행하고, 사용 가능한
 - `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 실행 스크립트가 서버/프론트엔드에서 서로 보완되도록 처리합니다.
 - `KERA_CONTROL_PLANE_DATABASE_URL`과 `KERA_DATA_PLANE_DATABASE_URL`을 모두 지정하면 control/data plane DB가 분리됩니다. 미지정 시 단일 DB(`KERA_DATABASE_URL` 또는 기본 SQLite)를 공용으로 사용합니다.
 - 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\KERA_DATA\kera.db`입니다.
+- 집/병원 등 여러 관리자 PC에서 같은 validation metadata와 model registry artifact를 보려면 `KERA_CONTROL_PLANE_DIR`과 `KERA_MODEL_DIR`을 모든 관리자 PC에서 동일한 공유 경로로 맞추는 것을 권장합니다.
+- OneDrive/SharePoint 자동 발행을 쓰려면 `KERA_MODEL_DISTRIBUTION_MODE=download_url`과 `KERA_ONEDRIVE_*`를 함께 설정하세요. 그러면 관리자 Registry의 `자동 발행` 버튼으로 모델/델타를 바로 업로드하고 링크를 등록할 수 있습니다.
+- Graph 설정이 없으면 기존처럼 `scripts/publish_model_version.py` 또는 관리자 수동 URL 등록으로 계속 운영할 수 있습니다.
 
 LLM 설정은 [docs/ai_clinic_llm_setup.md](docs/ai_clinic_llm_setup.md)를 참고하세요.
 
 IRB 제출용 초안은 [docs/irb/README.md](docs/irb/README.md)를 참고하세요.
+
+Single-DB에서 split control/data plane으로 전환할 때는 [docs/control_plane_split_migration.md](docs/control_plane_split_migration.md)를 참고하세요.
 
 ---
 
@@ -296,12 +313,16 @@ python -m kera_research.cli export-report --validation-id <VALIDATION_ID> --outp
 
 ```
 KERA_CONTROL_PLANE_DATABASE_URL=postgresql://central.example.com/kera_control
-KERA_CONTROL_PLANE_ARTIFACT_DIR=/mnt/central-server/artifacts
+KERA_CONTROL_PLANE_DIR=/mnt/central-server/control_plane
+KERA_CONTROL_PLANE_ARTIFACT_DIR=/mnt/central-server/control_plane/artifacts
 KERA_DATA_PLANE_DATABASE_URL=sqlite:///D:/KERA_DATA/kera_data.db
 KERA_STORAGE_DIR=D:\KERA_DATA
+KERA_MODEL_DIR=/mnt/central-server/models
+KERA_MODEL_DISTRIBUTION_MODE=download_url
 ```
 
 - 중앙 control plane: Neon Postgres 등 클라우드 DB 권장
+- 중앙 control plane 파일: 공유 스토리지(예: SMB/NAS, mounted drive) 권장
 - 병원 Local Node data plane: 각 PC 로컬 SQLite 또는 병원 내부 DB
 
 ---
@@ -385,6 +406,7 @@ python -m unittest tests.test_modeling
 - AI Clinic embedding indexing / backfill, lesion live preview, 관리자 aggregation은 현재 별도 외부 큐가 아니라 API 프로세스 내부 daemon thread로 실행됩니다. 따라서 API 프로세스 재시작이나 종료 시 해당 작업은 중단될 수 있습니다.
 - MedSAM은 로컬 스크립트와 체크포인트가 준비된 경우에만 사용하며, 그렇지 않으면 fallback ROI 경로를 사용합니다.
 - 프론트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.
+- 프론트엔드는 기본적으로 동일 origin의 `/api/...`로 요청하고, Next 개발 서버가 내부적으로 `http://127.0.0.1:8000` API로 프록시합니다. 다른 주소를 써야 하면 `KERA_INTERNAL_API_BASE_URL` 또는 `NEXT_PUBLIC_API_BASE_URL`을 설정합니다.
 - 배포용 인증, 비밀 관리, 감사 로깅, 장애 복구는 연구용 로컬 노드 수준으로만 구성되어 있습니다.
 
 ### 프론트엔드 빌드/캐시 트러블슈팅

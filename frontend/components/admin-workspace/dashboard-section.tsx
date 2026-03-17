@@ -123,9 +123,9 @@ function Panel({
         description={description}
         aside={
           subtitle || actions ? (
-            <div className="flex flex-wrap items-center justify-end gap-2.5 max-[900px]:justify-start">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2.5 max-[900px]:justify-start">
               {subtitle ? (
-                <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4">
+                <span className="inline-flex min-h-9 max-w-full items-center rounded-full border border-border bg-white/55 px-3 py-1 text-left text-[0.78rem] font-medium text-muted whitespace-normal break-words [overflow-wrap:anywhere] dark:bg-white/4">
                   {subtitle}
                 </span>
               ) : null}
@@ -158,7 +158,7 @@ function DetailRow({ items }: { items: Array<ReactNode | null | undefined> }) {
       {visibleItems.map((item, index) => (
         <span
           key={index}
-          className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4"
+          className="inline-flex min-h-9 max-w-full items-center rounded-full border border-border bg-white/55 px-3 py-1 text-left text-[0.78rem] font-medium text-muted whitespace-normal break-words [overflow-wrap:anywhere] dark:bg-white/4"
         >
           {item}
         </span>
@@ -488,14 +488,14 @@ export function DashboardSection({
                     key={item.modelVersion}
                     as="div"
                     variant="panel"
-                    className="grid gap-2 p-4 md:grid-cols-[minmax(0,1.4fr)_0.6fr_repeat(4,minmax(0,0.72fr))] md:items-center md:gap-3"
+                    className="grid gap-2 p-4 md:grid-cols-[minmax(0,1.4fr)_0.6fr_repeat(4,minmax(0,0.72fr))] md:items-center md:gap-3 [&>*]:min-w-0"
                   >
-                    <strong className="text-sm font-semibold text-ink">{item.modelVersion}</strong>
-                    <span className="text-sm text-muted">{item.count}</span>
-                    <span className="text-sm text-muted">{formatMetric(item.AUROC, notAvailableLabel)}</span>
-                    <span className="text-sm text-muted">{formatMetric(item.accuracy, notAvailableLabel)}</span>
-                    <span className="text-sm text-muted">{formatMetric(item.sensitivity, notAvailableLabel)}</span>
-                    <span className="text-sm text-muted">{formatMetric(item.F1, notAvailableLabel)}</span>
+                    <strong className="min-w-0 break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]">{item.modelVersion}</strong>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{item.count}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(item.AUROC, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(item.accuracy, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(item.sensitivity, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(item.F1, notAvailableLabel)}</span>
                   </Card>
                 ))}
               </div>
@@ -547,16 +547,16 @@ export function DashboardSection({
                         disabled={isDisabled}
                         onClick={() => toggleRocValidationSelection(run.validation_id)}
                         className={cn(
-                          "grid gap-1.5 rounded-[20px] border px-4 py-4 text-left transition duration-150 ease-out",
+                          "grid min-w-0 gap-1.5 rounded-[20px] border px-4 py-4 text-left transition duration-150 ease-out",
                           isActive
                             ? "border-brand/30 bg-brand-soft/80 shadow-card"
                             : "border-border bg-white/55 hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted dark:bg-white/4",
                           isDisabled && "cursor-not-allowed opacity-55"
                         )}
                       >
-                        <strong className="text-sm font-semibold text-ink">{run.model_version}</strong>
-                        <span className="text-[0.82rem] text-muted">{formatDateTime(run.run_date)}</span>
-                        <span className="text-[0.82rem] text-muted">
+                        <strong className="min-w-0 break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]">{run.model_version}</strong>
+                        <span className="min-w-0 break-words text-[0.82rem] text-muted [overflow-wrap:anywhere]">{formatDateTime(run.run_date)}</span>
+                        <span className="min-w-0 break-words text-[0.82rem] text-muted [overflow-wrap:anywhere]">
                           {pick(locale, "Cases", "케이스")} {run.n_cases} · AUROC{" "}
                           {formatMetric(run.AUROC, notAvailableLabel)}
                         </span>
@@ -686,9 +686,9 @@ export function DashboardSection({
                             aria-hidden="true"
                           />
                           <div className="grid gap-1">
-                            <strong className="text-sm font-semibold text-ink">{series.run.model_version}</strong>
-                            <span className="text-[0.82rem] text-muted">{formatDateTime(series.run.run_date)}</span>
-                            <span className="text-[0.82rem] text-muted">
+                            <strong className="min-w-0 break-words text-sm font-semibold text-ink [overflow-wrap:anywhere]">{series.run.model_version}</strong>
+                            <span className="min-w-0 break-words text-[0.82rem] text-muted [overflow-wrap:anywhere]">{formatDateTime(series.run.run_date)}</span>
+                            <span className="min-w-0 break-words text-[0.82rem] text-muted [overflow-wrap:anywhere]">
                               AUC = {formatMetric(series.run.AUROC, notAvailableLabel)} · {pick(locale, "Cases", "케이스")}{" "}
                               {series.run.n_cases}
                             </span>
@@ -799,18 +799,18 @@ export function DashboardSection({
                     type="button"
                     onClick={() => setSelectedValidationId(run.validation_id)}
                     className={cn(
-                      "grid gap-2 rounded-[20px] border px-4 py-4 text-left transition duration-150 ease-out md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_0.6fr_repeat(3,minmax(0,0.7fr))] md:items-center md:gap-3",
+                      "grid gap-2 rounded-[20px] border px-4 py-4 text-left transition duration-150 ease-out md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_0.6fr_repeat(3,minmax(0,0.7fr))] md:items-center md:gap-3 [&>*]:min-w-0",
                       selectedValidationId === run.validation_id
                         ? "border-brand/30 bg-brand-soft/80 shadow-card"
                         : "border-border bg-white/55 hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted dark:bg-white/4"
                     )}
                   >
-                    <span className="text-sm font-medium text-ink">{formatDateTime(run.run_date)}</span>
-                    <span className="text-sm text-muted">{run.model_version}</span>
-                    <span className="text-sm text-muted">{run.n_cases}</span>
-                    <span className="text-sm text-muted">{formatMetric(run.AUROC, notAvailableLabel)}</span>
-                    <span className="text-sm text-muted">{formatMetric(run.accuracy, notAvailableLabel)}</span>
-                    <span className="text-sm text-muted">{formatMetric(run.F1, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{formatDateTime(run.run_date)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{run.model_version}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{run.n_cases}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(run.AUROC, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(run.accuracy, notAvailableLabel)}</span>
+                    <span className="min-w-0 break-words text-sm text-muted [overflow-wrap:anywhere]">{formatMetric(run.F1, notAvailableLabel)}</span>
                   </button>
                 ))}
               </div>

@@ -16,6 +16,7 @@ from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from kera_research.config import DEFAULT_GLOBAL_MODELS
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.services.model_artifacts import ModelArtifactStore
 
 try:
     import torch
@@ -380,6 +381,7 @@ class Prediction:
 class ModelManager:
     def __init__(self) -> None:
         seed_everything()
+        self.artifact_store = ModelArtifactStore()
 
     def preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
         return {
@@ -525,14 +527,20 @@ class ModelManager:
                     },
                     model_path,
                 )
+            sha256_value = self.artifact_store.sha256_file(model_path)
             baselines.append(
                 {
                     "version_id": template["version_id"],
                     "version_name": template["version_name"],
+                    "model_name": "keratitis_cls",
                     "architecture": template["architecture"],
                     "stage": "global",
                     "base_version_id": None,
                     "model_path": str(model_path),
+                    "filename": model_path.name,
+                    "sha256": sha256_value,
+                    "size_bytes": int(model_path.stat().st_size),
+                    "source_provider": "local",
                     "requires_medsam_crop": template.get("requires_medsam_crop", False),
                     "training_input_policy": (
                         "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
@@ -551,14 +559,29 @@ class ModelManager:
             )
         return baselines
 
+    def resolve_model_reference(
+        self,
+        model_reference: dict[str, Any],
+        *,
+        allow_download: bool | None = None,
+    ) -> dict[str, Any]:
+        return self.artifact_store.resolve_model_reference(model_reference, allow_download=allow_download)
+
+    def resolve_model_path(
+        self,
+        model_reference: dict[str, Any],
+        *,
+        allow_download: bool | None = None,
+    ) -> str:
+        return str(self.artifact_store.resolve_model_path(model_reference, allow_download=allow_download))
+
     def load_model(self, model_reference: dict[str, Any], device: str) -> nn.Module:
         require_torch()
-        architecture = model_reference.get("architecture", "densenet121")
-        model_path = model_reference["model_path"]
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Model artifact not found: {model_path}")
+        resolved_reference = self.resolve_model_reference(model_reference, allow_download=True)
+        architecture = resolved_reference.get("architecture", "densenet121")
+        model_path = resolved_reference["model_path"]
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-        self.validate_model_artifact(model_reference, checkpoint)
+        self.validate_model_artifact(resolved_reference, checkpoint)
         model = self.build_model(architecture).to(device)
         state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
         strict = architecture not in DENSENET_VARIANTS

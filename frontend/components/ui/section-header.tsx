@@ -23,15 +23,19 @@ export function SectionHeader({
 }: SectionHeaderProps) {
   const TitleTag = titleAs;
   return (
-    <div className={cn("flex items-start justify-between gap-4 max-[900px]:flex-col", className)}>
+    <div className={cn("flex min-w-0 items-start justify-between gap-4 max-[900px]:flex-col", className)}>
       <div className="grid min-w-0 gap-2.5">
         {eyebrow ? <div className="w-fit">{eyebrow}</div> : null}
-        <TitleTag className="text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">
+        <TitleTag className="min-w-0 break-words text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
           {title}
         </TitleTag>
-        {description ? <p className="m-0 max-w-3xl text-sm leading-6 text-muted">{description}</p> : null}
+        {description ? (
+          <p className="m-0 max-w-3xl break-words text-sm leading-6 text-muted [overflow-wrap:anywhere]">
+            {description}
+          </p>
+        ) : null}
       </div>
-      {aside ? <div className="shrink-0 max-[900px]:w-full">{aside}</div> : null}
+      {aside ? <div className="min-w-0 max-w-full max-[900px]:w-full">{aside}</div> : null}
     </div>
   );
 }

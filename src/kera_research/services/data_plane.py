@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from io import BytesIO
+import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +10,7 @@ import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, delete, or_, select, update
 
-from kera_research.config import BASE_DIR, SITE_ROOT_DIR, ensure_base_directories
+from kera_research.config import BASE_DIR, PATIENT_REFERENCE_SALT, SITE_ROOT_DIR, ensure_base_directories
 from kera_research.db import (
     CONTROL_PLANE_ENGINE,
     DATA_PLANE_ENGINE,
@@ -25,15 +27,19 @@ from kera_research.domain import (
     MANIFEST_COLUMNS,
     VISIT_STATUS_OPTIONS,
     make_id,
+    make_patient_reference_id,
     normalize_actual_visit_date,
     normalize_patient_pseudonym,
     normalize_visit_label,
     utc_now,
+    visit_index_from_label,
 )
-from kera_research.storage import ensure_dir, write_csv
+from kera_research.storage import ensure_dir, read_json, write_csv, write_json
 
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF", "BMP", "WEBP"}
 _MAX_IMAGE_PIXELS = 40_000_000
+_SITE_STORAGE_ROOT_CACHE: dict[str, Path] = {}
+_SITE_STORAGE_ROOT_CACHE_LOCK = threading.Lock()
 
 
 class InvalidImageUploadError(ValueError):
@@ -73,6 +79,70 @@ def _normalize_additional_organisms(
     return normalized
 
 
+def _list_organisms(
+    culture_category: str,
+    culture_species: str,
+    additional_organisms: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    primary_species = str(culture_species or "").strip()
+    normalized_additional = _normalize_additional_organisms(
+        culture_category,
+        culture_species,
+        additional_organisms,
+    )
+    if not primary_species:
+        return normalized_additional
+    return [
+        {
+            "culture_category": str(culture_category or "").strip().lower(),
+            "culture_species": primary_species,
+        },
+        *normalized_additional,
+    ]
+
+
+def _organism_summary_label(
+    culture_category: str,
+    culture_species: str,
+    additional_organisms: list[dict[str, Any]] | None,
+    *,
+    max_visible_species: int = 2,
+) -> str:
+    organisms = _list_organisms(culture_category, culture_species, additional_organisms)
+    if not organisms:
+        return ""
+    visible_count = max(1, int(max_visible_species or 1))
+    if len(organisms) <= visible_count:
+        return " / ".join(item["culture_species"] for item in organisms)
+    visible = " / ".join(item["culture_species"] for item in organisms[:visible_count])
+    return f"{visible} + {len(organisms) - visible_count}"
+
+
+def _case_summary_sort_key(summary: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(summary.get("latest_image_uploaded_at") or ""),
+        str(summary.get("created_at") or ""),
+        str(summary.get("visit_date") or ""),
+        str(summary.get("patient_id") or ""),
+    )
+
+
+def _case_summary_search_haystack(summary: dict[str, Any]) -> str:
+    additional_organisms = summary.get("additional_organisms", []) or []
+    return " ".join(
+        [
+            str(summary.get("patient_id") or ""),
+            str(summary.get("local_case_code") or ""),
+            str(summary.get("chart_alias") or ""),
+            str(summary.get("culture_category") or ""),
+            str(summary.get("culture_species") or ""),
+            *(str(item.get("culture_species") or "") for item in additional_organisms if isinstance(item, dict)),
+            str(summary.get("visit_date") or ""),
+            str(summary.get("actual_visit_date") or ""),
+        ]
+    ).strip().lower()
+
+
 def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
     try:
         with Image.open(BytesIO(content)) as image:
@@ -106,6 +176,11 @@ def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
 
 
 def _resolve_site_storage_root(site_id: str) -> Path:
+    with _SITE_STORAGE_ROOT_CACHE_LOCK:
+        cached = _SITE_STORAGE_ROOT_CACHE.get(site_id)
+        if cached is not None:
+            return cached
+
     with CONTROL_PLANE_ENGINE.begin() as conn:
         row = conn.execute(
             select(control_sites.c.local_storage_root).where(control_sites.c.site_id == site_id)
@@ -118,8 +193,18 @@ def _resolve_site_storage_root(site_id: str) -> Path:
             root_path = (BASE_DIR / root_path).resolve()
         else:
             root_path = root_path.resolve()
-        return root_path
-    return (SITE_ROOT_DIR / site_id).resolve()
+        resolved_root = root_path
+    else:
+        resolved_root = (SITE_ROOT_DIR / site_id).resolve()
+
+    with _SITE_STORAGE_ROOT_CACHE_LOCK:
+        _SITE_STORAGE_ROOT_CACHE[site_id] = resolved_root
+    return resolved_root
+
+
+def _safe_path_component(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return normalized or "unknown"
 
 
 class SiteStore:
@@ -141,6 +226,7 @@ class SiteStore:
         self.embedding_dir = self.artifact_dir / "embeddings"
         self.validation_dir = self.site_dir / "validation"
         self.update_dir = self.site_dir / "model_updates"
+        self.case_history_dir = self.site_dir / "case_history"
         self._seed_defaults()
 
     def _seed_defaults(self) -> None:
@@ -155,8 +241,77 @@ class SiteStore:
             self.embedding_dir,
             self.validation_dir,
             self.update_dir,
+            self.case_history_dir,
         ):
             ensure_dir(path)
+
+    def _case_history_path(self, patient_id: str, visit_date: str) -> Path:
+        patient_dir = ensure_dir(self.case_history_dir / _safe_path_component(patient_id))
+        return patient_dir / f"{_safe_path_component(visit_date)}.json"
+
+    def load_case_history(self, patient_id: str, visit_date: str) -> dict[str, list[dict[str, Any]]]:
+        history_path = self._case_history_path(patient_id, visit_date)
+        payload = read_json(history_path, {"validations": [], "contributions": []})
+        validations = [dict(item) for item in payload.get("validations", []) if isinstance(item, dict)]
+        contributions = [dict(item) for item in payload.get("contributions", []) if isinstance(item, dict)]
+        validations.sort(
+            key=lambda item: (
+                str(item.get("run_date") or ""),
+                str(item.get("validation_id") or ""),
+            ),
+            reverse=True,
+        )
+        contributions.sort(
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("contribution_id") or ""),
+            ),
+            reverse=True,
+        )
+        return {
+            "validations": validations,
+            "contributions": contributions,
+        }
+
+    def record_case_validation_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        history = self.load_case_history(patient_id, visit_date)
+        validation_id = str(entry.get("validation_id") or "").strip()
+        if validation_id:
+            history["validations"] = [
+                item
+                for item in history["validations"]
+                if str(item.get("validation_id") or "").strip() != validation_id
+            ]
+        history["validations"].append(dict(entry))
+        history["validations"].sort(
+            key=lambda item: (
+                str(item.get("run_date") or ""),
+                str(item.get("validation_id") or ""),
+            ),
+            reverse=True,
+        )
+        write_json(self._case_history_path(patient_id, visit_date), history)
+        return history
+
+    def record_case_contribution_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        history = self.load_case_history(patient_id, visit_date)
+        contribution_id = str(entry.get("contribution_id") or "").strip()
+        if contribution_id:
+            history["contributions"] = [
+                item
+                for item in history["contributions"]
+                if str(item.get("contribution_id") or "").strip() != contribution_id
+            ]
+        history["contributions"].append(dict(entry))
+        history["contributions"].sort(
+            key=lambda item: (
+                str(item.get("created_at") or ""),
+                str(item.get("contribution_id") or ""),
+            ),
+            reverse=True,
+        )
+        write_json(self._case_history_path(patient_id, visit_date), history)
+        return history
 
     def list_patients(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
         query = select(db_patients).where(db_patients.c.site_id == self.site_id)
@@ -237,7 +392,7 @@ class SiteStore:
         query = (
             select(db_visits)
             .where(db_visits.c.site_id == self.site_id)
-            .order_by(db_visits.c.patient_id, db_visits.c.visit_date)
+            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
@@ -297,8 +452,14 @@ class SiteStore:
             "visit_id": make_id("visit"),
             "site_id": self.site_id,
             "patient_id": normalized_patient_id,
+            "patient_reference_id": make_patient_reference_id(
+                self.site_id,
+                normalized_patient_id,
+                PATIENT_REFERENCE_SALT,
+            ),
             "created_by_user_id": created_by_user_id,
             "visit_date": normalized_visit_date,
+            "visit_index": visit_index_from_label(normalized_visit_date),
             "actual_visit_date": normalized_actual_visit_date,
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
@@ -359,7 +520,13 @@ class SiteStore:
         if normalized_status not in VISIT_STATUS_OPTIONS:
             normalized_status = "active" if active_stage else "scar"
         values = {
+            "patient_reference_id": make_patient_reference_id(
+                self.site_id,
+                normalized_patient_id,
+                PATIENT_REFERENCE_SALT,
+            ),
             "actual_visit_date": normalized_actual_visit_date,
+            "visit_index": visit_index_from_label(normalized_visit_date),
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
             "culture_species": normalized_species,
@@ -568,7 +735,7 @@ class SiteStore:
                 )
             )
             .where(patient_table.c.site_id == self.site_id)
-            .order_by(patient_table.c.patient_id, visit_table.c.visit_date, image_table.c.uploaded_at)
+            .order_by(patient_table.c.patient_id, visit_table.c.visit_index, visit_table.c.visit_date, image_table.c.uploaded_at)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
@@ -606,7 +773,7 @@ class SiteStore:
         query = (
             select(db_visits)
             .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
-            .order_by(db_visits.c.visit_date)
+            .order_by(db_visits.c.visit_index, db_visits.c.visit_date)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
@@ -650,7 +817,9 @@ class SiteStore:
                     "case_id": f"{visit['patient_id']}::{visit['visit_date']}",
                     "visit_id": visit["visit_id"],
                     "patient_id": visit["patient_id"],
+                    "patient_reference_id": visit.get("patient_reference_id"),
                     "visit_date": visit["visit_date"],
+                    "visit_index": visit.get("visit_index"),
                     "actual_visit_date": visit.get("actual_visit_date"),
                     "chart_alias": patient.get("chart_alias", ""),
                     "local_case_code": patient.get("local_case_code", ""),
@@ -684,13 +853,80 @@ class SiteStore:
 
         summaries.sort(
             key=lambda item: (
-                item.get("visit_date") or "",
+                int(item.get("visit_index") or 0),
                 item.get("latest_image_uploaded_at") or "",
                 item.get("created_at") or "",
             ),
             reverse=True,
         )
         return summaries
+
+    def list_patient_case_rows(
+        self,
+        *,
+        created_by_user_id: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 25,
+    ) -> dict[str, Any]:
+        normalized_search = str(search or "").strip().lower()
+        bounded_page_size = max(1, min(int(page_size or 25), 100))
+        case_summaries = self.list_case_summaries(created_by_user_id=created_by_user_id)
+        if normalized_search:
+            case_summaries = [
+                item
+                for item in case_summaries
+                if normalized_search in _case_summary_search_haystack(item)
+            ]
+
+        grouped_cases: dict[str, list[dict[str, Any]]] = {}
+        for summary in case_summaries:
+            patient_id = str(summary.get("patient_id") or "").strip()
+            if not patient_id:
+                continue
+            grouped_cases.setdefault(patient_id, []).append(summary)
+
+        rows: list[dict[str, Any]] = []
+        for patient_id, grouped in grouped_cases.items():
+            sorted_cases = sorted(grouped, key=_case_summary_sort_key, reverse=True)
+            latest_case = sorted_cases[0]
+            rows.append(
+                {
+                    "patient_id": patient_id,
+                    "latest_case": latest_case,
+                    "case_count": len(grouped),
+                    "organism_summary": _organism_summary_label(
+                        str(latest_case.get("culture_category") or ""),
+                        str(latest_case.get("culture_species") or ""),
+                        latest_case.get("additional_organisms", []) or [],
+                        max_visible_species=2,
+                    ),
+                    "representative_thumbnails": [
+                        {
+                            "case_id": item["case_id"],
+                            "image_id": item["representative_image_id"],
+                            "view": item.get("representative_view"),
+                            "preview_url": None,
+                        }
+                        for item in sorted_cases
+                        if item.get("representative_image_id")
+                    ][:3],
+                }
+            )
+
+        rows.sort(key=lambda item: _case_summary_sort_key(item["latest_case"]), reverse=True)
+        total_count = len(rows)
+        total_pages = max(1, (total_count + bounded_page_size - 1) // bounded_page_size)
+        safe_page = min(max(1, int(page or 1)), total_pages)
+        start_index = (safe_page - 1) * bounded_page_size
+        end_index = start_index + bounded_page_size
+        return {
+            "items": rows[start_index:end_index],
+            "page": safe_page,
+            "page_size": bounded_page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+        }
 
     def update_visit_registry_status(
         self,

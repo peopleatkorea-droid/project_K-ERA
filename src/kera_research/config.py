@@ -9,8 +9,8 @@ import bcrypt
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
-def _resolve_storage_dir() -> Path:
-    configured = os.getenv("KERA_STORAGE_DIR", "").strip()
+def _resolve_path_env(env_name: str, default: Path) -> Path:
+    configured = os.getenv(env_name, "").strip()
     if configured:
         candidate = Path(configured).expanduser()
         if not candidate.is_absolute():
@@ -18,32 +18,61 @@ def _resolve_storage_dir() -> Path:
         else:
             candidate = candidate.resolve()
         return candidate
-    return (BASE_DIR.parent / "KERA_DATA").resolve()
+    return default.resolve()
+
+
+def _resolve_storage_dir() -> Path:
+    return _resolve_path_env("KERA_STORAGE_DIR", BASE_DIR.parent / "KERA_DATA")
 
 
 STORAGE_DIR = _resolve_storage_dir()
-CONTROL_PLANE_DIR = STORAGE_DIR / "control_plane"
+CONTROL_PLANE_DIR = _resolve_path_env("KERA_CONTROL_PLANE_DIR", STORAGE_DIR / "control_plane")
 CONTROL_PLANE_CASE_DIR = CONTROL_PLANE_DIR / "validation_cases"
 CONTROL_PLANE_REPORT_DIR = CONTROL_PLANE_DIR / "validation_reports"
 CONTROL_PLANE_EXPERIMENT_DIR = CONTROL_PLANE_DIR / "experiments"
-CONTROL_PLANE_ARTIFACT_DIR = Path(
-    os.getenv("KERA_CONTROL_PLANE_ARTIFACT_DIR", "").strip() or (CONTROL_PLANE_DIR / "artifacts")
+CONTROL_PLANE_ARTIFACT_DIR = _resolve_path_env(
+    "KERA_CONTROL_PLANE_ARTIFACT_DIR",
+    CONTROL_PLANE_DIR / "artifacts",
 )
 CASE_REFERENCE_SALT = (
     os.getenv("KERA_CASE_REFERENCE_SALT", "").strip()
     or os.getenv("KERA_API_SECRET", "").strip()
     or "kera-case-reference-v1"
 )
+PATIENT_REFERENCE_SALT = (
+    os.getenv("KERA_PATIENT_REFERENCE_SALT", "").strip()
+    or CASE_REFERENCE_SALT
+)
 # First 16 hex chars of SHA256(salt) — safe to transmit, never reveals the actual salt.
 # All nodes in the same federation must produce the same fingerprint.
 CASE_REFERENCE_SALT_FINGERPRINT = hashlib.sha256(CASE_REFERENCE_SALT.encode()).hexdigest()[:16]
 SITE_ROOT_DIR = STORAGE_DIR / "sites"
-MODEL_DIR = STORAGE_DIR / "models"
+MODEL_DIR = _resolve_path_env("KERA_MODEL_DIR", STORAGE_DIR / "models")
 DOCS_DIR = BASE_DIR / "docs"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 LOCAL_MEDSAM_ROOT = BASE_DIR / "MedSAM-main"
 
 APP_NAME = "K-ERA Research Platform"
+MODEL_CACHE_DIR = MODEL_DIR / "cache"
+MODEL_ACTIVE_MANIFEST_PATH = MODEL_DIR / "active.json"
+MODEL_SOURCE_PROVIDER = os.getenv("KERA_MODEL_SOURCE_PROVIDER", "").strip() or "local"
+MODEL_AUTO_DOWNLOAD = (os.getenv("KERA_MODEL_AUTO_DOWNLOAD", "").strip().lower() or "true") not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+MODEL_KEEP_VERSIONS = max(1, int(os.getenv("KERA_MODEL_KEEP_VERSIONS", "").strip() or "2"))
+MODEL_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("KERA_MODEL_DOWNLOAD_TIMEOUT_SECONDS", "").strip() or "300")
+MODEL_DISTRIBUTION_MODE = os.getenv("KERA_MODEL_DISTRIBUTION_MODE", "").strip().lower() or "local_path"
+ONEDRIVE_TENANT_ID = os.getenv("KERA_ONEDRIVE_TENANT_ID", "").strip()
+ONEDRIVE_CLIENT_ID = os.getenv("KERA_ONEDRIVE_CLIENT_ID", "").strip()
+ONEDRIVE_CLIENT_SECRET = os.getenv("KERA_ONEDRIVE_CLIENT_SECRET", "").strip()
+ONEDRIVE_DRIVE_ID = os.getenv("KERA_ONEDRIVE_DRIVE_ID", "").strip()
+ONEDRIVE_ROOT_PATH = os.getenv("KERA_ONEDRIVE_ROOT_PATH", "").strip().strip("\\/")
+ONEDRIVE_SHARE_SCOPE = os.getenv("KERA_ONEDRIVE_SHARE_SCOPE", "").strip().lower() or "organization"
+ONEDRIVE_SHARE_TYPE = os.getenv("KERA_ONEDRIVE_SHARE_TYPE", "").strip().lower() or "view"
+ONEDRIVE_GRAPH_TIMEOUT_SECONDS = float(os.getenv("KERA_ONEDRIVE_GRAPH_TIMEOUT_SECONDS", "").strip() or "300")
 
 DEFAULT_GLOBAL_MODELS = [
     {
@@ -233,6 +262,7 @@ def ensure_base_directories() -> None:
         CONTROL_PLANE_ARTIFACT_DIR,
         SITE_ROOT_DIR,
         MODEL_DIR,
+        MODEL_CACHE_DIR,
         DOCS_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)

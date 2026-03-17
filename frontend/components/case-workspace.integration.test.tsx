@@ -1,6 +1,6 @@
 import React from "react";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/i18n";
@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   uploadImage: vi.fn(),
   updateImageLesionBox: vi.fn(),
   fetchCases: vi.fn(),
+  fetchPatientListPage: vi.fn(),
   fetchSiteActivity: vi.fn(),
   fetchSiteValidations: vi.fn(),
   fetchSiteModelVersions: vi.fn(),
@@ -21,6 +22,10 @@ const apiMocks = vi.hoisted(() => ({
   fetchImages: vi.fn(),
   fetchImageBlob: vi.fn(),
   fetchCaseHistory: vi.fn(),
+  fetchStoredCaseLesionPreview: vi.fn(),
+  runCaseValidation: vi.fn(),
+  runCaseValidationCompare: vi.fn(),
+  runCaseContribution: vi.fn(),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -34,6 +39,7 @@ vi.mock("../lib/api", async () => {
     uploadImage: apiMocks.uploadImage,
     updateImageLesionBox: apiMocks.updateImageLesionBox,
     fetchCases: apiMocks.fetchCases,
+    fetchPatientListPage: apiMocks.fetchPatientListPage,
     fetchSiteActivity: apiMocks.fetchSiteActivity,
     fetchSiteValidations: apiMocks.fetchSiteValidations,
     fetchSiteModelVersions: apiMocks.fetchSiteModelVersions,
@@ -41,13 +47,18 @@ vi.mock("../lib/api", async () => {
     fetchImages: apiMocks.fetchImages,
     fetchImageBlob: apiMocks.fetchImageBlob,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
+    fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
+    runCaseValidation: apiMocks.runCaseValidation,
+    runCaseValidationCompare: apiMocks.runCaseValidationCompare,
+    runCaseContribution: apiMocks.runCaseContribution,
   };
 });
 
 describe("CaseWorkspace integration", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     window.localStorage.clear();
+    window.history.replaceState(null, "", "/");
     vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("scrollTo", vi.fn());
     URL.createObjectURL = vi.fn(() => "blob:preview-url");
@@ -94,6 +105,13 @@ describe("CaseWorkspace integration", () => {
           visit_status: "active",
         },
       ]);
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [],
+      page: 1,
+      page_size: 25,
+      total_count: 0,
+      total_pages: 1,
+    });
     apiMocks.fetchSiteActivity.mockResolvedValue({
       totals: {
         patients: 1,
@@ -138,6 +156,102 @@ describe("CaseWorkspace integration", () => {
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
       contributions: [],
+    });
+    apiMocks.fetchStoredCaseLesionPreview.mockResolvedValue([]);
+    apiMocks.runCaseValidation.mockResolvedValue({
+      summary: {
+        validation_id: "validation_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        predicted_label: "fungal",
+        true_label: "bacterial",
+        prediction_probability: 0.82,
+        is_correct: false,
+      },
+      case_prediction: null,
+      model_version: {
+        version_id: "model_convnext",
+        version_name: "global-convnext",
+        architecture: "convnext_tiny",
+        requires_medsam_crop: true,
+        crop_mode: "automated",
+        ensemble_mode: null,
+      },
+      execution_device: "cpu",
+      artifact_availability: {
+        gradcam: false,
+        roi_crop: false,
+        medsam_mask: false,
+        lesion_crop: false,
+        lesion_mask: false,
+      },
+    });
+    apiMocks.runCaseValidationCompare.mockResolvedValue({
+      patient_id: "KERA-2026-001",
+      visit_date: "Initial",
+      execution_device: "cpu",
+      comparisons: [],
+    });
+    apiMocks.runCaseContribution.mockResolvedValue({
+      update: {
+        update_id: "update_1",
+        site_id: "SITE_A",
+        base_model_version_id: "model_vit",
+        architecture: "vit",
+        upload_type: "weight delta",
+        execution_device: "cpu",
+        artifact_path: "C:\\KERA\\delta_1.pth",
+        n_cases: 1,
+        contributed_by: "user_researcher",
+        case_reference_id: "case_ref_1",
+        created_at: "2026-03-15T00:00:00Z",
+        training_input_policy: "medsam_cornea_crop_only",
+        training_summary: {},
+        status: "pending_review",
+      },
+      updates: [
+        {
+          update_id: "update_1",
+          site_id: "SITE_A",
+          base_model_version_id: "model_vit",
+          architecture: "vit",
+          upload_type: "weight delta",
+          execution_device: "cpu",
+          artifact_path: "C:\\KERA\\delta_1.pth",
+          n_cases: 1,
+          contributed_by: "user_researcher",
+          case_reference_id: "case_ref_1",
+          created_at: "2026-03-15T00:00:00Z",
+          training_input_policy: "medsam_cornea_crop_only",
+          training_summary: {},
+          status: "pending_review",
+          crop_mode: "automated",
+        },
+      ],
+      update_count: 1,
+      visit_status: "active",
+      execution_device: "cpu",
+      model_version: {
+        version_id: "model_vit",
+        version_name: "vit-v1",
+        architecture: "vit",
+      },
+      model_versions: [
+        {
+          version_id: "model_vit",
+          version_name: "vit-v1",
+          architecture: "vit",
+          crop_mode: "automated",
+          ensemble_mode: null,
+        },
+      ],
+      failures: [],
+      stats: {
+        total_contributions: 1,
+        user_contributions: 1,
+        user_contribution_pct: 100,
+        current_model_version: "global-http-seed",
+      },
     });
   });
 
@@ -220,20 +334,38 @@ describe("CaseWorkspace integration", () => {
     return file;
   }
 
+  it("keeps startup recovery toasts in the recent alerts card", async () => {
+    seedDraft();
+    renderWorkspace();
+
+    expect(await screen.findByText("Recent alerts")).toBeInTheDocument();
+    expect(
+      (
+        await screen.findAllByText(
+          "Recovered the last saved draft properties for this hospital. Re-attach image files before saving."
+        )
+      ).length
+    ).toBeGreaterThan(0);
+  });
+
   it("completes intake, uploads an image, and saves a new case", async () => {
     const onSiteDataChanged = vi.fn(async () => undefined);
     seedDraft();
     const { container } = renderWorkspace(onSiteDataChanged);
 
     await waitFor(() => {
-      expect(apiMocks.fetchCases).toHaveBeenCalledWith("SITE_A", "test-token", { mine: false });
+      expect(apiMocks.fetchCases).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ mine: false, signal: expect.any(AbortSignal) }),
+      );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
 
     const file = await addDraftImage(container);
 
-    fireEvent.click(screen.getByRole("button", { name: "Save case to hospital" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
 
     await waitFor(() => {
       expect(apiMocks.createPatient).toHaveBeenCalledWith("SITE_A", "test-token", {
@@ -255,7 +387,7 @@ describe("CaseWorkspace integration", () => {
     await waitFor(() => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
-    expect(await screen.findByText("Case KERA-2026-001 / Initial saved to hospital SITE_A.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Case KERA-2026-001 / Initial saved to hospital SITE_A.")).length).toBeGreaterThan(0);
   });
 
   it("overwrites an existing visit when the user confirms overwrite", async () => {
@@ -265,10 +397,10 @@ describe("CaseWorkspace integration", () => {
     apiMocks.createVisit.mockRejectedValueOnce(new Error("Visit KERA-2026-001 / Initial already exists."));
 
     const { container } = renderWorkspace();
-    await screen.findByRole("button", { name: "Complete" });
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    await screen.findByRole("button", { name: "Lock intake" });
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save case to hospital" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
 
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalledTimes(1);
@@ -341,10 +473,10 @@ describe("CaseWorkspace integration", () => {
     ]);
 
     const { container } = renderWorkspace();
-    await screen.findByRole("button", { name: "Complete" });
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    await screen.findByRole("button", { name: "Lock intake" });
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save case to hospital" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
 
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalledTimes(2);
@@ -358,6 +490,325 @@ describe("CaseWorkspace integration", () => {
         "test-token",
         expect.objectContaining({ visit_date: "FU #3" })
       );
+    });
+  });
+
+  it("returns to the patient list when browser back is used from case review", async () => {
+    apiMocks.fetchCases.mockReset();
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+      },
+    ]);
+
+    renderWorkspace();
+
+    expect(await screen.findByText("Case summary")).toBeInTheDocument();
+
+    await act(async () => {
+      window.history.back();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(await screen.findByText("Patient list")).toBeInTheDocument();
+    expect(screen.getByText("Browse saved patients and open the latest case.")).toBeInTheDocument();
+  });
+
+  it("loads patient list pages with numbered pagination", async () => {
+    apiMocks.fetchCases.mockReset();
+    apiMocks.fetchCases.mockResolvedValue(
+      Array.from({ length: 30 }, (_, index) => {
+        const caseNumber = index + 1;
+        const padded = String(caseNumber).padStart(3, "0");
+        return {
+          case_id: `case_${caseNumber}`,
+          patient_id: `KERA-2026-${padded}`,
+          chart_alias: "",
+          local_case_code: "",
+          culture_category: "bacterial",
+          culture_species: caseNumber === 26 ? "Pseudomonas aeruginosa" : "Staphylococcus aureus",
+          additional_organisms: [],
+          visit_date: "Initial",
+          actual_visit_date: null,
+          created_by_user_id: "user_researcher",
+          created_at: `2026-03-${String(Math.min(caseNumber, 28)).padStart(2, "0")}T00:00:00Z`,
+          latest_image_uploaded_at: `2026-03-${String(Math.min(caseNumber, 28)).padStart(2, "0")}T00:00:00Z`,
+          image_count: 1,
+          representative_image_id: `image_${caseNumber}`,
+          representative_view: "white",
+          age: 60,
+          sex: caseNumber % 2 === 0 ? "male" : "female",
+          visit_status: "active",
+          is_initial_visit: true,
+          smear_result: "not done",
+          polymicrobial: false,
+        };
+      }),
+    );
+
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "List view" }));
+
+    expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument();
+    expect(apiMocks.fetchPatientListPage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "2" }));
+
+    expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+  });
+
+  it("auto-runs five-model analysis after AI validation", async () => {
+    apiMocks.fetchCases.mockReset();
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+      },
+    ]);
+    apiMocks.fetchSiteModelVersions.mockResolvedValue([
+      { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", ready: true },
+      { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", ready: true },
+      { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", ready: true },
+      { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
+      { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
+    ]);
+    apiMocks.runCaseValidationCompare.mockResolvedValue({
+      patient_id: "KERA-2026-001",
+      visit_date: "Initial",
+      execution_device: "cpu",
+      comparisons: [
+        {
+          summary: {
+            validation_id: "cmp_1",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "fungal",
+            true_label: "bacterial",
+            prediction_probability: 0.81,
+            is_correct: false,
+          },
+          model_version: { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", crop_mode: "automated" },
+          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+        },
+        {
+          summary: {
+            validation_id: "cmp_2",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "fungal",
+            true_label: "bacterial",
+            prediction_probability: 0.77,
+            is_correct: false,
+          },
+          model_version: { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", crop_mode: "automated" },
+          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+        },
+        {
+          summary: {
+            validation_id: "cmp_3",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "fungal",
+            true_label: "bacterial",
+            prediction_probability: 0.79,
+            is_correct: false,
+          },
+          model_version: { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", crop_mode: "automated" },
+          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+        },
+        {
+          summary: {
+            validation_id: "cmp_4",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "bacterial",
+            true_label: "bacterial",
+            prediction_probability: 0.41,
+            is_correct: true,
+          },
+          model_version: { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", crop_mode: "automated" },
+          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+        },
+        {
+          summary: {
+            validation_id: "cmp_5",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "fungal",
+            true_label: "bacterial",
+            prediction_probability: 0.74,
+            is_correct: false,
+          },
+          model_version: { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", crop_mode: "automated" },
+          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+        },
+      ],
+    });
+
+    renderWorkspace();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        model_version_id: undefined,
+        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+      });
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidationCompare).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+        execution_mode: "cpu",
+      });
+    });
+
+    expect(await screen.findByText("Consensus snapshot")).toBeInTheDocument();
+    expect(screen.getByText("4 / 5")).toBeInTheDocument();
+  });
+
+  it("submits contribution with the selected five-model set", async () => {
+    apiMocks.fetchCases.mockReset();
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+      },
+    ]);
+    apiMocks.fetchSiteModelVersions.mockResolvedValue([
+      { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", ready: true },
+      { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", ready: true },
+      { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", ready: true },
+      { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
+      { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
+    ]);
+    apiMocks.runCaseContribution.mockResolvedValue({
+      update: {
+        update_id: "update_1",
+        site_id: "SITE_A",
+        base_model_version_id: "model_vit",
+        architecture: "vit",
+        upload_type: "weight delta",
+        execution_device: "cpu",
+        artifact_path: "C:\\KERA\\delta_1.pth",
+        n_cases: 1,
+        contributed_by: "user_researcher",
+        case_reference_id: "case_ref_1",
+        created_at: "2026-03-15T00:00:00Z",
+        training_input_policy: "medsam_cornea_crop_only",
+        training_summary: {},
+        status: "pending_review",
+      },
+      updates: [
+        {
+          update_id: "update_1",
+          site_id: "SITE_A",
+          base_model_version_id: "model_vit",
+          architecture: "vit",
+          upload_type: "weight delta",
+          execution_device: "cpu",
+          artifact_path: "C:\\KERA\\delta_1.pth",
+          n_cases: 1,
+          contributed_by: "user_researcher",
+          case_reference_id: "case_ref_1",
+          created_at: "2026-03-15T00:00:00Z",
+          training_input_policy: "medsam_cornea_crop_only",
+          training_summary: {},
+          status: "pending_review",
+          crop_mode: "automated",
+        },
+      ],
+      update_count: 1,
+      visit_status: "active",
+      execution_device: "cpu",
+      model_version: {
+        version_id: "model_vit",
+        version_name: "vit-v1",
+        architecture: "vit",
+      },
+      model_versions: [
+        {
+          version_id: "model_vit",
+          version_name: "vit-v1",
+          architecture: "vit",
+          crop_mode: "automated",
+          ensemble_mode: null,
+        },
+      ],
+      failures: [],
+      stats: {
+        total_contributions: 1,
+        user_contributions: 1,
+        user_contribution_pct: 100,
+        current_model_version: "global-http-seed",
+      },
+    });
+
+    renderWorkspace();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Contribute case update" }));
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseContribution).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        execution_mode: "auto",
+        model_version_id: undefined,
+        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+      });
     });
   });
 });

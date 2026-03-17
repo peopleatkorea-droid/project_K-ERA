@@ -563,9 +563,11 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             <div className="text-center">
               <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">지금까지</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                제주에서 시작해,
+                제주에서 시작한 경험을
                 <br />
-                한국 전체로
+                다른 현장과도
+                <br />
+                나눌 수 있게 준비하고 있습니다
               </h2>
             </div>
             <div className="landing-reveal justify-self-center w-full max-w-[420px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[280px]" data-reveal="" data-reveal-order={0}>

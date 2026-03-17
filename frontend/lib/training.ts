@@ -16,8 +16,8 @@ import type {
   ValidationCasePredictionRecord,
 } from "./types";
 
-export async function fetchSiteValidations(siteId: string, token: string) {
-  return request<SiteValidationRunRecord[]>(`/api/sites/${siteId}/validations`, {}, token);
+export async function fetchSiteValidations(siteId: string, token: string, signal?: AbortSignal) {
+  return request<SiteValidationRunRecord[]>(`/api/sites/${siteId}/validations`, { signal }, token);
 }
 
 export async function fetchValidationCases(
@@ -48,6 +48,7 @@ export async function runCaseValidation(
     visit_date: string;
     execution_mode?: "auto" | "cpu" | "gpu";
     model_version_id?: string;
+    model_version_ids?: string[];
     generate_gradcam?: boolean;
     generate_medsam?: boolean;
   },
@@ -102,6 +103,7 @@ export async function runCaseAiClinic(
     visit_date: string;
     execution_mode?: "auto" | "cpu" | "gpu";
     model_version_id?: string;
+    model_version_ids?: string[];
     top_k?: number;
     retrieval_backend?: "classifier" | "dinov2" | "hybrid";
   },
@@ -159,8 +161,8 @@ export async function fetchAiClinicEmbeddingStatus(
   return request<AiClinicEmbeddingStatusResponse>(`/api/sites/${siteId}/ai-clinic/embeddings/status${suffix}`, {}, token);
 }
 
-export async function fetchSiteModelVersions(siteId: string, token: string) {
-  return request<ModelVersionRecord[]>(`/api/sites/${siteId}/model-versions`, {}, token);
+export async function fetchSiteModelVersions(siteId: string, token: string, signal?: AbortSignal) {
+  return request<ModelVersionRecord[]>(`/api/sites/${siteId}/model-versions`, { signal }, token);
 }
 
 export async function runSiteValidation(

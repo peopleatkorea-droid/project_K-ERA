@@ -17,6 +17,7 @@ type CompletionState = {
   timestamp: string;
   stats?: CompletionStats;
   update_id?: string;
+  update_count?: number;
 };
 
 type Props = {
@@ -59,15 +60,21 @@ export function CompletionCard({
 
       <p className="m-0 text-sm leading-6 text-muted">
         {completion.kind === "contributed"
-          ? pick(
-              locale,
-              `This case produced update ${completion.update_id ?? "pending"} and is queued as a local weight delta.`,
-              `이 케이스는 업데이트 ${completion.update_id ?? pick(locale, "pending", "대기")}를 생성했고 로컬 weight delta로 대기열에 올라갔습니다.`
-            )
+          ? completion.update_count && completion.update_count > 1
+            ? pick(
+                locale,
+                `This case produced ${completion.update_count} local updates. The first queued update is ${completion.update_id ?? "pending"}.`,
+                `이 케이스는 ${completion.update_count}개의 로컬 업데이트를 생성했습니다. 첫 queued update는 ${completion.update_id ?? pick(locale, "pending", "대기")}입니다.`
+              )
+            : pick(
+                locale,
+                `This case produced update ${completion.update_id ?? "pending"} and is queued as a local weight delta.`,
+                `이 케이스는 업데이트 ${completion.update_id ?? pick(locale, "pending", "대기")}를 생성했고 로컬 weight delta로 대기열에 올라갔습니다.`
+              )
           : pick(
               locale,
-              "The patient, visit, and image set are now stored in the selected hospital workspace.",
-              "환자, 방문, 이미지 세트가 선택한 병원 워크스페이스에 저장되었습니다."
+              "The patient, visit, and image set are now stored in the selected hospital workspace and ready for the next step.",
+              "환자, 방문, 이미지 세트가 선택한 병원 워크스페이스에 저장되었고 다음 단계로 이어질 준비가 되었습니다."
             )}
       </p>
 

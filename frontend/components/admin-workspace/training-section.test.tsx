@@ -69,9 +69,9 @@ describe("TrainingSection", () => {
     const updater = setInitialForm.mock.calls.at(-1)?.[0];
     expect(updater(buildProps().initialForm).use_pretrained).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Run all 5 models" }));
-    expect(screen.getByRole("dialog", { name: "Batch training confirmation" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Start batch training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run 5-model initial training" }));
+    expect(screen.getByRole("dialog", { name: "Five-model training confirmation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start 5-model training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);

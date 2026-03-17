@@ -1,5 +1,5 @@
 param(
-    [string]$ApiBaseUrl = "http://localhost:8000",
+    [string]$ApiBaseUrl = "http://127.0.0.1:8000",
     [int]$Port = 3000
 )
 
@@ -67,7 +67,12 @@ try {
         }
     }
 
-    $env:NEXT_PUBLIC_API_BASE_URL = $ApiBaseUrl
+    if ($ApiBaseUrl) {
+        $env:KERA_INTERNAL_API_BASE_URL = $ApiBaseUrl
+    }
+    if (-not $env:NEXT_PUBLIC_API_BASE_URL) {
+        Remove-Item Env:NEXT_PUBLIC_API_BASE_URL -ErrorAction SilentlyContinue
+    }
     & $nextCli dev --hostname 0.0.0.0 --port $resolvedPort
 }
 finally {

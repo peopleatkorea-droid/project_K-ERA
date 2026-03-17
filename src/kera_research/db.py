@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from sqlalchemy import (
@@ -16,11 +17,14 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     inspect,
+    select,
     text,
+    update,
 )
 from sqlalchemy.engine import Engine
 
-from kera_research.config import STORAGE_DIR
+from kera_research.config import PATIENT_REFERENCE_SALT, STORAGE_DIR
+from kera_research.domain import make_patient_reference_id, visit_index_from_label
 
 
 def _default_database_url() -> str:
@@ -52,6 +56,23 @@ def _connect_args_for(database_url: str) -> dict[str, object]:
     return {"check_same_thread": False} if database_url.startswith("sqlite") else {}
 
 
+def _engine_kwargs_for(database_url: str) -> dict[str, object]:
+    """Return extra kwargs tuned for the database type.
+
+    For cloud PostgreSQL (e.g. Neon) keep a small persistent connection pool so
+    parallel requests reuse connections instead of opening a new one each time.
+    For SQLite use the default NullPool-equivalent (connect_args handles threading).
+    """
+    if database_url.startswith("postgresql") or database_url.startswith("postgres"):
+        return {
+            "pool_size": 5,
+            "max_overflow": 5,
+            "pool_timeout": 30,
+            "pool_recycle": 300,
+        }
+    return {}
+
+
 CONTROL_PLANE_DATABASE_URL = _resolve_control_plane_database_url()
 DATA_PLANE_DATABASE_URL = _resolve_data_plane_database_url()
 DATABASE_URL = CONTROL_PLANE_DATABASE_URL
@@ -61,17 +82,23 @@ CONTROL_PLANE_ENGINE: Engine = create_engine(
     future=True,
     pool_pre_ping=True,
     connect_args=_connect_args_for(CONTROL_PLANE_DATABASE_URL),
+    **_engine_kwargs_for(CONTROL_PLANE_DATABASE_URL),
 )
 DATA_PLANE_ENGINE: Engine = create_engine(
     DATA_PLANE_DATABASE_URL,
     future=True,
     pool_pre_ping=True,
     connect_args=_connect_args_for(DATA_PLANE_DATABASE_URL),
+    **_engine_kwargs_for(DATA_PLANE_DATABASE_URL),
 )
 ENGINE = CONTROL_PLANE_ENGINE
 CONTROL_PLANE_METADATA = MetaData()
 DATA_PLANE_METADATA = MetaData()
 METADATA = CONTROL_PLANE_METADATA
+_CONTROL_PLANE_DB_INITIALIZED = False
+_DATA_PLANE_DB_INITIALIZED = False
+_CONTROL_PLANE_DB_INIT_LOCK = threading.Lock()
+_DATA_PLANE_DB_INIT_LOCK = threading.Lock()
 
 users = Table(
     "users",
@@ -192,6 +219,32 @@ validation_runs = Table(
     Column("summary_json", JSON, nullable=False),
 )
 
+validation_cases = Table(
+    "validation_cases",
+    CONTROL_PLANE_METADATA,
+    Column("validation_case_id", String(160), primary_key=True),
+    Column("validation_id", String(64), nullable=False, index=True),
+    Column("project_id", String(64), nullable=False, index=True),
+    Column("site_id", String(64), nullable=False, index=True),
+    Column("patient_reference_id", String(64), nullable=False, index=True),
+    Column("case_reference_id", String(64), nullable=False, index=True),
+    Column("visit_index", Integer, nullable=False, index=True),
+    Column("model_version_id", String(64), nullable=True, index=True),
+    Column("model_version", String(255), nullable=True),
+    Column("run_date", String(64), nullable=False, index=True),
+    Column("true_label", String(64), nullable=True),
+    Column("predicted_label", String(64), nullable=False),
+    Column("prediction_probability", Float, nullable=False),
+    Column("is_correct", Boolean, nullable=True),
+    Column("n_source_images", Integer, nullable=True),
+    Column("crop_mode", String(64), nullable=True),
+    Column("has_gradcam", Boolean, nullable=False, default=False),
+    Column("has_roi_crop", Boolean, nullable=False, default=False),
+    Column("has_medsam_mask", Boolean, nullable=False, default=False),
+    Column("created_at", String(64), nullable=False),
+    UniqueConstraint("validation_id", "case_reference_id", name="uq_validation_cases_validation_case"),
+)
+
 model_versions = Table(
     "model_versions",
     CONTROL_PLANE_METADATA,
@@ -279,8 +332,10 @@ visits = Table(
     Column("visit_id", String(64), primary_key=True),
     Column("site_id", String(64), nullable=False, index=True),
     Column("patient_id", String(255), nullable=False, index=True),
+    Column("patient_reference_id", String(64), nullable=True, index=True),
     Column("created_by_user_id", String(64), nullable=True, index=True),
     Column("visit_date", String(32), nullable=False, index=True),
+    Column("visit_index", Integer, nullable=True, index=True),
     Column("actual_visit_date", String(32), nullable=True),
     Column("culture_confirmed", Boolean, nullable=False),
     Column("culture_category", String(32), nullable=False, index=True),
@@ -351,13 +406,27 @@ site_jobs = Table(
 
 
 def init_control_plane_db() -> None:
-    CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
-    _migrate_control_plane_schema()
+    global _CONTROL_PLANE_DB_INITIALIZED
+    if _CONTROL_PLANE_DB_INITIALIZED:
+        return
+    with _CONTROL_PLANE_DB_INIT_LOCK:
+        if _CONTROL_PLANE_DB_INITIALIZED:
+            return
+        CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
+        _migrate_control_plane_schema()
+        _CONTROL_PLANE_DB_INITIALIZED = True
 
 
 def init_data_plane_db() -> None:
-    DATA_PLANE_METADATA.create_all(DATA_PLANE_ENGINE)
-    _migrate_data_plane_schema()
+    global _DATA_PLANE_DB_INITIALIZED
+    if _DATA_PLANE_DB_INITIALIZED:
+        return
+    with _DATA_PLANE_DB_INIT_LOCK:
+        if _DATA_PLANE_DB_INITIALIZED:
+            return
+        DATA_PLANE_METADATA.create_all(DATA_PLANE_ENGINE)
+        _migrate_data_plane_schema()
+        _DATA_PLANE_DB_INITIALIZED = True
 
 
 def init_db() -> None:
@@ -428,6 +497,20 @@ def _migrate_control_plane_schema() -> None:
             ):
                 conn.execute(text("ALTER TABLE institution_directory ALTER COLUMN institution_id TYPE VARCHAR(128)"))
 
+        if "validation_cases" in table_names:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_validation_cases_site_patient_visit "
+                    "ON validation_cases (site_id, patient_reference_id, visit_index)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_validation_cases_validation_case "
+                    "ON validation_cases (validation_id, case_reference_id)"
+                )
+            )
+
 
 def _migrate_data_plane_schema() -> None:
     inspector = inspect(DATA_PLANE_ENGINE)
@@ -436,8 +519,12 @@ def _migrate_data_plane_schema() -> None:
     with DATA_PLANE_ENGINE.begin() as conn:
         if "visits" in table_names:
             visit_columns = {column["name"] for column in inspector.get_columns("visits")}
+            if "patient_reference_id" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN patient_reference_id VARCHAR(64)"))
             if "created_by_user_id" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN created_by_user_id VARCHAR(64)"))
+            if "visit_index" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN visit_index INTEGER"))
             if "is_initial_visit" not in visit_columns:
                 if DATA_PLANE_ENGINE.dialect.name == "sqlite":
                     conn.execute(text("ALTER TABLE visits ADD COLUMN is_initial_visit BOOLEAN NOT NULL DEFAULT 0"))
@@ -455,6 +542,19 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_updated_by VARCHAR(64)"))
             if "research_registry_source" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_source VARCHAR(64)"))
+            _backfill_visit_reference_columns(conn)
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_visits_site_patient_reference "
+                    "ON visits (site_id, patient_reference_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_visits_site_visit_index "
+                    "ON visits (site_id, visit_index)"
+                )
+            )
 
         if "patients" in table_names:
             patient_columns = {column["name"] for column in inspector.get_columns("patients")}
@@ -501,3 +601,32 @@ def _migrate_data_plane_schema() -> None:
                     )
                 )
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_site_jobs_claimed_by ON site_jobs (claimed_by)"))
+
+
+def _backfill_visit_reference_columns(conn: Any) -> None:
+    rows = conn.execute(
+        select(
+            visits.c.visit_id,
+            visits.c.site_id,
+            visits.c.patient_id,
+            visits.c.visit_date,
+            visits.c.patient_reference_id,
+            visits.c.visit_index,
+        )
+    ).mappings().all()
+    for row in rows:
+        values: dict[str, object] = {}
+        site_id = str(row.get("site_id") or "").strip()
+        patient_id = str(row.get("patient_id") or "").strip()
+        visit_date = str(row.get("visit_date") or "").strip()
+        if not site_id or not patient_id or not visit_date:
+            continue
+        if not str(row.get("patient_reference_id") or "").strip():
+            values["patient_reference_id"] = make_patient_reference_id(site_id, patient_id, PATIENT_REFERENCE_SALT)
+        if row.get("visit_index") is None:
+            try:
+                values["visit_index"] = visit_index_from_label(visit_date)
+            except ValueError:
+                continue
+        if values:
+            conn.execute(update(visits).where(visits.c.visit_id == row["visit_id"]).values(**values))

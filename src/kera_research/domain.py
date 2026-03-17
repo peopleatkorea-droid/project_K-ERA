@@ -122,6 +122,35 @@ def make_case_reference_id(site_id: str, patient_id: str, visit_date: str, salt:
     return f"caseref_{digest[:20]}"
 
 
+def make_patient_reference_id(site_id: str, patient_id: str, salt: str) -> str:
+    payload = "::".join(
+        [
+            salt.strip(),
+            site_id.strip(),
+            patient_id.strip(),
+        ]
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"ptref_{digest[:20]}"
+
+
+def visit_index_from_label(value: str) -> int:
+    normalized = normalize_visit_label(value)
+    if normalized == "Initial":
+        return 0
+    follow_up_match = _VISIT_FOLLOW_UP_PATTERN.fullmatch(normalized)
+    if follow_up_match:
+        return max(1, int(follow_up_match.group(1)))
+    raise ValueError("Visit reference must resolve to Initial or FU #N.")
+
+
+def visit_label_from_index(value: int) -> str:
+    index = int(value)
+    if index <= 0:
+        return "Initial"
+    return f"FU{index}"
+
+
 def normalize_patient_pseudonym(value: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:

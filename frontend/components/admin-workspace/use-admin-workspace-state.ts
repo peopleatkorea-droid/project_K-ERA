@@ -12,6 +12,7 @@ import {
   type BulkImportResponse,
   type CrossValidationFoldRecord,
   type CrossValidationReport,
+  type InstitutionDirectorySyncResponse,
   type InitialTrainingBenchmarkResponse,
   type InitialTrainingResponse,
   type ManagedSiteRecord,
@@ -58,13 +59,34 @@ export type UserFormState = {
   site_ids: string[];
 };
 
+export type SiteFormState = {
+  project_id: string;
+  site_code: string;
+  display_name: string;
+  hospital_name: string;
+  research_registry_enabled: boolean;
+  source_institution_id?: string;
+};
+
 export type ToastState = { tone: "success" | "error"; message: string } | null;
+
+export type UpdateThresholdAlert = {
+  scope: "pending_review" | "aggregation_ready" | "aggregation_blocked";
+  architecture: string;
+  base_model_version_id: string;
+  total_cases: number;
+  update_count: number;
+  site_count: number;
+  duplicate_site_count: number;
+};
 
 type UseAdminWorkspaceStateOptions = {
   user: AuthUser;
   initialSection?: WorkspaceSection;
   selectedSiteId: string | null;
 };
+
+const AGGREGATION_ALERT_CASE_THRESHOLD = 10;
 
 function clampUnitInterval(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -155,7 +177,7 @@ export function createUserForm(): UserFormState {
   };
 }
 
-export function createSiteForm(projectId = "") {
+export function createSiteForm(projectId = ""): SiteFormState {
   return {
     project_id: projectId,
     site_code: "",
@@ -163,6 +185,80 @@ export function createSiteForm(projectId = "") {
     hospital_name: "",
     research_registry_enabled: true,
   };
+}
+
+function summarizeUpdateThresholdAlerts(modelUpdates: ModelUpdateRecord[]): UpdateThresholdAlert[] {
+  const groups = new Map<
+    string,
+    {
+      scope: UpdateThresholdAlert["scope"];
+      architecture: string;
+      base_model_version_id: string;
+      total_cases: number;
+      update_count: number;
+      sites: Set<string>;
+      site_counts: Map<string, number>;
+    }
+  >();
+
+  for (const item of modelUpdates) {
+    const status = String(item.status ?? "").trim().toLowerCase();
+    const baseModelVersionId = String(item.base_model_version_id ?? "").trim();
+    const architecture = String(item.architecture ?? "").trim();
+    if (!baseModelVersionId || !architecture) {
+      continue;
+    }
+
+    let scope: UpdateThresholdAlert["scope"] | null = null;
+    if (status === "approved") {
+      scope = "aggregation_ready";
+    } else if (status === "pending_review" || status === "pending_upload") {
+      scope = "pending_review";
+    }
+    if (!scope) {
+      continue;
+    }
+
+    const key = `${scope}:${architecture}:${baseModelVersionId}`;
+    const group = groups.get(key) ?? {
+      scope,
+      architecture,
+      base_model_version_id: baseModelVersionId,
+      total_cases: 0,
+      update_count: 0,
+      sites: new Set<string>(),
+      site_counts: new Map<string, number>(),
+    };
+    const siteId = String(item.site_id ?? "").trim() || "unknown";
+    const nCases = Math.max(1, Number(item.n_cases ?? 1) || 1);
+    group.total_cases += nCases;
+    group.update_count += 1;
+    group.sites.add(siteId);
+    group.site_counts.set(siteId, (group.site_counts.get(siteId) ?? 0) + 1);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const duplicateSiteCount = Array.from(group.site_counts.values()).filter((count) => count > 1).length;
+      const scope =
+        group.scope === "aggregation_ready" && duplicateSiteCount > 0 ? "aggregation_blocked" : group.scope;
+      return {
+        scope,
+        architecture: group.architecture,
+        base_model_version_id: group.base_model_version_id,
+        total_cases: group.total_cases,
+        update_count: group.update_count,
+        site_count: group.sites.size,
+        duplicate_site_count: duplicateSiteCount,
+      };
+    })
+    .filter((group) => group.total_cases >= AGGREGATION_ALERT_CASE_THRESHOLD)
+    .sort((left, right) => {
+      const priority = (scope: UpdateThresholdAlert["scope"]) =>
+        scope === "aggregation_ready" ? 0 : scope === "aggregation_blocked" ? 1 : 2;
+      return priority(left.scope) - priority(right.scope) || right.total_cases - left.total_cases;
+    });
 }
 
 export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }: UseAdminWorkspaceStateOptions) {
@@ -179,6 +275,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [managedSites, setManagedSites] = useState<ManagedSiteRecord[]>([]);
   const [managedUsers, setManagedUsers] = useState<ManagedUserRecord[]>([]);
+  const [institutionSyncBusy, setInstitutionSyncBusy] = useState(false);
+  const [institutionSyncStatus, setInstitutionSyncStatus] = useState<InstitutionDirectorySyncResponse | null>(null);
   const [siteComparison, setSiteComparison] = useState<SiteComparisonRecord[]>([]);
   const [siteValidationRuns, setSiteValidationRuns] = useState<SiteValidationRunRecord[]>([]);
   const [selectedValidationId, setSelectedValidationId] = useState<string | null>(null);
@@ -220,6 +318,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     roi: null as string | null,
     mask: null as string | null,
   });
+  const [publishingModelVersionId, setPublishingModelVersionId] = useState<string | null>(null);
+  const [publishingModelUpdateId, setPublishingModelUpdateId] = useState<string | null>(null);
   const [aggregationBusy, setAggregationBusy] = useState(false);
   const [storageSettingsBusy, setStorageSettingsBusy] = useState(false);
   const [newVersionName, setNewVersionName] = useState("");
@@ -254,6 +354,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const currentModel = modelVersions.find((item) => item.is_current) ?? modelVersions[modelVersions.length - 1] ?? null;
   const pendingReviewUpdates = modelUpdates.filter((item) => ["pending_review", "pending_upload"].includes(item.status ?? ""));
   const approvedUpdates = modelUpdates.filter((item) => item.status === "approved");
+  const updateThresholdAlerts = summarizeUpdateThresholdAlerts(modelUpdates);
   const selectedModelUpdate = modelUpdates.find((item) => item.update_id === selectedModelUpdateId) ?? modelUpdates[0] ?? null;
   const selectedApprovalReport = selectedModelUpdate?.approval_report ?? null;
   const selectedReport = crossValidationReports.find((item) => item.cross_validation_id === selectedReportId) ?? null;
@@ -400,6 +501,10 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setManagedSites,
     managedUsers,
     setManagedUsers,
+    institutionSyncBusy,
+    setInstitutionSyncBusy,
+    institutionSyncStatus,
+    setInstitutionSyncStatus,
     siteComparison,
     setSiteComparison,
     siteValidationRuns,
@@ -474,6 +579,10 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setModelUpdateReviewNotes,
     selectedUpdatePreviewUrls,
     setSelectedUpdatePreviewUrls,
+    publishingModelVersionId,
+    setPublishingModelVersionId,
+    publishingModelUpdateId,
+    setPublishingModelUpdateId,
     aggregationBusy,
     setAggregationBusy,
     storageSettingsBusy,
@@ -491,6 +600,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     currentModel,
     pendingReviewUpdates,
     approvedUpdates,
+    updateThresholdAlerts,
     selectedModelUpdate,
     selectedApprovalReport,
     selectedReport,

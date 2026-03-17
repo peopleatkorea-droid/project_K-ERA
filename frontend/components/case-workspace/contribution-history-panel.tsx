@@ -196,8 +196,8 @@ export function ContributionHistoryPanel({
           titleAs="h4"
           description={pick(
             locale,
-            "Contribution runs locally and stores the weight delta for later upload to the shared model workflow.",
-            "기여는 로컬에서 실행되고, 이후 공유 모델 흐름으로 올릴 weight delta만 저장합니다."
+            "One click can fan out into multiple local model updates and store their weight deltas for the shared workflow.",
+            "한 번의 클릭으로 여러 로컬 모델 업데이트를 fan-out 실행하고, 공유 모델 흐름에 올릴 weight delta들을 저장합니다."
           )}
           aside={
             <Button type="button" variant="primary" size="sm" onClick={onContributeCase} disabled={contributionBusy || !canContributeSelectedCase}>
@@ -229,6 +229,7 @@ export function ContributionHistoryPanel({
         {contributionResult ? (
           <>
             <MetricGrid columns={2} className={contributionMetricGridClass}>
+              <MetricItem value={contributionResult.update_count} label={pick(locale, "queued updates", "생성된 업데이트")} />
               <MetricItem value={contributionResult.stats.user_contributions} label={pick(locale, "my contributions", "내 기여 수")} />
               <MetricItem value={contributionResult.stats.total_contributions} label={pick(locale, "global contributions", "전체 기여 수")} />
               <MetricItem value={`${contributionResult.stats.user_contribution_pct}%`} label={pick(locale, "my share", "내 비중")} />
@@ -236,13 +237,40 @@ export function ContributionHistoryPanel({
             </MetricGrid>
             <Card as="div" variant="nested" className={contributionStatusCardClass}>
               <p className="m-0 text-sm leading-6 text-muted">
-                {pick(
-                  locale,
-                  `Update ${contributionResult.update.update_id} is queued as a ${contributionResult.update.upload_type} against ${contributionResult.model_version.version_name}.`,
-                  `업데이트 ${contributionResult.update.update_id}가 ${contributionResult.model_version.version_name} 기준 ${contributionResult.update.upload_type} 형태로 대기열에 추가되었습니다.`
-                )}
+                {contributionResult.update_count > 1
+                  ? pick(
+                      locale,
+                      `${contributionResult.update_count} updates are queued from this one-click contribution. The first update is ${contributionResult.update.update_id}.`,
+                      `한 번의 기여로 ${contributionResult.update_count}개 업데이트가 대기열에 올랐습니다. 첫 update는 ${contributionResult.update.update_id}입니다.`
+                    )
+                  : pick(
+                      locale,
+                      `Update ${contributionResult.update.update_id} is queued as a ${contributionResult.update.upload_type} against ${contributionResult.model_version.version_name}.`,
+                      `업데이트 ${contributionResult.update.update_id}가 ${contributionResult.model_version.version_name} 기준 ${contributionResult.update.upload_type} 형태로 대기열에 추가되었습니다.`
+                    )}
               </p>
             </Card>
+            <div className={docBadgeRowClass}>
+              {contributionResult.contribution_group_id ? (
+                <span className={docSiteBadgeClass}>{`${pick(locale, "Group", "그룹")} · ${contributionResult.contribution_group_id}`}</span>
+              ) : null}
+              {contributionResult.updates.map((item) => (
+                <span key={item.update_id} className={docSiteBadgeClass}>
+                  {`${item.architecture} · ${item.update_id}`}
+                </span>
+              ))}
+            </div>
+            {contributionResult.failures?.length ? (
+              <Card as="div" variant="nested" className={contributionStatusCardClass}>
+                <div className="grid gap-2">
+                  {contributionResult.failures.map((item) => (
+                    <p key={`${item.model_version_id ?? item.architecture ?? "failed"}-${item.error}`} className="m-0 text-sm leading-6 text-muted">
+                      {pick(locale, "Failed", "실패")} {item.version_name ?? item.architecture ?? notAvailableLabel}: {item.error}
+                    </p>
+                  ))}
+                </div>
+              </Card>
+            ) : null}
           </>
         ) : (
           <Card as="div" variant="nested" className={contributionStatusCardClass}>
@@ -340,6 +368,7 @@ export function ContributionHistoryPanel({
                     <div className={historyEntryMetaClass}>
                       <span>{item.update_status ?? pick(locale, "unknown status", "알 수 없는 상태")}</span>
                       <span>{item.architecture ?? notAvailableLabel}</span>
+                      {item.contribution_group_id ? <span>{item.contribution_group_id}</span> : null}
                     </div>
                   </Card>
                 ))

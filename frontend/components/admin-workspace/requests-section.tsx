@@ -8,7 +8,7 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
-import type { AccessRequestRecord, ProjectRecord, SiteRecord } from "../../lib/api";
+import type { AccessRequestRecord, InstitutionDirectorySyncResponse, ProjectRecord, SiteRecord } from "../../lib/api";
 import { pick, translateRole, translateStatus, type Locale } from "../../lib/i18n";
 import type { ReviewDraft } from "./use-admin-workspace-state";
 
@@ -18,10 +18,13 @@ type Props = {
   pendingRequests: AccessRequestRecord[];
   reviewDrafts: Record<string, ReviewDraft>;
   canManagePlatform: boolean;
+  institutionSyncBusy: boolean;
+  institutionSyncStatus: InstitutionDirectorySyncResponse | null;
   projects: ProjectRecord[];
   sites: SiteRecord[];
   setReviewDrafts: Dispatch<SetStateAction<Record<string, ReviewDraft>>>;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
+  onInstitutionSync: () => void;
   onReview: (requestId: string, decision: "approved" | "rejected") => void;
 };
 
@@ -39,10 +42,13 @@ export function RequestsSection({
   pendingRequests,
   reviewDrafts,
   canManagePlatform,
+  institutionSyncBusy,
+  institutionSyncStatus,
   projects,
   sites,
   setReviewDrafts,
   formatDateTime,
+  onInstitutionSync,
   onReview,
 }: Props) {
   return (
@@ -56,8 +62,55 @@ export function RequestsSection({
           "Review institution access requests, assign the final role and site, and leave a short reviewer note before approval.",
           "기관 접근 요청을 검토하고 최종 역할과 site를 배정한 뒤 승인 메모를 남길 수 있습니다.",
         )}
-        aside={<span className={docSiteBadgeClass}>{`${pendingRequests.length} ${pick(locale, "pending", "대기")}`}</span>}
+        aside={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className={docSiteBadgeClass}>{`${pendingRequests.length} ${pick(locale, "pending", "대기")}`}</span>
+            {canManagePlatform ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                loading={institutionSyncBusy}
+                onClick={onInstitutionSync}
+              >
+                {pick(locale, "Sync HIRA directory", "HIRA 디렉터리 동기화")}
+              </Button>
+            ) : null}
+          </div>
+        }
       />
+
+      <Card as="section" variant="nested" className="grid gap-2 border border-border/80 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <strong className="text-sm font-semibold text-ink">
+            {pick(locale, "Last HIRA sync", "최근 HIRA 동기화")}
+          </strong>
+          <span className={docSiteBadgeClass}>
+            {institutionSyncStatus?.synced_at
+              ? formatDateTime(institutionSyncStatus.synced_at, notAvailableLabel)
+              : pick(locale, "Not synced yet", "아직 동기화되지 않음")}
+          </span>
+        </div>
+        <div className="text-sm leading-6 text-muted">
+          {institutionSyncStatus?.institutions_synced
+            ? pick(
+                locale,
+                `${institutionSyncStatus.institutions_synced.toLocaleString()} institutions cached`
+                  + (institutionSyncStatus.pages_synced
+                    ? ` across ${institutionSyncStatus.pages_synced.toLocaleString()} page(s).`
+                    : "."),
+                `기관 ${institutionSyncStatus.institutions_synced.toLocaleString()}개가 저장되어 있습니다`
+                  + (institutionSyncStatus.pages_synced
+                    ? ` (${institutionSyncStatus.pages_synced.toLocaleString()}페이지 동기화).`
+                    : "."),
+              )
+            : pick(
+                locale,
+                "Run one sync to build the official ophthalmology institution directory.",
+                "공식 안과 기관 디렉터리를 만들려면 한 번 동기화를 실행하세요.",
+              )}
+        </div>
+      </Card>
 
       {pendingRequests.length === 0 ? (
         <div className={emptySurfaceClass}>

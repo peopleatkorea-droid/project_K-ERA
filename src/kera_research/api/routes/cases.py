@@ -1,4 +1,5 @@
 import mimetypes
+import hashlib
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+from kera_research.services.pipeline_case_support import lesion_prompt_box_signature, load_stored_lesion_crop
 
 
 def build_cases_router(support: Any) -> APIRouter:
@@ -35,6 +37,7 @@ def build_cases_router(support: Any) -> APIRouter:
     queue_case_embedding_refresh = support.queue_case_embedding_refresh
     attach_image_quality_scores = support.attach_image_quality_scores
     build_case_history = support.build_case_history
+    build_patient_trajectory = support.build_patient_trajectory
     make_id = support.make_id
     lesion_preview_jobs = support.lesion_preview_jobs
     lesion_preview_jobs_lock = support.lesion_preview_jobs_lock
@@ -50,6 +53,159 @@ def build_cases_router(support: Any) -> APIRouter:
     CaseAiClinicRequest = support.CaseAiClinicRequest
     CaseContributionRequest = support.CaseContributionRequest
     CaseValidationCompareRequest = support.CaseValidationCompareRequest
+
+    def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
+        if model_version.get("ensemble_mode") == "weighted_average":
+            crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
+            if crop_mode in {"automated", "manual", "both"}:
+                return crop_mode
+            return "both"
+        crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
+        if crop_mode in {"automated", "manual", "both"}:
+            return crop_mode
+        return "automated" if model_version.get("requires_medsam_crop", False) else "raw"
+
+    def resolve_requested_model_version(
+        cp: Any,
+        *,
+        model_version_id: str | None,
+        model_version_ids: list[str] | None,
+    ) -> dict[str, Any] | None:
+        normalized_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
+        if normalized_ids:
+            versions_by_id = {
+                str(item.get("version_id") or ""): item
+                for item in cp.list_model_versions()
+                if item.get("ready", True)
+            }
+            components: list[dict[str, Any]] = []
+            missing_ids: list[str] = []
+            for version_id in normalized_ids:
+                component = versions_by_id.get(version_id)
+                if component is None:
+                    missing_ids.append(version_id)
+                else:
+                    components.append(component)
+            if missing_ids:
+                raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
+            if len(components) == 1:
+                return components[0]
+
+            sorted_component_ids = sorted(str(item.get("version_id") or "") for item in components)
+            ensemble_suffix = hashlib.sha1("|".join(sorted_component_ids).encode("utf-8")).hexdigest()[:12]
+            threshold_values: list[float] = []
+            for component in components:
+                try:
+                    threshold_values.append(float(component.get("decision_threshold")))
+                except (TypeError, ValueError):
+                    continue
+            crop_modes = {resolve_model_crop_mode(component) for component in components}
+            ensemble_crop_mode = next(iter(crop_modes)) if len(crop_modes) == 1 else "both"
+            component_weight = round(1.0 / max(len(components), 1), 6)
+            created_at = max(
+                (str(item.get("created_at") or "") for item in components),
+                default=datetime.now(timezone.utc).isoformat(),
+            )
+            ensemble_record = {
+                "version_id": f"analysis_ensemble_{ensemble_suffix}",
+                "version_name": f"analysis-latest-{len(components)}-{ensemble_suffix}",
+                "model_name": "keratitis_cls",
+                "architecture": "multi_model_ensemble",
+                "stage": "analysis",
+                "model_path": "",
+                "requires_medsam_crop": any(bool(item.get("requires_medsam_crop", False)) for item in components),
+                "crop_mode": ensemble_crop_mode,
+                "ensemble_mode": "weighted_average",
+                "component_model_version_ids": sorted_component_ids,
+                "ensemble_weights": {component_id: component_weight for component_id in sorted_component_ids},
+                "preprocess_signature": next(
+                    (item.get("preprocess_signature") for item in components if item.get("preprocess_signature")),
+                    None,
+                ),
+                "num_classes": next((item.get("num_classes") for item in components if item.get("num_classes")), 2),
+                "decision_threshold": sum(threshold_values) / len(threshold_values) if threshold_values else 0.5,
+                "threshold_selection_metric": "component_threshold_mean",
+                "threshold_selection_metrics": {
+                    "component_version_ids": sorted_component_ids,
+                    "component_thresholds": threshold_values,
+                    "weighting": "uniform",
+                },
+                "created_at": created_at,
+                "ready": True,
+                "is_current": False,
+                "notes": f"Temporary analysis ensemble across {len(components)} model versions.",
+                "notes_ko": f"{len(components)}개 모델 버전을 묶은 임시 분석 ensemble입니다.",
+                "notes_en": f"Temporary analysis ensemble across {len(components)} model versions.",
+            }
+            return cp.ensure_model_version(ensemble_record)
+        return get_model_version(cp, model_version_id)
+
+    def resolve_requested_contribution_models(
+        cp: Any,
+        *,
+        model_version_id: str | None,
+        model_version_ids: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        versions_by_id = {
+            str(item.get("version_id") or ""): item
+            for item in cp.list_model_versions()
+            if item.get("ready", True)
+        }
+
+        def expand_contribution_model(model_version: dict[str, Any]) -> list[dict[str, Any]]:
+            if model_version.get("ensemble_mode") != "weighted_average":
+                return [model_version]
+            component_ids = [str(item).strip() for item in model_version.get("component_model_version_ids") or [] if str(item).strip()]
+            components = [versions_by_id[component_id] for component_id in component_ids if component_id in versions_by_id]
+            if not components:
+                raise ValueError(
+                    f"Contribution base models are missing for ensemble {model_version.get('version_name') or model_version.get('version_id')}."
+                )
+            if str(model_version.get("architecture") or "") == "multi_model_ensemble":
+                return components
+            automated_component = next(
+                (
+                    component
+                    for component in components
+                    if component.get("ensemble_mode") != "weighted_average" and resolve_model_crop_mode(component) == "automated"
+                ),
+                None,
+            )
+            if automated_component is not None:
+                return [automated_component]
+            base_component = next((component for component in components if component.get("ensemble_mode") != "weighted_average"), None)
+            return [base_component or components[0]]
+
+        requested_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
+        if requested_ids:
+            requested_models: list[dict[str, Any]] = []
+            missing_ids: list[str] = []
+            for version_id in requested_ids:
+                model_version = versions_by_id.get(version_id)
+                if model_version is None:
+                    missing_ids.append(version_id)
+                else:
+                    requested_models.append(model_version)
+            if missing_ids:
+                raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
+        else:
+            single_model = get_model_version(cp, model_version_id)
+            if single_model is None or not single_model.get("ready", True):
+                raise ValueError("No ready model version is available for contribution.")
+            requested_models = [single_model]
+
+        expanded_models: list[dict[str, Any]] = []
+        seen_version_ids: set[str] = set()
+        for requested_model in requested_models:
+            for expanded_model in expand_contribution_model(requested_model):
+                version_id = str(expanded_model.get("version_id") or "").strip()
+                if not version_id or version_id in seen_version_ids:
+                    continue
+                seen_version_ids.add(version_id)
+                expanded_models.append(expanded_model)
+        if not expanded_models:
+            raise ValueError("No contribution-ready model version is available.")
+        return expanded_models
 
     @router.get("/api/sites/{site_id}/cases")
     def list_cases(
@@ -86,6 +242,29 @@ def build_cases_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
         return site_store.list_patients(created_by_user_id=created_by_user_id)
+
+    @router.get("/api/sites/{site_id}/patients/list-board")
+    def list_patient_rows(
+        site_id: str,
+        q: str | None = None,
+        mine: bool = False,
+        page: int = 1,
+        page_size: int = 25,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        if page < 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be at least 1.")
+        if page_size < 1 or page_size > 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page_size must be between 1 and 100.")
+        site_store = require_site_access(cp, user, site_id)
+        created_by_user_id = user["user_id"] if mine else None
+        return site_store.list_patient_case_rows(
+            created_by_user_id=created_by_user_id,
+            search=q,
+            page=page,
+            page_size=page_size,
+        )
 
     @router.post("/api/sites/{site_id}/patients")
     def create_patient(
@@ -529,7 +708,14 @@ def build_cases_router(support: Any) -> APIRouter:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
-        model_version = get_model_version(cp, payload.model_version_id)
+        try:
+            model_version = resolve_requested_model_version(
+                cp,
+                model_version_id=payload.model_version_id,
+                model_version_ids=payload.model_version_ids,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if model_version is None or not model_version.get("ready", True):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -678,7 +864,14 @@ def build_cases_router(support: Any) -> APIRouter:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
-        model_version = get_model_version(cp, payload.model_version_id)
+        try:
+            model_version = resolve_requested_model_version(
+                cp,
+                model_version_id=payload.model_version_id,
+                model_version_ids=payload.model_version_ids,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if model_version is None or not model_version.get("ready", True):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -725,23 +918,13 @@ def build_cases_router(support: Any) -> APIRouter:
                 detail="Only active visits are enabled for contribution under the current policy.",
             )
 
-        model_version = get_model_version(cp, payload.model_version_id)
-        if model_version is None or not model_version.get("ready", True):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No ready model version is available for contribution.",
-            )
-
         try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-            update_metadata = workflow.contribute_case(
-                site_store=site_store,
-                patient_id=payload.patient_id,
-                visit_date=payload.visit_date,
-                model_version=model_version,
-                execution_device=execution_device,
-                user_id=user["user_id"],
+            contribution_models = resolve_requested_contribution_models(
+                cp,
+                model_version_id=payload.model_version_id,
+                model_version_ids=payload.model_version_ids,
             )
+            execution_device = resolve_execution_device(payload.execution_mode)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -750,15 +933,83 @@ def build_cases_router(support: Any) -> APIRouter:
                 detail=f"Case contribution is unavailable: {exc}",
             ) from exc
 
+        updates: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        runtime_failure_count = 0
+        contribution_group_id = make_id("contribgrp")
+        for model_version in contribution_models:
+            try:
+                updates.append(
+                    workflow.contribute_case(
+                        site_store=site_store,
+                        patient_id=payload.patient_id,
+                        visit_date=payload.visit_date,
+                        model_version=model_version,
+                        execution_device=execution_device,
+                        user_id=user["user_id"],
+                        contribution_group_id=contribution_group_id,
+                    )
+                )
+            except ValueError as exc:
+                failures.append(
+                    {
+                        "model_version_id": model_version.get("version_id"),
+                        "version_name": model_version.get("version_name"),
+                        "architecture": model_version.get("architecture"),
+                        "error": str(exc),
+                    }
+                )
+            except RuntimeError as exc:
+                runtime_failure_count += 1
+                failures.append(
+                    {
+                        "model_version_id": model_version.get("version_id"),
+                        "version_name": model_version.get("version_name"),
+                        "architecture": model_version.get("architecture"),
+                        "error": str(exc),
+                    }
+                )
+
+        if not updates:
+            detail = "; ".join(item["error"] for item in failures) or "Case contribution is unavailable."
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE if runtime_failure_count and runtime_failure_count == len(failures) else status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            )
+
+        primary_update = updates[0]
+        primary_model_version = next(
+            (
+                item
+                for item in contribution_models
+                if str(item.get("version_id") or "") == str(primary_update.get("base_model_version_id") or "")
+            ),
+            contribution_models[0],
+        )
+
         return {
-            "update": update_metadata,
+            "update": primary_update,
+            "updates": updates,
+            "update_count": len(updates),
+            "contribution_group_id": contribution_group_id,
             "visit_status": visit_status,
             "execution_device": execution_device,
             "model_version": {
-                "version_id": model_version.get("version_id"),
-                "version_name": model_version.get("version_name"),
-                "architecture": model_version.get("architecture"),
+                "version_id": primary_model_version.get("version_id"),
+                "version_name": primary_model_version.get("version_name"),
+                "architecture": primary_model_version.get("architecture"),
             },
+            "model_versions": [
+                {
+                    "version_id": item.get("version_id"),
+                    "version_name": item.get("version_name"),
+                    "architecture": item.get("architecture"),
+                    "crop_mode": item.get("crop_mode"),
+                    "ensemble_mode": item.get("ensemble_mode"),
+                }
+                for item in contribution_models
+            ],
+            "failures": failures,
             "stats": cp.get_contribution_stats(user_id=user["user_id"]),
         }
 
@@ -892,6 +1143,44 @@ def build_cases_router(support: Any) -> APIRouter:
             for item in previews
         ]
 
+    @router.get("/api/sites/{site_id}/cases/lesion-preview/stored")
+    def list_stored_case_lesion_previews(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> list[dict[str, Any]]:
+        require_validation_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        image_records = site_store.list_images_for_visit(patient_id, visit_date)
+        if not image_records:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No images found for patient {patient_id} / {visit_date}.")
+
+        previews = []
+        for image in image_records:
+            prompt_box = image.get("lesion_prompt_box")
+            if not isinstance(prompt_box, dict):
+                continue
+            lesion = load_stored_lesion_crop(site_store, image)
+            previews.append(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "image_id": image.get("image_id"),
+                    "view": image.get("view"),
+                    "is_representative": bool(image.get("is_representative")),
+                    "source_image_path": image.get("image_path"),
+                    "has_lesion_crop": bool(lesion and lesion.get("lesion_crop_path")),
+                    "has_lesion_mask": bool(lesion and lesion.get("lesion_mask_path")),
+                    "backend": lesion.get("backend", "unknown") if lesion else "unknown",
+                    "lesion_prompt_box": prompt_box,
+                    "prompt_signature": lesion.get("prompt_signature") if lesion else lesion_prompt_box_signature(prompt_box),
+                }
+            )
+
+        return previews
+
     @router.get("/api/sites/{site_id}/cases/lesion-preview/artifacts/{artifact_kind}")
     def get_case_lesion_preview_artifact(
         site_id: str,
@@ -904,22 +1193,11 @@ def build_cases_router(support: Any) -> APIRouter:
     ) -> FileResponse:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
-        workflow = get_workflow(cp)
         image = site_store.get_image(image_id)
         if image is None or image.get("patient_id") != patient_id or image.get("visit_date") != visit_date:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found for this case.")
 
-        try:
-            previews = workflow.preview_case_lesion(site_store, patient_id, visit_date)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Lesion preview is unavailable: {exc}",
-            ) from exc
-
-        preview = next((item for item in previews if item.get("source_image_path") == image.get("image_path")), None)
+        preview = load_stored_lesion_crop(site_store, image)
         if preview is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesion preview record not found.")
 
@@ -953,8 +1231,19 @@ def build_cases_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
-        require_site_access(cp, user, site_id)
-        return build_case_history(cp, site_id, patient_id, visit_date)
+        site_store = require_site_access(cp, user, site_id)
+        return site_store.load_case_history(patient_id, visit_date)
+
+    @router.get("/api/sites/{site_id}/patients/{patient_reference_id}/trajectory")
+    def get_patient_trajectory(
+        site_id: str,
+        patient_reference_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        if not cp.user_can_access_site(user, site_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
+        return build_patient_trajectory(cp, site_id, patient_reference_id)
 
     @router.post("/api/sites/{site_id}/cases/research-registry")
     def update_case_research_registry(

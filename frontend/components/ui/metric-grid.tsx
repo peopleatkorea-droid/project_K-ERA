@@ -38,9 +38,13 @@ export function MetricGrid({
 
 export function MetricItem({ className, value, label }: MetricItemProps) {
   return (
-    <div className={cn("rounded-[18px] border border-border bg-surface-muted/80 p-3.5", className)}>
-      <strong className="block text-lg font-semibold tracking-[-0.03em] text-ink">{value}</strong>
-      <span className="mt-1 block text-[0.82rem] text-muted">{label}</span>
+    <div className={cn("min-w-0 rounded-[18px] border border-border bg-surface-muted/80 p-3.5", className)}>
+      <strong className="block min-w-0 break-words text-lg font-semibold tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
+        {value}
+      </strong>
+      <span className="mt-1 block min-w-0 break-words text-[0.82rem] text-muted [overflow-wrap:anywhere]">
+        {label}
+      </span>
     </div>
   );
 }

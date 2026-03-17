@@ -4,6 +4,7 @@ import type {
   AdminOverviewResponse,
   AggregationRecord,
   AggregationRunResponse,
+  InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
   ManagedUserRecord,
   ModelUpdateRecord,
@@ -21,6 +22,32 @@ export async function fetchAccessRequests(token: string, statusFilter = "pending
 
 export async function fetchAdminOverview(token: string) {
   return request<AdminOverviewResponse>("/api/admin/overview", {}, token);
+}
+
+export async function fetchInstitutionDirectoryStatus(token: string) {
+  return request<InstitutionDirectorySyncResponse>("/api/admin/institutions/status", {}, token);
+}
+
+export async function syncInstitutionDirectory(
+  token: string,
+  payload: {
+    page_size?: number;
+    max_pages?: number;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (typeof payload.page_size === "number") {
+    params.set("page_size", String(payload.page_size));
+  }
+  if (typeof payload.max_pages === "number") {
+    params.set("max_pages", String(payload.max_pages));
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<InstitutionDirectorySyncResponse>(
+    `/api/admin/institutions/sync${suffix}`,
+    { method: "POST" },
+    token,
+  );
 }
 
 export async function fetchStorageSettings(token: string) {
@@ -210,6 +237,47 @@ export async function deleteModelVersion(versionId: string, token: string) {
   return request<{ model_version: ModelVersionRecord }>(`/api/admin/model-versions/${versionId}`, { method: "DELETE" }, token);
 }
 
+export async function publishModelVersion(
+  versionId: string,
+  token: string,
+  payload: {
+    download_url: string;
+    set_current?: boolean;
+  },
+) {
+  return request<{ model_version: ModelVersionRecord }>(
+    `/api/admin/model-versions/${versionId}/publish`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        set_current: false,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function autoPublishModelVersion(
+  versionId: string,
+  token: string,
+  payload: {
+    set_current?: boolean;
+  } = {},
+) {
+  return request<{ model_version: ModelVersionRecord }>(
+    `/api/admin/model-versions/${versionId}/auto-publish`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        set_current: false,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
 export async function fetchModelUpdates(
   token: string,
   options: {
@@ -241,6 +309,34 @@ export async function reviewModelUpdate(
     {
       method: "POST",
       body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function publishModelUpdate(
+  updateId: string,
+  token: string,
+  payload: {
+    download_url: string;
+  },
+) {
+  return request<{ update: ModelUpdateRecord }>(
+    `/api/admin/model-updates/${updateId}/publish`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function autoPublishModelUpdate(updateId: string, token: string) {
+  return request<{ update: ModelUpdateRecord }>(
+    `/api/admin/model-updates/${updateId}/auto-publish`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
     },
     token,
   );

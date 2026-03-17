@@ -6,6 +6,7 @@ import io
 import mimetypes
 import os
 import threading
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from kera_research.services.semantic_prompts import SemanticPromptScoringService
 from kera_research.storage import read_json
 from kera_research.api.route_helpers import (
     build_case_history as _build_case_history,
+    build_patient_trajectory as _build_patient_trajectory,
     build_site_activity as _build_site_activity,
     load_cross_validation_reports as _load_cross_validation_reports,
     site_level_validation_runs as _site_level_validation_runs,
@@ -166,16 +168,22 @@ def get_control_plane() -> ControlPlaneStore:
 
 def get_current_user(
     authorization: str | None = Header(default=None),
-    cp: ControlPlaneStore = Depends(get_control_plane),
 ) -> dict[str, Any]:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
     token = authorization.split(" ", 1)[1].strip()
     token_payload = _decode_access_token(token)
-    user = cp.get_user_by_id(token_payload["sub"])
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists.")
-    return user
+    # Build the user dict directly from the signed JWT — no DB round trip needed.
+    # The JWT already contains role, site_ids, and approval_status.
+    # Token TTL is 2 hours, so stale permission windows are short.
+    return {
+        "user_id": token_payload["sub"],
+        "username": token_payload.get("username", ""),
+        "role": token_payload.get("role", "viewer"),
+        "site_ids": token_payload.get("site_ids") or [],
+        "approval_status": token_payload.get("approval_status", "approved"),
+        "full_name": token_payload.get("full_name", ""),
+    }
 
 
 def get_approved_user(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
@@ -932,6 +940,7 @@ class CaseValidationRequest(BaseModel):
     visit_date: str
     execution_mode: str = "auto"
     model_version_id: str | None = None
+    model_version_ids: list[str] = Field(default_factory=list)
     generate_gradcam: bool = True
     generate_medsam: bool = True
 
@@ -941,6 +950,7 @@ class CaseAiClinicRequest(BaseModel):
     visit_date: str
     execution_mode: str = "auto"
     model_version_id: str | None = None
+    model_version_ids: list[str] = Field(default_factory=list)
     top_k: int = 3
     retrieval_backend: str = "hybrid"
 
@@ -950,6 +960,7 @@ class CaseContributionRequest(BaseModel):
     visit_date: str
     execution_mode: str = "auto"
     model_version_id: str | None = None
+    model_version_ids: list[str] = Field(default_factory=list)
 
 
 class SiteValidationRunRequest(BaseModel):
@@ -1020,6 +1031,15 @@ class AggregationRunRequest(BaseModel):
 class ModelUpdateReviewRequest(BaseModel):
     decision: str
     reviewer_notes: str = ""
+
+
+class ModelVersionPublishRequest(BaseModel):
+    download_url: str
+    set_current: bool = False
+
+
+class ModelVersionAutoPublishRequest(BaseModel):
+    set_current: bool = False
 
 
 class ProjectCreateRequest(BaseModel):
@@ -1209,6 +1229,7 @@ def create_app() -> FastAPI:
         site_comparison_rows=_site_comparison_rows,
         attach_image_quality_scores=_attach_image_quality_scores,
         build_case_history=_build_case_history,
+        build_patient_trajectory=_build_patient_trajectory,
         hash_password=_hash_password,
         agg_jobs=_AGG_JOBS,
         agg_jobs_lock=_AGG_JOBS_LOCK,
@@ -1240,6 +1261,8 @@ def create_app() -> FastAPI:
         AccessRequestReviewRequest=AccessRequestReviewRequest,
         StorageSettingsUpdateRequest=StorageSettingsUpdateRequest,
         ModelUpdateReviewRequest=ModelUpdateReviewRequest,
+        ModelVersionPublishRequest=ModelVersionPublishRequest,
+        ModelVersionAutoPublishRequest=ModelVersionAutoPublishRequest,
         AggregationRunRequest=AggregationRunRequest,
         ProjectCreateRequest=ProjectCreateRequest,
         SiteCreateRequest=SiteCreateRequest,

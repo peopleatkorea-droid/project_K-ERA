@@ -1,7 +1,9 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "") ?? "";
+const API_BASE_URL = configuredApiBaseUrl;
 
 export function buildApiUrl(path: string): string {
-  return `${API_BASE_URL}${path}`;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath;
 }
 
 function stringifyApiDetail(detail: unknown): string {
@@ -58,11 +60,17 @@ export async function request<T>(path: string, init: RequestInit = {}, token?: s
   return (await response.json()) as T;
 }
 
-export async function requestBlob(path: string, token: string, fallbackLabel: string): Promise<Blob> {
+export async function requestBlob(
+  path: string,
+  token: string,
+  fallbackLabel: string,
+  init: RequestInit = {},
+): Promise<Blob> {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(buildApiUrl(path), {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    ...init,
+    headers,
   });
   if (!response.ok) {
     throw new Error(await readErrorDetail(response, fallbackLabel));

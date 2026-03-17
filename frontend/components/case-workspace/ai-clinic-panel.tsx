@@ -34,8 +34,8 @@ export function AiClinicPanel({
         titleAs="h4"
         description={pick(
           locale,
-          "Use the saved validation output to retrieve nearby patients from the configured visual retrieval backend.",
-          "저장된 검증 결과를 바탕으로 visual retrieval backend에서 가까운 환자를 검색합니다."
+          "Use the saved validation result to pull nearby patients from the retrieval index.",
+          "저장된 검증 결과를 바탕으로 retrieval index에서 가까운 환자를 찾습니다."
         )}
         aside={
           <Button type="button" variant="ghost" onClick={onRunAiClinic} disabled={aiClinicBusy || !canRunAiClinic}>
@@ -48,8 +48,8 @@ export function AiClinicPanel({
         <div className={emptySurfaceClass}>
           {pick(
             locale,
-            "Run validation first, then AI Clinic will retrieve up to three similar patients using the configured visual retrieval backend.",
-            "먼저 검증을 실행하면 AI Clinic이 설정된 visual retrieval backend를 사용해 최대 3명의 유사 환자를 찾아줍니다."
+            "Run validation first, then AI Clinic can retrieve up to three similar patients.",
+            "먼저 검증을 실행하면 AI Clinic이 최대 3명의 유사 환자를 찾아줍니다."
           )}
         </div>
       ) : (

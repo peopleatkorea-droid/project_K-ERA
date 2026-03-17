@@ -200,11 +200,11 @@ export function PatientVisitForm({
     <div className="grid gap-5">
       <CanvasBlock
         eyebrow={pick(locale, "Patient", "환자")}
-        title={pick(locale, "Anchor the case with a compact patient snapshot", "환자 스냅샷으로 케이스 기준점을 먼저 잡습니다")}
+        title={pick(locale, "Start with a clean patient snapshot", "환자 스냅샷부터 가볍게 시작합니다")}
         summary={pick(
           locale,
-          "Keep this short and structured. The canvas should read like a clinical document, not a long admin form.",
-          "길게 늘어놓기보다 짧고 구조화된 상태를 유지하세요. 이 캔버스는 관리자 폼보다 임상 문서처럼 읽혀야 합니다."
+          "Keep only the essentials here so the canvas opens like a clinical note, not a long admin form.",
+          "여기에는 핵심만 남겨서, 이 캔버스가 긴 행정 폼이 아니라 짧은 임상 노트처럼 열리게 합니다."
         )}
         statusLabel={identityComplete ? pick(locale, "Ready", "준비됨") : pick(locale, "Needs basics", "기본 정보 필요")}
         statusTone={identityComplete ? "complete" : "active"}
@@ -250,11 +250,11 @@ export function PatientVisitForm({
 
       <CanvasBlock
         eyebrow={pick(locale, "Visit", "방문")}
-        title={pick(locale, "Capture the visit context in one pass", "방문 맥락을 한 블록 안에서 정리합니다")}
+        title={pick(locale, "Set the visit context in one pass", "방문 맥락을 한 번에 정리합니다")}
         summary={pick(
           locale,
-          "Visit phase, status, lens use, and risk factors should read as one coherent state instead of separate setup panels.",
-          "방문 단계, 상태, 렌즈 사용, 선행 인자를 따로 떨어진 설정 패널이 아니라 하나의 상태로 읽히게 만듭니다."
+          "Phase, status, lens use, and risk factors should read as one state instead of scattered settings.",
+          "방문 단계, 상태, 렌즈 사용, 선행 인자가 흩어진 설정이 아니라 하나의 상태로 읽히게 만듭니다."
         )}
         statusLabel={visitComplete ? pick(locale, "Context set", "맥락 설정됨") : pick(locale, "Visit context", "방문 맥락")}
         statusTone={visitComplete ? "complete" : "pending"}
@@ -345,8 +345,8 @@ export function PatientVisitForm({
             <div className={supportHintClass}>
               {pick(
                 locale,
-                "Select only what matters for this visit. These choices become part of the review summary.",
-                "이 방문에 의미 있는 항목만 선택하세요. 선택한 내용은 이후 리뷰 요약에 그대로 반영됩니다."
+                "Select only what matters for this visit. These tags flow straight into review.",
+                "이 방문에 의미 있는 항목만 선택하세요. 선택한 태그는 이후 리뷰에 그대로 이어집니다."
               )}
             </div>
           </div>
@@ -356,11 +356,11 @@ export function PatientVisitForm({
 
       <CanvasBlock
         eyebrow={pick(locale, "Organism", "원인균")}
-        title={pick(locale, "Define the primary label before submission", "제출 전에 기본 라벨을 먼저 명확히 합니다")}
+        title={pick(locale, "Choose the primary organism first", "기본 원인균부터 명확히 정합니다")}
         summary={pick(
           locale,
-          "Start with one primary organism. Mixed organisms stay secondary and should only be added when they materially change the case.",
-          "먼저 하나의 기본 원인균을 정하고, 혼합 균주는 케이스 해석을 실제로 바꿀 때만 보조 라벨로 추가합니다."
+          "Start with one primary label. Add mixed organisms only when they meaningfully change the case.",
+          "먼저 하나의 기본 라벨을 정하고, 혼합 균주는 케이스 해석이 실제로 달라질 때만 추가합니다."
         )}
         statusLabel={organismComplete ? organismToneCopy : pick(locale, "Choose organism", "원인균 선택")}
         statusTone={organismComplete ? "complete" : "active"}
@@ -409,8 +409,8 @@ export function PatientVisitForm({
             <div className={supportHintClass}>
               {pick(
                 locale,
-                "Use this only when more than one organism should survive into review and validation.",
-                "리뷰와 검증 단계까지 둘 이상의 균주를 유지해야 할 때만 여세요."
+                "Open this only when more than one organism should survive into review.",
+                "둘 이상의 균주를 리뷰 단계까지 유지해야 할 때만 여세요."
               )}
             </div>
           </div>
@@ -462,8 +462,8 @@ export function PatientVisitForm({
                 <div className={supportHintClass}>
                   {pick(
                     locale,
-                    "Adds the pending organism to the review stack below without changing the primary label.",
-                    "기본 라벨은 유지한 채 아래 리뷰 스택에 보조 균주를 추가합니다."
+                    "Adds the pending organism below without changing the primary label.",
+                    "기본 라벨은 유지한 채 아래 스택에 보조 균주를 추가합니다."
                   )}
                 </div>
               </div>
@@ -499,11 +499,11 @@ export function PatientVisitForm({
 
       <CanvasBlock
         eyebrow={pick(locale, "Clinical note", "임상 노트")}
-        title={pick(locale, "Keep the note concise and clinical", "노트는 짧고 임상적으로 유지합니다")}
+        title={pick(locale, "Keep the note short and clinical", "노트는 짧고 임상적으로 유지합니다")}
         summary={pick(
           locale,
-          "Use this for ocular surface context, referral history, or procedural notes that should survive into later review.",
-          "안구 표면 맥락, 의뢰 경과, 시술 메모처럼 이후 리뷰까지 살아 있어야 하는 정보만 남기세요."
+          "Use this for ocular surface context, referral history, or procedural notes worth keeping.",
+          "안구 표면 맥락, 의뢰 경과, 시술 메모처럼 이후에도 남겨둘 만한 정보만 적으세요."
         )}
         statusLabel={noteComplete ? pick(locale, "Noted", "기록됨") : pick(locale, "Optional", "선택 사항")}
         statusTone={noteComplete ? "complete" : "pending"}
@@ -512,8 +512,8 @@ export function PatientVisitForm({
           label={pick(locale, "Case note", "케이스 노트")}
           hint={pick(
             locale,
-            "Write this as if it will be read during case review, not just during data entry.",
-            "단순 입력 메모가 아니라 케이스 리뷰에서 다시 읽힐 문장이라고 생각하고 작성하세요."
+            "Write this as something another clinician would want to read later.",
+            "단순 입력 메모가 아니라, 다른 임상의가 나중에 다시 읽을 문장이라고 생각하고 작성하세요."
           )}
         >
           <textarea
@@ -531,17 +531,17 @@ export function PatientVisitForm({
 
       <div className={canvasFooterClass}>
         <div className={canvasFooterCopyClass}>
-          <strong className={canvasFooterTitleClass}>{pick(locale, "Lock the intake when the structure is stable", "구조가 정리되면 입력을 고정합니다")}</strong>
+          <strong className={canvasFooterTitleClass}>{pick(locale, "Lock the intake when the case feels clean", "케이스 구조가 정리되면 입력을 고정합니다")}</strong>
           <p className={canvasFooterBodyClass}>
             {pick(
               locale,
-              "You can keep refining the note and metadata after this, but locking the intake stabilizes the case before submission.",
-              "이후에도 노트와 메타데이터는 다시 수정할 수 있지만, 입력을 먼저 고정하면 제출 전 케이스 구조가 안정됩니다."
+              "You can still refine details later, but locking the intake gives the case a stable shape before image review.",
+              "이후에도 세부 정보는 다시 다듬을 수 있지만, 먼저 입력을 고정하면 이미지 리뷰 전에 케이스 구조가 안정됩니다."
             )}
           </p>
         </div>
         <Button className="min-w-[168px]" type="button" variant="primary" onClick={onCompleteIntake}>
-          {pick(locale, "Complete", "완료")}
+          {pick(locale, "Lock intake", "입력 고정")}
         </Button>
       </div>
     </div>

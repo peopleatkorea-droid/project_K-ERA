@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from kera_research.domain import normalize_actual_visit_date, normalize_patient_pseudonym, normalize_visit_label
+from kera_research.services.data_plane import SiteStore
 
 
 def build_sites_router(support: Any) -> APIRouter:
@@ -368,7 +369,12 @@ def build_sites_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
-        site_store = require_site_access(cp, user, site_id)
+        if not cp.user_can_access_site(user, site_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
+        try:
+            site_store: SiteStore | None = SiteStore(site_id)
+        except Exception:
+            site_store = None
         validation_run = next((item for item in cp.list_validation_runs(site_id=site_id) if item.get("validation_id") == validation_id), None)
         if validation_run is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Validation run not found.")

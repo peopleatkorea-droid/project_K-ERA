@@ -1,6 +1,6 @@
 "use client";
 
-import type { Dispatch, SetStateAction } from "react";
+import { useDeferredValue, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -8,16 +8,9 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
-import type { ManagedSiteRecord, ManagedUserRecord, ProjectRecord, SiteSummary, StorageSettingsRecord } from "../../lib/api";
-import { pick, translateRole, type Locale } from "../../lib/i18n";
-
-type SiteFormState = {
-  project_id: string;
-  site_code: string;
-  display_name: string;
-  hospital_name: string;
-  research_registry_enabled: boolean;
-};
+import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecord, type ProjectRecord, type PublicInstitutionRecord, type SiteSummary, type StorageSettingsRecord } from "../../lib/api";
+import { pick, translateApiError, translateRole, type Locale } from "../../lib/i18n";
+import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
   username: string;
@@ -75,7 +68,7 @@ function SiteRecordCard({
   onClick?: () => void;
 }) {
   const content = (
-    <Card as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+    <Card as="article" variant="nested" className="grid min-w-0 gap-3 border border-border/80 p-4">
       <SectionHeader title={title} titleAs="h4" description={subtitle} />
       <MetricGrid columns={Math.min(Math.max(metrics.length, 1), 3) as 2 | 3}>
         {metrics.map((metric) => (
@@ -90,10 +83,34 @@ function SiteRecordCard({
   }
 
   return (
-    <button type="button" className="text-left" onClick={onClick}>
+    <button type="button" className="w-full min-w-0 text-left" onClick={onClick}>
       {content}
     </button>
   );
+}
+
+function normalizeSiteCode(value: string) {
+  return value
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
+function suggestedSiteCodeFromInstitution(institution: PublicInstitutionRecord): string {
+  const fromName = normalizeSiteCode(institution.name);
+  if (fromName) {
+    return fromName;
+  }
+  const fromId = normalizeSiteCode(`HIRA_${institution.institution_id}`);
+  if (fromId) {
+    return fromId;
+  }
+  const hash = Array.from(institution.institution_id).reduce(
+    (accumulator, char) => ((accumulator * 31) + char.charCodeAt(0)) >>> 0,
+    7,
+  );
+  return `HIRA_${hash.toString(16).toUpperCase()}`.slice(0, 32);
 }
 
 export function ManagementSection({
@@ -132,6 +149,53 @@ export function ManagementSection({
   onSaveUser,
 }: Props) {
   const hospitalHasData = Boolean(summary && (summary.n_patients > 0 || summary.n_visits > 0 || summary.n_images > 0));
+  const [institutionQuery, setInstitutionQuery] = useState("");
+  const [institutionResults, setInstitutionResults] = useState<PublicInstitutionRecord[]>([]);
+  const [institutionSearchBusy, setInstitutionSearchBusy] = useState(false);
+  const [institutionSearchError, setInstitutionSearchError] = useState<string | null>(null);
+  const deferredInstitutionQuery = useDeferredValue(institutionQuery);
+
+  useEffect(() => {
+    if (!canManagePlatform) {
+      setInstitutionResults([]);
+      setInstitutionSearchBusy(false);
+      setInstitutionSearchError(null);
+      return;
+    }
+    const query = deferredInstitutionQuery.trim();
+    if (query.length < 2) {
+      setInstitutionResults([]);
+      setInstitutionSearchBusy(false);
+      setInstitutionSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    setInstitutionSearchBusy(true);
+    setInstitutionSearchError(null);
+    void searchPublicInstitutions(query, { limit: 8 })
+      .then((items) => {
+        if (!cancelled) {
+          setInstitutionResults(items);
+        }
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setInstitutionSearchError(
+            nextError instanceof Error
+              ? translateApiError(locale, nextError.message)
+              : pick(locale, "Unable to search institutions.", "기관 검색에 실패했습니다."),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setInstitutionSearchBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canManagePlatform, deferredInstitutionQuery, locale]);
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -309,6 +373,102 @@ export function ManagementSection({
                     : pick(locale, "Registering a new hospital", "새 병원 등록")
                 }
               />
+              <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                <SectionHeader
+                  title={pick(locale, "Official institution search (HIRA)", "공식 기관 검색 (HIRA)")}
+                  titleAs="h4"
+                  description={pick(
+                    locale,
+                    "Search the synced ophthalmology directory and prefill a new hospital registration from an official institution.",
+                    "동기화된 안과 기관 디렉터리를 검색해서 공식 기관 정보로 새 병원 등록 폼을 채울 수 있습니다.",
+                  )}
+                />
+                <Field
+                  label={pick(locale, "Institution keyword", "기관 검색어")}
+                  hint={pick(
+                    locale,
+                    "Try Jeju, Seoul, Kim's Eye, or a hospital name. Selecting a result prepares a new site draft.",
+                    "제주, 서울, 김안과, 병원명 등을 검색하세요. 결과를 선택하면 새 site 초안이 채워집니다.",
+                  )}
+                >
+                  <input
+                    value={institutionQuery}
+                    onChange={(event) => setInstitutionQuery(event.target.value)}
+                    placeholder={pick(locale, "Jeju, Seoul, Kim's Eye...", "제주, 서울, 김안과...")}
+                  />
+                </Field>
+                {institutionSearchBusy ? (
+                  <div className="rounded-[18px] border border-border/80 bg-surface-muted/80 px-4 py-3 text-sm text-muted">
+                    {pick(locale, "Searching institutions...", "기관 검색 중...")}
+                  </div>
+                ) : null}
+                {institutionSearchError ? (
+                  <div className="rounded-[18px] border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
+                    {institutionSearchError}
+                  </div>
+                ) : null}
+                {deferredInstitutionQuery.trim().length >= 2 && !institutionSearchBusy && !institutionSearchError ? (
+                  institutionResults.length > 0 ? (
+                    <div className="grid gap-2">
+                      {institutionResults.map((institution) => {
+                        const linkedSite =
+                          managedSites.find((site) => site.source_institution_id === institution.institution_id) ?? null;
+                        return (
+                          <Card key={institution.institution_id} as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="grid gap-1">
+                                <strong className="text-sm font-semibold text-ink">{institution.name}</strong>
+                                <div className="text-xs leading-5 text-muted">
+                                  {[institution.institution_type_name, institution.address].filter(Boolean).join(" / ")}
+                                </div>
+                              </div>
+                              <span className={docSiteBadgeClass}>
+                                {linkedSite
+                                  ? pick(locale, `Linked to ${linkedSite.site_id}`, `${linkedSite.site_id}에 연결됨`)
+                                  : institution.institution_id}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-3">
+                              {linkedSite ? (
+                                <Button type="button" variant="ghost" onClick={() => onEditSite(linkedSite)}>
+                                  {pick(locale, "Open linked site", "연결된 site 열기")}
+                                </Button>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    const suggestedCode = suggestedSiteCodeFromInstitution(institution);
+                                    const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || "";
+                                    if (editingSiteId) {
+                                      onResetSiteForm();
+                                    }
+                                    setSiteForm((current) => ({
+                                      ...current,
+                                      project_id: current.project_id || effectiveProjectId,
+                                      site_code: current.site_code || suggestedCode,
+                                      display_name: institution.name,
+                                      hospital_name: institution.name,
+                                      source_institution_id: institution.institution_id,
+                                    }));
+                                    setInstitutionQuery(institution.name);
+                                  }}
+                                >
+                                  {pick(locale, "Use for new site", "새 site 초안으로 사용")}
+                                </Button>
+                              )}
+                            </div>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className={emptySurfaceClass}>
+                      {pick(locale, "No synced institution matched this search yet.", "동기화된 기관 목록에서 일치하는 결과가 없습니다.")}
+                    </div>
+                  )
+                ) : null}
+              </Card>
               <Field label={pick(locale, "Project", "프로젝트")}>
                 <select
                   value={siteForm.project_id || projects[0]?.project_id || ""}
@@ -346,6 +506,26 @@ export function ManagementSection({
                   placeholder={pick(locale, "Jeju National University Hospital", "예: 제주대학교병원")}
                 />
               </Field>
+              {siteForm.source_institution_id ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-brand/20 bg-brand-soft/60 px-4 py-3 text-sm text-ink">
+                  <span>
+                    <strong>{pick(locale, "Linked HIRA institution", "연결된 HIRA 기관")}:</strong> {siteForm.source_institution_id}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setSiteForm((current) => ({
+                        ...current,
+                        source_institution_id: undefined,
+                      }))
+                    }
+                  >
+                    {pick(locale, "Clear mapping", "연결 해제")}
+                  </Button>
+                </div>
+              ) : null}
               <Field
                 as="div"
                 label={pick(locale, "Research registry", "연구 레지스트리")}

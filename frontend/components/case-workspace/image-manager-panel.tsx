@@ -135,7 +135,7 @@ function ImageGrid({
             <div className="grid gap-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <strong className="block truncate text-sm font-semibold text-ink" title={image.file.name}>
+                  <strong className="block text-sm font-semibold text-ink [overflow-wrap:anywhere]" title={image.file.name}>
                     {image.file.name}
                   </strong>
                   <span className="mt-1 block text-xs text-muted">{storageLabel}</span>
@@ -296,8 +296,8 @@ export function ImageManagerPanel({
   const missingLesionBoxes = Math.max(0, allDraftImages.length - lesionBoxCount);
   const readyToSubmit = intakeCompleted && Boolean(selectedSiteId) && allDraftImages.length > 0;
   const imageSummary = allDraftImages.length
-    ? pick(locale, `${allDraftImages.length} draft images organized for ${resolvedVisitReferenceLabel}.`, `${resolvedVisitReferenceLabel}에 연결된 초안 이미지 ${allDraftImages.length}장을 정리 중입니다.`)
-    : pick(locale, "Start by dropping one or more images into a lane below.", "아래 레인에 이미지 한 장 이상을 먼저 떨어뜨리세요.");
+    ? pick(locale, `${allDraftImages.length} draft images are lined up for ${resolvedVisitReferenceLabel}.`, `${resolvedVisitReferenceLabel}에 연결된 초안 이미지 ${allDraftImages.length}장을 정리해 두었습니다.`)
+    : pick(locale, "Start by dropping one or more images into a lane below.", "아래 레인에 이미지 한 장 이상을 먼저 놓아보세요.");
 
   return (
     <CanvasBlock
@@ -305,8 +305,8 @@ export function ImageManagerPanel({
       title={pick(locale, "Build the image board before submission", "제출 전에 이미지 보드를 먼저 완성합니다")}
       summary={pick(
         locale,
-        "Upload images at any time. Intake completion now stabilizes submission, not image entry, so the canvas stays fluid while you work.",
-        "이미지는 언제든 올릴 수 있습니다. 이제 intake 완료는 업로드 자체를 막지 않고 제출만 안정화하므로 작성 흐름이 더 자연스럽게 유지됩니다."
+        "Upload at any time. Intake completion now stabilizes submission, not image entry, so the board stays fluid while you work.",
+        "이미지는 언제든 올릴 수 있습니다. 이제 intake 완료는 업로드를 막지 않고 제출만 안정화하므로 흐름이 더 자연스럽게 유지됩니다."
       )}
       statusLabel={
         readyToSubmit
@@ -331,7 +331,7 @@ export function ImageManagerPanel({
           title={pick(locale, "White (Slit) lane", "White (Slit) 레인")}
           uploadLabel={pick(locale, "Add files", "파일 추가")}
           dropTitle={pick(locale, "Drop White (Slit) photos here", "White (Slit) 사진을 여기에 놓으세요")}
-          dropBody={pick(locale, "These files stay local until the case is submitted.", "이 파일들은 케이스를 제출하기 전까지 현재 탭에만 머뭅니다.")}
+          dropBody={pick(locale, "Files stay local until this case is saved.", "이 파일들은 케이스를 저장하기 전까지 로컬에만 머뭅니다.")}
           viewLabel={pick(locale, "White", "White")}
           storageLabel={pick(locale, "Draft lane: White", "초안 레인: White")}
           view="white"
@@ -352,7 +352,7 @@ export function ImageManagerPanel({
           title={pick(locale, "Fluorescein lane", "Fluorescein 레인")}
           uploadLabel={pick(locale, "Add files", "파일 추가")}
           dropTitle={pick(locale, "Drop Fluorescein photos here", "Fluorescein 사진을 여기에 놓으세요")}
-          dropBody={pick(locale, "These files stay local until the case is submitted.", "이 파일들은 케이스를 제출하기 전까지 현재 탭에만 머뭅니다.")}
+          dropBody={pick(locale, "Files stay local until this case is saved.", "이 파일들은 케이스를 저장하기 전까지 로컬에만 머뭅니다.")}
           viewLabel={pick(locale, "Fluorescein", "Fluorescein")}
           storageLabel={pick(locale, "Draft lane: Fluorescein", "초안 레인: Fluorescein")}
           view="fluorescein"
@@ -382,12 +382,12 @@ export function ImageManagerPanel({
                 : allDraftImages.length === 0
                   ? pick(locale, "Add at least one image before saving this case to the hospital workspace.", "병원 워크스페이스에 저장하려면 이미지가 최소 한 장 필요합니다.")
                   : missingLesionBoxes > 0
-                    ? pick(locale, `${missingLesionBoxes} image(s) still have no lesion box. You can still save, but the board is stronger if all important images are annotated.`, `아직 lesion box가 없는 이미지가 ${missingLesionBoxes}장 있습니다. 저장은 가능하지만, 중요한 이미지는 표시를 마치는 편이 더 좋습니다.`)
+                    ? pick(locale, `${missingLesionBoxes} image(s) still have no lesion box. You can still save, but the board reads better when the key images are annotated.`, `아직 lesion box가 없는 이미지가 ${missingLesionBoxes}장 있습니다. 저장은 가능하지만, 중요한 이미지는 표시를 마치는 편이 더 좋습니다.`)
                     : pick(locale, "Patient, visit, and image records are aligned. You can save this case to the selected hospital now.", "환자, 방문, 이미지 기록이 정렬되었습니다. 이제 선택한 병원에 케이스를 저장할 수 있습니다.")}
           </p>
         </div>
         <Button type="button" variant="primary" onClick={onSaveCase} disabled={saveBusy || !readyToSubmit}>
-          {saveBusy ? pick(locale, "Saving case...", "케이스 저장 중...") : pick(locale, "Save case to hospital", "병원에 케이스 저장")}
+          {saveBusy ? pick(locale, "Saving case...", "케이스 저장 중...") : pick(locale, "Save to hospital", "병원에 저장")}
         </Button>
       </div>
     </CanvasBlock>

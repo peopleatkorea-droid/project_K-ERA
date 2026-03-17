@@ -1,6 +1,16 @@
 ﻿"use client";
 
-import { type PointerEvent as ReactPointerEvent, useDeferredValue, useEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n, type Locale } from "../lib/i18n";
 import { AiClinicPanel } from "./case-workspace/ai-clinic-panel";
@@ -19,7 +29,6 @@ import type {
   LesionPreviewCard,
   LiveLesionPreviewMap,
   NormalizedBox,
-  PatientListRow,
   PatientListThumbnail,
   RoiPreviewCard,
   SavedImagePreview,
@@ -38,14 +47,12 @@ import { MetricGrid, MetricItem } from "./ui/metric-grid";
 import { SectionHeader } from "./ui/section-header";
 import {
   canvasDocumentClass,
-  canvasHeaderBodyClass,
   canvasHeaderClass,
   canvasHeaderContentClass,
   canvasHeaderGlowClass,
   canvasHeaderKickerClass,
   canvasHeaderMetaChipClass,
   canvasHeaderMetaRowClass,
-  canvasHeaderTitleClass,
   canvasSidebarCardClass,
   canvasSidebarClass,
   canvasSidebarItemClass,
@@ -152,6 +159,7 @@ import {
   type CaseValidationResponse,
   type LiveLesionPreviewJobResponse,
   type ModelVersionRecord,
+
   type SemanticPromptInputMode,
   type SiteRecord,
   type SiteSummary,
@@ -187,6 +195,7 @@ const PREDISPOSING_FACTOR_OPTIONS = [
 ];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
 const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const PATIENT_LIST_PAGE_SIZE = 25;
 const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
     "Staphylococcus aureus",
@@ -280,12 +289,20 @@ type CompletionState = {
     user_contribution_pct: number;
   };
   update_id?: string;
+  update_count?: number;
 };
 
 type ToastState = {
   tone: "success" | "error";
   message: string;
 } | null;
+
+type ToastLogEntry = {
+  id: string;
+  tone: "success" | "error";
+  message: string;
+  created_at: string;
+};
 
 type CaseWorkspaceProps = {
   token: string;
@@ -302,6 +319,73 @@ type CaseWorkspaceProps = {
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onToggleTheme: () => void;
 };
+
+type WorkspaceHistoryEntry = {
+  scope: "case-workspace";
+  version: 1;
+  rail_view: "cases" | "patients";
+  selected_case_id: string | null;
+};
+
+const WORKSPACE_HISTORY_KEY = "__keraWorkspace";
+
+function buildWorkspaceHistoryEntry(
+  railView: "cases" | "patients",
+  selectedCaseId: string | null
+): WorkspaceHistoryEntry {
+  return {
+    scope: "case-workspace",
+    version: 1,
+    rail_view: railView,
+    selected_case_id: selectedCaseId,
+  };
+}
+
+function readWorkspaceHistoryEntry(state: unknown): WorkspaceHistoryEntry | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+  const rawEntry = (state as Record<string, unknown>)[WORKSPACE_HISTORY_KEY];
+  if (!rawEntry || typeof rawEntry !== "object") {
+    return null;
+  }
+  const entry = rawEntry as Record<string, unknown>;
+  if (entry.scope !== "case-workspace" || entry.version !== 1) {
+    return null;
+  }
+  if (entry.rail_view !== "cases" && entry.rail_view !== "patients") {
+    return null;
+  }
+  if (entry.selected_case_id !== null && typeof entry.selected_case_id !== "string") {
+    return null;
+  }
+  return {
+    scope: "case-workspace",
+    version: 1,
+    rail_view: entry.rail_view,
+    selected_case_id: entry.selected_case_id,
+  };
+}
+
+function isSameWorkspaceHistoryEntry(left: WorkspaceHistoryEntry | null, right: WorkspaceHistoryEntry | null): boolean {
+  return left?.rail_view === right?.rail_view && left?.selected_case_id === right?.selected_case_id;
+}
+
+function writeWorkspaceHistoryEntry(entry: WorkspaceHistoryEntry, mode: "push" | "replace") {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const nextState: Record<string, unknown> =
+    window.history.state && typeof window.history.state === "object"
+      ? { ...(window.history.state as Record<string, unknown>) }
+      : {};
+  nextState[WORKSPACE_HISTORY_KEY] = entry;
+  if (mode === "push") {
+    window.history.pushState(nextState, "");
+    return;
+  }
+  window.history.replaceState(nextState, "");
+}
 
 function createDraft(): DraftState {
   return {
@@ -697,14 +781,37 @@ export function CaseWorkspace({
   const [completionState, setCompletionState] = useState<CompletionState | null>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [showOnlyMine, setShowOnlyMine] = useState(false);
+  const [patientListPage, setPatientListPage] = useState(1);
   const [patientListThumbs, setPatientListThumbs] = useState<Record<string, PatientListThumbnail[]>>({});
-  const [toast, setToast] = useState<ToastState>(null);
+  const [toast, setToastState] = useState<ToastState>(null);
+  const [toastHistory, setToastHistory] = useState<ToastLogEntry[]>([]);
   const whiteFileInputRef = useRef<HTMLInputElement | null>(null);
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const patientListThumbUrlsRef = useRef<string[]>([]);
   const railListSectionRef = useRef<HTMLElement | null>(null);
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
+  const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
+  const workspacePopNavigationRef = useRef(false);
   const deferredSearch = useDeferredValue(caseSearch);
+  const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
+    setToastState((current) => {
+      const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
+      if (resolved) {
+        setToastHistory((existing) =>
+          [
+            {
+              id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              tone: resolved.tone,
+              message: resolved.message,
+              created_at: new Date().toISOString(),
+            },
+            ...existing,
+          ].slice(0, 8)
+        );
+      }
+      return resolved;
+    });
+  }, []);
   const copy = {
     recoveredDraft: pick(locale, "Recovered the last saved draft properties for this hospital. Re-attach image files before saving.", "??蹂묒썝??留덉?留?珥덉븞 ?띿꽦??蹂듦뎄?덉뒿?덈떎. ??????대?吏 ?뚯씪? ?ㅼ떆 泥⑤???二쇱꽭??"),
     unableLoadRecentCases: pick(locale, "Unable to load recent cases.", "理쒓렐 耳?댁뒪瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
@@ -749,6 +856,12 @@ export function CaseWorkspace({
     intakeOrganismRequired: pick(locale, "Select the primary organism first.", "먼저 대표 균종을 선택해 주세요."),
     draftAutosaved: (time: string) => pick(locale, `Draft autosaved ${time}`, `${time}에 초안 자동 저장`),
     draftUnsaved: pick(locale, "Draft changes live only in this tab", "초안 변경 내용은 현재 탭에만 유지됩니다."),
+    recentAlerts: pick(locale, "Recent alerts", "최근 알림"),
+    recentAlertsCopy: pick(locale, "Transient toasts stay here for this session.", "짧게 사라지는 토스트도 현재 세션에서는 여기 남겨둡니다."),
+    noAlertsYet: pick(locale, "No alerts yet in this session.", "현재 세션에는 아직 알림이 없습니다."),
+    clearAlerts: pick(locale, "Clear alerts", "알림 비우기"),
+    alertsKept: pick(locale, "kept", "보관"),
+    unableLoadPatientList: pick(locale, "Unable to load the patient list.", "환자 목록을 불러오지 못했습니다."),
     patients: pick(locale, "patients", "?섏옄"),
     savedCases: pick(locale, "saved cases", "??λ맂 耳?댁뒪"),
     loadingSavedCases: pick(locale, "Loading saved cases...", "??λ맂 耳?댁뒪瑜?遺덈윭?ㅻ뒗 以?.."),
@@ -953,6 +1066,89 @@ export function CaseWorkspace({
       window.clearTimeout(timeoutId);
     };
   }, [toast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const historyEntry = readWorkspaceHistoryEntry(event.state);
+      if (!historyEntry) {
+        return;
+      }
+
+      workspacePopNavigationRef.current = true;
+      setPanelOpen(true);
+      setRailView(historyEntry.rail_view);
+      setSelectedCase(
+        historyEntry.selected_case_id
+          ? cases.find((item) => item.case_id === historyEntry.selected_case_id) ?? null
+          : null
+      );
+      if (!historyEntry.selected_case_id) {
+        setSelectedCaseImages([]);
+      }
+      window.scrollTo({ top: 0, behavior: "auto" });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [cases, setSelectedCase, setSelectedCaseImages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextEntry = buildWorkspaceHistoryEntry(railView, selectedCase?.case_id ?? null);
+    const browserEntry = readWorkspaceHistoryEntry(window.history.state);
+
+    if (workspacePopNavigationRef.current) {
+      workspacePopNavigationRef.current = false;
+      workspaceHistoryRef.current = nextEntry;
+      if (!isSameWorkspaceHistoryEntry(browserEntry, nextEntry)) {
+        writeWorkspaceHistoryEntry(nextEntry, "replace");
+      }
+      return;
+    }
+
+    if (!workspaceHistoryRef.current) {
+      workspaceHistoryRef.current = nextEntry;
+      if (isSameWorkspaceHistoryEntry(browserEntry, nextEntry)) {
+        return;
+      }
+      if (nextEntry.selected_case_id) {
+        const backstopEntry = buildWorkspaceHistoryEntry("patients", nextEntry.selected_case_id);
+        if (!isSameWorkspaceHistoryEntry(browserEntry, backstopEntry)) {
+          writeWorkspaceHistoryEntry(backstopEntry, "replace");
+        }
+        writeWorkspaceHistoryEntry(nextEntry, "push");
+        return;
+      }
+      writeWorkspaceHistoryEntry(nextEntry, "replace");
+      return;
+    }
+
+    if (isSameWorkspaceHistoryEntry(workspaceHistoryRef.current, nextEntry)) {
+      if (!isSameWorkspaceHistoryEntry(browserEntry, nextEntry)) {
+        writeWorkspaceHistoryEntry(nextEntry, "replace");
+      }
+      return;
+    }
+
+    if (nextEntry.selected_case_id && workspaceHistoryRef.current.rail_view === "cases" && !workspaceHistoryRef.current.selected_case_id) {
+      const backstopEntry = buildWorkspaceHistoryEntry("patients", nextEntry.selected_case_id);
+      if (!isSameWorkspaceHistoryEntry(browserEntry, backstopEntry)) {
+        writeWorkspaceHistoryEntry(backstopEntry, "replace");
+      }
+    }
+
+    workspaceHistoryRef.current = nextEntry;
+    writeWorkspaceHistoryEntry(nextEntry, "push");
+  }, [railView, selectedCase?.case_id]);
 
   useEffect(() => {
     if (railView !== "patients") {
@@ -1199,6 +1395,20 @@ export function CaseWorkspace({
     resetDraft();
     setPanelOpen(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handlePatientListSearchChange(value: string) {
+    setCaseSearch(value);
+    setPatientListPage(1);
+  }
+
+  function handlePatientScopeChange(nextValue: boolean) {
+    setShowOnlyMine(nextValue);
+    setPatientListPage(1);
+  }
+
+  function handlePatientListPageChange(nextPage: number) {
+    setPatientListPage(nextPage);
   }
 
   function isFavoriteCase(caseId: string): boolean {
@@ -1606,11 +1816,19 @@ export function CaseWorkspace({
     setContributionBusy(true);
     setPanelOpen(true);
     try {
+      const requestedContributionModelIds = selectedCompareModelVersionIds.length > 0 ? selectedCompareModelVersionIds : undefined;
+      const contributionModelVersionId =
+        requestedContributionModelIds && requestedContributionModelIds.length > 0
+          ? undefined
+          : validationResult?.model_version.ensemble_mode === "weighted_average"
+            ? undefined
+            : validationResult?.model_version.version_id;
       const result = await runCaseContribution(selectedSiteId, token, {
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
         execution_mode: executionModeFromDevice(validationResult?.execution_device),
-        model_version_id: validationResult?.model_version.version_id,
+        model_version_id: contributionModelVersionId,
+        model_version_ids: requestedContributionModelIds,
       });
       setContributionResult(result);
       await onSiteDataChanged(selectedSiteId);
@@ -1627,10 +1845,24 @@ export function CaseWorkspace({
           user_contribution_pct: result.stats.user_contribution_pct,
         },
         update_id: result.update.update_id,
+        update_count: result.update_count,
       });
       setToast({
         tone: "success",
-        message: copy.contributionQueued(selectedCase.patient_id, selectedCase.visit_date),
+        message:
+          result.failures && result.failures.length > 0
+            ? pick(
+                locale,
+                `${result.update_count} updates were queued, with ${result.failures.length} model(s) failing.`,
+                `${result.update_count}개 업데이트를 올렸고, ${result.failures.length}개 모델은 실패했습니다.`
+              )
+            : result.update_count > 1
+              ? pick(
+                  locale,
+                  `${result.update_count} contribution updates were queued for ${selectedCase.patient_id} / ${selectedCase.visit_date}.`,
+                  `${selectedCase.patient_id} / ${selectedCase.visit_date}에 대해 ${result.update_count}개 기여 업데이트를 대기열에 올렸습니다.`
+                )
+              : copy.contributionQueued(selectedCase.patient_id, selectedCase.visit_date),
       });
     } catch (nextError) {
       setToast({
@@ -1890,66 +2122,66 @@ export function CaseWorkspace({
     }
   }
 
-  const searchNeedle = deferredSearch.trim().toLowerCase();
-  const filteredCases = cases
-    .filter((item) => {
-    if (!searchNeedle) {
-      return true;
-    }
-    const haystack = [
-      item.patient_id,
-      item.chart_alias,
-      item.culture_category,
-      item.culture_species,
-      ...(item.additional_organisms ?? []).map((organism) => organism.culture_species),
-      item.visit_date,
-      item.actual_visit_date ?? "",
-    ]
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(searchNeedle);
-    })
-    .sort((left, right) => {
-      const leftFavorite = isFavoriteCase(left.case_id) ? 1 : 0;
-      const rightFavorite = isFavoriteCase(right.case_id) ? 1 : 0;
-      if (leftFavorite !== rightFavorite) {
-        return rightFavorite - leftFavorite;
+  useEffect(() => {
+    setPatientListPage(1);
+  }, [selectedSiteId]);
+
+  const normalizedPatientListSearch = deferredSearch.trim().toLowerCase();
+  const allPatientRows = useMemo(() => {
+    const groups = new Map<string, CaseSummaryRecord[]>();
+    for (const caseRecord of cases) {
+      if (normalizedPatientListSearch) {
+        const haystack = [
+          caseRecord.patient_id,
+          caseRecord.local_case_code,
+          caseRecord.chart_alias,
+          caseRecord.culture_category,
+          caseRecord.culture_species,
+          ...(caseRecord.additional_organisms ?? []).map((o) => o.culture_species),
+          caseRecord.visit_date,
+          caseRecord.actual_visit_date ?? "",
+        ].join(" ").toLowerCase();
+        if (!haystack.includes(normalizedPatientListSearch)) {
+          continue;
+        }
       }
-      return 0;
-    });
-  const patientListRows = Array.from(
-    filteredCases.reduce((groups, caseRecord) => {
-      const currentGroup = groups.get(caseRecord.patient_id) ?? [];
-      currentGroup.push(caseRecord);
-      groups.set(caseRecord.patient_id, currentGroup);
-      return groups;
-    }, new Map<string, CaseSummaryRecord[]>()).entries()
-  )
-    .map(([patientId, groupedCases]): PatientListRow => {
-      const sortedCases = [...groupedCases].sort((left, right) => caseTimestamp(right) - caseTimestamp(left));
-      const latestCase = sortedCases[0];
-      return {
-        patient_id: patientId,
-        latest_case: latestCase,
-        case_count: groupedCases.length,
-        organism_summary: organismSummaryLabel(
-          latestCase.culture_category,
-          latestCase.culture_species,
-          latestCase.additional_organisms,
-          2
-        ),
-        representative_thumbnails: sortedCases
-          .filter((item) => item.representative_image_id)
-          .slice(0, 3)
-          .map((item) => ({
-            case_id: item.case_id,
-            image_id: item.representative_image_id as string,
-            view: item.representative_view,
-            preview_url: null,
-          })),
-      };
-    })
-    .sort((left, right) => caseTimestamp(right.latest_case) - caseTimestamp(left.latest_case));
+      const group = groups.get(caseRecord.patient_id) ?? [];
+      group.push(caseRecord);
+      groups.set(caseRecord.patient_id, group);
+    }
+    return Array.from(groups.entries())
+      .map(([patientId, groupedCases]) => {
+        const sortedCases = [...groupedCases].sort((left, right) => caseTimestamp(right) - caseTimestamp(left));
+        const latestCase = sortedCases[0];
+        return {
+          patient_id: patientId,
+          latest_case: latestCase,
+          case_count: groupedCases.length,
+          organism_summary: Array.from(
+            new Set(
+              sortedCases
+                .flatMap((item) => listOrganisms(item.culture_category, item.culture_species, item.additional_organisms))
+                .map((o) => o.culture_species),
+            ),
+          ).slice(0, 2).join(" · "),
+          representative_thumbnails: sortedCases
+            .filter((item) => item.representative_image_id)
+            .slice(0, 3)
+            .map((item) => ({
+              case_id: item.case_id,
+              image_id: item.representative_image_id as string,
+              view: item.representative_view,
+              preview_url: null,
+            })),
+        };
+      })
+      .sort((left, right) => caseTimestamp(right.latest_case) - caseTimestamp(left.latest_case));
+  }, [cases, normalizedPatientListSearch]);
+  const patientListTotalCount = allPatientRows.length;
+  const patientListTotalPages = Math.max(1, Math.ceil(patientListTotalCount / PATIENT_LIST_PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, patientListPage), patientListTotalPages);
+  const patientListRows = allPatientRows.slice((safePage - 1) * PATIENT_LIST_PAGE_SIZE, safePage * PATIENT_LIST_PAGE_SIZE);
+
   const selectedPatientCases = selectedCase
     ? [...cases]
         .filter((item) => item.patient_id === selectedCase.patient_id)
@@ -1971,23 +2203,31 @@ export function CaseWorkspace({
     let cancelled = false;
     const createdUrls: string[] = [];
     async function loadPatientListThumbs() {
-      const nextThumbs: Record<string, PatientListThumbnail[]> = {};
-      for (const row of patientListRows) {
-        nextThumbs[row.patient_id] = [];
-        for (const item of row.representative_thumbnails) {
-          try {
-            const blob = await fetchImageBlob(currentSiteId, item.image_id, token);
-            const previewUrl = URL.createObjectURL(blob);
-            createdUrls.push(previewUrl);
-            nextThumbs[row.patient_id].push({ ...item, preview_url: previewUrl });
-          } catch {
-            nextThumbs[row.patient_id].push({ ...item, preview_url: null });
+      setPatientListThumbs({});
+      await Promise.all(
+        patientListRows.map(async (row) => {
+          const thumbs = await Promise.all(
+            row.representative_thumbnails.map(async (item) => {
+              try {
+                const blob = await fetchImageBlob(currentSiteId, item.image_id, token);
+                if (cancelled) {
+                  return { ...item, preview_url: null };
+                }
+                const previewUrl = URL.createObjectURL(blob);
+                createdUrls.push(previewUrl);
+                return { ...item, preview_url: previewUrl };
+              } catch {
+                return { ...item, preview_url: null };
+              }
+            }),
+          );
+          if (!cancelled) {
+            setPatientListThumbs((prev) => ({ ...prev, [row.patient_id]: thumbs }));
           }
-        }
-      }
+        }),
+      );
       if (!cancelled) {
         patientListThumbUrlsRef.current = createdUrls;
-        setPatientListThumbs(nextThumbs);
       } else {
         for (const url of createdUrls) {
           URL.revokeObjectURL(url);
@@ -2005,7 +2245,6 @@ export function CaseWorkspace({
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const momentumPercent = cases.length === 0 ? 18 : Math.min(100, 18 + cases.length * 12);
-  const patientScopeCopy = showOnlyMine ? copy.patientScopeMine(patientListRows.length) : copy.patientScopeAll(patientListRows.length);
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
   const canRunRoiPreview = canRunValidation;
   const canRunAiClinic = canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
@@ -2059,7 +2298,6 @@ export function CaseWorkspace({
   ];
   const draftCompletionCount = draftChecklist.filter(Boolean).length;
   const draftCompletionPercent = Math.round((draftCompletionCount / draftChecklist.length) * 100);
-  const draftHeaderTitle = draft.patient_id.trim() || pick(locale, "Untitled keratitis case", "제목 없는 각막염 케이스");
   const draftPendingItems: string[] = [];
   if (!selectedSiteId) {
     draftPendingItems.push(pick(locale, "Select a hospital workspace.", "병원 워크스페이스를 선택하세요."));
@@ -2207,6 +2445,53 @@ export function CaseWorkspace({
               </button>
             ))}
           </div>
+        </Card>
+
+        <Card as="section" variant="nested" className={railSectionClass}>
+          <div className={railSectionHeadClass}>
+            <div className="grid gap-1">
+              <span className={railLabelClass}>{copy.recentAlerts}</span>
+              <p className="m-0 text-sm leading-6 text-muted">{copy.recentAlertsCopy}</p>
+            </div>
+            <div className={railSummaryClass}>
+              <strong className={railSummaryValueClass}>{toastHistory.length}</strong>
+              <span className={railSummaryMetaClass}>{copy.alertsKept}</span>
+            </div>
+          </div>
+          {toastHistory.length ? (
+            <>
+              <div className={railActivityListClass}>
+                {toastHistory.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`${railActivityItemClass} ${
+                      entry.tone === "error"
+                        ? "border-danger/25 bg-danger/6"
+                        : "border-emerald-300/35 bg-emerald-500/6"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <strong>{entry.tone === "success" ? common.saved : common.actionNeeded}</strong>
+                      <span className="text-[0.72rem] text-muted">
+                        {new Date(entry.created_at).toLocaleTimeString(localeTag, {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    <span>{entry.message}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end">
+                <Button type="button" size="sm" variant="ghost" onClick={() => setToastHistory([])}>
+                  {copy.clearAlerts}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className={emptySurfaceClass}>{copy.noAlertsYet}</div>
+          )}
         </Card>
 
         {isAuthoringCanvas ? (
@@ -2408,6 +2693,9 @@ export function CaseWorkspace({
               selectedSiteId={selectedSiteId}
               selectedPatientId={selectedCase?.patient_id}
               patientListRows={patientListRows}
+              patientListTotalCount={patientListTotalCount}
+              patientListPage={safePage}
+              patientListTotalPages={patientListTotalPages}
               patientListThumbsByPatient={patientListThumbs}
               caseSearch={caseSearch}
               showOnlyMine={showOnlyMine}
@@ -2420,8 +2708,9 @@ export function CaseWorkspace({
               translateOption={translateOption}
               displayVisitReference={displayVisitReference}
               formatDateTime={formatDateTime}
-              onSearchChange={setCaseSearch}
-              onShowOnlyMineChange={setShowOnlyMine}
+              onSearchChange={handlePatientListSearchChange}
+              onShowOnlyMineChange={handlePatientScopeChange}
+              onPageChange={handlePatientListPageChange}
               onOpenSavedCase={openSavedCase}
             />
           ) : selectedCase ? (
@@ -2527,20 +2816,12 @@ export function CaseWorkspace({
               <div className={canvasHeaderGlowClass} />
               <div className={canvasHeaderContentClass}>
                 <div className="grid gap-3">
-                  <span className={canvasHeaderKickerClass}>{pick(locale, "Structured case canvas", "구조화 케이스 캔버스")}</span>
-                  <div className={canvasHeaderMetaRowClass}>
+                  <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
+                    <span className={canvasHeaderKickerClass}>{pick(locale, "Structured case canvas", "구조화 케이스 캔버스")}</span>
                     <span className={canvasHeaderMetaChipClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>
                     <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
                     <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
                   </div>
-                  <h3 className={canvasHeaderTitleClass}>{draftHeaderTitle}</h3>
-                  <p className={canvasHeaderBodyClass}>
-                    {pick(
-                      locale,
-                      "A single-case authoring surface for patient intake, image organization, and hospital submission. The goal is a document that reads clearly while still capturing structured data.",
-                      "환자 intake, 이미지 정리, 병원 제출을 한 화면에서 다루는 단일 케이스 작성 캔버스입니다. 구조화 데이터는 유지하되, 읽히는 느낌은 문서에 가깝게 가져갑니다."
-                    )}
-                  </p>
                 </div>
 
                 <div className={canvasSummaryGridClass}>

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT
+from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
 from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.data_plane import SiteStore
 from kera_research.storage import write_json
@@ -89,6 +89,22 @@ class ResearchValidationWorkflow:
             "ensemble_weights": case_result.get("ensemble_weights"),
         }
         saved_summary = service.control_plane.save_validation_run(summary, [case_prediction])
+        site_store.record_case_validation_history(
+            patient_id,
+            visit_date,
+            {
+                "validation_id": saved_summary["validation_id"],
+                "run_date": saved_summary.get("run_date"),
+                "model_version": saved_summary.get("model_version"),
+                "model_version_id": saved_summary.get("model_version_id"),
+                "model_architecture": saved_summary.get("model_architecture"),
+                "run_scope": "case",
+                "predicted_label": case_prediction.get("predicted_label"),
+                "true_label": case_prediction.get("true_label"),
+                "prediction_probability": case_prediction.get("prediction_probability"),
+                "is_correct": case_prediction.get("is_correct"),
+            },
+        )
         return saved_summary, [case_prediction]
 
     def preview_case_roi(
@@ -138,17 +154,13 @@ class ResearchValidationWorkflow:
         visit_date: str,
     ) -> list[dict[str, Any]]:
         service = self.service
-        manifest_df = site_store.generate_manifest()
-        case_df = manifest_df[
-            (manifest_df["patient_id"] == patient_id)
-            & (manifest_df["visit_date"] == visit_date)
-        ]
-        if case_df.empty:
+        image_records = site_store.list_images_for_visit(patient_id, visit_date)
+        if not image_records:
             raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
 
         boxed_records = [
             record
-            for record in case_df.to_dict("records")
+            for record in image_records
             if isinstance(record.get("lesion_prompt_box"), dict)
         ]
         if not boxed_records:
@@ -170,6 +182,56 @@ class ResearchValidationWorkflow:
                     "medsam_error": lesion.get("medsam_error"),
                     "lesion_prompt_box": record.get("lesion_prompt_box"),
                     "prompt_signature": lesion.get("prompt_signature"),
+                }
+            )
+        previews.sort(
+            key=lambda item: (
+                not item["is_representative"],
+                item["view"],
+                item["source_image_path"],
+            )
+        )
+        return previews
+
+    def list_stored_case_lesion_previews(
+        self,
+        site_store: SiteStore,
+        patient_id: str,
+        visit_date: str,
+    ) -> list[dict[str, Any]]:
+        service = self.service
+        manifest_df = site_store.generate_manifest()
+        case_df = manifest_df[
+            (manifest_df["patient_id"] == patient_id)
+            & (manifest_df["visit_date"] == visit_date)
+        ]
+        if case_df.empty:
+            raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
+
+        boxed_records = [
+            record
+            for record in case_df.to_dict("records")
+            if isinstance(record.get("lesion_prompt_box"), dict)
+        ]
+        if not boxed_records:
+            return []
+
+        previews: list[dict[str, Any]] = []
+        for record in boxed_records:
+            lesion = service._load_stored_lesion_crop(site_store, record)
+            previews.append(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "view": record.get("view", "unknown"),
+                    "is_representative": bool(record.get("is_representative")),
+                    "source_image_path": record["image_path"],
+                    "lesion_mask_path": lesion.get("lesion_mask_path") if lesion else None,
+                    "lesion_crop_path": lesion.get("lesion_crop_path") if lesion else None,
+                    "backend": lesion.get("backend", "unknown") if lesion else "unknown",
+                    "medsam_error": lesion.get("medsam_error") if lesion else None,
+                    "lesion_prompt_box": record.get("lesion_prompt_box"),
+                    "prompt_signature": lesion.get("prompt_signature") if lesion else service._lesion_prompt_box_signature(record.get("lesion_prompt_box")),
                 }
             )
         previews.sort(
@@ -223,6 +285,7 @@ class ResearchContributionWorkflow:
         model_version: dict[str, Any],
         execution_device: str,
         user_id: str,
+        contribution_group_id: str | None = None,
     ) -> dict[str, Any]:
         service = self.service
         manifest_df = site_store.generate_manifest()
@@ -257,8 +320,9 @@ class ResearchContributionWorkflow:
         )
 
         delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
+        base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
         service.model_manager.save_weight_delta(
-            model_version["model_path"],
+            base_model_path,
             result["output_model_path"],
             delta_path,
         )
@@ -289,6 +353,7 @@ class ResearchContributionWorkflow:
 
         update_metadata: dict[str, Any] = {
             "update_id": update_id,
+            "contribution_group_id": str(contribution_group_id or "").strip() or None,
             "site_id": site_store.site_id,
             "base_model_version_id": model_version["version_id"],
             "architecture": architecture,
@@ -310,7 +375,7 @@ class ResearchContributionWorkflow:
             "quality_summary": quality_summary,
             "status": "pending_review",
         }
-        service.control_plane.register_model_update(update_metadata)
+        update_metadata = service.control_plane.register_model_update(update_metadata)
         update_metadata["experiment"] = service._register_experiment(
             site_store,
             experiment_type="case_contribution_fine_tuning",
@@ -336,6 +401,7 @@ class ResearchContributionWorkflow:
 
         contribution = {
             "contribution_id": make_id("contrib"),
+            "contribution_group_id": str(contribution_group_id or "").strip() or None,
             "user_id": user_id,
             "site_id": site_store.site_id,
             "case_reference_id": case_reference_id,
@@ -343,6 +409,23 @@ class ResearchContributionWorkflow:
             "created_at": utc_now(),
         }
         service.control_plane.register_contribution(contribution)
+        site_store.record_case_contribution_history(
+            patient_id,
+            visit_date,
+            {
+                "contribution_id": contribution["contribution_id"],
+                "contribution_group_id": contribution.get("contribution_group_id"),
+                "created_at": contribution["created_at"],
+                "user_id": contribution["user_id"],
+                "case_reference_id": contribution.get("case_reference_id"),
+                "update_id": update_metadata["update_id"],
+                "update_status": update_metadata.get("status"),
+                "upload_type": update_metadata.get("upload_type"),
+                "architecture": update_metadata.get("architecture"),
+                "execution_device": update_metadata.get("execution_device"),
+                "base_model_version_id": update_metadata.get("base_model_version_id"),
+            },
+        )
         return update_metadata
 
 
@@ -465,10 +548,12 @@ class ResearchTrainingWorkflow:
             new_version = {
                 "version_id": make_id("model"),
                 "version_name": version_name,
+                "model_name": "keratitis_cls",
                 "architecture": architecture,
                 "stage": "global",
                 "base_version_id": None,
                 "model_path": component_output_path,
+                "filename": Path(component_output_path).name,
                 "requires_medsam_crop": use_medsam_crops,
                 "crop_mode": component_crop_mode,
                 "training_input_policy": (
@@ -480,7 +565,12 @@ class ResearchTrainingWorkflow:
                 "threshold_selection_metric": result.get("threshold_selection_metric"),
                 "threshold_selection_metrics": result.get("threshold_selection_metrics"),
                 "created_at": utc_now(),
-                "is_current": normalized_crop_mode != "both" and component_crop_mode == normalized_crop_mode,
+                "publish_required": MODEL_DISTRIBUTION_MODE == "download_url",
+                "is_current": (
+                    MODEL_DISTRIBUTION_MODE != "download_url"
+                    and normalized_crop_mode != "both"
+                    and component_crop_mode == normalized_crop_mode
+                ),
                 "notes": (
                     f"Initial training with {'MedSAM cornea crops' if component_crop_mode == 'automated' else 'MedSAM lesion-centered crops'}: "
                     f"train {result['n_train_patients']} / val {result['n_val_patients']} / test {result['n_test_patients']} patients, "
@@ -577,6 +667,7 @@ class ResearchTrainingWorkflow:
             {
                 "version_id": make_id("model"),
                 "version_name": f"global-{architecture}-ensemble-v{make_id('ens')[:6]}",
+                "model_name": "keratitis_cls",
                 "architecture": architecture,
                 "stage": "global",
                 "base_version_id": None,
@@ -593,7 +684,8 @@ class ResearchTrainingWorkflow:
                 "threshold_selection_metric": ensemble_selection["threshold_selection_metric"],
                 "threshold_selection_metrics": ensemble_selection["threshold_selection_metrics"],
                 "created_at": utc_now(),
-                "is_current": True,
+                "publish_required": False,
+                "is_current": MODEL_DISTRIBUTION_MODE != "download_url",
                 "notes": (
                     "Weighted-average ensemble of automated cornea crop and manual lesion-centered crop models. "
                     f"Selected weights on validation split: automated={ensemble_selection['ensemble_weights']['automated']:.2f}, "

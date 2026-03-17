@@ -206,8 +206,8 @@ export function TrainingSection({
         titleAs="h3"
         description={pick(
           locale,
-          "Configure a single baseline run or queue a five-model benchmark with the same data split and crop policy.",
-          "단일 기준 모델을 학습하거나, 같은 split과 crop 정책으로 5개 모델 벤치마크를 실행할 수 있습니다."
+          "Configure a single baseline run or queue a five-model sequential initial-training run with the same data split and crop policy.",
+          "단일 기준 모델을 학습하거나, 같은 split과 crop 정책으로 5종 순차 초기 학습을 실행할 수 있습니다."
         )}
         aside={<span className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
@@ -308,7 +308,7 @@ export function TrainingSection({
 
       <Card as="section" variant="nested" className="grid gap-4 p-5">
         <SectionHeader
-          title={pick(locale, `Run all ${BENCHMARK_MODEL_COUNT} baseline models in one job`, `${BENCHMARK_MODEL_COUNT}개 모델 일괄 학습`)}
+          title={pick(locale, `Run ${BENCHMARK_MODEL_COUNT} sequential baseline models in one job`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습`)}
           titleAs="h4"
           description={pick(
             locale,
@@ -323,7 +323,7 @@ export function TrainingSection({
             "진행 상황에는 전체 퍼센트, 현재 아키텍처, 순서, 모드, 작업 단계가 함께 표시됩니다."
           )}
         </div>
-        <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Batch training architectures", "일괄 학습 아키텍처")}>
+        <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Five-model training architectures", "5종 순차 학습 아키텍처")}>
           {benchmarkModelLabels.map((label) => (
             <span key={label} className={docSiteBadgeClass}>
               {label}
@@ -332,16 +332,16 @@ export function TrainingSection({
         </div>
         <div className="flex justify-end">
           <Button type="button" variant="primary" disabled={benchmarkBusy || !selectedSiteId} onClick={() => setBenchmarkConfirmOpen(true)}>
-            {benchmarkBusy ? pick(locale, `Training ${BENCHMARK_MODEL_COUNT} models...`, `${BENCHMARK_MODEL_COUNT}개 모델 학습 중...`) : pick(locale, `Run all ${BENCHMARK_MODEL_COUNT} models`, `${BENCHMARK_MODEL_COUNT}개 모델 일괄 학습 실행`)}
+            {benchmarkBusy ? pick(locale, `Training ${BENCHMARK_MODEL_COUNT} models...`, `${BENCHMARK_MODEL_COUNT}개 모델 학습 중...`) : pick(locale, `Run ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 실행`)}
           </Button>
         </div>
       </Card>
 
       {benchmarkConfirmOpen ? (
-        <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={pick(locale, "Batch training confirmation", "일괄 학습 확인")}>
+        <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={pick(locale, "Five-model training confirmation", "5종 순차 초기 학습 확인")}>
           <Card as="div" variant="panel" className="w-full max-w-4xl grid gap-5 p-6">
             <SectionHeader
-              title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model batch training`, `${BENCHMARK_MODEL_COUNT}개 모델 일괄 학습 확인`)}
+              title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 확인`)}
               titleAs="h4"
               description={pick(locale, "One queued job, sequential execution.", "하나의 작업으로 순차 실행됩니다.")}
             />
@@ -372,7 +372,7 @@ export function TrainingSection({
                   onRunBenchmark();
                 }}
               >
-                {pick(locale, "Start batch training", "일괄 학습 시작")}
+                {pick(locale, "Start 5-model training", "5종 순차 초기 학습 시작")}
               </Button>
             </div>
           </Card>
@@ -440,7 +440,7 @@ export function TrainingSection({
       {benchmarkJob ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, "Benchmark progress", "일괄 학습 진행 상태")}
+            title={pick(locale, "Five-model training progress", "5종 순차 초기 학습 진행 상태")}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{formatTrainingStage((benchmarkProgress as { stage?: string } | null)?.stage ?? null)}</span>}
           />
@@ -472,7 +472,7 @@ export function TrainingSection({
           <p className="m-0 text-sm leading-6 text-muted">
             {(benchmarkProgress as { message?: string } | null)?.message
               ? (benchmarkProgress as { message: string }).message
-              : pick(locale, "Waiting for the benchmark worker to report progress.", "일괄 학습 작업 상태를 기다리는 중입니다.")}
+              : pick(locale, "Waiting for the five-model training worker to report progress.", "5종 순차 초기 학습 작업 상태를 기다리는 중입니다.")}
           </p>
         </Card>
       ) : null}
@@ -480,7 +480,7 @@ export function TrainingSection({
       {benchmarkResult ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, "Benchmark summary", "일괄 학습 요약")}
+            title={pick(locale, "Five-model training summary", "5종 순차 초기 학습 요약")}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{benchmarkResult.best_architecture ?? notAvailableLabel}</span>}
           />

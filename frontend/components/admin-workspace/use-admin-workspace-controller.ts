@@ -4,6 +4,8 @@ import { useEffect, useRef } from "react";
 
 import { pick, translateApiError } from "../../lib/i18n";
 import {
+  autoPublishModelUpdate,
+  autoPublishModelVersion,
   backfillAiClinicEmbeddings,
   createAdminSite,
   createProject,
@@ -16,6 +18,7 @@ import {
   fetchAiClinicEmbeddingStatus,
   fetchCrossValidationReports,
   fetchImageBlob,
+  fetchInstitutionDirectoryStatus,
   fetchModelUpdateArtifactBlob,
   fetchModelUpdates,
   fetchModelVersions,
@@ -28,8 +31,11 @@ import {
   fetchValidationArtifactBlob,
   fetchValidationCases,
   migrateAdminSiteStorageRoot,
+  publishModelVersion,
+  publishModelUpdate,
   reviewAccessRequest,
   reviewModelUpdate,
+  syncInstitutionDirectory,
   runBulkImport,
   runCrossValidation,
   runFederatedAggregation,
@@ -41,6 +47,7 @@ import {
   updateStorageSettings,
   upsertManagedUser,
   type ManagedSiteRecord,
+  type ModelUpdateRecord,
   type ModelVersionRecord,
 } from "../../lib/api";
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
@@ -172,12 +179,65 @@ export function useAdminWorkspaceController({
   onSiteDataChanged,
   onSelectSite,
 }: UseAdminWorkspaceControllerOptions) {
+  const buildReadyAggregationLanes = (items: ModelUpdateRecord[]) => {
+    const groups = new Map<
+      string,
+      {
+        architecture: string;
+        base_model_version_id: string;
+        duplicate_site_count: number;
+        update_ids: string[];
+      }
+    >();
+    const siteCounts = new Map<string, Map<string, number>>();
+
+    for (const item of items) {
+      const status = String(item.status ?? "").trim().toLowerCase();
+      if (status !== "approved") {
+        continue;
+      }
+      const architecture = String(item.architecture ?? "").trim();
+      const baseModelVersionId = String(item.base_model_version_id ?? "").trim();
+      const updateId = String(item.update_id ?? "").trim();
+      if (!architecture || !baseModelVersionId || !updateId) {
+        continue;
+      }
+      const laneKey = `${architecture}:${baseModelVersionId}`;
+      const lane = groups.get(laneKey) ?? {
+        architecture,
+        base_model_version_id: baseModelVersionId,
+        duplicate_site_count: 0,
+        update_ids: [],
+      };
+      const siteId = String(item.site_id ?? "").trim() || "unknown";
+      const laneSiteCounts = siteCounts.get(laneKey) ?? new Map<string, number>();
+      laneSiteCounts.set(siteId, (laneSiteCounts.get(siteId) ?? 0) + 1);
+      siteCounts.set(laneKey, laneSiteCounts);
+      lane.update_ids.push(updateId);
+      groups.set(laneKey, lane);
+    }
+
+    return Array.from(groups.entries())
+      .map(([laneKey, lane]) => {
+        const laneSiteCounts = siteCounts.get(laneKey) ?? new Map<string, number>();
+        const duplicateSiteCount = Array.from(laneSiteCounts.values()).filter((count) => count > 1).length;
+        return {
+          architecture: lane.architecture,
+          base_model_version_id: lane.base_model_version_id,
+          duplicate_site_count: duplicateSiteCount,
+          update_ids: lane.update_ids,
+        };
+      })
+      .filter((lane) => lane.duplicate_site_count === 0 && lane.update_ids.length > 0);
+  };
+
   const {
     locale,
     section,
     setSection,
     toast,
     setToast,
+    overview,
     setOverview,
     storageSettings,
     setStorageSettings,
@@ -192,6 +252,9 @@ export function useAdminWorkspaceController({
     setProjects,
     setManagedSites,
     setManagedUsers,
+    institutionSyncBusy,
+    setInstitutionSyncBusy,
+    setInstitutionSyncStatus,
     setSiteComparison,
     siteValidationRuns,
     setSiteValidationRuns,
@@ -249,6 +312,8 @@ export function useAdminWorkspaceController({
     selectedReport,
     selectedValidationRun,
     setSelectedUpdatePreviewUrls,
+    setPublishingModelVersionId,
+    setPublishingModelUpdateId,
     setAggregationBusy,
     canAggregate,
     canManagePlatform,
@@ -260,12 +325,26 @@ export function useAdminWorkspaceController({
   } = state;
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
   const modelUpdatePreviewUrlsRef = useRef<string[]>([]);
+  const autoPublishEnabled = Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled);
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
   const copy = {
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
     unableLoadEmbeddingStatus: pick(locale, "Unable to load embedding status.", "임베딩 상태를 불러오지 못했습니다."),
+    institutionSyncSucceeded: (count: number, pages?: number | null) =>
+      pages && pages > 0
+        ? pick(
+            locale,
+            `Synced ${count} institutions from ${pages} HIRA page(s).`,
+            `HIRA ${pages}페이지에서 기관 ${count}개를 동기화했습니다.`,
+          )
+        : pick(
+            locale,
+            `Synced ${count} institutions from HIRA.`,
+            `HIRA에서 기관 ${count}개를 동기화했습니다.`,
+          ),
+    institutionSyncFailed: pick(locale, "Unable to sync the HIRA directory.", "HIRA 기관 디렉터리 동기화에 실패했습니다."),
     requestReviewed: (decision: "approved" | "rejected") =>
       pick(locale, `Request ${decision}.`, `요청이 ${decision === "approved" ? "승인" : "반려"} 처리되었습니다.`),
     requestReviewedAndSiteCreated: (siteId: string) =>
@@ -279,11 +358,38 @@ export function useAdminWorkspaceController({
     crossValidationFailed: pick(locale, "Cross-validation failed.", "교차 검증에 실패했습니다."),
     createdVersion: (name: string) => pick(locale, `Created ${name}.`, `${name} 버전을 생성했습니다.`),
     aggregationFailed: pick(locale, "Federated aggregation failed.", "연합 집계에 실패했습니다."),
+    noReadyAggregationLanes: pick(locale, "No aggregation-ready lanes are available.", "일괄 집계할 준비된 lane이 없습니다."),
+    createdBatchVersions: (count: number) =>
+      pick(locale, `Created ${count} aggregated version(s).`, `${count}개 집계 버전을 생성했습니다.`),
+    batchAggregationPartialFailed: (count: number, detail: string) =>
+      pick(
+        locale,
+        `Created ${count} aggregated version(s), then stopped: ${detail}`,
+        `${count}개 집계 버전을 생성한 뒤 중단되었습니다: ${detail}`
+      ),
     updateReviewed: (decision: "approved" | "rejected") =>
       pick(locale, `Update ${decision}.`, `업데이트를 ${decision === "approved" ? "승인" : "반려"}했습니다.`),
     updateReviewFailed: pick(locale, "Unable to review model update.", "모델 업데이트 검토에 실패했습니다."),
+    updatePublishPrompt: (updateId: string) =>
+      pick(locale, `Enter the artifact download URL for ${updateId}.`, `${updateId} delta의 download URL을 입력하세요.`),
+    updatePublished: (updateId: string) => pick(locale, `Published ${updateId}.`, `${updateId} delta를 발행했습니다.`),
+    updatePublishFailed: pick(locale, "Unable to publish the update artifact.", "업데이트 아티팩트 발행에 실패했습니다."),
     modelDeleted: (name: string) => pick(locale, `Deleted ${name}.`, `${name} 모델을 삭제했습니다.`),
     modelDeleteFailed: pick(locale, "Unable to delete the model.", "모델 삭제에 실패했습니다."),
+    modelPublishPrompt: (name: string) =>
+      pick(
+        locale,
+        `Enter the download URL for ${name}.`,
+        `${name} 모델의 download URL을 입력하세요.`,
+      ),
+    modelPublishConfirmCurrent: (name: string) =>
+      pick(
+        locale,
+        `Mark ${name} as the current global model after publishing?`,
+        `${name} 모델을 발행 후 현재 글로벌 모델로 승격할까요?`,
+      ),
+    modelPublished: (name: string) => pick(locale, `Published ${name}.`, `${name} 모델을 발행했습니다.`),
+    modelPublishFailed: pick(locale, "Unable to publish the model.", "모델 발행에 실패했습니다."),
     selectSiteForTemplate: pick(locale, "Select a hospital before downloading the template.", "템플릿을 내려받으려면 병원을 선택하세요."),
     templateDownloadFailed: pick(locale, "Template download failed.", "템플릿 다운로드에 실패했습니다."),
     selectSiteForImport: pick(locale, "Select a hospital before importing.", "임포트를 하려면 병원을 선택하세요."),
@@ -354,6 +460,7 @@ export function useAdminWorkspaceController({
           nextProjects,
           nextManagedSites,
           nextManagedUsers,
+          nextInstitutionSyncStatus,
           nextSiteComparison,
           nextCrossValidationReports,
           nextSiteValidationRuns,
@@ -367,6 +474,7 @@ export function useAdminWorkspaceController({
           fetchProjects(token),
           fetchAdminSites(token),
           canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+          fetchInstitutionDirectoryStatus(token),
           fetchSiteComparison(token),
           selectedSiteId ? fetchCrossValidationReports(selectedSiteId, token) : Promise.resolve([]),
           selectedSiteId ? fetchSiteValidations(selectedSiteId, token) : Promise.resolve([]),
@@ -381,6 +489,7 @@ export function useAdminWorkspaceController({
         setProjects(nextProjects);
         setManagedSites(nextManagedSites);
         setManagedUsers(nextManagedUsers);
+        setInstitutionSyncStatus(nextInstitutionSyncStatus);
         setSiteComparison(nextSiteComparison);
         setCrossValidationReports(nextCrossValidationReports);
         setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
@@ -433,6 +542,7 @@ export function useAdminWorkspaceController({
     setInstanceStorageRootForm,
     setManagedSites,
     setManagedUsers,
+    setInstitutionSyncStatus,
     setModelUpdateReviewNotes,
     setModelUpdates,
     setModelVersions,
@@ -695,6 +805,7 @@ export function useAdminWorkspaceController({
       nextProjects,
       nextManagedSites,
       nextManagedUsers,
+      nextInstitutionSyncStatus,
       nextSiteComparison,
       nextCrossValidationReports,
       nextSiteValidationRuns,
@@ -708,6 +819,7 @@ export function useAdminWorkspaceController({
       fetchProjects(token),
       fetchAdminSites(token),
       canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+      fetchInstitutionDirectoryStatus(token),
       fetchSiteComparison(token),
       selectedSiteId ? fetchCrossValidationReports(selectedSiteId, token) : Promise.resolve([]),
       selectedSiteId ? fetchSiteValidations(selectedSiteId, token) : Promise.resolve([]),
@@ -721,6 +833,7 @@ export function useAdminWorkspaceController({
     setProjects(nextProjects);
     setManagedSites(nextManagedSites);
     setManagedUsers(nextManagedUsers);
+    setInstitutionSyncStatus(nextInstitutionSyncStatus);
     setSiteComparison(nextSiteComparison);
     setCrossValidationReports(nextCrossValidationReports);
     setSiteValidationRuns(nextSiteValidationRuns);
@@ -762,6 +875,25 @@ export function useAdminWorkspaceController({
       }
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableReview) });
+    }
+  }
+
+  async function handleInstitutionSync() {
+    if (!canManagePlatform || institutionSyncBusy) {
+      return;
+    }
+    setInstitutionSyncBusy(true);
+    try {
+      const result = await syncInstitutionDirectory(token, { page_size: 100 });
+      await refreshWorkspace();
+      setToast({
+        tone: "success",
+        message: copy.institutionSyncSucceeded(result.institutions_synced, result.pages_synced),
+      });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.institutionSyncFailed) });
+    } finally {
+      setInstitutionSyncBusy(false);
     }
   }
 
@@ -827,23 +959,23 @@ export function useAdminWorkspaceController({
         setBenchmarkJob(latestJob);
       }
       if (latestJob.status === "failed") {
-        throw new Error(latestJob.result?.error || pick(locale, "Benchmark training failed.", "벤치마크 학습에 실패했습니다."));
+        throw new Error(latestJob.result?.error || pick(locale, "Five-model initial training failed.", "5종 순차 초기 학습에 실패했습니다."));
       }
       const result = latestJob.result?.response;
       if (!result || !("results" in result)) {
-        throw new Error(pick(locale, "Benchmark training result is missing.", "벤치마크 학습 결과가 없습니다."));
+        throw new Error(pick(locale, "Five-model initial training result is missing.", "5종 순차 초기 학습 결과가 없습니다."));
       }
       setBenchmarkResult(result);
       await refreshWorkspace(true);
       setSection("registry");
       setToast({
         tone: "success",
-        message: pick(locale, `Benchmark completed for ${result.results.length} architecture(s).`, `${result.results.length}개 아키텍처 벤치마크가 완료되었습니다.`),
+        message: pick(locale, `Five-model initial training completed for ${result.results.length} architecture(s).`, `${result.results.length}개 아키텍처의 5종 순차 초기 학습이 완료되었습니다.`),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Benchmark training failed.", "벤치마크 학습에 실패했습니다.")),
+        message: describeError(nextError, pick(locale, "Five-model initial training failed.", "5종 순차 초기 학습에 실패했습니다.")),
       });
     } finally {
       setBenchmarkBusy(false);
@@ -1026,10 +1158,13 @@ export function useAdminWorkspaceController({
     }
   }
 
-  async function handleAggregation() {
+  async function handleAggregation(updateIds: string[] = []) {
     setAggregationBusy(true);
     try {
-      const result = await runFederatedAggregation(token, { new_version_name: newVersionName.trim() || undefined });
+      const result = await runFederatedAggregation(token, {
+        update_ids: updateIds,
+        new_version_name: newVersionName.trim() || undefined,
+      });
       setNewVersionName("");
       await refreshWorkspace();
       setSection("registry");
@@ -1055,6 +1190,76 @@ export function useAdminWorkspaceController({
     }
   }
 
+  async function handleAggregationAllReady() {
+    const readyLanes = buildReadyAggregationLanes(modelUpdates);
+    if (readyLanes.length === 0) {
+      setToast({ tone: "error", message: copy.noReadyAggregationLanes });
+      return;
+    }
+    setAggregationBusy(true);
+    let completedCount = 0;
+    try {
+      for (const lane of readyLanes) {
+        const laneVersionName =
+          newVersionName.trim().length > 0
+            ? readyLanes.length === 1
+              ? newVersionName.trim()
+              : `${newVersionName.trim()}-${lane.architecture}`
+            : undefined;
+        await runFederatedAggregation(token, {
+          update_ids: lane.update_ids,
+          new_version_name: laneVersionName,
+        });
+        completedCount += 1;
+      }
+      setNewVersionName("");
+      await refreshWorkspace();
+      setSection("registry");
+      setToast({ tone: "success", message: copy.createdBatchVersions(completedCount) });
+    } catch (nextError) {
+      await refreshWorkspace();
+      setSection("registry");
+      if (completedCount > 0) {
+        setToast({
+          tone: "error",
+          message: copy.batchAggregationPartialFailed(completedCount, describeError(nextError, copy.aggregationFailed)),
+        });
+      } else {
+        setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
+      }
+    } finally {
+      setAggregationBusy(false);
+    }
+  }
+
+  async function handlePublishModelVersion(version: ModelVersionRecord) {
+    const setCurrent = window.confirm(copy.modelPublishConfirmCurrent(version.version_name));
+    setPublishingModelVersionId(version.version_id);
+    try {
+      if (autoPublishEnabled) {
+        await autoPublishModelVersion(version.version_id, token, {
+          set_current: setCurrent,
+        });
+      } else {
+        const initialUrl = String(version.download_url ?? "").trim();
+        const nextUrl = window.prompt(copy.modelPublishPrompt(version.version_name), initialUrl);
+        if (!nextUrl || !nextUrl.trim()) {
+          return;
+        }
+        await publishModelVersion(version.version_id, token, {
+          download_url: nextUrl.trim(),
+          set_current: setCurrent,
+        });
+      }
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.modelPublished(version.version_name) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.modelPublishFailed) });
+    } finally {
+      setPublishingModelVersionId(null);
+    }
+  }
+
   async function handleModelUpdateReview(decision: "approved" | "rejected") {
     if (!selectedModelUpdate) {
       return;
@@ -1068,6 +1273,33 @@ export function useAdminWorkspaceController({
       setToast({ tone: "success", message: copy.updateReviewed(decision) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.updateReviewFailed) });
+    }
+  }
+
+  async function handlePublishModelUpdate() {
+    if (!selectedModelUpdate) {
+      return;
+    }
+    setPublishingModelUpdateId(selectedModelUpdate.update_id);
+    try {
+      if (autoPublishEnabled) {
+        await autoPublishModelUpdate(selectedModelUpdate.update_id, token);
+      } else {
+        const initialUrl = String(selectedModelUpdate.artifact_download_url ?? "").trim();
+        const nextUrl = window.prompt(copy.updatePublishPrompt(selectedModelUpdate.update_id), initialUrl);
+        if (!nextUrl || !nextUrl.trim()) {
+          return;
+        }
+        await publishModelUpdate(selectedModelUpdate.update_id, token, {
+          download_url: nextUrl.trim(),
+        });
+      }
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.updatePublished(selectedModelUpdate.update_id) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.updatePublishFailed) });
+    } finally {
+      setPublishingModelUpdateId(null);
     }
   }
 
@@ -1141,6 +1373,7 @@ export function useAdminWorkspaceController({
       display_name: site.display_name,
       hospital_name: site.hospital_name ?? "",
       research_registry_enabled: site.research_registry_enabled ?? true,
+      source_institution_id: site.source_institution_id ?? undefined,
     });
   }
 
@@ -1275,6 +1508,7 @@ export function useAdminWorkspaceController({
   }
 
   return {
+    handleInstitutionSync,
     handleReview,
     handleInitialTraining,
     handleBenchmarkTraining,
@@ -1285,8 +1519,11 @@ export function useAdminWorkspaceController({
     handleExportValidationReport,
     handleExportCrossValidationReport,
     handleAggregation,
+    handleAggregationAllReady,
     handleDeleteModelVersion,
+    handlePublishModelVersion,
     handleModelUpdateReview,
+    handlePublishModelUpdate,
     handleDownloadImportTemplate,
     handleBulkImport,
     handleCreateProject,

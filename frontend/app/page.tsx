@@ -57,6 +57,7 @@ type ReviewDraft = {
 const TOKEN_KEY = "kera_web_token";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 type OperationsSection = "dashboard" | "training" | "cross_validation";
+type WorkspaceMode = "canvas" | "operations";
 
 function parseOperationsLaunchFromSearch(): { mode: "canvas" | "operations"; section: OperationsSection } | null {
   if (typeof window === "undefined") {
@@ -71,6 +72,143 @@ function parseOperationsLaunchFromSearch(): { mode: "canvas" | "operations"; sec
     return { mode: "operations", section };
   }
   return { mode: "operations", section: "dashboard" };
+}
+
+type HomeHistoryEntry = {
+  scope: "home-page";
+  version: 1;
+  kind: "workspace" | "guard";
+  workspace_mode: WorkspaceMode;
+};
+
+const INSTITUTION_SEARCH_ALIASES: Record<string, string[]> = {
+  seoul: ["seoul", "서울"],
+  "서울": ["seoul", "서울"],
+  busan: ["busan", "부산"],
+  "부산": ["busan", "부산"],
+  daegu: ["daegu", "대구"],
+  "대구": ["daegu", "대구"],
+  incheon: ["incheon", "인천"],
+  "인천": ["incheon", "인천"],
+  gwangju: ["gwangju", "광주"],
+  "광주": ["gwangju", "광주"],
+  daejeon: ["daejeon", "대전"],
+  "대전": ["daejeon", "대전"],
+  ulsan: ["ulsan", "울산"],
+  "울산": ["ulsan", "울산"],
+  sejong: ["sejong", "세종"],
+  "세종": ["sejong", "세종"],
+  gyeonggi: ["gyeonggi", "경기", "경기도"],
+  "경기": ["gyeonggi", "경기", "경기도"],
+  gangwon: ["gangwon", "강원", "강원도"],
+  "강원": ["gangwon", "강원", "강원도"],
+  chungbuk: ["chungbuk", "충북", "충청북도"],
+  "충북": ["chungbuk", "충북", "충청북도"],
+  chungnam: ["chungnam", "충남", "충청남도"],
+  "충남": ["chungnam", "충남", "충청남도"],
+  jeonbuk: ["jeonbuk", "전북", "전라북도"],
+  "전북": ["jeonbuk", "전북", "전라북도"],
+  jeonnam: ["jeonnam", "전남", "전라남도"],
+  "전남": ["jeonnam", "전남", "전라남도"],
+  gyeongbuk: ["gyeongbuk", "경북", "경상북도"],
+  "경북": ["gyeongbuk", "경북", "경상북도"],
+  gyeongnam: ["gyeongnam", "경남", "경상남도"],
+  "경남": ["gyeongnam", "경남", "경상남도"],
+  jeju: ["jeju", "제주", "제주도", "제주특별자치도"],
+  "제주": ["jeju", "제주", "제주도", "제주특별자치도"],
+  hospital: ["hospital", "병원"],
+  "병원": ["hospital", "병원"],
+  university: ["university", "대학교", "대학"],
+  "대학교": ["university", "대학교", "대학"],
+  "대학": ["university", "대학교", "대학"],
+  clinic: ["clinic", "클리닉", "의원", "안과"],
+  "클리닉": ["clinic", "클리닉", "의원", "안과"],
+  "의원": ["clinic", "클리닉", "의원", "안과"],
+  eye: ["eye", "안과"],
+  "안과": ["eye", "안과"],
+};
+
+const HOME_HISTORY_KEY = "__keraHomePage";
+
+function buildHomeHistoryEntry(kind: HomeHistoryEntry["kind"], workspaceMode: WorkspaceMode): HomeHistoryEntry {
+  return {
+    scope: "home-page",
+    version: 1,
+    kind,
+    workspace_mode: workspaceMode,
+  };
+}
+
+function readHomeHistoryEntry(state: unknown): HomeHistoryEntry | null {
+  if (!state || typeof state !== "object") {
+    return null;
+  }
+  const rawEntry = (state as Record<string, unknown>)[HOME_HISTORY_KEY];
+  if (!rawEntry || typeof rawEntry !== "object") {
+    return null;
+  }
+  const entry = rawEntry as Record<string, unknown>;
+  if (entry.scope !== "home-page" || entry.version !== 1) {
+    return null;
+  }
+  if (entry.kind !== "workspace" && entry.kind !== "guard") {
+    return null;
+  }
+  if (entry.workspace_mode !== "canvas" && entry.workspace_mode !== "operations") {
+    return null;
+  }
+  return {
+    scope: "home-page",
+    version: 1,
+    kind: entry.kind,
+    workspace_mode: entry.workspace_mode,
+  };
+}
+
+function isSameHomeHistoryEntry(left: HomeHistoryEntry | null, right: HomeHistoryEntry | null): boolean {
+  return left?.kind === right?.kind && left?.workspace_mode === right?.workspace_mode;
+}
+
+function tokenizeInstitutionSearch(value: string): string[] {
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/[^0-9a-zA-Z가-힣]+/)
+    .filter(Boolean);
+}
+
+function expandInstitutionSearchToken(token: string): string[] {
+  return Array.from(new Set(INSTITUTION_SEARCH_ALIASES[token] ?? [token]));
+}
+
+function matchesInstitutionSearch(
+  query: string,
+  ...fields: Array<string | null | undefined>
+): boolean {
+  const tokens = tokenizeInstitutionSearch(query);
+  if (!tokens.length) {
+    return true;
+  }
+  const haystack = fields
+    .map((field) => String(field ?? "").toLowerCase())
+    .join(" ");
+  return tokens.every((token) => expandInstitutionSearchToken(token).some((alias) => haystack.includes(alias)));
+}
+
+function writeHomeHistoryEntry(entry: HomeHistoryEntry, mode: "push" | "replace") {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const nextState: Record<string, unknown> =
+    window.history.state && typeof window.history.state === "object"
+      ? { ...(window.history.state as Record<string, unknown>) }
+      : {};
+  nextState[HOME_HISTORY_KEY] = entry;
+  if (mode === "push") {
+    window.history.pushState(nextState, "");
+    return;
+  }
+  window.history.replaceState(nextState, "");
 }
 
 function readJwtExpiration(token: string): number | null {
@@ -142,6 +280,8 @@ export default function HomePage() {
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
   const [error, setError] = useState<string | null>(null);
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
+  const workspaceHistoryReadyRef = useRef(false);
+  const workspaceModeRef = useRef<WorkspaceMode>("canvas");
   const [patientForm, setPatientForm] = useState({
     patient_id: "",
     sex: "female",
@@ -156,10 +296,19 @@ export default function HomePage() {
     message: "",
   });
   const [institutionQuery, setInstitutionQuery] = useState("");
-  const [workspaceMode, setWorkspaceMode] = useState<"canvas" | "operations">("canvas");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
   const [launchTarget, setLaunchTarget] = useState<{ mode: "canvas" | "operations"; section: OperationsSection } | null>(null);
   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
+  const filteredExistingSites = publicSites.filter((site) =>
+    matchesInstitutionSearch(institutionQuery, site.site_id, site.display_name, site.hospital_name),
+  );
+  const selectedExistingSite =
+    publicSites.find((site) => site.site_id === requestForm.requested_site_id) ?? null;
+  const visibleExistingSites =
+    selectedExistingSite && !filteredExistingSites.some((site) => site.site_id === selectedExistingSite.site_id)
+      ? [selectedExistingSite, ...filteredExistingSites]
+      : filteredExistingSites;
 
   const approved = user?.approval_status === "approved";
   const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
@@ -223,6 +372,7 @@ export default function HomePage() {
     officialInstitutionEmpty: pick(locale, "No synced institution matched this search yet.", "동기화된 기관 목록에서 일치하는 결과가 없습니다."),
     selectedInstitution: pick(locale, "Selected institution", "선택한 기관"),
     existingInstitutionFallback: pick(locale, "Existing K-ERA institution", "기존 K-ERA 기관"),
+    existingInstitutionEmpty: pick(locale, "No existing K-ERA institution matched this search.", "기존 K-ERA 기관에서도 일치하는 결과가 없습니다."),
     hospital: pick(locale, "Hospital", "蹂묒썝"),
     requestedRole: pick(locale, "Requested role", "?붿껌 ??븷"),
     noteForReviewer: pick(locale, "Note for reviewer", "寃?좎옄 硫붾え"),
@@ -665,6 +815,79 @@ export default function HomePage() {
     setOperationsSection(launchTarget.section);
     setWorkspaceMode("operations");
   }, [approved, canOpenOperations, launchTarget]);
+
+  useEffect(() => {
+    workspaceModeRef.current = workspaceMode;
+  }, [workspaceMode]);
+
+  useEffect(() => {
+    if (token && user && approved) {
+      return;
+    }
+    workspaceHistoryReadyRef.current = false;
+  }, [approved, token, user]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !token || !user || !approved) {
+      return;
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const historyEntry = readHomeHistoryEntry(event.state);
+      if (historyEntry?.kind === "workspace") {
+        workspaceHistoryReadyRef.current = true;
+        return;
+      }
+
+      const nextWorkspaceEntry = buildHomeHistoryEntry("workspace", workspaceModeRef.current);
+      workspaceHistoryReadyRef.current = true;
+      writeHomeHistoryEntry(nextWorkspaceEntry, "push");
+      window.scrollTo({ top: 0, behavior: "auto" });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [approved, token, user]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !token || !user || !approved) {
+      return;
+    }
+
+    const guardEntry = buildHomeHistoryEntry("guard", workspaceMode);
+    const workspaceEntry = buildHomeHistoryEntry("workspace", workspaceMode);
+    const browserEntry = readHomeHistoryEntry(window.history.state);
+
+    if (!workspaceHistoryReadyRef.current) {
+      workspaceHistoryReadyRef.current = true;
+      if (browserEntry?.kind === "guard") {
+        if (!isSameHomeHistoryEntry(browserEntry, guardEntry)) {
+          writeHomeHistoryEntry(guardEntry, "replace");
+        }
+        writeHomeHistoryEntry(workspaceEntry, "push");
+        return;
+      }
+      if (browserEntry?.kind === "workspace") {
+        if (!isSameHomeHistoryEntry(browserEntry, workspaceEntry)) {
+          writeHomeHistoryEntry(workspaceEntry, "replace");
+        }
+        return;
+      }
+      writeHomeHistoryEntry(guardEntry, "replace");
+      writeHomeHistoryEntry(workspaceEntry, "push");
+      return;
+    }
+
+    if (browserEntry?.kind === "workspace" && !isSameHomeHistoryEntry(browserEntry, workspaceEntry)) {
+      writeHomeHistoryEntry(workspaceEntry, "replace");
+      return;
+    }
+    if (browserEntry?.kind === "guard" && !isSameHomeHistoryEntry(browserEntry, guardEntry)) {
+      writeHomeHistoryEntry(guardEntry, "replace");
+    }
+  }, [approved, token, user, workspaceMode]);
 
   useEffect(() => {
     if (!token || !user || approved) {
@@ -1143,10 +1366,10 @@ export default function HomePage() {
                   <Field as="div" label={copy.existingInstitutionFallback}>
                     <select
                       id="requested_site_id"
-                      value={publicSites.some((site) => site.site_id === requestForm.requested_site_id) ? requestForm.requested_site_id : ""}
+                      value={visibleExistingSites.some((site) => site.site_id === requestForm.requested_site_id) ? requestForm.requested_site_id : ""}
                       onChange={(event) => {
                         const nextSiteId = event.target.value;
-                        const nextSite = publicSites.find((site) => site.site_id === nextSiteId) ?? null;
+                        const nextSite = visibleExistingSites.find((site) => site.site_id === nextSiteId) ?? null;
                         setRequestForm((current) => ({
                           ...current,
                           requested_site_id: nextSiteId,
@@ -1155,12 +1378,17 @@ export default function HomePage() {
                       }}
                     >
                       <option value="">{pick(locale, "No existing site selected", "기존 site 미선택")}</option>
-                      {publicSites.map((site) => (
+                      {visibleExistingSites.map((site) => (
                         <option key={site.site_id} value={site.site_id}>
                           {site.display_name}
                         </option>
                       ))}
                     </select>
+                    {institutionQuery.trim().length >= 2 && visibleExistingSites.length === 0 ? (
+                      <div className="mt-2 rounded-[18px] border border-border/80 bg-surface-muted/80 px-4 py-3 text-sm text-muted">
+                        {copy.existingInstitutionEmpty}
+                      </div>
+                    ) : null}
                   </Field>
                   <Field as="div" label={copy.requestedRole}>
                     <select

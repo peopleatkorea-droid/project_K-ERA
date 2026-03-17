@@ -12,8 +12,8 @@ export async function downloadManifest(siteId: string, token: string) {
   return response.blob();
 }
 
-export async function fetchImageBlob(siteId: string, imageId: string, token: string) {
-  return requestBlob(`/api/sites/${siteId}/images/${imageId}/content`, token, "Image fetch failed");
+export async function fetchImageBlob(siteId: string, imageId: string, token: string, signal?: AbortSignal) {
+  return requestBlob(`/api/sites/${siteId}/images/${imageId}/content`, token, "Image fetch failed", { signal });
 }
 
 export async function downloadImportTemplate(siteId: string, token: string) {

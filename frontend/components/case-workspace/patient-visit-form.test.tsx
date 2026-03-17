@@ -81,7 +81,7 @@ describe("PatientVisitForm", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "trauma" }));
-    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
 
     expect(togglePredisposingFactor).toHaveBeenCalledWith("trauma");
     expect(onCompleteIntake).toHaveBeenCalledTimes(1);

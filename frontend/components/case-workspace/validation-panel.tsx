@@ -77,6 +77,43 @@ export function ValidationPanel({
   modelCompareResult,
   formatProbability,
 }: Props) {
+  const validationModelLabel =
+    validationResult?.model_version.ensemble_mode === "weighted_average" &&
+    validationResult.model_version.architecture === "multi_model_ensemble"
+      ? pick(locale, "5-model ensemble", "5모델 ensemble")
+      : validationResult?.model_version.architecture ?? common.notAvailable;
+  const successfulComparisons = (modelCompareResult?.comparisons ?? []).filter(
+    (item): item is NonNullable<typeof modelCompareResult>["comparisons"][number] & { summary: NonNullable<NonNullable<typeof modelCompareResult>["comparisons"][number]["summary"]> } =>
+      Boolean(item.summary && !item.error)
+  );
+  const consensusCounts = successfulComparisons.reduce<Record<string, number>>((accumulator, item) => {
+    const label = item.summary.predicted_label ?? "unknown";
+    accumulator[label] = (accumulator[label] ?? 0) + 1;
+    return accumulator;
+  }, {});
+  const consensusRankedLabels = Object.entries(consensusCounts).sort(
+    (left, right) => right[1] - left[1] || left[0].localeCompare(right[0])
+  );
+  const consensusTop = consensusRankedLabels[0] ?? null;
+  const consensusSecond = consensusRankedLabels[1] ?? null;
+  const consensusAgreementPercent =
+    consensusTop && successfulComparisons.length > 0
+      ? Math.round((consensusTop[1] / successfulComparisons.length) * 100)
+      : null;
+  const consensusLabel =
+    consensusTop == null
+      ? null
+      : consensusSecond && consensusSecond[1] === consensusTop[1]
+        ? pick(locale, "Split decision", "의견 분산")
+        : consensusTop[0];
+  const probabilityValues = successfulComparisons
+    .map((item) => item.summary.prediction_probability)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const consensusProbability =
+    probabilityValues.length > 0
+      ? probabilityValues.reduce((total, value) => total + value, 0) / probabilityValues.length
+      : null;
+
   return (
     <>
       <Card as="section" variant="panel" className="grid gap-4 p-5">
@@ -188,7 +225,7 @@ export function ValidationPanel({
 
             <p className="m-0 text-sm leading-6 text-muted">
               {pick(locale, "Model", "모델")} {validationResult.model_version.version_name} (
-              {validationResult.model_version.architecture}){" "}
+              {validationModelLabel}){" "}
               {validationResult.model_version.crop_mode
                 ? pick(locale, `mode ${validationResult.model_version.crop_mode}`, `모드 ${validationResult.model_version.crop_mode}`)
                 : null}
@@ -214,12 +251,12 @@ export function ValidationPanel({
       <Card as="section" variant="panel" className="grid gap-4 p-5">
         <SectionHeader
           eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Comparison", "비교")}</div>}
-          title={pick(locale, "Model compare", "모델 비교")}
+          title={pick(locale, "Multi-model analysis", "다중 모델 분석")}
           titleAs="h4"
           description={pick(
             locale,
-            "Run the same case through the latest ViT, Swin, ConvNeXt-Tiny, DenseNet121, and related baselines to inspect prediction gaps.",
-            "같은 케이스를 최신 ViT, Swin, ConvNeXt-Tiny, DenseNet121 계열로 동시에 돌려 예측 차이를 확인합니다."
+            "AI validation refreshes this section with the selected latest models by default. You can keep or adjust the selection and re-run it anytime.",
+            "AI 검증을 실행하면 이 섹션도 기본 선택된 최신 모델들로 함께 갱신됩니다. 필요하면 선택을 조정해 다시 실행할 수 있습니다."
           )}
           aside={
             <Button
@@ -259,6 +296,47 @@ export function ValidationPanel({
 
         {modelCompareResult ? (
           <div className="grid gap-4">
+            {successfulComparisons.length > 1 ? (
+              <Card as="article" variant="nested" className="grid gap-3 p-4">
+                <SectionHeader
+                  className={docSectionHeadClass}
+                  title={pick(locale, "Consensus snapshot", "합의 요약")}
+                  titleAs="h4"
+                  description={pick(
+                    locale,
+                    "A quick readout from the currently selected multi-model analysis.",
+                    "현재 선택된 다중 모델 분석 결과를 빠르게 요약한 값입니다."
+                  )}
+                  aside={
+                    <span
+                      className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                        consensusAgreementPercent !== null && consensusAgreementPercent >= 80
+                          ? "high"
+                          : consensusAgreementPercent !== null && consensusAgreementPercent >= 60
+                            ? "medium"
+                            : "low"
+                      )}`}
+                    >
+                      {consensusAgreementPercent !== null
+                        ? `${consensusAgreementPercent}% ${pick(locale, "agreement", "일치율")}`
+                        : common.notAvailable}
+                    </span>
+                  }
+                />
+                <MetricGrid columns={4}>
+                  <MetricItem value={String(successfulComparisons.length)} label={pick(locale, "models run", "실행 모델 수")} />
+                  <MetricItem value={consensusLabel ?? common.notAvailable} label={pick(locale, "leading label", "우세 라벨")} />
+                  <MetricItem
+                    value={consensusTop ? `${consensusTop[1]} / ${successfulComparisons.length}` : common.notAvailable}
+                    label={pick(locale, "vote", "득표")}
+                  />
+                  <MetricItem
+                    value={formatProbability(consensusProbability, common.notAvailable)}
+                    label={pick(locale, "avg fungal prob", "평균 진균 확률")}
+                  />
+                </MetricGrid>
+              </Card>
+            ) : null}
             {modelCompareResult.comparisons.map((item, index) => {
               const validationTone = item.summary?.is_correct == null ? "neutral" : item.summary.is_correct ? "match" : "mismatch";
               const validationLabel =

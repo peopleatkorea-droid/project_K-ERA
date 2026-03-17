@@ -15,12 +15,15 @@ type Props = {
   locale: Locale;
   notAvailableLabel: string;
   canManagePlatform: boolean;
+  autoPublishEnabled: boolean;
   modelVersions: ModelVersionRecord[];
   currentModel: ModelVersionRecord | null;
   modelUpdates: ModelUpdateRecord[];
   selectedModelUpdate: ModelUpdateRecord | null;
   selectedApprovalReport: NonNullable<ModelUpdateRecord["approval_report"]> | null;
   selectedUpdatePreviewUrls: { source: string | null; roi: string | null; mask: string | null };
+  publishingModelVersionId: string | null;
+  publishingModelUpdateId: string | null;
   modelUpdateReviewNotes: Record<string, string>;
   setSelectedModelUpdateId: Dispatch<SetStateAction<string | null>>;
   setModelUpdateReviewNotes: Dispatch<SetStateAction<Record<string, string>>>;
@@ -30,7 +33,9 @@ type Props = {
   formatQualityRecommendation: (recommendation: string | null | undefined) => string;
   translateQualityFlag: (flag: string) => string;
   onDeleteModelVersion: (version: ModelVersionRecord) => void;
+  onPublishModelVersion: (version: ModelVersionRecord) => void;
   onModelUpdateReview: (decision: "approved" | "rejected") => void;
+  onPublishModelUpdate: () => void;
 };
 
 function PreviewCard({
@@ -58,12 +63,15 @@ export function RegistrySection({
   locale,
   notAvailableLabel,
   canManagePlatform,
+  autoPublishEnabled,
   modelVersions,
   currentModel,
   modelUpdates,
   selectedModelUpdate,
   selectedApprovalReport,
   selectedUpdatePreviewUrls,
+  publishingModelVersionId,
+  publishingModelUpdateId,
   modelUpdateReviewNotes,
   setSelectedModelUpdateId,
   setModelUpdateReviewNotes,
@@ -73,7 +81,9 @@ export function RegistrySection({
   formatQualityRecommendation,
   translateQualityFlag,
   onDeleteModelVersion,
+  onPublishModelVersion,
   onModelUpdateReview,
+  onPublishModelUpdate,
 }: Props) {
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -121,9 +131,25 @@ export function RegistrySection({
                     <MetricGrid columns={4}>
                       <MetricItem value={item.is_current ? pick(locale, "Current", "현재") : item.stage ?? pick(locale, "Stored", "보관됨")} label={pick(locale, "Stage", "단계")} />
                       <MetricItem value={formatDateTime(item.created_at, notAvailableLabel)} label={pick(locale, "Created", "생성 시각")} />
-                      <MetricItem value={item.ready ? pick(locale, "Ready", "준비됨") : pick(locale, "Pending", "대기 중")} label={pick(locale, "Status", "상태")} />
+                      <MetricItem
+                        value={
+                          item.distribution_status === "pending_upload"
+                            ? pick(locale, "Pending publish", "발행 대기")
+                            : item.ready
+                              ? pick(locale, "Ready", "준비됨")
+                              : pick(locale, "Pending", "대기 중")
+                        }
+                        label={pick(locale, "Status", "상태")}
+                      />
                       <MetricItem value={item.crop_mode ?? notAvailableLabel} label={pick(locale, "Crop mode", "Crop 모드")} />
                     </MetricGrid>
+                    <div className="flex flex-wrap gap-2">
+                      <span className={docSiteBadgeClass}>{`${pick(locale, "Distribution", "배포")} / ${item.distribution_status ?? pick(locale, "local_only", "local_only")}`}</span>
+                      {item.source_provider ? <span className={docSiteBadgeClass}>{`${pick(locale, "Source", "소스")} / ${item.source_provider}`}</span> : null}
+                    </div>
+                    {item.download_url ? (
+                      <div className="text-xs leading-5 text-muted break-all">{item.download_url}</div>
+                    ) : null}
                     {item.ensemble_weights ? (
                       <div className="flex flex-wrap gap-2">
                         <span className={docSiteBadgeClass}>{`${pick(locale, "Automated", "Automated")} ${formatWeightPercent(item.ensemble_weights.automated)}`}</span>
@@ -131,7 +157,22 @@ export function RegistrySection({
                       </div>
                     ) : null}
                     {canManagePlatform ? (
-                      <div className="flex justify-end">
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {item.distribution_status === "pending_upload" ? (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            disabled={publishingModelVersionId === item.version_id}
+                            onClick={() => onPublishModelVersion(item)}
+                          >
+                            {publishingModelVersionId === item.version_id
+                              ? pick(locale, "Publishing...", "발행 중...")
+                              : autoPublishEnabled
+                                ? pick(locale, "Auto publish", "자동 발행")
+                                : pick(locale, "Publish model", "모델 발행")}
+                          </Button>
+                        ) : null}
                         <Button type="button" variant="danger" size="sm" disabled={item.is_current} onClick={() => onDeleteModelVersion(item)}>
                           {pick(locale, "Delete model", "모델 삭제")}
                         </Button>
@@ -177,6 +218,9 @@ export function RegistrySection({
                     <MetricItem value={String(item.n_cases ?? 0)} label={pick(locale, "Cases", "케이스")} />
                     <MetricItem value={formatDateTime(item.created_at, notAvailableLabel)} label={pick(locale, "Created", "생성 시각")} />
                   </MetricGrid>
+                  {item.contribution_group_id ? (
+                    <div className="text-xs leading-5 text-muted">{`${pick(locale, "Group", "그룹")} / ${item.contribution_group_id}`}</div>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -199,6 +243,23 @@ export function RegistrySection({
             <MetricItem value={selectedModelUpdate.execution_device ?? notAvailableLabel} label={pick(locale, "Execution device", "실행 장치")} />
             <MetricItem value={formatDateTime(selectedModelUpdate.created_at, notAvailableLabel)} label={pick(locale, "Created", "생성 시각")} />
           </MetricGrid>
+          <div className="flex flex-wrap gap-2">
+            <span className={docSiteBadgeClass}>{`${pick(locale, "Artifact", "아티팩트")} / ${selectedModelUpdate.artifact_distribution_status ?? pick(locale, "local_only", "local_only")}`}</span>
+            {selectedModelUpdate.central_artifact_key ? (
+              <span className={docSiteBadgeClass}>{`${pick(locale, "Key", "키")} / ${selectedModelUpdate.central_artifact_key}`}</span>
+            ) : null}
+            {selectedModelUpdate.artifact_source_provider ? (
+              <span className={docSiteBadgeClass}>{`${pick(locale, "Source", "소스")} / ${selectedModelUpdate.artifact_source_provider}`}</span>
+            ) : null}
+          </div>
+          {selectedModelUpdate.artifact_download_url ? (
+            <div className="text-xs leading-5 text-muted break-all">{selectedModelUpdate.artifact_download_url}</div>
+          ) : null}
+          {selectedModelUpdate.contribution_group_id ? (
+            <div className="flex flex-wrap gap-2">
+              <span className={docSiteBadgeClass}>{`${pick(locale, "Contribution group", "기여 그룹")} / ${selectedModelUpdate.contribution_group_id}`}</span>
+            </div>
+          ) : null}
 
           {selectedModelUpdate.quality_summary ? (
             <Card as="section" variant="nested" className="grid gap-4 border border-border/80 p-4">
@@ -334,6 +395,18 @@ export function RegistrySection({
           </Field>
 
           <div className="flex flex-wrap justify-end gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={publishingModelUpdateId === selectedModelUpdate.update_id}
+              onClick={onPublishModelUpdate}
+            >
+              {publishingModelUpdateId === selectedModelUpdate.update_id
+                ? pick(locale, "Publishing delta...", "delta 발행 중...")
+                : autoPublishEnabled
+                  ? pick(locale, "Auto publish delta", "delta 자동 발행")
+                  : pick(locale, "Publish delta", "delta 발행")}
+            </Button>
             <Button type="button" variant="danger" onClick={() => onModelUpdateReview("rejected")}>
               {pick(locale, "Reject update", "업데이트 반려")}
             </Button>

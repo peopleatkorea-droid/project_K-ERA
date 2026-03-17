@@ -5,6 +5,20 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, Response
+from kera_research.config import CONTROL_PLANE_ARTIFACT_DIR, MODEL_DISTRIBUTION_MODE, STORAGE_DIR
+from kera_research.db import CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL
+from kera_research.services.institution_directory import HiraApiError
+from kera_research.services.model_artifacts import ModelArtifactStore
+from kera_research.services.onedrive_publisher import OneDrivePublisher
+
+
+def _database_backend_label(database_url: str) -> str:
+    normalized = str(database_url or "").strip().lower()
+    if normalized.startswith("postgresql"):
+        return "postgresql"
+    if normalized.startswith("sqlite"):
+        return "sqlite"
+    return "other"
 
 
 def build_admin_router(support: Any) -> APIRouter:
@@ -34,6 +48,8 @@ def build_admin_router(support: Any) -> APIRouter:
     AccessRequestReviewRequest = support.AccessRequestReviewRequest
     StorageSettingsUpdateRequest = support.StorageSettingsUpdateRequest
     ModelUpdateReviewRequest = support.ModelUpdateReviewRequest
+    ModelVersionPublishRequest = support.ModelVersionPublishRequest
+    ModelVersionAutoPublishRequest = support.ModelVersionAutoPublishRequest
     AggregationRunRequest = support.AggregationRunRequest
     ProjectCreateRequest = support.ProjectCreateRequest
     SiteCreateRequest = support.SiteCreateRequest
@@ -134,6 +150,43 @@ def build_admin_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return {"request": reviewed, "created_site": created_site}
 
+    @router.post("/api/admin/institutions/sync")
+    def sync_institutions(
+        page_size: int = 100,
+        max_pages: int | None = None,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        if page_size < 1 or page_size > 500:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="page_size must be between 1 and 500.",
+            )
+        if max_pages is not None and max_pages < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="max_pages must be at least 1.",
+            )
+        try:
+            return cp.sync_hira_ophthalmology_directory(page_size=page_size, max_pages=max_pages)
+        except HiraApiError as exc:
+            detail = str(exc)
+            status_code = (
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if "not configured" in detail.lower()
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    @router.get("/api/admin/institutions/status")
+    def institution_sync_status(
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        return cp.institution_directory_sync_status()
+
     @router.get("/api/admin/overview")
     def admin_overview(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -154,6 +207,18 @@ def build_admin_router(support: Any) -> APIRouter:
             "pending_access_requests": len(pending_requests),
             "pending_model_updates": len(visible_updates),
             "current_model_version": current_model.get("version_name") if current_model else None,
+            "federation_setup": {
+                "control_plane_split_enabled": CONTROL_PLANE_DATABASE_URL != DATA_PLANE_DATABASE_URL,
+                "control_plane_backend": _database_backend_label(CONTROL_PLANE_DATABASE_URL),
+                "data_plane_backend": _database_backend_label(DATA_PLANE_DATABASE_URL),
+                "control_plane_artifact_dir": str(CONTROL_PLANE_ARTIFACT_DIR),
+                "uses_default_control_plane_artifact_dir": CONTROL_PLANE_ARTIFACT_DIR.resolve()
+                == (STORAGE_DIR / "control_plane" / "artifacts").resolve(),
+                "model_distribution_mode": MODEL_DISTRIBUTION_MODE,
+                "onedrive_auto_publish_enabled": OneDrivePublisher().is_configured(),
+                "onedrive_root_path": OneDrivePublisher().configuration_summary().get("root_path") or "",
+                "onedrive_missing_settings": OneDrivePublisher().configuration_summary().get("missing_settings") or [],
+            },
         }
         if user.get("role") == "admin":
             overview["aggregation_count"] = len(cp.list_aggregations())
@@ -252,6 +317,102 @@ def build_admin_router(support: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    @router.post("/api/admin/model-versions/{version_id}/publish")
+    def publish_model_version(
+        version_id: str,
+        payload: ModelVersionPublishRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        existing = next((item for item in cp.list_model_versions() if item.get("version_id") == version_id), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model version.")
+
+        normalized_download_url = str(payload.download_url or "").strip()
+        if not normalized_download_url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="download_url is required.")
+
+        local_model_path = str(existing.get("model_path") or "").strip()
+        if not local_model_path or not Path(local_model_path).exists():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Local model artifact is missing — cannot publish this version.",
+            )
+
+        artifact_store = ModelArtifactStore()
+        metadata = artifact_store.register_local_metadata(existing, local_path=local_model_path)
+        published = cp.ensure_model_version(
+            {
+                **existing,
+                **metadata,
+                "version_id": version_id,
+                "download_url": normalized_download_url,
+                "source_provider": "",
+                "publish_required": False,
+                "distribution_status": "published",
+                "ready": True,
+                "is_current": bool(payload.set_current),
+                "model_path": "",
+            }
+        )
+        return {"model_version": published}
+
+    @router.post("/api/admin/model-versions/{version_id}/auto-publish")
+    def auto_publish_model_version(
+        version_id: str,
+        payload: ModelVersionAutoPublishRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        existing = next((item for item in cp.list_model_versions() if item.get("version_id") == version_id), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model version.")
+
+        local_model_path = str(existing.get("model_path") or "").strip()
+        if not local_model_path or not Path(local_model_path).exists():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Local model artifact is missing — cannot auto-publish this version.",
+            )
+
+        artifact_store = ModelArtifactStore()
+        local_metadata = artifact_store.register_local_metadata(existing, local_path=local_model_path)
+        try:
+            publish_metadata = OneDrivePublisher().publish_local_file(
+                local_path=local_model_path,
+                category="model_versions",
+                artifact_id=version_id,
+                filename=str(local_metadata.get("filename") or ""),
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        published = cp.ensure_model_version(
+            {
+                **existing,
+                **local_metadata,
+                "version_id": version_id,
+                "download_url": str(publish_metadata.get("download_url") or ""),
+                "source_provider": str(publish_metadata.get("source_provider") or ""),
+                "publish_required": False,
+                "distribution_status": str(publish_metadata.get("distribution_status") or "published"),
+                "ready": True,
+                "is_current": bool(payload.set_current),
+                "model_path": "",
+                "onedrive_drive_id": publish_metadata.get("onedrive_drive_id"),
+                "onedrive_item_id": publish_metadata.get("onedrive_item_id"),
+                "onedrive_remote_path": publish_metadata.get("onedrive_remote_path"),
+                "onedrive_web_url": publish_metadata.get("onedrive_web_url"),
+                "onedrive_share_url": publish_metadata.get("onedrive_share_url"),
+                "onedrive_share_scope": publish_metadata.get("onedrive_share_scope"),
+                "onedrive_share_type": publish_metadata.get("onedrive_share_type"),
+                "onedrive_share_error": publish_metadata.get("onedrive_share_error"),
+            }
+        )
+        return {"model_version": published}
+
     @router.get("/api/admin/model-updates")
     def list_model_updates(
         site_id: str | None = None,
@@ -280,12 +441,13 @@ def build_admin_router(support: Any) -> APIRouter:
             require_site_access(cp, user, site_id)
 
         if payload.decision.strip().lower() == "approved":
-            delta_path = str(update_record.get("central_artifact_path") or update_record.get("artifact_path") or "")
-            if not delta_path or not Path(delta_path).exists():
+            try:
+                delta_path = cp.resolve_model_update_artifact_path(update_record)
+            except (FileNotFoundError, ValueError) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Delta artifact file is missing — cannot approve.",
-                )
+                    detail=f"Delta artifact file is missing — cannot approve: {exc}",
+                ) from exc
             try:
                 import torch as _torch
 
@@ -322,6 +484,52 @@ def build_admin_router(support: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return {"update": reviewed}
+
+    @router.post("/api/admin/model-updates/{update_id}/publish")
+    def publish_model_update(
+        update_id: str,
+        payload: ModelVersionPublishRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        try:
+            return {"update": cp.publish_model_update_artifact(update_id, download_url=payload.download_url)}
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @router.post("/api/admin/model-updates/{update_id}/auto-publish")
+    def auto_publish_model_update(
+        update_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        current = cp.get_model_update(update_id)
+        if current is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model update.")
+        try:
+            artifact_path = cp.resolve_model_update_artifact_path(current, allow_download=False)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Local delta artifact is missing — cannot auto-publish this update: {exc}",
+            ) from exc
+        try:
+            publish_metadata = OneDrivePublisher().publish_local_file(
+                local_path=artifact_path,
+                category="model_updates",
+                artifact_id=update_id,
+                filename=str(current.get("central_artifact_name") or artifact_path.name),
+            )
+            published = cp.publish_model_update_artifact(
+                update_id,
+                download_url=str(publish_metadata.get("download_url") or ""),
+                artifact_metadata=publish_metadata,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"update": published}
 
     @router.get("/api/admin/model-updates/{update_id}/artifacts/{artifact_kind}")
     def get_model_update_artifact(
@@ -435,13 +643,13 @@ def build_admin_router(support: Any) -> APIRouter:
                 detail="No global model is available for aggregation.",
             )
 
-        delta_paths = [str(item.get("central_artifact_path") or item.get("artifact_path") or "") for item in approved_updates]
-        missing_paths = [path for path in delta_paths if not path or not Path(path).exists()]
-        if missing_paths:
+        try:
+            delta_paths = [str(cp.resolve_model_update_artifact_path(item)) for item in approved_updates]
+        except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="One or more approved update artifacts are missing on disk.",
-            )
+                detail=f"One or more approved update artifacts are unavailable: {exc}",
+            ) from exc
 
         site_weights: dict[str, int] = {}
         delta_weights: list[int] = []
@@ -474,7 +682,7 @@ def build_admin_router(support: Any) -> APIRouter:
                     delta_paths,
                     output_path,
                     weights=delta_weights,
-                    base_model_path=base_model["model_path"],
+                    base_model_path=workflow.model_manager.resolve_model_path(base_model, allow_download=True),
                 )
                 aggregation = cp.register_aggregation(
                     base_model_version_id=base_model["version_id"],

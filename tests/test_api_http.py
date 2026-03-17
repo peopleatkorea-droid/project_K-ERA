@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import gc
+import hashlib
 import io
 import json
 import os
@@ -13,7 +14,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -28,6 +29,7 @@ def reload_app_module(
     control_plane_db_path: Path | None = None,
     data_plane_db_path: Path | None = None,
     control_plane_artifact_dir: Path | None = None,
+    model_distribution_mode: str | None = None,
 ):
     for env_name in (
         "KERA_DATABASE_URL",
@@ -38,7 +40,16 @@ def reload_app_module(
         "KERA_LOCAL_DATABASE_URL",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
         "KERA_CASE_REFERENCE_SALT",
+        "KERA_PATIENT_REFERENCE_SALT",
         "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
+        "KERA_MODEL_DISTRIBUTION_MODE",
+        "KERA_ONEDRIVE_TENANT_ID",
+        "KERA_ONEDRIVE_CLIENT_ID",
+        "KERA_ONEDRIVE_CLIENT_SECRET",
+        "KERA_ONEDRIVE_DRIVE_ID",
+        "KERA_ONEDRIVE_ROOT_PATH",
+        "KERA_ONEDRIVE_SHARE_SCOPE",
+        "KERA_ONEDRIVE_SHARE_TYPE",
     ):
         os.environ.pop(env_name, None)
 
@@ -53,7 +64,10 @@ def reload_app_module(
 
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
     os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
+    os.environ["KERA_PATIENT_REFERENCE_SALT"] = "test-patient-reference-salt"
     os.environ["KERA_DISABLE_CASE_EMBEDDING_REFRESH"] = "true"
+    if model_distribution_mode is not None:
+        os.environ["KERA_MODEL_DISTRIBUTION_MODE"] = model_distribution_mode
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
     os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
@@ -130,7 +144,23 @@ class FakeWorkflow:
             "gradcam_path": str(gradcam_path),
             "medsam_mask_path": None,
         }
-        self.control_plane.save_validation_run(summary, [case_prediction])
+        saved_summary = self.control_plane.save_validation_run(summary, [case_prediction])
+        site_store.record_case_validation_history(
+            patient_id,
+            visit_date,
+            {
+                "validation_id": saved_summary["validation_id"],
+                "run_date": saved_summary.get("run_date"),
+                "model_version": saved_summary.get("model_version"),
+                "model_version_id": saved_summary.get("model_version_id"),
+                "model_architecture": saved_summary.get("model_architecture"),
+                "run_scope": "case",
+                "predicted_label": case_prediction.get("predicted_label"),
+                "true_label": case_prediction.get("true_label"),
+                "prediction_probability": case_prediction.get("prediction_probability"),
+                "is_correct": case_prediction.get("is_correct"),
+            },
+        )
         self.control_plane.save_experiment(
             {
                 "experiment_id": self.app_module.make_id("exp"),
@@ -149,13 +179,41 @@ class FakeWorkflow:
         )
         return summary, [case_prediction]
 
-    def contribute_case(self, site_store, patient_id, visit_date, model_version, execution_device, user_id):
+    def run_ai_clinic_report(
+        self,
+        site_store,
+        *,
+        patient_id,
+        visit_date,
+        model_version,
+        execution_device,
+        top_k=3,
+        retrieval_backend="hybrid",
+    ):
+        return {
+            "patient_id": patient_id,
+            "visit_date": visit_date,
+            "model_version_id": model_version["version_id"],
+            "model_version_name": model_version["version_name"],
+            "retrieval_backend": retrieval_backend,
+            "execution_device": execution_device,
+            "similar_cases": [],
+            "classification_context": {
+                "validation_id": None,
+                "model_version_id": model_version["version_id"],
+            },
+            "differential": [],
+            "workflow_recommendation": None,
+        }
+
+    def contribute_case(self, site_store, patient_id, visit_date, model_version, execution_device, user_id, contribution_group_id=None):
         delta_path = site_store.update_dir / f"{self.app_module.make_id('delta')}.pt"
         delta_path.parent.mkdir(parents=True, exist_ok=True)
         delta_path.write_bytes(b"delta")
         case_reference_id = self.control_plane.case_reference_id(site_store.site_id, patient_id, visit_date)
         update = {
             "update_id": self.app_module.make_id("update"),
+            "contribution_group_id": contribution_group_id,
             "site_id": site_store.site_id,
             "base_model_version_id": model_version["version_id"],
             "architecture": model_version["architecture"],
@@ -175,16 +233,33 @@ class FakeWorkflow:
             },
             "status": "pending_upload",
         }
-        self.control_plane.register_model_update(update)
-        self.control_plane.register_contribution(
+        update = self.control_plane.register_model_update(update)
+        contribution = {
+            "contribution_id": self.app_module.make_id("contrib"),
+            "contribution_group_id": contribution_group_id,
+            "user_id": user_id,
+            "site_id": site_store.site_id,
+            "case_reference_id": case_reference_id,
+            "update_id": update["update_id"],
+            "created_at": "2026-03-11T00:10:00+00:00",
+        }
+        self.control_plane.register_contribution(contribution)
+        site_store.record_case_contribution_history(
+            patient_id,
+            visit_date,
             {
-                "contribution_id": self.app_module.make_id("contrib"),
-                "user_id": user_id,
-                "site_id": site_store.site_id,
-                "case_reference_id": case_reference_id,
-                "update_id": update["update_id"],
-                "created_at": "2026-03-11T00:10:00+00:00",
-            }
+                "contribution_id": contribution["contribution_id"],
+                "contribution_group_id": contribution.get("contribution_group_id"),
+                "created_at": contribution["created_at"],
+                "user_id": contribution["user_id"],
+                "case_reference_id": contribution.get("case_reference_id"),
+                "update_id": update.get("update_id"),
+                "update_status": update.get("status"),
+                "upload_type": update.get("upload_type"),
+                "architecture": update.get("architecture"),
+                "execution_device": update.get("execution_device"),
+                "base_model_version_id": update.get("base_model_version_id"),
+            },
         )
         return update
 
@@ -892,6 +967,37 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(sites_response.status_code, 200, sites_response.text)
         self.assertEqual([item["site_id"] for item in sites_response.json()], [self.site_id])
 
+    def test_patient_list_board_endpoint_returns_paginated_patient_rows_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001")
+        self._seed_case(admin_token, patient_id="HTTP-002")
+        self._seed_case(admin_token, patient_id="HTTP-003")
+
+        response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/list-board?page=2&page_size=2",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["page_size"], 2)
+        self.assertEqual(payload["total_count"], 3)
+        self.assertEqual(payload["total_pages"], 2)
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertIn(payload["items"][0]["patient_id"], {"HTTP-001", "HTTP-002", "HTTP-003"})
+        self.assertIn("latest_case", payload["items"][0])
+        self.assertIn("representative_thumbnails", payload["items"][0])
+
+        search_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/list-board?q=HTTP-003&page=1&page_size=2",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(search_response.status_code, 200, search_response.text)
+        search_payload = search_response.json()
+        self.assertEqual(search_payload["total_count"], 1)
+        self.assertEqual(len(search_payload["items"]), 1)
+        self.assertEqual(search_payload["items"][0]["patient_id"], "HTTP-003")
+
     def test_site_summary_reports_case_counts_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
@@ -1105,6 +1211,125 @@ class ApiHttpTests(unittest.TestCase):
             self.assertIn(job_payload["status"], {"running", "done"})
             self.assertIn("prompt_signature", job_payload)
 
+    def test_stored_case_lesion_preview_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.7},
+        )
+        self.assertEqual(lesion_box_response.status_code, 200, lesion_box_response.text)
+
+        image = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image)
+        artifact_name = Path(str(image["image_path"])).stem
+        mask_path = self.site_store.lesion_mask_dir / f"{artifact_name}_mask.png"
+        crop_path = self.site_store.lesion_crop_dir / f"{artifact_name}_crop.png"
+        metadata_dir = self.site_store.artifact_dir / "lesion_preview_meta"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = metadata_dir / f"{artifact_name}.json"
+        prompt_signature = hashlib.sha1(
+            json.dumps(
+                {"x0": 0.2, "x1": 0.6, "y0": 0.2, "y1": 0.7},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        mask_path.write_bytes(b"mask")
+        crop_path.write_bytes(b"crop")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "backend": "medsam",
+                    "crop_style": "soft_masked_bbox_v1",
+                    "medsam_error": None,
+                    "prompt_signature": prompt_signature,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        preview_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases/lesion-preview/stored?patient_id=HTTP-001&visit_date=Initial",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(preview_response.status_code, 200, preview_response.text)
+        preview_payload = preview_response.json()
+        self.assertEqual(len(preview_payload), 1)
+        self.assertEqual(preview_payload[0]["image_id"], image_id)
+        self.assertTrue(preview_payload[0]["has_lesion_mask"])
+        self.assertTrue(preview_payload[0]["has_lesion_crop"])
+
+        artifact_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases/lesion-preview/artifacts/lesion_mask?patient_id=HTTP-001&visit_date=Initial&image_id={image_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(artifact_response.status_code, 200, artifact_response.text)
+        self.assertEqual(artifact_response.content, b"mask")
+
+    def test_case_history_http_reads_local_site_history(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+        self.site_store.record_case_validation_history(
+            "HTTP-001",
+            "Initial",
+            {
+                "validation_id": "validation_local_001",
+                "run_date": "2026-03-17T10:00:00+00:00",
+                "model_version": "local-current",
+                "model_version_id": "model_local_001",
+                "model_architecture": "convnext_tiny",
+                "run_scope": "case",
+                "predicted_label": "bacterial",
+                "true_label": "bacterial",
+                "prediction_probability": 0.91,
+                "is_correct": True,
+            },
+        )
+        self.site_store.record_case_contribution_history(
+            "HTTP-001",
+            "Initial",
+            {
+                "contribution_id": "contrib_local_001",
+                "contribution_group_id": "group_local_001",
+                "created_at": "2026-03-17T10:05:00+00:00",
+                "user_id": "http_researcher",
+                "case_reference_id": "case_local_001",
+                "update_id": "update_local_001",
+                "update_status": "pending_review",
+                "upload_type": "weight delta",
+                "architecture": "convnext_tiny",
+                "execution_device": "cpu",
+                "base_model_version_id": "model_local_001",
+            },
+        )
+
+        with patch.object(
+            self.app_module.ControlPlaneStore,
+            "list_validation_runs",
+            side_effect=AssertionError("case history should not read central validation runs"),
+        ), patch.object(
+            self.app_module.ControlPlaneStore,
+            "list_contributions",
+            side_effect=AssertionError("case history should not read central contributions"),
+        ), patch.object(
+            self.app_module.ControlPlaneStore,
+            "list_model_updates",
+            side_effect=AssertionError("case history should not read central model updates"),
+        ):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["validations"]), 1)
+        self.assertEqual(payload["validations"][0]["validation_id"], "validation_local_001")
+        self.assertEqual(len(payload["contributions"]), 1)
+        self.assertEqual(payload["contributions"][0]["contribution_id"], "contrib_local_001")
+
     def test_non_owner_cannot_modify_or_delete_other_researcher_case_http(self):
         owner_token = self._token_for_username("http_researcher")
         other_token = self._token_for_username("http_researcher_other")
@@ -1197,6 +1422,7 @@ class ApiHttpTests(unittest.TestCase):
             contribution_payload = contribution_response.json()
             self.assertEqual(contribution_payload["update"]["status"], "pending_upload")
             self.assertEqual(contribution_payload["stats"]["user_contributions"], 1)
+            self.assertTrue(contribution_payload.get("contribution_group_id"))
             self.assertIn("case_reference_id", contribution_payload["update"])
             self.assertNotIn("patient_id", contribution_payload["update"])
             self.assertNotIn("visit_date", contribution_payload["update"])
@@ -1225,6 +1451,158 @@ class ApiHttpTests(unittest.TestCase):
             )
             self.assertNotIn("patient_id", activity_payload["recent_contributions"][0])
             self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
+
+    def test_patient_reference_trajectory_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+            self.assertEqual(validation_response.status_code, 200, validation_response.text)
+
+        visit = self.site_store.get_visit("HTTP-001", "Initial")
+        self.assertIsNotNone(visit)
+        patient_reference_id = str(visit.get("patient_reference_id") or "")
+        self.assertTrue(patient_reference_id.startswith("ptref_"))
+
+        trajectory_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/{patient_reference_id}/trajectory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(trajectory_response.status_code, 200, trajectory_response.text)
+        trajectory_payload = trajectory_response.json()
+        self.assertEqual(trajectory_payload["patient_reference_id"], patient_reference_id)
+        self.assertEqual(len(trajectory_payload["trajectory"]), 1)
+        self.assertEqual(trajectory_payload["trajectory"][0]["visit_index"], 0)
+        self.assertEqual(trajectory_payload["trajectory"][0]["visit_label"], "Initial")
+        self.assertEqual(len(trajectory_payload["trajectory"][0]["validations"]), 1)
+
+    def test_case_contribution_can_fan_out_into_multiple_updates_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+        for index, architecture in enumerate(("vit", "swin", "convnext_tiny", "efficientnet_v2_s"), start=1):
+            self.cp.ensure_model_version(
+                {
+                    "version_id": self.app_module.make_id("model"),
+                    "version_name": f"global-{architecture}-http",
+                    "architecture": architecture,
+                    "stage": "global",
+                    "model_path": str(self.seed_model_path),
+                    "created_at": f"2026-03-11T01:{index:02d}:00+00:00",
+                    "ready": True,
+                    "is_current": False,
+                    "requires_medsam_crop": True,
+                }
+            )
+
+        selected_models = []
+        for architecture in ("vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"):
+            match = next(
+                item
+                for item in reversed(self.cp.list_model_versions())
+                if item.get("architecture") == architecture and item.get("ready", True)
+            )
+            selected_models.append(match["version_id"])
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            contribution_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/contribute",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "patient_id": "HTTP-001",
+                    "visit_date": "Initial",
+                    "execution_mode": "cpu",
+                    "model_version_ids": selected_models,
+                },
+            )
+            self.assertEqual(contribution_response.status_code, 200, contribution_response.text)
+            contribution_payload = contribution_response.json()
+            self.assertEqual(contribution_payload["update_count"], 5)
+            self.assertEqual(len(contribution_payload["updates"]), 5)
+            self.assertEqual(len(contribution_payload["model_versions"]), 5)
+            self.assertEqual(contribution_payload["failures"], [])
+            self.assertEqual(contribution_payload["stats"]["user_contributions"], 5)
+            self.assertTrue(contribution_payload.get("contribution_group_id"))
+            self.assertEqual(
+                len({item.get("contribution_group_id") for item in contribution_payload["updates"]}),
+                1,
+            )
+            self.assertEqual(len(self.cp.list_model_updates(site_id=self.site_id)), 5)
+
+            history_response = self.client.get(
+                f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(history_response.status_code, 200, history_response.text)
+            history_payload = history_response.json()
+            self.assertEqual(len(history_payload["contributions"]), 5)
+
+    def test_case_validation_and_ai_clinic_can_use_multi_model_analysis_ensemble_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token)
+        for index, architecture in enumerate(("vit", "swin", "convnext_tiny", "efficientnet_v2_s"), start=1):
+            self.cp.ensure_model_version(
+                {
+                    "version_id": self.app_module.make_id("model"),
+                    "version_name": f"global-{architecture}-http",
+                    "architecture": architecture,
+                    "stage": "global",
+                    "model_path": str(self.seed_model_path),
+                    "created_at": f"2026-03-11T00:{index:02d}:00+00:00",
+                    "ready": True,
+                    "is_current": False,
+                    "requires_medsam_crop": True,
+                    "decision_threshold": 0.5,
+                }
+            )
+
+        selected_models = []
+        for architecture in ("vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"):
+            match = next(
+                item
+                for item in reversed(self.cp.list_model_versions())
+                if item.get("architecture") == architecture and item.get("ready", True)
+            )
+            selected_models.append(match["version_id"])
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "patient_id": "HTTP-001",
+                    "visit_date": "Initial",
+                    "execution_mode": "cpu",
+                    "model_version_ids": selected_models,
+                },
+            )
+            self.assertEqual(validation_response.status_code, 200, validation_response.text)
+            validation_payload = validation_response.json()
+            self.assertEqual(validation_payload["model_version"]["ensemble_mode"], "weighted_average")
+            self.assertEqual(validation_payload["model_version"]["architecture"], "multi_model_ensemble")
+            self.assertEqual(validation_payload["model_version"]["crop_mode"], "automated")
+            self.assertTrue(validation_payload["model_version"]["version_id"].startswith("analysis_ensemble_"))
+
+            ai_clinic_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/ai-clinic",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "patient_id": "HTTP-001",
+                    "visit_date": "Initial",
+                    "execution_mode": "cpu",
+                    "model_version_ids": selected_models,
+                    "retrieval_backend": "hybrid",
+                },
+            )
+            self.assertEqual(ai_clinic_response.status_code, 200, ai_clinic_response.text)
+            ai_clinic_payload = ai_clinic_response.json()
+            self.assertTrue(ai_clinic_payload["model_version_id"].startswith("analysis_ensemble_"))
 
     def test_research_registry_opt_in_and_case_include_http(self):
         token = self._token_for_username("http_researcher")
@@ -1475,7 +1853,8 @@ class ApiHttpTests(unittest.TestCase):
                         "status": "approved",
                     }
                 )
-                self.assertTrue(Path(str(registered_update["central_artifact_path"])).exists())
+                self.assertTrue(str(registered_update.get("central_artifact_key") or "").startswith("model_updates/"))
+                self.assertTrue(self.cp.resolve_model_update_artifact_path(registered_update).exists())
                 delta_path.unlink()
 
             aggregation_response = self.client.post(
@@ -1554,6 +1933,196 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(current_delete_response.status_code, 400, current_delete_response.text)
 
+    def test_model_version_publish_registers_download_url_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+        self.app_module = reload_app_module(
+            Path(self.tempdir.name) / "publish_test.db",
+            control_plane_artifact_dir=self.control_plane_artifact_dir,
+            model_distribution_mode="download_url",
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+        project = self.cp.create_project("HTTP Publish Project", "test", "user_admin")
+        self.site_id = f"HTTP_{self.app_module.make_id('site')[-6:].upper()}"
+        self.cp.create_site(project["project_id"], self.site_id, "HTTP Test Site", "HTTP Hospital")
+        self.site_store = self.app_module.SiteStore(self.site_id)
+        from fastapi.testclient import TestClient
+
+        self.client = TestClient(self.app_module.create_app())
+        admin_token = self._login("admin", "admin123")
+        checkpoint_path = Path(self.tempdir.name) / "publishable_model.pth"
+        checkpoint_path.write_bytes(b"fake-model-checkpoint")
+        pending_version = self.cp.ensure_model_version(
+            {
+                "version_id": self.app_module.make_id("model"),
+                "version_name": "global-pending-publish",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(checkpoint_path),
+                "created_at": "2026-03-17T00:00:00+00:00",
+                "publish_required": True,
+                "ready": True,
+                "is_current": True,
+            }
+        )
+        self.assertEqual(pending_version["distribution_status"], "pending_upload")
+        self.assertFalse(pending_version["ready"])
+
+        response = self.client.post(
+            f"/api/admin/model-versions/{pending_version['version_id']}/publish",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "download_url": "https://example.com/global-pending-publish.pt",
+                "set_current": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["model_version"]
+        self.assertEqual(payload["distribution_status"], "published")
+        self.assertEqual(payload["download_url"], "https://example.com/global-pending-publish.pt")
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["is_current"])
+        self.assertEqual(payload["source_provider"], "http_download")
+
+    def test_model_update_publish_registers_download_url_http(self):
+        admin_token = self._login("admin", "admin123")
+        delta_path = Path(self.tempdir.name) / "publishable_delta.pth"
+        delta_path.write_bytes(b"fake-delta")
+        update = self.cp.register_model_update(
+            {
+                "update_id": self.app_module.make_id("update"),
+                "site_id": self.site_id,
+                "base_model_version_id": self.cp.current_global_model()["version_id"],
+                "architecture": "densenet121",
+                "upload_type": "weight delta",
+                "execution_device": "cpu",
+                "artifact_path": str(delta_path),
+                "n_cases": 1,
+                "created_at": "2026-03-17T00:00:00+00:00",
+                "status": "pending_review",
+            }
+        )
+        self.assertTrue(str(update.get("central_artifact_key") or "").startswith("model_updates/"))
+        self.assertEqual(update["artifact_distribution_status"], "local_only")
+
+        response = self.client.post(
+            f"/api/admin/model-updates/{update['update_id']}/publish",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"download_url": "https://example.com/delta/update.pth"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["update"]
+        self.assertEqual(payload["artifact_distribution_status"], "published")
+        self.assertEqual(payload["artifact_download_url"], "https://example.com/delta/update.pth")
+        self.assertEqual(payload["artifact_source_provider"], "http_download")
+        self.assertTrue(str(payload.get("central_artifact_key") or "").startswith("model_updates/"))
+
+    def test_model_version_auto_publish_uses_onedrive_metadata_http(self):
+        admin_token = self._login("admin", "admin123")
+        checkpoint_path = Path(self.tempdir.name) / "autopublish_model.pth"
+        checkpoint_path.write_bytes(b"auto-model-checkpoint")
+        pending_version = self.cp.ensure_model_version(
+            {
+                "version_id": self.app_module.make_id("model"),
+                "version_name": "global-auto-publish",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(checkpoint_path),
+                "created_at": "2026-03-17T00:00:00+00:00",
+                "publish_required": True,
+                "ready": True,
+                "is_current": False,
+            }
+        )
+
+        fake_publisher = Mock()
+        fake_publisher.publish_local_file.return_value = {
+            "download_url": "https://sharepoint.example/model/global-auto-publish",
+            "source_provider": "onedrive_sharepoint",
+            "distribution_status": "published",
+            "filename": checkpoint_path.name,
+            "size_bytes": checkpoint_path.stat().st_size,
+            "sha256": self.cp._sha256_file(checkpoint_path),
+            "onedrive_drive_id": "drive_auto",
+            "onedrive_item_id": "item_auto",
+            "onedrive_remote_path": "KERA/model_versions__global_auto_publish__autopublish_model.pth",
+            "onedrive_web_url": "https://sharepoint.example/model/global-auto-publish/view",
+            "onedrive_share_url": "https://sharepoint.example/model/global-auto-publish/share",
+            "onedrive_share_scope": "organization",
+            "onedrive_share_type": "view",
+            "onedrive_share_error": "",
+        }
+
+        with patch("kera_research.api.routes.admin.OneDrivePublisher", return_value=fake_publisher):
+            response = self.client.post(
+                f"/api/admin/model-versions/{pending_version['version_id']}/auto-publish",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"set_current": True},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["model_version"]
+        self.assertEqual(payload["distribution_status"], "published")
+        self.assertEqual(payload["download_url"], "https://sharepoint.example/model/global-auto-publish")
+        self.assertEqual(payload["source_provider"], "onedrive_sharepoint")
+        self.assertTrue(payload["ready"])
+        self.assertTrue(payload["is_current"])
+        self.assertEqual(payload["onedrive_item_id"], "item_auto")
+        self.assertEqual(payload["onedrive_drive_id"], "drive_auto")
+
+    def test_model_update_auto_publish_uses_onedrive_metadata_http(self):
+        admin_token = self._login("admin", "admin123")
+        delta_path = Path(self.tempdir.name) / "autopublish_delta.pth"
+        delta_path.write_bytes(b"auto-delta")
+        update = self.cp.register_model_update(
+            {
+                "update_id": self.app_module.make_id("update"),
+                "site_id": self.site_id,
+                "base_model_version_id": self.cp.current_global_model()["version_id"],
+                "architecture": "densenet121",
+                "upload_type": "weight delta",
+                "execution_device": "cpu",
+                "artifact_path": str(delta_path),
+                "n_cases": 1,
+                "created_at": "2026-03-17T00:00:00+00:00",
+                "status": "pending_review",
+            }
+        )
+
+        fake_publisher = Mock()
+        fake_publisher.publish_local_file.return_value = {
+            "download_url": "https://sharepoint.example/delta/update-auto",
+            "source_provider": "onedrive_sharepoint",
+            "distribution_status": "published",
+            "filename": "delta.pth",
+            "size_bytes": delta_path.stat().st_size,
+            "sha256": self.cp._sha256_file(delta_path),
+            "onedrive_drive_id": "drive_delta",
+            "onedrive_item_id": "item_delta",
+            "onedrive_remote_path": "KERA/model_updates__update_auto__delta.pth",
+            "onedrive_web_url": "https://sharepoint.example/delta/update-auto/view",
+            "onedrive_share_url": "https://sharepoint.example/delta/update-auto/share",
+            "onedrive_share_scope": "organization",
+            "onedrive_share_type": "view",
+            "onedrive_share_error": "",
+        }
+
+        with patch("kera_research.api.routes.admin.OneDrivePublisher", return_value=fake_publisher):
+            response = self.client.post(
+                f"/api/admin/model-updates/{update['update_id']}/auto-publish",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["update"]
+        self.assertEqual(payload["artifact_distribution_status"], "published")
+        self.assertEqual(payload["artifact_download_url"], "https://sharepoint.example/delta/update-auto")
+        self.assertEqual(payload["artifact_source_provider"], "onedrive_sharepoint")
+        self.assertEqual(payload["onedrive_item_id"], "item_delta")
+        self.assertEqual(payload["onedrive_drive_id"], "drive_delta")
+
     def test_access_request_review_http(self):
         requester_token = self._token_for_username("http_viewer")
         access_response = self.client.post(
@@ -1619,6 +2188,35 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(request_payload["requested_site_id"], "HIRA_EYE_001")
         self.assertEqual(request_payload["requested_site_label"], "Kim Eye Clinic")
         self.assertEqual(request_payload["requested_site_source"], "institution_directory")
+
+    def test_public_institution_search_matches_korean_and_english_region_aliases_http(self):
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "HIRA_EYE_003",
+                    "name": "제주대학교병원",
+                    "institution_type_code": "11",
+                    "institution_type_name": "Tertiary hospital",
+                    "address": "제주특별자치도 제주시 아란13길 15",
+                    "phone": "064-717-1114",
+                    "sido_code": "50",
+                    "sggu_code": "500",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_003"},
+                }
+            ]
+        )
+
+        korean_response = self.client.get("/api/public/institutions/search?q=제주")
+        self.assertEqual(korean_response.status_code, 200, korean_response.text)
+        self.assertEqual(len(korean_response.json()), 1)
+        self.assertEqual(korean_response.json()[0]["institution_id"], "HIRA_EYE_003")
+
+        english_response = self.client.get("/api/public/institutions/search?q=Jeju university hospital")
+        self.assertEqual(english_response.status_code, 200, english_response.text)
+        self.assertEqual(len(english_response.json()), 1)
+        self.assertEqual(english_response.json()[0]["institution_id"], "HIRA_EYE_003")
 
     def test_access_request_review_can_create_site_from_institution_request_http(self):
         self.cp.upsert_institutions(
@@ -1691,6 +2289,75 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(created_site)
         self.assertEqual(created_site["source_institution_id"], "HIRA_EYE_002")
         self.assertFalse(created_site["research_registry_enabled"])
+
+    def test_platform_admin_can_sync_institution_directory_http(self):
+        admin_token = self._login("admin", "admin123")
+        site_admin_token = self._token_for_username("http_site_admin")
+
+        with patch.object(
+            self.app_module.ControlPlaneStore,
+            "sync_hira_ophthalmology_directory",
+            return_value={
+                "source": "hira",
+                "pages_synced": 2,
+                "total_count": 128,
+                "institutions_synced": 128,
+            },
+        ) as sync_mock:
+            response = self.client.post(
+                "/api/admin/institutions/sync?page_size=75&max_pages=2",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["source"], "hira")
+            self.assertEqual(response.json()["pages_synced"], 2)
+            self.assertEqual(response.json()["institutions_synced"], 128)
+            sync_mock.assert_called_once_with(page_size=75, max_pages=2)
+
+            forbidden_response = self.client.post(
+                "/api/admin/institutions/sync",
+                headers={"Authorization": f"Bearer {site_admin_token}"},
+            )
+            self.assertEqual(forbidden_response.status_code, 403, forbidden_response.text)
+            self.assertEqual(sync_mock.call_count, 1)
+
+    def test_admin_workspace_can_read_institution_directory_sync_status_http(self):
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "HIRA_EYE_STATUS_001",
+                    "name": "Status Eye Clinic",
+                    "institution_type_code": "31",
+                    "institution_type_name": "Clinic",
+                    "address": "Seoul",
+                    "phone": "02-000-0000",
+                    "sido_code": "11",
+                    "sggu_code": "110",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_STATUS_001"},
+                    "synced_at": "2026-03-17T00:00:00+00:00",
+                }
+            ]
+        )
+
+        admin_token = self._login("admin", "admin123")
+        site_admin_token = self._token_for_username("http_site_admin")
+
+        admin_response = self.client.get(
+            "/api/admin/institutions/status",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(admin_response.status_code, 200, admin_response.text)
+        self.assertEqual(admin_response.json()["institutions_synced"], 1)
+        self.assertEqual(admin_response.json()["synced_at"], "2026-03-17T00:00:00+00:00")
+
+        site_admin_response = self.client.get(
+            "/api/admin/institutions/status",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(site_admin_response.status_code, 200, site_admin_response.text)
+        self.assertEqual(site_admin_response.json()["institutions_synced"], 1)
 
     def test_management_bulk_import_and_dashboard_http(self):
         admin_token = self._login("admin", "admin123")

@@ -26,6 +26,14 @@ export type PublicInstitutionRecord = {
   synced_at: string;
 };
 
+export type InstitutionDirectorySyncResponse = {
+  source: string;
+  pages_synced?: number | null;
+  total_count?: number | null;
+  institutions_synced: number;
+  synced_at?: string | null;
+};
+
 export type ProjectRecord = {
   project_id: string;
   name: string;
@@ -216,6 +224,29 @@ export type CaseSummaryRecord = {
   representative_view: string | null;
   created_at: string | null;
   latest_image_uploaded_at: string | null;
+};
+
+export type PatientListThumbnailRecord = {
+  case_id: string;
+  image_id: string;
+  view: string | null;
+  preview_url: string | null;
+};
+
+export type PatientListRowRecord = {
+  patient_id: string;
+  latest_case: CaseSummaryRecord;
+  case_count: number;
+  organism_summary: string;
+  representative_thumbnails: PatientListThumbnailRecord[];
+};
+
+export type PatientListPageResponse = {
+  items: PatientListRowRecord[];
+  page: number;
+  page_size: number;
+  total_count: number;
+  total_pages: number;
 };
 
 export type SiteSummary = {
@@ -453,12 +484,16 @@ export type ContributionStats = {
 export type CaseContributionResponse = {
   update: {
     update_id: string;
+    contribution_group_id?: string | null;
     site_id: string;
     base_model_version_id: string;
     architecture: string;
     upload_type: string;
     execution_device: string;
-    artifact_path: string;
+    artifact_path?: string | null;
+    central_artifact_key?: string | null;
+    artifact_download_url?: string | null;
+    artifact_distribution_status?: string | null;
     n_cases: number;
     contributed_by: string;
     case_reference_id?: string | null;
@@ -467,6 +502,29 @@ export type CaseContributionResponse = {
     training_summary: Record<string, unknown>;
     status: string;
   };
+  updates: Array<{
+    update_id: string;
+    contribution_group_id?: string | null;
+    site_id: string;
+    base_model_version_id: string;
+    architecture: string;
+    upload_type: string;
+    execution_device: string;
+    artifact_path?: string | null;
+    central_artifact_key?: string | null;
+    artifact_download_url?: string | null;
+    artifact_distribution_status?: string | null;
+    n_cases: number;
+    contributed_by: string;
+    case_reference_id?: string | null;
+    created_at: string;
+    training_input_policy: string;
+    training_summary: Record<string, unknown>;
+    status: string;
+    crop_mode?: string | null;
+  }>;
+  update_count: number;
+  contribution_group_id?: string | null;
   visit_status: string;
   execution_device: string;
   model_version: {
@@ -474,6 +532,19 @@ export type CaseContributionResponse = {
     version_name: string;
     architecture: string;
   };
+  model_versions: Array<{
+    version_id: string;
+    version_name: string;
+    architecture: string;
+    crop_mode?: string | null;
+    ensemble_mode?: string | null;
+  }>;
+  failures?: Array<{
+    model_version_id?: string | null;
+    version_name?: string | null;
+    architecture?: string | null;
+    error: string;
+  }>;
   stats: ContributionStats;
 };
 
@@ -560,6 +631,7 @@ export type CaseHistoryValidationRecord = {
 
 export type CaseHistoryContributionRecord = {
   contribution_id: string;
+  contribution_group_id?: string | null;
   created_at: string;
   user_id: string;
   case_reference_id?: string | null;
@@ -590,6 +662,7 @@ export type SiteActivityValidationRecord = {
 
 export type SiteActivityContributionRecord = {
   contribution_id: string;
+  contribution_group_id?: string | null;
   created_at: string;
   user_id: string;
   case_reference_id?: string | null;
@@ -657,6 +730,17 @@ export type AdminOverviewResponse = {
   pending_model_updates: number;
   current_model_version?: string | null;
   aggregation_count?: number;
+  federation_setup?: {
+    control_plane_split_enabled: boolean;
+    control_plane_backend: string;
+    data_plane_backend: string;
+    control_plane_artifact_dir: string;
+    uses_default_control_plane_artifact_dir: boolean;
+    model_distribution_mode: string;
+    onedrive_auto_publish_enabled?: boolean;
+    onedrive_root_path?: string;
+    onedrive_missing_settings?: string[];
+  };
 };
 
 export type ModelVersionRecord = {
@@ -667,6 +751,13 @@ export type ModelVersionRecord = {
   created_at?: string | null;
   ready?: boolean;
   is_current?: boolean;
+  publish_required?: boolean;
+  distribution_status?: string | null;
+  download_url?: string | null;
+  source_provider?: string | null;
+  filename?: string | null;
+  size_bytes?: number | null;
+  sha256?: string | null;
   notes?: string;
   notes_ko?: string;
   notes_en?: string;
@@ -686,16 +777,21 @@ export type ModelVersionRecord = {
 
 export type ModelUpdateRecord = {
   update_id: string;
+  contribution_group_id?: string | null;
   site_id?: string | null;
   base_model_version_id?: string | null;
   architecture?: string | null;
   upload_type?: string | null;
   execution_device?: string | null;
   artifact_path?: string | null;
+  central_artifact_key?: string | null;
   central_artifact_path?: string | null;
   central_artifact_name?: string | null;
   central_artifact_size_bytes?: number | null;
   central_artifact_sha256?: string | null;
+  artifact_download_url?: string | null;
+  artifact_distribution_status?: string | null;
+  artifact_source_provider?: string | null;
   artifact_storage?: string | null;
   n_cases?: number | null;
   contributed_by?: string | null;

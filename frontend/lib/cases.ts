@@ -9,6 +9,7 @@ import type {
   LesionPreviewRecord,
   LiveLesionPreviewJobResponse,
   OrganismRecord,
+  PatientListPageResponse,
   PatientRecord,
   ResearchRegistrySettingsResponse,
   RoiPreviewRecord,
@@ -23,8 +24,8 @@ export async function fetchSiteSummary(siteId: string, token: string) {
   return request<SiteSummary>(`/api/sites/${siteId}/summary`, {}, token);
 }
 
-export async function fetchSiteActivity(siteId: string, token: string) {
-  return request<SiteActivityResponse>(`/api/sites/${siteId}/activity`, {}, token);
+export async function fetchSiteActivity(siteId: string, token: string, signal?: AbortSignal) {
+  return request<SiteActivityResponse>(`/api/sites/${siteId}/activity`, { signal }, token);
 }
 
 export async function fetchPatients(siteId: string, token: string, options?: { mine?: boolean }) {
@@ -57,13 +58,40 @@ export async function createPatient(
   );
 }
 
-export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean }) {
+export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean; signal?: AbortSignal }) {
   const params = new URLSearchParams();
   if (options?.mine) {
     params.set("mine", "true");
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases${suffix}`, {}, token);
+  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases${suffix}`, { signal: options?.signal }, token);
+}
+
+export async function fetchPatientListPage(
+  siteId: string,
+  token: string,
+  options: {
+    mine?: boolean;
+    page?: number;
+    page_size?: number;
+    search?: string;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.mine) {
+    params.set("mine", "true");
+  }
+  if (typeof options.page === "number") {
+    params.set("page", String(options.page));
+  }
+  if (typeof options.page_size === "number") {
+    params.set("page_size", String(options.page_size));
+  }
+  if (options.search?.trim()) {
+    params.set("q", options.search.trim());
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<PatientListPageResponse>(`/api/sites/${siteId}/patients/list-board${suffix}`, {}, token);
 }
 
 export async function fetchVisits(siteId: string, token: string, patientId?: string) {
@@ -173,7 +201,13 @@ export async function deleteVisit(siteId: string, token: string, patientId: stri
   }>(`/api/sites/${siteId}/visits?${params.toString()}`, { method: "DELETE" }, token);
 }
 
-export async function fetchImages(siteId: string, token: string, patientId?: string, visitDate?: string) {
+export async function fetchImages(
+  siteId: string,
+  token: string,
+  patientId?: string,
+  visitDate?: string,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams();
   if (patientId) {
     params.set("patient_id", patientId);
@@ -182,7 +216,7 @@ export async function fetchImages(siteId: string, token: string, patientId?: str
     params.set("visit_date", visitDate);
   }
   const suffix = params.size ? `?${params.toString()}` : "";
-  return request<ImageRecord[]>(`/api/sites/${siteId}/images${suffix}`, {}, token);
+  return request<ImageRecord[]>(`/api/sites/${siteId}/images${suffix}`, { signal }, token);
 }
 
 export async function uploadImage(
@@ -289,6 +323,7 @@ export async function runCaseContribution(
     visit_date: string;
     execution_mode?: "auto" | "cpu" | "gpu";
     model_version_id?: string;
+    model_version_ids?: string[];
   },
 ) {
   return request<CaseContributionResponse>(
@@ -357,6 +392,14 @@ export async function fetchCaseLesionPreview(siteId: string, patientId: string, 
   return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview?${params.toString()}`, {}, token);
 }
 
+export async function fetchStoredCaseLesionPreview(siteId: string, patientId: string, visitDate: string, token: string) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+    visit_date: visitDate,
+  });
+  return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview/stored?${params.toString()}`, {}, token);
+}
+
 export async function startLiveLesionPreview(siteId: string, imageId: string, token: string) {
   return request<LiveLesionPreviewJobResponse>(
     `/api/sites/${siteId}/images/${imageId}/lesion-live-preview`,
@@ -406,10 +449,16 @@ export async function clearImageLesionBox(siteId: string, imageId: string, token
   );
 }
 
-export async function fetchCaseHistory(siteId: string, patientId: string, visitDate: string, token: string) {
+export async function fetchCaseHistory(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  token: string,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams({
     patient_id: patientId,
     visit_date: visitDate,
   });
-  return request<CaseHistoryResponse>(`/api/sites/${siteId}/cases/history?${params.toString()}`, {}, token);
+  return request<CaseHistoryResponse>(`/api/sites/${siteId}/cases/history?${params.toString()}`, { signal }, token);
 }

@@ -16,25 +16,95 @@ if TYPE_CHECKING:
     from kera_research.services.pipeline import ResearchWorkflowService
 
 
+def crop_metadata_dir(site_store: SiteStore, crop_mode: str) -> Path:
+    return ensure_dir(site_store.artifact_dir / f"{crop_mode}_preview_meta")
+
+
+def lesion_prompt_box_signature(lesion_prompt_box: dict[str, Any] | None) -> str | None:
+    if not isinstance(lesion_prompt_box, dict):
+        return None
+    normalized = {
+        key: round(float(lesion_prompt_box[key]), 6)
+        for key in ("x0", "y0", "x1", "y1")
+        if key in lesion_prompt_box
+    }
+    if len(normalized) != 4:
+        return None
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def load_cached_crop(
+    *,
+    metadata_path: Path,
+    mask_path: Path,
+    crop_path: Path,
+    mask_key: str = "medsam_mask_path",
+    crop_key: str = "roi_crop_path",
+    expected_backend: str | None = None,
+    expected_crop_style: str | None = None,
+    expected_prompt_signature: str | None = None,
+) -> dict[str, Any] | None:
+    if not (crop_path.exists() and mask_path.exists() and metadata_path.exists()):
+        return None
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    backend = str(metadata.get("backend") or "").strip() or "unknown"
+    crop_style = str(metadata.get("crop_style") or "").strip()
+    if backend == "unknown" or backend.startswith("fallback_after_medsam_error"):
+        return None
+    normalized_expected_backend = str(expected_backend or "").strip().lower()
+    if normalized_expected_backend and backend.startswith("external_") and normalized_expected_backend not in backend.lower():
+        return None
+    if expected_crop_style and crop_style != expected_crop_style:
+        return None
+    if expected_prompt_signature is not None and metadata.get("prompt_signature") != expected_prompt_signature:
+        return None
+    return {
+        mask_key: str(mask_path),
+        crop_key: str(crop_path),
+        "backend": backend,
+        "crop_style": crop_style or None,
+        "medsam_error": metadata.get("medsam_error"),
+        "prompt_signature": metadata.get("prompt_signature"),
+    }
+
+
+def load_stored_lesion_crop(
+    site_store: SiteStore,
+    record: dict[str, Any],
+    *,
+    lesion_prompt_box: dict[str, Any] | None = None,
+    expected_backend: str | None = None,
+) -> dict[str, Any] | None:
+    lesion_prompt_box = lesion_prompt_box if lesion_prompt_box is not None else record.get("lesion_prompt_box")
+    if not isinstance(lesion_prompt_box, dict):
+        return None
+    prompt_signature = lesion_prompt_box_signature(lesion_prompt_box)
+    artifact_name = Path(record["image_path"]).stem
+    mask_path = site_store.lesion_mask_dir / f"{artifact_name}_mask.png"
+    crop_path = site_store.lesion_crop_dir / f"{artifact_name}_crop.png"
+    metadata_path = crop_metadata_dir(site_store, "lesion") / f"{artifact_name}.json"
+    return load_cached_crop(
+        metadata_path=metadata_path,
+        mask_path=mask_path,
+        crop_path=crop_path,
+        mask_key="lesion_mask_path",
+        crop_key="lesion_crop_path",
+        expected_backend=expected_backend,
+        expected_crop_style=LESION_CROP_STYLE,
+        expected_prompt_signature=prompt_signature,
+    )
+
+
 class ResearchCaseSupport:
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
     def _crop_metadata_dir(self, site_store: SiteStore, crop_mode: str) -> Path:
-        return ensure_dir(site_store.artifact_dir / f"{crop_mode}_preview_meta")
+        return crop_metadata_dir(site_store, crop_mode)
 
     def _lesion_prompt_box_signature(self, lesion_prompt_box: dict[str, Any] | None) -> str | None:
-        if not isinstance(lesion_prompt_box, dict):
-            return None
-        normalized = {
-            key: round(float(lesion_prompt_box[key]), 6)
-            for key in ("x0", "y0", "x1", "y1")
-            if key in lesion_prompt_box
-        }
-        if len(normalized) != 4:
-            return None
-        payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+        return lesion_prompt_box_signature(lesion_prompt_box)
 
     def _load_cached_crop(
         self,
@@ -48,28 +118,16 @@ class ResearchCaseSupport:
         expected_crop_style: str | None = None,
         expected_prompt_signature: str | None = None,
     ) -> dict[str, Any] | None:
-        if not (crop_path.exists() and mask_path.exists() and metadata_path.exists()):
-            return None
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        backend = str(metadata.get("backend") or "").strip() or "unknown"
-        crop_style = str(metadata.get("crop_style") or "").strip()
-        if backend == "unknown" or backend.startswith("fallback_after_medsam_error"):
-            return None
-        normalized_expected_backend = str(expected_backend or "").strip().lower()
-        if normalized_expected_backend and backend.startswith("external_") and normalized_expected_backend not in backend.lower():
-            return None
-        if expected_crop_style and crop_style != expected_crop_style:
-            return None
-        if expected_prompt_signature is not None and metadata.get("prompt_signature") != expected_prompt_signature:
-            return None
-        return {
-            mask_key: str(mask_path),
-            crop_key: str(crop_path),
-            "backend": backend,
-            "crop_style": crop_style or None,
-            "medsam_error": metadata.get("medsam_error"),
-            "prompt_signature": metadata.get("prompt_signature"),
-        }
+        return load_cached_crop(
+            metadata_path=metadata_path,
+            mask_path=mask_path,
+            crop_path=crop_path,
+            mask_key=mask_key,
+            crop_key=crop_key,
+            expected_backend=expected_backend,
+            expected_crop_style=expected_crop_style,
+            expected_prompt_signature=expected_prompt_signature,
+        )
 
     def _save_crop_metadata(
         self,
@@ -179,6 +237,20 @@ class ResearchCaseSupport:
             "medsam_error": result.get("medsam_error"),
             "prompt_signature": prompt_signature,
         }
+
+    def _load_stored_lesion_crop(
+        self,
+        site_store: SiteStore,
+        record: dict[str, Any],
+        *,
+        lesion_prompt_box: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        return load_stored_lesion_crop(
+            site_store,
+            record,
+            lesion_prompt_box=lesion_prompt_box,
+            expected_backend=self.service.medsam_service.backend,
+        )
 
     def _prepare_records_for_model(
         self,

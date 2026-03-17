@@ -161,6 +161,8 @@ export function AdminWorkspace({
     setManagedSites,
     managedUsers,
     setManagedUsers,
+    institutionSyncBusy,
+    institutionSyncStatus,
     siteComparison,
     setSiteComparison,
     siteValidationRuns,
@@ -235,6 +237,8 @@ export function AdminWorkspace({
     setModelUpdateReviewNotes,
     selectedUpdatePreviewUrls,
     setSelectedUpdatePreviewUrls,
+    publishingModelVersionId,
+    publishingModelUpdateId,
     aggregationBusy,
     setAggregationBusy,
     storageSettingsBusy,
@@ -252,6 +256,7 @@ export function AdminWorkspace({
     currentModel,
     pendingReviewUpdates,
     approvedUpdates,
+    updateThresholdAlerts,
     selectedModelUpdate,
     selectedApprovalReport,
     selectedReport,
@@ -276,6 +281,7 @@ export function AdminWorkspace({
     toggleRocValidationSelection,
   } = state;
   const {
+    handleInstitutionSync,
     handleReview,
     handleInitialTraining,
     handleBenchmarkTraining,
@@ -286,8 +292,11 @@ export function AdminWorkspace({
     handleExportValidationReport,
     handleExportCrossValidationReport,
     handleAggregation,
+    handleAggregationAllReady,
     handleDeleteModelVersion,
+    handlePublishModelVersion,
     handleModelUpdateReview,
+    handlePublishModelUpdate,
     handleDownloadImportTemplate,
     handleBulkImport,
     handleCreateProject,
@@ -348,7 +357,8 @@ export function AdminWorkspace({
             <div className="grid gap-2">
             {sites.map((site) => (
               <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
-                <strong>{site.display_name}</strong><span>{site.hospital_name || site.site_id}</span>
+                <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{site.display_name}</strong>
+                <span className="min-w-0 break-words [overflow-wrap:anywhere]">{site.hospital_name || site.site_id}</span>
               </button>
             ))}
             </div>
@@ -399,6 +409,54 @@ export function AdminWorkspace({
               <MetricItem value={overview?.model_version_count ?? modelVersions.length} label={pick(locale, "Models", "紐⑤뜽")} />
               <MetricItem value={overview?.current_model_version ?? currentModel?.version_name ?? common.notAvailable} label={pick(locale, "Current model", "?꾩옱 紐⑤뜽")} />
             </MetricGrid>
+            {overview?.federation_setup ? (
+              <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
+                <div className="font-medium text-ink">
+                  {overview.federation_setup.control_plane_split_enabled && overview.federation_setup.control_plane_backend !== "sqlite"
+                    ? pick(locale, "Federation-ready control plane", "연합학습용 control plane")
+                    : pick(locale, "Single-node control plane", "단일 노드 control plane")}
+                </div>
+                <div>
+                  {pick(locale, "Control plane", "Control plane")}: {overview.federation_setup.control_plane_backend} /{" "}
+                  {overview.federation_setup.control_plane_split_enabled
+                    ? pick(locale, "split", "분리됨")
+                    : pick(locale, "shared with data plane", "data plane과 공유")}
+                </div>
+                <div>
+                  {pick(locale, "Artifacts", "아티팩트")}:{" "}
+                  {overview.federation_setup.uses_default_control_plane_artifact_dir
+                    ? pick(locale, "default local path", "기본 로컬 경로")
+                    : pick(locale, "custom path configured", "커스텀 경로 설정됨")}
+                </div>
+                <div>
+                  {pick(locale, "Model delivery", "모델 배포")}: {overview.federation_setup.model_distribution_mode}
+                </div>
+                <div>
+                  {pick(locale, "Auto publish", "자동 발행")}:{" "}
+                  {overview.federation_setup.onedrive_auto_publish_enabled
+                    ? pick(locale, "configured", "설정됨")
+                    : pick(locale, "not configured", "미설정")}
+                </div>
+              </div>
+            ) : null}
+            {updateThresholdAlerts.length > 0 ? (
+              <div className="grid gap-2 rounded-[18px] border border-amber-300/80 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+                <div className="font-medium">
+                  {pick(
+                    locale,
+                    `${updateThresholdAlerts.length} contribution threshold alert(s) are active.`,
+                    `${updateThresholdAlerts.length}개의 기여 임계치 알림이 활성화되어 있습니다.`
+                  )}
+                </div>
+                <div className="text-amber-900/80 dark:text-amber-100/80">
+                  {pick(
+                    locale,
+                    "Open Federation to review architecture lanes that have reached 10 or more contributed cases.",
+                    "Federation에서 10개 이상 기여 케이스가 쌓인 아키텍처 lane을 확인하세요."
+                  )}
+                </div>
+              </div>
+            ) : null}
             {summary ? (
               <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
                 <div className="font-medium text-ink">{selectedSiteId}</div>
@@ -519,10 +577,13 @@ export function AdminWorkspace({
               pendingRequests={pendingRequests}
               reviewDrafts={reviewDrafts}
               canManagePlatform={canManagePlatform}
+              institutionSyncBusy={institutionSyncBusy}
+              institutionSyncStatus={institutionSyncStatus}
               projects={projects}
               sites={sites}
               setReviewDrafts={setReviewDrafts}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
+              onInstitutionSync={() => void handleInstitutionSync()}
               onReview={(requestId, decision) => void handleReview(requestId, decision)}
             />
           ) : null}
@@ -580,12 +641,15 @@ export function AdminWorkspace({
               locale={locale}
               notAvailableLabel={common.notAvailable}
               canManagePlatform={canManagePlatform}
+              autoPublishEnabled={Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled)}
               modelVersions={modelVersions}
               currentModel={currentModel}
               modelUpdates={modelUpdates}
               selectedModelUpdate={selectedModelUpdate}
               selectedApprovalReport={selectedApprovalReport}
               selectedUpdatePreviewUrls={selectedUpdatePreviewUrls}
+              publishingModelVersionId={publishingModelVersionId}
+              publishingModelUpdateId={publishingModelUpdateId}
               modelUpdateReviewNotes={modelUpdateReviewNotes}
               setSelectedModelUpdateId={setSelectedModelUpdateId}
               setModelUpdateReviewNotes={setModelUpdateReviewNotes}
@@ -595,7 +659,9 @@ export function AdminWorkspace({
               formatQualityRecommendation={(recommendation) => formatQualityRecommendation(locale, recommendation)}
               translateQualityFlag={(flag) => translateQualityFlag(locale, flag)}
               onDeleteModelVersion={(version) => void handleDeleteModelVersion(version)}
+              onPublishModelVersion={(version) => void handlePublishModelVersion(version)}
               onModelUpdateReview={(decision) => void handleModelUpdateReview(decision)}
+              onPublishModelUpdate={() => void handlePublishModelUpdate()}
             />
           ) : null}
           {section === "management" ? (
@@ -640,12 +706,14 @@ export function AdminWorkspace({
               locale={locale}
               notAvailableLabel={common.notAvailable}
               approvedUpdates={approvedUpdates}
+              updateThresholdAlerts={updateThresholdAlerts}
               aggregations={aggregations}
               newVersionName={newVersionName}
               aggregationBusy={aggregationBusy}
               setNewVersionName={setNewVersionName}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
-              onAggregation={() => void handleAggregation()}
+              onAggregation={(updateIds) => void handleAggregation(updateIds)}
+              onAggregationAllReady={() => void handleAggregationAllReady()}
             />
           ) : null}
         </div>

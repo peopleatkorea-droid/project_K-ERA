@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import shutil
 import threading
+import requests
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, unquote
 
 import bcrypt
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -21,6 +25,8 @@ from kera_research.config import (
     CONTROL_PLANE_REPORT_DIR,
     DEFAULT_USERS,
     HIRA_API_KEY,
+    MODEL_DISTRIBUTION_MODE,
+    PATIENT_REFERENCE_SALT,
     SITE_ROOT_DIR,
     ensure_base_directories,
 )
@@ -42,14 +48,86 @@ from kera_research.db import (
     projects,
     sites,
     users,
+    validation_cases,
     validation_runs,
 )
-from kera_research.domain import CULTURE_SPECIES, make_case_reference_id, make_id, utc_now
+from kera_research.domain import (
+    CULTURE_SPECIES,
+    make_case_reference_id,
+    make_id,
+    make_patient_reference_id,
+    utc_now,
+    visit_index_from_label,
+    visit_label_from_index,
+)
 from kera_research.services.institution_directory import HiraApiError, HiraInstitutionDirectoryClient
+from kera_research.services.onedrive_publisher import OneDrivePublisher
 from kera_research.storage import ensure_dir, read_json, write_json
 
 GOOGLE_AUTH_SENTINEL = "__google__"
 APP_SETTING_INSTANCE_STORAGE_ROOT = "instance_storage_root"
+APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC = "institution_directory_last_sync"
+
+
+def _safe_artifact_name(value: str, fallback: str) -> str:
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(value or "").strip())
+    collapsed = normalized.strip("._")
+    return collapsed or fallback
+
+
+def _infer_remote_source_provider(download_url: str) -> str:
+    normalized = str(download_url or "").strip().lower()
+    if "sharepoint.com" in normalized or "onedrive" in normalized:
+        return "onedrive_sharepoint"
+    if normalized:
+        return "http_download"
+    return "local"
+INSTITUTION_SEARCH_ALIASES: dict[str, set[str]] = {
+    "seoul": {"seoul", "서울"},
+    "서울": {"seoul", "서울"},
+    "busan": {"busan", "부산"},
+    "부산": {"busan", "부산"},
+    "daegu": {"daegu", "대구"},
+    "대구": {"daegu", "대구"},
+    "incheon": {"incheon", "인천"},
+    "인천": {"incheon", "인천"},
+    "gwangju": {"gwangju", "광주"},
+    "광주": {"gwangju", "광주"},
+    "daejeon": {"daejeon", "대전"},
+    "대전": {"daejeon", "대전"},
+    "ulsan": {"ulsan", "울산"},
+    "울산": {"ulsan", "울산"},
+    "sejong": {"sejong", "세종"},
+    "세종": {"sejong", "세종"},
+    "gyeonggi": {"gyeonggi", "경기", "경기도"},
+    "경기": {"gyeonggi", "경기", "경기도"},
+    "gangwon": {"gangwon", "강원", "강원도"},
+    "강원": {"gangwon", "강원", "강원도"},
+    "chungbuk": {"chungbuk", "충북", "충청북도"},
+    "충북": {"chungbuk", "충북", "충청북도"},
+    "chungnam": {"chungnam", "충남", "충청남도"},
+    "충남": {"chungnam", "충남", "충청남도"},
+    "jeonbuk": {"jeonbuk", "전북", "전라북도"},
+    "전북": {"jeonbuk", "전북", "전라북도"},
+    "jeonnam": {"jeonnam", "전남", "전라남도"},
+    "전남": {"jeonnam", "전남", "전라남도"},
+    "gyeongbuk": {"gyeongbuk", "경북", "경상북도"},
+    "경북": {"gyeongbuk", "경북", "경상북도"},
+    "gyeongnam": {"gyeongnam", "경남", "경상남도"},
+    "경남": {"gyeongnam", "경남", "경상남도"},
+    "jeju": {"jeju", "제주", "제주도", "제주특별자치도"},
+    "제주": {"jeju", "제주", "제주도", "제주특별자치도"},
+    "hospital": {"hospital", "병원"},
+    "병원": {"hospital", "병원"},
+    "university": {"university", "대학교", "대학"},
+    "대학교": {"university", "대학교", "대학"},
+    "대학": {"university", "대학교", "대학"},
+    "clinic": {"clinic", "클리닉", "의원", "안과"},
+    "클리닉": {"clinic", "클리닉", "의원", "안과"},
+    "의원": {"clinic", "클리닉", "의원", "안과"},
+    "eye": {"eye", "안과"},
+    "안과": {"eye", "안과"},
+}
 
 
 def _hash_password(plain: str) -> str:
@@ -78,6 +156,19 @@ def _payload_record(row: Any, payload_key: str, extra_keys: list[str]) -> dict[s
         if key not in payload and mapping.get(key) is not None:
             payload[key] = mapping.get(key)
     return payload
+
+
+def _tokenize_institution_search(value: str) -> list[str]:
+    return [token for token in re.split(r"[^0-9a-zA-Z가-힣]+", str(value or "").strip().lower()) if token]
+
+
+def _expand_institution_search_terms(value: str) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for token in _tokenize_institution_search(value):
+        aliases = sorted(INSTITUTION_SEARCH_ALIASES.get(token, {token}))
+        if aliases not in groups:
+            groups.append(aliases)
+    return groups
 
 
 def _normalize_registry_consents(value: Any) -> dict[str, dict[str, Any]]:
@@ -461,6 +552,47 @@ class _ControlPlaneRegistryOps:
     def __init__(self, store: "ControlPlaneStore") -> None:
         self.store = store
 
+    def _infer_model_source_provider(self, metadata: dict[str, Any]) -> str:
+        explicit = str(metadata.get("source_provider") or "").strip()
+        if explicit:
+            return explicit
+        download_url = str(metadata.get("download_url") or "").strip().lower()
+        if "sharepoint.com" in download_url or "onedrive" in download_url:
+            return "onedrive_sharepoint"
+        if download_url:
+            return "http_download"
+        if str(metadata.get("model_path") or "").strip():
+            return "local"
+        return "unknown"
+
+    def _normalize_model_metadata(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(model_metadata)
+        local_model_path = str(merged.get("model_path") or "").strip()
+        download_url = str(merged.get("download_url") or "").strip()
+        publish_required = bool(merged.get("publish_required", False))
+
+        if local_model_path:
+            local_path = Path(local_model_path).expanduser()
+            if local_path.exists():
+                merged.setdefault("filename", local_path.name)
+                merged.setdefault("size_bytes", int(local_path.stat().st_size))
+                merged.setdefault("sha256", self.store._sha256_file(local_path))
+
+        merged.setdefault("model_name", "keratitis_cls")
+        merged["source_provider"] = self._infer_model_source_provider(merged)
+
+        if publish_required and MODEL_DISTRIBUTION_MODE == "download_url" and not download_url:
+            merged["distribution_status"] = "pending_upload"
+            merged["ready"] = False
+            merged["is_current"] = False
+        elif download_url:
+            merged["distribution_status"] = "published"
+            merged["ready"] = bool(merged.get("ready", True))
+        else:
+            merged.setdefault("distribution_status", "local_only")
+
+        return merged
+
     def list_model_versions(self) -> list[dict[str, Any]]:
         return self.store.list_model_versions()
 
@@ -473,7 +605,7 @@ class _ControlPlaneRegistryOps:
         conn.execute(update(model_versions).where(model_versions.c.version_id == version_id).values(is_current=is_current, payload_json=payload))
 
     def ensure_model_version(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(model_metadata)
+        merged = self._normalize_model_metadata(model_metadata)
         merged.setdefault("ready", True)
         merged.setdefault("is_current", False)
         with _MODEL_VERSION_LOCK, CONTROL_PLANE_ENGINE.begin() as conn:
@@ -490,7 +622,7 @@ class _ControlPlaneRegistryOps:
                     "payload_json",
                     ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"],
                 )
-                merged = {**existing_payload, **merged}
+                merged = self._normalize_model_metadata({**existing_payload, **merged})
                 conn.execute(
                     update(model_versions)
                     .where(model_versions.c.version_id == merged["version_id"])
@@ -568,9 +700,16 @@ class _ControlPlaneRegistryOps:
                 "All nodes in a federation must share the same KERA_CASE_REFERENCE_SALT "
                 "environment variable to ensure consistent case reference IDs."
             )
-        record = self.store._normalize_case_reference(update_metadata)
+        record = self.store.normalize_model_update_artifact_metadata(
+            self.store._normalize_case_reference(update_metadata)
+        )
         artifact_path = str(record.get("artifact_path") or "").strip()
-        if artifact_path and not str(record.get("central_artifact_path") or "").strip():
+        needs_artifact_copy = artifact_path and (
+            not str(record.get("central_artifact_name") or "").strip()
+            or not str(record.get("central_artifact_sha256") or "").strip()
+            or not int(record.get("central_artifact_size_bytes") or 0)
+        )
+        if needs_artifact_copy:
             try:
                 record.update(
                     self.store.store_model_update_artifact(
@@ -581,6 +720,8 @@ class _ControlPlaneRegistryOps:
                 )
             except FileNotFoundError:
                 pass
+        record.pop("artifact_path", None)
+        record.pop("central_artifact_path", None)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(select(model_updates).where(model_updates.c.update_id == record["update_id"])).first()
             values = {
@@ -605,15 +746,21 @@ class _ControlPlaneRegistryOps:
             row = conn.execute(select(model_updates).where(model_updates.c.update_id == normalized_update_id)).first()
         if row is None:
             return None
-        return self.store._normalize_case_reference(
-            _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+        return self.store.normalize_model_update_artifact_metadata(
+            self.store._normalize_case_reference(
+                _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+            )
         )
 
     def update_model_update(self, update_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         current = self.get_model_update(update_id)
         if current is None:
             raise ValueError(f"Unknown update_id: {update_id}")
-        merged = self.store._normalize_case_reference({**current, **updates})
+        merged = self.store.normalize_model_update_artifact_metadata(
+            self.store._normalize_case_reference({**current, **updates})
+        )
+        merged.pop("artifact_path", None)
+        merged.pop("central_artifact_path", None)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 update(model_updates)
@@ -665,8 +812,10 @@ class _ControlPlaneRegistryOps:
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).all()
         return [
-            self.store._normalize_case_reference(
-                _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+            self.store.normalize_model_update_artifact_metadata(
+                self.store._normalize_case_reference(
+                    _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
+                )
             )
             for row in rows
         ]
@@ -763,10 +912,12 @@ class _ControlPlaneRegistryOps:
         new_version = {
             "version_id": make_id("model"),
             "version_name": new_version_name,
+            "model_name": "keratitis_cls",
             "architecture": architecture,
             "stage": "global",
             "base_version_id": base_model_version_id,
             "model_path": new_model_path,
+            "filename": Path(new_model_path).name if str(new_model_path).strip() else "",
             "created_at": utc_now(),
             "aggregation_id": agg_id,
             "requires_medsam_crop": bool(requires_medsam_crop),
@@ -774,7 +925,8 @@ class _ControlPlaneRegistryOps:
             "decision_threshold": float(decision_threshold) if decision_threshold is not None else 0.5,
             "threshold_selection_metric": threshold_selection_metric or "inherited_from_base_model",
             "threshold_selection_metrics": threshold_selection_metrics,
-            "is_current": True,
+            "publish_required": MODEL_DISTRIBUTION_MODE == "download_url",
+            "is_current": MODEL_DISTRIBUTION_MODE != "download_url",
             "ready": True,
             "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
             "notes_ko": f"{len(site_weights)}개 사이트, 총 {sum(site_weights.values())}개 케이스의 Federated aggregation 결과입니다.",
@@ -1020,6 +1172,21 @@ class _ControlPlaneWorkspaceOps:
     ) -> dict[str, Any]:
         return self.store.save_validation_run(summary, case_predictions)
 
+    def list_validation_cases(
+        self,
+        *,
+        validation_id: str | None = None,
+        site_id: str | None = None,
+        patient_reference_id: str | None = None,
+        case_reference_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.store.list_validation_cases(
+            validation_id=validation_id,
+            site_id=site_id,
+            patient_reference_id=patient_reference_id,
+            case_reference_id=case_reference_id,
+        )
+
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
         return self.store.load_case_predictions(validation_id)
 
@@ -1101,6 +1268,39 @@ class ControlPlaneStore:
                 conn.execute(app_settings.insert().values(**record))
         return normalized_value
 
+    def institution_directory_sync_status(self) -> dict[str, Any]:
+        raw = self.get_app_setting(APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC)
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                return {
+                    "source": str(payload.get("source") or "hira"),
+                    "pages_synced": int(payload["pages_synced"]) if payload.get("pages_synced") is not None else None,
+                    "total_count": int(payload["total_count"]) if payload.get("total_count") is not None else None,
+                    "institutions_synced": int(payload.get("institutions_synced") or 0),
+                    "synced_at": str(payload.get("synced_at") or "").strip() or None,
+                }
+
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            count_row = conn.execute(
+                select(
+                    func.count(institution_directory.c.institution_id),
+                    func.max(institution_directory.c.synced_at),
+                )
+            ).first()
+        institutions_synced = int(count_row[0] or 0) if count_row is not None else 0
+        synced_at = str(count_row[1] or "").strip() if count_row is not None else ""
+        return {
+            "source": "hira",
+            "pages_synced": None,
+            "total_count": institutions_synced or None,
+            "institutions_synced": institutions_synced,
+            "synced_at": synced_at or None,
+        }
+
     def instance_storage_root(self) -> str:
         configured = self.get_app_setting(APP_SETTING_INSTANCE_STORAGE_ROOT)
         if configured:
@@ -1129,13 +1329,23 @@ class ControlPlaneStore:
     def case_reference_id(self, site_id: str, patient_id: str, visit_date: str) -> str:
         return make_case_reference_id(site_id, patient_id, visit_date, CASE_REFERENCE_SALT)
 
+    def patient_reference_id(self, site_id: str, patient_id: str) -> str:
+        return make_patient_reference_id(site_id, patient_id, PATIENT_REFERENCE_SALT)
+
     def _normalize_case_reference(self, record: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(record)
         site_id = str(normalized.get("site_id") or "").strip()
         patient_id = str(normalized.get("patient_id") or "").strip()
         visit_date = str(normalized.get("visit_date") or "").strip()
+        patient_reference_id = str(normalized.get("patient_reference_id") or "").strip()
+        visit_index = normalized.get("visit_index")
         case_reference_id = str(normalized.get("case_reference_id") or "").strip()
 
+        if not patient_reference_id and site_id and patient_id:
+            patient_reference_id = self.patient_reference_id(site_id, patient_id)
+            normalized["patient_reference_id"] = patient_reference_id
+        if visit_index is None and visit_date:
+            normalized["visit_index"] = visit_index_from_label(visit_date)
         if not case_reference_id and site_id and patient_id and visit_date:
             case_reference_id = self.case_reference_id(site_id, patient_id, visit_date)
             normalized["case_reference_id"] = case_reference_id
@@ -1149,15 +1359,25 @@ class ControlPlaneStore:
             report_site_id = str(report.get("site_id") or site_id).strip()
             report_patient_id = str(report.get("patient_id") or patient_id).strip()
             report_visit_date = str(report.get("visit_date") or visit_date).strip()
+            report_patient_reference_id = str(report.get("patient_reference_id") or patient_reference_id).strip()
             report_case_reference_id = str(report.get("case_reference_id") or case_reference_id).strip()
+            report_visit_index = report.get("visit_index", normalized.get("visit_index"))
+            if not report_patient_reference_id and report_site_id and report_patient_id:
+                report_patient_reference_id = self.patient_reference_id(report_site_id, report_patient_id)
             if not report_case_reference_id and report_site_id and report_patient_id and report_visit_date:
                 report_case_reference_id = self.case_reference_id(
                     report_site_id,
                     report_patient_id,
                     report_visit_date,
                 )
+            if report_visit_index is None and report_visit_date:
+                report_visit_index = visit_index_from_label(report_visit_date)
+            if report_patient_reference_id:
+                report["patient_reference_id"] = report_patient_reference_id
             if report_case_reference_id:
                 report["case_reference_id"] = report_case_reference_id
+            if report_visit_index is not None:
+                report["visit_index"] = int(report_visit_index)
             report.pop("patient_id", None)
             report.pop("visit_date", None)
             normalized["approval_report"] = report
@@ -1168,12 +1388,218 @@ class ControlPlaneStore:
         normalized = dict(record)
         patient_id = str(normalized.get("patient_id") or "").strip()
         visit_date = str(normalized.get("visit_date") or "").strip()
+        patient_reference_id = str(normalized.get("patient_reference_id") or "").strip()
+        visit_index = normalized.get("visit_index")
         case_reference_id = str(normalized.get("case_reference_id") or "").strip()
+        if not patient_reference_id and site_id and patient_id:
+            normalized["patient_reference_id"] = self.patient_reference_id(site_id, patient_id)
+        if visit_index is None and visit_date:
+            normalized["visit_index"] = visit_index_from_label(visit_date)
         if not case_reference_id and site_id and patient_id and visit_date:
             normalized["case_reference_id"] = self.case_reference_id(site_id, patient_id, visit_date)
         normalized.pop("patient_id", None)
         normalized.pop("visit_date", None)
         return normalized
+
+    def model_update_artifact_key(self, *, update_id: str, artifact_kind: str = "delta", filename: str = "") -> str:
+        safe_update_id = _safe_artifact_name(update_id, "update")
+        suffix = Path(filename).suffix or ".bin"
+        safe_filename = _safe_artifact_name(filename, f"{artifact_kind}{suffix}")
+        return str((Path("model_updates") / safe_update_id / safe_filename).as_posix())
+
+    def model_update_artifact_path_for_key(self, artifact_key: str) -> Path:
+        normalized_key = str(artifact_key or "").replace("\\", "/").strip().lstrip("/")
+        if not normalized_key:
+            raise ValueError("Artifact key is required.")
+        artifact_root = self.artifact_root.resolve()
+        candidate = (artifact_root / Path(normalized_key)).resolve()
+        try:
+            candidate.relative_to(artifact_root)
+        except ValueError as exc:
+            raise ValueError("Artifact key resolves outside the control plane artifact directory.") from exc
+        return candidate
+
+    def normalize_model_update_artifact_metadata(self, record: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(record)
+        update_id = str(normalized.get("update_id") or "").strip()
+        artifact_kind = str(normalized.get("artifact_kind") or "").strip() or (
+            "delta" if str(normalized.get("upload_type") or "").strip().lower() == "weight delta" else "model"
+        )
+
+        central_artifact_key = str(normalized.get("central_artifact_key") or "").strip().replace("\\", "/")
+        if not central_artifact_key:
+            central_artifact_path = str(normalized.get("central_artifact_path") or "").strip()
+            if central_artifact_path:
+                try:
+                    resolved_path = Path(central_artifact_path).expanduser().resolve()
+                    resolved_path.relative_to(self.artifact_root.resolve())
+                    central_artifact_key = str(resolved_path.relative_to(self.artifact_root.resolve()).as_posix())
+                except (OSError, ValueError):
+                    central_artifact_key = ""
+            if not central_artifact_key and update_id:
+                filename = str(normalized.get("central_artifact_name") or "").strip()
+                if not filename:
+                    download_name = unquote(Path(urlsplit(str(normalized.get("artifact_download_url") or "")).path).name)
+                    filename = download_name or f"{artifact_kind}.bin"
+                central_artifact_key = self.model_update_artifact_key(
+                    update_id=update_id,
+                    artifact_kind=artifact_kind,
+                    filename=filename,
+                )
+        if central_artifact_key:
+            normalized["central_artifact_key"] = central_artifact_key
+
+        download_url = str(normalized.get("artifact_download_url") or "").strip()
+        if download_url:
+            normalized["artifact_source_provider"] = (
+                str(normalized.get("artifact_source_provider") or "").strip()
+                or _infer_remote_source_provider(download_url)
+            )
+            normalized["artifact_distribution_status"] = str(
+                normalized.get("artifact_distribution_status") or "published"
+            ).strip() or "published"
+        else:
+            normalized.setdefault("artifact_source_provider", "local")
+            normalized.setdefault("artifact_distribution_status", "local_only")
+
+        normalized.pop("central_artifact_path", None)
+        return normalized
+
+    def resolve_model_update_artifact_path(
+        self,
+        record: dict[str, Any],
+        *,
+        allow_download: bool = True,
+    ) -> Path:
+        normalized = self.normalize_model_update_artifact_metadata(record)
+        expected_sha = str(normalized.get("central_artifact_sha256") or "").strip().lower()
+        expected_size = int(normalized.get("central_artifact_size_bytes") or 0)
+        central_artifact_key = str(normalized.get("central_artifact_key") or "").strip()
+        if central_artifact_key:
+            target = self.model_update_artifact_path_for_key(central_artifact_key)
+            if target.exists():
+                if expected_sha and self._sha256_file(target).lower() != expected_sha:
+                    target.unlink(missing_ok=True)
+                elif expected_size and int(target.stat().st_size) != expected_size:
+                    target.unlink(missing_ok=True)
+                else:
+                    return target
+
+        legacy_central_path = str(record.get("central_artifact_path") or "").strip()
+        if legacy_central_path:
+            legacy_candidate = Path(legacy_central_path).expanduser()
+            if legacy_candidate.exists():
+                return legacy_candidate.resolve()
+
+        local_artifact_path = str(record.get("artifact_path") or "").strip()
+        if local_artifact_path:
+            local_candidate = Path(local_artifact_path).expanduser()
+            if local_candidate.exists():
+                return local_candidate.resolve()
+
+        download_url = ""
+        artifact_source_provider = str(normalized.get("artifact_source_provider") or "").strip().lower()
+        has_onedrive_locator = bool(
+            str(normalized.get("onedrive_item_id") or "").strip()
+            or str(normalized.get("onedrive_remote_path") or "").strip()
+        )
+        if artifact_source_provider == "onedrive_sharepoint" or has_onedrive_locator:
+            try:
+                download_url = OneDrivePublisher().resolve_download_url(normalized)
+            except ValueError:
+                download_url = ""
+        if not download_url:
+            download_url = str(normalized.get("artifact_download_url") or "").strip()
+        if not allow_download or not download_url:
+            raise FileNotFoundError("Model update artifact is unavailable locally and has no download_url.")
+
+        target = self.model_update_artifact_path_for_key(
+            central_artifact_key
+            or self.model_update_artifact_key(
+                update_id=str(normalized.get("update_id") or "update"),
+                artifact_kind=str(normalized.get("artifact_kind") or "delta"),
+                filename=str(normalized.get("central_artifact_name") or "").strip()
+                or unquote(Path(urlsplit(download_url).path).name)
+                or "delta.bin",
+            )
+        )
+        ensure_dir(target.parent)
+        temp_path = target.with_suffix(target.suffix + ".part")
+        if temp_path.exists():
+            temp_path.unlink()
+
+        with requests.get(download_url, stream=True, timeout=300) as response:
+            response.raise_for_status()
+            with temp_path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    handle.write(chunk)
+
+        if expected_sha and self._sha256_file(temp_path).lower() != expected_sha:
+            temp_path.unlink(missing_ok=True)
+            raise ValueError("Downloaded model update artifact SHA256 mismatch.")
+        if expected_size and int(temp_path.stat().st_size) != expected_size:
+            temp_path.unlink(missing_ok=True)
+            raise ValueError("Downloaded model update artifact size mismatch.")
+
+        shutil.move(str(temp_path), str(target))
+        return target.resolve()
+
+    def publish_model_update_artifact(
+        self,
+        update_id: str,
+        *,
+        download_url: str,
+        artifact_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        current = self.registry.get_model_update(update_id)
+        if current is None:
+            raise ValueError(f"Unknown update_id: {update_id}")
+        normalized_download_url = str(download_url or "").strip()
+        if not normalized_download_url:
+            raise ValueError("download_url is required.")
+
+        normalized = self.normalize_model_update_artifact_metadata(current)
+        try:
+            artifact_path = self.resolve_model_update_artifact_path(current, allow_download=False)
+        except FileNotFoundError:
+            artifact_path = None
+
+        updates: dict[str, Any] = {
+            "artifact_download_url": normalized_download_url,
+            "artifact_source_provider": _infer_remote_source_provider(normalized_download_url),
+            "artifact_distribution_status": "published",
+            "central_artifact_key": normalized.get("central_artifact_key"),
+            "central_artifact_path": None,
+        }
+        extra_metadata = dict(artifact_metadata or {})
+        if extra_metadata:
+            source_provider = str(extra_metadata.get("source_provider") or "").strip()
+            if source_provider:
+                updates["artifact_source_provider"] = source_provider
+            distribution_status = str(extra_metadata.get("distribution_status") or "").strip()
+            if distribution_status:
+                updates["artifact_distribution_status"] = distribution_status
+            metadata_key_map = {
+                "onedrive_drive_id": "onedrive_drive_id",
+                "onedrive_item_id": "onedrive_item_id",
+                "onedrive_remote_path": "onedrive_remote_path",
+                "onedrive_web_url": "onedrive_web_url",
+                "onedrive_share_url": "onedrive_share_url",
+                "onedrive_share_scope": "onedrive_share_scope",
+                "onedrive_share_type": "onedrive_share_type",
+                "onedrive_share_error": "onedrive_share_error",
+            }
+            for source_key, target_key in metadata_key_map.items():
+                source_value = extra_metadata.get(source_key)
+                if source_value not in (None, ""):
+                    updates[target_key] = source_value
+        if artifact_path is not None and artifact_path.exists():
+            updates["central_artifact_name"] = artifact_path.name
+            updates["central_artifact_size_bytes"] = int(artifact_path.stat().st_size)
+            updates["central_artifact_sha256"] = self._sha256_file(artifact_path)
+        return self.registry.update_model_update(update_id, updates)
 
     def store_model_update_artifact(
         self,
@@ -1187,18 +1613,26 @@ class ControlPlaneStore:
             raise FileNotFoundError(f"Model update artifact does not exist: {source}")
 
         suffix = source.suffix or ".bin"
-        target_dir = ensure_dir(self.artifact_root / "model_updates" / update_id)
-        target = target_dir / f"{artifact_kind}{suffix}"
+        filename = f"{artifact_kind}{suffix}"
+        artifact_key = self.model_update_artifact_key(
+            update_id=update_id,
+            artifact_kind=artifact_kind,
+            filename=filename,
+        )
+        target = self.model_update_artifact_path_for_key(artifact_key)
+        target_dir = ensure_dir(target.parent)
         if source != target:
             shutil.copy2(source, target)
 
         return {
-            "central_artifact_path": str(target),
+            "central_artifact_key": artifact_key,
             "central_artifact_name": target.name,
             "central_artifact_size_bytes": int(target.stat().st_size),
             "central_artifact_sha256": self._sha256_file(target),
             "artifact_storage": "control_plane_filesystem",
             "artifact_kind": artifact_kind,
+            "artifact_source_provider": "local",
+            "artifact_distribution_status": "local_only",
         }
 
     def _seed_defaults(self) -> None:
@@ -1412,15 +1846,30 @@ class ControlPlaneStore:
         if normalized_sggu:
             query = query.where(institution_directory.c.sggu_code == normalized_sggu)
         if normalized_search:
-            like_pattern = f"%{normalized_search}%"
-            id_pattern = f"%{search.strip()}%"
-            query = query.where(
-                or_(
-                    func.lower(institution_directory.c.name).like(like_pattern),
-                    func.lower(institution_directory.c.address).like(like_pattern),
-                    institution_directory.c.institution_id.like(id_pattern),
+            searchable_columns = [
+                func.lower(institution_directory.c.name),
+                func.lower(institution_directory.c.address),
+                func.lower(institution_directory.c.institution_id),
+            ]
+            grouped_terms = _expand_institution_search_terms(search)
+            if grouped_terms:
+                token_clauses = []
+                for aliases in grouped_terms:
+                    alias_clauses = []
+                    for alias in aliases:
+                        alias_pattern = f"%{alias.lower()}%"
+                        alias_clauses.extend(column.like(alias_pattern) for column in searchable_columns)
+                    token_clauses.append(or_(*alias_clauses))
+                query = query.where(and_(*token_clauses))
+            else:
+                like_pattern = f"%{normalized_search}%"
+                query = query.where(
+                    or_(
+                        func.lower(institution_directory.c.name).like(like_pattern),
+                        func.lower(institution_directory.c.address).like(like_pattern),
+                        func.lower(institution_directory.c.institution_id).like(like_pattern),
+                    )
                 )
-            )
         query = query.order_by(institution_directory.c.name).limit(bounded_limit)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
@@ -1507,12 +1956,18 @@ class ControlPlaneStore:
                 break
             page_no += 1
 
-        return {
+        result = {
             "source": "hira",
             "pages_synced": pages_synced,
             "total_count": total_count,
             "institutions_synced": upserted,
+            "synced_at": utc_now(),
         }
+        self.set_app_setting(
+            APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC,
+            json.dumps(result, ensure_ascii=False),
+        )
+        return result
 
     def create_site(
         self,
@@ -1659,6 +2114,32 @@ class ControlPlaneStore:
             runs.append(payload)
         return runs
 
+    def list_validation_cases(
+        self,
+        *,
+        validation_id: str | None = None,
+        site_id: str | None = None,
+        patient_reference_id: str | None = None,
+        case_reference_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = select(validation_cases)
+        if validation_id:
+            query = query.where(validation_cases.c.validation_id == validation_id)
+        if site_id:
+            query = query.where(validation_cases.c.site_id == site_id)
+        if patient_reference_id:
+            query = query.where(validation_cases.c.patient_reference_id == patient_reference_id)
+        if case_reference_id:
+            query = query.where(validation_cases.c.case_reference_id == case_reference_id)
+        query = query.order_by(
+            validation_cases.c.visit_index.asc(),
+            validation_cases.c.run_date.desc(),
+            validation_cases.c.validation_case_id.asc(),
+        )
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [dict(row) for row in rows]
+
     def save_validation_run(
         self,
         summary: dict[str, Any],
@@ -1701,6 +2182,33 @@ class ControlPlaneStore:
             "case_predictions_path": payload["case_predictions_path"],
             "summary_json": payload,
         }
+        validation_case_records = [
+            {
+                "validation_case_id": f"{summary['validation_id']}::{prediction['case_reference_id']}",
+                "validation_id": summary["validation_id"],
+                "project_id": summary["project_id"],
+                "site_id": summary["site_id"],
+                "patient_reference_id": str(prediction.get("patient_reference_id") or ""),
+                "case_reference_id": str(prediction.get("case_reference_id") or ""),
+                "visit_index": int(prediction.get("visit_index") or 0),
+                "model_version_id": summary.get("model_version_id"),
+                "model_version": summary.get("model_version", ""),
+                "run_date": summary.get("run_date", utc_now()),
+                "true_label": prediction.get("true_label"),
+                "predicted_label": str(prediction.get("predicted_label") or ""),
+                "prediction_probability": float(prediction.get("prediction_probability") or 0.0),
+                "is_correct": prediction.get("is_correct"),
+                "n_source_images": prediction.get("n_source_images"),
+                "crop_mode": prediction.get("crop_mode"),
+                "has_gradcam": bool(prediction.get("gradcam_path")),
+                "has_roi_crop": bool(prediction.get("roi_crop_path")),
+                "has_medsam_mask": bool(prediction.get("medsam_mask_path")),
+                "created_at": summary.get("run_date", utc_now()),
+            }
+            for prediction in normalized_predictions
+            if str(prediction.get("case_reference_id") or "").strip()
+            and str(prediction.get("patient_reference_id") or "").strip()
+        ]
         with CONTROL_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(
                 select(validation_runs.c.validation_id).where(validation_runs.c.validation_id == summary["validation_id"])
@@ -1713,11 +2221,37 @@ class ControlPlaneStore:
                 )
             else:
                 conn.execute(validation_runs.insert().values(**record))
+            conn.execute(delete(validation_cases).where(validation_cases.c.validation_id == summary["validation_id"]))
+            if validation_case_records:
+                conn.execute(validation_cases.insert(), validation_case_records)
         return payload
 
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
         case_path = CONTROL_PLANE_CASE_DIR / f"{validation_id}.json"
-        return read_json(case_path, [])
+        saved = read_json(case_path, [])
+        if isinstance(saved, list) and saved:
+            return saved
+        rows = self.list_validation_cases(validation_id=validation_id)
+        return [
+            {
+                "validation_id": row["validation_id"],
+                "patient_reference_id": row["patient_reference_id"],
+                "case_reference_id": row["case_reference_id"],
+                "visit_index": row["visit_index"],
+                "true_label": row.get("true_label"),
+                "predicted_label": row.get("predicted_label"),
+                "prediction_probability": row.get("prediction_probability"),
+                "is_correct": row.get("is_correct"),
+                "crop_mode": row.get("crop_mode"),
+                "n_source_images": row.get("n_source_images"),
+                "gradcam_path": None,
+                "medsam_mask_path": None,
+                "roi_crop_path": None,
+                "lesion_mask_path": None,
+                "lesion_crop_path": None,
+            }
+            for row in rows
+        ]
 
     def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(experiment_record)

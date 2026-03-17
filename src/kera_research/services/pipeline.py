@@ -52,6 +52,7 @@ class ResearchWorkflowService:
         self._ensure_roi_crop = self.case_support._ensure_roi_crop
         self._pixel_prompt_box = self.case_support._pixel_prompt_box
         self._ensure_lesion_crop = self.case_support._ensure_lesion_crop
+        self._load_stored_lesion_crop = self.case_support._load_stored_lesion_crop
         self._prepare_records_for_model = self.case_support._prepare_records_for_model
         self._select_representative_record = self.case_support._select_representative_record
         self._normalize_metadata_text = self.case_support._normalize_metadata_text
@@ -78,6 +79,9 @@ class ResearchWorkflowService:
 
     def _resolve_model_crop_mode(self, model_version: dict[str, Any]) -> str:
         if model_version.get("ensemble_mode") == "weighted_average":
+            crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
+            if crop_mode:
+                return self._normalize_crop_mode(crop_mode)
             return "both"
         crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
         if crop_mode:
@@ -336,9 +340,27 @@ class ResearchWorkflowService:
             components.append(component)
         weight_map = model_version.get("ensemble_weights") or {}
         if isinstance(weight_map, dict):
-            raw_weights = [float(weight_map.get(component.get("crop_mode") or "automated", 0.5)) for component in components]
+            raw_weights = []
+            default_weight = 1.0 / max(len(components), 1)
+            for component in components:
+                component_id = str(component.get("version_id") or "")
+                component_version_name = str(component.get("version_name") or "")
+                component_architecture = str(component.get("architecture") or "")
+                component_crop_mode = str(component.get("crop_mode") or self._resolve_model_crop_mode(component) or "")
+                raw_weight = (
+                    weight_map.get(component_id)
+                    if component_id in weight_map
+                    else weight_map.get(component_version_name)
+                    if component_version_name in weight_map
+                    else weight_map.get(component_architecture)
+                    if component_architecture in weight_map
+                    else weight_map.get(component_crop_mode)
+                    if component_crop_mode in weight_map
+                    else default_weight
+                )
+                raw_weights.append(float(raw_weight))
         else:
-            raw_weights = [0.5 for _ in components]
+            raw_weights = [1.0 / max(len(components), 1) for _ in components]
         total = sum(raw_weights) or float(len(raw_weights))
         normalized = [weight / total for weight in raw_weights]
         return components, normalized
@@ -859,6 +881,7 @@ class ResearchWorkflowService:
         model_version_id: str | None = None,
     ) -> dict[str, Any] | None:
         preferred_model_id = str(model_version_id or "").strip()
+        expected_case_reference_id = self.control_plane.case_reference_id(site_id, patient_id, visit_date)
         matching_runs = self.control_plane.list_validation_runs(site_id=site_id)
         for require_model_match in ([True, False] if preferred_model_id else [False]):
             for run in matching_runs:
@@ -873,8 +896,13 @@ class ResearchWorkflowService:
                     (
                         item
                         for item in predictions
-                        if str(item.get("patient_id") or "") == patient_id
-                        and str(item.get("visit_date") or "") == visit_date
+                        if (
+                            str(item.get("case_reference_id") or "") == expected_case_reference_id
+                            or (
+                                str(item.get("patient_id") or "") == patient_id
+                                and str(item.get("visit_date") or "") == visit_date
+                            )
+                        )
                     ),
                     None,
                 )
@@ -1051,6 +1079,7 @@ class ResearchWorkflowService:
                 )
             )
 
+        ensemble_crop_mode = self._resolve_model_crop_mode(model_version)
         automated_prediction = next((item for item in component_predictions if item.get("crop_mode") == "automated"), None)
         manual_prediction = next((item for item in component_predictions if item.get("crop_mode") == "manual"), None)
         predicted_probability = float(
@@ -1060,12 +1089,27 @@ class ResearchWorkflowService:
         predicted_index = 1 if predicted_probability >= decision_threshold else 0
         true_index = int(component_predictions[0]["true_index"])
 
+        def first_artifact_path(*artifact_keys: str) -> str | None:
+            for preferred_prediction in (automated_prediction, manual_prediction):
+                if preferred_prediction is None:
+                    continue
+                for artifact_key in artifact_keys:
+                    artifact_value = preferred_prediction.get(artifact_key)
+                    if artifact_value:
+                        return str(artifact_value)
+            for prediction in component_predictions:
+                for artifact_key in artifact_keys:
+                    artifact_value = prediction.get(artifact_key)
+                    if artifact_value:
+                        return str(artifact_value)
+            return None
+
         merged_artifacts = {
-            "gradcam_path": automated_prediction.get("gradcam_path") if automated_prediction else None,
-            "medsam_mask_path": automated_prediction.get("medsam_mask_path") if automated_prediction else None,
-            "roi_crop_path": automated_prediction.get("roi_crop_path") if automated_prediction else None,
-            "lesion_mask_path": manual_prediction.get("lesion_mask_path") if manual_prediction else None,
-            "lesion_crop_path": manual_prediction.get("lesion_crop_path") if manual_prediction else None,
+            "gradcam_path": first_artifact_path("gradcam_path"),
+            "medsam_mask_path": first_artifact_path("medsam_mask_path"),
+            "roi_crop_path": first_artifact_path("roi_crop_path"),
+            "lesion_mask_path": first_artifact_path("lesion_mask_path"),
+            "lesion_crop_path": first_artifact_path("lesion_crop_path"),
         }
 
         return {
@@ -1075,12 +1119,12 @@ class ResearchWorkflowService:
             "predicted_index": predicted_index,
             "predicted_probability": predicted_probability,
             "decision_threshold": decision_threshold,
-            "crop_mode": "both",
+            "crop_mode": ensemble_crop_mode,
             "n_source_images": len(case_records),
             "n_model_inputs": sum(int(item.get("n_model_inputs", 0)) for item in component_predictions),
             "ensemble_component_predictions": component_predictions,
             "ensemble_weights": {
-                (component.get("crop_mode") or self._resolve_model_crop_mode(component)): round(weight, 4)
+                str(component.get("version_id") or component.get("architecture") or "component"): round(weight, 4)
                 for component, weight in zip(components, weights)
             },
             **merged_artifacts,
@@ -1259,6 +1303,14 @@ class ResearchWorkflowService:
     ) -> list[dict[str, Any]]:
         return self.validation_workflow.preview_case_lesion(site_store, patient_id, visit_date)
 
+    def list_stored_case_lesion_previews(
+        self,
+        site_store: SiteStore,
+        patient_id: str,
+        visit_date: str,
+    ) -> list[dict[str, Any]]:
+        return self.validation_workflow.list_stored_case_lesion_previews(site_store, patient_id, visit_date)
+
     def preview_image_lesion(
         self,
         site_store: SiteStore,
@@ -1280,6 +1332,7 @@ class ResearchWorkflowService:
         model_version: dict[str, Any],
         execution_device: str,
         user_id: str,
+        contribution_group_id: str | None = None,
     ) -> dict[str, Any]:
         return self.contribution_workflow.contribute_case(
             site_store,
@@ -1288,6 +1341,7 @@ class ResearchWorkflowService:
             model_version,
             execution_device,
             user_id,
+            contribution_group_id=contribution_group_id,
         )
 
     def run_initial_training(
@@ -1392,17 +1446,18 @@ class ResearchWorkflowService:
         )
 
         upload_path = Path(result["output_model_path"])
+        base_model_path = self.model_manager.resolve_model_path(model_version, allow_download=True)
         if upload_type == "weight delta":
             upload_path = site_store.update_dir / f"{make_id('delta')}.pt"
             self.model_manager.save_weight_delta(
-                model_version["model_path"],
+                base_model_path,
                 result["output_model_path"],
                 upload_path,
             )
         elif upload_type == "aggregated update":
             upload_path = site_store.update_dir / f"{make_id('agg')}.pt"
             self.model_manager.save_weight_delta(
-                model_version["model_path"],
+                base_model_path,
                 result["output_model_path"],
                 upload_path,
             )

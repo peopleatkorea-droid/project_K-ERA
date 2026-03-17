@@ -4,6 +4,8 @@ import type {
   CaseSummaryRecord,
   ImageRecord,
   LesionPreviewRecord,
+  PatientListRowRecord,
+  PatientListThumbnailRecord,
   RoiPreviewRecord,
   SemanticPromptInputMode,
   SemanticPromptReviewResponse,
@@ -26,20 +28,8 @@ export type LesionPreviewCard = LesionPreviewRecord & {
   lesion_mask_url: string | null;
 };
 
-export type PatientListThumbnail = {
-  case_id: string;
-  image_id: string;
-  view: string | null;
-  preview_url: string | null;
-};
-
-export type PatientListRow = {
-  patient_id: string;
-  latest_case: CaseSummaryRecord;
-  case_count: number;
-  organism_summary: string;
-  representative_thumbnails: PatientListThumbnail[];
-};
+export type PatientListThumbnail = PatientListThumbnailRecord;
+export type PatientListRow = PatientListRowRecord;
 
 export type NormalizedBox = {
   x0: number;

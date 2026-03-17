@@ -5,6 +5,7 @@ import { type PointerEvent as ReactPointerEvent, type Dispatch, type SetStateAct
 import {
   clearImageLesionBox,
   fetchCaseLesionPreview,
+  fetchStoredCaseLesionPreview,
   fetchCaseLesionPreviewArtifactBlob,
   fetchCaseRoiPreview,
   fetchCaseRoiPreviewArtifactBlob,
@@ -162,6 +163,9 @@ export function useCaseWorkspaceAnalysis({
   const liveLesionPreviewRequestRef = useRef<Record<string, number>>({});
   const liveLesionPreviewsRef = useRef<LiveLesionPreviewMap>({});
   const lesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
+  const selectedCaseImagesRef = useRef(selectedCaseImages);
+  selectedCaseImagesRef.current = selectedCaseImages;
+  const caseImagesKey = `${selectedCase?.case_id ?? ""}:${selectedCaseImages.map((i) => i.image_id).join(",")}`;
 
   const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
   const lesionBoxChangedImageIds = selectedCaseImages
@@ -281,13 +285,14 @@ export function useCaseWorkspaceAnalysis({
 
   useEffect(() => {
     let cancelled = false;
+    let hydrateTimer: number | null = null;
 
     async function hydrateStoredCaseLesionPreviews() {
       if (!liveLesionCropEnabled || !selectedSiteId) {
         return;
       }
 
-      const visibleImages = [...selectedCaseImages, ...Object.values(patientVisitGallery).flat()];
+      const visibleImages = selectedCaseImagesRef.current;
       const boxedImages = Array.from(
         new Map(
           visibleImages
@@ -319,7 +324,7 @@ export function useCaseWorkspaceAnalysis({
         const visitDate = caseKey.slice(separatorIndex + 2);
 
         try {
-          const previews = await fetchCaseLesionPreview(selectedSiteId, patientId, visitDate, token);
+          const previews = await fetchStoredCaseLesionPreview(selectedSiteId, patientId, visitDate, token);
           if (cancelled) {
             return;
           }
@@ -397,11 +402,16 @@ export function useCaseWorkspaceAnalysis({
       }
     }
 
-    void hydrateStoredCaseLesionPreviews();
+    hydrateTimer = window.setTimeout(() => {
+      void hydrateStoredCaseLesionPreviews();
+    }, 900);
     return () => {
       cancelled = true;
+      if (hydrateTimer !== null) {
+        window.clearTimeout(hydrateTimer);
+      }
     };
-  }, [liveLesionCropEnabled, patientVisitGallery, selectedCaseImages, selectedSiteId, toNormalizedBox, token]);
+  }, [liveLesionCropEnabled, caseImagesKey, selectedSiteId, toNormalizedBox, token]);
 
   useEffect(() => {
     if (!liveLesionCropEnabled) {
@@ -1114,6 +1124,7 @@ export function useCaseWorkspaceAnalysis({
     setValidationBusy(true);
     clearValidationArtifacts();
     setValidationResult(null);
+    setModelCompareResult(null);
     setContributionResult(null);
     setPanelOpen(true);
     try {
@@ -1121,6 +1132,7 @@ export function useCaseWorkspaceAnalysis({
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
         model_version_id: validationResult?.model_version.version_id,
+        model_version_ids: selectedCompareModelVersionIds,
       });
       const nextArtifacts: ValidationArtifactPreviews = {};
       const artifactKinds: ValidationArtifactKind[] = ["roi_crop", "gradcam", "medsam_mask", "lesion_crop", "lesion_mask"];
@@ -1158,6 +1170,24 @@ export function useCaseWorkspaceAnalysis({
 
       setValidationArtifacts(nextArtifacts);
       setValidationResult(result);
+      let autoCompareCount = 0;
+      if (selectedCompareModelVersionIds.length > 0) {
+        setModelCompareBusy(true);
+        try {
+          const compareResult = await runCaseValidationCompare(selectedSiteId, token, {
+            patient_id: selectedCase.patient_id,
+            visit_date: selectedCase.visit_date,
+            model_version_ids: selectedCompareModelVersionIds,
+            execution_mode: executionModeFromDevice(result.execution_device),
+          });
+          setModelCompareResult(compareResult);
+          autoCompareCount = compareResult.comparisons.length;
+        } catch {
+          setModelCompareResult(null);
+        } finally {
+          setModelCompareBusy(false);
+        }
+      }
       await onSiteDataChanged(selectedSiteId);
       await loadCaseHistory(selectedSiteId, selectedCase.patient_id, selectedCase.visit_date);
       await loadSiteActivity(selectedSiteId);
@@ -1168,7 +1198,14 @@ export function useCaseWorkspaceAnalysis({
       });
       setToast({
         tone: "success",
-        message: copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date),
+        message:
+          autoCompareCount > 0
+            ? pick(
+                locale,
+                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}-model analysis refreshed.`,
+                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}개 모델 분석도 함께 갱신했습니다.`
+              )
+            : copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date),
       });
     } catch (nextError) {
       setToast({
@@ -1177,6 +1214,7 @@ export function useCaseWorkspaceAnalysis({
       });
     } finally {
       setValidationBusy(false);
+      setModelCompareBusy(false);
     }
   }
 
@@ -1237,6 +1275,7 @@ export function useCaseWorkspaceAnalysis({
         visit_date: selectedCase.visit_date,
         execution_mode: executionModeFromDevice(validationResult.execution_device),
         model_version_id: validationResult.model_version.version_id,
+        model_version_ids: selectedCompareModelVersionIds,
         top_k: 3,
         retrieval_backend: "hybrid",
       });
