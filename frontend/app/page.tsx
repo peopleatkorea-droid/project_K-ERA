@@ -18,10 +18,8 @@ import {
   fetchAccessRequests,
   fetchMe,
   fetchMyAccessRequests,
-  fetchPatients,
   fetchPublicSites,
   searchPublicInstitutions,
-  type PatientRecord,
   type PublicInstitutionRecord,
   type SiteSummary,
   fetchSiteSummary,
@@ -264,7 +262,6 @@ export default function HomePage() {
   const [publicInstitutions, setPublicInstitutions] = useState<PublicInstitutionRecord[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
   const [summary, setSummary] = useState<SiteSummary | null>(null);
-  const [patients, setPatients] = useState<PatientRecord[]>([]);
   const [myRequests, setMyRequests] = useState<AccessRequestRecord[]>([]);
   const [adminRequests, setAdminRequests] = useState<AccessRequestRecord[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
@@ -985,12 +982,7 @@ export default function HomePage() {
       setSiteBusy(true);
       setError(null);
       try {
-        const [nextSummary, nextPatients] = await Promise.all([
-          fetchSiteSummary(currentSiteId, currentToken),
-          fetchPatients(currentSiteId, currentToken),
-        ]);
-        setSummary(nextSummary);
-        setPatients(nextPatients);
+        setSummary(await fetchSiteSummary(currentSiteId, currentToken));
       } catch (nextError) {
         setError(describeError(nextError, copy.failedLoadSiteData));
       } finally {
@@ -1062,12 +1054,7 @@ export default function HomePage() {
   }, [googleReady, token, googleButtonWidth, copy.googleLoginFailed, copy.googleNoCredential]);
 
   async function refreshSiteData(siteId: string, currentToken: string) {
-    const [nextSummary, nextPatients] = await Promise.all([
-      fetchSiteSummary(siteId, currentToken),
-      fetchPatients(siteId, currentToken),
-    ]);
-    setSummary(nextSummary);
-    setPatients(nextPatients);
+    setSummary(await fetchSiteSummary(siteId, currentToken));
   }
 
   async function refreshApprovedSites(currentToken: string) {
@@ -1162,7 +1149,6 @@ export default function HomePage() {
     setSites([]);
     setSelectedSiteId(null);
     setSummary(null);
-    setPatients([]);
     setMyRequests([]);
     setAdminRequests([]);
   }

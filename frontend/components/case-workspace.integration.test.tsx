@@ -348,6 +348,24 @@ describe("CaseWorkspace integration", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("highlights selected predisposing factors and mirrors them in the authoring rail", async () => {
+    seedDraft();
+    renderWorkspace();
+
+    expect(await screen.findByText("No predisposing factor selected yet.")).toBeInTheDocument();
+
+    const traumaButton = screen.getByRole("button", { name: "trauma" });
+    expect(traumaButton.className).not.toContain("border-amber-300/70");
+
+    fireEvent.click(traumaButton);
+
+    await waitFor(() => {
+      expect(traumaButton.className).toContain("border-amber-300/70");
+    });
+    expect(screen.queryByText("No predisposing factor selected yet.")).not.toBeInTheDocument();
+    expect(screen.getAllByText("trauma").length).toBeGreaterThan(1);
+  });
+
   it("completes intake, uploads an image, and saves a new case", async () => {
     const onSiteDataChanged = vi.fn(async () => undefined);
     seedDraft();

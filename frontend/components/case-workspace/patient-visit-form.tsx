@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type { Dispatch, SetStateAction } from "react";
 
@@ -23,13 +23,11 @@ import {
   organismChipRemoveClass,
   organismChipRowClass,
   organismChipStaticClass,
-  segmentedToggleClass,
   supportFieldClass,
   supportHintClass,
   supportLabelClass,
   summaryNoteClass,
   tagPillClass,
-  togglePillClass,
 } from "../ui/workspace-patterns";
 
 type DraftState = {
@@ -81,14 +79,14 @@ type Props = {
 
 type SummaryPropertyProps = {
   label: string;
-  value: string;
+  value?: string;
 };
 
 function SummaryProperty({ label, value }: SummaryPropertyProps) {
   return (
     <div className={canvasPropertyCardClass}>
       <span className={canvasPropertyLabelClass}>{label}</span>
-      <span className={canvasPropertyValueClass}>{value}</span>
+      {value ? <span className={canvasPropertyValueClass}>{value}</span> : null}
     </div>
   );
 }
@@ -151,6 +149,10 @@ export function PatientVisitForm({
     translateOption(locale, "visitStatus", draft.visit_status),
     contactLensSummary,
   ].join(" · ");
+  const currentVisitSummary = [
+    visitSummary,
+    ...(draft.actual_visit_date.trim() ? [actualVisitDateLabel] : []),
+  ].join(" · ");
   const organismSummary = [organismCategorySummary, primaryOrganismLabel].join(" / ");
 
   if (draft.intake_completed) {
@@ -201,11 +203,7 @@ export function PatientVisitForm({
       <CanvasBlock
         eyebrow={pick(locale, "Patient", "환자")}
         title={pick(locale, "Start with a clean patient snapshot", "환자 스냅샷부터 가볍게 시작합니다")}
-        summary={pick(
-          locale,
-          "Keep only the essentials here so the canvas opens like a clinical note, not a long admin form.",
-          "여기에는 핵심만 남겨서, 이 캔버스가 긴 행정 폼이 아니라 짧은 임상 노트처럼 열리게 합니다."
-        )}
+        headerInline
         statusLabel={identityComplete ? pick(locale, "Ready", "준비됨") : pick(locale, "Needs basics", "기본 정보 필요")}
         statusTone={identityComplete ? "complete" : "active"}
       >
@@ -260,40 +258,7 @@ export function PatientVisitForm({
         statusTone={visitComplete ? "complete" : "pending"}
       >
         <div className={canvasPropertyGridClass}>
-          <div className={canvasPropertyCardClass}>
-            <span className={canvasPropertyLabelClass}>{pick(locale, "Visit phase", "방문 단계")}</span>
-            <div className={segmentedToggleClass} role="group" aria-label={pick(locale, "Visit phase", "방문 단계")}>
-              <Button
-                className={togglePillClass(draft.is_initial_visit)}
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setDraft((current) => ({ ...current, is_initial_visit: true }))}
-              >
-                {pick(locale, "Initial", "초진")}
-              </Button>
-              <Button
-                className={togglePillClass(!draft.is_initial_visit)}
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setDraft((current) => ({ ...current, is_initial_visit: false }))}
-              >
-                {pick(locale, "Follow-up", "재진")}
-              </Button>
-            </div>
-          </div>
-          {!draft.is_initial_visit ? (
-            <Field className={canvasPropertyCardClass} label={pick(locale, "FU number", "FU 번호")}>
-              <select value={draft.follow_up_number} onChange={(event) => setDraft((current) => ({ ...current, follow_up_number: event.target.value }))}>
-                {Array.from({ length: 15 }, (_, index) => String(index + 1)).map((option) => (
-                  <option key={option} value={option}>
-                    {`FU #${option}`}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          ) : null}
+          <SummaryProperty label={pick(locale, "Visit reference", "방문 기준")} value={resolvedVisitReferenceLabel} />
           <Field
             className={canvasPropertyCardClass}
             label={pick(locale, "Date", "날짜")}
@@ -350,7 +315,7 @@ export function PatientVisitForm({
               )}
             </div>
           </div>
-          <SummaryProperty label={pick(locale, "Current summary", "현재 요약")} value={`${visitSummary} · ${actualVisitDateLabel}`} />
+          <SummaryProperty label={pick(locale, "Current summary", "현재 요약")} value={currentVisitSummary} />
         </div>
       </CanvasBlock>
 

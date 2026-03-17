@@ -107,6 +107,7 @@ import {
   organismChipClass,
   organismChipRowClass,
   organismChipStaticClass,
+  predisposingChipClass,
   workspaceUserBadgeClass,
   validationRailHeadClass,
   workspaceBrandActionsClass,
@@ -2287,6 +2288,9 @@ export function CaseWorkspace({
   const resolvedVisitReference = buildVisitReference(draft);
   const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
   const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
+  const selectedPredisposingFactorLabels = draft.predisposing_factor.map((factor) =>
+    translateOption(locale, "predisposing", factor)
+  );
   const isAuthoringCanvas = railView !== "patients" && !selectedCase;
   const draftRepresentativeCount = draftImages.filter((image) => image.is_representative).length;
   const draftLesionBoxCount = draftImages.filter((image) => Boolean(draftLesionPromptBoxes[image.draft_id])).length;
@@ -2982,6 +2986,39 @@ export function CaseWorkspace({
                         </div>
                       )}
                     </div>
+                  </section>
+
+                  <section className={canvasSidebarCardClass}>
+                    <div className="grid gap-1">
+                      <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Predisposing factors", "선행 인자")}</span>
+                      <p className="m-0 text-sm leading-6 text-muted">
+                        {pick(
+                          locale,
+                          "Selected visit factors stay visible here while you finish the draft.",
+                          "선택한 방문 인자는 초안을 마무리하는 동안 여기에서 계속 보입니다."
+                        )}
+                      </p>
+                    </div>
+                    {selectedPredisposingFactorLabels.length > 0 ? (
+                      <div className={organismChipRowClass}>
+                        {selectedPredisposingFactorLabels.map((label) => (
+                          <span
+                            key={`draft-predisposing-${label}`}
+                            className={predisposingChipClass}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={canvasSidebarItemClass}>
+                        {pick(
+                          locale,
+                          "No predisposing factor selected yet.",
+                          "아직 선택된 선행 인자가 없습니다."
+                        )}
+                      </div>
+                    )}
                   </section>
                 </div>
               ) : (

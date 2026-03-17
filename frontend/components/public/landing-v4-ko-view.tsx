@@ -17,57 +17,38 @@ type KoreanLandingViewProps = {
 
 const koPainItems = [
   {
-    icon: "💻",
-    title: "매번 Python 환경 설정부터",
-    body: "Anaconda, 라이브러리 충돌, 터미널 에러. 이 과정에서 포기하는 임상의가 너무 많습니다.",
+    title: "Python 환경 설정, 수동 Annotation",
+    body: "Anaconda 충돌, 터미널 에러, 수천 장의 ROI 작업. 연구를 시작하기도 전에 지칩니다.",
   },
   {
-    icon: "✂️",
-    title: "이미지 수천 장, 수동 Annotation",
-    body: "병변 ROI를 직접 그려야 하는 반복 작업. 연구를 시작하기도 전에 피로가 커집니다.",
+    title: "Single-center의 한계",
+    body: "데이터를 병원 밖으로 꺼낼 수 없어, 힘들게 만든 모델도 external validation을 받지 못합니다.",
   },
   {
-    icon: "🗂️",
-    title: "데이터 정리와 manifest 작업",
-    body: "이미지 이름을 맞추고 메타데이터를 정리하고 CSV를 만드는 일만으로도 연구 준비가 길어집니다.",
-  },
-  {
-    icon: "📊",
-    title: "Single-center의 벽",
-    body: "데이터를 병원 밖으로 꺼낼 수 없어, 힘들게 만든 AI도 external validation을 받지 못합니다.",
-  },
-  {
-    icon: "🔒",
-    title: "논문만 쓰고 쓰지 못하는 AI",
-    body: "연구 결과가 쌓여도 실제 진료로 이어지지 못합니다.",
+    title: "논문은 쓰지만 진료엔 못 쓰는 AI",
+    body: "연구 결과가 쌓여도 프라이버시 문제로 실제 임상에 적용되지 못합니다.",
   },
 ];
 
 const koFeatures = [
   {
-    number: "01",
-    icon: "🎯",
-    title: "MedSAM 기반\n반자동 병변 분할",
-    body: "이미지를 올리고 병변 주변에 box만 그리면, MedSAM이 정밀한 ROI segmentation을 자동 생성합니다. 수시간의 수동 annotation이 몇 초로. Grad-CAM으로 AI의 판단 근거도 함께 보여줍니다.",
-    chip: "Meta AI MedSAM · 2024",
+    title: "MedSAM 기반 반자동 병변 분할",
+    body: "병변 주변에 box만 그리면 MedSAM이 정밀한 ROI를 자동 생성합니다. 수시간의 수동 annotation이 몇 초로 줄어듭니다.",
+    chip: "MedSAM",
     previewSrc: "/landing/medSAM.png",
     previewAlt: "MedSAM 기반 반자동 병변 분할을 보여주는 이미지",
   },
   {
-    number: "02",
-    icon: "👁️",
-    title: "Visit 단위\n멀티모달 종합 판독",
-    body: "실제 진료처럼 White · Fluorescein · Slit 세 가지 view를 함께 봅니다. 한 방문(Visit)의 이미지를 통합해 판단하므로, 사진 한 장의 빛 번짐에 흔들리지 않습니다. 두 모델이 넓게·집중적으로 나눠 보고 앙상블합니다.",
-    chip: "Visit-level Ensemble",
+    title: "Visit 단위 멀티모달 판독",
+    body: "White · Fluorescein · Slit 세 가지 view를 통합 분석합니다. 사진 한 장의 품질에 흔들리지 않습니다.",
+    chip: "Ensemble",
     previewSrc: "/landing/multi_modal.png",
     previewAlt: "Visit 단위 멀티모달 종합 판독을 보여주는 이미지",
   },
   {
-    number: "03",
-    icon: "🤝",
-    title: "Federated Learning\n다기관 협력",
-    body: "원본 이미지는 병원 밖으로 나가지 않습니다. 각 병원이 자체 환경에서 학습 후, Weight delta만 암호화해 전달합니다. FedAvg로 집계된 모델은 참여 병원 모두에 배포됩니다.",
-    chip: "Privacy-preserving",
+    title: "Federated Learning",
+    body: "원본 이미지는 병원 밖으로 나가지 않습니다. Weight delta만 암호화해 전달하고, 집계된 모델을 공유합니다.",
+    chip: "Privacy",
     previewSrc: "/landing/federated.png",
     previewAlt: "Federated Learning 다기관 협력을 보여주는 이미지",
   },
@@ -208,7 +189,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               className="landing-hero-fade mb-6 text-[clamp(0.9rem,1.6vw,1.1rem)] italic text-[#7b88a8] font-ko-serif"
               style={{ animationDelay: "0s" }}
             >
-              외래가 끝난 뒤, 조용해진 진료실. 각막 사진 몇 장이 화면에 떠 있습니다.
+              배양 결과는 며칠 뒤. 지금은 이 사진만으로 판단해야 합니다.
             </p>
 
             <h1
@@ -329,16 +310,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                   className="h-auto w-full object-cover"
                 />
               </div>
-              {koPainItems.map((item) => (
+              {koPainItems.map((item, index) => (
                 <div
                   key={item.title}
                   className="landing-reveal flex items-start gap-4 border-b border-white/4 py-6 last:border-b-0"
                   data-reveal=""
-                  data-reveal-order={koPainItems.findIndex((candidate) => candidate.title === item.title) + 1}
+                  data-reveal-order={index + 1}
                 >
-                  <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[8px] bg-[rgba(245,158,11,0.14)] text-base">
-                    {item.icon}
-                  </div>
+                  <div className="mt-1.5 h-[7px] w-[7px] shrink-0 rounded-full bg-[#f59e0b]" />
                   <div>
                     <div className="mb-1 text-[0.92rem] font-medium">{item.title}</div>
                     <div className="text-[0.85rem] leading-[1.65] text-[#7b88a8]">{item.body}</div>
@@ -359,21 +338,17 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               </div>
               <div className="flex h-full flex-col items-center justify-center gap-3.5 p-7">
                 <div className="flex items-start justify-center gap-2">
-                  {[
-                    ["👁️", "White"],
-                    ["🟢", "Fluorescein"],
-                    ["🔵", "Slit"],
-                  ].map(([icon, label]) => (
+                  {["White", "Fluorescein", "Slit"].map((label) => (
                     <div key={label} className="flex w-[72px] flex-col items-center overflow-hidden rounded-[8px] border border-[rgba(45,212,192,0.13)] bg-black/45 px-1.5 pb-1.5 pt-2">
-                      <span className="text-2xl">{icon}</span>
+                      <div className="h-6 w-6 rounded-full bg-[rgba(45,212,192,0.22)]" />
                       <div className="mt-1 text-[0.58rem] tracking-[0.08em] text-[#3f4b6a]">{label}</div>
                     </div>
                   ))}
                 </div>
-                <div className="text-[1.1rem] text-[#2dd4c0]">↓ Visit 단위 종합 판독</div>
+                <div className="text-[0.9rem] text-[#2dd4c0]">↓ Visit 단위 종합 판독</div>
                 <div className="rounded-[8px] border border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] px-[18px] py-3 text-center text-[0.76rem] tracking-[0.06em] text-[#2dd4c0]">
-                  🦠 Fungal Keratitis · 76% 확률
-                  <div className="mt-1 text-[0.62rem] opacity-65">MedSAM ROI 자동 추출 · Ensemble 모델</div>
+                  Fungal Keratitis · 76%
+                  <div className="mt-1 text-[0.62rem] opacity-65">MedSAM · Ensemble</div>
                 </div>
               </div>
             </div>
@@ -426,29 +401,25 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
           </div>
 
           <div className="mt-13 grid overflow-hidden rounded-2xl border border-[rgba(45,212,192,0.13)] md:grid-cols-3">
-            {koFeatures.map((feature) => (
+            {koFeatures.map((feature, index) => (
               <div
-                key={feature.number}
+                key={feature.title}
                 className="landing-reveal relative border-r border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-[30px] py-[38px] last:border-r-0 hover:bg-[rgba(13,20,38,0.88)]"
                 data-reveal=""
-                data-reveal-order={koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1}
+                data-reveal-order={index + 1}
                 onMouseEnter={() => {
-                  setFeaturePreviewIndex(koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1);
+                  setFeaturePreviewIndex(index + 1);
                   setFeaturePreviewOverride({ src: feature.previewSrc, alt: feature.previewAlt });
                 }}
                 onMouseLeave={() => setFeaturePreviewOverride(null)}
                 onFocus={() => {
-                  setFeaturePreviewIndex(koFeatures.findIndex((candidate) => candidate.number === feature.number) + 1);
+                  setFeaturePreviewIndex(index + 1);
                   setFeaturePreviewOverride({ src: feature.previewSrc, alt: feature.previewAlt });
                 }}
                 onBlur={() => setFeaturePreviewOverride(null)}
                 tabIndex={0}
               >
-                <div className="mb-[18px] text-[3.2rem] leading-none text-[rgba(45,212,192,0.13)] font-ko-serif">
-                  {feature.number}
-                </div>
-                <span className="mb-[14px] block text-[1.35rem]">{feature.icon}</span>
-                <div className="mb-3 whitespace-pre-line text-[0.95rem] leading-[1.4] font-medium">{feature.title}</div>
+                <div className="mb-3 text-[0.95rem] leading-[1.4] font-medium">{feature.title}</div>
                 <div className="text-[0.81rem] leading-[1.8] text-[#7b88a8]">{feature.body}</div>
                 <span className="mt-4 inline-block rounded-full bg-[rgba(45,212,192,0.22)] px-2.5 py-1 text-[0.65rem] uppercase tracking-[0.1em] text-[#2dd4c0]">{feature.chip}</span>
               </div>
@@ -469,7 +440,6 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <div className="grid grid-cols-3 gap-2">
                 {["병원 A", "병원 B", "병원 C"].map((name) => (
                   <div key={name} className="rounded-[8px] border border-[rgba(45,212,192,0.13)] bg-white/[0.025] px-1.5 py-3 text-center text-[0.7rem] leading-[1.4] text-[#7b88a8]">
-                    <span className="mb-1 block text-[1.15rem]">🏥</span>
                     {name}
                     <br />
                     Local Node
@@ -477,7 +447,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 ))}
               </div>
               <div className="mt-3 rounded-[8px] border border-[rgba(245,158,11,0.25)] bg-[rgba(245,158,11,0.14)] px-3.5 py-2.5 text-center text-[0.73rem] text-[#f59e0b]">
-                🔒 원본 이미지 · 환자 ID · 병원 밖 전송 절대 불가
+                원본 이미지 · 환자 ID — 병원 밖 전송 불가
               </div>
             </div>
 
@@ -510,50 +480,6 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               </div>
             </div>
           </div>
-        </div>
-      </section>
-
-      <section className="border-y border-[rgba(45,212,192,0.13)] bg-[linear-gradient(135deg,#0e1426_0%,#121a30_100%)] px-6 py-24 text-center md:px-8">
-        <div className="mx-auto max-w-[660px]">
-          <span className="mb-6 block text-[2.8rem]">☕</span>
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">우리가 그리는 장면</div>
-          <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-            외래가 정리된 뒤,
-            <br />
-            커피 한 잔과 함께
-          </h2>
-
-          <div className="relative mb-9 mt-2 rounded-2xl border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.75)] px-11 py-10 text-left text-[0.97rem] leading-[2.05] text-[#7b88a8]">
-            <div className="absolute inset-x-0 top-0 h-0.5 rounded-t-2xl bg-gradient-to-r from-transparent via-[#2dd4c0] to-transparent" />
-            오늘 마지막 환자의 차트를 닫고, 자리에 앉습니다.
-            <br />
-            컴퓨터 화면에는 각막 사진 몇 장이 떠 있습니다.
-            <br />
-            <br />
-            <em className="not-italic text-[#2dd4c0]">White, Fluorescein, Slit — 세 장의 사진을 함께 봅니다.</em>
-            <br />
-            병변에 box를 그리면, MedSAM이 ROI를 잡아냅니다.
-            <br />
-            <br />
-            잠시 후, AI가 말합니다:
-            <br />
-            <strong className="font-medium text-[#e4e8f5]">
-              "이 방문의 패턴은 Fungal keratitis와 76% 일치합니다.
-              <br />
-              유사한 케이스를 함께 보시겠어요?"
-            </strong>
-            <br />
-            <br />
-            판단은 여전히 의사가 합니다.
-            <br />
-            다만 이제는, <em className="not-italic text-[#2dd4c0]">혼자 판단하지 않아도 됩니다.</em>
-            <br />
-            <br />
-            그리고 그 케이스 하나가, 다른 누군가의 AI를 조금 더 강하게 만듭니다.
-          </div>
-          <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
-            이 연구에 함께하기
-          </button>
         </div>
       </section>
 
@@ -694,12 +620,10 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <br />
               그 사진 몇 장이면 충분합니다.
             </p>
-            <p className="mb-10 text-[0.97rem] leading-[2] text-[#e4e8f5] italic">
-              외래가 끝난 뒤, 커피 한 잔을 들고
+            <p className="mb-10 text-[0.97rem] leading-[2] text-[#e4e8f5]">
+              배양 결과가 나오기 전,
               <br />
-              AI에게 물어보세요. "너는 어떻게 생각해?"
-              <br />
-              K-ERA는 그 질문에서 시작됩니다.
+              한 번 더 확인하고 싶을 때.
             </p>
             <button
               className={`${koSecondaryCtaClass} ${props.googleLaunchPulse ? "ring-4 ring-[rgba(45,212,192,0.22)]" : ""}`}

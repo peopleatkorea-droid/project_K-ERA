@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import os
 import re
 import threading
 from pathlib import Path
@@ -8,11 +9,13 @@ from typing import Any
 
 import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, desc, func, or_, select, update
 
 from kera_research.config import BASE_DIR, PATIENT_REFERENCE_SALT, SITE_ROOT_DIR, ensure_base_directories
 from kera_research.db import (
+    CONTROL_PLANE_DATABASE_URL,
     CONTROL_PLANE_ENGINE,
+    DATA_PLANE_DATABASE_URL,
     DATA_PLANE_ENGINE,
     images as db_images,
     init_control_plane_db,
@@ -44,6 +47,19 @@ _SITE_STORAGE_ROOT_CACHE_LOCK = threading.Lock()
 
 class InvalidImageUploadError(ValueError):
     pass
+
+
+def control_plane_split_enabled() -> bool:
+    return CONTROL_PLANE_DATABASE_URL != DATA_PLANE_DATABASE_URL
+
+
+def _use_control_plane_site_storage_lookup() -> bool:
+    mode = os.getenv("KERA_SITE_STORAGE_SOURCE", "").strip().lower()
+    if mode == "control_plane":
+        return True
+    if mode == "local":
+        return False
+    return not control_plane_split_enabled()
 
 
 def _normalize_organism_entry(entry: dict[str, Any] | None) -> dict[str, str] | None:
@@ -181,21 +197,21 @@ def _resolve_site_storage_root(site_id: str) -> Path:
         if cached is not None:
             return cached
 
-    with CONTROL_PLANE_ENGINE.begin() as conn:
-        row = conn.execute(
-            select(control_sites.c.local_storage_root).where(control_sites.c.site_id == site_id)
-        ).first()
+    resolved_root = (SITE_ROOT_DIR / site_id).resolve()
+    if _use_control_plane_site_storage_lookup():
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(control_sites.c.local_storage_root).where(control_sites.c.site_id == site_id)
+            ).first()
 
-    configured_root = str(row[0] or "").strip() if row else ""
-    if configured_root:
-        root_path = Path(configured_root).expanduser()
-        if not root_path.is_absolute():
-            root_path = (BASE_DIR / root_path).resolve()
-        else:
-            root_path = root_path.resolve()
-        resolved_root = root_path
-    else:
-        resolved_root = (SITE_ROOT_DIR / site_id).resolve()
+        configured_root = str(row[0] or "").strip() if row else ""
+        if configured_root:
+            root_path = Path(configured_root).expanduser()
+            if not root_path.is_absolute():
+                root_path = (BASE_DIR / root_path).resolve()
+            else:
+                root_path = root_path.resolve()
+            resolved_root = root_path
 
     with _SITE_STORAGE_ROOT_CACHE_LOCK:
         _SITE_STORAGE_ROOT_CACHE[site_id] = resolved_root
@@ -210,8 +226,9 @@ def _safe_path_component(value: str) -> str:
 class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
-        init_control_plane_db()
         init_data_plane_db()
+        if _use_control_plane_site_storage_lookup():
+            init_control_plane_db()
         self.site_id = site_id
         self.site_dir = _resolve_site_storage_root(site_id)
         self.raw_dir = self.site_dir / "data" / "raw"
@@ -796,70 +813,137 @@ class SiteStore:
         return [dict(row) for row in rows]
 
     def list_case_summaries(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
-        patients_by_id = {
-            patient["patient_id"]: patient
-            for patient in self.list_patients(created_by_user_id=created_by_user_id)
-        }
-        images_by_visit: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for image in self.list_images():
-            images_by_visit.setdefault((image["patient_id"], image["visit_date"]), []).append(image)
+        """Optimized case summaries using a single JOIN query."""
+        patient_table = db_patients.alias("p")
+        visit_table = db_visits.alias("v")
+        image_table = db_images.alias("i")
 
-        summaries: list[dict[str, Any]] = []
-        for visit in self.list_visits():
-            patient = patients_by_id.get(visit["patient_id"], {})
-            if not patient:
-                continue
-            visit_images = images_by_visit.get((visit["patient_id"], visit["visit_date"]), [])
-            representative = next((image for image in visit_images if image.get("is_representative")), None)
-            latest_uploaded_at = visit_images[-1]["uploaded_at"] if visit_images else None
-            summaries.append(
-                {
-                    "case_id": f"{visit['patient_id']}::{visit['visit_date']}",
-                    "visit_id": visit["visit_id"],
-                    "patient_id": visit["patient_id"],
-                    "patient_reference_id": visit.get("patient_reference_id"),
-                    "visit_date": visit["visit_date"],
-                    "visit_index": visit.get("visit_index"),
-                    "actual_visit_date": visit.get("actual_visit_date"),
-                    "chart_alias": patient.get("chart_alias", ""),
-                    "local_case_code": patient.get("local_case_code", ""),
-                    "sex": patient.get("sex", ""),
-                    "age": patient.get("age"),
-                    "culture_category": visit.get("culture_category", ""),
-                    "culture_species": visit.get("culture_species", ""),
-                    "additional_organisms": visit.get("additional_organisms", []) or [],
-                    "contact_lens_use": visit.get("contact_lens_use", ""),
-                    "predisposing_factor": visit.get("predisposing_factor", []) or [],
-                    "other_history": visit.get("other_history", "") or "",
-                    "visit_status": visit.get("visit_status", "active"),
-                    "active_stage": bool(visit.get("active_stage", visit.get("visit_status", "active") == "active")),
-                    "is_initial_visit": bool(visit.get("is_initial_visit", False)),
-                    "smear_result": visit.get("smear_result", ""),
-                    "polymicrobial": bool(
-                        visit.get("polymicrobial", False) or (visit.get("additional_organisms", []) or [])
-                    ),
-                    "research_registry_status": visit.get("research_registry_status", "analysis_only"),
-                    "research_registry_updated_at": visit.get("research_registry_updated_at"),
-                    "research_registry_updated_by": visit.get("research_registry_updated_by"),
-                    "research_registry_source": visit.get("research_registry_source"),
-                    "image_count": len(visit_images),
-                    "representative_image_id": representative["image_id"] if representative else None,
-                    "representative_view": representative["view"] if representative else None,
-                    "created_by_user_id": patient.get("created_by_user_id"),
-                    "created_at": visit.get("created_at"),
-                    "latest_image_uploaded_at": latest_uploaded_at,
-                }
+        # Subquery for image aggregates per visit
+        image_stats = (
+            select(
+                image_table.c.visit_id,
+                func.count(image_table.c.image_id).label("image_count"),
+                func.max(image_table.c.uploaded_at).label("latest_image_uploaded_at"),
             )
-
-        summaries.sort(
-            key=lambda item: (
-                int(item.get("visit_index") or 0),
-                item.get("latest_image_uploaded_at") or "",
-                item.get("created_at") or "",
-            ),
-            reverse=True,
+            .where(image_table.c.site_id == self.site_id)
+            .group_by(image_table.c.visit_id)
+            .subquery("image_stats")
         )
-        return summaries
+
+        # Subquery for representative image per visit
+        representative_images = (
+            select(
+                image_table.c.visit_id,
+                image_table.c.image_id.label("representative_image_id"),
+                image_table.c.view.label("representative_view"),
+            )
+            .where(
+                and_(
+                    image_table.c.site_id == self.site_id,
+                    image_table.c.is_representative == True,
+                )
+            )
+            .subquery("representative_images")
+        )
+
+        # Main query with LEFT JOINs
+        query = (
+            select(
+                visit_table.c.visit_id,
+                visit_table.c.patient_id,
+                visit_table.c.patient_reference_id,
+                visit_table.c.visit_date,
+                visit_table.c.visit_index,
+                visit_table.c.actual_visit_date,
+                visit_table.c.culture_category,
+                visit_table.c.culture_species,
+                visit_table.c.additional_organisms,
+                visit_table.c.contact_lens_use,
+                visit_table.c.predisposing_factor,
+                visit_table.c.other_history,
+                visit_table.c.visit_status,
+                visit_table.c.active_stage,
+                visit_table.c.is_initial_visit,
+                visit_table.c.smear_result,
+                visit_table.c.polymicrobial,
+                visit_table.c.research_registry_status,
+                visit_table.c.research_registry_updated_at,
+                visit_table.c.research_registry_updated_by,
+                visit_table.c.research_registry_source,
+                visit_table.c.created_at,
+                patient_table.c.chart_alias,
+                patient_table.c.local_case_code,
+                patient_table.c.sex,
+                patient_table.c.age,
+                patient_table.c.created_by_user_id,
+                func.coalesce(image_stats.c.image_count, 0).label("image_count"),
+                image_stats.c.latest_image_uploaded_at,
+                representative_images.c.representative_image_id,
+                representative_images.c.representative_view,
+            )
+            .select_from(
+                visit_table
+                .join(
+                    patient_table,
+                    and_(
+                        visit_table.c.site_id == patient_table.c.site_id,
+                        visit_table.c.patient_id == patient_table.c.patient_id,
+                    ),
+                )
+                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
+                .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
+            )
+            .where(visit_table.c.site_id == self.site_id)
+            .order_by(
+                desc(visit_table.c.visit_index),
+                desc(image_stats.c.latest_image_uploaded_at),
+                desc(visit_table.c.created_at),
+            )
+        )
+
+        if created_by_user_id:
+            query = query.where(patient_table.c.created_by_user_id == created_by_user_id)
+
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+
+        return [
+            {
+                "case_id": f"{row['patient_id']}::{row['visit_date']}",
+                "visit_id": row["visit_id"],
+                "patient_id": row["patient_id"],
+                "patient_reference_id": row["patient_reference_id"],
+                "visit_date": row["visit_date"],
+                "visit_index": row["visit_index"],
+                "actual_visit_date": row["actual_visit_date"],
+                "chart_alias": row["chart_alias"] or "",
+                "local_case_code": row["local_case_code"] or "",
+                "sex": row["sex"] or "",
+                "age": row["age"],
+                "culture_category": row["culture_category"] or "",
+                "culture_species": row["culture_species"] or "",
+                "additional_organisms": row["additional_organisms"] or [],
+                "contact_lens_use": row["contact_lens_use"] or "",
+                "predisposing_factor": row["predisposing_factor"] or [],
+                "other_history": row["other_history"] or "",
+                "visit_status": row["visit_status"] or "active",
+                "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
+                "is_initial_visit": bool(row["is_initial_visit"]),
+                "smear_result": row["smear_result"] or "",
+                "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
+                "research_registry_status": row["research_registry_status"] or "analysis_only",
+                "research_registry_updated_at": row["research_registry_updated_at"],
+                "research_registry_updated_by": row["research_registry_updated_by"],
+                "research_registry_source": row["research_registry_source"],
+                "image_count": int(row["image_count"] or 0),
+                "representative_image_id": row["representative_image_id"],
+                "representative_view": row["representative_view"],
+                "created_by_user_id": row["created_by_user_id"],
+                "created_at": row["created_at"],
+                "latest_image_uploaded_at": row["latest_image_uploaded_at"],
+            }
+            for row in rows
+        ]
 
     def list_patient_case_rows(
         self,
@@ -869,32 +953,266 @@ class SiteStore:
         page: int = 1,
         page_size: int = 25,
     ) -> dict[str, Any]:
+        """Optimized patient case rows with DB-level pagination and search."""
         normalized_search = str(search or "").strip().lower()
         bounded_page_size = max(1, min(int(page_size or 25), 100))
-        case_summaries = self.list_case_summaries(created_by_user_id=created_by_user_id)
+        safe_page = max(1, int(page or 1))
+
+        patient_table = db_patients.alias("p")
+        visit_table = db_visits.alias("v")
+        image_table = db_images.alias("i")
+
+        # Image stats subquery
+        image_stats = (
+            select(
+                image_table.c.visit_id,
+                func.count(image_table.c.image_id).label("image_count"),
+                func.max(image_table.c.uploaded_at).label("latest_image_uploaded_at"),
+            )
+            .where(image_table.c.site_id == self.site_id)
+            .group_by(image_table.c.visit_id)
+            .subquery("image_stats")
+        )
+
+        # Representative image subquery
+        representative_images = (
+            select(
+                image_table.c.visit_id,
+                image_table.c.image_id.label("representative_image_id"),
+                image_table.c.view.label("representative_view"),
+            )
+            .where(
+                and_(
+                    image_table.c.site_id == self.site_id,
+                    image_table.c.is_representative == True,
+                )
+            )
+            .subquery("representative_images")
+        )
+
+        # Patient summary subquery (latest case per patient)
+        patient_latest = (
+            select(
+                visit_table.c.patient_id,
+                func.count(visit_table.c.visit_id).label("case_count"),
+                func.max(
+                    visit_table.c.visit_index * 1000000000000 +
+                    func.coalesce(func.length(visit_table.c.created_at), 0)
+                ).label("sort_key"),
+            )
+            .where(visit_table.c.site_id == self.site_id)
+            .group_by(visit_table.c.patient_id)
+            .subquery("patient_latest")
+        )
+
+        # Build search conditions
+        search_conditions = []
         if normalized_search:
-            case_summaries = [
-                item
-                for item in case_summaries
-                if normalized_search in _case_summary_search_haystack(item)
+            search_pattern = f"%{normalized_search}%"
+            search_conditions = [
+                or_(
+                    patient_table.c.patient_id.ilike(search_pattern),
+                    patient_table.c.local_case_code.ilike(search_pattern),
+                    patient_table.c.chart_alias.ilike(search_pattern),
+                    visit_table.c.culture_category.ilike(search_pattern),
+                    visit_table.c.culture_species.ilike(search_pattern),
+                    visit_table.c.visit_date.ilike(search_pattern),
+                    visit_table.c.actual_visit_date.ilike(search_pattern),
+                )
             ]
 
-        grouped_cases: dict[str, list[dict[str, Any]]] = {}
-        for summary in case_summaries:
-            patient_id = str(summary.get("patient_id") or "").strip()
-            if not patient_id:
-                continue
-            grouped_cases.setdefault(patient_id, []).append(summary)
+        # Count query for total patients matching search
+        count_base = (
+            select(func.count(func.distinct(visit_table.c.patient_id)))
+            .select_from(
+                visit_table.join(
+                    patient_table,
+                    and_(
+                        visit_table.c.site_id == patient_table.c.site_id,
+                        visit_table.c.patient_id == patient_table.c.patient_id,
+                    ),
+                )
+            )
+            .where(visit_table.c.site_id == self.site_id)
+        )
+        if created_by_user_id:
+            count_base = count_base.where(patient_table.c.created_by_user_id == created_by_user_id)
+        if search_conditions:
+            count_base = count_base.where(and_(*search_conditions))
 
+        with DATA_PLANE_ENGINE.begin() as conn:
+            total_count = conn.execute(count_base).scalar() or 0
+
+        total_pages = max(1, (total_count + bounded_page_size - 1) // bounded_page_size)
+        safe_page = min(safe_page, total_pages) if total_pages > 0 else 1
+        offset = (safe_page - 1) * bounded_page_size
+
+        # Main query: get paginated patient IDs with their latest case info
+        # First, get distinct patient IDs ordered by their latest activity
+        patient_ids_query = (
+            select(
+                patient_table.c.patient_id,
+                patient_latest.c.case_count,
+                func.max(image_stats.c.latest_image_uploaded_at).label("max_upload"),
+                func.max(visit_table.c.created_at).label("max_created"),
+                func.max(visit_table.c.visit_index).label("max_visit_index"),
+            )
+            .select_from(
+                patient_table
+                .join(
+                    visit_table,
+                    and_(
+                        patient_table.c.site_id == visit_table.c.site_id,
+                        patient_table.c.patient_id == visit_table.c.patient_id,
+                    ),
+                )
+                .join(patient_latest, patient_table.c.patient_id == patient_latest.c.patient_id)
+                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
+            )
+            .where(patient_table.c.site_id == self.site_id)
+            .group_by(patient_table.c.patient_id, patient_latest.c.case_count)
+        )
+        if created_by_user_id:
+            patient_ids_query = patient_ids_query.where(patient_table.c.created_by_user_id == created_by_user_id)
+        if search_conditions:
+            patient_ids_query = patient_ids_query.where(and_(*search_conditions))
+
+        patient_ids_query = (
+            patient_ids_query
+            .order_by(
+                desc(func.coalesce(func.max(image_stats.c.latest_image_uploaded_at), "")),
+                desc(func.max(visit_table.c.created_at)),
+                desc(func.max(visit_table.c.visit_index)),
+            )
+            .limit(bounded_page_size)
+            .offset(offset)
+        )
+
+        with DATA_PLANE_ENGINE.begin() as conn:
+            patient_rows = conn.execute(patient_ids_query).mappings().all()
+
+        if not patient_rows:
+            return {
+                "items": [],
+                "page": safe_page,
+                "page_size": bounded_page_size,
+                "total_count": total_count,
+                "total_pages": total_pages,
+            }
+
+        patient_ids = [row["patient_id"] for row in patient_rows]
+        case_counts = {row["patient_id"]: int(row["case_count"] or 0) for row in patient_rows}
+
+        # Get full case details for these patients only
+        cases_query = (
+            select(
+                visit_table.c.visit_id,
+                visit_table.c.patient_id,
+                visit_table.c.patient_reference_id,
+                visit_table.c.visit_date,
+                visit_table.c.visit_index,
+                visit_table.c.actual_visit_date,
+                visit_table.c.culture_category,
+                visit_table.c.culture_species,
+                visit_table.c.additional_organisms,
+                visit_table.c.contact_lens_use,
+                visit_table.c.predisposing_factor,
+                visit_table.c.other_history,
+                visit_table.c.visit_status,
+                visit_table.c.active_stage,
+                visit_table.c.is_initial_visit,
+                visit_table.c.smear_result,
+                visit_table.c.polymicrobial,
+                visit_table.c.research_registry_status,
+                visit_table.c.created_at,
+                patient_table.c.chart_alias,
+                patient_table.c.local_case_code,
+                patient_table.c.sex,
+                patient_table.c.age,
+                patient_table.c.created_by_user_id,
+                func.coalesce(image_stats.c.image_count, 0).label("image_count"),
+                image_stats.c.latest_image_uploaded_at,
+                representative_images.c.representative_image_id,
+                representative_images.c.representative_view,
+            )
+            .select_from(
+                visit_table
+                .join(
+                    patient_table,
+                    and_(
+                        visit_table.c.site_id == patient_table.c.site_id,
+                        visit_table.c.patient_id == patient_table.c.patient_id,
+                    ),
+                )
+                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
+                .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
+            )
+            .where(
+                and_(
+                    visit_table.c.site_id == self.site_id,
+                    visit_table.c.patient_id.in_(patient_ids),
+                )
+            )
+            .order_by(
+                desc(image_stats.c.latest_image_uploaded_at),
+                desc(visit_table.c.created_at),
+                desc(visit_table.c.visit_index),
+            )
+        )
+
+        with DATA_PLANE_ENGINE.begin() as conn:
+            case_rows = conn.execute(cases_query).mappings().all()
+
+        # Group cases by patient
+        cases_by_patient: dict[str, list[dict[str, Any]]] = {}
+        for row in case_rows:
+            patient_id = row["patient_id"]
+            case_record = {
+                "case_id": f"{row['patient_id']}::{row['visit_date']}",
+                "visit_id": row["visit_id"],
+                "patient_id": row["patient_id"],
+                "patient_reference_id": row["patient_reference_id"],
+                "visit_date": row["visit_date"],
+                "visit_index": row["visit_index"],
+                "actual_visit_date": row["actual_visit_date"],
+                "chart_alias": row["chart_alias"] or "",
+                "local_case_code": row["local_case_code"] or "",
+                "sex": row["sex"] or "",
+                "age": row["age"],
+                "culture_category": row["culture_category"] or "",
+                "culture_species": row["culture_species"] or "",
+                "additional_organisms": row["additional_organisms"] or [],
+                "contact_lens_use": row["contact_lens_use"] or "",
+                "predisposing_factor": row["predisposing_factor"] or [],
+                "other_history": row["other_history"] or "",
+                "visit_status": row["visit_status"] or "active",
+                "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
+                "is_initial_visit": bool(row["is_initial_visit"]),
+                "smear_result": row["smear_result"] or "",
+                "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
+                "research_registry_status": row["research_registry_status"] or "analysis_only",
+                "image_count": int(row["image_count"] or 0),
+                "representative_image_id": row["representative_image_id"],
+                "representative_view": row["representative_view"],
+                "created_by_user_id": row["created_by_user_id"],
+                "created_at": row["created_at"],
+                "latest_image_uploaded_at": row["latest_image_uploaded_at"],
+            }
+            cases_by_patient.setdefault(patient_id, []).append(case_record)
+
+        # Build result rows maintaining the order from patient_ids
         rows: list[dict[str, Any]] = []
-        for patient_id, grouped in grouped_cases.items():
-            sorted_cases = sorted(grouped, key=_case_summary_sort_key, reverse=True)
+        for patient_id in patient_ids:
+            cases = cases_by_patient.get(patient_id, [])
+            if not cases:
+                continue
+            sorted_cases = sorted(cases, key=_case_summary_sort_key, reverse=True)
             latest_case = sorted_cases[0]
             rows.append(
                 {
                     "patient_id": patient_id,
                     "latest_case": latest_case,
-                    "case_count": len(grouped),
+                    "case_count": case_counts.get(patient_id, len(sorted_cases)),
                     "organism_summary": _organism_summary_label(
                         str(latest_case.get("culture_category") or ""),
                         str(latest_case.get("culture_species") or ""),
@@ -914,14 +1232,8 @@ class SiteStore:
                 }
             )
 
-        rows.sort(key=lambda item: _case_summary_sort_key(item["latest_case"]), reverse=True)
-        total_count = len(rows)
-        total_pages = max(1, (total_count + bounded_page_size - 1) // bounded_page_size)
-        safe_page = min(max(1, int(page or 1)), total_pages)
-        start_index = (safe_page - 1) * bounded_page_size
-        end_index = start_index + bounded_page_size
         return {
-            "items": rows[start_index:end_index],
+            "items": rows,
             "page": safe_page,
             "page_size": bounded_page_size,
             "total_count": total_count,

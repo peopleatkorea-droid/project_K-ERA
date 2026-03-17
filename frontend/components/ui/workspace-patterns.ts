@@ -179,6 +179,8 @@ export const organismChipRowClass = "flex flex-wrap gap-2";
 export const organismChipClass =
   "inline-flex items-center gap-3 rounded-[10px] border border-border bg-surface px-4 py-2 text-sm";
 export const organismChipStaticClass = "border-brand/12 bg-brand-soft/60";
+export const predisposingChipClass =
+  "inline-flex min-h-8 max-w-full items-center rounded-full border border-[rgba(194,166,133,0.46)] bg-[rgba(255,251,246,0.96)] px-3 py-1 text-[0.78rem] font-medium tracking-[-0.01em] text-[rgb(110,78,52)] shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] whitespace-nowrap dark:border-[rgba(232,190,132,0.22)] dark:bg-[rgba(93,63,31,0.2)] dark:text-[rgba(255,236,214,0.9)]";
 export const organismChipCopyClass = "grid gap-0.5";
 export const organismChipRemoveClass =
   "inline-flex min-h-8 items-center rounded-[8px] border border-border bg-white/55 px-3 text-[0.76rem] font-medium text-muted transition hover:border-danger/30 hover:text-danger dark:bg-white/4";
@@ -298,7 +300,7 @@ export function tagPillClass(active = false) {
   return cn(
     "min-h-10 rounded-[10px] border px-4 text-sm font-semibold transition duration-150 ease-out",
     active
-      ? "border-brand/20 bg-brand-soft text-brand"
+      ? "border-amber-300/70 bg-[linear-gradient(180deg,rgba(255,244,214,1),rgba(255,226,156,0.97))] text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.58),0_10px_22px_rgba(245,158,11,0.15)] ring-1 ring-amber-200/75 dark:border-amber-300/35 dark:bg-[linear-gradient(180deg,rgba(120,53,15,0.5),rgba(146,64,14,0.32))] dark:text-amber-100 dark:ring-amber-300/20"
       : "border-border bg-surface text-muted hover:border-brand/15 hover:bg-surface-muted/80 hover:text-ink"
   );
 }

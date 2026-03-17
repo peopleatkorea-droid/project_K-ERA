@@ -76,6 +76,20 @@ FastAPI 서버와 Next.js 개발 서버를 함께 실행하고, 사용 가능한
 .\scripts\run_web_frontend.ps1
 ```
 
+공용 FastAPI 서버 1대를 두고 다른 PC에서 같은 관리자/프로젝트/site를 보려면, 클라이언트 PC에서는 로컬 API를 띄우지 말고 아래처럼 frontend만 공용 API에 연결하세요.
+
+```powershell
+.\scripts\run_local_node.ps1 -SharedApiBaseUrl http://YOUR-SHARED-API:8000
+```
+
+또는 `.env.local`에 `KERA_INTERNAL_API_BASE_URL`을 넣어도 동일하게 동작합니다.
+
+새 PC에서 관리자/프로젝트/site만 같은 중앙 DB를 보게 하려면 `.env.local`을 직접 편집하지 않고 아래 한 줄로 생성할 수 있습니다.
+
+```powershell
+.\scripts\configure_shared_control_plane_client.ps1 -ControlPlaneDatabaseUrl "postgresql://.../kera_control_plane?sslmode=require&channel_binding=require"
+```
+
 ---
 
 ## 환경변수

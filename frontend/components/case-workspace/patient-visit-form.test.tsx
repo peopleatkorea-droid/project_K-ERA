@@ -109,4 +109,23 @@ describe("PatientVisitForm", () => {
     expect(typeof updater).toBe("function");
     expect(updater(completedDraft).intake_completed).toBe(false);
   });
+
+  it("omits an unset date from the current summary", () => {
+    render(
+      <PatientVisitForm
+        {...buildProps({
+          draft: {
+            ...buildProps().draft,
+            predisposing_factor: ["trauma"],
+          },
+        })}
+      />
+    );
+
+    const currentSummaryCard = screen.getByText("Current summary").closest("div");
+    expect(currentSummaryCard).not.toBeNull();
+    expect(currentSummaryCard).toHaveTextContent("initial · active · No lens use");
+    expect(currentSummaryCard).not.toHaveTextContent("Not set");
+    expect(currentSummaryCard).not.toHaveTextContent("trauma");
+  });
 });

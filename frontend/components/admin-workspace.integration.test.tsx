@@ -310,7 +310,7 @@ describe("AdminWorkspace integration", () => {
     const onRefreshSites = vi.fn(async () => undefined);
     apiMocks.searchPublicInstitutions.mockResolvedValue([
       {
-        institution_id: "HIRA_12345678",
+        institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
         source: "hira",
         name: "Jeju National University Hospital",
         institution_type_code: "11",
@@ -378,11 +378,15 @@ describe("AdminWorkspace integration", () => {
       expect(apiMocks.searchPublicInstitutions).toHaveBeenCalledWith("Jeju", { limit: 8 });
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use for new site" }));
+    expect(screen.queryByText("HIRA")).not.toBeInTheDocument();
+    expect(screen.queryByText("JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz")).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
 
     expect(screen.getByLabelText("App display name")).toHaveValue("Jeju National University Hospital");
     expect(screen.getByLabelText("Official hospital name")).toHaveValue("Jeju National University Hospital");
     expect(screen.getByText(/Linked HIRA institution/i)).toBeInTheDocument();
+    expect(screen.getByText(/Jeju National University Hospital/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
@@ -393,7 +397,7 @@ describe("AdminWorkspace integration", () => {
           project_id: "project_1",
           display_name: "Jeju National University Hospital",
           hospital_name: "Jeju National University Hospital",
-          source_institution_id: "HIRA_12345678",
+          source_institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
           research_registry_enabled: true,
         }),
       );

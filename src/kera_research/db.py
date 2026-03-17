@@ -65,10 +65,11 @@ def _engine_kwargs_for(database_url: str) -> dict[str, object]:
     """
     if database_url.startswith("postgresql") or database_url.startswith("postgres"):
         return {
-            "pool_size": 5,
-            "max_overflow": 5,
+            "pool_size": 10,
+            "max_overflow": 10,
             "pool_timeout": 30,
-            "pool_recycle": 300,
+            "pool_recycle": 180,  # Neon idle timeout is 300s, recycle before that
+            "pool_pre_ping": True,  # Handled here instead of global for clarity
         }
     return {}
 
@@ -80,14 +81,12 @@ DATABASE_URL = CONTROL_PLANE_DATABASE_URL
 CONTROL_PLANE_ENGINE: Engine = create_engine(
     CONTROL_PLANE_DATABASE_URL,
     future=True,
-    pool_pre_ping=True,
     connect_args=_connect_args_for(CONTROL_PLANE_DATABASE_URL),
     **_engine_kwargs_for(CONTROL_PLANE_DATABASE_URL),
 )
 DATA_PLANE_ENGINE: Engine = create_engine(
     DATA_PLANE_DATABASE_URL,
     future=True,
-    pool_pre_ping=True,
     connect_args=_connect_args_for(DATA_PLANE_DATABASE_URL),
     **_engine_kwargs_for(DATA_PLANE_DATABASE_URL),
 )

@@ -9,6 +9,7 @@ import threading
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,13 @@ from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel, Field
 
-from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DIR
+from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DIR, SITE_ROOT_DIR
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
 from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
-from kera_research.services.data_plane import InvalidImageUploadError, SiteStore
+from kera_research.services.data_plane import InvalidImageUploadError, SiteStore, control_plane_split_enabled
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
 from kera_research.storage import read_json
@@ -162,8 +163,22 @@ def _verify_google_id_token(id_token: str) -> dict[str, str]:
     }
 
 
+class _LazyControlPlaneStore:
+    def __init__(self) -> None:
+        self._store: ControlPlaneStore | None = None
+
+    def _resolve(self) -> ControlPlaneStore:
+        if self._store is None:
+            self._store = ControlPlaneStore()
+        return self._store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+
+@lru_cache(maxsize=1)
 def get_control_plane() -> ControlPlaneStore:
-    return ControlPlaneStore()
+    return _LazyControlPlaneStore()
 
 
 def get_current_user(
@@ -195,8 +210,44 @@ def get_approved_user(user: dict[str, Any] = Depends(get_current_user)) -> dict[
     return user
 
 
+def _site_ids_for_user(user: dict[str, Any]) -> list[str]:
+    return [
+        str(site_id).strip()
+        for site_id in user.get("site_ids") or []
+        if str(site_id).strip()
+    ]
+
+
+def _user_can_access_site(user: dict[str, Any], site_id: str) -> bool:
+    normalized_site_id = str(site_id or "").strip()
+    if not normalized_site_id:
+        return False
+    if str(user.get("role") or "").strip().lower() == "admin":
+        return True
+    return normalized_site_id in set(_site_ids_for_user(user))
+
+
+def _local_site_records_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
+    site_ids = _site_ids_for_user(user)
+    if str(user.get("role") or "").strip().lower() == "admin":
+        disk_site_ids = []
+        if SITE_ROOT_DIR.exists():
+            disk_site_ids = sorted(path.name for path in SITE_ROOT_DIR.iterdir() if path.is_dir())
+        site_ids = [*disk_site_ids, *site_ids]
+
+    ordered_site_ids = list(dict.fromkeys(site_ids))
+    return [
+        {
+            "site_id": site_id,
+            "display_name": site_id,
+            "hospital_name": site_id,
+        }
+        for site_id in ordered_site_ids
+    ]
+
+
 def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: str) -> SiteStore:
-    if not cp.user_can_access_site(user, site_id):
+    if not _user_can_access_site(user, site_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
     return SiteStore(site_id)
 
@@ -215,7 +266,7 @@ def _build_auth_response(cp: ControlPlaneStore, user: dict[str, Any]) -> dict[st
 def _assert_request_review_permission(cp: ControlPlaneStore, reviewer: dict[str, Any], site_id: str) -> None:
     if reviewer.get("role") == "admin":
         return
-    if reviewer.get("role") == "site_admin" and cp.user_can_access_site(reviewer, site_id):
+    if reviewer.get("role") == "site_admin" and _user_can_access_site(reviewer, site_id):
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot review requests for this site.")
 
@@ -401,6 +452,8 @@ def _queue_case_embedding_refresh(
     visit_date: str,
     trigger: str,
 ) -> None:
+    if control_plane_split_enabled():
+        return
     disable_refresh = os.getenv("KERA_DISABLE_CASE_EMBEDDING_REFRESH", "").strip().lower()
     if disable_refresh in {"1", "true", "yes", "on"}:
         return
@@ -1196,6 +1249,9 @@ def create_app() -> FastAPI:
         require_validation_permission=_require_validation_permission,
         require_platform_admin=_require_platform_admin,
         require_site_access=_require_site_access,
+        user_can_access_site=_user_can_access_site,
+        control_plane_split_enabled=control_plane_split_enabled,
+        local_site_records_for_user=_local_site_records_for_user,
         require_visit_write_access=_require_visit_write_access,
         require_visit_image_write_access=_require_visit_image_write_access,
         require_record_owner=_require_record_owner,

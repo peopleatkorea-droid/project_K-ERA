@@ -798,6 +798,118 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIn("patients", local_tables)
         self.assertEqual(local_patients, 1)
 
+    def test_split_mode_case_crud_paths_do_not_touch_control_plane_http(self):
+        old_site_dir = self.site_store.site_dir
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+        shutil.rmtree(old_site_dir, ignore_errors=True)
+        self.tempdir.cleanup()
+
+        split_tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = split_tempdir
+        control_db = Path(split_tempdir.name) / "control.db"
+        local_db = Path(split_tempdir.name) / "local.db"
+        self.app_module = reload_app_module(
+            control_plane_db_path=control_db,
+            data_plane_db_path=local_db,
+            control_plane_artifact_dir=Path(split_tempdir.name) / "control_artifacts",
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        self.site_id = "LOCAL_ONLY_SITE"
+        from fastapi.testclient import TestClient
+
+        self.client = TestClient(self.app_module.create_app())
+        token = self.app_module._create_access_token(
+            {
+                "user_id": "local_user_001",
+                "username": "local.user",
+                "role": "researcher",
+                "site_ids": [self.site_id],
+                "approval_status": "approved",
+            }
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        with patch("kera_research.services.data_plane.init_control_plane_db", side_effect=AssertionError("data plane should stay local")), patch.object(
+            self.app_module.ControlPlaneStore,
+            "__init__",
+            side_effect=AssertionError("control plane should stay idle"),
+        ):
+            site_store = self.app_module.SiteStore(self.site_id)
+            self.assertTrue(site_store.site_dir.exists())
+
+            sites_response = self.client.get("/api/sites", headers=headers)
+            self.assertEqual(sites_response.status_code, 200, sites_response.text)
+            self.assertEqual([item["site_id"] for item in sites_response.json()], [self.site_id])
+
+            patient_response = self.client.post(
+                f"/api/sites/{self.site_id}/patients",
+                headers=headers,
+                json={"patient_id": "LOCAL-001", "sex": "female", "age": 52, "chart_alias": "", "local_case_code": ""},
+            )
+            self.assertEqual(patient_response.status_code, 200, patient_response.text)
+
+            visit_response = self.client.post(
+                f"/api/sites/{self.site_id}/visits",
+                headers=headers,
+                json={
+                    "patient_id": "LOCAL-001",
+                    "visit_date": "Initial",
+                    "culture_category": "bacterial",
+                    "culture_species": "Staphylococcus aureus",
+                    "contact_lens_use": "none",
+                    "visit_status": "active",
+                    "is_initial_visit": True,
+                },
+            )
+            self.assertEqual(visit_response.status_code, 200, visit_response.text)
+
+            image_response = self.client.post(
+                f"/api/sites/{self.site_id}/images",
+                headers=headers,
+                data={
+                    "patient_id": "LOCAL-001",
+                    "visit_date": "Initial",
+                    "view": "slit",
+                    "is_representative": "true",
+                },
+                files={"file": ("local.png", self._make_test_image_bytes("PNG"), "image/png")},
+            )
+            self.assertEqual(image_response.status_code, 200, image_response.text)
+
+            cases_response = self.client.get(f"/api/sites/{self.site_id}/cases", headers=headers)
+            self.assertEqual(cases_response.status_code, 200, cases_response.text)
+            self.assertEqual(len(cases_response.json()), 1)
+
+            summary_response = self.client.get(f"/api/sites/{self.site_id}/summary", headers=headers)
+            self.assertEqual(summary_response.status_code, 200, summary_response.text)
+            summary_payload = summary_response.json()
+            self.assertEqual(summary_payload["site_id"], self.site_id)
+            self.assertEqual(summary_payload["n_patients"], 1)
+            self.assertEqual(summary_payload["n_visits"], 1)
+            self.assertEqual(summary_payload["n_images"], 1)
+            self.assertEqual(summary_payload["n_validation_runs"], 0)
+            self.assertFalse(summary_payload["research_registry"]["site_enabled"])
+
+            activity_response = self.client.get(f"/api/sites/{self.site_id}/activity", headers=headers)
+            self.assertEqual(activity_response.status_code, 200, activity_response.text)
+            self.assertEqual(activity_response.json()["recent_validations"], [])
+            self.assertEqual(activity_response.json()["recent_contributions"], [])
+
+            model_versions_response = self.client.get(f"/api/sites/{self.site_id}/model-versions", headers=headers)
+            self.assertEqual(model_versions_response.status_code, 200, model_versions_response.text)
+            self.assertEqual(model_versions_response.json(), [])
+
+        with sqlite3.connect(local_db) as conn:
+            local_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+            local_visits = conn.execute("SELECT COUNT(*) FROM visits").fetchone()[0]
+            local_images = conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+
+        self.assertEqual(local_patients, 1)
+        self.assertEqual(local_visits, 1)
+        self.assertEqual(local_images, 1)
+
     def _login(self, username: str, password: str) -> str:
         response = self.client.post("/api/auth/login", json={"username": username, "password": password})
         self.assertEqual(response.status_code, 200, response.text)
@@ -2217,6 +2329,44 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(english_response.status_code, 200, english_response.text)
         self.assertEqual(len(english_response.json()), 1)
         self.assertEqual(english_response.json()[0]["institution_id"], "HIRA_EYE_003")
+
+    def test_public_institution_search_prioritizes_name_matches_over_address_only_matches_http(self):
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "HIRA_EYE_010",
+                    "name": "가톨릭안과의원",
+                    "institution_type_code": "31",
+                    "institution_type_name": "Clinic",
+                    "address": "제주특별자치도 제주시 도령로 1",
+                    "phone": "064-000-0001",
+                    "sido_code": "50",
+                    "sggu_code": "500",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_010"},
+                },
+                {
+                    "institution_id": "HIRA_EYE_011",
+                    "name": "제주대학교병원",
+                    "institution_type_code": "11",
+                    "institution_type_name": "Tertiary hospital",
+                    "address": "제주특별자치도 제주시 아란13길 15",
+                    "phone": "064-717-1114",
+                    "sido_code": "50",
+                    "sggu_code": "500",
+                    "ophthalmology_available": True,
+                    "open_status": "active",
+                    "source_payload": {"ykiho": "HIRA_EYE_011"},
+                },
+            ]
+        )
+
+        response = self.client.get("/api/public/institutions/search?q=제주&limit=1")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["institution_id"], "HIRA_EYE_011")
 
     def test_access_request_review_can_create_site_from_institution_request_http(self):
         self.cp.upsert_institutions(

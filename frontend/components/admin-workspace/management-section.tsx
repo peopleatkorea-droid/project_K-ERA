@@ -422,11 +422,11 @@ export function ManagementSection({
                                   {[institution.institution_type_name, institution.address].filter(Boolean).join(" / ")}
                                 </div>
                               </div>
-                              <span className={docSiteBadgeClass}>
-                                {linkedSite
-                                  ? pick(locale, `Linked to ${linkedSite.site_id}`, `${linkedSite.site_id}에 연결됨`)
-                                  : institution.institution_id}
-                              </span>
+                              {linkedSite ? (
+                                <span className={docSiteBadgeClass}>
+                                  {pick(locale, `Linked to ${linkedSite.site_id}`, `${linkedSite.site_id}에 연결됨`)}
+                                </span>
+                              ) : null}
                             </div>
                             <div className="flex flex-wrap justify-end gap-3">
                               {linkedSite ? (
@@ -454,7 +454,7 @@ export function ManagementSection({
                                     setInstitutionQuery(institution.name);
                                   }}
                                 >
-                                  {pick(locale, "Use for new site", "새 site 초안으로 사용")}
+                                  {pick(locale, "Select this hospital", "이 병원으로 선택")}
                                 </Button>
                               )}
                             </div>
@@ -473,13 +473,17 @@ export function ManagementSection({
                 <select
                   value={siteForm.project_id || projects[0]?.project_id || ""}
                   onChange={(event) => setSiteForm((current) => ({ ...current, project_id: event.target.value }))}
-                  disabled={Boolean(editingSiteId)}
+                  disabled={Boolean(editingSiteId) || projects.length === 0}
                 >
-                  {projects.map((project) => (
-                    <option key={project.project_id} value={project.project_id}>
-                      {project.name}
-                    </option>
-                  ))}
+                  {projects.length === 0 ? (
+                    <option value="">{pick(locale, "Create a project first", "프로젝트를 먼저 생성하세요")}</option>
+                  ) : (
+                    projects.map((project) => (
+                      <option key={project.project_id} value={project.project_id}>
+                        {project.name}
+                      </option>
+                    ))
+                  )}
                 </select>
               </Field>
               <div className="grid gap-4 md:grid-cols-2">
@@ -509,7 +513,8 @@ export function ManagementSection({
               {siteForm.source_institution_id ? (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-brand/20 bg-brand-soft/60 px-4 py-3 text-sm text-ink">
                   <span>
-                    <strong>{pick(locale, "Linked HIRA institution", "연결된 HIRA 기관")}:</strong> {siteForm.source_institution_id}
+                    <strong>{pick(locale, "Linked HIRA institution", "연결된 HIRA 기관")}:</strong>{" "}
+                    {siteForm.hospital_name || siteForm.display_name || "HIRA"}
                   </span>
                   <Button
                     type="button"

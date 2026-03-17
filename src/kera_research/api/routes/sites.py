@@ -25,6 +25,9 @@ def build_sites_router(support: Any) -> APIRouter:
     require_admin_workspace_permission = support.require_admin_workspace_permission
     require_validation_permission = support.require_validation_permission
     require_site_access = support.require_site_access
+    user_can_access_site = support.user_can_access_site
+    control_plane_split_enabled = support.control_plane_split_enabled
+    local_site_records_for_user = support.local_site_records_for_user
     get_model_version = support.get_model_version
     resolve_execution_device = support.resolve_execution_device
     project_id_for_site = support.project_id_for_site
@@ -51,11 +54,39 @@ def build_sites_router(support: Any) -> APIRouter:
     EmbeddingBackfillRequest = support.EmbeddingBackfillRequest
     CrossValidationRunRequest = support.CrossValidationRunRequest
 
+    def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
+        patients = site_store.list_patients()
+        visits = site_store.list_visits()
+        images = site_store.list_images()
+        active_visits = [
+            visit for visit in visits if visit.get("visit_status", "active" if visit.get("active_stage") else "scar") == "active"
+        ]
+        included_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "included"]
+        excluded_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "excluded"]
+        return {
+            "site_id": site_id,
+            "n_patients": len(patients),
+            "n_visits": len(visits),
+            "n_images": len(images),
+            "n_active_visits": len(active_visits),
+            "n_validation_runs": 0,
+            "latest_validation": None,
+            "research_registry": {
+                "site_enabled": False,
+                "user_enrolled": False,
+                "user_enrolled_at": None,
+                "included_cases": len(included_visits),
+                "excluded_cases": len(excluded_visits),
+            },
+        }
+
     @router.get("/api/sites")
     def list_sites(
-        cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
+        if control_plane_split_enabled():
+            return local_site_records_for_user(user)
+        cp = get_control_plane()
         return cp.accessible_sites_for_user(user)
 
     @router.get("/api/sites/{site_id}/summary")
@@ -65,6 +96,8 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
+        if control_plane_split_enabled():
+            return build_local_summary(site_store, site_id)
         patients = site_store.list_patients()
         visits = site_store.list_visits()
         images = site_store.list_images()
@@ -349,6 +382,12 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         require_site_access(cp, user, site_id)
+        if control_plane_split_enabled():
+            return {
+                "pending_updates": 0,
+                "recent_validations": [],
+                "recent_contributions": [],
+            }
         return build_site_activity(cp, site_id)
 
     @router.get("/api/sites/{site_id}/validations")
@@ -358,6 +397,8 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         require_site_access(cp, user, site_id)
+        if control_plane_split_enabled():
+            return []
         return site_level_validation_runs(cp.list_validation_runs(site_id=site_id))
 
     @router.get("/api/sites/{site_id}/validations/{validation_id}/cases")
@@ -369,7 +410,7 @@ def build_sites_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
-        if not cp.user_can_access_site(user, site_id):
+        if not user_can_access_site(user, site_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
         try:
             site_store: SiteStore | None = SiteStore(site_id)

@@ -23,6 +23,8 @@ def build_cases_router(support: Any) -> APIRouter:
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
     require_site_access = support.require_site_access
+    user_can_access_site = support.user_can_access_site
+    control_plane_split_enabled = support.control_plane_split_enabled
     require_validation_permission = support.require_validation_permission
     require_visit_write_access = support.require_visit_write_access
     require_visit_image_write_access = support.require_visit_image_write_access
@@ -227,6 +229,8 @@ def build_cases_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         require_validation_permission(user)
         require_site_access(cp, user, site_id)
+        if control_plane_split_enabled():
+            return []
         versions = cp.list_model_versions()
         if ready_only:
             versions = [item for item in versions if item.get("ready", True)]
@@ -1241,8 +1245,24 @@ def build_cases_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
-        if not cp.user_can_access_site(user, site_id):
+        if not user_can_access_site(user, site_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
+        if control_plane_split_enabled():
+            site_store = require_site_access(cp, user, site_id)
+            visits = [
+                {
+                    "visit_index": int(item.get("visit_index") or 0),
+                    "visit_label": item.get("visit_date"),
+                    "validations": [],
+                }
+                for item in site_store.list_visits()
+                if str(item.get("patient_reference_id") or "") == patient_reference_id
+            ]
+            visits.sort(key=lambda item: item["visit_index"])
+            return {
+                "patient_reference_id": patient_reference_id,
+                "trajectory": visits,
+            }
         return build_patient_trajectory(cp, site_id, patient_reference_id)
 
     @router.post("/api/sites/{site_id}/cases/research-registry")

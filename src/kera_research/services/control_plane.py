@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit, unquote
 
 import bcrypt
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 
 from kera_research.config import (
     BASE_DIR,
@@ -1839,6 +1839,7 @@ class ControlPlaneStore:
         bounded_limit = max(1, min(limit, 50))
 
         query = select(institution_directory)
+        ranking_expression = None
         if open_only:
             query = query.where(institution_directory.c.open_status == "active")
         if normalized_sido:
@@ -1846,31 +1847,66 @@ class ControlPlaneStore:
         if normalized_sggu:
             query = query.where(institution_directory.c.sggu_code == normalized_sggu)
         if normalized_search:
-            searchable_columns = [
-                func.lower(institution_directory.c.name),
-                func.lower(institution_directory.c.address),
-                func.lower(institution_directory.c.institution_id),
-            ]
+            name_column = func.lower(institution_directory.c.name)
+            address_column = func.lower(institution_directory.c.address)
+            institution_id_column = func.lower(institution_directory.c.institution_id)
+            searchable_columns = [name_column, address_column, institution_id_column]
             grouped_terms = _expand_institution_search_terms(search)
             if grouped_terms:
                 token_clauses = []
+                ranking_terms = [
+                    case((name_column == normalized_search, 1000), else_=0),
+                    case((name_column.like(f"{normalized_search}%"), 500), else_=0),
+                    case((name_column.like(f"%{normalized_search}%"), 250), else_=0),
+                    case((address_column.like(f"{normalized_search}%"), 120), else_=0),
+                    case((address_column.like(f"%{normalized_search}%"), 60), else_=0),
+                    case((institution_id_column.like(f"%{normalized_search}%"), 20), else_=0),
+                ]
                 for aliases in grouped_terms:
                     alias_clauses = []
+                    name_alias_clauses = []
+                    address_alias_clauses = []
+                    institution_id_alias_clauses = []
                     for alias in aliases:
                         alias_pattern = f"%{alias.lower()}%"
                         alias_clauses.extend(column.like(alias_pattern) for column in searchable_columns)
+                        name_alias_clauses.append(name_column.like(alias_pattern))
+                        address_alias_clauses.append(address_column.like(alias_pattern))
+                        institution_id_alias_clauses.append(institution_id_column.like(alias_pattern))
                     token_clauses.append(or_(*alias_clauses))
+                    ranking_terms.extend(
+                        [
+                            case((or_(*name_alias_clauses), 50), else_=0),
+                            case((or_(*address_alias_clauses), 10), else_=0),
+                            case((or_(*institution_id_alias_clauses), 2), else_=0),
+                        ]
+                    )
                 query = query.where(and_(*token_clauses))
+                ranking_expression = ranking_terms[0]
+                for ranking_term in ranking_terms[1:]:
+                    ranking_expression = ranking_expression + ranking_term
             else:
                 like_pattern = f"%{normalized_search}%"
                 query = query.where(
                     or_(
-                        func.lower(institution_directory.c.name).like(like_pattern),
-                        func.lower(institution_directory.c.address).like(like_pattern),
-                        func.lower(institution_directory.c.institution_id).like(like_pattern),
+                        name_column.like(like_pattern),
+                        address_column.like(like_pattern),
+                        institution_id_column.like(like_pattern),
                     )
                 )
-        query = query.order_by(institution_directory.c.name).limit(bounded_limit)
+                ranking_expression = (
+                    case((name_column == normalized_search, 1000), else_=0)
+                    + case((name_column.like(f"{normalized_search}%"), 500), else_=0)
+                    + case((name_column.like(like_pattern), 250), else_=0)
+                    + case((address_column.like(f"{normalized_search}%"), 120), else_=0)
+                    + case((address_column.like(like_pattern), 60), else_=0)
+                    + case((institution_id_column.like(like_pattern), 20), else_=0)
+                )
+        if ranking_expression is not None:
+            query = query.order_by(ranking_expression.desc(), institution_directory.c.name)
+        else:
+            query = query.order_by(institution_directory.c.name)
+        query = query.limit(bounded_limit)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
