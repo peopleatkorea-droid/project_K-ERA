@@ -175,6 +175,8 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (프론트엔드) |
 | `NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL` | control plane UI가 로컬 FastAPI node와 통신할 때 사용할 base URL |
 | `KERA_CONTROL_PLANE_DATABASE_URL` | 중앙 control plane DB (사용자, 권한, 프로젝트, 모델 레지스트리) |
+| `KERA_CONTROL_PLANE_API_BASE_URL` | 병원 local node가 중앙 control-plane HTTP API에 붙을 때 사용하는 base URL |
+| `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL` | 병원 local node가 중앙 metadata projection/cache를 저장하는 로컬 SQLite DB |
 | `KERA_CONTROL_PLANE_SESSION_SECRET` | control plane 세션/JWT 서명용 비밀값 |
 | `KERA_CONTROL_PLANE_DEV_AUTH` | 로컬 개발용 dev login 허용 여부 (`true` 권장, 운영에서는 비활성화) |
 | `KERA_CONTROL_PLANE_DIR` | 중앙 control plane 파일 루트 (`validation_cases`, `validation_reports`, `experiments`, `artifacts`) |
@@ -207,7 +209,7 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 **참고:**
 - 로컬 계정(`KERA_ADMIN_USERNAME` 등)은 해당 환경변수가 있을 때만 앱 시작 시 시드됩니다.
 - `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 실행 스크립트가 서버/프론트엔드에서 서로 보완되도록 처리합니다.
-- `KERA_CONTROL_PLANE_DATABASE_URL`과 `KERA_DATA_PLANE_DATABASE_URL`을 모두 지정하면 control/data plane DB가 분리됩니다. 미지정 시 단일 DB(`KERA_DATABASE_URL` 또는 기본 SQLite)를 공용으로 사용합니다.
+- 중앙 owner(Next.js control plane)는 `KERA_CONTROL_PLANE_DATABASE_URL`을 사용합니다. 병원 local node는 `KERA_CONTROL_PLANE_API_BASE_URL`과 `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL`을 사용하고, `KERA_DATA_PLANE_DATABASE_URL`은 병원 로컬 DB를 가리켜야 합니다.
 - 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\KERA_DATA\kera.db`입니다.
 - 집/병원 등 여러 관리자 PC에서 같은 validation metadata와 model registry artifact를 보려면 `KERA_CONTROL_PLANE_DIR`과 `KERA_MODEL_DIR`을 모든 관리자 PC에서 동일한 공유 경로로 맞추는 것을 권장합니다.
 - OneDrive/SharePoint 자동 발행을 쓰려면 `KERA_MODEL_DISTRIBUTION_MODE=download_url`과 `KERA_ONEDRIVE_*`를 함께 설정하세요. 그러면 관리자 Registry의 `자동 발행` 버튼으로 모델/델타를 바로 업로드하고 링크를 등록할 수 있습니다.

@@ -165,13 +165,13 @@ export default function AdminLoginPage() {
               </div>
             ) : null}
 
-            <Button type="submit" variant="primary" fullWidth disabled={authBusy}>
+            <Button type="submit" variant="primary" className="w-full" disabled={authBusy}>
               {authBusy ? copy.signingIn : copy.signIn}
             </Button>
 
             {allowDevRecovery ? (
               <>
-                <Button type="button" variant="ghost" fullWidth disabled={authBusy} onClick={handleDevLogin}>
+                <Button type="button" variant="ghost" className="w-full" disabled={authBusy} onClick={handleDevLogin}>
                   {authBusy ? copy.signingIn : copy.devSignIn}
                 </Button>
                 <p className="m-0 text-xs leading-5 text-muted">{copy.devFootnote}</p>

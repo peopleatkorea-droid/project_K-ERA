@@ -2,7 +2,7 @@ import postgres from "postgres";
 
 import { controlPlaneDatabaseUrl } from "./config";
 
-type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
+export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
@@ -40,6 +40,8 @@ async function createUniqueIndex(sql: ControlPlaneSql, tableName: string, suffix
 
 async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists users add column if not exists username text`;
+  await sql`alter table if exists users add column if not exists legacy_local_user_id text`;
+  await sql`alter table if exists users add column if not exists public_alias text`;
   await sql`alter table if exists users add column if not exists password text`;
   await sql`alter table if exists users add column if not exists role text`;
   await sql`alter table if exists users add column if not exists site_ids jsonb default '[]'::jsonb`;
@@ -94,13 +96,32 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
     where u.ctid = r.ctid and r.row_number > 1
   `);
 
+  await sql`alter table if exists projects add column if not exists description text default ''`;
+  await sql`alter table if exists projects add column if not exists owner_user_id text`;
+  await sql`alter table if exists projects add column if not exists site_ids jsonb default '[]'::jsonb`;
+  await sql`alter table if exists projects add column if not exists created_at timestamptz default now()`;
+  await sql`alter table if exists projects add column if not exists updated_at timestamptz default now()`;
+  await sql`
+    update projects
+    set
+      description = coalesce(description, ''),
+      site_ids = coalesce(site_ids, '[]'::jsonb),
+      updated_at = now()
+  `;
+
+  await sql`alter table if exists sites add column if not exists project_id text default 'project_default'`;
+  await sql`alter table if exists sites add column if not exists local_storage_root text default ''`;
+  await sql`alter table if exists sites add column if not exists research_registry_enabled boolean not null default true`;
   await sql`alter table if exists sites add column if not exists status text`;
   await sql`alter table if exists sites add column if not exists updated_at timestamptz default now()`;
   await sql`
     update sites
     set
+      project_id = coalesce(nullif(trim(project_id), ''), 'project_default'),
       display_name = coalesce(nullif(trim(display_name), ''), site_id),
       hospital_name = coalesce(nullif(trim(hospital_name), ''), coalesce(nullif(trim(display_name), ''), site_id)),
+      local_storage_root = coalesce(local_storage_root, ''),
+      research_registry_enabled = coalesce(research_registry_enabled, true),
       status = coalesce(nullif(trim(status), ''), 'active'),
       updated_at = now()
   `;
@@ -120,6 +141,39 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
     where s.ctid = r.ctid and r.row_number > 1
   `);
 
+  await sql`alter table if exists institution_directory add column if not exists source text default 'hira'`;
+  await sql`alter table if exists institution_directory add column if not exists institution_type_code text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists institution_type_name text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists address text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists phone text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists homepage text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists sido_code text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists sggu_code text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists emdong_name text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists postal_code text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists x_pos text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists y_pos text default ''`;
+  await sql`alter table if exists institution_directory add column if not exists ophthalmology_available boolean not null default true`;
+  await sql`alter table if exists institution_directory add column if not exists open_status text default 'active'`;
+  await sql`alter table if exists institution_directory add column if not exists source_payload jsonb default '{}'::jsonb`;
+  await sql`alter table if exists institution_directory add column if not exists synced_at timestamptz default now()`;
+
+  await sql`alter table if exists access_requests add column if not exists email text`;
+  await sql`alter table if exists access_requests add column if not exists requested_site_label text default ''`;
+  await sql`alter table if exists access_requests add column if not exists requested_site_source text default 'site'`;
+  await sql`alter table if exists access_requests add column if not exists reviewer_notes text default ''`;
+  await sql`alter table if exists access_requests add column if not exists created_at timestamptz default now()`;
+  await sql`alter table if exists access_requests add column if not exists reviewed_at timestamptz`;
+  await sql`
+    update access_requests
+    set
+      email = lower(coalesce(nullif(trim(email), ''), user_id || '@local.invalid')),
+      requested_site_label = coalesce(requested_site_label, ''),
+      requested_site_source = coalesce(nullif(trim(requested_site_source), ''), 'site'),
+      reviewer_notes = coalesce(reviewer_notes, '')
+  `;
+
+  await sql`alter table if exists model_versions add column if not exists stage text`;
   await sql`alter table if exists model_versions add column if not exists payload_json jsonb default '{}'::jsonb`;
   await sql`alter table if exists model_versions add column if not exists source_provider text`;
   await sql`alter table if exists model_versions add column if not exists download_url text`;
@@ -161,6 +215,7 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
       updated_at = now()
   `;
 
+  await sql`alter table if exists aggregations add column if not exists new_version_name text default ''`;
   await sql`alter table if exists aggregations add column if not exists payload_json jsonb default '{}'::jsonb`;
   await sql`alter table if exists aggregations add column if not exists new_version_id text`;
   await sql`alter table if exists aggregations add column if not exists status text`;
@@ -171,22 +226,45 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`
     update aggregations
     set
+      new_version_name = coalesce(new_version_name, ''),
       status = coalesce(nullif(trim(status), ''), 'completed'),
       summary_json = coalesce(summary_json, payload_json::jsonb, '{}'::jsonb),
       updated_at = now()
   `;
 
+  await sql`alter table if exists validation_runs add column if not exists project_id text default 'project_default'`;
+  await sql`alter table if exists validation_runs add column if not exists model_version text default ''`;
   await sql`alter table if exists validation_runs add column if not exists node_id text`;
   await sql`alter table if exists validation_runs add column if not exists model_version_id text`;
+  await sql`alter table if exists validation_runs add column if not exists case_predictions_path text default ''`;
+  await sql`alter table if exists validation_runs add column if not exists n_cases integer`;
+  await sql`alter table if exists validation_runs add column if not exists n_images integer`;
+  await sql`alter table if exists validation_runs add column if not exists "AUROC" double precision`;
+  await sql`alter table if exists validation_runs add column if not exists accuracy double precision`;
+  await sql`alter table if exists validation_runs add column if not exists sensitivity double precision`;
+  await sql`alter table if exists validation_runs add column if not exists specificity double precision`;
+  await sql`alter table if exists validation_runs add column if not exists "F1" double precision`;
   await sql`alter table if exists validation_runs add column if not exists created_at timestamptz default now()`;
   await sql`alter table if exists validation_runs add column if not exists updated_at timestamptz default now()`;
   await sql`
     update validation_runs
     set
+      project_id = coalesce(
+        nullif(trim(project_id), ''),
+        nullif(trim(summary_json::jsonb ->> 'project_id'), ''),
+        'project_default'
+      ),
+      model_version = coalesce(
+        nullif(trim(model_version), ''),
+        nullif(trim(summary_json::jsonb ->> 'model_version'), '')
+      ),
       model_version_id = coalesce(
         nullif(trim(model_version_id), ''),
         nullif(trim(summary_json::jsonb ->> 'model_version_id'), '')
       ),
+      case_predictions_path = coalesce(case_predictions_path, ''),
+      n_cases = coalesce(n_cases, nullif(summary_json::jsonb ->> 'n_cases', '')::integer),
+      n_images = coalesce(n_images, nullif(summary_json::jsonb ->> 'n_images', '')::integer),
       updated_at = now()
   `;
 }
@@ -202,9 +280,16 @@ export async function ensureControlPlaneSchema(): Promise<void> {
     await sql`
       create table if not exists users (
         user_id text primary key,
+        legacy_local_user_id text,
+        username text,
         email text not null,
         google_sub text,
+        public_alias text,
+        password text not null default '',
+        role text not null default 'viewer',
         full_name text not null,
+        site_ids jsonb not null default '[]'::jsonb,
+        registry_consents jsonb not null default '{}'::jsonb,
         global_role text not null default 'member',
         status text not null default 'active',
         created_at timestamptz not null default now(),
@@ -212,20 +297,64 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createUniqueIndex(sql, "users", "email", "(email)");
+    await createUniqueIndex(sql, "users", "legacy_local_user_id", "(legacy_local_user_id) where legacy_local_user_id is not null");
+    await createUniqueIndex(sql, "users", "username", "(username) where username is not null");
     await createUniqueIndex(sql, "users", "google_sub", "(google_sub) where google_sub is not null");
+    await createUniqueIndex(sql, "users", "public_alias", "(public_alias) where public_alias is not null");
+
+    await sql`
+      create table if not exists projects (
+        project_id text primary key,
+        name text not null,
+        description text not null default '',
+        owner_user_id text,
+        site_ids jsonb not null default '[]'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `;
 
     await sql`
       create table if not exists sites (
         site_id text primary key,
+        project_id text not null default 'project_default',
         display_name text not null,
         hospital_name text not null default '',
         source_institution_id text,
+        local_storage_root text not null default '',
+        research_registry_enabled boolean not null default true,
         status text not null default 'active',
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       )
     `;
     await createUniqueIndex(sql, "sites", "source_institution_id", "(source_institution_id) where source_institution_id is not null");
+    await createIndex(sql, "sites", "project", "(project_id)");
+
+    await sql`
+      create table if not exists institution_directory (
+        institution_id text primary key,
+        source text not null default 'hira',
+        name text not null,
+        institution_type_code text not null default '',
+        institution_type_name text not null default '',
+        address text not null default '',
+        phone text not null default '',
+        homepage text not null default '',
+        sido_code text not null default '',
+        sggu_code text not null default '',
+        emdong_name text not null default '',
+        postal_code text not null default '',
+        x_pos text not null default '',
+        y_pos text not null default '',
+        ophthalmology_available boolean not null default true,
+        open_status text not null default 'active',
+        source_payload jsonb not null default '{}'::jsonb,
+        synced_at timestamptz not null default now()
+      )
+    `;
+    await createIndex(sql, "institution_directory", "name", "(name)");
+    await createIndex(sql, "institution_directory", "region", "(sido_code, sggu_code)");
 
     await sql`
       create table if not exists site_memberships (
@@ -241,6 +370,27 @@ export async function ensureControlPlaneSchema(): Promise<void> {
     `;
     await createUniqueIndex(sql, "site_memberships", "user_site", "(user_id, site_id)");
     await createIndex(sql, "site_memberships", "site_role", "(site_id, role)");
+
+    await sql`
+      create table if not exists access_requests (
+        request_id text primary key,
+        user_id text not null references users (user_id) on delete cascade,
+        email text not null,
+        requested_site_id text not null,
+        requested_site_label text not null default '',
+        requested_site_source text not null default 'site',
+        requested_role text not null,
+        message text not null default '',
+        status text not null default 'pending',
+        reviewed_by text references users (user_id) on delete set null,
+        reviewer_notes text not null default '',
+        created_at timestamptz not null default now(),
+        reviewed_at timestamptz
+      )
+    `;
+    await createIndex(sql, "access_requests", "status", "(status, created_at desc)");
+    await createIndex(sql, "access_requests", "user", "(user_id, created_at desc)");
+    await createIndex(sql, "access_requests", "site", "(requested_site_id, created_at desc)");
 
     await sql`
       create table if not exists nodes (
@@ -264,6 +414,8 @@ export async function ensureControlPlaneSchema(): Promise<void> {
         version_id text primary key,
         version_name text not null,
         architecture text not null,
+        stage text,
+        payload_json jsonb not null default '{}'::jsonb,
         source_provider text not null default '',
         download_url text not null default '',
         sha256 text not null default '',
@@ -276,6 +428,7 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createIndex(sql, "model_versions", "current", "(is_current)");
+    await createIndex(sql, "model_versions", "stage", "(stage, created_at desc)");
 
     await sql`
       create table if not exists model_updates (
@@ -299,23 +452,36 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       create table if not exists aggregations (
         aggregation_id text primary key,
         base_model_version_id text references model_versions (version_id) on delete set null,
+        new_version_name text not null default '',
         new_version_id text references model_versions (version_id) on delete set null,
         status text not null default 'queued',
         triggered_by_user_id text references users (user_id) on delete set null,
+        payload_json jsonb not null default '{}'::jsonb,
         summary_json jsonb not null default '{}'::jsonb,
         created_at timestamptz not null default now(),
         finished_at timestamptz,
         updated_at timestamptz not null default now()
       )
     `;
+    await createIndex(sql, "aggregations", "status", "(status, created_at desc)");
 
     await sql`
       create table if not exists validation_runs (
         validation_id text primary key,
+        project_id text not null default 'project_default',
         site_id text references sites (site_id) on delete set null,
         node_id text references nodes (node_id) on delete set null,
+        model_version text not null default '',
         model_version_id text references model_versions (version_id) on delete set null,
         run_date timestamptz,
+        n_cases integer,
+        n_images integer,
+        "AUROC" double precision,
+        accuracy double precision,
+        sensitivity double precision,
+        specificity double precision,
+        "F1" double precision,
+        case_predictions_path text not null default '',
         summary_json jsonb not null default '{}'::jsonb,
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()

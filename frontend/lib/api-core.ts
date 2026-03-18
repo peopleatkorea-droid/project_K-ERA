@@ -60,7 +60,12 @@ async function readErrorDetail(response: Response, fallbackLabel: string): Promi
   return detail || `${fallbackLabel}: ${response.status}`;
 }
 
-export async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
+async function requestFromUrl<T>(
+  url: string,
+  init: RequestInit = {},
+  token?: string,
+  unavailableMessage = "Request server is unavailable.",
+): Promise<T> {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData)) {
     headers.set("Content-Type", headers.get("Content-Type") ?? "application/json");
@@ -70,17 +75,25 @@ export async function request<T>(path: string, init: RequestInit = {}, token?: s
   }
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(path), {
+    response = await fetch(url, {
       ...init,
       headers,
     });
   } catch {
-    throw new Error("Local API server is unavailable.");
+    throw new Error(unavailableMessage);
   }
   if (!response.ok) {
     throw new Error(await readErrorDetail(response, "Request failed"));
   }
   return (await response.json()) as T;
+}
+
+export async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
+  return requestFromUrl<T>(buildApiUrl(path), init, token, "Local API server is unavailable.");
+}
+
+export async function requestSameOrigin<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
+  return requestFromUrl<T>(path, init, token, "Web API server is unavailable.");
 }
 
 export async function requestBlob(

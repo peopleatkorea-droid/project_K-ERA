@@ -70,6 +70,35 @@ class RemoteControlPlaneClient:
             "x-kera-node-token": self.node_token,
         }
 
+    def _user_headers(self, user_bearer_token: str) -> dict[str, str]:
+        token = (user_bearer_token or "").strip()
+        if not token:
+            raise RuntimeError("User bearer token is required.")
+        return {
+            "Authorization": f"Bearer {token}",
+        }
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        response = requests.request(
+            method.upper(),
+            self._url(path),
+            headers=headers,
+            params=params,
+            json=json_body,
+            timeout=float(timeout_seconds or self.timeout_seconds),
+        )
+        response.raise_for_status()
+        return response.json()
+
     def register_node(
         self,
         *,
@@ -82,9 +111,10 @@ class RemoteControlPlaneClient:
         hospital_name: str | None = None,
         source_institution_id: str | None = None,
     ) -> dict[str, Any]:
-        response = requests.post(
-            self._url("/nodes/register"),
-            json={
+        payload = self._request_json(
+            "POST",
+            "/nodes/register",
+            json_body={
                 "device_name": device_name,
                 "os_info": os_info,
                 "app_version": app_version,
@@ -93,43 +123,29 @@ class RemoteControlPlaneClient:
                 "hospital_name": hospital_name,
                 "source_institution_id": source_institution_id,
             },
-            headers={"Authorization": f"Bearer {user_bearer_token.strip()}"},
-            timeout=self.timeout_seconds,
+            headers=self._user_headers(user_bearer_token),
         )
-        response.raise_for_status()
-        return dict(response.json())
+        return dict(payload)
 
     def bootstrap(self) -> dict[str, Any]:
-        response = requests.get(
-            self._url("/nodes/bootstrap"),
-            headers=self._node_headers(),
-            timeout=self.timeout_seconds,
-        )
-        response.raise_for_status()
-        return dict(response.json())
+        payload = self._request_json("GET", "/nodes/bootstrap", headers=self._node_headers())
+        return dict(payload)
 
     def heartbeat(self, *, app_version: str = "", os_info: str = "", status: str = "ok") -> dict[str, Any]:
-        response = requests.post(
-            self._url("/nodes/heartbeat"),
-            json={
+        payload = self._request_json(
+            "POST",
+            "/nodes/heartbeat",
+            json_body={
                 "app_version": app_version,
                 "os_info": os_info,
                 "status": status,
             },
             headers=self._node_headers(),
-            timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
-        return dict(response.json())
+        return dict(payload)
 
     def current_release(self) -> dict[str, Any] | None:
-        response = requests.get(
-            self._url("/nodes/current-release"),
-            headers=self._node_headers(),
-            timeout=self.timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        payload = self._request_json("GET", "/nodes/current-release", headers=self._node_headers())
         return dict(payload) if isinstance(payload, dict) else None
 
     def upload_model_update(
@@ -139,34 +155,32 @@ class RemoteControlPlaneClient:
         payload_json: dict[str, Any],
         review_thumbnail_url: str | None = None,
     ) -> dict[str, Any]:
-        response = requests.post(
-            self._url("/nodes/model-updates"),
-            json={
+        payload = self._request_json(
+            "POST",
+            "/nodes/model-updates",
+            json_body={
                 "base_model_version_id": base_model_version_id,
                 "payload_json": payload_json,
                 "review_thumbnail_url": review_thumbnail_url,
             },
             headers=self._node_headers(),
-            timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
-        return dict(response.json())
+        return dict(payload)
 
     def upload_validation_run(
         self,
         *,
         summary_json: dict[str, Any],
     ) -> dict[str, Any]:
-        response = requests.post(
-            self._url("/nodes/validation-runs"),
-            json={
+        payload = self._request_json(
+            "POST",
+            "/nodes/validation-runs",
+            json_body={
                 "summary_json": summary_json,
             },
             headers=self._node_headers(),
-            timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
-        return dict(response.json())
+        return dict(payload)
 
     def relay_ai_clinic(
         self,
@@ -175,15 +189,227 @@ class RemoteControlPlaneClient:
         system_prompt: str = "",
         model: str = "",
     ) -> dict[str, Any]:
-        response = requests.post(
-            self._url("/llm/ai-clinic"),
-            json={
+        payload = self._request_json(
+            "POST",
+            "/llm/ai-clinic",
+            json_body={
                 "input": input_text,
                 "system": system_prompt,
                 "model": model,
             },
             headers=self._node_headers(),
-            timeout=max(self.timeout_seconds, 60.0),
+            timeout_seconds=max(self.timeout_seconds, 60.0),
         )
-        response.raise_for_status()
-        return dict(response.json())
+        return dict(payload)
+
+    def public_sites(self) -> list[dict[str, Any]]:
+        payload = self._request_json("GET", "/main/public/sites")
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def public_institutions(
+        self,
+        *,
+        query: str = "",
+        sido_code: str | None = None,
+        sggu_code: str | None = None,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/public/institutions/search",
+            params={
+                "q": query,
+                "sido_code": sido_code,
+                "sggu_code": sggu_code,
+                "limit": limit,
+            },
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def public_statistics(self) -> dict[str, Any]:
+        payload = self._request_json("GET", "/main/public/statistics")
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_sites(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json("GET", "/main/sites", headers=self._user_headers(user_bearer_token))
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_auth_me(self, *, user_bearer_token: str) -> dict[str, Any]:
+        payload = self._request_json("GET", "/main/auth/me", headers=self._user_headers(user_bearer_token))
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_access_requests(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json("GET", "/main/auth/access-requests", headers=self._user_headers(user_bearer_token))
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_request_access(
+        self,
+        *,
+        user_bearer_token: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/auth/request-access",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_access_requests(
+        self,
+        *,
+        user_bearer_token: str,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/access-requests",
+            headers=self._user_headers(user_bearer_token),
+            params={"status_filter": status_filter},
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_overview(self, *, user_bearer_token: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/overview",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_model_versions(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/model-versions",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_model_updates(
+        self,
+        *,
+        user_bearer_token: str,
+        site_id: str | None = None,
+        status_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/model-updates",
+            headers=self._user_headers(user_bearer_token),
+            params={
+                "site_id": site_id,
+                "status_filter": status_filter,
+            },
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_aggregations(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/aggregations",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_review_access_request(
+        self,
+        *,
+        user_bearer_token: str,
+        request_id: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            f"/main/admin/access-requests/{request_id}/review",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_projects(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json("GET", "/main/admin/projects", headers=self._user_headers(user_bearer_token))
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_create_project(
+        self,
+        *,
+        user_bearer_token: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/admin/projects",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_sites(
+        self,
+        *,
+        user_bearer_token: str,
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/sites",
+            headers=self._user_headers(user_bearer_token),
+            params={"project_id": project_id},
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_create_site(
+        self,
+        *,
+        user_bearer_token: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/admin/sites",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_users(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json("GET", "/main/admin/users", headers=self._user_headers(user_bearer_token))
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_upsert_user(
+        self,
+        *,
+        user_bearer_token: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/admin/users",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_update_site(
+        self,
+        *,
+        user_bearer_token: str,
+        site_id: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "PATCH",
+            f"/main/admin/sites/{site_id}",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_institution_status(self, *, user_bearer_token: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/institutions/status",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}

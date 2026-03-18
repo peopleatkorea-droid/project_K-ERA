@@ -4,9 +4,19 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
+from kera_research.api.control_plane_proxy import call_remote_control_plane_method, site_record_for_request
+from kera_research.api.site_jobs import (
+    require_ready_model_version,
+    resolve_execution_device_or_raise,
+    serialize_site_model_version,
+    start_cross_validation,
+    start_initial_training,
+    start_initial_training_benchmark,
+    start_site_validation,
+)
 from kera_research.domain import normalize_actual_visit_date, normalize_patient_pseudonym, normalize_visit_label
 from kera_research.services.data_plane import SiteStore
 
@@ -84,7 +94,17 @@ def build_sites_router(support: Any) -> APIRouter:
     def list_sites(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
+        remote_sites = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_sites",
+        )
+        if remote_sites is not None:
+            return remote_sites
         accessible_sites = cp.accessible_sites_for_user(user)
         if accessible_sites:
             return accessible_sites
@@ -97,6 +117,8 @@ def build_sites_router(support: Any) -> APIRouter:
         site_id: str,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
         patients = site_store.list_patients()
@@ -109,7 +131,12 @@ def build_sites_router(support: Any) -> APIRouter:
         included_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "included"]
         excluded_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "excluded"]
         latest_run = validation_runs[0] if validation_runs else None
-        site_record = cp.get_site(site_id) or {}
+        site_record = site_record_for_request(
+            cp,
+            site_id=site_id,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+        ) or {}
         consent = cp.get_registry_consent(user["user_id"], site_id)
         if not site_record and control_plane_split_enabled():
             summary = build_local_summary(site_store, site_id)
@@ -138,9 +165,16 @@ def build_sites_router(support: Any) -> APIRouter:
         site_id: str,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_site_access(cp, user, site_id)
-        site_record = cp.get_site(site_id)
+        site_record = site_record_for_request(
+            cp,
+            site_id=site_id,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+        )
         if site_record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
         consent = cp.get_registry_consent(user["user_id"], site_id)
@@ -157,12 +191,32 @@ def build_sites_router(support: Any) -> APIRouter:
         payload: ResearchRegistrySettingsRequest,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         require_site_access(cp, user, site_id)
-        site_record = cp.get_site(site_id)
+        site_record = site_record_for_request(
+            cp,
+            site_id=site_id,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+        )
         if site_record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
+        remote_site = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_update_site",
+            site_id=site_id,
+            payload_json={"research_registry_enabled": payload.research_registry_enabled},
+        )
+        if remote_site is not None:
+            return {
+                "site_id": site_id,
+                "research_registry_enabled": bool(remote_site.get("research_registry_enabled", True)),
+            }
         updated = cp.update_site_metadata(
             site_id,
             str(site_record.get("display_name") or site_id),
@@ -180,9 +234,16 @@ def build_sites_router(support: Any) -> APIRouter:
         payload: ResearchRegistryConsentRequest,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_site_access(cp, user, site_id)
-        site_record = cp.get_site(site_id)
+        site_record = site_record_for_request(
+            cp,
+            site_id=site_id,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+        )
         if site_record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
         if not bool(site_record.get("research_registry_enabled", True)):
@@ -429,56 +490,26 @@ def build_sites_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
-
-        model_version = get_model_version(cp, payload.model_version_id)
-        if model_version is None or not model_version.get("ready", True):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No ready model version is available for site validation.",
-            )
-
-        try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Site validation is unavailable: {exc}",
-            ) from exc
-        job = site_store.enqueue_job(
-            "site_validation",
-            {
-                "project_id": project_id_for_site(cp, site_id),
-                "model_version_id": model_version.get("version_id"),
-                "execution_mode": payload.execution_mode,
-                "execution_device": execution_device,
-                "generate_gradcam": bool(payload.generate_gradcam),
-                "generate_medsam": bool(payload.generate_medsam),
-            },
-            queue_name=queue_name_for_job_type("site_validation"),
+        model_version = require_ready_model_version(
+            cp,
+            get_model_version=get_model_version,
+            model_version_id=payload.model_version_id,
+            unavailable_detail="No ready model version is available for site validation.",
         )
-        site_store.update_job_status(
-            job["job_id"],
-            "queued",
-            {
-                "progress": {
-                    "stage": "queued",
-                    "message": "Hospital validation job queued.",
-                    "percent": 0,
-                }
-            },
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="Site validation",
         )
-        return {
-            "site_id": site_id,
-            "execution_device": execution_device,
-            "job": site_store.get_job(job["job_id"]) or job,
-            "model_version": {
-                "version_id": model_version.get("version_id"),
-                "version_name": model_version.get("version_name"),
-                "architecture": model_version.get("architecture"),
-            },
-        }
+        return start_site_validation(
+            site_store,
+            site_id=site_id,
+            project_id=project_id_for_site(cp, site_id),
+            model_version=model_version,
+            payload=payload,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
+        )
 
     @router.post("/api/sites/{site_id}/training/initial")
     def run_initial_training(
@@ -495,54 +526,20 @@ def build_sites_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Initial training supports only these architectures: {', '.join(training_architectures)}",
             )
-
-        try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Initial training is unavailable: {exc}",
-            ) from exc
-
-        output_path = model_dir / f"global_{payload.architecture}_{make_id('init')[:8]}.pth"
-        job = site_store.enqueue_job(
-            "initial_training",
-            {
-                "architecture": payload.architecture,
-                "execution_mode": payload.execution_mode,
-                "execution_device": execution_device,
-                "crop_mode": payload.crop_mode,
-                "epochs": int(payload.epochs),
-                "learning_rate": float(payload.learning_rate),
-                "batch_size": int(payload.batch_size),
-                "val_split": float(payload.val_split),
-                "test_split": float(payload.test_split),
-                "use_pretrained": bool(payload.use_pretrained),
-                "regenerate_split": bool(payload.regenerate_split),
-                "output_model_path": str(output_path),
-            },
-            queue_name=queue_name_for_job_type("initial_training"),
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="Initial training",
         )
-
-        site_store.update_job_status(
-            job["job_id"],
-            "queued",
-            {
-                "progress": {
-                    "stage": "queued",
-                    "message": "Training job queued.",
-                    "percent": 0,
-                    "crop_mode": payload.crop_mode,
-                }
-            },
+        return start_initial_training(
+            site_store,
+            site_id=site_id,
+            payload=payload,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
+            model_dir=model_dir,
+            make_id=make_id,
         )
-        return {
-            "site_id": site_id,
-            "execution_device": execution_device,
-            "job": site_store.get_job(job["job_id"]) or job,
-        }
 
     @router.post("/api/sites/{site_id}/training/initial/benchmark")
     def run_initial_training_benchmark(
@@ -564,52 +561,19 @@ def build_sites_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported architectures: {', '.join(unsupported)}. Supported: {', '.join(training_architectures)}",
             )
-
-        try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Initial benchmark training is unavailable: {exc}",
-            ) from exc
-
-        job = site_store.enqueue_job(
-            "initial_training_benchmark",
-            {
-                "architectures": architectures,
-                "execution_mode": payload.execution_mode,
-                "execution_device": execution_device,
-                "crop_mode": payload.crop_mode,
-                "epochs": int(payload.epochs),
-                "learning_rate": float(payload.learning_rate),
-                "batch_size": int(payload.batch_size),
-                "val_split": float(payload.val_split),
-                "test_split": float(payload.test_split),
-                "use_pretrained": bool(payload.use_pretrained),
-                "regenerate_split": bool(payload.regenerate_split),
-            },
-            queue_name=queue_name_for_job_type("initial_training_benchmark"),
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="Initial benchmark training",
         )
-        site_store.update_job_status(
-            job["job_id"],
-            "queued",
-            {
-                "progress": {
-                    "stage": "queued",
-                    "message": "Benchmark training job queued.",
-                    "percent": 0,
-                    "crop_mode": payload.crop_mode,
-                    "architecture_count": len(architectures),
-                }
-            },
+        return start_initial_training_benchmark(
+            site_store,
+            site_id=site_id,
+            payload=payload,
+            architectures=architectures,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
         )
-        return {
-            "site_id": site_id,
-            "execution_device": execution_device,
-            "job": site_store.get_job(job["job_id"]) or job,
-        }
 
     @router.get("/api/sites/{site_id}/jobs/{job_id}")
     def get_site_job(
@@ -634,12 +598,12 @@ def build_sites_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         site_store = require_site_access(cp, user, site_id)
-        model_version = get_model_version(cp, model_version_id)
-        if model_version is None or not model_version.get("ready", True):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No ready model version is available for AI Clinic embedding status.",
-            )
+        model_version = require_ready_model_version(
+            cp,
+            get_model_version=get_model_version,
+            model_version_id=model_version_id,
+            unavailable_detail="No ready model version is available for AI Clinic embedding status.",
+        )
         return get_embedding_backfill_status(cp, site_store, model_version=model_version)
 
     @router.post("/api/sites/{site_id}/ai-clinic/embeddings/backfill")
@@ -659,27 +623,23 @@ def build_sites_router(support: Any) -> APIRouter:
                 "site_id": site_id,
                 "job": active_job,
                 "model_version": {
+                    **serialize_site_model_version(active_model_version),
                     "version_id": active_payload.get("model_version_id"),
                     "version_name": active_payload.get("model_version_name"),
-                    "architecture": active_model_version.get("architecture") if active_model_version else None,
                 },
                 "execution_device": active_payload.get("execution_device", "unknown"),
             }
-        model_version = get_model_version(cp, payload.model_version_id)
-        if model_version is None or not model_version.get("ready", True):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No ready model version is available for AI Clinic embedding backfill.",
-            )
-        try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"AI Clinic embedding backfill is unavailable: {exc}",
-            ) from exc
+        model_version = require_ready_model_version(
+            cp,
+            get_model_version=get_model_version,
+            model_version_id=payload.model_version_id,
+            unavailable_detail="No ready model version is available for AI Clinic embedding backfill.",
+        )
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="AI Clinic embedding backfill",
+        )
         job = queue_site_embedding_backfill(
             cp,
             site_store,
@@ -690,11 +650,7 @@ def build_sites_router(support: Any) -> APIRouter:
         return {
             "site_id": site_id,
             "job": job,
-            "model_version": {
-                "version_id": model_version.get("version_id"),
-                "version_name": model_version.get("version_name"),
-                "architecture": model_version.get("architecture"),
-            },
+            "model_version": serialize_site_model_version(model_version),
             "execution_device": execution_device,
         }
 
@@ -722,51 +678,19 @@ def build_sites_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cross-validation supports only these architectures: {', '.join(training_architectures)}",
             )
-        try:
-            execution_device = resolve_execution_device(payload.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Cross-validation is unavailable: {exc}",
-            ) from exc
-        output_dir = model_dir / f"cross_validation_{make_id('cvdir')[:8]}"
-
-        job = site_store.enqueue_job(
-            "cross_validation",
-            {
-                "architecture": payload.architecture,
-                "execution_mode": payload.execution_mode,
-                "execution_device": execution_device,
-                "crop_mode": payload.crop_mode,
-                "num_folds": int(payload.num_folds),
-                "epochs": int(payload.epochs),
-                "learning_rate": float(payload.learning_rate),
-                "batch_size": int(payload.batch_size),
-                "val_split": float(payload.val_split),
-                "use_pretrained": bool(payload.use_pretrained),
-                "output_dir": str(output_dir),
-            },
-            queue_name=queue_name_for_job_type("cross_validation"),
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="Cross-validation",
         )
-        site_store.update_job_status(
-            job["job_id"],
-            "queued",
-            {
-                "progress": {
-                    "stage": "queued",
-                    "message": "Cross-validation job queued.",
-                    "percent": 0,
-                    "crop_mode": payload.crop_mode,
-                    "num_folds": payload.num_folds,
-                }
-            },
+        return start_cross_validation(
+            site_store,
+            site_id=site_id,
+            payload=payload,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
+            model_dir=model_dir,
+            make_id=make_id,
         )
-        return {
-            "site_id": site_id,
-            "execution_device": execution_device,
-            "job": site_store.get_job(job["job_id"]) or job,
-        }
 
     return router

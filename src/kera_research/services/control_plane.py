@@ -1,24 +1,17 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import platform
 import re
-import shutil
 import threading
-import time
-import requests
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit
 
 import bcrypt
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import func, select
 
 from kera_research.config import (
-    BASE_DIR,
-    CASE_REFERENCE_SALT,
     CASE_REFERENCE_SALT_FINGERPRINT,
     CONTROL_PLANE_ARTIFACT_DIR,
     CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS,
@@ -26,54 +19,41 @@ from kera_research.config import (
     CONTROL_PLANE_DIR,
     CONTROL_PLANE_EXPERIMENT_DIR,
     CONTROL_PLANE_REPORT_DIR,
-    DEFAULT_USERS,
     HIRA_API_KEY,
-    MODEL_DISTRIBUTION_MODE,
-    PATIENT_REFERENCE_SALT,
     PUBLIC_ALIAS_SALT,
-    SITE_ROOT_DIR,
     ensure_base_directories,
 )
 from kera_research.db import (
     CONTROL_PLANE_ENGINE,
-    DATA_PLANE_ENGINE,
-    access_requests,
-    app_settings,
-    aggregations,
-    contributions,
-    experiments,
-    images as db_images,
     init_control_plane_db,
-    institution_directory,
-    model_updates,
     model_versions,
-    organism_catalog,
-    organism_requests,
-    projects,
     sites,
-    users,
-    validation_cases,
     validation_runs,
 )
 from kera_research.domain import (
-    CULTURE_SPECIES,
-    make_case_reference_id,
-    make_id,
-    make_patient_reference_id,
     utc_now,
-    visit_index_from_label,
     visit_label_from_index,
 )
-from kera_research.services.institution_directory import HiraApiError, HiraInstitutionDirectoryClient
+from kera_research.services.control_plane_artifacts import ControlPlaneArtifactFacade
+from kera_research.services.control_plane_bootstrap_projection import ControlPlaneBootstrapProjectionFacade
 from kera_research.services.node_credentials import clear_node_credentials
-from kera_research.services.onedrive_publisher import OneDrivePublisher
+from kera_research.services.control_plane_catalog import ControlPlaneCatalogFacade
+from kera_research.services.control_plane_case_references import ControlPlaneCaseReferenceFacade
+from kera_research.services.control_plane_identity_views import ControlPlaneIdentityFacade
+from kera_research.services.control_plane_instance_state import ControlPlaneInstanceStateFacade
+from kera_research.services.control_plane_models import ControlPlaneModelFacade
+from kera_research.services.control_plane_registry_ops import ControlPlaneRegistryOps
+from kera_research.services.control_plane_remote_state import ControlPlaneRemoteState
+from kera_research.services.control_plane_results import ControlPlaneResultsFacade
+from kera_research.services.control_plane_seeding import ControlPlaneSeedingFacade
+from kera_research.services.control_plane_workspace_ops import ControlPlaneWorkspaceOps
+from kera_research.services.control_plane_workspace_views import ControlPlaneWorkspaceFacade
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
-from kera_research.storage import ensure_dir, read_json, write_json
+from kera_research.storage import ensure_dir
 
 GOOGLE_AUTH_SENTINEL = "__google__"
 APP_SETTING_INSTANCE_STORAGE_ROOT = "instance_storage_root"
 APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC = "institution_directory_last_sync"
-REMOTE_BOOTSTRAP_CACHE_FILENAME = "remote_bootstrap_cache.json"
 REMOTE_CURRENT_RELEASE_CACHE_SECONDS = 30.0
 HIRA_SITE_ID_PATTERN = re.compile(r"^\d{8}$")
 PUBLIC_ALIAS_ADJECTIVES: list[tuple[str, str, str]] = [
@@ -389,1171 +369,6 @@ def _replace_path_prefix_in_value(value: Any, old_root: Path, new_root: Path) ->
 _MODEL_VERSION_LOCK = threading.Lock()
 
 
-class _ControlPlaneIdentityOps:
-    def __init__(self, store: "ControlPlaneStore") -> None:
-        self.store = store
-
-    def _public_alias_seed(self, user_record: dict[str, Any]) -> str:
-        google_sub = str(user_record.get("google_sub") or "").strip()
-        if google_sub:
-            return f"google:{google_sub}"
-        user_id = str(user_record.get("user_id") or "").strip()
-        if user_id:
-            return f"user:{user_id}"
-        return ""
-
-    def _ensure_public_alias_for_record(self, conn: Any, user_record: dict[str, Any], *, persist: bool = True) -> str | None:
-        existing_alias = str(user_record.get("public_alias") or "").strip()
-        user_id = str(user_record.get("user_id") or "").strip()
-        if existing_alias:
-            normalized_existing_alias = _normalize_public_alias_token(existing_alias)
-            if normalized_existing_alias:
-                if normalized_existing_alias != existing_alias and user_id and persist:
-                    owner_user_id = conn.execute(select(users.c.user_id).where(users.c.public_alias == normalized_existing_alias)).scalar_one_or_none()
-                    if owner_user_id is None or str(owner_user_id) == user_id:
-                        conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=normalized_existing_alias))
-                        user_record["public_alias"] = normalized_existing_alias
-                        return normalized_existing_alias
-                return normalized_existing_alias
-
-        alias_seed = self._public_alias_seed(user_record)
-        if not user_id or not alias_seed:
-            return existing_alias or None
-
-        for attempt in range(256):
-            candidate = _make_public_alias(alias_seed, attempt=attempt)
-            owner_user_id = conn.execute(select(users.c.user_id).where(users.c.public_alias == candidate)).scalar_one_or_none()
-            if owner_user_id is None or str(owner_user_id) == user_id:
-                if persist:
-                    conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=candidate))
-                    user_record["public_alias"] = candidate
-                return candidate
-
-        fallback_suffix = hashlib.sha256(f"{PUBLIC_ALIAS_SALT}::{alias_seed}".encode("utf-8")).hexdigest()[:6].lower()
-        fallback_alias = f"anonymous_member_{fallback_suffix}"
-        if persist:
-            conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=fallback_alias))
-            user_record["public_alias"] = fallback_alias
-        return fallback_alias
-
-    def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
-        query = select(users).where(users.c.username == username)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        if row is None:
-            return None
-        user_record = dict(row)
-        stored = user_record.get("password", "")
-        if stored == GOOGLE_AUTH_SENTINEL:
-            return None
-        if not _is_bcrypt_hash(stored):
-            return None
-        if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
-            return None
-        return self.serialize_user(user_record)
-
-    def serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
-        serialized = dict(user_record)
-        serialized["site_ids"] = list(serialized.get("site_ids") or [])
-        serialized["registry_consents"] = _normalize_registry_consents(serialized.get("registry_consents"))
-        if not str(serialized.get("public_alias") or "").strip():
-            with CONTROL_PLANE_ENGINE.begin() as conn:
-                serialized["public_alias"] = self._ensure_public_alias_for_record(conn, serialized, persist=True)
-        else:
-            serialized["public_alias"] = str(serialized.get("public_alias") or "").strip()
-        serialized["approval_status"] = self.user_approval_status(serialized)
-        latest_request = self.latest_access_request(serialized["user_id"])
-        serialized["latest_access_request"] = latest_request
-        serialized.pop("google_sub", None)
-        serialized.pop("password", None)
-        return serialized
-
-    def load_user_by_id(self, user_id: str) -> dict[str, Any] | None:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(users).where(users.c.user_id == user_id)).mappings().first()
-        return dict(row) if row else None
-
-    def load_user_by_username(self, username: str) -> dict[str, Any] | None:
-        normalized = username.strip().lower()
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(users).where(users.c.username == normalized)).mappings().first()
-        return dict(row) if row else None
-
-    def load_user_by_google_sub(self, google_sub: str) -> dict[str, Any] | None:
-        normalized_sub = google_sub.strip()
-        if not normalized_sub:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(users).where(users.c.google_sub == normalized_sub)).mappings().first()
-        return dict(row) if row else None
-
-    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
-        row = self.load_user_by_id(user_id)
-        return self.serialize_user(row) if row else None
-
-    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
-        row = self.load_user_by_username(username)
-        return self.serialize_user(row) if row else None
-
-    def get_user_by_google_sub(self, google_sub: str) -> dict[str, Any] | None:
-        row = self.load_user_by_google_sub(google_sub)
-        return self.serialize_user(row) if row else None
-
-    def list_users(self) -> list[dict[str, Any]]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(users).order_by(users.c.username)).mappings().all()
-        return [self.serialize_user(dict(row)) for row in rows]
-
-    def get_user_public_alias(self, user_id: str) -> str | None:
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(users).where(users.c.user_id == normalized_user_id)).mappings().first()
-            if row is None:
-                return None
-            return self._ensure_public_alias_for_record(conn, dict(row), persist=True)
-
-    def list_user_public_aliases(self, user_ids: list[str]) -> dict[str, str]:
-        normalized_user_ids = [
-            str(user_id).strip()
-            for user_id in user_ids
-            if str(user_id).strip()
-        ]
-        normalized_user_ids = list(dict.fromkeys(normalized_user_ids))
-        if not normalized_user_ids:
-            return {}
-        aliases: dict[str, str] = {}
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(users).where(users.c.user_id.in_(normalized_user_ids))).mappings().all()
-            for row in rows:
-                record = dict(row)
-                alias = self._ensure_public_alias_for_record(conn, record, persist=True)
-                if alias:
-                    aliases[str(record["user_id"])] = alias
-        return aliases
-
-    def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
-        normalized_site_ids = list(dict.fromkeys(user_record.get("site_ids") or []))
-        normalized = {
-            **user_record,
-            "username": user_record["username"].strip().lower(),
-            "site_ids": normalized_site_ids,
-        }
-        normalized["registry_consents"] = _normalize_registry_consents(normalized.get("registry_consents"))
-        normalized["password"] = _normalize_password_storage(str(normalized.get("password") or ""))
-        if "google_sub" in normalized:
-            normalized["google_sub"] = str(normalized.get("google_sub") or "").strip() or None
-        if "public_alias" in normalized:
-            normalized["public_alias"] = _normalize_public_alias_token(str(normalized.get("public_alias") or "").strip()) or None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(users).where((users.c.user_id == normalized["user_id"]) | (users.c.username == normalized["username"]))
-            ).mappings().first()
-            if existing:
-                persisted = dict(existing)
-                persisted.update(normalized)
-                persisted["user_id"] = existing["user_id"]
-                conn.execute(update(users).where(users.c.user_id == existing["user_id"]).values(**persisted))
-                user_id = existing["user_id"]
-            else:
-                conn.execute(users.insert().values(**normalized))
-                user_id = normalized["user_id"]
-        return self.get_user_by_id(user_id) or normalized
-
-    def ensure_google_user(self, google_sub: str, email: str, full_name: str) -> dict[str, Any]:
-        normalized_sub = google_sub.strip()
-        normalized_email = email.strip().lower()
-        normalized_name = full_name.strip() or normalized_email
-        if not normalized_sub:
-            raise ValueError("Google account did not return a stable subject identifier.")
-
-        existing_by_sub = self.load_user_by_google_sub(normalized_sub)
-        if existing_by_sub:
-            email_owner = self.load_user_by_username(normalized_email)
-            if email_owner and email_owner["user_id"] != existing_by_sub["user_id"]:
-                raise ValueError("This Google email is already used by another account.")
-            updated = {
-                **existing_by_sub,
-                "username": normalized_email,
-                "full_name": normalized_name,
-                "google_sub": normalized_sub,
-            }
-            return self.upsert_user(updated)
-
-        existing_by_email = self.load_user_by_username(normalized_email)
-        if existing_by_email:
-            if existing_by_email.get("password") != GOOGLE_AUTH_SENTINEL:
-                raise ValueError("This email is already reserved by a local account.")
-            bound_google_sub = str(existing_by_email.get("google_sub") or "").strip()
-            if bound_google_sub and bound_google_sub != normalized_sub:
-                raise ValueError("This email is already linked to a different Google account.")
-            updated = {
-                **existing_by_email,
-                "full_name": normalized_name,
-                "google_sub": normalized_sub,
-            }
-            return self.upsert_user(updated)
-
-        return self.upsert_user(
-            {
-                "user_id": make_id("user"),
-                "username": normalized_email,
-                "google_sub": normalized_sub,
-                "password": GOOGLE_AUTH_SENTINEL,
-                "role": "viewer",
-                "full_name": normalized_name,
-                "site_ids": [],
-                "registry_consents": {},
-            }
-        )
-
-    def get_registry_consent(self, user_id: str, site_id: str) -> dict[str, Any] | None:
-        user = self.load_user_by_id(user_id)
-        if user is None:
-            return None
-        consents = _normalize_registry_consents(user.get("registry_consents"))
-        return consents.get(site_id)
-
-    def set_registry_consent(self, user_id: str, site_id: str, *, version: str = "v1") -> dict[str, Any]:
-        user = self.load_user_by_id(user_id)
-        if user is None:
-            raise ValueError(f"Unknown user_id: {user_id}")
-        consents = _normalize_registry_consents(user.get("registry_consents"))
-        consents[site_id] = {
-            "enrolled_at": utc_now(),
-            "version": version.strip() or "v1",
-        }
-        return self.upsert_user({**user, "registry_consents": consents})
-
-    def user_approval_status(self, user: dict[str, Any]) -> str:
-        if user.get("role") == "admin":
-            return "approved"
-        if user.get("password") != GOOGLE_AUTH_SENTINEL:
-            return "approved"
-        if user.get("site_ids"):
-            return "approved"
-        latest_request = self.latest_access_request(user["user_id"])
-        if latest_request is None:
-            return "application_required"
-        return latest_request.get("status", "application_required")
-
-    def _serialize_access_request(self, request_record: dict[str, Any]) -> dict[str, Any]:
-        serialized = dict(request_record)
-        serialized["requested_site_label"] = str(serialized.get("requested_site_label") or "").strip()
-        serialized["requested_site_source"] = str(serialized.get("requested_site_source") or "site").strip() or "site"
-        serialized["resolved_site_id"] = None
-        serialized["resolved_site_label"] = None
-
-        requested_site_id = str(serialized.get("requested_site_id") or "").strip()
-        if not requested_site_id:
-            return serialized
-
-        site = self.store.get_site(requested_site_id)
-        if site is not None:
-            if not serialized["requested_site_label"]:
-                serialized["requested_site_label"] = _site_display_label(site, requested_site_id)
-            serialized["requested_site_source"] = "site"
-            serialized["resolved_site_id"] = str(site.get("site_id") or requested_site_id)
-            serialized["resolved_site_label"] = _site_display_label(site, requested_site_id)
-            return serialized
-
-        mapped_site = self.store.get_site_by_source_institution_id(requested_site_id)
-        if mapped_site is not None:
-            serialized["resolved_site_id"] = str(mapped_site.get("site_id") or "")
-            serialized["resolved_site_label"] = _site_display_label(mapped_site, serialized["resolved_site_id"])
-
-        institution = self.store.get_institution(requested_site_id)
-        if institution is not None:
-            if not serialized["requested_site_label"]:
-                serialized["requested_site_label"] = str(institution.get("name") or requested_site_id)
-            serialized["requested_site_source"] = "institution_directory"
-        return serialized
-
-    def submit_access_request(
-        self,
-        user_id: str,
-        requested_site_id: str,
-        requested_role: str,
-        message: str = "",
-        *,
-        requested_site_label: str = "",
-        requested_site_source: str = "site",
-    ) -> dict[str, Any]:
-        user = self.get_user_by_id(user_id)
-        if user is None:
-            raise ValueError(f"Unknown user_id: {user_id}")
-        latest_request = self.latest_access_request(user_id)
-        if latest_request and latest_request.get("status") == "pending":
-            raise ValueError("There is already a pending approval request for this user.")
-        request_record = {
-            "request_id": make_id("access"),
-            "user_id": user_id,
-            "email": user["username"],
-            "requested_site_id": requested_site_id,
-            "requested_site_label": requested_site_label.strip(),
-            "requested_site_source": requested_site_source.strip() or "site",
-            "requested_role": requested_role,
-            "message": message.strip(),
-            "status": "pending",
-            "reviewed_by": None,
-            "reviewer_notes": "",
-            "created_at": utc_now(),
-            "reviewed_at": None,
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(access_requests.insert().values(**request_record))
-        return self._serialize_access_request(request_record)
-
-    def latest_access_request(self, user_id: str) -> dict[str, Any] | None:
-        query = select(access_requests).where(access_requests.c.user_id == user_id).order_by(access_requests.c.created_at.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        return self._serialize_access_request(dict(row)) if row else None
-
-    def list_access_requests(
-        self,
-        status: str | None = None,
-        site_ids: list[str] | None = None,
-        user_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        query = select(access_requests)
-        if status:
-            query = query.where(access_requests.c.status == status)
-        if site_ids is not None:
-            query = query.where(access_requests.c.requested_site_id.in_(site_ids))
-        if user_id:
-            query = query.where(access_requests.c.user_id == user_id)
-        query = query.order_by(access_requests.c.created_at.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [self._serialize_access_request(dict(row)) for row in rows]
-
-    def review_access_request(
-        self,
-        request_id: str,
-        reviewer_user_id: str,
-        decision: str,
-        assigned_role: str | None = None,
-        assigned_site_id: str | None = None,
-        reviewer_notes: str = "",
-    ) -> dict[str, Any]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            request_row = conn.execute(select(access_requests).where(access_requests.c.request_id == request_id)).mappings().first()
-            if request_row is None:
-                raise ValueError(f"Unknown request_id: {request_id}")
-            if request_row["status"] != "pending":
-                raise ValueError("Only pending requests can be reviewed.")
-
-            reviewed_at = utc_now()
-            decision_value = decision.strip().lower()
-            site_id = (assigned_site_id or request_row["requested_site_id"]).strip()
-            role_value = (assigned_role or request_row["requested_role"]).strip()
-            conn.execute(
-                update(access_requests)
-                .where(access_requests.c.request_id == request_id)
-                .values(
-                    status=decision_value,
-                    reviewed_by=reviewer_user_id,
-                    reviewer_notes=reviewer_notes.strip(),
-                    reviewed_at=reviewed_at,
-                    requested_site_id=site_id,
-                    requested_role=role_value,
-                )
-            )
-
-            user_row = conn.execute(select(users).where(users.c.user_id == request_row["user_id"])).mappings().first()
-            if user_row is None:
-                raise ValueError(f"Unknown user_id: {request_row['user_id']}")
-
-            if decision_value == "approved":
-                next_site_ids = list(user_row["site_ids"] or [])
-                if site_id and site_id not in next_site_ids:
-                    next_site_ids.append(site_id)
-                conn.execute(update(users).where(users.c.user_id == request_row["user_id"]).values(role=role_value, site_ids=next_site_ids))
-
-        reviewed = self.list_access_requests(user_id=request_row["user_id"])
-        return reviewed[0] if reviewed else {
-            **dict(request_row),
-            "status": decision_value,
-            "reviewed_by": reviewer_user_id,
-            "reviewer_notes": reviewer_notes.strip(),
-            "reviewed_at": reviewed_at,
-            "requested_site_id": site_id,
-            "requested_role": role_value,
-        }
-
-    def accessible_sites_for_user(self, user: dict[str, Any]) -> list[dict[str, Any]]:
-        all_sites = self.store.list_sites()
-        if user.get("role") == "admin":
-            return all_sites
-        allowed_site_ids = set(user.get("site_ids") or [])
-        return [site for site in all_sites if site["site_id"] in allowed_site_ids]
-
-    def user_can_access_site(self, user: dict[str, Any], site_id: str | None) -> bool:
-        if not site_id:
-            return False
-        if user.get("role") == "admin":
-            return True
-        return site_id in set(user.get("site_ids") or [])
-
-
-class _ControlPlaneRegistryOps:
-    def __init__(self, store: "ControlPlaneStore") -> None:
-        self.store = store
-
-    def _infer_model_source_provider(self, metadata: dict[str, Any]) -> str:
-        explicit = str(metadata.get("source_provider") or "").strip()
-        if explicit:
-            return explicit
-        download_url = str(metadata.get("download_url") or "").strip().lower()
-        if "sharepoint.com" in download_url or "onedrive" in download_url:
-            return "onedrive_sharepoint"
-        if download_url:
-            return "http_download"
-        if str(metadata.get("model_path") or "").strip():
-            return "local"
-        return "unknown"
-
-    def _normalize_model_metadata(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(model_metadata)
-        local_model_path = str(merged.get("model_path") or "").strip()
-        download_url = str(merged.get("download_url") or "").strip()
-        publish_required = bool(merged.get("publish_required", False))
-
-        if local_model_path:
-            local_path = Path(local_model_path).expanduser()
-            if local_path.exists():
-                merged.setdefault("filename", local_path.name)
-                merged.setdefault("size_bytes", int(local_path.stat().st_size))
-                merged.setdefault("sha256", self.store._sha256_file(local_path))
-
-        merged.setdefault("model_name", "keratitis_cls")
-        merged["source_provider"] = self._infer_model_source_provider(merged)
-
-        if publish_required and MODEL_DISTRIBUTION_MODE == "download_url" and not download_url:
-            merged["distribution_status"] = "pending_upload"
-            merged["ready"] = False
-            merged["is_current"] = False
-        elif download_url:
-            merged["distribution_status"] = "published"
-            merged["ready"] = bool(merged.get("ready", True))
-        else:
-            merged.setdefault("distribution_status", "local_only")
-
-        return merged
-
-    def list_model_versions(self) -> list[dict[str, Any]]:
-        return self.store.list_model_versions()
-
-    def set_model_current_flag(self, conn: Any, version_id: str, is_current: bool) -> None:
-        row = conn.execute(select(model_versions).where(model_versions.c.version_id == version_id)).first()
-        if row is None:
-            return
-        payload = _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
-        payload["is_current"] = is_current
-        conn.execute(update(model_versions).where(model_versions.c.version_id == version_id).values(is_current=is_current, payload_json=payload))
-
-    def ensure_model_version(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
-        merged = self._normalize_model_metadata(model_metadata)
-        merged.setdefault("ready", True)
-        merged.setdefault("is_current", False)
-        with _MODEL_VERSION_LOCK, CONTROL_PLANE_ENGINE.begin() as conn:
-            if merged.get("stage") == "global" and merged.get("ready", True) and merged.get("is_current"):
-                current_rows = conn.execute(select(model_versions.c.version_id).where(model_versions.c.stage == "global")).all()
-                for row in current_rows:
-                    if row.version_id != merged["version_id"]:
-                        self.set_model_current_flag(conn, row.version_id, False)
-
-            existing = conn.execute(select(model_versions).where(model_versions.c.version_id == merged["version_id"])).first()
-            if existing:
-                existing_payload = _payload_record(
-                    existing,
-                    "payload_json",
-                    ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"],
-                )
-                merged = self._normalize_model_metadata({**existing_payload, **merged})
-                conn.execute(
-                    update(model_versions)
-                    .where(model_versions.c.version_id == merged["version_id"])
-                    .values(
-                        version_name=merged["version_name"],
-                        architecture=merged["architecture"],
-                        stage=merged.get("stage"),
-                        created_at=merged.get("created_at"),
-                        ready=bool(merged.get("ready", True)),
-                        is_current=bool(merged.get("is_current", False)),
-                        payload_json=merged,
-                    )
-                )
-            else:
-                conn.execute(
-                    model_versions.insert().values(
-                        version_id=merged["version_id"],
-                        version_name=merged["version_name"],
-                        architecture=merged["architecture"],
-                        stage=merged.get("stage"),
-                        created_at=merged.get("created_at"),
-                        ready=bool(merged.get("ready", True)),
-                        is_current=bool(merged.get("is_current", False)),
-                        payload_json=merged,
-                    )
-                )
-        return merged
-
-    def current_global_model(self) -> dict[str, Any] | None:
-        versions = [item for item in self.list_model_versions() if item.get("stage") == "global" and item.get("ready", True)]
-        if not versions:
-            return None
-        current_versions = [item for item in versions if item.get("is_current")]
-        if current_versions:
-            return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
-        return sorted(versions, key=lambda item: item.get("created_at", ""))[-1]
-
-    def archive_model_version(self, version_id: str) -> dict[str, Any]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(model_versions).where(model_versions.c.version_id == version_id)).first()
-            if row is None:
-                raise ValueError(f"Unknown model version: {version_id}")
-            payload = _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
-            if payload.get("is_current"):
-                raise ValueError("The current active model cannot be deleted.")
-            all_versions = [
-                _payload_record(item, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
-                for item in conn.execute(select(model_versions)).all()
-            ]
-            all_aggregations = [
-                _payload_record(item, "payload_json", ["aggregation_id", "base_model_version_id", "new_version_name", "architecture", "created_at", "total_cases"])
-                for item in conn.execute(select(aggregations)).all()
-            ]
-            if any(str(item.get("base_model_version_id") or "") == version_id for item in all_aggregations):
-                raise ValueError("This model is referenced by an aggregation and cannot be deleted.")
-            for item in all_versions:
-                component_ids = [str(component_id) for component_id in item.get("component_model_version_ids", [])]
-                if version_id in component_ids:
-                    raise ValueError("This model is referenced by an ensemble model and cannot be deleted.")
-                if str(item.get("base_version_id") or "") == version_id:
-                    raise ValueError("This model is referenced as a base model and cannot be deleted.")
-
-            payload["archived"] = True
-            payload["archived_at"] = utc_now()
-            conn.execute(update(model_versions).where(model_versions.c.version_id == version_id).values(is_current=False, payload_json=payload))
-        return payload
-
-    def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
-        incoming_fingerprint = str(update_metadata.get("salt_fingerprint") or "").strip()
-        if incoming_fingerprint and incoming_fingerprint != CASE_REFERENCE_SALT_FINGERPRINT:
-            raise ValueError(
-                f"Salt fingerprint mismatch: the submitting site uses a different "
-                f"KERA_CASE_REFERENCE_SALT (site fingerprint: {incoming_fingerprint!r}, "
-                f"server fingerprint: {CASE_REFERENCE_SALT_FINGERPRINT!r}). "
-                "All nodes in a federation must share the same KERA_CASE_REFERENCE_SALT "
-                "environment variable to ensure consistent case reference IDs."
-            )
-        record = self.store.normalize_model_update_artifact_metadata(
-            self.store._normalize_case_reference(update_metadata)
-        )
-        artifact_path = str(record.get("artifact_path") or "").strip()
-        needs_artifact_copy = artifact_path and (
-            not str(record.get("central_artifact_name") or "").strip()
-            or not str(record.get("central_artifact_sha256") or "").strip()
-            or not int(record.get("central_artifact_size_bytes") or 0)
-        )
-        if needs_artifact_copy:
-            try:
-                record.update(
-                    self.store.store_model_update_artifact(
-                        artifact_path,
-                        update_id=str(record["update_id"]),
-                        artifact_kind="delta" if record.get("upload_type") == "weight delta" else "model",
-                    )
-                )
-            except FileNotFoundError:
-                pass
-        record.pop("artifact_path", None)
-        record.pop("central_artifact_path", None)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(select(model_updates).where(model_updates.c.update_id == record["update_id"])).first()
-            values = {
-                "update_id": record["update_id"],
-                "site_id": record.get("site_id"),
-                "architecture": record.get("architecture"),
-                "status": record.get("status"),
-                "created_at": record.get("created_at"),
-                "payload_json": record,
-            }
-            if existing:
-                conn.execute(update(model_updates).where(model_updates.c.update_id == record["update_id"]).values(**values))
-            else:
-                conn.execute(model_updates.insert().values(**values))
-        return record
-
-    def get_model_update(self, update_id: str) -> dict[str, Any] | None:
-        normalized_update_id = update_id.strip()
-        if not normalized_update_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(model_updates).where(model_updates.c.update_id == normalized_update_id)).first()
-        if row is None:
-            return None
-        return self.store.normalize_model_update_artifact_metadata(
-            self.store._normalize_case_reference(
-                _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
-            )
-        )
-
-    def update_model_update(self, update_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        current = self.get_model_update(update_id)
-        if current is None:
-            raise ValueError(f"Unknown update_id: {update_id}")
-        merged = self.store.normalize_model_update_artifact_metadata(
-            self.store._normalize_case_reference({**current, **updates})
-        )
-        merged.pop("artifact_path", None)
-        merged.pop("central_artifact_path", None)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(model_updates)
-                .where(model_updates.c.update_id == update_id)
-                .values(
-                    site_id=merged.get("site_id"),
-                    architecture=merged.get("architecture"),
-                    status=merged.get("status"),
-                    created_at=merged.get("created_at"),
-                    payload_json=merged,
-                )
-            )
-        return merged
-
-    def update_model_update_statuses(self, update_ids: list[str], status: str) -> None:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(model_updates).where(model_updates.c.update_id.in_(update_ids))).all()
-            for row in rows:
-                payload = _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
-                payload["status"] = status
-                conn.execute(
-                    update(model_updates)
-                    .where(model_updates.c.update_id == row._mapping["update_id"])
-                    .values(status=status, payload_json=payload)
-                )
-
-    def review_model_update(self, update_id: str, reviewer_user_id: str, decision: str, reviewer_notes: str = "") -> dict[str, Any]:
-        normalized_decision = decision.strip().lower()
-        if normalized_decision not in {"approved", "rejected"}:
-            raise ValueError("Invalid review decision.")
-        current = self.get_model_update(update_id)
-        if current is None:
-            raise ValueError(f"Unknown update_id: {update_id}")
-        return self.update_model_update(
-            update_id,
-            {
-                "status": normalized_decision,
-                "reviewed_by": reviewer_user_id,
-                "reviewed_at": utc_now(),
-                "reviewer_notes": reviewer_notes.strip(),
-            },
-        )
-
-    def list_model_updates(self, site_id: str | None = None) -> list[dict[str, Any]]:
-        query = select(model_updates)
-        if site_id:
-            query = query.where(model_updates.c.site_id == site_id)
-        query = query.order_by(model_updates.c.created_at.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).all()
-        return [
-            self.store.normalize_model_update_artifact_metadata(
-                self.store._normalize_case_reference(
-                    _payload_record(row, "payload_json", ["update_id", "site_id", "architecture", "status", "created_at"])
-                )
-            )
-            for row in rows
-        ]
-
-    def register_contribution(self, contribution: dict[str, Any]) -> dict[str, Any]:
-        record = self.store._normalize_case_reference(contribution)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(select(contributions).where(contributions.c.contribution_id == record["contribution_id"])).first()
-            values = {
-                "contribution_id": record["contribution_id"],
-                "user_id": record.get("user_id"),
-                "site_id": record.get("site_id"),
-                "created_at": record.get("created_at"),
-                "payload_json": record,
-            }
-            if existing:
-                conn.execute(update(contributions).where(contributions.c.contribution_id == record["contribution_id"]).values(**values))
-            else:
-                conn.execute(contributions.insert().values(**values))
-        return record
-
-    def list_contributions(self, user_id: str | None = None, site_id: str | None = None) -> list[dict[str, Any]]:
-        query = select(contributions)
-        if user_id:
-            query = query.where(contributions.c.user_id == user_id)
-        if site_id:
-            query = query.where(contributions.c.site_id == site_id)
-        query = query.order_by(contributions.c.created_at.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).all()
-        return [
-            self.store._normalize_case_reference(
-                _payload_record(row, "payload_json", ["contribution_id", "user_id", "site_id", "created_at"])
-            )
-            for row in rows
-        ]
-
-    def get_contribution_leaderboard(
-        self,
-        *,
-        user_id: str | None = None,
-        site_id: str | None = None,
-        limit: int = 5,
-    ) -> dict[str, Any]:
-        contributions_for_scope = self.list_contributions(site_id=site_id)
-        contributor_counts: dict[str, dict[str, Any]] = {}
-        payload_aliases: dict[str, str] = {}
-
-        for item in contributions_for_scope:
-            contributor_user_id = str(item.get("user_id") or "").strip()
-            if not contributor_user_id:
-                continue
-            payload_alias = str(item.get("public_alias") or "").strip()
-            if payload_alias:
-                payload_aliases[contributor_user_id] = payload_alias
-            entry = contributor_counts.setdefault(
-                contributor_user_id,
-                {
-                    "user_id": contributor_user_id,
-                    "contribution_count": 0,
-                    "last_contribution_at": None,
-                },
-            )
-            entry["contribution_count"] = int(entry["contribution_count"]) + 1
-            created_at = str(item.get("created_at") or "").strip() or None
-            if created_at and (entry["last_contribution_at"] is None or created_at > str(entry["last_contribution_at"])):
-                entry["last_contribution_at"] = created_at
-
-        alias_map = self.store.list_user_public_aliases(list(contributor_counts))
-        sorted_contributors = sorted(
-            contributor_counts.values(),
-            key=lambda item: (
-                int(item.get("contribution_count") or 0),
-                str(item.get("last_contribution_at") or ""),
-                str(item.get("user_id") or ""),
-            ),
-            reverse=True,
-        )
-
-        top_entries: list[dict[str, Any]] = []
-        current_user_entry: dict[str, Any] | None = None
-        normalized_user_id = str(user_id or "").strip() or None
-        for rank, item in enumerate(sorted_contributors, start=1):
-            contributor_user_id = str(item.get("user_id") or "").strip()
-            alias = (
-                payload_aliases.get(contributor_user_id)
-                or alias_map.get(contributor_user_id)
-                or "Anonymous member"
-            )
-            entry = {
-                "rank": rank,
-                "user_id": contributor_user_id,
-                "public_alias": alias,
-                "contribution_count": int(item.get("contribution_count") or 0),
-                "last_contribution_at": item.get("last_contribution_at"),
-                "is_current_user": contributor_user_id == normalized_user_id,
-            }
-            if rank <= max(1, int(limit or 5)):
-                top_entries.append(entry)
-            if normalized_user_id and contributor_user_id == normalized_user_id:
-                current_user_entry = entry
-
-        return {
-            "scope": "site" if site_id else "global",
-            "site_id": site_id,
-            "leaderboard": top_entries,
-            "current_user": current_user_entry,
-        }
-
-    def get_contribution_stats(self, user_id: str | None = None) -> dict[str, Any]:
-        all_contribs = self.list_contributions()
-        total = len(all_contribs)
-        user_contribs = [item for item in all_contribs if item.get("user_id") == user_id] if user_id else []
-        user_total = len(user_contribs)
-        pct = round(user_total / total * 100, 1) if total > 0 else 0.0
-        current_model = self.current_global_model()
-        leaderboard = self.get_contribution_leaderboard(user_id=user_id, limit=5)
-        current_user_entry = leaderboard.get("current_user") if isinstance(leaderboard, dict) else None
-        return {
-            "total_contributions": total,
-            "user_contributions": user_total,
-            "user_contribution_pct": pct,
-            "current_model_version": current_model["version_name"] if current_model else "—",
-            "user_public_alias": current_user_entry.get("public_alias") if isinstance(current_user_entry, dict) else self.store.get_user_public_alias(user_id or ""),
-            "user_rank": current_user_entry.get("rank") if isinstance(current_user_entry, dict) else None,
-            "leaderboard": leaderboard,
-        }
-
-    def list_aggregations(self) -> list[dict[str, Any]]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(aggregations).order_by(aggregations.c.created_at.desc())).all()
-        return [
-            _payload_record(row, "payload_json", ["aggregation_id", "architecture", "created_at", "total_cases"])
-            for row in rows
-        ]
-
-    def register_aggregation(
-        self,
-        base_model_version_id: str,
-        new_model_path: str,
-        new_version_name: str,
-        architecture: str,
-        site_weights: dict[str, int],
-        requires_medsam_crop: bool = False,
-        decision_threshold: float | None = None,
-        threshold_selection_metric: str | None = None,
-        threshold_selection_metrics: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        agg_id = make_id("agg")
-        record = {
-            "aggregation_id": agg_id,
-            "base_model_version_id": base_model_version_id,
-            "new_version_name": new_version_name,
-            "architecture": architecture,
-            "site_weights": site_weights,
-            "total_cases": sum(site_weights.values()),
-            "created_at": utc_now(),
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                aggregations.insert().values(
-                    aggregation_id=agg_id,
-                    base_model_version_id=base_model_version_id,
-                    new_version_name=new_version_name,
-                    architecture=architecture,
-                    total_cases=sum(site_weights.values()),
-                    created_at=record["created_at"],
-                    payload_json=record,
-                )
-            )
-        new_version = {
-            "version_id": make_id("model"),
-            "version_name": new_version_name,
-            "model_name": "keratitis_cls",
-            "architecture": architecture,
-            "stage": "global",
-            "base_version_id": base_model_version_id,
-            "model_path": new_model_path,
-            "filename": Path(new_model_path).name if str(new_model_path).strip() else "",
-            "created_at": utc_now(),
-            "aggregation_id": agg_id,
-            "requires_medsam_crop": bool(requires_medsam_crop),
-            "training_input_policy": "medsam_cornea_crop_only" if requires_medsam_crop else "raw_or_model_defined",
-            "decision_threshold": float(decision_threshold) if decision_threshold is not None else 0.5,
-            "threshold_selection_metric": threshold_selection_metric or "inherited_from_base_model",
-            "threshold_selection_metrics": threshold_selection_metrics,
-            "publish_required": MODEL_DISTRIBUTION_MODE == "download_url",
-            "is_current": MODEL_DISTRIBUTION_MODE != "download_url",
-            "ready": True,
-            "notes": f"Federated aggregation of {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
-            "notes_ko": f"{len(site_weights)}개 사이트, 총 {sum(site_weights.values())}개 케이스의 Federated aggregation 결과입니다.",
-            "notes_en": f"Federated aggregation result from {len(site_weights)} site(s), {sum(site_weights.values())} cases.",
-        }
-        self.ensure_model_version(new_version)
-        return record
-
-
-class _ControlPlaneWorkspaceOps:
-    def __init__(self, store: "ControlPlaneStore") -> None:
-        self.store = store
-
-    def list_projects(self) -> list[dict[str, Any]]:
-        return self.store.list_projects()
-
-    def create_project(self, name: str, description: str, owner_user_id: str) -> dict[str, Any]:
-        return self.store.create_project(name, description, owner_user_id)
-
-    def list_sites(self, project_id: str | None = None) -> list[dict[str, Any]]:
-        return self.store.list_sites(project_id)
-
-    def get_site(self, site_id: str) -> dict[str, Any] | None:
-        return self.store.get_site(site_id)
-
-    def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
-        return self.store.get_site_by_source_institution_id(source_institution_id)
-
-    def create_site(
-        self,
-        project_id: str,
-        site_code: str,
-        display_name: str,
-        hospital_name: str,
-        source_institution_id: str | None = None,
-        research_registry_enabled: bool = True,
-    ) -> dict[str, Any]:
-        normalized_source_institution_id = str(source_institution_id or "").strip() or None
-        normalized_site_code = site_code.strip()
-        if normalized_source_institution_id and HIRA_SITE_ID_PATTERN.fullmatch(normalized_source_institution_id):
-            normalized_site_code = normalized_source_institution_id
-        normalized_display_name = display_name.strip() or hospital_name.strip() or normalized_site_code
-        normalized_hospital_name = hospital_name.strip() or normalized_display_name
-        if not normalized_site_code:
-            raise ValueError("Site code is required.")
-        if not normalized_display_name:
-            raise ValueError("Site display name is required.")
-        record = {
-            "site_id": normalized_site_code,
-            "project_id": project_id,
-            "display_name": normalized_display_name,
-            "hospital_name": normalized_hospital_name,
-            "source_institution_id": normalized_source_institution_id,
-            "local_storage_root": str(Path(self.store.instance_storage_root()) / normalized_site_code),
-            "research_registry_enabled": bool(research_registry_enabled),
-            "created_at": utc_now(),
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
-            if existing_site:
-                raise ValueError(f"Site {normalized_site_code} already exists.")
-            if normalized_source_institution_id:
-                existing_institution_site = conn.execute(
-                    select(sites.c.site_id).where(sites.c.source_institution_id == normalized_source_institution_id)
-                ).first()
-                if existing_institution_site:
-                    raise ValueError(
-                        f"Institution {normalized_source_institution_id} is already linked to site {existing_institution_site.site_id}."
-                    )
-            project_row = conn.execute(select(projects).where(projects.c.project_id == project_id)).mappings().first()
-            if project_row is None:
-                raise ValueError(f"Unknown project_id: {project_id}")
-            conn.execute(sites.insert().values(**record))
-            project_site_ids = list(project_row["site_ids"] or [])
-            if normalized_site_code not in project_site_ids:
-                project_site_ids.append(normalized_site_code)
-            conn.execute(
-                update(projects)
-                .where(projects.c.project_id == project_id)
-                .values(site_ids=project_site_ids)
-            )
-        return record
-
-    def update_site_metadata(
-        self,
-        site_id: str,
-        display_name: str,
-        hospital_name: str,
-        research_registry_enabled: bool | None = None,
-    ) -> dict[str, Any]:
-        normalized_site_id = site_id.strip()
-        normalized_display_name = display_name.strip()
-        normalized_hospital_name = hospital_name.strip()
-        if not normalized_site_id:
-            raise ValueError("Site code is required.")
-        if not normalized_display_name:
-            raise ValueError("Site display name is required.")
-
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing_site = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
-            if existing_site is None:
-                raise ValueError(f"Unknown site_id: {normalized_site_id}")
-            values: dict[str, Any] = {
-                "display_name": normalized_display_name,
-                "hospital_name": normalized_hospital_name,
-            }
-            if research_registry_enabled is not None:
-                values["research_registry_enabled"] = bool(research_registry_enabled)
-            conn.execute(
-                update(sites)
-                .where(sites.c.site_id == normalized_site_id)
-                .values(**values)
-            )
-
-        return self.get_site(normalized_site_id) or {
-            "site_id": normalized_site_id,
-            "display_name": normalized_display_name,
-            "hospital_name": normalized_hospital_name,
-            "research_registry_enabled": bool(research_registry_enabled) if research_registry_enabled is not None else True,
-        }
-
-    def update_site_storage_root(self, site_id: str, storage_root: str) -> dict[str, Any]:
-        normalized_site_id = site_id.strip()
-        normalized_storage_root = storage_root.strip()
-        if not normalized_site_id:
-            raise ValueError("Site code is required.")
-        if not normalized_storage_root:
-            raise ValueError("Storage root is required.")
-
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing_site = conn.execute(
-                select(sites).where(sites.c.site_id == normalized_site_id)
-            ).mappings().first()
-            if existing_site is None:
-                raise ValueError(f"Unknown site_id: {normalized_site_id}")
-            conn.execute(
-                update(sites)
-                .where(sites.c.site_id == normalized_site_id)
-                .values(local_storage_root=normalized_storage_root)
-            )
-        return self.get_site(normalized_site_id) or {
-            "site_id": normalized_site_id,
-            "local_storage_root": normalized_storage_root,
-        }
-
-    def migrate_site_storage_root(self, site_id: str, storage_root: str) -> dict[str, Any]:
-        normalized_site_id = site_id.strip()
-        normalized_storage_root = str(Path(storage_root).expanduser().resolve())
-        if not normalized_site_id:
-            raise ValueError("Site code is required.")
-        if not normalized_storage_root:
-            raise ValueError("Storage root is required.")
-
-        site = self.get_site(normalized_site_id)
-        if site is None:
-            raise ValueError(f"Unknown site_id: {normalized_site_id}")
-
-        old_root = Path(self.store.site_storage_root(normalized_site_id)).resolve()
-        new_root = Path(normalized_storage_root).resolve()
-        if old_root == new_root:
-            return site
-
-        new_root.parent.mkdir(parents=True, exist_ok=True)
-        if new_root.exists() and any(new_root.iterdir()):
-            raise ValueError("Target storage root already exists and is not empty.")
-        if new_root.exists() and not any(new_root.iterdir()):
-            new_root.rmdir()
-
-        if old_root.exists():
-            shutil.move(str(old_root), str(new_root))
-        else:
-            new_root.mkdir(parents=True, exist_ok=True)
-
-        with DATA_PLANE_ENGINE.begin() as conn:
-            image_rows = conn.execute(
-                select(db_images.c.image_id, db_images.c.image_path).where(db_images.c.site_id == normalized_site_id)
-            ).mappings().all()
-            for row in image_rows:
-                rewritten_path = _replace_path_prefix_in_value(row["image_path"], old_root, new_root)
-                conn.execute(
-                    update(db_images)
-                    .where(db_images.c.image_id == row["image_id"])
-                    .values(image_path=rewritten_path)
-                )
-
-        validation_run_rows = self.list_validation_runs(site_id=normalized_site_id)
-        for run in validation_run_rows:
-            validation_id = str(run.get("validation_id") or "").strip()
-            if not validation_id:
-                continue
-            predictions = self.load_case_predictions(validation_id)
-            rewritten_predictions = _replace_path_prefix_in_value(predictions, old_root, new_root)
-            write_json(CONTROL_PLANE_CASE_DIR / f"{validation_id}.json", rewritten_predictions)
-
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            update_rows = conn.execute(
-                select(model_updates).where(model_updates.c.site_id == normalized_site_id)
-            ).all()
-            for row in update_rows:
-                payload = _payload_record(
-                    row,
-                    "payload_json",
-                    ["update_id", "site_id", "architecture", "status", "created_at"],
-                )
-                rewritten_payload = _replace_path_prefix_in_value(payload, old_root, new_root)
-                conn.execute(
-                    update(model_updates)
-                    .where(model_updates.c.update_id == row._mapping["update_id"])
-                    .values(
-                        site_id=rewritten_payload.get("site_id"),
-                        architecture=rewritten_payload.get("architecture"),
-                        status=rewritten_payload.get("status"),
-                        created_at=rewritten_payload.get("created_at"),
-                        payload_json=rewritten_payload,
-                    )
-                )
-
-            conn.execute(
-                update(sites)
-                .where(sites.c.site_id == normalized_site_id)
-                .values(local_storage_root=str(new_root))
-            )
-
-        validation_dir = new_root / "validation"
-        if validation_dir.exists():
-            for report_path in validation_dir.glob("*.json"):
-                report = read_json(report_path, {})
-                if isinstance(report, dict):
-                    write_json(report_path, _replace_path_prefix_in_value(report, old_root, new_root))
-
-        return self.get_site(normalized_site_id) or {
-            "site_id": normalized_site_id,
-            "local_storage_root": str(new_root),
-        }
-
-    def list_validation_runs(
-        self,
-        project_id: str | None = None,
-        site_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        return self.store.list_validation_runs(project_id, site_id)
-
-    def save_validation_run(
-        self,
-        summary: dict[str, Any],
-        case_predictions: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        saved_summary = self.store.save_validation_run(summary, case_predictions)
-        if self.remote_node_sync_enabled():
-            try:
-                remote_summary = self.remote_control_plane.upload_validation_run(
-                    summary_json=_sanitize_remote_payload(saved_summary),
-                )
-                saved_summary["control_plane_source"] = "remote"
-                saved_summary["remote_validation_id"] = str(
-                    remote_summary.get("validation_id") or saved_summary.get("validation_id") or ""
-                ).strip() or None
-            except (requests.RequestException, RuntimeError) as exc:
-                saved_summary["control_plane_source"] = "local_fallback"
-                saved_summary["remote_sync_error"] = str(exc)
-        return saved_summary
-
-    def list_validation_cases(
-        self,
-        *,
-        validation_id: str | None = None,
-        site_id: str | None = None,
-        patient_reference_id: str | None = None,
-        case_reference_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        return self.store.list_validation_cases(
-            validation_id=validation_id,
-            site_id=site_id,
-            patient_reference_id=patient_reference_id,
-            case_reference_id=case_reference_id,
-        )
-
-    def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
-        return self.store.load_case_predictions(validation_id)
-
-    def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
-        return self.store.save_experiment(experiment_record)
-
-    def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
-        return self.store.get_experiment(experiment_id)
-
-    def list_experiments(
-        self,
-        *,
-        site_id: str | None = None,
-        experiment_type: str | None = None,
-        status_filter: str | None = None,
-    ) -> list[dict[str, Any]]:
-        return self.store.list_experiments(
-            site_id=site_id,
-            experiment_type=experiment_type,
-            status_filter=status_filter,
-        )
-
-
 class ControlPlaneStore:
     def __init__(self, root: Path | None = None) -> None:
         ensure_base_directories()
@@ -1566,15 +381,62 @@ class ControlPlaneStore:
         ensure_dir(CONTROL_PLANE_EXPERIMENT_DIR)
         ensure_dir(self.artifact_root)
         self.remote_control_plane = RemoteControlPlaneClient()
-        self._remote_sync_lock = threading.Lock()
-        self._remote_bootstrap_cache_path = self.root / REMOTE_BOOTSTRAP_CACHE_FILENAME
-        self._remote_bootstrap_cache: dict[str, Any] | None = None
-        self._remote_bootstrap_cached_at = 0.0
-        self._remote_release_cache: dict[str, Any] | None = None
-        self._remote_release_cached_at = 0.0
-        self.identity = _ControlPlaneIdentityOps(self)
-        self.registry = _ControlPlaneRegistryOps(self)
-        self.workspace = _ControlPlaneWorkspaceOps(self)
+        self.identity = ControlPlaneIdentityFacade(
+            self,
+            google_auth_sentinel=GOOGLE_AUTH_SENTINEL,
+            normalize_registry_consents=_normalize_registry_consents,
+            normalize_password_storage=_normalize_password_storage,
+            normalize_public_alias_token=_normalize_public_alias_token,
+            make_public_alias=_make_public_alias,
+        )
+        self.instance_state = ControlPlaneInstanceStateFacade(
+            self,
+            instance_storage_root_setting_key=APP_SETTING_INSTANCE_STORAGE_ROOT,
+            institution_directory_last_sync_setting_key=APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC,
+        )
+        self.bootstrap_projection = ControlPlaneBootstrapProjectionFacade(
+            self,
+            infer_remote_source_provider=_infer_remote_source_provider,
+            site_display_label=_site_display_label,
+        )
+        self.references = ControlPlaneCaseReferenceFacade()
+        self.artifacts = ControlPlaneArtifactFacade(
+            artifact_root=self.artifact_root,
+            infer_remote_source_provider=_infer_remote_source_provider,
+            safe_artifact_name=_safe_artifact_name,
+        )
+        self.registry = ControlPlaneRegistryOps(
+            self,
+            payload_record=_payload_record,
+        )
+        self.workspace = ControlPlaneWorkspaceOps(
+            self,
+            site_id_pattern=HIRA_SITE_ID_PATTERN,
+            payload_record=_payload_record,
+            replace_path_prefix_in_value=_replace_path_prefix_in_value,
+            sanitize_remote_payload=_sanitize_remote_payload,
+        )
+        self.remote_state = ControlPlaneRemoteState(
+            root=self.root,
+            remote_control_plane=self.remote_control_plane,
+            remote_node_sync_enabled=self.remote_node_sync_enabled,
+            clear_remote_credentials=clear_node_credentials,
+            cache_remote_release_locally=self._cache_remote_release_locally,
+            bootstrap_refresh_seconds=CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS,
+            release_cache_seconds=REMOTE_CURRENT_RELEASE_CACHE_SECONDS,
+        )
+        self.models = ControlPlaneModelFacade(self)
+        self.results = ControlPlaneResultsFacade(self)
+        self.workspace_views = ControlPlaneWorkspaceFacade(self)
+        self.seeding = ControlPlaneSeedingFacade(
+            normalize_password_storage=_normalize_password_storage,
+        )
+        self.catalog = ControlPlaneCatalogFacade(
+            self,
+            hira_api_key=HIRA_API_KEY,
+            institution_directory_last_sync_setting_key=APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC,
+            expand_institution_search_terms=_expand_institution_search_terms,
+        )
         self._seed_defaults()
 
     def remote_control_plane_enabled(self) -> bool:
@@ -1587,68 +449,13 @@ class ControlPlaneStore:
         return self.remote_control_plane.reload_credentials()
 
     def clear_remote_control_plane_state(self, *, clear_persisted_credentials: bool = False) -> None:
-        if clear_persisted_credentials:
-            clear_node_credentials()
-        self.remote_control_plane.reload_credentials()
-        self._remote_bootstrap_cache = None
-        self._remote_bootstrap_cached_at = 0.0
-        self._remote_release_cache = None
-        self._remote_release_cached_at = 0.0
-        if self._remote_bootstrap_cache_path.exists():
-            self._remote_bootstrap_cache_path.unlink()
+        self.remote_state.clear(clear_persisted_credentials=clear_persisted_credentials)
 
     def remote_node_os_info(self) -> str:
-        return f"{platform.system()} {platform.release()} ({platform.machine()})".strip()
-
-    def _load_remote_bootstrap_cache(self) -> dict[str, Any] | None:
-        if self._remote_bootstrap_cache is not None:
-            return dict(self._remote_bootstrap_cache)
-        payload = read_json(self._remote_bootstrap_cache_path, {})
-        if isinstance(payload, dict) and payload:
-            self._remote_bootstrap_cache = dict(payload)
-            self._remote_bootstrap_cached_at = time.time()
-            current_release = payload.get("current_release")
-            if isinstance(current_release, dict) and current_release:
-                self._remote_release_cache = dict(current_release)
-                self._remote_release_cached_at = self._remote_bootstrap_cached_at
-            return dict(payload)
-        return None
-
-    def _store_remote_bootstrap_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
-        cached = dict(payload)
-        self._remote_bootstrap_cache = cached
-        self._remote_bootstrap_cached_at = time.time()
-        current_release = cached.get("current_release")
-        if isinstance(current_release, dict) and current_release:
-            self._remote_release_cache = dict(current_release)
-            self._remote_release_cached_at = self._remote_bootstrap_cached_at
-            self._cache_remote_release_locally(current_release)
-        write_json(self._remote_bootstrap_cache_path, cached)
-        return dict(cached)
+        return self.remote_state.remote_node_os_info()
 
     def remote_bootstrap_state(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
-        if not self.remote_node_sync_enabled():
-            return self._load_remote_bootstrap_cache()
-
-        now = time.time()
-        with self._remote_sync_lock:
-            if (
-                not force_refresh
-                and self._remote_bootstrap_cache is not None
-                and (now - self._remote_bootstrap_cached_at) < float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS)
-            ):
-                return dict(self._remote_bootstrap_cache)
-
-        try:
-            payload = self.remote_control_plane.bootstrap()
-        except (requests.RequestException, RuntimeError):
-            payload = None
-
-        with self._remote_sync_lock:
-            if isinstance(payload, dict) and payload:
-                return self._store_remote_bootstrap_cache(payload)
-            cached = self._load_remote_bootstrap_cache()
-            return dict(cached) if cached else None
+        return self.remote_state.bootstrap_state(force_refresh=force_refresh)
 
     def record_remote_node_heartbeat(
         self,
@@ -1657,405 +464,87 @@ class ControlPlaneStore:
         os_info: str = "",
         status: str = "ok",
     ) -> dict[str, Any] | None:
-        if not self.remote_node_sync_enabled():
-            return None
-        try:
-            node = self.remote_control_plane.heartbeat(
-                app_version=app_version,
-                os_info=os_info or self.remote_node_os_info(),
-                status=status,
-            )
-        except (requests.RequestException, RuntimeError):
-            return None
-
-        with self._remote_sync_lock:
-            bootstrap = self._load_remote_bootstrap_cache()
-            if bootstrap is not None:
-                bootstrap["node"] = dict(node)
-                self._store_remote_bootstrap_cache(bootstrap)
-        return dict(node)
-
-    def _remote_current_release_manifest(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
-        if not self.remote_node_sync_enabled():
-            return None
-
-        now = time.time()
-        with self._remote_sync_lock:
-            if (
-                not force_refresh
-                and self._remote_release_cache is not None
-                and (now - self._remote_release_cached_at) < REMOTE_CURRENT_RELEASE_CACHE_SECONDS
-            ):
-                return dict(self._remote_release_cache)
-
-        try:
-            payload = self.remote_control_plane.current_release()
-        except (requests.RequestException, RuntimeError):
-            payload = None
-
-        with self._remote_sync_lock:
-            if isinstance(payload, dict) and payload:
-                self._remote_release_cache = dict(payload)
-                self._remote_release_cached_at = time.time()
-                bootstrap = self._load_remote_bootstrap_cache()
-                if bootstrap is not None:
-                    bootstrap["current_release"] = dict(payload)
-                    self._store_remote_bootstrap_cache(bootstrap)
-                else:
-                    self._cache_remote_release_locally(payload)
-                return dict(payload)
-
-        bootstrap = self.remote_bootstrap_state(force_refresh=force_refresh)
-        if isinstance(bootstrap, dict):
-            release = bootstrap.get("current_release")
-            if isinstance(release, dict) and release:
-                return dict(release)
-        return None
-
-    def _normalize_remote_release(self, release: dict[str, Any]) -> dict[str, Any]:
-        metadata = release.get("metadata_json") if isinstance(release.get("metadata_json"), dict) else {}
-        normalized = {
-            **metadata,
-            "version_id": str(release.get("version_id") or "").strip(),
-            "version_name": str(release.get("version_name") or "").strip(),
-            "architecture": str(release.get("architecture") or metadata.get("architecture") or "").strip(),
-            "stage": "global",
-            "created_at": str(release.get("created_at") or metadata.get("created_at") or utc_now()),
-            "ready": bool(release.get("ready", True)),
-            "is_current": bool(release.get("is_current", True)),
-            "model_name": str(metadata.get("model_name") or "keratitis_cls"),
-            "download_url": str(release.get("download_url") or "").strip(),
-            "sha256": str(release.get("sha256") or "").strip().lower(),
-            "size_bytes": int(release.get("size_bytes") or 0),
-            "source_provider": str(
-                release.get("source_provider")
-                or metadata.get("source_provider")
-                or _infer_remote_source_provider(str(release.get("download_url") or ""))
-            ).strip(),
-            "metadata_json": metadata,
-        }
-        if normalized.get("requires_medsam_crop") is None:
-            normalized["requires_medsam_crop"] = bool(metadata.get("requires_medsam_crop", False))
-        return normalized
-
-    def _cache_remote_release_locally(self, release: dict[str, Any]) -> dict[str, Any]:
-        normalized = self._normalize_remote_release(release)
-        try:
-            self.registry.ensure_model_version(normalized)
-        except Exception:
-            pass
-        return normalized
-
-    def _remote_bootstrap_project_records(self) -> list[dict[str, Any]]:
-        bootstrap = self.remote_bootstrap_state()
-        if not isinstance(bootstrap, dict):
-            return []
-        project = bootstrap.get("project")
-        if not isinstance(project, dict):
-            return []
-        project_id = str(project.get("project_id") or "").strip()
-        if not project_id:
-            return []
-        return [
-            {
-                "project_id": project_id,
-                "name": str(project.get("name") or project_id).strip() or project_id,
-                "description": str(project.get("description") or "").strip(),
-                "owner_user_id": str(bootstrap.get("user", {}).get("user_id") or "").strip() or None,
-                "site_ids": [
-                    str(site.get("site_id") or "").strip()
-                    for site in self._remote_bootstrap_site_records()
-                    if str(site.get("site_id") or "").strip()
-                ],
-                "created_at": str(project.get("created_at") or utc_now()),
-            }
-        ]
-
-    def _remote_bootstrap_site_records(self) -> list[dict[str, Any]]:
-        bootstrap = self.remote_bootstrap_state()
-        if not isinstance(bootstrap, dict):
-            return []
-
-        project = bootstrap.get("project") if isinstance(bootstrap.get("project"), dict) else {}
-        project_id = str(project.get("project_id") or "project_default").strip() or "project_default"
-        raw_memberships = bootstrap.get("memberships") if isinstance(bootstrap.get("memberships"), list) else []
-        site_index: dict[str, dict[str, Any]] = {}
-
-        def add_site(raw_site: Any) -> None:
-            if not isinstance(raw_site, dict):
-                return
-            site_id = str(raw_site.get("site_id") or "").strip()
-            if not site_id:
-                return
-            site_index[site_id] = {
-                "site_id": site_id,
-                "project_id": project_id,
-                "site_code": str(raw_site.get("site_code") or site_id).strip() or site_id,
-                "display_name": str(raw_site.get("display_name") or site_id).strip() or site_id,
-                "hospital_name": str(raw_site.get("hospital_name") or raw_site.get("display_name") or site_id).strip() or site_id,
-                "source_institution_id": str(raw_site.get("source_institution_id") or "").strip() or None,
-                "research_registry_enabled": bool(raw_site.get("research_registry_enabled", True)),
-                "local_storage_root": raw_site.get("local_storage_root"),
-                "status": str(raw_site.get("status") or "active").strip() or "active",
-                "created_at": str(raw_site.get("created_at") or utc_now()),
-            }
-
-        add_site(bootstrap.get("site"))
-        for membership in raw_memberships:
-            if not isinstance(membership, dict):
-                continue
-            membership_site = membership.get("site")
-            if isinstance(membership_site, dict):
-                add_site(membership_site)
-            elif str(membership.get("status") or "").strip().lower() == "approved":
-                add_site(
-                    {
-                        "site_id": membership.get("site_id"),
-                        "display_name": membership.get("site_id"),
-                        "hospital_name": membership.get("site_id"),
-                    }
-                )
-
-        return sorted(site_index.values(), key=lambda item: _site_display_label(item, str(item.get("site_id") or "")).lower())
-
-    def default_instance_storage_root(self) -> Path:
-        return SITE_ROOT_DIR.resolve()
-
-    def get_app_setting(self, setting_key: str) -> str | None:
-        normalized_key = setting_key.strip()
-        if not normalized_key:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(
-                select(app_settings.c.setting_value).where(app_settings.c.setting_key == normalized_key)
-            ).first()
-        if row is None:
-            return None
-        value = str(row[0] or "").strip()
-        return value or None
-
-    def set_app_setting(self, setting_key: str, setting_value: str) -> str:
-        normalized_key = setting_key.strip()
-        normalized_value = setting_value.strip()
-        if not normalized_key:
-            raise ValueError("Setting key is required.")
-        if not normalized_value:
-            raise ValueError("Setting value is required.")
-        record = {
-            "setting_key": normalized_key,
-            "setting_value": normalized_value,
-            "updated_at": utc_now(),
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(app_settings.c.setting_key).where(app_settings.c.setting_key == normalized_key)
-            ).first()
-            if existing:
-                conn.execute(
-                    update(app_settings)
-                    .where(app_settings.c.setting_key == normalized_key)
-                    .values(**record)
-                )
-            else:
-                conn.execute(app_settings.insert().values(**record))
-        return normalized_value
-
-    def institution_directory_sync_status(self) -> dict[str, Any]:
-        raw = self.get_app_setting(APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC)
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, dict):
-                return {
-                    "source": str(payload.get("source") or "hira"),
-                    "pages_synced": int(payload["pages_synced"]) if payload.get("pages_synced") is not None else None,
-                    "total_count": int(payload["total_count"]) if payload.get("total_count") is not None else None,
-                    "institutions_synced": int(payload.get("institutions_synced") or 0),
-                    "synced_at": str(payload.get("synced_at") or "").strip() or None,
-                }
-
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            count_row = conn.execute(
-                select(
-                    func.count(institution_directory.c.institution_id),
-                    func.max(institution_directory.c.synced_at),
-                )
-            ).first()
-        institutions_synced = int(count_row[0] or 0) if count_row is not None else 0
-        synced_at = str(count_row[1] or "").strip() if count_row is not None else ""
-        return {
-            "source": "hira",
-            "pages_synced": None,
-            "total_count": institutions_synced or None,
-            "institutions_synced": institutions_synced,
-            "synced_at": synced_at or None,
-        }
-
-    def instance_storage_root(self) -> str:
-        configured = self.get_app_setting(APP_SETTING_INSTANCE_STORAGE_ROOT)
-        if configured:
-            return str(Path(configured).expanduser().resolve())
-        return str(self.default_instance_storage_root())
-
-    def site_storage_root(self, site_id: str) -> str:
-        site = self.get_site(site_id)
-        configured = str(site.get("local_storage_root") or "").strip() if site else ""
-        if configured:
-            site_root = Path(configured).expanduser()
-            if not site_root.is_absolute():
-                site_root = (BASE_DIR / site_root).resolve()
-            else:
-                site_root = site_root.resolve()
-            return str(site_root)
-        return str(Path(self.instance_storage_root()) / site_id)
-
-    def _sha256_file(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    def case_reference_id(self, site_id: str, patient_id: str, visit_date: str) -> str:
-        return make_case_reference_id(site_id, patient_id, visit_date, CASE_REFERENCE_SALT)
-
-    def patient_reference_id(self, site_id: str, patient_id: str) -> str:
-        return make_patient_reference_id(site_id, patient_id, PATIENT_REFERENCE_SALT)
-
-    def _normalize_case_reference(self, record: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(record)
-        site_id = str(normalized.get("site_id") or "").strip()
-        patient_id = str(normalized.get("patient_id") or "").strip()
-        visit_date = str(normalized.get("visit_date") or "").strip()
-        patient_reference_id = str(normalized.get("patient_reference_id") or "").strip()
-        visit_index = normalized.get("visit_index")
-        case_reference_id = str(normalized.get("case_reference_id") or "").strip()
-
-        if not patient_reference_id and site_id and patient_id:
-            patient_reference_id = self.patient_reference_id(site_id, patient_id)
-            normalized["patient_reference_id"] = patient_reference_id
-        if visit_index is None and visit_date:
-            normalized["visit_index"] = visit_index_from_label(visit_date)
-        if not case_reference_id and site_id and patient_id and visit_date:
-            case_reference_id = self.case_reference_id(site_id, patient_id, visit_date)
-            normalized["case_reference_id"] = case_reference_id
-
-        normalized.pop("patient_id", None)
-        normalized.pop("visit_date", None)
-
-        approval_report = normalized.get("approval_report")
-        if isinstance(approval_report, dict):
-            report = dict(approval_report)
-            report_site_id = str(report.get("site_id") or site_id).strip()
-            report_patient_id = str(report.get("patient_id") or patient_id).strip()
-            report_visit_date = str(report.get("visit_date") or visit_date).strip()
-            report_patient_reference_id = str(report.get("patient_reference_id") or patient_reference_id).strip()
-            report_case_reference_id = str(report.get("case_reference_id") or case_reference_id).strip()
-            report_visit_index = report.get("visit_index", normalized.get("visit_index"))
-            if not report_patient_reference_id and report_site_id and report_patient_id:
-                report_patient_reference_id = self.patient_reference_id(report_site_id, report_patient_id)
-            if not report_case_reference_id and report_site_id and report_patient_id and report_visit_date:
-                report_case_reference_id = self.case_reference_id(
-                    report_site_id,
-                    report_patient_id,
-                    report_visit_date,
-                )
-            if report_visit_index is None and report_visit_date:
-                report_visit_index = visit_index_from_label(report_visit_date)
-            if report_patient_reference_id:
-                report["patient_reference_id"] = report_patient_reference_id
-            if report_case_reference_id:
-                report["case_reference_id"] = report_case_reference_id
-            if report_visit_index is not None:
-                report["visit_index"] = int(report_visit_index)
-            report.pop("patient_id", None)
-            report.pop("visit_date", None)
-            normalized["approval_report"] = report
-
-        return normalized
-
-    def _normalize_validation_record(self, site_id: str, record: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(record)
-        patient_id = str(normalized.get("patient_id") or "").strip()
-        visit_date = str(normalized.get("visit_date") or "").strip()
-        patient_reference_id = str(normalized.get("patient_reference_id") or "").strip()
-        visit_index = normalized.get("visit_index")
-        case_reference_id = str(normalized.get("case_reference_id") or "").strip()
-        if not patient_reference_id and site_id and patient_id:
-            normalized["patient_reference_id"] = self.patient_reference_id(site_id, patient_id)
-        if visit_index is None and visit_date:
-            normalized["visit_index"] = visit_index_from_label(visit_date)
-        if not case_reference_id and site_id and patient_id and visit_date:
-            normalized["case_reference_id"] = self.case_reference_id(site_id, patient_id, visit_date)
-        normalized.pop("patient_id", None)
-        normalized.pop("visit_date", None)
-        return normalized
-
-    def model_update_artifact_key(self, *, update_id: str, artifact_kind: str = "delta", filename: str = "") -> str:
-        safe_update_id = _safe_artifact_name(update_id, "update")
-        suffix = Path(filename).suffix or ".bin"
-        safe_filename = _safe_artifact_name(filename, f"{artifact_kind}{suffix}")
-        return str((Path("model_updates") / safe_update_id / safe_filename).as_posix())
-
-    def model_update_artifact_path_for_key(self, artifact_key: str) -> Path:
-        normalized_key = str(artifact_key or "").replace("\\", "/").strip().lstrip("/")
-        if not normalized_key:
-            raise ValueError("Artifact key is required.")
-        artifact_root = self.artifact_root.resolve()
-        candidate = (artifact_root / Path(normalized_key)).resolve()
-        try:
-            candidate.relative_to(artifact_root)
-        except ValueError as exc:
-            raise ValueError("Artifact key resolves outside the control plane artifact directory.") from exc
-        return candidate
-
-    def normalize_model_update_artifact_metadata(self, record: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(record)
-        update_id = str(normalized.get("update_id") or "").strip()
-        artifact_kind = str(normalized.get("artifact_kind") or "").strip() or (
-            "delta" if str(normalized.get("upload_type") or "").strip().lower() == "weight delta" else "model"
+        return self.remote_state.record_node_heartbeat(
+            app_version=app_version,
+            os_info=os_info,
+            status=status,
         )
 
-        central_artifact_key = str(normalized.get("central_artifact_key") or "").strip().replace("\\", "/")
-        if not central_artifact_key:
-            central_artifact_path = str(normalized.get("central_artifact_path") or "").strip()
-            if central_artifact_path:
-                try:
-                    resolved_path = Path(central_artifact_path).expanduser().resolve()
-                    resolved_path.relative_to(self.artifact_root.resolve())
-                    central_artifact_key = str(resolved_path.relative_to(self.artifact_root.resolve()).as_posix())
-                except (OSError, ValueError):
-                    central_artifact_key = ""
-            if not central_artifact_key and update_id:
-                filename = str(normalized.get("central_artifact_name") or "").strip()
-                if not filename:
-                    download_name = unquote(Path(urlsplit(str(normalized.get("artifact_download_url") or "")).path).name)
-                    filename = download_name or f"{artifact_kind}.bin"
-                central_artifact_key = self.model_update_artifact_key(
-                    update_id=update_id,
-                    artifact_kind=artifact_kind,
-                    filename=filename,
-                )
-        if central_artifact_key:
-            normalized["central_artifact_key"] = central_artifact_key
+    def _remote_current_release_manifest(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
+        return self.remote_state.current_release_manifest(force_refresh=force_refresh)
 
-        download_url = str(normalized.get("artifact_download_url") or "").strip()
-        if download_url:
-            normalized["artifact_source_provider"] = (
-                str(normalized.get("artifact_source_provider") or "").strip()
-                or _infer_remote_source_provider(download_url)
-            )
-            normalized["artifact_distribution_status"] = str(
-                normalized.get("artifact_distribution_status") or "published"
-            ).strip() or "published"
-        else:
-            normalized.setdefault("artifact_source_provider", "local")
-            normalized.setdefault("artifact_distribution_status", "local_only")
+    def _normalize_remote_release(self, release: dict[str, Any]) -> dict[str, Any]:
+        return self.bootstrap_projection.normalize_remote_release(release)
 
-        normalized.pop("central_artifact_path", None)
-        return normalized
+    def _cache_remote_release_locally(self, release: dict[str, Any]) -> dict[str, Any]:
+        return self.bootstrap_projection.cache_remote_release_locally(release)
+
+    def sanitize_remote_payload(self, value: Any, *, key: str | None = None) -> Any:
+        return _sanitize_remote_payload(value, key=key)
+
+    def infer_remote_source_provider(self, download_url: str) -> str:
+        return _infer_remote_source_provider(download_url)
+
+    def case_reference_salt_fingerprint(self) -> str:
+        return CASE_REFERENCE_SALT_FINGERPRINT
+
+    def site_display_label(self, site: dict[str, Any] | None, fallback: str = "") -> str:
+        return _site_display_label(site, fallback)
+
+    def payload_record(self, row: Any, payload_key: str, extra_keys: list[str]) -> dict[str, Any]:
+        return _payload_record(row, payload_key, extra_keys)
+
+    def _remote_bootstrap_project_records(self) -> list[dict[str, Any]]:
+        return self.bootstrap_projection.remote_bootstrap_project_records()
+
+    def _remote_bootstrap_site_records(self) -> list[dict[str, Any]]:
+        return self.bootstrap_projection.remote_bootstrap_site_records()
+
+    def default_instance_storage_root(self) -> Path:
+        return self.instance_state.default_instance_storage_root()
+
+    def get_app_setting(self, setting_key: str) -> str | None:
+        return self.instance_state.get_app_setting(setting_key)
+
+    def set_app_setting(self, setting_key: str, setting_value: str) -> str:
+        return self.instance_state.set_app_setting(setting_key, setting_value)
+
+    def institution_directory_sync_status(self) -> dict[str, Any]:
+        return self.instance_state.institution_directory_sync_status()
+
+    def instance_storage_root(self) -> str:
+        return self.instance_state.instance_storage_root()
+
+    def site_storage_root(self, site_id: str) -> str:
+        return self.instance_state.site_storage_root(site_id)
+
+    def _sha256_file(self, path: Path) -> str:
+        return self.artifacts.sha256_file(path)
+
+    def case_reference_id(self, site_id: str, patient_id: str, visit_date: str) -> str:
+        return self.references.case_reference_id(site_id, patient_id, visit_date)
+
+    def patient_reference_id(self, site_id: str, patient_id: str) -> str:
+        return self.references.patient_reference_id(site_id, patient_id)
+
+    def _normalize_case_reference(self, record: dict[str, Any]) -> dict[str, Any]:
+        return self.references.normalize_case_reference(record)
+
+    def _normalize_validation_record(self, site_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        return self.references.normalize_validation_record(site_id, record)
+
+    def model_update_artifact_key(self, *, update_id: str, artifact_kind: str = "delta", filename: str = "") -> str:
+        return self.artifacts.model_update_artifact_key(
+            update_id=update_id,
+            artifact_kind=artifact_kind,
+            filename=filename,
+        )
+
+    def model_update_artifact_path_for_key(self, artifact_key: str) -> Path:
+        return self.artifacts.model_update_artifact_path_for_key(artifact_key)
+
+    def normalize_model_update_artifact_metadata(self, record: dict[str, Any]) -> dict[str, Any]:
+        return self.artifacts.normalize_model_update_artifact_metadata(record)
 
     def resolve_model_update_artifact_path(
         self,
@@ -2063,80 +552,7 @@ class ControlPlaneStore:
         *,
         allow_download: bool = True,
     ) -> Path:
-        normalized = self.normalize_model_update_artifact_metadata(record)
-        expected_sha = str(normalized.get("central_artifact_sha256") or "").strip().lower()
-        expected_size = int(normalized.get("central_artifact_size_bytes") or 0)
-        central_artifact_key = str(normalized.get("central_artifact_key") or "").strip()
-        if central_artifact_key:
-            target = self.model_update_artifact_path_for_key(central_artifact_key)
-            if target.exists():
-                if expected_sha and self._sha256_file(target).lower() != expected_sha:
-                    target.unlink(missing_ok=True)
-                elif expected_size and int(target.stat().st_size) != expected_size:
-                    target.unlink(missing_ok=True)
-                else:
-                    return target
-
-        legacy_central_path = str(record.get("central_artifact_path") or "").strip()
-        if legacy_central_path:
-            legacy_candidate = Path(legacy_central_path).expanduser()
-            if legacy_candidate.exists():
-                return legacy_candidate.resolve()
-
-        local_artifact_path = str(record.get("artifact_path") or "").strip()
-        if local_artifact_path:
-            local_candidate = Path(local_artifact_path).expanduser()
-            if local_candidate.exists():
-                return local_candidate.resolve()
-
-        download_url = ""
-        artifact_source_provider = str(normalized.get("artifact_source_provider") or "").strip().lower()
-        has_onedrive_locator = bool(
-            str(normalized.get("onedrive_item_id") or "").strip()
-            or str(normalized.get("onedrive_remote_path") or "").strip()
-        )
-        if artifact_source_provider == "onedrive_sharepoint" or has_onedrive_locator:
-            try:
-                download_url = OneDrivePublisher().resolve_download_url(normalized)
-            except ValueError:
-                download_url = ""
-        if not download_url:
-            download_url = str(normalized.get("artifact_download_url") or "").strip()
-        if not allow_download or not download_url:
-            raise FileNotFoundError("Model update artifact is unavailable locally and has no download_url.")
-
-        target = self.model_update_artifact_path_for_key(
-            central_artifact_key
-            or self.model_update_artifact_key(
-                update_id=str(normalized.get("update_id") or "update"),
-                artifact_kind=str(normalized.get("artifact_kind") or "delta"),
-                filename=str(normalized.get("central_artifact_name") or "").strip()
-                or unquote(Path(urlsplit(download_url).path).name)
-                or "delta.bin",
-            )
-        )
-        ensure_dir(target.parent)
-        temp_path = target.with_suffix(target.suffix + ".part")
-        if temp_path.exists():
-            temp_path.unlink()
-
-        with requests.get(download_url, stream=True, timeout=300) as response:
-            response.raise_for_status()
-            with temp_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-
-        if expected_sha and self._sha256_file(temp_path).lower() != expected_sha:
-            temp_path.unlink(missing_ok=True)
-            raise ValueError("Downloaded model update artifact SHA256 mismatch.")
-        if expected_size and int(temp_path.stat().st_size) != expected_size:
-            temp_path.unlink(missing_ok=True)
-            raise ValueError("Downloaded model update artifact size mismatch.")
-
-        shutil.move(str(temp_path), str(target))
-        return target.resolve()
+        return self.artifacts.resolve_model_update_artifact_path(record, allow_download=allow_download)
 
     def publish_model_update_artifact(
         self,
@@ -2145,53 +561,11 @@ class ControlPlaneStore:
         download_url: str,
         artifact_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        current = self.registry.get_model_update(update_id)
-        if current is None:
-            raise ValueError(f"Unknown update_id: {update_id}")
-        normalized_download_url = str(download_url or "").strip()
-        if not normalized_download_url:
-            raise ValueError("download_url is required.")
-
-        normalized = self.normalize_model_update_artifact_metadata(current)
-        try:
-            artifact_path = self.resolve_model_update_artifact_path(current, allow_download=False)
-        except FileNotFoundError:
-            artifact_path = None
-
-        updates: dict[str, Any] = {
-            "artifact_download_url": normalized_download_url,
-            "artifact_source_provider": _infer_remote_source_provider(normalized_download_url),
-            "artifact_distribution_status": "published",
-            "central_artifact_key": normalized.get("central_artifact_key"),
-            "central_artifact_path": None,
-        }
-        extra_metadata = dict(artifact_metadata or {})
-        if extra_metadata:
-            source_provider = str(extra_metadata.get("source_provider") or "").strip()
-            if source_provider:
-                updates["artifact_source_provider"] = source_provider
-            distribution_status = str(extra_metadata.get("distribution_status") or "").strip()
-            if distribution_status:
-                updates["artifact_distribution_status"] = distribution_status
-            metadata_key_map = {
-                "onedrive_drive_id": "onedrive_drive_id",
-                "onedrive_item_id": "onedrive_item_id",
-                "onedrive_remote_path": "onedrive_remote_path",
-                "onedrive_web_url": "onedrive_web_url",
-                "onedrive_share_url": "onedrive_share_url",
-                "onedrive_share_scope": "onedrive_share_scope",
-                "onedrive_share_type": "onedrive_share_type",
-                "onedrive_share_error": "onedrive_share_error",
-            }
-            for source_key, target_key in metadata_key_map.items():
-                source_value = extra_metadata.get(source_key)
-                if source_value not in (None, ""):
-                    updates[target_key] = source_value
-        if artifact_path is not None and artifact_path.exists():
-            updates["central_artifact_name"] = artifact_path.name
-            updates["central_artifact_size_bytes"] = int(artifact_path.stat().st_size)
-            updates["central_artifact_sha256"] = self._sha256_file(artifact_path)
-        return self.registry.update_model_update(update_id, updates)
+        return self.models.publish_model_update_artifact(
+            update_id,
+            download_url=download_url,
+            artifact_metadata=artifact_metadata,
+        )
 
     def store_model_update_artifact(
         self,
@@ -2200,84 +574,14 @@ class ControlPlaneStore:
         update_id: str,
         artifact_kind: str = "delta",
     ) -> dict[str, Any]:
-        source = Path(source_path).resolve()
-        if not source.exists():
-            raise FileNotFoundError(f"Model update artifact does not exist: {source}")
-
-        suffix = source.suffix or ".bin"
-        filename = f"{artifact_kind}{suffix}"
-        artifact_key = self.model_update_artifact_key(
+        return self.artifacts.store_model_update_artifact(
+            source_path,
             update_id=update_id,
             artifact_kind=artifact_kind,
-            filename=filename,
         )
-        target = self.model_update_artifact_path_for_key(artifact_key)
-        target_dir = ensure_dir(target.parent)
-        if source != target:
-            shutil.copy2(source, target)
-
-        return {
-            "central_artifact_key": artifact_key,
-            "central_artifact_name": target.name,
-            "central_artifact_size_bytes": int(target.stat().st_size),
-            "central_artifact_sha256": self._sha256_file(target),
-            "artifact_storage": "control_plane_filesystem",
-            "artifact_kind": artifact_kind,
-            "artifact_source_provider": "local",
-            "artifact_distribution_status": "local_only",
-        }
 
     def _seed_defaults(self) -> None:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing_users = {row.username for row in conn.execute(select(users.c.username))}
-            for user_record in DEFAULT_USERS:
-                if user_record["username"] not in existing_users:
-                    conn.execute(users.insert().values(**user_record))
-
-            existing_password_rows = conn.execute(select(users.c.user_id, users.c.password)).all()
-            for user_id, stored_password in existing_password_rows:
-                normalized_password = _normalize_password_storage(str(stored_password or ""))
-                if normalized_password != str(stored_password or ""):
-                    conn.execute(
-                        update(users)
-                        .where(users.c.user_id == user_id)
-                        .values(password=normalized_password)
-                    )
-
-            conn.execute(
-                update(users)
-                .where(and_(users.c.role != "admin", users.c.site_ids.is_(None)))
-                .values(site_ids=[])
-            )
-            conn.execute(
-                update(users)
-                .where(users.c.registry_consents.is_(None))
-                .values(registry_consents={})
-            )
-
-            conn.execute(
-                delete(organism_catalog).where(
-                    and_(
-                        organism_catalog.c.culture_category == "bacterial",
-                        organism_catalog.c.species_name == "Moraxella spp",
-                    )
-                )
-            )
-
-            existing_catalog = {
-                (row.culture_category, row.species_name)
-                for row in conn.execute(select(organism_catalog.c.culture_category, organism_catalog.c.species_name))
-            }
-            for category, species_list in CULTURE_SPECIES.items():
-                for species_name in species_list:
-                    if (category, species_name) in existing_catalog:
-                        continue
-                    conn.execute(
-                        organism_catalog.insert().values(
-                            culture_category=category,
-                            species_name=species_name,
-                        )
-                    )
+        self.seeding.seed_defaults()
 
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
         return self.identity.authenticate(username, password)
@@ -2376,111 +680,19 @@ class ControlPlaneStore:
         return self.identity.user_can_access_site(user, site_id)
 
     def list_projects(self) -> list[dict[str, Any]]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(projects).order_by(projects.c.created_at)).mappings().all()
-        merged: dict[str, dict[str, Any]] = {
-            str(row["project_id"]): dict(row)
-            for row in rows
-            if str(row.get("project_id") or "").strip()
-        }
-        for project in self._remote_bootstrap_project_records():
-            project_id = str(project.get("project_id") or "").strip()
-            if not project_id:
-                continue
-            existing = dict(merged.get(project_id) or {})
-            merged[project_id] = {
-                **project,
-                **existing,
-                "project_id": project_id,
-                "name": str(project.get("name") or existing.get("name") or project_id).strip() or project_id,
-            }
-        return sorted(merged.values(), key=lambda item: str(item.get("created_at") or ""))
+        return self.workspace_views.list_projects()
 
     def create_project(self, name: str, description: str, owner_user_id: str) -> dict[str, Any]:
-        if not name.strip():
-            raise ValueError("Project name is required.")
-        record = {
-            "project_id": make_id("project"),
-            "name": name.strip(),
-            "description": description,
-            "owner_user_id": owner_user_id,
-            "site_ids": [],
-            "created_at": utc_now(),
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(projects.insert().values(**record))
-        return record
+        return self.workspace_views.create_project(name, description, owner_user_id)
 
     def list_sites(self, project_id: str | None = None) -> list[dict[str, Any]]:
-        query = select(sites)
-        if project_id:
-            query = query.where(sites.c.project_id == project_id)
-        query = query.order_by(sites.c.display_name)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        merged: dict[str, dict[str, Any]] = {
-            str(row["site_id"]): dict(row)
-            for row in rows
-            if str(row.get("site_id") or "").strip()
-        }
-        for remote_site in self._remote_bootstrap_site_records():
-            site_id = str(remote_site.get("site_id") or "").strip()
-            if not site_id:
-                continue
-            existing = dict(merged.get(site_id) or {})
-            local_storage_root = existing.get("local_storage_root")
-            research_registry_enabled = existing.get("research_registry_enabled")
-            merged_site = {
-                **remote_site,
-                **existing,
-                "site_id": site_id,
-                "project_id": str(existing.get("project_id") or remote_site.get("project_id") or "project_default").strip() or "project_default",
-                "site_code": str(existing.get("site_code") or remote_site.get("site_code") or site_id).strip() or site_id,
-                "display_name": str(remote_site.get("display_name") or existing.get("display_name") or site_id).strip() or site_id,
-                "hospital_name": str(remote_site.get("hospital_name") or existing.get("hospital_name") or site_id).strip() or site_id,
-            }
-            if local_storage_root:
-                merged_site["local_storage_root"] = local_storage_root
-            if research_registry_enabled is not None:
-                merged_site["research_registry_enabled"] = bool(research_registry_enabled)
-            merged[site_id] = merged_site
-        site_rows = list(merged.values())
-        if project_id:
-            site_rows = [site for site in site_rows if str(site.get("project_id") or "") == project_id]
-        return sorted(site_rows, key=lambda item: _site_display_label(item, str(item.get("site_id") or "")).lower())
+        return self.workspace_views.list_sites(project_id)
 
     def get_site(self, site_id: str) -> dict[str, Any] | None:
-        normalized_site_id = site_id.strip()
-        if not normalized_site_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
-        local_site = dict(row) if row else None
-        remote_site = next(
-            (item for item in self._remote_bootstrap_site_records() if str(item.get("site_id") or "").strip() == normalized_site_id),
-            None,
-        )
-        if local_site and remote_site:
-            merged = {
-                **remote_site,
-                **local_site,
-            }
-            if local_site.get("local_storage_root"):
-                merged["local_storage_root"] = local_site.get("local_storage_root")
-            if local_site.get("research_registry_enabled") is not None:
-                merged["research_registry_enabled"] = bool(local_site.get("research_registry_enabled"))
-            return merged
-        return local_site or remote_site
+        return self.workspace_views.get_site(site_id)
 
     def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
-        normalized_source_institution_id = source_institution_id.strip()
-        if not normalized_source_institution_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(
-                select(sites).where(sites.c.source_institution_id == normalized_source_institution_id)
-            ).mappings().first()
-        return dict(row) if row else None
+        return self.workspace_views.get_site_by_source_institution_id(source_institution_id)
 
     def list_institutions(
         self,
@@ -2491,138 +703,19 @@ class ControlPlaneStore:
         open_only: bool = True,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        normalized_search = search.strip().lower()
-        normalized_sido = str(sido_code or "").strip()
-        normalized_sggu = str(sggu_code or "").strip()
-        bounded_limit = max(1, min(limit, 50))
-
-        query = select(institution_directory)
-        ranking_expression = None
-        if open_only:
-            query = query.where(institution_directory.c.open_status == "active")
-        if normalized_sido:
-            query = query.where(institution_directory.c.sido_code == normalized_sido)
-        if normalized_sggu:
-            query = query.where(institution_directory.c.sggu_code == normalized_sggu)
-        if normalized_search:
-            name_column = func.lower(institution_directory.c.name)
-            address_column = func.lower(institution_directory.c.address)
-            institution_id_column = func.lower(institution_directory.c.institution_id)
-            searchable_columns = [name_column, address_column, institution_id_column]
-            grouped_terms = _expand_institution_search_terms(search)
-            if grouped_terms:
-                token_clauses = []
-                ranking_terms = [
-                    case((name_column == normalized_search, 1000), else_=0),
-                    case((name_column.like(f"{normalized_search}%"), 500), else_=0),
-                    case((name_column.like(f"%{normalized_search}%"), 250), else_=0),
-                    case((address_column.like(f"{normalized_search}%"), 120), else_=0),
-                    case((address_column.like(f"%{normalized_search}%"), 60), else_=0),
-                    case((institution_id_column.like(f"%{normalized_search}%"), 20), else_=0),
-                ]
-                for aliases in grouped_terms:
-                    alias_clauses = []
-                    name_alias_clauses = []
-                    address_alias_clauses = []
-                    institution_id_alias_clauses = []
-                    for alias in aliases:
-                        alias_pattern = f"%{alias.lower()}%"
-                        alias_clauses.extend(column.like(alias_pattern) for column in searchable_columns)
-                        name_alias_clauses.append(name_column.like(alias_pattern))
-                        address_alias_clauses.append(address_column.like(alias_pattern))
-                        institution_id_alias_clauses.append(institution_id_column.like(alias_pattern))
-                    token_clauses.append(or_(*alias_clauses))
-                    ranking_terms.extend(
-                        [
-                            case((or_(*name_alias_clauses), 50), else_=0),
-                            case((or_(*address_alias_clauses), 10), else_=0),
-                            case((or_(*institution_id_alias_clauses), 2), else_=0),
-                        ]
-                    )
-                query = query.where(and_(*token_clauses))
-                ranking_expression = ranking_terms[0]
-                for ranking_term in ranking_terms[1:]:
-                    ranking_expression = ranking_expression + ranking_term
-            else:
-                like_pattern = f"%{normalized_search}%"
-                query = query.where(
-                    or_(
-                        name_column.like(like_pattern),
-                        address_column.like(like_pattern),
-                        institution_id_column.like(like_pattern),
-                    )
-                )
-                ranking_expression = (
-                    case((name_column == normalized_search, 1000), else_=0)
-                    + case((name_column.like(f"{normalized_search}%"), 500), else_=0)
-                    + case((name_column.like(like_pattern), 250), else_=0)
-                    + case((address_column.like(f"{normalized_search}%"), 120), else_=0)
-                    + case((address_column.like(like_pattern), 60), else_=0)
-                    + case((institution_id_column.like(like_pattern), 20), else_=0)
-                )
-        if ranking_expression is not None:
-            query = query.order_by(ranking_expression.desc(), institution_directory.c.name)
-        else:
-            query = query.order_by(institution_directory.c.name)
-        query = query.limit(bounded_limit)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        return self.catalog.list_institutions(
+            search=search,
+            sido_code=sido_code,
+            sggu_code=sggu_code,
+            open_only=open_only,
+            limit=limit,
+        )
 
     def get_institution(self, institution_id: str) -> dict[str, Any] | None:
-        normalized_institution_id = institution_id.strip()
-        if not normalized_institution_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(
-                select(institution_directory).where(institution_directory.c.institution_id == normalized_institution_id)
-            ).mappings().first()
-        return dict(row) if row else None
+        return self.catalog.get_institution(institution_id)
 
     def upsert_institutions(self, records: list[dict[str, Any]]) -> int:
-        if not records:
-            return 0
-        upserted = 0
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            for raw_record in records:
-                institution_id = str(raw_record.get("institution_id") or "").strip()
-                if not institution_id:
-                    continue
-                record = {
-                    "institution_id": institution_id,
-                    "source": str(raw_record.get("source") or "hira").strip() or "hira",
-                    "name": str(raw_record.get("name") or institution_id).strip() or institution_id,
-                    "institution_type_code": str(raw_record.get("institution_type_code") or "").strip(),
-                    "institution_type_name": str(raw_record.get("institution_type_name") or "").strip(),
-                    "address": str(raw_record.get("address") or "").strip(),
-                    "phone": str(raw_record.get("phone") or "").strip(),
-                    "homepage": str(raw_record.get("homepage") or "").strip(),
-                    "sido_code": str(raw_record.get("sido_code") or "").strip(),
-                    "sggu_code": str(raw_record.get("sggu_code") or "").strip(),
-                    "emdong_name": str(raw_record.get("emdong_name") or "").strip(),
-                    "postal_code": str(raw_record.get("postal_code") or "").strip(),
-                    "x_pos": str(raw_record.get("x_pos") or "").strip(),
-                    "y_pos": str(raw_record.get("y_pos") or "").strip(),
-                    "ophthalmology_available": bool(raw_record.get("ophthalmology_available", True)),
-                    "open_status": str(raw_record.get("open_status") or "active").strip() or "active",
-                    "source_payload": dict(raw_record.get("source_payload") or {}),
-                    "synced_at": str(raw_record.get("synced_at") or utc_now()).strip() or utc_now(),
-                }
-                existing = conn.execute(
-                    select(institution_directory.c.institution_id).where(
-                        institution_directory.c.institution_id == institution_id
-                    )
-                ).first()
-                if existing:
-                    conn.execute(
-                        update(institution_directory)
-                        .where(institution_directory.c.institution_id == institution_id)
-                        .values(**record)
-                    )
-                else:
-                    conn.execute(institution_directory.insert().values(**record))
-                upserted += 1
-        return upserted
+        return self.catalog.upsert_institutions(records)
 
     def sync_hira_ophthalmology_directory(
         self,
@@ -2631,37 +724,11 @@ class ControlPlaneStore:
         max_pages: int | None = None,
         service_key: str | None = None,
     ) -> dict[str, Any]:
-        client = HiraInstitutionDirectoryClient(service_key or HIRA_API_KEY)
-        page_no = 1
-        pages_synced = 0
-        total_count = 0
-        upserted = 0
-
-        while True:
-            page = client.fetch_ophthalmology_page(page_no=page_no, num_rows=page_size)
-            total_count = max(total_count, page.total_count)
-            if not page.items:
-                break
-            upserted += self.upsert_institutions(page.items)
-            pages_synced += 1
-            if max_pages is not None and pages_synced >= max_pages:
-                break
-            if page.total_count and page_no * page_size >= page.total_count:
-                break
-            page_no += 1
-
-        result = {
-            "source": "hira",
-            "pages_synced": pages_synced,
-            "total_count": total_count,
-            "institutions_synced": upserted,
-            "synced_at": utc_now(),
-        }
-        self.set_app_setting(
-            APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC,
-            json.dumps(result, ensure_ascii=False),
+        return self.catalog.sync_hira_ophthalmology_directory(
+            page_size=page_size,
+            max_pages=max_pages,
+            service_key=service_key,
         )
-        return result
 
     def create_site(
         self,
@@ -2708,17 +775,7 @@ class ControlPlaneStore:
         return self.identity.set_registry_consent(user_id, site_id, version=version)
 
     def list_organisms(self, category: str | None = None) -> list[str] | dict[str, list[str]]:
-        query = select(organism_catalog).order_by(organism_catalog.c.culture_category, organism_catalog.c.species_name)
-        if category:
-            query = query.where(organism_catalog.c.culture_category == category)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        if category:
-            return [row["species_name"] for row in rows]
-        catalog: dict[str, list[str]] = {}
-        for row in rows:
-            catalog.setdefault(row["culture_category"], []).append(row["species_name"])
-        return catalog
+        return self.catalog.list_organisms(category)
 
     def request_new_organism(
         self,
@@ -2726,87 +783,20 @@ class ControlPlaneStore:
         requested_species: str,
         requested_by: str,
     ) -> dict[str, Any]:
-        request_record = {
-            "request_id": make_id("organism"),
-            "culture_category": culture_category,
-            "requested_species": requested_species,
-            "requested_by": requested_by,
-            "status": "pending",
-            "reviewed_by": None,
-            "created_at": utc_now(),
-            "reviewed_at": None,
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(organism_requests.insert().values(**request_record))
-        return request_record
+        return self.catalog.request_new_organism(culture_category, requested_species, requested_by)
 
     def list_organism_requests(self, status: str | None = None) -> list[dict[str, Any]]:
-        query = select(organism_requests).order_by(organism_requests.c.created_at.desc())
-        if status:
-            query = query.where(organism_requests.c.status == status)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        return self.catalog.list_organism_requests(status)
 
     def approve_organism(self, request_id: str, approver_user_id: str) -> dict[str, Any]:
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            request_row = conn.execute(
-                select(organism_requests).where(organism_requests.c.request_id == request_id)
-            ).mappings().first()
-            if request_row is None:
-                raise ValueError(f"Unknown request_id: {request_id}")
-            reviewed_at = utc_now()
-            approved_request = {
-                **dict(request_row),
-                "status": "approved",
-                "reviewed_by": approver_user_id,
-                "reviewed_at": reviewed_at,
-            }
-            conn.execute(
-                update(organism_requests)
-                .where(organism_requests.c.request_id == request_id)
-                .values(
-                    status="approved",
-                    reviewed_by=approver_user_id,
-                    reviewed_at=reviewed_at,
-                )
-            )
-            existing_species = conn.execute(
-                select(organism_catalog.c.catalog_id).where(
-                    and_(
-                        organism_catalog.c.culture_category == request_row["culture_category"],
-                        organism_catalog.c.species_name == request_row["requested_species"],
-                    )
-                )
-            ).first()
-            if existing_species is None:
-                conn.execute(
-                    organism_catalog.insert().values(
-                        culture_category=request_row["culture_category"],
-                        species_name=request_row["requested_species"],
-                    )
-                )
-        return approved_request
+        return self.catalog.approve_organism(request_id, approver_user_id)
 
     def list_validation_runs(
         self,
         project_id: str | None = None,
         site_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        query = select(validation_runs)
-        if project_id:
-            query = query.where(validation_runs.c.project_id == project_id)
-        if site_id:
-            query = query.where(validation_runs.c.site_id == site_id)
-        query = query.order_by(validation_runs.c.run_date.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        runs: list[dict[str, Any]] = []
-        for row in rows:
-            payload = dict(row["summary_json"] or {})
-            payload["case_predictions_path"] = row["case_predictions_path"]
-            runs.append(payload)
-        return runs
+        return self.results.list_validation_runs(project_id=project_id, site_id=site_id)
 
     def list_validation_cases(
         self,
@@ -2816,194 +806,28 @@ class ControlPlaneStore:
         patient_reference_id: str | None = None,
         case_reference_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        query = select(validation_cases)
-        if validation_id:
-            query = query.where(validation_cases.c.validation_id == validation_id)
-        if site_id:
-            query = query.where(validation_cases.c.site_id == site_id)
-        if patient_reference_id:
-            query = query.where(validation_cases.c.patient_reference_id == patient_reference_id)
-        if case_reference_id:
-            query = query.where(validation_cases.c.case_reference_id == case_reference_id)
-        query = query.order_by(
-            validation_cases.c.visit_index.asc(),
-            validation_cases.c.run_date.desc(),
-            validation_cases.c.validation_case_id.asc(),
+        return self.results.list_validation_cases(
+            validation_id=validation_id,
+            site_id=site_id,
+            patient_reference_id=patient_reference_id,
+            case_reference_id=case_reference_id,
         )
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
 
     def save_validation_run(
         self,
         summary: dict[str, Any],
         case_predictions: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        normalized_summary = self._normalize_validation_record(str(summary.get("site_id") or "").strip(), summary)
-        normalized_predictions = [
-            self._normalize_validation_record(str(summary.get("site_id") or "").strip(), prediction)
-            for prediction in case_predictions
-        ]
-        case_path = CONTROL_PLANE_CASE_DIR / f"{summary['validation_id']}.json"
-        write_json(case_path, normalized_predictions)
-        report_path = CONTROL_PLANE_REPORT_DIR / f"{summary['validation_id']}.json"
-        try:
-            case_predictions_path = str(case_path.relative_to(BASE_DIR))
-        except ValueError:
-            case_predictions_path = str(case_path)
-        payload = {
-            **normalized_summary,
-            "case_predictions_path": case_predictions_path,
-        }
-        try:
-            payload["report_path"] = str(report_path.relative_to(BASE_DIR))
-        except ValueError:
-            payload["report_path"] = str(report_path)
-        write_json(report_path, payload)
-        record = {
-            "validation_id": summary["validation_id"],
-            "project_id": summary["project_id"],
-            "site_id": summary["site_id"],
-            "model_version": summary.get("model_version", ""),
-            "run_date": summary.get("run_date", utc_now()),
-            "n_cases": summary.get("n_cases"),
-            "n_images": summary.get("n_images"),
-            "AUROC": summary.get("AUROC"),
-            "accuracy": summary.get("accuracy"),
-            "sensitivity": summary.get("sensitivity"),
-            "specificity": summary.get("specificity"),
-            "F1": summary.get("F1"),
-            "case_predictions_path": payload["case_predictions_path"],
-            "summary_json": payload,
-        }
-        validation_case_records = [
-            {
-                "validation_case_id": f"{summary['validation_id']}::{prediction['case_reference_id']}",
-                "validation_id": summary["validation_id"],
-                "project_id": summary["project_id"],
-                "site_id": summary["site_id"],
-                "patient_reference_id": str(prediction.get("patient_reference_id") or ""),
-                "case_reference_id": str(prediction.get("case_reference_id") or ""),
-                "visit_index": int(prediction.get("visit_index") or 0),
-                "model_version_id": summary.get("model_version_id"),
-                "model_version": summary.get("model_version", ""),
-                "run_date": summary.get("run_date", utc_now()),
-                "true_label": prediction.get("true_label"),
-                "predicted_label": str(prediction.get("predicted_label") or ""),
-                "prediction_probability": float(prediction.get("prediction_probability") or 0.0),
-                "is_correct": prediction.get("is_correct"),
-                "n_source_images": prediction.get("n_source_images"),
-                "crop_mode": prediction.get("crop_mode"),
-                "has_gradcam": bool(prediction.get("gradcam_path")),
-                "has_roi_crop": bool(prediction.get("roi_crop_path")),
-                "has_medsam_mask": bool(prediction.get("medsam_mask_path")),
-                "created_at": summary.get("run_date", utc_now()),
-            }
-            for prediction in normalized_predictions
-            if str(prediction.get("case_reference_id") or "").strip()
-            and str(prediction.get("patient_reference_id") or "").strip()
-        ]
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(validation_runs.c.validation_id).where(validation_runs.c.validation_id == summary["validation_id"])
-            ).first()
-            if existing:
-                conn.execute(
-                    update(validation_runs)
-                    .where(validation_runs.c.validation_id == summary["validation_id"])
-                    .values(**record)
-                )
-            else:
-                conn.execute(validation_runs.insert().values(**record))
-            conn.execute(delete(validation_cases).where(validation_cases.c.validation_id == summary["validation_id"]))
-            if validation_case_records:
-                conn.execute(validation_cases.insert(), validation_case_records)
-        return payload
+        return self.results.save_validation_run(summary, case_predictions)
 
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
-        case_path = CONTROL_PLANE_CASE_DIR / f"{validation_id}.json"
-        saved = read_json(case_path, [])
-        if isinstance(saved, list) and saved:
-            return saved
-        rows = self.list_validation_cases(validation_id=validation_id)
-        return [
-            {
-                "validation_id": row["validation_id"],
-                "patient_reference_id": row["patient_reference_id"],
-                "case_reference_id": row["case_reference_id"],
-                "visit_index": row["visit_index"],
-                "true_label": row.get("true_label"),
-                "predicted_label": row.get("predicted_label"),
-                "prediction_probability": row.get("prediction_probability"),
-                "is_correct": row.get("is_correct"),
-                "crop_mode": row.get("crop_mode"),
-                "n_source_images": row.get("n_source_images"),
-                "gradcam_path": None,
-                "medsam_mask_path": None,
-                "roi_crop_path": None,
-                "lesion_mask_path": None,
-                "lesion_crop_path": None,
-            }
-            for row in rows
-        ]
+        return self.results.load_case_predictions(validation_id)
 
     def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(experiment_record)
-        normalized.setdefault("status", "completed")
-        normalized.setdefault("created_at", utc_now())
-        experiment_id = str(normalized.get("experiment_id") or "").strip()
-        if not experiment_id:
-            raise ValueError("experiment_id is required.")
-        normalized["experiment_id"] = experiment_id
-
-        report_path_value = str(normalized.get("report_path") or "").strip()
-        if report_path_value:
-            report_path = Path(report_path_value)
-            if not report_path.is_absolute():
-                report_path = (BASE_DIR / report_path).resolve()
-            if not report_path.exists():
-                experiment_report_path = CONTROL_PLANE_EXPERIMENT_DIR / f"{experiment_id}.json"
-                write_json(experiment_report_path, normalized)
-                normalized["report_path"] = str(experiment_report_path)
-        else:
-            experiment_report_path = CONTROL_PLANE_EXPERIMENT_DIR / f"{experiment_id}.json"
-            write_json(experiment_report_path, normalized)
-            normalized["report_path"] = str(experiment_report_path)
-
-        values = {
-            "experiment_id": experiment_id,
-            "site_id": normalized.get("site_id"),
-            "experiment_type": str(normalized.get("experiment_type") or "unknown"),
-            "status": str(normalized.get("status") or "completed"),
-            "model_version_id": normalized.get("model_version_id"),
-            "created_at": normalized.get("created_at"),
-            "payload_json": normalized,
-        }
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(experiments.c.experiment_id).where(experiments.c.experiment_id == experiment_id)
-            ).first()
-            if existing:
-                conn.execute(update(experiments).where(experiments.c.experiment_id == experiment_id).values(**values))
-            else:
-                conn.execute(experiments.insert().values(**values))
-        return normalized
+        return self.results.save_experiment(experiment_record)
 
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
-        normalized_id = experiment_id.strip()
-        if not normalized_id:
-            return None
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(
-                select(experiments).where(experiments.c.experiment_id == normalized_id)
-            ).first()
-        if row is None:
-            return None
-        return _payload_record(
-            row,
-            "payload_json",
-            ["experiment_id", "site_id", "experiment_type", "status", "model_version_id", "created_at"],
-        )
+        return self.results.get_experiment(experiment_id)
 
     def list_experiments(
         self,
@@ -3012,39 +836,14 @@ class ControlPlaneStore:
         experiment_type: str | None = None,
         status_filter: str | None = None,
     ) -> list[dict[str, Any]]:
-        query = select(experiments)
-        if site_id:
-            query = query.where(experiments.c.site_id == site_id)
-        if experiment_type:
-            query = query.where(experiments.c.experiment_type == experiment_type)
-        if status_filter:
-            query = query.where(experiments.c.status == status_filter)
-        query = query.order_by(experiments.c.created_at.desc())
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).all()
-        return [
-            _payload_record(
-                row,
-                "payload_json",
-                ["experiment_id", "site_id", "experiment_type", "status", "model_version_id", "created_at"],
-            )
-            for row in rows
-        ]
+        return self.results.list_experiments(
+            site_id=site_id,
+            experiment_type=experiment_type,
+            status_filter=status_filter,
+        )
 
     def list_model_versions(self) -> list[dict[str, Any]]:
-        remote_release = self._remote_current_release_manifest()
-        if remote_release is not None:
-            self._cache_remote_release_locally(remote_release)
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(select(model_versions).order_by(model_versions.c.created_at)).all()
-        return [
-            item
-            for item in (
-                _payload_record(row, "payload_json", ["version_id", "version_name", "architecture", "stage", "created_at", "ready", "is_current"])
-                for row in rows
-            )
-            if not item.get("archived", False)
-        ]
+        return self.models.list_model_versions()
 
     def _set_model_current_flag(
         self,
@@ -3055,74 +854,25 @@ class ControlPlaneStore:
         return self.registry.set_model_current_flag(conn, version_id, is_current)
 
     def ensure_model_version(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
-        return self.registry.ensure_model_version(model_metadata)
+        return self.models.ensure_model_version(model_metadata)
 
     def current_global_model(self) -> dict[str, Any] | None:
-        remote_release = self._remote_current_release_manifest()
-        if remote_release is not None:
-            return self._normalize_remote_release(remote_release)
-        return self.registry.current_global_model()
+        return self.models.current_global_model()
 
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
-        return self.registry.archive_model_version(version_id)
+        return self.models.archive_model_version(version_id)
 
     def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
-        incoming_fingerprint = str(update_metadata.get("salt_fingerprint") or "").strip()
-        if incoming_fingerprint and incoming_fingerprint != CASE_REFERENCE_SALT_FINGERPRINT:
-            raise ValueError(
-                f"Salt fingerprint mismatch: the submitting site uses a different "
-                f"KERA_CASE_REFERENCE_SALT (site fingerprint: {incoming_fingerprint!r}, "
-                f"server fingerprint: {CASE_REFERENCE_SALT_FINGERPRINT!r}). "
-                "All nodes in a federation must share the same KERA_CASE_REFERENCE_SALT "
-                "environment variable to ensure consistent case reference IDs."
-            )
-
-        normalized_update = self.normalize_model_update_artifact_metadata(
-            self._normalize_case_reference(update_metadata)
-        )
-        if self.remote_node_sync_enabled():
-            review_thumbnail_url = str(normalized_update.get("review_thumbnail_url") or "").strip() or None
-            remote_payload = _sanitize_remote_payload(normalized_update)
-            try:
-                remote_record = self.remote_control_plane.upload_model_update(
-                    base_model_version_id=str(normalized_update.get("base_model_version_id") or "").strip() or None,
-                    payload_json=remote_payload if isinstance(remote_payload, dict) else {},
-                    review_thumbnail_url=review_thumbnail_url,
-                )
-            except (requests.RequestException, RuntimeError) as exc:
-                local_record = self.registry.register_model_update(normalized_update)
-                local_record["control_plane_source"] = "local_fallback"
-                local_record["remote_sync_error"] = str(exc)
-                return local_record
-
-            merged = dict(normalized_update)
-            merged["control_plane_source"] = "remote"
-            merged["remote_status"] = str(remote_record.get("status") or "").strip() or None
-            merged["status"] = "pending_review" if merged["remote_status"] == "pending" else (merged["remote_status"] or merged.get("status"))
-            merged["update_id"] = str(remote_record.get("update_id") or merged.get("update_id") or "").strip()
-            if remote_record.get("created_at"):
-                merged["created_at"] = remote_record["created_at"]
-            if remote_record.get("site_id"):
-                merged["site_id"] = remote_record["site_id"]
-            if remote_record.get("node_id"):
-                merged["node_id"] = remote_record["node_id"]
-            merged.pop("artifact_path", None)
-            merged.pop("central_artifact_path", None)
-            cached = self.registry.register_model_update(merged)
-            cached["control_plane_source"] = "remote"
-            cached["remote_status"] = merged.get("remote_status")
-            return cached
-
-        return self.registry.register_model_update(normalized_update)
+        return self.models.register_model_update(update_metadata)
 
     def get_model_update(self, update_id: str) -> dict[str, Any] | None:
-        return self.registry.get_model_update(update_id)
+        return self.models.get_model_update(update_id)
 
     def update_model_update(self, update_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        return self.registry.update_model_update(update_id, updates)
+        return self.models.update_model_update(update_id, updates)
 
     def update_model_update_statuses(self, update_ids: list[str], status: str) -> None:
-        return self.registry.update_model_update_statuses(update_ids, status)
+        self.models.update_model_update_statuses(update_ids, status)
 
     def review_model_update(
         self,
@@ -3131,10 +881,10 @@ class ControlPlaneStore:
         decision: str,
         reviewer_notes: str = "",
     ) -> dict[str, Any]:
-        return self.registry.review_model_update(update_id, reviewer_user_id, decision, reviewer_notes)
+        return self.models.review_model_update(update_id, reviewer_user_id, decision, reviewer_notes)
 
     def list_model_updates(self, site_id: str | None = None) -> list[dict[str, Any]]:
-        return self.registry.list_model_updates(site_id)
+        return self.models.list_model_updates(site_id)
 
     def register_contribution(self, contribution: dict[str, Any]) -> dict[str, Any]:
         return self.registry.register_contribution(contribution)
@@ -3155,7 +905,7 @@ class ControlPlaneStore:
         return self.registry.get_contribution_stats(user_id)
 
     def list_aggregations(self) -> list[dict[str, Any]]:
-        return self.registry.list_aggregations()
+        return self.models.list_aggregations()
 
     def register_aggregation(
         self,
@@ -3169,7 +919,7 @@ class ControlPlaneStore:
         threshold_selection_metric: str | None = None,
         threshold_selection_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.registry.register_aggregation(
+        return self.models.register_aggregation(
             base_model_version_id,
             new_model_path,
             new_version_name,

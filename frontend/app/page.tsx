@@ -949,9 +949,13 @@ export default function HomePage() {
       setError(null);
       try {
         const me = await fetchMe(currentToken);
+        const refreshedToken = window.localStorage.getItem(TOKEN_KEY) || currentToken;
+        if (refreshedToken !== currentToken) {
+          setToken(refreshedToken);
+        }
         setUser(me);
         if (me.approval_status === "approved") {
-          const nextSites = await fetchSites(currentToken);
+          const nextSites = await fetchSites(refreshedToken);
           setSites(nextSites);
           setSelectedSiteId((current) =>
             current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
@@ -959,7 +963,7 @@ export default function HomePage() {
         } else {
           setSites([]);
           setSelectedSiteId(null);
-          setMyRequests(await fetchMyAccessRequests(currentToken));
+          setMyRequests(await fetchMyAccessRequests(refreshedToken));
         }
       } catch (nextError) {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -1101,8 +1105,12 @@ export default function HomePage() {
     setError(null);
     try {
       const response = await submitAccessRequest(token, requestForm);
+      const refreshedToken = window.localStorage.getItem(TOKEN_KEY) || token;
+      if (refreshedToken !== token) {
+        setToken(refreshedToken);
+      }
       setUser(response.user);
-      setMyRequests(await fetchMyAccessRequests(token));
+      setMyRequests(await fetchMyAccessRequests(refreshedToken));
     } catch (nextError) {
       setError(describeError(nextError, copy.requestSubmissionFailed));
     } finally {
@@ -1401,7 +1409,12 @@ export default function HomePage() {
                       placeholder={copy.requestPlaceholder}
                     />
                   </Field>
-                  <Button type="submit" variant="primary" fullWidth disabled={requestBusy || !requestForm.requested_site_id}>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    className="w-full"
+                    disabled={requestBusy || !requestForm.requested_site_id}
+                  >
                     {requestBusy ? copy.submitting : copy.submitInstitutionRequest}
                   </Button>
                 </form>

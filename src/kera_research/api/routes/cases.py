@@ -1,4 +1,3 @@
-import hashlib
 import mimetypes
 import threading
 from io import BytesIO
@@ -6,10 +5,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel
+from kera_research.api.case_model_versions import (
+    resolve_requested_contribution_models as select_requested_contribution_models,
+    resolve_requested_model_version as select_requested_model_version,
+    serialize_case_artifact_availability,
+    serialize_case_model_version,
+)
+from kera_research.api.control_plane_proxy import site_record_for_request
 from kera_research.services.pipeline_case_support import lesion_prompt_box_signature, load_stored_lesion_crop
 
 
@@ -57,159 +63,6 @@ def build_cases_router(support: Any) -> APIRouter:
     CaseAiClinicRequest = support.CaseAiClinicRequest
     CaseContributionRequest = support.CaseContributionRequest
     CaseValidationCompareRequest = support.CaseValidationCompareRequest
-
-    def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
-        if model_version.get("ensemble_mode") == "weighted_average":
-            crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
-            if crop_mode in {"automated", "manual", "both"}:
-                return crop_mode
-            return "both"
-        crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
-        if crop_mode in {"automated", "manual", "both"}:
-            return crop_mode
-        return "automated" if model_version.get("requires_medsam_crop", False) else "raw"
-
-    def resolve_requested_model_version(
-        cp: Any,
-        *,
-        model_version_id: str | None,
-        model_version_ids: list[str] | None,
-    ) -> dict[str, Any] | None:
-        normalized_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
-        if normalized_ids:
-            versions_by_id = {
-                str(item.get("version_id") or ""): item
-                for item in cp.list_model_versions()
-                if item.get("ready", True)
-            }
-            components: list[dict[str, Any]] = []
-            missing_ids: list[str] = []
-            for version_id in normalized_ids:
-                component = versions_by_id.get(version_id)
-                if component is None:
-                    missing_ids.append(version_id)
-                else:
-                    components.append(component)
-            if missing_ids:
-                raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
-            if len(components) == 1:
-                return components[0]
-
-            sorted_component_ids = sorted(str(item.get("version_id") or "") for item in components)
-            ensemble_suffix = hashlib.sha1("|".join(sorted_component_ids).encode("utf-8")).hexdigest()[:12]
-            threshold_values: list[float] = []
-            for component in components:
-                try:
-                    threshold_values.append(float(component.get("decision_threshold")))
-                except (TypeError, ValueError):
-                    continue
-            crop_modes = {resolve_model_crop_mode(component) for component in components}
-            ensemble_crop_mode = next(iter(crop_modes)) if len(crop_modes) == 1 else "both"
-            component_weight = round(1.0 / max(len(components), 1), 6)
-            created_at = max(
-                (str(item.get("created_at") or "") for item in components),
-                default=datetime.now(timezone.utc).isoformat(),
-            )
-            ensemble_record = {
-                "version_id": f"analysis_ensemble_{ensemble_suffix}",
-                "version_name": f"analysis-latest-{len(components)}-{ensemble_suffix}",
-                "model_name": "keratitis_cls",
-                "architecture": "multi_model_ensemble",
-                "stage": "analysis",
-                "model_path": "",
-                "requires_medsam_crop": any(bool(item.get("requires_medsam_crop", False)) for item in components),
-                "crop_mode": ensemble_crop_mode,
-                "ensemble_mode": "weighted_average",
-                "component_model_version_ids": sorted_component_ids,
-                "ensemble_weights": {component_id: component_weight for component_id in sorted_component_ids},
-                "preprocess_signature": next(
-                    (item.get("preprocess_signature") for item in components if item.get("preprocess_signature")),
-                    None,
-                ),
-                "num_classes": next((item.get("num_classes") for item in components if item.get("num_classes")), 2),
-                "decision_threshold": sum(threshold_values) / len(threshold_values) if threshold_values else 0.5,
-                "threshold_selection_metric": "component_threshold_mean",
-                "threshold_selection_metrics": {
-                    "component_version_ids": sorted_component_ids,
-                    "component_thresholds": threshold_values,
-                    "weighting": "uniform",
-                },
-                "created_at": created_at,
-                "ready": True,
-                "is_current": False,
-                "notes": f"Temporary analysis ensemble across {len(components)} model versions.",
-                "notes_ko": f"{len(components)}개 모델 버전을 묶은 임시 분석 ensemble입니다.",
-                "notes_en": f"Temporary analysis ensemble across {len(components)} model versions.",
-            }
-            return cp.ensure_model_version(ensemble_record)
-        return get_model_version(cp, model_version_id)
-
-    def resolve_requested_contribution_models(
-        cp: Any,
-        *,
-        model_version_id: str | None,
-        model_version_ids: list[str] | None,
-    ) -> list[dict[str, Any]]:
-        versions_by_id = {
-            str(item.get("version_id") or ""): item
-            for item in cp.list_model_versions()
-            if item.get("ready", True)
-        }
-
-        def expand_contribution_model(model_version: dict[str, Any]) -> list[dict[str, Any]]:
-            if model_version.get("ensemble_mode") != "weighted_average":
-                return [model_version]
-            component_ids = [str(item).strip() for item in model_version.get("component_model_version_ids") or [] if str(item).strip()]
-            components = [versions_by_id[component_id] for component_id in component_ids if component_id in versions_by_id]
-            if not components:
-                raise ValueError(
-                    f"Contribution base models are missing for ensemble {model_version.get('version_name') or model_version.get('version_id')}."
-                )
-            if str(model_version.get("architecture") or "") == "multi_model_ensemble":
-                return components
-            automated_component = next(
-                (
-                    component
-                    for component in components
-                    if component.get("ensemble_mode") != "weighted_average" and resolve_model_crop_mode(component) == "automated"
-                ),
-                None,
-            )
-            if automated_component is not None:
-                return [automated_component]
-            base_component = next((component for component in components if component.get("ensemble_mode") != "weighted_average"), None)
-            return [base_component or components[0]]
-
-        requested_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
-        if requested_ids:
-            requested_models: list[dict[str, Any]] = []
-            missing_ids: list[str] = []
-            for version_id in requested_ids:
-                model_version = versions_by_id.get(version_id)
-                if model_version is None:
-                    missing_ids.append(version_id)
-                else:
-                    requested_models.append(model_version)
-            if missing_ids:
-                raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
-        else:
-            single_model = get_model_version(cp, model_version_id)
-            if single_model is None or not single_model.get("ready", True):
-                raise ValueError("No ready model version is available for contribution.")
-            requested_models = [single_model]
-
-        expanded_models: list[dict[str, Any]] = []
-        seen_version_ids: set[str] = set()
-        for requested_model in requested_models:
-            for expanded_model in expand_contribution_model(requested_model):
-                version_id = str(expanded_model.get("version_id") or "").strip()
-                if not version_id or version_id in seen_version_ids:
-                    continue
-                seen_version_ids.add(version_id)
-                expanded_models.append(expanded_model)
-        if not expanded_models:
-            raise ValueError("No contribution-ready model version is available.")
-        return expanded_models
 
     @router.get("/api/sites/{site_id}/cases")
     def list_cases(
@@ -753,8 +606,9 @@ def build_cases_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
         try:
-            model_version = resolve_requested_model_version(
+            model_version = select_requested_model_version(
                 cp,
+                get_model_version=get_model_version,
                 model_version_id=payload.model_version_id,
                 model_version_ids=payload.model_version_ids,
             )
@@ -790,22 +644,9 @@ def build_cases_router(support: Any) -> APIRouter:
         return {
             "summary": summary,
             "case_prediction": case_prediction,
-            "model_version": {
-                "version_id": model_version.get("version_id"),
-                "version_name": model_version.get("version_name"),
-                "architecture": model_version.get("architecture"),
-                "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
-                "crop_mode": model_version.get("crop_mode"),
-                "ensemble_mode": model_version.get("ensemble_mode"),
-            },
+            "model_version": serialize_case_model_version(model_version),
             "execution_device": execution_device,
-            "artifact_availability": {
-                "gradcam": bool(case_prediction and case_prediction.get("gradcam_path")),
-                "roi_crop": bool(case_prediction and case_prediction.get("roi_crop_path")),
-                "medsam_mask": bool(case_prediction and case_prediction.get("medsam_mask_path")),
-                "lesion_crop": bool(case_prediction and case_prediction.get("lesion_crop_path")),
-                "lesion_mask": bool(case_prediction and case_prediction.get("lesion_mask_path")),
-            },
+            "artifact_availability": serialize_case_artifact_availability(case_prediction),
         }
 
     @router.post("/api/sites/{site_id}/cases/validate/compare")
@@ -859,34 +700,14 @@ def build_cases_router(support: Any) -> APIRouter:
                     {
                         "summary": summary,
                         "case_prediction": case_prediction,
-                        "model_version": {
-                            "version_id": model_version.get("version_id"),
-                            "version_name": model_version.get("version_name"),
-                            "architecture": model_version.get("architecture"),
-                            "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
-                            "crop_mode": model_version.get("crop_mode"),
-                            "ensemble_mode": model_version.get("ensemble_mode"),
-                        },
-                        "artifact_availability": {
-                            "gradcam": bool(case_prediction and case_prediction.get("gradcam_path")),
-                            "roi_crop": bool(case_prediction and case_prediction.get("roi_crop_path")),
-                            "medsam_mask": bool(case_prediction and case_prediction.get("medsam_mask_path")),
-                            "lesion_crop": bool(case_prediction and case_prediction.get("lesion_crop_path")),
-                            "lesion_mask": bool(case_prediction and case_prediction.get("lesion_mask_path")),
-                        },
+                        "model_version": serialize_case_model_version(model_version),
+                        "artifact_availability": serialize_case_artifact_availability(case_prediction),
                     }
                 )
             except Exception as exc:
                 comparisons.append(
                     {
-                        "model_version": {
-                            "version_id": model_version.get("version_id"),
-                            "version_name": model_version.get("version_name"),
-                            "architecture": model_version.get("architecture"),
-                            "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
-                            "crop_mode": model_version.get("crop_mode"),
-                            "ensemble_mode": model_version.get("ensemble_mode"),
-                        },
+                        "model_version": serialize_case_model_version(model_version),
                         "error": str(exc),
                     }
                 )
@@ -909,8 +730,9 @@ def build_cases_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
         try:
-            model_version = resolve_requested_model_version(
+            model_version = select_requested_model_version(
                 cp,
+                get_model_version=get_model_version,
                 model_version_id=payload.model_version_id,
                 model_version_ids=payload.model_version_ids,
             )
@@ -963,8 +785,9 @@ def build_cases_router(support: Any) -> APIRouter:
             )
 
         try:
-            contribution_models = resolve_requested_contribution_models(
+            contribution_models = select_requested_contribution_models(
                 cp,
+                get_model_version=get_model_version,
                 model_version_id=payload.model_version_id,
                 model_version_ids=payload.model_version_ids,
             )
@@ -1308,6 +1131,8 @@ def build_cases_router(support: Any) -> APIRouter:
         payload: CaseResearchRegistryRequest,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
         require_visit_write_access(site_store, user, payload.patient_id, payload.visit_date)
@@ -1329,7 +1154,12 @@ def build_cases_router(support: Any) -> APIRouter:
         if action not in {"include", "exclude"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid research registry action.")
 
-        site_record = cp.get_site(site_id) or {}
+        site_record = site_record_for_request(
+            cp,
+            site_id=site_id,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+        ) or {}
         if action == "include":
             if not bool(site_record.get("research_registry_enabled", True)):
                 raise HTTPException(

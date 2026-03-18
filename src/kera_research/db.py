@@ -32,7 +32,25 @@ def _default_database_url() -> str:
     return f"sqlite:///{database_path}"
 
 
+def _default_local_control_plane_cache_url() -> str:
+    database_path = (STORAGE_DIR / "control_plane_cache.db").resolve().as_posix()
+    return f"sqlite:///{database_path}"
+
+
+def _control_plane_remote_api_enabled() -> bool:
+    return bool((os.getenv("KERA_CONTROL_PLANE_API_BASE_URL") or "").strip())
+
+
 def _resolve_control_plane_database_url() -> str:
+    local_cache_url = (
+        os.getenv("KERA_LOCAL_CONTROL_PLANE_DATABASE_URL")
+        or os.getenv("KERA_CONTROL_PLANE_LOCAL_DATABASE_URL")
+        or ""
+    ).strip()
+    if local_cache_url:
+        return local_cache_url
+    if _control_plane_remote_api_enabled():
+        return _default_local_control_plane_cache_url()
     legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
     return (
         os.getenv("KERA_CONTROL_PLANE_DATABASE_URL")

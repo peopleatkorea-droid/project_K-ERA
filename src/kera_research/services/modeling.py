@@ -54,6 +54,80 @@ def seed_everything(seed: int = 42) -> None:
 
 DEFAULT_IMAGE_SIZE = 224
 DEFAULT_NUM_CLASSES = len(LABEL_TO_INDEX)
+IMAGENET_CHANNEL_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_CHANNEL_STD = (0.229, 0.224, 0.225)
+
+
+def _legacy_preprocess_metadata(image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
+    return {
+        "color_mode": "RGB",
+        "resize": [int(image_size), int(image_size)],
+        "scaling": "0_1",
+    }
+
+
+def _imagenet_preprocess_metadata(image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
+    metadata = _legacy_preprocess_metadata(image_size=image_size)
+    metadata["normalization"] = {
+        "type": "imagenet",
+        "mean": [float(value) for value in IMAGENET_CHANNEL_MEAN],
+        "std": [float(value) for value in IMAGENET_CHANNEL_STD],
+    }
+    return metadata
+
+
+def _preprocess_signature_from_metadata(metadata: dict[str, Any]) -> str:
+    payload = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _preprocess_image_size(preprocess_metadata: dict[str, Any] | None, fallback: int = DEFAULT_IMAGE_SIZE) -> int:
+    if not isinstance(preprocess_metadata, dict):
+        return int(fallback)
+    resize = preprocess_metadata.get("resize")
+    if (
+        isinstance(resize, list)
+        and len(resize) >= 2
+        and all(isinstance(item, (int, float)) for item in resize[:2])
+    ):
+        return int(resize[0])
+    return int(fallback)
+
+
+def _normalize_view(view: Any) -> str:
+    return str(view or "white").strip().lower() or "white"
+
+
+def _apply_preprocess_to_tensor(tensor: torch.Tensor, preprocess_metadata: dict[str, Any] | None) -> torch.Tensor:
+    if tensor.ndim not in {3, 4}:
+        raise ValueError(f"Expected a 3D or 4D tensor, got shape {tuple(tensor.shape)}.")
+    if not isinstance(preprocess_metadata, dict):
+        return tensor
+    normalization = preprocess_metadata.get("normalization")
+    if not isinstance(normalization, dict):
+        return tensor
+    normalization_type = str(normalization.get("type") or "").strip().lower()
+    if normalization_type in {"", "none"}:
+        return tensor
+    if normalization_type != "imagenet":
+        raise ValueError(f"Unsupported normalization type: {normalization_type}")
+    mean = normalization.get("mean") or IMAGENET_CHANNEL_MEAN
+    std = normalization.get("std") or IMAGENET_CHANNEL_STD
+    mean_tensor = tensor.new_tensor(mean).view((1, -1, 1, 1) if tensor.ndim == 4 else (-1, 1, 1))
+    std_tensor = tensor.new_tensor(std).view((1, -1, 1, 1) if tensor.ndim == 4 else (-1, 1, 1))
+    return (tensor - mean_tensor) / std_tensor
+
+
+def _load_image_tensor(
+    image_path: str | Path,
+    image_size: int = DEFAULT_IMAGE_SIZE,
+) -> tuple[Image.Image, torch.Tensor]:
+    require_torch()
+    image = Image.open(image_path).convert("RGB")
+    resized = image.resize((image_size, image_size))
+    array = np.asarray(resized, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(array.transpose(2, 0, 1)).unsqueeze(0)
+    return image, tensor
 
 
 if nn is not None:
@@ -331,43 +405,141 @@ else:  # pragma: no cover - dependency guard
         pass
 
 
-def preprocess_image(image_path: str | Path, image_size: int = DEFAULT_IMAGE_SIZE) -> tuple[Image.Image, torch.Tensor]:
-    require_torch()
-    image = Image.open(image_path).convert("RGB")
-    resized = image.resize((image_size, image_size))
-    array = np.asarray(resized, dtype=np.float32) / 255.0
-    tensor = torch.from_numpy(array.transpose(2, 0, 1)).unsqueeze(0)
-    return image, tensor
+def preprocess_image(
+    image_path: str | Path,
+    image_size: int = DEFAULT_IMAGE_SIZE,
+    *,
+    preprocess_metadata: dict[str, Any] | None = None,
+) -> tuple[Image.Image, torch.Tensor]:
+    effective_size = _preprocess_image_size(preprocess_metadata, fallback=image_size)
+    image, tensor = _load_image_tensor(image_path, image_size=effective_size)
+    return image, _apply_preprocess_to_tensor(tensor, preprocess_metadata)
 
 
-def _augment_tensor(tensor: torch.Tensor) -> torch.Tensor:
-    """학습용 간단한 augmentation (horizontal flip, 밝기/대비 jitter)."""
+def _apply_random_affine(
+    tensor: torch.Tensor,
+    *,
+    max_rotate_degrees: float,
+    max_translate: float,
+    min_scale: float,
+    max_scale: float,
+) -> torch.Tensor:
+    angle = math.radians(random.uniform(-max_rotate_degrees, max_rotate_degrees))
+    scale = random.uniform(min_scale, max_scale)
+    translate_x = random.uniform(-max_translate, max_translate)
+    translate_y = random.uniform(-max_translate, max_translate)
+    theta = tensor.new_tensor(
+        [
+            [scale * math.cos(angle), -scale * math.sin(angle), translate_x],
+            [scale * math.sin(angle), scale * math.cos(angle), translate_y],
+        ]
+    )
+    grid = F.affine_grid(theta.unsqueeze(0), size=(1, *tensor.shape), align_corners=False)
+    warped = F.grid_sample(
+        tensor.unsqueeze(0),
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=False,
+    )
+    return warped.squeeze(0)
+
+
+def _apply_box_blur(tensor: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
+    blurred = F.avg_pool2d(tensor.unsqueeze(0), kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+    return blurred.squeeze(0)
+
+
+def _apply_specular_glare(tensor: torch.Tensor, intensity_scale: float = 1.0) -> torch.Tensor:
+    _, height, width = tensor.shape
+    yy, xx = torch.meshgrid(
+        torch.linspace(-1.0, 1.0, height, device=tensor.device),
+        torch.linspace(-1.0, 1.0, width, device=tensor.device),
+        indexing="ij",
+    )
+    center_x = random.uniform(-0.45, 0.45)
+    center_y = random.uniform(-0.45, 0.45)
+    radius = random.uniform(0.08, 0.22)
+    distance = ((xx - center_x) ** 2 + (yy - center_y) ** 2) / max(radius**2, 1e-6)
+    spot = torch.exp(-distance * 2.4) * random.uniform(0.06, 0.18) * intensity_scale
+    return torch.clamp(tensor + spot.unsqueeze(0), 0.0, 1.0)
+
+
+def _adjust_color_by_view(tensor: torch.Tensor, view: str) -> torch.Tensor:
+    brightness = random.uniform(0.9, 1.12)
+    contrast = random.uniform(0.9, 1.12)
+    tensor = torch.clamp(tensor * brightness, 0.0, 1.0)
+    channel_mean = tensor.mean(dim=(1, 2), keepdim=True)
+    tensor = torch.clamp((tensor - channel_mean) * contrast + channel_mean, 0.0, 1.0)
+    if view == "fluorescein":
+        channel_gain = tensor.new_tensor(
+            [
+                random.uniform(0.94, 1.02),
+                random.uniform(0.98, 1.12),
+                random.uniform(0.94, 1.04),
+            ]
+        ).view(3, 1, 1)
+        return torch.clamp(tensor * channel_gain, 0.0, 1.0)
+    channel_gain = tensor.new_tensor(
+        [
+            random.uniform(0.92, 1.08),
+            random.uniform(0.92, 1.08),
+            random.uniform(0.92, 1.08),
+        ]
+    ).view(3, 1, 1)
+    return torch.clamp(tensor * channel_gain, 0.0, 1.0)
+
+
+def _augment_tensor(tensor: torch.Tensor, *, view: str | None = None) -> torch.Tensor:
+    """Apply slit-lamp aware augmentation on raw 0-1 RGB tensors before normalization."""
+    normalized_view = _normalize_view(view)
     if random.random() < 0.5:
         tensor = torch.flip(tensor, dims=[2])
-    if random.random() < 0.5:
-        tensor = torch.flip(tensor, dims=[1])
-    brightness = random.uniform(0.8, 1.2)
-    contrast = random.uniform(0.8, 1.2)
-    tensor = torch.clamp(tensor * brightness, 0.0, 1.0)
-    mean = tensor.mean()
-    tensor = torch.clamp((tensor - mean) * contrast + mean, 0.0, 1.0)
+    if random.random() < 0.8:
+        tensor = _apply_random_affine(
+            tensor,
+            max_rotate_degrees=7.0 if normalized_view == "slit" else 10.0,
+            max_translate=0.05,
+            min_scale=0.95,
+            max_scale=1.05,
+        )
+    tensor = _adjust_color_by_view(tensor, normalized_view)
+    if random.random() < 0.18:
+        tensor = _apply_box_blur(tensor)
+    if normalized_view != "fluorescein" and random.random() < 0.16:
+        tensor = _apply_specular_glare(tensor, intensity_scale=1.15 if normalized_view == "slit" else 1.0)
+    if random.random() < 0.22:
+        noise_scale = 0.018 if normalized_view == "fluorescein" else 0.024
+        tensor = torch.clamp(tensor + torch.randn_like(tensor) * noise_scale, 0.0, 1.0)
     return tensor
 
 
 class ManifestImageDataset(Dataset):
-    def __init__(self, records: Iterable[dict[str, Any]], augment: bool = False) -> None:
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.records = list(records)
         self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        _, tensor = preprocess_image(self.records[index]["image_path"])
+        record = self.records[index]
+        _, tensor = _load_image_tensor(
+            record["image_path"],
+            image_size=_preprocess_image_size(self.preprocess_metadata),
+        )
         tensor = tensor.squeeze(0)
         if self.augment:
-            tensor = _augment_tensor(tensor)
-        label_value = LABEL_TO_INDEX[self.records[index]["culture_category"]]
+            tensor = _augment_tensor(tensor, view=record.get("view"))
+        tensor = _apply_preprocess_to_tensor(tensor, self.preprocess_metadata)
+        label_value = LABEL_TO_INDEX[record["culture_category"]]
         return tensor, torch.tensor(label_value, dtype=torch.long)
 
 
@@ -384,15 +556,53 @@ class ModelManager:
         self.artifact_store = ModelArtifactStore()
 
     def preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
-        return {
-            "color_mode": "RGB",
-            "resize": [int(image_size), int(image_size)],
-            "scaling": "0_1",
-        }
+        return _imagenet_preprocess_metadata(image_size=image_size)
+
+    def legacy_preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
+        return _legacy_preprocess_metadata(image_size=image_size)
 
     def preprocess_signature(self, image_size: int = DEFAULT_IMAGE_SIZE) -> str:
-        payload = json.dumps(self.preprocess_metadata(image_size=image_size), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+        return _preprocess_signature_from_metadata(self.preprocess_metadata(image_size=image_size))
+
+    def legacy_preprocess_signature(self, image_size: int = DEFAULT_IMAGE_SIZE) -> str:
+        return _preprocess_signature_from_metadata(self.legacy_preprocess_metadata(image_size=image_size))
+
+    def resolve_preprocess_metadata(
+        self,
+        model_reference: dict[str, Any] | None = None,
+        checkpoint_metadata: dict[str, Any] | None = None,
+        *,
+        image_size: int = DEFAULT_IMAGE_SIZE,
+    ) -> dict[str, Any]:
+        for source in (checkpoint_metadata, model_reference):
+            if not isinstance(source, dict):
+                continue
+            preprocess = source.get("preprocess")
+            if isinstance(preprocess, dict):
+                return dict(preprocess)
+
+        for source in (checkpoint_metadata, model_reference):
+            if not isinstance(source, dict):
+                continue
+            signature = str(source.get("preprocess_signature") or "").strip()
+            if not signature:
+                continue
+            if signature == self.legacy_preprocess_signature(image_size=image_size):
+                return self.legacy_preprocess_metadata(image_size=image_size)
+            if signature == self.preprocess_signature(image_size=image_size):
+                return self.preprocess_metadata(image_size=image_size)
+
+        return self.preprocess_metadata(image_size=image_size)
+
+    def model_preprocess_metadata(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        metadata = getattr(model, "_kera_preprocess_metadata", None)
+        if isinstance(metadata, dict):
+            return dict(metadata)
+        return self.resolve_preprocess_metadata(model_reference)
 
     def build_artifact_metadata(
         self,
@@ -403,7 +613,9 @@ class ModelManager:
         training_input_policy: str | None = None,
         image_size: int = DEFAULT_IMAGE_SIZE,
         num_classes: int = DEFAULT_NUM_CLASSES,
+        preprocess_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        resolved_preprocess = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else self.preprocess_metadata(image_size=image_size)
         metadata = {
             "artifact_format": "kera_model_artifact_v1",
             "artifact_type": artifact_type,
@@ -413,8 +625,8 @@ class ModelManager:
                 "index_to_label": {str(key): value for key, value in INDEX_TO_LABEL.items()},
                 "label_to_index": LABEL_TO_INDEX,
             },
-            "preprocess": self.preprocess_metadata(image_size=image_size),
-            "preprocess_signature": self.preprocess_signature(image_size=image_size),
+            "preprocess": resolved_preprocess,
+            "preprocess_signature": _preprocess_signature_from_metadata(resolved_preprocess),
             "saved_at": utc_now(),
         }
         if crop_mode is not None:
@@ -508,25 +720,37 @@ class ModelManager:
         baselines: list[dict[str, Any]] = []
         for template in DEFAULT_GLOBAL_MODELS:
             model_path = Path(template["model_path"])
+            checkpoint_metadata: dict[str, Any] = {}
             if not model_path.exists():
                 model_path.parent.mkdir(parents=True, exist_ok=True)
                 model = self.build_model_pretrained(template["architecture"])
+                checkpoint_metadata = self.build_artifact_metadata(
+                    architecture=template["architecture"],
+                    crop_mode="automated" if template.get("requires_medsam_crop", False) else "raw",
+                    training_input_policy=(
+                        "medsam_cornea_crop_only"
+                        if template.get("requires_medsam_crop", False)
+                        else "raw_or_model_defined"
+                    ),
+                )
                 torch.save(
                     {
                         "architecture": template["architecture"],
                         "state_dict": model.state_dict(),
-                        "artifact_metadata": self.build_artifact_metadata(
-                            architecture=template["architecture"],
-                            crop_mode="automated" if template.get("requires_medsam_crop", False) else "raw",
-                            training_input_policy=(
-                                "medsam_cornea_crop_only"
-                                if template.get("requires_medsam_crop", False)
-                                else "raw_or_model_defined"
-                            ),
-                        ),
+                        "artifact_metadata": checkpoint_metadata,
                     },
                     model_path,
                 )
+            else:
+                try:
+                    checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+                    checkpoint_metadata = self._checkpoint_metadata(checkpoint)
+                except Exception:
+                    checkpoint_metadata = {}
+            resolved_preprocess = self.resolve_preprocess_metadata(template, checkpoint_metadata)
+            resolved_signature = str(checkpoint_metadata.get("preprocess_signature") or "").strip() or _preprocess_signature_from_metadata(
+                resolved_preprocess
+            )
             sha256_value = self.artifact_store.sha256_file(model_path)
             baselines.append(
                 {
@@ -545,7 +769,8 @@ class ModelManager:
                     "training_input_policy": (
                         "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
                     ),
-                    "preprocess_signature": self.preprocess_signature(),
+                    "preprocess": resolved_preprocess,
+                    "preprocess_signature": resolved_signature,
                     "num_classes": DEFAULT_NUM_CLASSES,
                     "decision_threshold": 0.5,
                     "threshold_selection_metric": "default",
@@ -581,11 +806,15 @@ class ModelManager:
         architecture = resolved_reference.get("architecture", "densenet121")
         model_path = resolved_reference["model_path"]
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-        self.validate_model_artifact(resolved_reference, checkpoint)
+        checkpoint_metadata = self.validate_model_artifact(resolved_reference, checkpoint)
         model = self.build_model(architecture).to(device)
         state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
         strict = architecture not in DENSENET_VARIANTS
         model.load_state_dict(state_dict, strict=strict)
+        model._kera_preprocess_metadata = self.resolve_preprocess_metadata(
+            resolved_reference,
+            checkpoint_metadata,
+        )
         model.eval()
         return model
 
@@ -625,7 +854,10 @@ class ModelManager:
 
     def predict_image(self, model: nn.Module, image_path: str | Path, device: str) -> Prediction:
         require_torch()
-        _, tensor = preprocess_image(image_path)
+        _, tensor = preprocess_image(
+            image_path,
+            preprocess_metadata=self.model_preprocess_metadata(model),
+        )
         tensor = tensor.to(device)
         model.eval()
         with torch.no_grad():
@@ -646,7 +878,10 @@ class ModelManager:
         device: str,
     ) -> np.ndarray:
         require_torch()
-        _, tensor = preprocess_image(image_path)
+        _, tensor = preprocess_image(
+            image_path,
+            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
+        )
         tensor = tensor.to(device)
         model.eval()
         architecture = str(model_reference.get("architecture") or "densenet121")
@@ -683,6 +918,7 @@ class ModelManager:
         architecture = model_reference.get("architecture", "densenet121")
         return self._generate_cam_from_layer(
             model=model,
+            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
             image_path=image_path,
             device=device,
             output_path=output_path,
@@ -730,6 +966,7 @@ class ModelManager:
     def _generate_cam_from_layer(
         self,
         model: nn.Module,
+        preprocess_metadata: dict[str, Any] | None,
         image_path: str | Path,
         device: str,
         output_path: str | Path,
@@ -737,7 +974,7 @@ class ModelManager:
         target_class: int | None = None,
     ) -> str:
         require_torch()
-        original_image, tensor = preprocess_image(image_path)
+        original_image, tensor = preprocess_image(image_path, preprocess_metadata=preprocess_metadata)
         tensor = tensor.to(device)
         model.eval()
 
@@ -815,7 +1052,10 @@ class ModelManager:
         if not records:
             raise ValueError("No records are available for fine-tuning.")
 
-        dataset = ManifestImageDataset(records)
+        dataset = ManifestImageDataset(
+            records,
+            preprocess_metadata=self.resolve_preprocess_metadata(base_model_reference),
+        )
         loader = DataLoader(dataset, batch_size=min(8, len(records)), shuffle=True)
 
         model = self.load_model(base_model_reference, device)
@@ -855,6 +1095,7 @@ class ModelManager:
                     artifact_type="model",
                     crop_mode=str(base_model_reference.get("crop_mode") or ""),
                     training_input_policy=str(base_model_reference.get("training_input_policy") or ""),
+                    preprocess_metadata=self.resolve_preprocess_metadata(base_model_reference),
                 ),
             },
             output,
@@ -1275,9 +1516,10 @@ class ModelManager:
         val_records = [record for patient_id in val_patient_ids for record in patient_to_records[patient_id]]
         test_records = [record for patient_id in test_patient_ids for record in patient_to_records[patient_id]]
 
-        train_ds = ManifestImageDataset(train_records, augment=True)
-        val_ds = ManifestImageDataset(val_records, augment=False)
-        test_ds = ManifestImageDataset(test_records, augment=False)
+        preprocess_metadata = self.preprocess_metadata()
+        train_ds = ManifestImageDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+        val_ds = ManifestImageDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+        test_ds = ManifestImageDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
         bs = max(1, min(batch_size, len(train_records)))
         train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False)
@@ -1518,6 +1760,7 @@ class ModelManager:
         tuned_checkpoint = torch.load(tuned_model_path, map_location="cpu", weights_only=True)
         architecture = tuned_checkpoint.get("architecture", "densenet121") if isinstance(tuned_checkpoint, dict) else "densenet121"
         base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)
+        tuned_metadata = self._checkpoint_metadata(tuned_checkpoint)
         base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
         tuned_state = self._extract_state_dict_from_checkpoint(tuned_checkpoint, architecture)
         delta_state = {key: tuned_state[key] - base_state[key] for key in base_state}
@@ -1530,6 +1773,7 @@ class ModelManager:
                 "artifact_metadata": self.build_artifact_metadata(
                     architecture=architecture,
                     artifact_type="weight_delta",
+                    preprocess_metadata=self.resolve_preprocess_metadata(checkpoint_metadata=tuned_metadata),
                 ),
             },
             output,
@@ -1592,9 +1836,11 @@ class ModelManager:
             aggregated[key] = (stacked * weights_tensor.view(*view_shape)).sum(dim=0)
 
         architecture = delta_checkpoints[0].get("architecture", "densenet121")
+        reference_metadata = self._checkpoint_metadata(delta_checkpoints[0])
         state_dict_to_save = aggregated
         if base_model_path is not None:
             base_checkpoint = torch.load(base_model_path, map_location="cpu", weights_only=True)
+            reference_metadata = self._checkpoint_metadata(base_checkpoint) or reference_metadata
             base_state = self._extract_state_dict_from_checkpoint(base_checkpoint, architecture)
             state_dict_to_save = {
                 key: base_state[key] + aggregated[key]
@@ -1610,6 +1856,7 @@ class ModelManager:
                 "artifact_metadata": self.build_artifact_metadata(
                     architecture=architecture,
                     artifact_type="model" if base_model_path is not None else "weight_delta",
+                    preprocess_metadata=self.resolve_preprocess_metadata(checkpoint_metadata=reference_metadata),
                 ),
             },
             output,

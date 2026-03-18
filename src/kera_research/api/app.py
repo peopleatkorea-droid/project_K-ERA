@@ -31,6 +31,7 @@ from kera_research.config import (
     SITE_ROOT_DIR,
 )
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
+from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
 from kera_research.services.node_credentials import (
@@ -89,14 +90,9 @@ API_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = 2
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 
-# ---------------------------------------------------------------------------
-# Background aggregation job tracker
-# ---------------------------------------------------------------------------
-_AGG_JOBS: dict[str, dict[str, Any]] = {}
-_AGG_JOBS_LOCK = threading.Lock()
-_AGG_RUNNING = threading.Event()  # set while an aggregation is in progress
 _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
+_ADMIN_REGISTRY_ORCHESTRATOR = AdminRegistryOrchestrator(make_id=make_id, model_dir=MODEL_DIR)
 _SEMANTIC_PROMPT_SCORER: SemanticPromptScoringService | None = None
 IMPORT_TEMPLATE_ROWS = [
     "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_confirmed,culture_category,culture_species,"
@@ -136,6 +132,7 @@ def _create_access_token(user: dict[str, Any]) -> str:
         "role": user.get("role", "viewer"),
         "site_ids": user.get("site_ids"),
         "approval_status": user.get("approval_status", "approved"),
+        "registry_consents": user.get("registry_consents") or {},
         "exp": int(expires_at.timestamp()),
     }
     return jwt.encode(payload, API_SECRET, algorithm=API_ALGORITHM)
@@ -220,6 +217,7 @@ def get_current_user(
         "approval_status": token_payload.get("approval_status", "approved"),
         "full_name": token_payload.get("full_name", ""),
         "public_alias": token_payload.get("public_alias"),
+        "registry_consents": token_payload.get("registry_consents") or {},
     }
 
 
@@ -1562,9 +1560,7 @@ def create_app() -> FastAPI:
         build_case_history=_build_case_history,
         build_patient_trajectory=_build_patient_trajectory,
         hash_password=_hash_password,
-        agg_jobs=_AGG_JOBS,
-        agg_jobs_lock=_AGG_JOBS_LOCK,
-        agg_running=_AGG_RUNNING,
+        registry_orchestrator=_ADMIN_REGISTRY_ORCHESTRATOR,
         lesion_preview_jobs=_LESION_PREVIEW_JOBS,
         lesion_preview_jobs_lock=_LESION_PREVIEW_JOBS_LOCK,
         make_id=make_id,

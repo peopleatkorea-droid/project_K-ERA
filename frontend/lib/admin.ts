@@ -1,4 +1,5 @@
 import { request } from "./api-core";
+import { requestMainControlPlane } from "./main-control-plane-client";
 import type {
   AccessRequestRecord,
   AdminOverviewResponse,
@@ -17,15 +18,15 @@ import type {
 
 export async function fetchAccessRequests(token: string, statusFilter = "pending") {
   const suffix = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : "";
-  return request<AccessRequestRecord[]>(`/api/admin/access-requests${suffix}`, {}, token);
+  return requestMainControlPlane<AccessRequestRecord[]>(`/admin/access-requests${suffix}`, {}, token);
 }
 
 export async function fetchAdminOverview(token: string) {
-  return request<AdminOverviewResponse>("/api/admin/overview", {}, token);
+  return requestMainControlPlane<AdminOverviewResponse>("/admin/overview", {}, token);
 }
 
 export async function fetchInstitutionDirectoryStatus(token: string) {
-  return request<InstitutionDirectorySyncResponse>("/api/admin/institutions/status", {}, token);
+  return requestMainControlPlane<InstitutionDirectorySyncResponse>("/admin/institutions/status", {}, token);
 }
 
 export async function syncInstitutionDirectory(
@@ -66,12 +67,12 @@ export async function updateStorageSettings(token: string, payload: { storage_ro
 }
 
 export async function fetchProjects(token: string) {
-  return request<ProjectRecord[]>("/api/admin/projects", {}, token);
+  return requestMainControlPlane<ProjectRecord[]>("/admin/projects", {}, token);
 }
 
 export async function createProject(token: string, payload: { name: string; description?: string }) {
-  return request<ProjectRecord>(
-    "/api/admin/projects",
+  return requestMainControlPlane<ProjectRecord>(
+    "/admin/projects",
     {
       method: "POST",
       body: JSON.stringify({
@@ -85,7 +86,7 @@ export async function createProject(token: string, payload: { name: string; desc
 
 export async function fetchAdminSites(token: string, projectId?: string) {
   const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
-  return request<ManagedSiteRecord[]>(`/api/admin/sites${suffix}`, {}, token);
+  return requestMainControlPlane<ManagedSiteRecord[]>(`/admin/sites${suffix}`, {}, token);
 }
 
 export async function createAdminSite(
@@ -99,8 +100,8 @@ export async function createAdminSite(
     research_registry_enabled?: boolean;
   },
 ) {
-  return request<ManagedSiteRecord>(
-    "/api/admin/sites",
+  return requestMainControlPlane<ManagedSiteRecord>(
+    "/admin/sites",
     {
       method: "POST",
       body: JSON.stringify({
@@ -122,8 +123,8 @@ export async function updateAdminSite(
     research_registry_enabled?: boolean;
   },
 ) {
-  return request<ManagedSiteRecord>(
-    `/api/admin/sites/${siteId}`,
+  return requestMainControlPlane<ManagedSiteRecord>(
+    `/admin/sites/${siteId}`,
     {
       method: "PATCH",
       body: JSON.stringify({
@@ -163,18 +164,22 @@ export async function updateResearchRegistrySettings(
   token: string,
   payload: { research_registry_enabled: boolean },
 ) {
-  return request<ResearchRegistrySettingsResponse>(
-    `/api/sites/${siteId}/research-registry/settings`,
+  const site = await requestMainControlPlane<ManagedSiteRecord>(
+    `/admin/sites/${siteId}`,
     {
       method: "PATCH",
       body: JSON.stringify(payload),
     },
     token,
   );
+  return {
+    site_id: site.site_id,
+    research_registry_enabled: Boolean(site.research_registry_enabled),
+  } satisfies ResearchRegistrySettingsResponse;
 }
 
 export async function fetchUsers(token: string) {
-  return request<ManagedUserRecord[]>("/api/admin/users", {}, token);
+  return requestMainControlPlane<ManagedUserRecord[]>("/admin/users", {}, token);
 }
 
 export async function upsertManagedUser(
@@ -188,8 +193,8 @@ export async function upsertManagedUser(
     site_ids?: string[];
   },
 ) {
-  return request<ManagedUserRecord>(
-    "/api/admin/users",
+  return requestMainControlPlane<ManagedUserRecord>(
+    "/admin/users",
     {
       method: "POST",
       body: JSON.stringify({
@@ -219,8 +224,8 @@ export async function reviewAccessRequest(
     reviewer_notes?: string;
   },
 ) {
-  return request<{ request: AccessRequestRecord; created_site?: ManagedSiteRecord | null }>(
-    `/api/admin/access-requests/${requestId}/review`,
+  return requestMainControlPlane<{ request: AccessRequestRecord; created_site?: ManagedSiteRecord | null }>(
+    `/admin/access-requests/${requestId}/review`,
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -230,11 +235,15 @@ export async function reviewAccessRequest(
 }
 
 export async function fetchModelVersions(token: string) {
-  return request<ModelVersionRecord[]>("/api/admin/model-versions", {}, token);
+  return requestMainControlPlane<ModelVersionRecord[]>("/admin/model-versions", {}, token);
 }
 
 export async function deleteModelVersion(versionId: string, token: string) {
-  return request<{ model_version: ModelVersionRecord }>(`/api/admin/model-versions/${versionId}`, { method: "DELETE" }, token);
+  return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
+    `/admin/model-versions/${versionId}`,
+    { method: "DELETE" },
+    token,
+  );
 }
 
 export async function publishModelVersion(
@@ -245,8 +254,8 @@ export async function publishModelVersion(
     set_current?: boolean;
   },
 ) {
-  return request<{ model_version: ModelVersionRecord }>(
-    `/api/admin/model-versions/${versionId}/publish`,
+  return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
+    `/admin/model-versions/${versionId}/publish`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -265,8 +274,8 @@ export async function autoPublishModelVersion(
     set_current?: boolean;
   } = {},
 ) {
-  return request<{ model_version: ModelVersionRecord }>(
-    `/api/admin/model-versions/${versionId}/auto-publish`,
+  return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
+    `/admin/model-versions/${versionId}/auto-publish`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -293,7 +302,7 @@ export async function fetchModelUpdates(
     params.set("status_filter", options.status_filter);
   }
   const suffix = params.size ? `?${params.toString()}` : "";
-  return request<ModelUpdateRecord[]>(`/api/admin/model-updates${suffix}`, {}, token);
+  return requestMainControlPlane<ModelUpdateRecord[]>(`/admin/model-updates${suffix}`, {}, token);
 }
 
 export async function reviewModelUpdate(
@@ -304,8 +313,8 @@ export async function reviewModelUpdate(
     reviewer_notes?: string;
   },
 ) {
-  return request<{ update: ModelUpdateRecord }>(
-    `/api/admin/model-updates/${updateId}/review`,
+  return requestMainControlPlane<{ update: ModelUpdateRecord }>(
+    `/admin/model-updates/${updateId}/review`,
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -321,8 +330,8 @@ export async function publishModelUpdate(
     download_url: string;
   },
 ) {
-  return request<{ update: ModelUpdateRecord }>(
-    `/api/admin/model-updates/${updateId}/publish`,
+  return requestMainControlPlane<{ update: ModelUpdateRecord }>(
+    `/admin/model-updates/${updateId}/publish`,
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -332,8 +341,8 @@ export async function publishModelUpdate(
 }
 
 export async function autoPublishModelUpdate(updateId: string, token: string) {
-  return request<{ update: ModelUpdateRecord }>(
-    `/api/admin/model-updates/${updateId}/auto-publish`,
+  return requestMainControlPlane<{ update: ModelUpdateRecord }>(
+    `/admin/model-updates/${updateId}/auto-publish`,
     {
       method: "POST",
       body: JSON.stringify({}),
@@ -343,7 +352,7 @@ export async function autoPublishModelUpdate(updateId: string, token: string) {
 }
 
 export async function fetchAggregations(token: string) {
-  return request<AggregationRecord[]>("/api/admin/aggregations", {}, token);
+  return requestMainControlPlane<AggregationRecord[]>("/admin/aggregations", {}, token);
 }
 
 export async function fetchSiteComparison(token: string) {
@@ -357,8 +366,8 @@ export async function runFederatedAggregation(
     new_version_name?: string;
   } = {},
 ) {
-  return request<AggregationRunResponse>(
-    "/api/admin/aggregations/run",
+  return requestMainControlPlane<AggregationRunResponse>(
+    "/admin/aggregations/run",
     {
       method: "POST",
       body: JSON.stringify({

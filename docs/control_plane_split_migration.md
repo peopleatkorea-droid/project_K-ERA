@@ -43,7 +43,8 @@
 병원 노드:
 
 ```powershell
-KERA_CONTROL_PLANE_DATABASE_URL=postgresql://<neon-user>:<password>@<host>/<db>?sslmode=require
+KERA_CONTROL_PLANE_API_BASE_URL=https://<control-plane-host>/control-plane/api
+KERA_LOCAL_CONTROL_PLANE_DATABASE_URL=sqlite:///C:/Users/USER/Downloads/KERA_DATA/control_plane_cache.db
 KERA_DATA_PLANE_DATABASE_URL=sqlite:///C:/Users/USER/Downloads/KERA_DATA/kera.db
 KERA_STORAGE_DIR=C:\Users\USER\Downloads\KERA_DATA
 KERA_CONTROL_PLANE_DIR=Z:\KERA_SHARED\control_plane

@@ -1,4 +1,5 @@
 import { request } from "./api-core";
+import { persistMainAppToken, requestMainControlPlane } from "./main-control-plane-client";
 import type {
   BulkImportResponse,
   CaseResearchRegistryResponse,
@@ -340,8 +341,12 @@ export async function runCaseContribution(
 }
 
 export async function enrollResearchRegistry(siteId: string, token: string, payload?: { version?: string }) {
-  return request<ResearchRegistrySettingsResponse>(
-    `/api/sites/${siteId}/research-registry/consent`,
+  const response = await requestMainControlPlane<
+    ResearchRegistrySettingsResponse & {
+      access_token?: string;
+    }
+  >(
+    `/sites/${siteId}/research-registry/consent`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -351,6 +356,8 @@ export async function enrollResearchRegistry(siteId: string, token: string, payl
     },
     token,
   );
+  persistMainAppToken(response.access_token);
+  return response;
 }
 
 export async function updateCaseResearchRegistry(

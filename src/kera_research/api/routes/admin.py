@@ -1,24 +1,13 @@
-from datetime import datetime, timezone
 from pathlib import Path
-import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import FileResponse, Response
-from kera_research.config import CONTROL_PLANE_ARTIFACT_DIR, MODEL_DISTRIBUTION_MODE, STORAGE_DIR
-from kera_research.db import CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL
+from kera_research.api.admin_workflows import (
+    build_admin_overview as build_admin_workspace_overview,
+)
+from kera_research.api.control_plane_proxy import call_remote_control_plane_method
 from kera_research.services.institution_directory import HiraApiError
-from kera_research.services.model_artifacts import ModelArtifactStore
-from kera_research.services.onedrive_publisher import OneDrivePublisher
-
-
-def _database_backend_label(database_url: str) -> str:
-    normalized = str(database_url or "").strip().lower()
-    if normalized.startswith("postgresql"):
-        return "postgresql"
-    if normalized.startswith("sqlite"):
-        return "sqlite"
-    return "other"
 
 
 def build_admin_router(support: Any) -> APIRouter:
@@ -38,11 +27,8 @@ def build_admin_router(support: Any) -> APIRouter:
     load_approval_report = support.load_approval_report
     site_comparison_rows = support.site_comparison_rows
     hash_password = support.hash_password
-    agg_jobs = support.agg_jobs
-    agg_jobs_lock = support.agg_jobs_lock
-    agg_running = support.agg_running
+    registry_orchestrator = support.registry_orchestrator
     make_id = support.make_id
-    model_dir = support.model_dir
     case_reference_salt_fingerprint = support.case_reference_salt_fingerprint
 
     AccessRequestReviewRequest = support.AccessRequestReviewRequest
@@ -62,7 +48,18 @@ def build_admin_router(support: Any) -> APIRouter:
         status_filter: str | None = None,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
+        remote_requests = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_access_requests",
+            status_filter=status_filter,
+        )
+        if remote_requests is not None:
+            return remote_requests
         if user.get("role") == "admin":
             return cp.list_access_requests(status=status_filter)
         if user.get("role") == "site_admin":
@@ -78,7 +75,19 @@ def build_admin_router(support: Any) -> APIRouter:
         payload: AccessRequestReviewRequest,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
+        remote_review = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_review_access_request",
+            request_id=request_id,
+            payload_json=payload.model_dump(),
+        )
+        if remote_review is not None:
+            return remote_review
         access_request = next((item for item in cp.list_access_requests() if item["request_id"] == request_id), None)
         if access_request is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown access request.")
@@ -183,46 +192,42 @@ def build_admin_router(support: Any) -> APIRouter:
     def institution_sync_status(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
+        remote_status = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_institution_status",
+        )
+        if remote_status is not None:
+            return remote_status
         return cp.institution_directory_sync_status()
 
     @router.get("/api/admin/overview")
     def admin_overview(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
-        visible_sites = cp.list_sites() if user.get("role") == "admin" else cp.accessible_sites_for_user(user)
-        pending_requests = (
-            cp.list_access_requests(status="pending")
-            if user.get("role") == "admin"
-            else cp.list_access_requests(status="pending", site_ids=[site["site_id"] for site in visible_sites])
+        remote_overview = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_overview",
         )
-        visible_updates = [item for item in visible_model_updates(cp, user) if is_pending_model_update(item)]
-        current_model = cp.current_global_model()
-        overview = {
-            "site_count": len(visible_sites),
-            "model_version_count": len(cp.list_model_versions()),
-            "pending_access_requests": len(pending_requests),
-            "pending_model_updates": len(visible_updates),
-            "current_model_version": current_model.get("version_name") if current_model else None,
-            "federation_setup": {
-                "control_plane_split_enabled": CONTROL_PLANE_DATABASE_URL != DATA_PLANE_DATABASE_URL,
-                "control_plane_backend": _database_backend_label(CONTROL_PLANE_DATABASE_URL),
-                "data_plane_backend": _database_backend_label(DATA_PLANE_DATABASE_URL),
-                "control_plane_artifact_dir": str(CONTROL_PLANE_ARTIFACT_DIR),
-                "uses_default_control_plane_artifact_dir": CONTROL_PLANE_ARTIFACT_DIR.resolve()
-                == (STORAGE_DIR / "control_plane" / "artifacts").resolve(),
-                "model_distribution_mode": MODEL_DISTRIBUTION_MODE,
-                "onedrive_auto_publish_enabled": OneDrivePublisher().is_configured(),
-                "onedrive_root_path": OneDrivePublisher().configuration_summary().get("root_path") or "",
-                "onedrive_missing_settings": OneDrivePublisher().configuration_summary().get("missing_settings") or [],
-            },
-        }
-        if user.get("role") == "admin":
-            overview["aggregation_count"] = len(cp.list_aggregations())
-        return overview
+        if remote_overview is not None:
+            return remote_overview
+        return build_admin_workspace_overview(
+            cp,
+            user,
+            visible_model_updates=visible_model_updates,
+            is_pending_model_update=is_pending_model_update,
+        )
 
     @router.get("/api/admin/storage-settings")
     def get_storage_settings(
@@ -268,8 +273,18 @@ def build_admin_router(support: Any) -> APIRouter:
     def list_model_versions(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_admin_workspace_permission(user)
+        remote_versions = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_model_versions",
+        )
+        if remote_versions is not None:
+            return remote_versions
         return cp.list_model_versions()
 
     @router.get("/api/admin/experiments")
@@ -325,38 +340,12 @@ def build_admin_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        existing = next((item for item in cp.list_model_versions() if item.get("version_id") == version_id), None)
-        if existing is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model version.")
-
-        normalized_download_url = str(payload.download_url or "").strip()
-        if not normalized_download_url:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="download_url is required.")
-
-        local_model_path = str(existing.get("model_path") or "").strip()
-        if not local_model_path or not Path(local_model_path).exists():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Local model artifact is missing — cannot publish this version.",
-            )
-
-        artifact_store = ModelArtifactStore()
-        metadata = artifact_store.register_local_metadata(existing, local_path=local_model_path)
-        published = cp.ensure_model_version(
-            {
-                **existing,
-                **metadata,
-                "version_id": version_id,
-                "download_url": normalized_download_url,
-                "source_provider": "",
-                "publish_required": False,
-                "distribution_status": "published",
-                "ready": True,
-                "is_current": bool(payload.set_current),
-                "model_path": "",
-            }
+        return registry_orchestrator.publish_model_version(
+            cp,
+            version_id=version_id,
+            download_url=payload.download_url,
+            set_current=payload.set_current,
         )
-        return {"model_version": published}
 
     @router.post("/api/admin/model-versions/{version_id}/auto-publish")
     def auto_publish_model_version(
@@ -366,52 +355,11 @@ def build_admin_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        existing = next((item for item in cp.list_model_versions() if item.get("version_id") == version_id), None)
-        if existing is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model version.")
-
-        local_model_path = str(existing.get("model_path") or "").strip()
-        if not local_model_path or not Path(local_model_path).exists():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Local model artifact is missing — cannot auto-publish this version.",
-            )
-
-        artifact_store = ModelArtifactStore()
-        local_metadata = artifact_store.register_local_metadata(existing, local_path=local_model_path)
-        try:
-            publish_metadata = OneDrivePublisher().publish_local_file(
-                local_path=local_model_path,
-                category="model_versions",
-                artifact_id=version_id,
-                filename=str(local_metadata.get("filename") or ""),
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-        published = cp.ensure_model_version(
-            {
-                **existing,
-                **local_metadata,
-                "version_id": version_id,
-                "download_url": str(publish_metadata.get("download_url") or ""),
-                "source_provider": str(publish_metadata.get("source_provider") or ""),
-                "publish_required": False,
-                "distribution_status": str(publish_metadata.get("distribution_status") or "published"),
-                "ready": True,
-                "is_current": bool(payload.set_current),
-                "model_path": "",
-                "onedrive_drive_id": publish_metadata.get("onedrive_drive_id"),
-                "onedrive_item_id": publish_metadata.get("onedrive_item_id"),
-                "onedrive_remote_path": publish_metadata.get("onedrive_remote_path"),
-                "onedrive_web_url": publish_metadata.get("onedrive_web_url"),
-                "onedrive_share_url": publish_metadata.get("onedrive_share_url"),
-                "onedrive_share_scope": publish_metadata.get("onedrive_share_scope"),
-                "onedrive_share_type": publish_metadata.get("onedrive_share_type"),
-                "onedrive_share_error": publish_metadata.get("onedrive_share_error"),
-            }
+        return registry_orchestrator.auto_publish_model_version(
+            cp,
+            version_id=version_id,
+            set_current=payload.set_current,
         )
-        return {"model_version": published}
 
     @router.get("/api/admin/model-updates")
     def list_model_updates(
@@ -419,8 +367,20 @@ def build_admin_router(support: Any) -> APIRouter:
         status_filter: str | None = None,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_admin_workspace_permission(user)
+        remote_updates = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_model_updates",
+            site_id=site_id,
+            status_filter=status_filter,
+        )
+        if remote_updates is not None:
+            return remote_updates
         if site_id:
             require_site_access(cp, user, site_id)
         return visible_model_updates(cp, user, site_id=site_id, status_filter=status_filter)
@@ -439,51 +399,14 @@ def build_admin_router(support: Any) -> APIRouter:
         site_id = str(update_record.get("site_id") or "").strip()
         if site_id:
             require_site_access(cp, user, site_id)
-
-        if payload.decision.strip().lower() == "approved":
-            try:
-                delta_path = cp.resolve_model_update_artifact_path(update_record)
-            except (FileNotFoundError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Delta artifact file is missing — cannot approve: {exc}",
-                ) from exc
-            try:
-                import torch as _torch
-
-                checkpoint = _torch.load(delta_path, map_location="cpu", weights_only=True)
-                delta_state = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
-                if delta_state is None:
-                    raise ValueError("Delta file has no state_dict key.")
-                workflow = get_workflow(cp)
-                workflow.model_manager._validate_deltas([delta_state])
-            except ValueError as exc:
-                cp.review_model_update(
-                    update_id,
-                    reviewer_user_id=user["user_id"],
-                    decision="rejected",
-                    reviewer_notes=f"[Auto-rejected by validation] {exc}",
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Delta validation failed — update auto-rejected: {exc}",
-                ) from exc
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Delta file could not be loaded: {exc}",
-                ) from exc
-
-        try:
-            reviewed = cp.review_model_update(
-                update_id,
-                reviewer_user_id=user["user_id"],
-                decision=payload.decision,
-                reviewer_notes=payload.reviewer_notes,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return {"update": reviewed}
+        return registry_orchestrator.review_model_update(
+            cp,
+            update_id=update_id,
+            reviewer_user_id=user["user_id"],
+            decision=payload.decision,
+            reviewer_notes=payload.reviewer_notes,
+            get_workflow=get_workflow,
+        )
 
     @router.post("/api/admin/model-updates/{update_id}/publish")
     def publish_model_update(
@@ -493,10 +416,11 @@ def build_admin_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        try:
-            return {"update": cp.publish_model_update_artifact(update_id, download_url=payload.download_url)}
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return registry_orchestrator.publish_model_update(
+            cp,
+            update_id=update_id,
+            download_url=payload.download_url,
+        )
 
     @router.post("/api/admin/model-updates/{update_id}/auto-publish")
     def auto_publish_model_update(
@@ -505,31 +429,7 @@ def build_admin_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        current = cp.get_model_update(update_id)
-        if current is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model update.")
-        try:
-            artifact_path = cp.resolve_model_update_artifact_path(current, allow_download=False)
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Local delta artifact is missing — cannot auto-publish this update: {exc}",
-            ) from exc
-        try:
-            publish_metadata = OneDrivePublisher().publish_local_file(
-                local_path=artifact_path,
-                category="model_updates",
-                artifact_id=update_id,
-                filename=str(current.get("central_artifact_name") or artifact_path.name),
-            )
-            published = cp.publish_model_update_artifact(
-                update_id,
-                download_url=str(publish_metadata.get("download_url") or ""),
-                artifact_metadata=publish_metadata,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return {"update": published}
+        return registry_orchestrator.auto_publish_model_update(cp, update_id=update_id)
 
     @router.get("/api/admin/model-updates/{update_id}/artifacts/{artifact_kind}")
     def get_model_update_artifact(
@@ -576,8 +476,18 @@ def build_admin_router(support: Any) -> APIRouter:
     def list_aggregations(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_platform_admin(user)
+        remote_aggregations = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_aggregations",
+        )
+        if remote_aggregations is not None:
+            return remote_aggregations
         return cp.list_aggregations()
 
     @router.post("/api/admin/aggregations/run")
@@ -587,169 +497,19 @@ def build_admin_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-
-        if agg_running.is_set():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Another aggregation job is already running. Poll /api/admin/aggregations/jobs to check status.",
-            )
-
-        workflow = get_workflow(cp)
-        selected_ids = set(payload.update_ids)
-        approved_updates = [
-            item
-            for item in cp.list_model_updates()
-            if item.get("status") == "approved" and (not selected_ids or item.get("update_id") in selected_ids)
-        ]
-        if not approved_updates:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No approved updates are available for aggregation.",
-            )
-
-        site_update_counts: dict[str, int] = {}
-        for item in approved_updates:
-            site_key = str(item.get("site_id") or "unknown")
-            site_update_counts[site_key] = site_update_counts.get(site_key, 0) + 1
-        duplicate_sites = sorted(site_id for site_id, count in site_update_counts.items() if count > 1)
-        if duplicate_sites:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Only one approved update per site can be aggregated at a time. Duplicate sites: {', '.join(duplicate_sites)}.",
-            )
-
-        architectures = {item.get("architecture") for item in approved_updates}
-        if len(architectures) != 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only updates with the same architecture can be aggregated together.",
-            )
-        architecture = next(iter(architectures))
-
-        base_model_ids = {item.get("base_model_version_id") for item in approved_updates}
-        if len(base_model_ids) != 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only updates based on the same global model can be aggregated together.",
-            )
-        base_model_version_id = next(iter(base_model_ids))
-        base_model = next(
-            (item for item in cp.list_model_versions() if item.get("version_id") == base_model_version_id),
-            cp.current_global_model(),
+        return registry_orchestrator.run_federated_aggregation(
+            cp,
+            get_workflow=get_workflow,
+            selected_update_ids=payload.update_ids,
+            new_version_name=payload.new_version_name,
         )
-        if base_model is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No global model is available for aggregation.",
-            )
-
-        try:
-            delta_paths = [str(cp.resolve_model_update_artifact_path(item)) for item in approved_updates]
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"One or more approved update artifacts are unavailable: {exc}",
-            ) from exc
-
-        site_weights: dict[str, int] = {}
-        delta_weights: list[int] = []
-        for update_record in approved_updates:
-            site_key = str(update_record.get("site_id") or "unknown")
-            n_cases = max(1, int(update_record.get("n_cases", 1) or 1))
-            site_weights[site_key] = site_weights.get(site_key, 0) + n_cases
-            delta_weights.append(n_cases)
-
-        new_version_name = (payload.new_version_name or "").strip() or f"global-{architecture}-fedavg-{make_id('v')[:6]}"
-        output_path = model_dir / f"global_{architecture}_{make_id('agg')}.pth"
-        update_ids = [item["update_id"] for item in approved_updates]
-
-        job_id = make_id("job")
-        job_record: dict[str, Any] = {
-            "job_id": job_id,
-            "status": "running",
-            "result": None,
-            "error": None,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None,
-        }
-        with agg_jobs_lock:
-            agg_jobs[job_id] = job_record
-
-        def run() -> None:
-            agg_running.set()
-            try:
-                workflow.model_manager.aggregate_weight_deltas(
-                    delta_paths,
-                    output_path,
-                    weights=delta_weights,
-                    base_model_path=workflow.model_manager.resolve_model_path(base_model, allow_download=True),
-                )
-                aggregation = cp.register_aggregation(
-                    base_model_version_id=base_model["version_id"],
-                    new_model_path=str(output_path),
-                    new_version_name=new_version_name,
-                    architecture=str(architecture or base_model.get("architecture") or "unknown"),
-                    site_weights=site_weights,
-                    requires_medsam_crop=bool(base_model.get("requires_medsam_crop", False)),
-                    decision_threshold=base_model.get("decision_threshold"),
-                    threshold_selection_metric="inherited_from_base_model",
-                    threshold_selection_metrics={
-                        "source_model_version_id": base_model.get("version_id"),
-                        "source_decision_threshold": base_model.get("decision_threshold"),
-                    },
-                )
-                cp.update_model_update_statuses(update_ids, "aggregated")
-                model_version = next(
-                    (item for item in cp.list_model_versions() if item.get("aggregation_id") == aggregation["aggregation_id"]),
-                    cp.current_global_model(),
-                )
-                with agg_jobs_lock:
-                    agg_jobs[job_id].update(
-                        {
-                            "status": "done",
-                            "result": {
-                                "aggregation": aggregation,
-                                "model_version": model_version,
-                                "aggregated_update_ids": update_ids,
-                            },
-                            "finished_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-            except Exception as exc:
-                with agg_jobs_lock:
-                    agg_jobs[job_id].update(
-                        {
-                            "status": "failed",
-                            "error": str(exc),
-                            "finished_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-            finally:
-                agg_running.clear()
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        t.join(timeout=0.25)
-
-        with agg_jobs_lock:
-            job_snapshot = dict(agg_jobs.get(job_id) or {})
-        if job_snapshot.get("status") == "done" and isinstance(job_snapshot.get("result"), dict):
-            return job_snapshot["result"]
-        if job_snapshot.get("status") == "failed":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(job_snapshot.get("error") or "Aggregation job failed."),
-            )
-
-        return {"job_id": job_id, "status": "running"}
 
     @router.get("/api/admin/aggregations/jobs")
     def list_aggregation_jobs(
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         require_platform_admin(user)
-        with agg_jobs_lock:
-            return list(agg_jobs.values())
+        return registry_orchestrator.list_aggregation_jobs()
 
     @router.get("/api/admin/aggregations/jobs/{job_id}")
     def get_aggregation_job(
@@ -757,18 +517,24 @@ def build_admin_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        with agg_jobs_lock:
-            job = agg_jobs.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aggregation job not found.")
-        return job
+        return registry_orchestrator.get_aggregation_job(job_id)
 
     @router.get("/api/admin/projects")
     def list_projects(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_admin_workspace_permission(user)
+        remote_projects = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_projects",
+        )
+        if remote_projects is not None:
+            return remote_projects
         return cp.list_projects()
 
     @router.post("/api/admin/projects")
@@ -776,8 +542,19 @@ def build_admin_router(support: Any) -> APIRouter:
         payload: ProjectCreateRequest,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        remote_project = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_create_project",
+            payload_json=payload.model_dump(),
+        )
+        if remote_project is not None:
+            return remote_project
         try:
             return cp.create_project(payload.name, payload.description, user["user_id"])
         except ValueError as exc:
@@ -788,8 +565,19 @@ def build_admin_router(support: Any) -> APIRouter:
         project_id: str | None = None,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_admin_workspace_permission(user)
+        remote_sites = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_sites",
+            project_id=project_id,
+        )
+        if remote_sites is not None:
+            return remote_sites
         if user.get("role") == "admin":
             return cp.list_sites(project_id=project_id)
         sites = cp.accessible_sites_for_user(user)
@@ -802,8 +590,19 @@ def build_admin_router(support: Any) -> APIRouter:
         payload: SiteCreateRequest,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        remote_site = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_create_site",
+            payload_json=payload.model_dump(),
+        )
+        if remote_site is not None:
+            return remote_site
         try:
             return cp.create_site(
                 payload.project_id,
@@ -822,8 +621,20 @@ def build_admin_router(support: Any) -> APIRouter:
         payload: SiteUpdateRequest,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        remote_site = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_update_site",
+            site_id=site_id,
+            payload_json=payload.model_dump(),
+        )
+        if remote_site is not None:
+            return remote_site
         try:
             return cp.update_site_metadata(
                 site_id,
@@ -838,8 +649,18 @@ def build_admin_router(support: Any) -> APIRouter:
     def list_users(
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
         require_platform_admin(user)
+        remote_users = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_users",
+        )
+        if remote_users is not None:
+            return remote_users
         return cp.list_users()
 
     @router.post("/api/admin/users")
@@ -847,8 +668,19 @@ def build_admin_router(support: Any) -> APIRouter:
         payload: UserUpsertRequest,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        remote_user = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_upsert_user",
+            payload_json=payload.model_dump(),
+        )
+        if remote_user is not None:
+            return remote_user
         if payload.role not in {"admin", "site_admin", "researcher", "viewer"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user role.")
         if payload.role != "admin" and not payload.site_ids:

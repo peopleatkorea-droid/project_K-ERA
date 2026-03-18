@@ -82,6 +82,7 @@ These environment variables point the local node at the new central API:
 
 ```powershell
 KERA_CONTROL_PLANE_API_BASE_URL=http://127.0.0.1:3000/control-plane/api
+KERA_LOCAL_CONTROL_PLANE_DATABASE_URL=sqlite:///C:/Users/USER/Downloads/KERA_DATA/control_plane_cache.db
 KERA_CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS=300
 KERA_CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS=900
 KERA_SITE_STORAGE_SOURCE=local
@@ -89,6 +90,7 @@ KERA_SITE_STORAGE_SOURCE=local
 
 `KERA_CONTROL_PLANE_NODE_ID` and `KERA_CONTROL_PLANE_NODE_TOKEN` are now optional overrides.
 The default path is the persisted local credential store.
+The local node no longer needs `KERA_CONTROL_PLANE_DATABASE_URL` when it is configured to use the remote control-plane API.
 
 Once these are set, the FastAPI local node will:
 

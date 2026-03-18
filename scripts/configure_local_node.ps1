@@ -1,12 +1,13 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$ControlPlaneDatabaseUrl,
+    [string]$ControlPlaneApiBaseUrl,
     [Parameter(Mandatory = $true)]
     [string]$StorageDir,
     [Parameter(Mandatory = $true)]
     [string]$SharedRoot,
     [Parameter(Mandatory = $true)]
     [string]$CaseReferenceSalt,
+    [string]$LocalControlPlaneDatabasePath = "",
     [string]$OutputPath = "",
     [string]$GoogleClientId = "",
     [string]$HiraApiKey = "",
@@ -48,6 +49,16 @@ function Convert-ToSqliteUrl {
 
     $normalized = $ResolvedPath -replace "\\", "/"
     return "sqlite:///$normalized/kera.db"
+}
+
+function Convert-FilePathToSqliteUrl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ResolvedPath
+    )
+
+    $normalized = $ResolvedPath -replace "\\", "/"
+    return "sqlite:///$normalized"
 }
 
 function New-RandomHex {
@@ -103,6 +114,19 @@ function Set-EnvValue {
     $Values[$Key] = $Value
 }
 
+function Remove-EnvValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$Values,
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    if ($Values.Contains($Key)) {
+        $Values.Remove($Key)
+    }
+}
+
 function Write-EnvFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -118,12 +142,13 @@ function Write-EnvFile {
         "KERA_GOOGLE_CLIENT_ID",
         "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
         "KERA_HIRA_API_KEY",
+        "KERA_CONTROL_PLANE_API_BASE_URL",
+        "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL",
         "KERA_ONEDRIVE_TENANT_ID",
         "KERA_ONEDRIVE_CLIENT_ID",
         "KERA_ONEDRIVE_CLIENT_SECRET",
         "KERA_ONEDRIVE_DRIVE_ID",
         "KERA_ONEDRIVE_ROOT_PATH",
-        "KERA_CONTROL_PLANE_DATABASE_URL",
         "KERA_DATA_PLANE_DATABASE_URL",
         "KERA_STORAGE_DIR",
         "KERA_CONTROL_PLANE_DIR",
@@ -168,6 +193,12 @@ $resolvedControlPlaneDir = Join-Path $resolvedSharedRoot "control_plane"
 $resolvedArtifactDir = Join-Path $resolvedControlPlaneDir "artifacts"
 $resolvedModelDir = Join-Path $resolvedSharedRoot "models"
 $resolvedDataPlaneDatabaseUrl = Convert-ToSqliteUrl -ResolvedPath $resolvedStorageDir
+$resolvedLocalControlPlaneDatabasePath = if ($LocalControlPlaneDatabasePath.Trim()) {
+    Resolve-FullPath -PathValue $LocalControlPlaneDatabasePath
+} else {
+    Join-Path $resolvedStorageDir "control_plane_cache.db"
+}
+$resolvedLocalControlPlaneDatabaseUrl = Convert-FilePathToSqliteUrl -ResolvedPath $resolvedLocalControlPlaneDatabasePath
 
 if (-not $SkipDirectoryCreation) {
     foreach ($pathToCreate in @($resolvedStorageDir, $resolvedControlPlaneDir, $resolvedArtifactDir, $resolvedModelDir)) {
@@ -210,7 +241,8 @@ if (-not $effectiveOneDriveRootPath -and $ModelDistributionMode -eq "download_ur
 Set-EnvValue -Values $envValues -Key "KERA_API_SECRET" -Value $effectiveApiSecret
 Set-EnvValue -Values $envValues -Key "KERA_CASE_REFERENCE_SALT" -Value $CaseReferenceSalt
 Set-EnvValue -Values $envValues -Key "KERA_PATIENT_REFERENCE_SALT" -Value $effectivePatientReferenceSalt
-Set-EnvValue -Values $envValues -Key "KERA_CONTROL_PLANE_DATABASE_URL" -Value $ControlPlaneDatabaseUrl
+Set-EnvValue -Values $envValues -Key "KERA_CONTROL_PLANE_API_BASE_URL" -Value $ControlPlaneApiBaseUrl.Trim().TrimEnd("/")
+Set-EnvValue -Values $envValues -Key "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL" -Value $resolvedLocalControlPlaneDatabaseUrl
 Set-EnvValue -Values $envValues -Key "KERA_DATA_PLANE_DATABASE_URL" -Value $resolvedDataPlaneDatabaseUrl
 Set-EnvValue -Values $envValues -Key "KERA_STORAGE_DIR" -Value $resolvedStorageDir
 Set-EnvValue -Values $envValues -Key "KERA_CONTROL_PLANE_DIR" -Value $resolvedControlPlaneDir
@@ -245,11 +277,16 @@ if ($effectiveOneDriveRootPath) {
     Set-EnvValue -Values $envValues -Key "KERA_ONEDRIVE_ROOT_PATH" -Value $effectiveOneDriveRootPath
 }
 
+Remove-EnvValue -Values $envValues -Key "KERA_CONTROL_PLANE_DATABASE_URL"
+Remove-EnvValue -Values $envValues -Key "KERA_DATABASE_URL"
+Remove-EnvValue -Values $envValues -Key "DATABASE_URL"
+
 Write-EnvFile -PathValue $resolvedOutputPath -Values $envValues
 
 Write-Host "[K-ERA] Local node configuration updated." -ForegroundColor Green
 Write-Host "  Output: $resolvedOutputPath"
-Write-Host "  Control plane DB: $ControlPlaneDatabaseUrl"
+Write-Host "  Control plane API: $($ControlPlaneApiBaseUrl.Trim().TrimEnd('/'))"
+Write-Host "  Local control plane DB: $resolvedLocalControlPlaneDatabaseUrl"
 Write-Host "  Data plane DB: $resolvedDataPlaneDatabaseUrl"
 Write-Host "  Shared root: $resolvedSharedRoot"
 Write-Host "  Artifact dir: $resolvedArtifactDir"

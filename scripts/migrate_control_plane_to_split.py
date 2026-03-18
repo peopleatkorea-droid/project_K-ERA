@@ -591,7 +591,7 @@ def main() -> int:
             "filesystem": _audit_control_plane_filesystem(),
         },
         "recommendations": [
-            "Use split mode with KERA_CONTROL_PLANE_DATABASE_URL pointing to Neon and KERA_DATA_PLANE_DATABASE_URL pointing to the hospital-local SQLite DB.",
+            "For hospital nodes, use KERA_CONTROL_PLANE_API_BASE_URL plus KERA_LOCAL_CONTROL_PLANE_DATABASE_URL for the local projection cache, and keep KERA_DATA_PLANE_DATABASE_URL pointed at the hospital-local SQLite DB.",
             "For home/hospital parity, mount a shared control-plane filesystem and set KERA_CONTROL_PLANE_DIR consistently on every admin machine.",
             "For model registry usability across admin machines, mount a shared model directory and set KERA_MODEL_DIR consistently.",
             "Do not migrate patients, visits, images, site_patient_splits, site_jobs, raw patient_id, actual_visit_date, or local raw image paths into Neon.",

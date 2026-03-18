@@ -1,4 +1,4 @@
-import { request } from "./api-core";
+import { persistMainAppToken, requestMainControlPlane } from "./main-control-plane-client";
 import type {
   AccessRequestRecord,
   AuthResponse,
@@ -10,35 +10,37 @@ import type {
 } from "./types";
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/login", {
+  return requestMainControlPlane<AuthResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
 }
 
 export async function devLogin(): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/dev-login", {
+  return requestMainControlPlane<AuthResponse>("/auth/dev-login", {
     method: "POST",
   });
 }
 
 export async function googleLogin(idToken: string): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/google", {
+  return requestMainControlPlane<AuthResponse>("/auth/google", {
     method: "POST",
     body: JSON.stringify({ id_token: idToken }),
   });
 }
 
 export async function fetchMe(token: string) {
-  return request<AuthUser>("/api/auth/me", {}, token);
+  const auth = await requestMainControlPlane<AuthResponse>("/auth/me", {}, token);
+  persistMainAppToken(auth.access_token);
+  return auth.user;
 }
 
 export async function fetchSites(token: string) {
-  return request<SiteRecord[]>("/api/sites", {}, token);
+  return requestMainControlPlane<SiteRecord[]>("/sites", {}, token);
 }
 
 export async function fetchPublicSites() {
-  return request<SiteRecord[]>("/api/public/sites");
+  return requestMainControlPlane<SiteRecord[]>("/public/sites");
 }
 
 export async function searchPublicInstitutions(
@@ -56,15 +58,15 @@ export async function searchPublicInstitutions(
     params.set("sggu_code", options.sggu_code);
   }
   params.set("limit", String(options?.limit ?? 12));
-  return request<PublicInstitutionRecord[]>(`/api/public/institutions/search?${params.toString()}`);
+  return requestMainControlPlane<PublicInstitutionRecord[]>(`/public/institutions/search?${params.toString()}`);
 }
 
 export async function fetchPublicStatistics() {
-  return request<PublicStatistics>("/api/public/statistics");
+  return requestMainControlPlane<PublicStatistics>("/public/statistics");
 }
 
 export async function fetchMyAccessRequests(token: string) {
-  return request<AccessRequestRecord[]>("/api/auth/access-requests", {}, token);
+  return requestMainControlPlane<AccessRequestRecord[]>("/auth/access-requests", {}, token);
 }
 
 export async function submitAccessRequest(
@@ -76,12 +78,16 @@ export async function submitAccessRequest(
     message?: string;
   },
 ) {
-  return request<{ request: AccessRequestRecord; auth_state: AuthState; user: AuthUser }>(
-    "/api/auth/request-access",
+  const response = await requestMainControlPlane<
+    { request: AccessRequestRecord; auth_state: AuthState; user: AuthUser; access_token?: string }
+  >(
+    "/auth/request-access",
     {
       method: "POST",
       body: JSON.stringify(payload),
     },
     token,
   );
+  persistMainAppToken(response.access_token);
+  return response;
 }

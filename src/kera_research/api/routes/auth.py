@@ -1,6 +1,10 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from kera_research.api.control_plane_proxy import (
+    call_remote_control_plane_method,
+    call_remote_public_control_plane_method,
+)
 
 
 def build_auth_router(support: Any) -> APIRouter:
@@ -17,7 +21,17 @@ def build_auth_router(support: Any) -> APIRouter:
     AccessRequestCreateRequest = support.AccessRequestCreateRequest
 
     @router.get("/api/public/sites")
-    def public_sites(cp=Depends(get_control_plane)) -> list[dict[str, Any]]:
+    def public_sites(
+        cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> list[dict[str, Any]]:
+        remote_sites = call_remote_public_control_plane_method(
+            cp,
+            control_plane_owner=control_plane_owner,
+            method_name="public_sites",
+        )
+        if remote_sites is not None:
+            return remote_sites
         return cp.list_sites()
 
     @router.get("/api/public/institutions/search")
@@ -27,7 +41,19 @@ def build_auth_router(support: Any) -> APIRouter:
         sggu_code: str | None = None,
         limit: int = 12,
         cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
+        remote_results = call_remote_public_control_plane_method(
+            cp,
+            control_plane_owner=control_plane_owner,
+            method_name="public_institutions",
+            query=q,
+            sido_code=sido_code,
+            sggu_code=sggu_code,
+            limit=limit,
+        )
+        if remote_results is not None:
+            return remote_results
         return cp.list_institutions(
             search=q,
             sido_code=sido_code,
@@ -36,7 +62,17 @@ def build_auth_router(support: Any) -> APIRouter:
         )
 
     @router.get("/api/public/statistics")
-    def public_statistics(cp=Depends(get_control_plane)) -> dict[str, Any]:
+    def public_statistics(
+        cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        remote_stats = call_remote_public_control_plane_method(
+            cp,
+            control_plane_owner=control_plane_owner,
+            method_name="public_statistics",
+        )
+        if remote_stats is not None:
+            return remote_stats
         return cp.get_public_statistics()
 
     @router.post("/api/auth/login")
@@ -97,7 +133,17 @@ def build_auth_router(support: Any) -> APIRouter:
     def my_access_requests(
         user: dict[str, Any] = Depends(get_current_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
+        remote_requests = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_access_requests",
+        )
+        if remote_requests is not None:
+            return remote_requests
         return cp.list_access_requests(user_id=user["user_id"])
 
     @router.post("/api/auth/request-access")
@@ -105,7 +151,23 @@ def build_auth_router(support: Any) -> APIRouter:
         payload: AccessRequestCreateRequest,
         user: dict[str, Any] = Depends(get_current_user),
         cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
+        remote_response = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_request_access",
+            payload_json={
+                "requested_site_id": payload.requested_site_id,
+                "requested_site_label": payload.requested_site_label,
+                "requested_role": payload.requested_role,
+                "message": payload.message,
+            },
+        )
+        if remote_response is not None:
+            return remote_response
         if payload.requested_role not in {"site_admin", "researcher", "viewer"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid requested role.")
         requested_site_id = payload.requested_site_id.strip()
