@@ -51,6 +51,7 @@ type Props = {
   locale: Locale;
   notAvailableLabel: string;
   selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
   selectedReport: CrossValidationReport | null;
   crossValidationExportBusy: boolean;
   initialForm: InitialTrainingForm;
@@ -93,6 +94,7 @@ export function TrainingSection({
   locale,
   notAvailableLabel,
   selectedSiteId,
+  selectedSiteLabel,
   selectedReport,
   crossValidationExportBusy,
   initialForm,
@@ -186,7 +188,7 @@ export function TrainingSection({
     },
   ];
   const benchmarkSummaryItems = [
-    { label: pick(locale, "Site", "병원"), value: selectedSiteId ?? notAvailableLabel },
+    { label: pick(locale, "Site", "병원"), value: selectedSiteLabel ?? notAvailableLabel },
     { label: pick(locale, "Execution", "실행"), value: initialForm.execution_mode.toUpperCase() },
     { label: pick(locale, "Crop", "Crop"), value: initialForm.crop_mode },
     { label: pick(locale, "Epochs", "에폭"), value: String(initialForm.epochs) },
@@ -209,7 +211,7 @@ export function TrainingSection({
           "Configure a single baseline run or queue a five-model sequential initial-training run with the same data split and crop policy.",
           "단일 기준 모델을 학습하거나, 같은 split과 crop 정책으로 5종 순차 초기 학습을 실행할 수 있습니다."
         )}
-        aside={<span className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
+        aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
 
       <div className="flex justify-end">

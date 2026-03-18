@@ -14,6 +14,7 @@ import { pick, type Locale } from "../../lib/i18n";
 type Props = {
   locale: Locale;
   selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
   bulkCsvFile: File | null;
   bulkImportBusy: boolean;
   bulkImportResult: BulkImportResponse | null;
@@ -26,6 +27,7 @@ type Props = {
 export function ImportsSection({
   locale,
   selectedSiteId,
+  selectedSiteLabel,
   bulkCsvFile,
   bulkImportBusy,
   bulkImportResult,
@@ -45,7 +47,7 @@ export function ImportsSection({
           "Use this path for legacy backfill only. Daily clinical entry should continue in the document-style case canvas.",
           "이 경로는 레거시 백필 전용입니다. 일상 입력은 문서형 케이스 캔버스에서 계속 진행하는 것이 맞습니다."
         )}
-        aside={<span className={docSiteBadgeClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
+        aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
 
       <Card as="div" variant="nested" className="grid gap-4 p-5">
@@ -89,6 +91,7 @@ export function ImportsSection({
         <Button
           type="button"
           variant="primary"
+          className="min-w-[190px] rounded-[16px] border-[#294cf0]/45 bg-[#3058ff] text-white shadow-none hover:border-[#2449e6] hover:bg-[#274de9] hover:shadow-none disabled:border-border/70 disabled:bg-surface-muted/82 disabled:text-muted dark:border-[rgba(124,150,255,0.18)] dark:bg-[rgba(104,129,255,0.2)] dark:text-[rgba(244,247,255,0.96)] dark:hover:border-[rgba(124,150,255,0.3)] dark:hover:bg-[rgba(104,129,255,0.28)] dark:disabled:border-white/8 dark:disabled:bg-[rgba(255,255,255,0.12)] dark:disabled:text-[rgba(226,232,240,0.78)]"
           disabled={bulkImportBusy || !selectedSiteId || !bulkCsvFile}
           onClick={onRunBulkImport}
         >

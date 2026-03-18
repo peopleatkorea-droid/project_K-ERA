@@ -43,6 +43,11 @@ PATIENT_REFERENCE_SALT = (
     os.getenv("KERA_PATIENT_REFERENCE_SALT", "").strip()
     or CASE_REFERENCE_SALT
 )
+PUBLIC_ALIAS_SALT = (
+    os.getenv("KERA_PUBLIC_ALIAS_SALT", "").strip()
+    or os.getenv("KERA_API_SECRET", "").strip()
+    or CASE_REFERENCE_SALT
+)
 # First 16 hex chars of SHA256(salt) — safe to transmit, never reveals the actual salt.
 # All nodes in the same federation must produce the same fingerprint.
 CASE_REFERENCE_SALT_FINGERPRINT = hashlib.sha256(CASE_REFERENCE_SALT.encode()).hexdigest()[:16]
@@ -65,6 +70,18 @@ MODEL_AUTO_DOWNLOAD = (os.getenv("KERA_MODEL_AUTO_DOWNLOAD", "").strip().lower()
 MODEL_KEEP_VERSIONS = max(1, int(os.getenv("KERA_MODEL_KEEP_VERSIONS", "").strip() or "2"))
 MODEL_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("KERA_MODEL_DOWNLOAD_TIMEOUT_SECONDS", "").strip() or "300")
 MODEL_DISTRIBUTION_MODE = os.getenv("KERA_MODEL_DISTRIBUTION_MODE", "").strip().lower() or "local_path"
+CONTROL_PLANE_API_BASE_URL = os.getenv("KERA_CONTROL_PLANE_API_BASE_URL", "").strip().rstrip("/")
+CONTROL_PLANE_NODE_ID = os.getenv("KERA_CONTROL_PLANE_NODE_ID", "").strip()
+CONTROL_PLANE_NODE_TOKEN = os.getenv("KERA_CONTROL_PLANE_NODE_TOKEN", "").strip()
+CONTROL_PLANE_API_TIMEOUT_SECONDS = float(os.getenv("KERA_CONTROL_PLANE_API_TIMEOUT_SECONDS", "").strip() or "30")
+CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS = max(
+    30,
+    int(os.getenv("KERA_CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS", "").strip() or "300"),
+)
+CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS = max(
+    60,
+    int(os.getenv("KERA_CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS", "").strip() or "900"),
+)
 ONEDRIVE_TENANT_ID = os.getenv("KERA_ONEDRIVE_TENANT_ID", "").strip()
 ONEDRIVE_CLIENT_ID = os.getenv("KERA_ONEDRIVE_CLIENT_ID", "").strip()
 ONEDRIVE_CLIENT_SECRET = os.getenv("KERA_ONEDRIVE_CLIENT_SECRET", "").strip()

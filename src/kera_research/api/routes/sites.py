@@ -83,11 +83,14 @@ def build_sites_router(support: Any) -> APIRouter:
     @router.get("/api/sites")
     def list_sites(
         user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
     ) -> list[dict[str, Any]]:
+        accessible_sites = cp.accessible_sites_for_user(user)
+        if accessible_sites:
+            return accessible_sites
         if control_plane_split_enabled():
             return local_site_records_for_user(user)
-        cp = get_control_plane()
-        return cp.accessible_sites_for_user(user)
+        return []
 
     @router.get("/api/sites/{site_id}/summary")
     def site_summary(
@@ -96,8 +99,6 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
-        if control_plane_split_enabled():
-            return build_local_summary(site_store, site_id)
         patients = site_store.list_patients()
         visits = site_store.list_visits()
         images = site_store.list_images()
@@ -110,6 +111,11 @@ def build_sites_router(support: Any) -> APIRouter:
         latest_run = validation_runs[0] if validation_runs else None
         site_record = cp.get_site(site_id) or {}
         consent = cp.get_registry_consent(user["user_id"], site_id)
+        if not site_record and control_plane_split_enabled():
+            summary = build_local_summary(site_store, site_id)
+            summary["n_validation_runs"] = len(validation_runs)
+            summary["latest_validation"] = latest_run
+            return summary
         return {
             "site_id": site_id,
             "n_patients": len(patients),
@@ -382,13 +388,7 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         require_site_access(cp, user, site_id)
-        if control_plane_split_enabled():
-            return {
-                "pending_updates": 0,
-                "recent_validations": [],
-                "recent_contributions": [],
-            }
-        return build_site_activity(cp, site_id)
+        return build_site_activity(cp, site_id, current_user_id=user["user_id"])
 
     @router.get("/api/sites/{site_id}/validations")
     def list_site_validations(
@@ -397,8 +397,6 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         require_site_access(cp, user, site_id)
-        if control_plane_split_enabled():
-            return []
         return site_level_validation_runs(cp.list_validation_runs(site_id=site_id))
 
     @router.get("/api/sites/{site_id}/validations/{validation_id}/cases")

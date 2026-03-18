@@ -11,7 +11,13 @@ import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 
-from kera_research.config import BASE_DIR, PATIENT_REFERENCE_SALT, SITE_ROOT_DIR, ensure_base_directories
+from kera_research.config import (
+    BASE_DIR,
+    CONTROL_PLANE_API_BASE_URL,
+    PATIENT_REFERENCE_SALT,
+    SITE_ROOT_DIR,
+    ensure_base_directories,
+)
 from kera_research.db import (
     CONTROL_PLANE_DATABASE_URL,
     CONTROL_PLANE_ENGINE,
@@ -37,6 +43,7 @@ from kera_research.domain import (
     utc_now,
     visit_index_from_label,
 )
+from kera_research.services.node_credentials import load_node_credentials
 from kera_research.storage import ensure_dir, read_json, write_csv, write_json
 
 _ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF", "BMP", "WEBP"}
@@ -58,6 +65,12 @@ def _use_control_plane_site_storage_lookup() -> bool:
     if mode == "control_plane":
         return True
     if mode == "local":
+        return False
+    persisted_credentials = load_node_credentials() or {}
+    remote_control_plane_enabled = bool(
+        str(CONTROL_PLANE_API_BASE_URL or persisted_credentials.get("control_plane_base_url") or "").strip()
+    )
+    if remote_control_plane_enabled:
         return False
     return not control_plane_split_enabled()
 

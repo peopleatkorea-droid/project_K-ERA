@@ -11,6 +11,7 @@ import { Field } from "../components/ui/field";
 import { SectionHeader } from "../components/ui/section-header";
 import { cn } from "../lib/cn";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
+import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
 import { useTheme } from "../lib/theme";
 import {
   createPatient,
@@ -952,7 +953,9 @@ export default function HomePage() {
         if (me.approval_status === "approved") {
           const nextSites = await fetchSites(currentToken);
           setSites(nextSites);
-          setSelectedSiteId((current) => current ?? nextSites[0]?.site_id ?? null);
+          setSelectedSiteId((current) =>
+            current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
+          );
         } else {
           setSites([]);
           setSelectedSiteId(null);
@@ -1060,7 +1063,9 @@ export default function HomePage() {
   async function refreshApprovedSites(currentToken: string) {
     const nextSites = await fetchSites(currentToken);
     setSites(nextSites);
-    setSelectedSiteId((current) => current ?? nextSites[0]?.site_id ?? null);
+    setSelectedSiteId((current) =>
+      current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
+    );
   }
 
   async function handleCreatePatient(event: FormEvent<HTMLFormElement>) {
@@ -1179,7 +1184,7 @@ export default function HomePage() {
   }
 
   const landingHospitalChips = [
-    ...publicSites.slice(0, 5).map((site) => ({ label: site.display_name, active: true })),
+    ...publicSites.slice(0, 5).map((site) => ({ label: getSiteDisplayName(site), active: true })),
     ...Array.from({ length: Math.max(0, 5 - publicSites.slice(0, 5).length) }, () => ({
       label: pick(locale, "Recruiting", "참여 모집 중"),
       active: false,
@@ -1271,7 +1276,7 @@ export default function HomePage() {
                     {myRequests.map((request) => (
                       <Card key={request.request_id} as="article" variant="nested" className="grid gap-3 p-4">
                         <div className="flex items-start justify-between gap-3">
-                          <strong className="text-sm font-semibold text-ink">{request.requested_site_id}</strong>
+                          <strong className="text-sm font-semibold text-ink">{getRequestedSiteLabel(request)}</strong>
                           <span className="rounded-full border border-border bg-white/55 px-3 py-1 text-[0.76rem] font-medium text-muted dark:bg-white/4">
                             {translateStatus(locale, request.status)}
                           </span>
@@ -1359,14 +1364,14 @@ export default function HomePage() {
                         setRequestForm((current) => ({
                           ...current,
                           requested_site_id: nextSiteId,
-                          requested_site_label: nextSite?.display_name ?? current.requested_site_label,
+                          requested_site_label: nextSite ? getSiteDisplayName(nextSite) : current.requested_site_label,
                         }));
                       }}
                     >
                       <option value="">{pick(locale, "No existing site selected", "기존 site 미선택")}</option>
                       {visibleExistingSites.map((site) => (
                         <option key={site.site_id} value={site.site_id}>
-                          {site.display_name}
+                          {getSiteDisplayName(site)}
                         </option>
                       ))}
                     </select>

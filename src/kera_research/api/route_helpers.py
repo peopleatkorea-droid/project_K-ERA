@@ -186,10 +186,16 @@ def build_case_history(
         for item in cp.list_model_updates(site_id=site_id)
         if item.get("case_reference_id") == case_reference_id
     }
+    contribution_records = [
+        item
+        for item in cp.list_contributions(site_id=site_id)
+        if item.get("case_reference_id") == case_reference_id
+    ]
+    contribution_aliases = cp.list_user_public_aliases(
+        [str(item.get("user_id") or "").strip() for item in contribution_records]
+    )
     contribution_history: list[dict[str, Any]] = []
-    for item in cp.list_contributions(site_id=site_id):
-        if item.get("case_reference_id") != case_reference_id:
-            continue
+    for item in contribution_records:
         update = updates_by_id.get(item.get("update_id"))
         contribution_history.append(
             {
@@ -197,6 +203,7 @@ def build_case_history(
                 "contribution_group_id": item.get("contribution_group_id"),
                 "created_at": item.get("created_at"),
                 "user_id": item.get("user_id"),
+                "public_alias": str(item.get("public_alias") or "").strip() or contribution_aliases.get(str(item.get("user_id") or "").strip()),
                 "case_reference_id": item.get("case_reference_id"),
                 "update_id": item.get("update_id"),
                 "update_status": update.get("status") if update else None,
@@ -253,6 +260,7 @@ def build_site_activity(
     cp: ControlPlaneStore,
     site_id: str,
     *,
+    current_user_id: str | None = None,
     is_pending_model_update: Callable[[dict[str, Any]], bool],
 ) -> dict[str, Any]:
     validation_runs = cp.list_validation_runs(site_id=site_id)
@@ -278,8 +286,12 @@ def build_site_activity(
         }
         for item in validation_runs[:5]
     ]
+    recent_contribution_records = contributions[:5]
+    contribution_aliases = cp.list_user_public_aliases(
+        [str(item.get("user_id") or "").strip() for item in recent_contribution_records]
+    )
     recent_contributions = []
-    for item in contributions[:5]:
+    for item in recent_contribution_records:
         update = updates_by_id.get(item.get("update_id"))
         recent_contributions.append(
             {
@@ -287,6 +299,7 @@ def build_site_activity(
                 "contribution_group_id": item.get("contribution_group_id"),
                 "created_at": item.get("created_at"),
                 "user_id": item.get("user_id"),
+                "public_alias": str(item.get("public_alias") or "").strip() or contribution_aliases.get(str(item.get("user_id") or "").strip()),
                 "case_reference_id": item.get("case_reference_id"),
                 "update_id": item.get("update_id"),
                 "update_status": update.get("status") if update else None,
@@ -298,4 +311,5 @@ def build_site_activity(
         "pending_updates": pending_updates,
         "recent_validations": recent_validations,
         "recent_contributions": recent_contributions,
+        "contribution_leaderboard": cp.get_contribution_leaderboard(user_id=current_user_id, limit=5),
     }

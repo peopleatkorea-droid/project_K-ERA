@@ -48,6 +48,7 @@ type DashboardSectionProps = {
   loadingLabel: string;
   notAvailableLabel: string;
   selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
   selectedValidationRun: SiteValidationRunRecord | null;
   validationExportBusy: boolean;
   siteValidationBusy: boolean;
@@ -188,6 +189,7 @@ export function DashboardSection({
   loadingLabel,
   notAvailableLabel,
   selectedSiteId,
+  selectedSiteLabel,
   selectedValidationRun,
   validationExportBusy,
   siteValidationBusy,
@@ -241,7 +243,7 @@ export function DashboardSection({
         )}
         aside={
           <span className="inline-flex min-h-10 items-center rounded-full border border-border bg-white/55 px-4 text-sm font-medium text-muted dark:bg-white/4">
-            {selectedSiteId ?? pick(locale, "Select a hospital", "병원을 선택하세요")}
+            {selectedSiteLabel ?? pick(locale, "Select a hospital", "병원을 선택하세요")}
           </span>
         }
       />
@@ -324,8 +326,7 @@ export function DashboardSection({
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="grid gap-1">
-                          <strong className="text-sm font-semibold text-ink">{item.display_name}</strong>
-                          <span className="text-[0.82rem] text-muted">{item.site_id}</span>
+                          <strong className="text-sm font-semibold text-ink">{item.hospital_name || item.display_name}</strong>
                         </div>
                         <span className="rounded-full border border-border bg-white/55 px-3 py-1 text-[0.76rem] font-medium text-muted dark:bg-white/4">
                           {item.run_count} {pick(locale, "run(s)", "회")}

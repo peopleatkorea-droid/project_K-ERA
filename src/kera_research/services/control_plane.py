@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import threading
+import time
 import requests
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from kera_research.config import (
     CASE_REFERENCE_SALT,
     CASE_REFERENCE_SALT_FINGERPRINT,
     CONTROL_PLANE_ARTIFACT_DIR,
+    CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS,
     CONTROL_PLANE_CASE_DIR,
     CONTROL_PLANE_DIR,
     CONTROL_PLANE_EXPERIMENT_DIR,
@@ -27,6 +30,7 @@ from kera_research.config import (
     HIRA_API_KEY,
     MODEL_DISTRIBUTION_MODE,
     PATIENT_REFERENCE_SALT,
+    PUBLIC_ALIAS_SALT,
     SITE_ROOT_DIR,
     ensure_base_directories,
 )
@@ -61,12 +65,81 @@ from kera_research.domain import (
     visit_label_from_index,
 )
 from kera_research.services.institution_directory import HiraApiError, HiraInstitutionDirectoryClient
+from kera_research.services.node_credentials import clear_node_credentials
 from kera_research.services.onedrive_publisher import OneDrivePublisher
+from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.storage import ensure_dir, read_json, write_json
 
 GOOGLE_AUTH_SENTINEL = "__google__"
 APP_SETTING_INSTANCE_STORAGE_ROOT = "instance_storage_root"
 APP_SETTING_INSTITUTION_DIRECTORY_LAST_SYNC = "institution_directory_last_sync"
+REMOTE_BOOTSTRAP_CACHE_FILENAME = "remote_bootstrap_cache.json"
+REMOTE_CURRENT_RELEASE_CACHE_SECONDS = 30.0
+HIRA_SITE_ID_PATTERN = re.compile(r"^\d{8}$")
+PUBLIC_ALIAS_ADJECTIVES: list[tuple[str, str, str]] = [
+    ("warm", "따스한", "Warm"),
+    ("calm", "차분한", "Calm"),
+    ("clear", "맑은", "Clear"),
+    ("steady", "든든한", "Steady"),
+    ("delicate", "섬세한", "Delicate"),
+    ("diligent", "성실한", "Diligent"),
+    ("upright", "반듯한", "Upright"),
+    ("wise", "지혜로운", "Wise"),
+    ("quiet", "조용한", "Quiet"),
+    ("agile", "민첩한", "Agile"),
+    ("gentle", "푸근한", "Gentle"),
+    ("radiant", "빛나는", "Radiant"),
+    ("composed", "침착한", "Composed"),
+    ("alert", "기민한", "Alert"),
+    ("serene", "온화한", "Serene"),
+    ("sturdy", "단단한", "Sturdy"),
+    ("flexible", "유연한", "Flexible"),
+    ("vivid", "선명한", "Vivid"),
+    ("kind", "상냥한", "Kind"),
+    ("bold", "담대한", "Bold"),
+    ("tranquil", "고요한", "Tranquil"),
+    ("healthy", "건강한", "Healthy"),
+    ("honest", "정직한", "Honest"),
+    ("bright", "명민한", "Bright"),
+]
+PUBLIC_ALIAS_ANIMALS: list[tuple[str, str, str]] = [
+    ("gorilla", "고릴라", "Gorilla"),
+    ("otter", "수달", "Otter"),
+    ("tiger", "호랑이", "Tiger"),
+    ("owl", "올빼미", "Owl"),
+    ("fox", "여우", "Fox"),
+    ("whale", "고래", "Whale"),
+    ("squirrel", "다람쥐", "Squirrel"),
+    ("penguin", "펭귄", "Penguin"),
+    ("dolphin", "돌고래", "Dolphin"),
+    ("deer", "사슴", "Deer"),
+    ("cheetah", "치타", "Cheetah"),
+    ("elephant", "코끼리", "Elephant"),
+    ("magpie", "까치", "Magpie"),
+    ("crane", "두루미", "Crane"),
+    ("panda", "판다", "Panda"),
+    ("wolf", "늑대", "Wolf"),
+    ("beaver", "비버", "Beaver"),
+    ("badger", "오소리", "Badger"),
+    ("seaotter", "해달", "Sea Otter"),
+    ("hawk", "매", "Hawk"),
+    ("lynx", "살쾡이", "Lynx"),
+    ("seal", "바다표범", "Seal"),
+    ("ibex", "산양", "Ibex"),
+    ("goose", "기러기", "Goose"),
+]
+PUBLIC_ALIAS_TOKEN_PATTERN = re.compile(r"^(?P<adjective>[a-z]+)_(?P<animal>[a-z]+)_(?P<number>\d{3})$")
+PUBLIC_ALIAS_LEGACY_PATTERN = re.compile(r"^(?P<adjective>\S+)\s+(?P<animal>\S+)\s+#(?P<number>\d{3})$")
+PUBLIC_ALIAS_ANONYMOUS_PATTERN = re.compile(r"^anonymous_member_(?P<code>[a-z0-9]{6})$")
+PUBLIC_ALIAS_LEGACY_ANONYMOUS_PATTERN = re.compile(r"^익명 참여자 #(?P<code>[A-Za-z0-9]{6})$")
+PUBLIC_ALIAS_ADJECTIVE_KEYS = [item[0] for item in PUBLIC_ALIAS_ADJECTIVES]
+PUBLIC_ALIAS_ANIMAL_KEYS = [item[0] for item in PUBLIC_ALIAS_ANIMALS]
+PUBLIC_ALIAS_ADJECTIVE_KEY_SET = set(PUBLIC_ALIAS_ADJECTIVE_KEYS)
+PUBLIC_ALIAS_ANIMAL_KEY_SET = set(PUBLIC_ALIAS_ANIMAL_KEYS)
+PUBLIC_ALIAS_ADJECTIVE_BY_KO = {item[1]: item[0] for item in PUBLIC_ALIAS_ADJECTIVES}
+PUBLIC_ALIAS_ADJECTIVE_BY_EN = {item[2].lower(): item[0] for item in PUBLIC_ALIAS_ADJECTIVES}
+PUBLIC_ALIAS_ANIMAL_BY_KO = {item[1]: item[0] for item in PUBLIC_ALIAS_ANIMALS}
+PUBLIC_ALIAS_ANIMAL_BY_EN = {item[2].lower(): item[0] for item in PUBLIC_ALIAS_ANIMALS}
 
 
 def _safe_artifact_name(value: str, fallback: str) -> str:
@@ -82,6 +155,104 @@ def _infer_remote_source_provider(download_url: str) -> str:
     if normalized:
         return "http_download"
     return "local"
+
+
+def _site_display_label(site: dict[str, Any] | None, fallback: str = "") -> str:
+    if not isinstance(site, dict):
+        return fallback
+    hospital_name = str(site.get("hospital_name") or "").strip()
+    if hospital_name:
+        return hospital_name
+    display_name = str(site.get("display_name") or "").strip()
+    if display_name:
+        return display_name
+    site_id = str(site.get("site_id") or "").strip()
+    return site_id or fallback
+
+
+def _make_public_alias(seed: str, *, attempt: int = 0) -> str:
+    normalized_seed = str(seed or "").strip()
+    digest = hashlib.sha256(f"{PUBLIC_ALIAS_SALT}::{normalized_seed}::{attempt}".encode("utf-8")).digest()
+    adjective = PUBLIC_ALIAS_ADJECTIVE_KEYS[int.from_bytes(digest[0:2], "big") % len(PUBLIC_ALIAS_ADJECTIVE_KEYS)]
+    animal = PUBLIC_ALIAS_ANIMAL_KEYS[int.from_bytes(digest[2:4], "big") % len(PUBLIC_ALIAS_ANIMAL_KEYS)]
+    number = int.from_bytes(digest[4:6], "big") % 1000
+    return f"{adjective}_{animal}_{number:03d}"
+
+
+def _normalize_public_alias_token(value: str) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+
+    token_match = PUBLIC_ALIAS_TOKEN_PATTERN.fullmatch(normalized)
+    if token_match:
+        adjective_key = token_match.group("adjective")
+        animal_key = token_match.group("animal")
+        number = token_match.group("number")
+        if adjective_key in PUBLIC_ALIAS_ADJECTIVE_KEY_SET and animal_key in PUBLIC_ALIAS_ANIMAL_KEY_SET:
+            return f"{adjective_key}_{animal_key}_{number}"
+
+    anonymous_match = PUBLIC_ALIAS_ANONYMOUS_PATTERN.fullmatch(normalized)
+    if anonymous_match:
+        return f"anonymous_member_{anonymous_match.group('code').lower()}"
+
+    legacy_match = PUBLIC_ALIAS_LEGACY_PATTERN.fullmatch(normalized)
+    if legacy_match:
+        adjective_key = (
+            PUBLIC_ALIAS_ADJECTIVE_BY_KO.get(legacy_match.group("adjective"))
+            or PUBLIC_ALIAS_ADJECTIVE_BY_EN.get(legacy_match.group("adjective").lower())
+        )
+        animal_key = (
+            PUBLIC_ALIAS_ANIMAL_BY_KO.get(legacy_match.group("animal"))
+            or PUBLIC_ALIAS_ANIMAL_BY_EN.get(legacy_match.group("animal").lower())
+        )
+        if adjective_key and animal_key:
+            return f"{adjective_key}_{animal_key}_{legacy_match.group('number')}"
+
+    legacy_anonymous_match = PUBLIC_ALIAS_LEGACY_ANONYMOUS_PATTERN.fullmatch(normalized)
+    if legacy_anonymous_match:
+        return f"anonymous_member_{legacy_anonymous_match.group('code').lower()}"
+
+    return None
+
+
+def _looks_like_local_absolute_path(value: str) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return False
+    parsed = urlsplit(normalized)
+    if parsed.scheme in {"http", "https"}:
+        return False
+    if normalized.startswith(("\\\\", "//", "/")):
+        return True
+    return bool(re.match(r"^[a-zA-Z]:[\\/]", normalized))
+
+
+def _sanitize_remote_payload(value: Any, *, key: str | None = None) -> Any:
+    normalized_key = str(key or "").strip().lower()
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            child_key = str(raw_key)
+            child_key_normalized = child_key.strip().lower()
+            if child_key_normalized in {"artifact_path", "central_artifact_path"}:
+                continue
+            child_value = _sanitize_remote_payload(raw_value, key=child_key)
+            if child_value is None and child_key_normalized.endswith("_path"):
+                continue
+            sanitized[child_key] = child_value
+        return sanitized
+    if isinstance(value, list):
+        sanitized_items = [_sanitize_remote_payload(item, key=key) for item in value]
+        return [item for item in sanitized_items if item is not None]
+    if isinstance(value, str):
+        if normalized_key.endswith("_url"):
+            return value
+        if _looks_like_local_absolute_path(value):
+            if normalized_key.endswith("_path"):
+                return None
+            return Path(value).name or None
+    return value
 INSTITUTION_SEARCH_ALIASES: dict[str, set[str]] = {
     "seoul": {"seoul", "서울"},
     "서울": {"seoul", "서울"},
@@ -222,6 +393,49 @@ class _ControlPlaneIdentityOps:
     def __init__(self, store: "ControlPlaneStore") -> None:
         self.store = store
 
+    def _public_alias_seed(self, user_record: dict[str, Any]) -> str:
+        google_sub = str(user_record.get("google_sub") or "").strip()
+        if google_sub:
+            return f"google:{google_sub}"
+        user_id = str(user_record.get("user_id") or "").strip()
+        if user_id:
+            return f"user:{user_id}"
+        return ""
+
+    def _ensure_public_alias_for_record(self, conn: Any, user_record: dict[str, Any], *, persist: bool = True) -> str | None:
+        existing_alias = str(user_record.get("public_alias") or "").strip()
+        user_id = str(user_record.get("user_id") or "").strip()
+        if existing_alias:
+            normalized_existing_alias = _normalize_public_alias_token(existing_alias)
+            if normalized_existing_alias:
+                if normalized_existing_alias != existing_alias and user_id and persist:
+                    owner_user_id = conn.execute(select(users.c.user_id).where(users.c.public_alias == normalized_existing_alias)).scalar_one_or_none()
+                    if owner_user_id is None or str(owner_user_id) == user_id:
+                        conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=normalized_existing_alias))
+                        user_record["public_alias"] = normalized_existing_alias
+                        return normalized_existing_alias
+                return normalized_existing_alias
+
+        alias_seed = self._public_alias_seed(user_record)
+        if not user_id or not alias_seed:
+            return existing_alias or None
+
+        for attempt in range(256):
+            candidate = _make_public_alias(alias_seed, attempt=attempt)
+            owner_user_id = conn.execute(select(users.c.user_id).where(users.c.public_alias == candidate)).scalar_one_or_none()
+            if owner_user_id is None or str(owner_user_id) == user_id:
+                if persist:
+                    conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=candidate))
+                    user_record["public_alias"] = candidate
+                return candidate
+
+        fallback_suffix = hashlib.sha256(f"{PUBLIC_ALIAS_SALT}::{alias_seed}".encode("utf-8")).hexdigest()[:6].lower()
+        fallback_alias = f"anonymous_member_{fallback_suffix}"
+        if persist:
+            conn.execute(update(users).where(users.c.user_id == user_id).values(public_alias=fallback_alias))
+            user_record["public_alias"] = fallback_alias
+        return fallback_alias
+
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
         query = select(users).where(users.c.username == username)
         with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -242,6 +456,11 @@ class _ControlPlaneIdentityOps:
         serialized = dict(user_record)
         serialized["site_ids"] = list(serialized.get("site_ids") or [])
         serialized["registry_consents"] = _normalize_registry_consents(serialized.get("registry_consents"))
+        if not str(serialized.get("public_alias") or "").strip():
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                serialized["public_alias"] = self._ensure_public_alias_for_record(conn, serialized, persist=True)
+        else:
+            serialized["public_alias"] = str(serialized.get("public_alias") or "").strip()
         serialized["approval_status"] = self.user_approval_status(serialized)
         latest_request = self.latest_access_request(serialized["user_id"])
         serialized["latest_access_request"] = latest_request
@@ -285,6 +504,35 @@ class _ControlPlaneIdentityOps:
             rows = conn.execute(select(users).order_by(users.c.username)).mappings().all()
         return [self.serialize_user(dict(row)) for row in rows]
 
+    def get_user_public_alias(self, user_id: str) -> str | None:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return None
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(select(users).where(users.c.user_id == normalized_user_id)).mappings().first()
+            if row is None:
+                return None
+            return self._ensure_public_alias_for_record(conn, dict(row), persist=True)
+
+    def list_user_public_aliases(self, user_ids: list[str]) -> dict[str, str]:
+        normalized_user_ids = [
+            str(user_id).strip()
+            for user_id in user_ids
+            if str(user_id).strip()
+        ]
+        normalized_user_ids = list(dict.fromkeys(normalized_user_ids))
+        if not normalized_user_ids:
+            return {}
+        aliases: dict[str, str] = {}
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(select(users).where(users.c.user_id.in_(normalized_user_ids))).mappings().all()
+            for row in rows:
+                record = dict(row)
+                alias = self._ensure_public_alias_for_record(conn, record, persist=True)
+                if alias:
+                    aliases[str(record["user_id"])] = alias
+        return aliases
+
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         normalized_site_ids = list(dict.fromkeys(user_record.get("site_ids") or []))
         normalized = {
@@ -296,6 +544,8 @@ class _ControlPlaneIdentityOps:
         normalized["password"] = _normalize_password_storage(str(normalized.get("password") or ""))
         if "google_sub" in normalized:
             normalized["google_sub"] = str(normalized.get("google_sub") or "").strip() or None
+        if "public_alias" in normalized:
+            normalized["public_alias"] = _normalize_public_alias_token(str(normalized.get("public_alias") or "").strip()) or None
         with CONTROL_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(
                 select(users).where((users.c.user_id == normalized["user_id"]) | (users.c.username == normalized["username"]))
@@ -402,16 +652,16 @@ class _ControlPlaneIdentityOps:
         site = self.store.get_site(requested_site_id)
         if site is not None:
             if not serialized["requested_site_label"]:
-                serialized["requested_site_label"] = str(site.get("display_name") or requested_site_id)
+                serialized["requested_site_label"] = _site_display_label(site, requested_site_id)
             serialized["requested_site_source"] = "site"
             serialized["resolved_site_id"] = str(site.get("site_id") or requested_site_id)
-            serialized["resolved_site_label"] = str(site.get("display_name") or requested_site_id)
+            serialized["resolved_site_label"] = _site_display_label(site, requested_site_id)
             return serialized
 
         mapped_site = self.store.get_site_by_source_institution_id(requested_site_id)
         if mapped_site is not None:
             serialized["resolved_site_id"] = str(mapped_site.get("site_id") or "")
-            serialized["resolved_site_label"] = str(mapped_site.get("display_name") or serialized["resolved_site_id"])
+            serialized["resolved_site_label"] = _site_display_label(mapped_site, serialized["resolved_site_id"])
 
         institution = self.store.get_institution(requested_site_id)
         if institution is not None:
@@ -853,6 +1103,78 @@ class _ControlPlaneRegistryOps:
             for row in rows
         ]
 
+    def get_contribution_leaderboard(
+        self,
+        *,
+        user_id: str | None = None,
+        site_id: str | None = None,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        contributions_for_scope = self.list_contributions(site_id=site_id)
+        contributor_counts: dict[str, dict[str, Any]] = {}
+        payload_aliases: dict[str, str] = {}
+
+        for item in contributions_for_scope:
+            contributor_user_id = str(item.get("user_id") or "").strip()
+            if not contributor_user_id:
+                continue
+            payload_alias = str(item.get("public_alias") or "").strip()
+            if payload_alias:
+                payload_aliases[contributor_user_id] = payload_alias
+            entry = contributor_counts.setdefault(
+                contributor_user_id,
+                {
+                    "user_id": contributor_user_id,
+                    "contribution_count": 0,
+                    "last_contribution_at": None,
+                },
+            )
+            entry["contribution_count"] = int(entry["contribution_count"]) + 1
+            created_at = str(item.get("created_at") or "").strip() or None
+            if created_at and (entry["last_contribution_at"] is None or created_at > str(entry["last_contribution_at"])):
+                entry["last_contribution_at"] = created_at
+
+        alias_map = self.store.list_user_public_aliases(list(contributor_counts))
+        sorted_contributors = sorted(
+            contributor_counts.values(),
+            key=lambda item: (
+                int(item.get("contribution_count") or 0),
+                str(item.get("last_contribution_at") or ""),
+                str(item.get("user_id") or ""),
+            ),
+            reverse=True,
+        )
+
+        top_entries: list[dict[str, Any]] = []
+        current_user_entry: dict[str, Any] | None = None
+        normalized_user_id = str(user_id or "").strip() or None
+        for rank, item in enumerate(sorted_contributors, start=1):
+            contributor_user_id = str(item.get("user_id") or "").strip()
+            alias = (
+                payload_aliases.get(contributor_user_id)
+                or alias_map.get(contributor_user_id)
+                or "Anonymous member"
+            )
+            entry = {
+                "rank": rank,
+                "user_id": contributor_user_id,
+                "public_alias": alias,
+                "contribution_count": int(item.get("contribution_count") or 0),
+                "last_contribution_at": item.get("last_contribution_at"),
+                "is_current_user": contributor_user_id == normalized_user_id,
+            }
+            if rank <= max(1, int(limit or 5)):
+                top_entries.append(entry)
+            if normalized_user_id and contributor_user_id == normalized_user_id:
+                current_user_entry = entry
+
+        return {
+            "scope": "site" if site_id else "global",
+            "site_id": site_id,
+            "leaderboard": top_entries,
+            "current_user": current_user_entry,
+        }
+
     def get_contribution_stats(self, user_id: str | None = None) -> dict[str, Any]:
         all_contribs = self.list_contributions()
         total = len(all_contribs)
@@ -860,11 +1182,16 @@ class _ControlPlaneRegistryOps:
         user_total = len(user_contribs)
         pct = round(user_total / total * 100, 1) if total > 0 else 0.0
         current_model = self.current_global_model()
+        leaderboard = self.get_contribution_leaderboard(user_id=user_id, limit=5)
+        current_user_entry = leaderboard.get("current_user") if isinstance(leaderboard, dict) else None
         return {
             "total_contributions": total,
             "user_contributions": user_total,
             "user_contribution_pct": pct,
             "current_model_version": current_model["version_name"] if current_model else "—",
+            "user_public_alias": current_user_entry.get("public_alias") if isinstance(current_user_entry, dict) else self.store.get_user_public_alias(user_id or ""),
+            "user_rank": current_user_entry.get("rank") if isinstance(current_user_entry, dict) else None,
+            "leaderboard": leaderboard,
         }
 
     def list_aggregations(self) -> list[dict[str, Any]]:
@@ -964,17 +1291,21 @@ class _ControlPlaneWorkspaceOps:
         source_institution_id: str | None = None,
         research_registry_enabled: bool = True,
     ) -> dict[str, Any]:
-        normalized_site_code = site_code.strip()
         normalized_source_institution_id = str(source_institution_id or "").strip() or None
+        normalized_site_code = site_code.strip()
+        if normalized_source_institution_id and HIRA_SITE_ID_PATTERN.fullmatch(normalized_source_institution_id):
+            normalized_site_code = normalized_source_institution_id
+        normalized_display_name = display_name.strip() or hospital_name.strip() or normalized_site_code
+        normalized_hospital_name = hospital_name.strip() or normalized_display_name
         if not normalized_site_code:
             raise ValueError("Site code is required.")
-        if not display_name.strip():
+        if not normalized_display_name:
             raise ValueError("Site display name is required.")
         record = {
             "site_id": normalized_site_code,
             "project_id": project_id,
-            "display_name": display_name.strip(),
-            "hospital_name": hospital_name.strip(),
+            "display_name": normalized_display_name,
+            "hospital_name": normalized_hospital_name,
             "source_institution_id": normalized_source_institution_id,
             "local_storage_root": str(Path(self.store.instance_storage_root()) / normalized_site_code),
             "research_registry_enabled": bool(research_registry_enabled),
@@ -1170,7 +1501,20 @@ class _ControlPlaneWorkspaceOps:
         summary: dict[str, Any],
         case_predictions: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        return self.store.save_validation_run(summary, case_predictions)
+        saved_summary = self.store.save_validation_run(summary, case_predictions)
+        if self.remote_node_sync_enabled():
+            try:
+                remote_summary = self.remote_control_plane.upload_validation_run(
+                    summary_json=_sanitize_remote_payload(saved_summary),
+                )
+                saved_summary["control_plane_source"] = "remote"
+                saved_summary["remote_validation_id"] = str(
+                    remote_summary.get("validation_id") or saved_summary.get("validation_id") or ""
+                ).strip() or None
+            except (requests.RequestException, RuntimeError) as exc:
+                saved_summary["control_plane_source"] = "local_fallback"
+                saved_summary["remote_sync_error"] = str(exc)
+        return saved_summary
 
     def list_validation_cases(
         self,
@@ -1221,10 +1565,258 @@ class ControlPlaneStore:
         ensure_dir(CONTROL_PLANE_REPORT_DIR)
         ensure_dir(CONTROL_PLANE_EXPERIMENT_DIR)
         ensure_dir(self.artifact_root)
+        self.remote_control_plane = RemoteControlPlaneClient()
+        self._remote_sync_lock = threading.Lock()
+        self._remote_bootstrap_cache_path = self.root / REMOTE_BOOTSTRAP_CACHE_FILENAME
+        self._remote_bootstrap_cache: dict[str, Any] | None = None
+        self._remote_bootstrap_cached_at = 0.0
+        self._remote_release_cache: dict[str, Any] | None = None
+        self._remote_release_cached_at = 0.0
         self.identity = _ControlPlaneIdentityOps(self)
         self.registry = _ControlPlaneRegistryOps(self)
         self.workspace = _ControlPlaneWorkspaceOps(self)
         self._seed_defaults()
+
+    def remote_control_plane_enabled(self) -> bool:
+        return self.remote_control_plane.is_configured()
+
+    def remote_node_sync_enabled(self) -> bool:
+        return self.remote_control_plane.is_configured() and self.remote_control_plane.has_node_credentials()
+
+    def reload_remote_control_plane_credentials(self) -> dict[str, str] | None:
+        return self.remote_control_plane.reload_credentials()
+
+    def clear_remote_control_plane_state(self, *, clear_persisted_credentials: bool = False) -> None:
+        if clear_persisted_credentials:
+            clear_node_credentials()
+        self.remote_control_plane.reload_credentials()
+        self._remote_bootstrap_cache = None
+        self._remote_bootstrap_cached_at = 0.0
+        self._remote_release_cache = None
+        self._remote_release_cached_at = 0.0
+        if self._remote_bootstrap_cache_path.exists():
+            self._remote_bootstrap_cache_path.unlink()
+
+    def remote_node_os_info(self) -> str:
+        return f"{platform.system()} {platform.release()} ({platform.machine()})".strip()
+
+    def _load_remote_bootstrap_cache(self) -> dict[str, Any] | None:
+        if self._remote_bootstrap_cache is not None:
+            return dict(self._remote_bootstrap_cache)
+        payload = read_json(self._remote_bootstrap_cache_path, {})
+        if isinstance(payload, dict) and payload:
+            self._remote_bootstrap_cache = dict(payload)
+            self._remote_bootstrap_cached_at = time.time()
+            current_release = payload.get("current_release")
+            if isinstance(current_release, dict) and current_release:
+                self._remote_release_cache = dict(current_release)
+                self._remote_release_cached_at = self._remote_bootstrap_cached_at
+            return dict(payload)
+        return None
+
+    def _store_remote_bootstrap_cache(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cached = dict(payload)
+        self._remote_bootstrap_cache = cached
+        self._remote_bootstrap_cached_at = time.time()
+        current_release = cached.get("current_release")
+        if isinstance(current_release, dict) and current_release:
+            self._remote_release_cache = dict(current_release)
+            self._remote_release_cached_at = self._remote_bootstrap_cached_at
+            self._cache_remote_release_locally(current_release)
+        write_json(self._remote_bootstrap_cache_path, cached)
+        return dict(cached)
+
+    def remote_bootstrap_state(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
+        if not self.remote_node_sync_enabled():
+            return self._load_remote_bootstrap_cache()
+
+        now = time.time()
+        with self._remote_sync_lock:
+            if (
+                not force_refresh
+                and self._remote_bootstrap_cache is not None
+                and (now - self._remote_bootstrap_cached_at) < float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS)
+            ):
+                return dict(self._remote_bootstrap_cache)
+
+        try:
+            payload = self.remote_control_plane.bootstrap()
+        except (requests.RequestException, RuntimeError):
+            payload = None
+
+        with self._remote_sync_lock:
+            if isinstance(payload, dict) and payload:
+                return self._store_remote_bootstrap_cache(payload)
+            cached = self._load_remote_bootstrap_cache()
+            return dict(cached) if cached else None
+
+    def record_remote_node_heartbeat(
+        self,
+        *,
+        app_version: str = "",
+        os_info: str = "",
+        status: str = "ok",
+    ) -> dict[str, Any] | None:
+        if not self.remote_node_sync_enabled():
+            return None
+        try:
+            node = self.remote_control_plane.heartbeat(
+                app_version=app_version,
+                os_info=os_info or self.remote_node_os_info(),
+                status=status,
+            )
+        except (requests.RequestException, RuntimeError):
+            return None
+
+        with self._remote_sync_lock:
+            bootstrap = self._load_remote_bootstrap_cache()
+            if bootstrap is not None:
+                bootstrap["node"] = dict(node)
+                self._store_remote_bootstrap_cache(bootstrap)
+        return dict(node)
+
+    def _remote_current_release_manifest(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
+        if not self.remote_node_sync_enabled():
+            return None
+
+        now = time.time()
+        with self._remote_sync_lock:
+            if (
+                not force_refresh
+                and self._remote_release_cache is not None
+                and (now - self._remote_release_cached_at) < REMOTE_CURRENT_RELEASE_CACHE_SECONDS
+            ):
+                return dict(self._remote_release_cache)
+
+        try:
+            payload = self.remote_control_plane.current_release()
+        except (requests.RequestException, RuntimeError):
+            payload = None
+
+        with self._remote_sync_lock:
+            if isinstance(payload, dict) and payload:
+                self._remote_release_cache = dict(payload)
+                self._remote_release_cached_at = time.time()
+                bootstrap = self._load_remote_bootstrap_cache()
+                if bootstrap is not None:
+                    bootstrap["current_release"] = dict(payload)
+                    self._store_remote_bootstrap_cache(bootstrap)
+                else:
+                    self._cache_remote_release_locally(payload)
+                return dict(payload)
+
+        bootstrap = self.remote_bootstrap_state(force_refresh=force_refresh)
+        if isinstance(bootstrap, dict):
+            release = bootstrap.get("current_release")
+            if isinstance(release, dict) and release:
+                return dict(release)
+        return None
+
+    def _normalize_remote_release(self, release: dict[str, Any]) -> dict[str, Any]:
+        metadata = release.get("metadata_json") if isinstance(release.get("metadata_json"), dict) else {}
+        normalized = {
+            **metadata,
+            "version_id": str(release.get("version_id") or "").strip(),
+            "version_name": str(release.get("version_name") or "").strip(),
+            "architecture": str(release.get("architecture") or metadata.get("architecture") or "").strip(),
+            "stage": "global",
+            "created_at": str(release.get("created_at") or metadata.get("created_at") or utc_now()),
+            "ready": bool(release.get("ready", True)),
+            "is_current": bool(release.get("is_current", True)),
+            "model_name": str(metadata.get("model_name") or "keratitis_cls"),
+            "download_url": str(release.get("download_url") or "").strip(),
+            "sha256": str(release.get("sha256") or "").strip().lower(),
+            "size_bytes": int(release.get("size_bytes") or 0),
+            "source_provider": str(
+                release.get("source_provider")
+                or metadata.get("source_provider")
+                or _infer_remote_source_provider(str(release.get("download_url") or ""))
+            ).strip(),
+            "metadata_json": metadata,
+        }
+        if normalized.get("requires_medsam_crop") is None:
+            normalized["requires_medsam_crop"] = bool(metadata.get("requires_medsam_crop", False))
+        return normalized
+
+    def _cache_remote_release_locally(self, release: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_remote_release(release)
+        try:
+            self.registry.ensure_model_version(normalized)
+        except Exception:
+            pass
+        return normalized
+
+    def _remote_bootstrap_project_records(self) -> list[dict[str, Any]]:
+        bootstrap = self.remote_bootstrap_state()
+        if not isinstance(bootstrap, dict):
+            return []
+        project = bootstrap.get("project")
+        if not isinstance(project, dict):
+            return []
+        project_id = str(project.get("project_id") or "").strip()
+        if not project_id:
+            return []
+        return [
+            {
+                "project_id": project_id,
+                "name": str(project.get("name") or project_id).strip() or project_id,
+                "description": str(project.get("description") or "").strip(),
+                "owner_user_id": str(bootstrap.get("user", {}).get("user_id") or "").strip() or None,
+                "site_ids": [
+                    str(site.get("site_id") or "").strip()
+                    for site in self._remote_bootstrap_site_records()
+                    if str(site.get("site_id") or "").strip()
+                ],
+                "created_at": str(project.get("created_at") or utc_now()),
+            }
+        ]
+
+    def _remote_bootstrap_site_records(self) -> list[dict[str, Any]]:
+        bootstrap = self.remote_bootstrap_state()
+        if not isinstance(bootstrap, dict):
+            return []
+
+        project = bootstrap.get("project") if isinstance(bootstrap.get("project"), dict) else {}
+        project_id = str(project.get("project_id") or "project_default").strip() or "project_default"
+        raw_memberships = bootstrap.get("memberships") if isinstance(bootstrap.get("memberships"), list) else []
+        site_index: dict[str, dict[str, Any]] = {}
+
+        def add_site(raw_site: Any) -> None:
+            if not isinstance(raw_site, dict):
+                return
+            site_id = str(raw_site.get("site_id") or "").strip()
+            if not site_id:
+                return
+            site_index[site_id] = {
+                "site_id": site_id,
+                "project_id": project_id,
+                "site_code": str(raw_site.get("site_code") or site_id).strip() or site_id,
+                "display_name": str(raw_site.get("display_name") or site_id).strip() or site_id,
+                "hospital_name": str(raw_site.get("hospital_name") or raw_site.get("display_name") or site_id).strip() or site_id,
+                "source_institution_id": str(raw_site.get("source_institution_id") or "").strip() or None,
+                "research_registry_enabled": bool(raw_site.get("research_registry_enabled", True)),
+                "local_storage_root": raw_site.get("local_storage_root"),
+                "status": str(raw_site.get("status") or "active").strip() or "active",
+                "created_at": str(raw_site.get("created_at") or utc_now()),
+            }
+
+        add_site(bootstrap.get("site"))
+        for membership in raw_memberships:
+            if not isinstance(membership, dict):
+                continue
+            membership_site = membership.get("site")
+            if isinstance(membership_site, dict):
+                add_site(membership_site)
+            elif str(membership.get("status") or "").strip().lower() == "approved":
+                add_site(
+                    {
+                        "site_id": membership.get("site_id"),
+                        "display_name": membership.get("site_id"),
+                        "hospital_name": membership.get("site_id"),
+                    }
+                )
+
+        return sorted(site_index.values(), key=lambda item: _site_display_label(item, str(item.get("site_id") or "")).lower())
 
     def default_instance_storage_root(self) -> Path:
         return SITE_ROOT_DIR.resolve()
@@ -1720,6 +2312,12 @@ class ControlPlaneStore:
     def ensure_google_user(self, google_sub: str, email: str, full_name: str) -> dict[str, Any]:
         return self.identity.ensure_google_user(google_sub, email, full_name)
 
+    def get_user_public_alias(self, user_id: str) -> str | None:
+        return self.identity.get_user_public_alias(user_id)
+
+    def list_user_public_aliases(self, user_ids: list[str]) -> dict[str, str]:
+        return self.identity.list_user_public_aliases(user_ids)
+
     def user_approval_status(self, user: dict[str, Any]) -> str:
         return self.identity.user_approval_status(user)
 
@@ -1780,7 +2378,23 @@ class ControlPlaneStore:
     def list_projects(self) -> list[dict[str, Any]]:
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(select(projects).order_by(projects.c.created_at)).mappings().all()
-        return [dict(row) for row in rows]
+        merged: dict[str, dict[str, Any]] = {
+            str(row["project_id"]): dict(row)
+            for row in rows
+            if str(row.get("project_id") or "").strip()
+        }
+        for project in self._remote_bootstrap_project_records():
+            project_id = str(project.get("project_id") or "").strip()
+            if not project_id:
+                continue
+            existing = dict(merged.get(project_id) or {})
+            merged[project_id] = {
+                **project,
+                **existing,
+                "project_id": project_id,
+                "name": str(project.get("name") or existing.get("name") or project_id).strip() or project_id,
+            }
+        return sorted(merged.values(), key=lambda item: str(item.get("created_at") or ""))
 
     def create_project(self, name: str, description: str, owner_user_id: str) -> dict[str, Any]:
         if not name.strip():
@@ -1804,7 +2418,36 @@ class ControlPlaneStore:
         query = query.order_by(sites.c.display_name)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        merged: dict[str, dict[str, Any]] = {
+            str(row["site_id"]): dict(row)
+            for row in rows
+            if str(row.get("site_id") or "").strip()
+        }
+        for remote_site in self._remote_bootstrap_site_records():
+            site_id = str(remote_site.get("site_id") or "").strip()
+            if not site_id:
+                continue
+            existing = dict(merged.get(site_id) or {})
+            local_storage_root = existing.get("local_storage_root")
+            research_registry_enabled = existing.get("research_registry_enabled")
+            merged_site = {
+                **remote_site,
+                **existing,
+                "site_id": site_id,
+                "project_id": str(existing.get("project_id") or remote_site.get("project_id") or "project_default").strip() or "project_default",
+                "site_code": str(existing.get("site_code") or remote_site.get("site_code") or site_id).strip() or site_id,
+                "display_name": str(remote_site.get("display_name") or existing.get("display_name") or site_id).strip() or site_id,
+                "hospital_name": str(remote_site.get("hospital_name") or existing.get("hospital_name") or site_id).strip() or site_id,
+            }
+            if local_storage_root:
+                merged_site["local_storage_root"] = local_storage_root
+            if research_registry_enabled is not None:
+                merged_site["research_registry_enabled"] = bool(research_registry_enabled)
+            merged[site_id] = merged_site
+        site_rows = list(merged.values())
+        if project_id:
+            site_rows = [site for site in site_rows if str(site.get("project_id") or "") == project_id]
+        return sorted(site_rows, key=lambda item: _site_display_label(item, str(item.get("site_id") or "")).lower())
 
     def get_site(self, site_id: str) -> dict[str, Any] | None:
         normalized_site_id = site_id.strip()
@@ -1812,7 +2455,22 @@ class ControlPlaneStore:
             return None
         with CONTROL_PLANE_ENGINE.begin() as conn:
             row = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
-        return dict(row) if row else None
+        local_site = dict(row) if row else None
+        remote_site = next(
+            (item for item in self._remote_bootstrap_site_records() if str(item.get("site_id") or "").strip() == normalized_site_id),
+            None,
+        )
+        if local_site and remote_site:
+            merged = {
+                **remote_site,
+                **local_site,
+            }
+            if local_site.get("local_storage_root"):
+                merged["local_storage_root"] = local_site.get("local_storage_root")
+            if local_site.get("research_registry_enabled") is not None:
+                merged["research_registry_enabled"] = bool(local_site.get("research_registry_enabled"))
+            return merged
+        return local_site or remote_site
 
     def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
         normalized_source_institution_id = source_institution_id.strip()
@@ -2374,6 +3032,9 @@ class ControlPlaneStore:
         ]
 
     def list_model_versions(self) -> list[dict[str, Any]]:
+        remote_release = self._remote_current_release_manifest()
+        if remote_release is not None:
+            self._cache_remote_release_locally(remote_release)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(select(model_versions).order_by(model_versions.c.created_at)).all()
         return [
@@ -2397,13 +3058,62 @@ class ControlPlaneStore:
         return self.registry.ensure_model_version(model_metadata)
 
     def current_global_model(self) -> dict[str, Any] | None:
+        remote_release = self._remote_current_release_manifest()
+        if remote_release is not None:
+            return self._normalize_remote_release(remote_release)
         return self.registry.current_global_model()
 
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
         return self.registry.archive_model_version(version_id)
 
     def register_model_update(self, update_metadata: dict[str, Any]) -> dict[str, Any]:
-        return self.registry.register_model_update(update_metadata)
+        incoming_fingerprint = str(update_metadata.get("salt_fingerprint") or "").strip()
+        if incoming_fingerprint and incoming_fingerprint != CASE_REFERENCE_SALT_FINGERPRINT:
+            raise ValueError(
+                f"Salt fingerprint mismatch: the submitting site uses a different "
+                f"KERA_CASE_REFERENCE_SALT (site fingerprint: {incoming_fingerprint!r}, "
+                f"server fingerprint: {CASE_REFERENCE_SALT_FINGERPRINT!r}). "
+                "All nodes in a federation must share the same KERA_CASE_REFERENCE_SALT "
+                "environment variable to ensure consistent case reference IDs."
+            )
+
+        normalized_update = self.normalize_model_update_artifact_metadata(
+            self._normalize_case_reference(update_metadata)
+        )
+        if self.remote_node_sync_enabled():
+            review_thumbnail_url = str(normalized_update.get("review_thumbnail_url") or "").strip() or None
+            remote_payload = _sanitize_remote_payload(normalized_update)
+            try:
+                remote_record = self.remote_control_plane.upload_model_update(
+                    base_model_version_id=str(normalized_update.get("base_model_version_id") or "").strip() or None,
+                    payload_json=remote_payload if isinstance(remote_payload, dict) else {},
+                    review_thumbnail_url=review_thumbnail_url,
+                )
+            except (requests.RequestException, RuntimeError) as exc:
+                local_record = self.registry.register_model_update(normalized_update)
+                local_record["control_plane_source"] = "local_fallback"
+                local_record["remote_sync_error"] = str(exc)
+                return local_record
+
+            merged = dict(normalized_update)
+            merged["control_plane_source"] = "remote"
+            merged["remote_status"] = str(remote_record.get("status") or "").strip() or None
+            merged["status"] = "pending_review" if merged["remote_status"] == "pending" else (merged["remote_status"] or merged.get("status"))
+            merged["update_id"] = str(remote_record.get("update_id") or merged.get("update_id") or "").strip()
+            if remote_record.get("created_at"):
+                merged["created_at"] = remote_record["created_at"]
+            if remote_record.get("site_id"):
+                merged["site_id"] = remote_record["site_id"]
+            if remote_record.get("node_id"):
+                merged["node_id"] = remote_record["node_id"]
+            merged.pop("artifact_path", None)
+            merged.pop("central_artifact_path", None)
+            cached = self.registry.register_model_update(merged)
+            cached["control_plane_source"] = "remote"
+            cached["remote_status"] = merged.get("remote_status")
+            return cached
+
+        return self.registry.register_model_update(normalized_update)
 
     def get_model_update(self, update_id: str) -> dict[str, Any] | None:
         return self.registry.get_model_update(update_id)
@@ -2431,6 +3141,15 @@ class ControlPlaneStore:
 
     def list_contributions(self, user_id: str | None = None, site_id: str | None = None) -> list[dict[str, Any]]:
         return self.registry.list_contributions(user_id=user_id, site_id=site_id)
+
+    def get_contribution_leaderboard(
+        self,
+        *,
+        user_id: str | None = None,
+        site_id: str | None = None,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        return self.registry.get_contribution_leaderboard(user_id=user_id, site_id=site_id, limit=limit)
 
     def get_contribution_stats(self, user_id: str | None = None) -> dict[str, Any]:
         return self.registry.get_contribution_stats(user_id)

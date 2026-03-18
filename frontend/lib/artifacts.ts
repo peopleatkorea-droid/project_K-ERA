@@ -16,6 +16,25 @@ export async function fetchImageBlob(siteId: string, imageId: string, token: str
   return requestBlob(`/api/sites/${siteId}/images/${imageId}/content`, token, "Image fetch failed", { signal });
 }
 
+export async function fetchImagePreviewBlob(
+  siteId: string,
+  imageId: string,
+  token: string,
+  options: {
+    maxSide?: number;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (typeof options.maxSide === "number" && Number.isFinite(options.maxSide)) {
+    params.set("max_side", String(Math.round(options.maxSide)));
+  }
+  const path = params.size > 0
+    ? `/api/sites/${siteId}/images/${imageId}/preview?${params.toString()}`
+    : `/api/sites/${siteId}/images/${imageId}/preview`;
+  return requestBlob(path, token, "Image preview fetch failed", { signal: options.signal });
+}
+
 export async function downloadImportTemplate(siteId: string, token: string) {
   const response = await fetch(buildApiUrl(`/api/sites/${siteId}/import/template.csv`), {
     headers: {

@@ -1,14 +1,10 @@
 "use client";
 
-import type { PointerEvent as ReactPointerEvent } from "react";
-
 import type { CaseSummaryRecord, OrganismRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import {
-  docSectionLabelClass,
-  docSiteBadgeClass,
   emptySurfaceClass,
   patientVisitGalleryCardClass,
   patientVisitGalleryStackClass,
@@ -16,7 +12,7 @@ import {
   savedCaseActionButtonClass,
 } from "../ui/workspace-patterns";
 import { MaskOverlayPreview } from "./preview-media";
-import type { LesionBoxMap, LiveLesionPreviewMap, SavedImagePreview, TranslateOption } from "./shared";
+import type { LiveLesionPreviewMap, SavedImagePreview, TranslateOption } from "./shared";
 
 const savedCaseMintLabelClass =
   "inline-flex min-h-9 items-center rounded-[10px] border border-brand/18 bg-brand-soft/80 px-4 text-[0.76rem] font-semibold tracking-[-0.01em] text-brand dark:border-brand/20 dark:bg-brand-soft/75 dark:text-brand";
@@ -36,14 +32,12 @@ type SavedCaseOverviewProps = {
   localeTag: string;
   commonLoading: string;
   commonNotAvailable: string;
-  selectedSiteId: string | null;
   selectedCase: CaseSummaryRecord;
   selectedPatientCases: CaseSummaryRecord[];
+  panelBusy: boolean;
   patientVisitGalleryBusy: boolean;
   patientVisitGallery: Record<string, SavedImagePreview[]>;
   liveLesionPreviews: LiveLesionPreviewMap;
-  lesionPromptDrafts: LesionBoxMap;
-  lesionPromptSaved: LesionBoxMap;
   editDraftBusy: boolean;
   pick: (locale: Locale, en: string, ko: string) => string;
   translateOption: TranslateOption;
@@ -55,15 +49,11 @@ type SavedCaseOverviewProps = {
     additionalOrganisms?: OrganismRecord[],
     limit?: number
   ) => string;
-  organismKey: (organism: Pick<OrganismRecord, "culture_category" | "culture_species">) => string;
   onStartEditDraft: () => void | Promise<void>;
   onStartFollowUpDraft: () => void | Promise<void>;
   onToggleFavorite: (caseId: string) => void;
   onOpenSavedCase: (caseRecord: CaseSummaryRecord, nextView: "cases" | "patients") => void;
   onDeleteSavedCase: (caseRecord: CaseSummaryRecord) => void | Promise<void>;
-  onLesionPointerDown: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
-  onLesionPointerMove: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
-  onFinishLesionPointer: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   isFavoriteCase: (caseId: string) => boolean;
   caseTitle: string;
 };
@@ -86,14 +76,12 @@ export function SavedCaseOverview({
   localeTag,
   commonLoading,
   commonNotAvailable,
-  selectedSiteId,
   selectedCase,
   selectedPatientCases,
+  panelBusy,
   patientVisitGalleryBusy,
   patientVisitGallery,
   liveLesionPreviews,
-  lesionPromptDrafts,
-  lesionPromptSaved,
   editDraftBusy,
   pick,
   translateOption,
@@ -105,9 +93,6 @@ export function SavedCaseOverview({
   onToggleFavorite,
   onOpenSavedCase,
   onDeleteSavedCase,
-  onLesionPointerDown,
-  onLesionPointerMove,
-  onFinishLesionPointer,
   isFavoriteCase,
   caseTitle,
 }: SavedCaseOverviewProps) {
@@ -179,13 +164,15 @@ export function SavedCaseOverview({
         {!patientVisitGalleryBusy && selectedPatientCases.length === 0 ? (
           <div className={emptySurfaceClass}>{pick(locale, "No saved visits are available for this patient yet.", "이 환자에는 아직 저장 방문이 없습니다.")}</div>
         ) : null}
-        {!patientVisitGalleryBusy && selectedPatientCases.length > 0 ? (
+        {selectedPatientCases.length > 0 ? (
           <div className={patientVisitGalleryStackClass}>
             {selectedPatientCases.map((caseItem) => {
-              const visitImages = patientVisitGallery[caseItem.case_id] ?? [];
+              const visitImages = patientVisitGallery[caseItem.case_id];
+              const hasLoadedVisitImages = Array.isArray(visitImages);
+              const visibleVisitImages = visitImages ?? [];
               const isCurrentVisit = selectedCase.case_id === caseItem.case_id;
               const visitLabel = resolveVisitLabel(locale, caseItem.visit_date, caseItem.is_initial_visit, pick, displayVisitReference);
-              const imageCount = visitImages.length || caseItem.image_count;
+              const imageCount = visibleVisitImages.length || caseItem.image_count;
               const visitMeta = [
                 formatDateTime(caseItem.latest_image_uploaded_at ?? caseItem.created_at, localeTag, commonNotAvailable),
                 `${imageCount} ${pick(locale, "images", "이미지")}`,
@@ -228,23 +215,16 @@ export function SavedCaseOverview({
                     </div>
                   </div>
 
-                  {visitImages.length > 0 ? (
+                  {visibleVisitImages.length > 0 ? (
                     <div className="grid gap-x-3 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-                      {visitImages.map((image) => {
+                      {visibleVisitImages.map((image) => {
                         const livePreview = liveLesionPreviews[image.image_id];
-                        const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
                         const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
 
                         return (
                           <div key={`timeline-${image.image_id}`} className="grid gap-2.5">
                             {image.preview_url ? (
-                              <div
-                                className={`relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55 ${isCurrentVisit ? "cursor-crosshair touch-none" : ""}`}
-                                onPointerDown={isCurrentVisit ? (event) => onLesionPointerDown(image.image_id, event) : undefined}
-                                onPointerMove={isCurrentVisit ? (event) => onLesionPointerMove(image.image_id, event) : undefined}
-                                onPointerUp={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
-                                onPointerCancel={isCurrentVisit ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
-                              >
+                              <div className="relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55">
                                 {maskReady ? (
                                   <MaskOverlayPreview
                                     sourceUrl={image.preview_url}
@@ -263,17 +243,6 @@ export function SavedCaseOverview({
                                     onDragStart={(event) => event.preventDefault()}
                                   />
                                 )}
-                                {isCurrentVisit && draftBox && !maskReady ? (
-                                  <div
-                                    className="pointer-events-none absolute rounded-[14px] border-2 border-danger/70 bg-danger/10"
-                                    style={{
-                                      left: `${draftBox.x0 * 100}%`,
-                                      top: `${draftBox.y0 * 100}%`,
-                                      width: `${(draftBox.x1 - draftBox.x0) * 100}%`,
-                                      height: `${(draftBox.y1 - draftBox.y0) * 100}%`,
-                                    }}
-                                  />
-                                ) : null}
                               </div>
                             ) : (
                               <div className="grid aspect-square w-full place-items-center rounded-[18px] bg-surface-muted/55 text-sm text-muted">
@@ -299,7 +268,11 @@ export function SavedCaseOverview({
                       })}
                     </div>
                   ) : (
-                    <div className={emptySurfaceClass}>{pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}</div>
+                    <div className={emptySurfaceClass}>
+                      {(isCurrentVisit && panelBusy) || (patientVisitGalleryBusy && !hasLoadedVisitImages)
+                        ? commonLoading
+                        : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
+                    </div>
                   )}
                 </Card>
               );

@@ -21,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchVisits: vi.fn(),
   fetchImages: vi.fn(),
   fetchImageBlob: vi.fn(),
+  fetchImagePreviewBlob: vi.fn(),
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
   runCaseValidation: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock("../lib/api", async () => {
     fetchVisits: apiMocks.fetchVisits,
     fetchImages: apiMocks.fetchImages,
     fetchImageBlob: apiMocks.fetchImageBlob,
+    fetchImagePreviewBlob: apiMocks.fetchImagePreviewBlob,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
     runCaseValidation: apiMocks.runCaseValidation,
@@ -153,6 +155,7 @@ describe("CaseWorkspace integration", () => {
       },
     ]);
     apiMocks.fetchImageBlob.mockResolvedValue(new Blob(["image"], { type: "image/png" }));
+    apiMocks.fetchImagePreviewBlob.mockResolvedValue(new Blob(["image"], { type: "image/jpeg" }));
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
       contributions: [],
@@ -405,7 +408,7 @@ describe("CaseWorkspace integration", () => {
     await waitFor(() => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
-    expect((await screen.findAllByText("Case KERA-2026-001 / Initial saved to hospital SITE_A.")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Case KERA-2026-001 / Initial saved to Hospital A.")).length).toBeGreaterThan(0);
   });
 
   it("overwrites an existing visit when the user confirms overwrite", async () => {

@@ -9,6 +9,7 @@ def build_auth_router(support: Any) -> APIRouter:
     get_control_plane = support.get_control_plane
     get_current_user = support.get_current_user
     local_login_enabled = support.local_login_enabled
+    local_dev_auth_enabled = support.local_dev_auth_enabled
     verify_google_id_token = support.verify_google_id_token
     build_auth_response = support.build_auth_response
     LoginRequest = support.LoginRequest
@@ -53,6 +54,30 @@ def build_auth_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Local username/password login is restricted to platform admins. Use Google sign-in.",
             )
+        return build_auth_response(cp, user)
+
+    @router.post("/api/auth/dev-login")
+    def dev_login(cp=Depends(get_control_plane)) -> dict[str, Any]:
+        if not local_dev_auth_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Local development admin login is disabled.",
+            )
+        user = cp.get_user_by_username("admin")
+        if user is None:
+            user = cp.upsert_user(
+                {
+                    "user_id": "user_admin",
+                    "username": "admin",
+                    "password": "__google__",
+                    "role": "admin",
+                    "full_name": "Platform Administrator",
+                    "site_ids": [],
+                    "registry_consents": {},
+                }
+            )
+        elif user.get("role") != "admin":
+            user = cp.upsert_user({**user, "role": "admin"})
         return build_auth_response(cp, user)
 
     @router.post("/api/auth/google")

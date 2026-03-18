@@ -12,6 +12,7 @@ function buildProps(
     locale: "en",
     notAvailableLabel: "n/a",
     selectedSiteId: "HTTP_SITE",
+    selectedSiteLabel: "HTTP Hospital",
     selectedReport: null,
     crossValidationExportBusy: false,
     initialForm: {

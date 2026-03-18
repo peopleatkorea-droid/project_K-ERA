@@ -213,9 +213,9 @@ export const representativeImageTagClass =
 export const listBoardStackClass = "grid gap-3";
 export function patientListRowClass(active = false) {
   return cn(
-    "group relative overflow-hidden grid gap-4 rounded-[14px] border border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-4 py-4 text-left shadow-[0_8px_18px_rgba(15,23,42,0.03)] transition duration-150 ease-out hover:-translate-y-[1px] hover:border-brand/30 hover:bg-[linear-gradient(180deg,rgba(243,247,255,0.98),rgba(233,241,255,0.92))] hover:shadow-[0_16px_32px_rgba(48,88,255,0.14)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.16)] dark:bg-[linear-gradient(180deg,rgba(21,27,35,0.92),rgba(26,33,42,0.9))] dark:hover:bg-[linear-gradient(180deg,rgba(28,38,58,0.96),rgba(25,34,54,0.92))] md:grid-cols-[minmax(0,1fr)_auto] md:items-center",
+    "group relative overflow-hidden grid gap-4 rounded-[14px] border border-[rgba(218,225,240,0.92)] bg-[rgba(248,250,254,0.96)] px-4 py-4 text-left shadow-[0_8px_18px_rgba(15,23,42,0.03)] transition duration-150 ease-out hover:-translate-y-[1px] hover:border-brand/30 hover:bg-[rgba(240,245,255,0.97)] hover:shadow-[0_16px_32px_rgba(48,88,255,0.14)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.16)] dark:border-[rgba(148,163,184,0.2)] dark:bg-[rgba(24,31,40,0.92)] dark:hover:border-[rgba(96,165,250,0.26)] dark:hover:bg-[rgba(29,39,58,0.96)] md:grid-cols-[minmax(0,1fr)_auto] md:items-center",
     active &&
-      "border-brand/34 bg-[linear-gradient(180deg,rgba(238,244,255,0.98),rgba(228,238,255,0.94))] shadow-[0_18px_36px_rgba(48,88,255,0.16)] ring-1 ring-brand/14 dark:bg-[linear-gradient(180deg,rgba(31,43,68,0.96),rgba(27,37,58,0.94))]"
+      "border-brand/34 bg-[rgba(232,239,255,0.98)] shadow-[0_18px_36px_rgba(48,88,255,0.16)] ring-1 ring-brand/14 dark:border-[rgba(110,146,255,0.3)] dark:bg-[rgba(31,43,68,0.96)] dark:ring-[rgba(96,132,255,0.14)]"
   );
 }
 export const patientListRowMainClass = "grid min-w-0 gap-3";

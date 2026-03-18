@@ -32,6 +32,7 @@ import { useAdminWorkspaceController } from "./admin-workspace/use-admin-workspa
 import { LocaleToggle, pick, translateRole } from "../lib/i18n";
 import { type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
 import { cn } from "../lib/cn";
+import { getSiteDisplayName } from "../lib/site-labels";
 
 export type WorkspaceSection =
   | "dashboard"
@@ -317,6 +318,8 @@ export function AdminWorkspace({
     onSiteDataChanged,
     onSelectSite,
   });
+  const selectedSiteRecord = sites.find((site) => site.site_id === selectedSiteId) ?? selectedManagedSite ?? null;
+  const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
 
 
 
@@ -357,8 +360,7 @@ export function AdminWorkspace({
             <div className="grid gap-2">
             {sites.map((site) => (
               <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
-                <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{site.display_name}</strong>
-                <span className="min-w-0 break-words [overflow-wrap:anywhere]">{site.hospital_name || site.site_id}</span>
+                <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{getSiteDisplayName(site)}</strong>
               </button>
             ))}
             </div>
@@ -459,7 +461,7 @@ export function AdminWorkspace({
             ) : null}
             {summary ? (
               <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
-                <div className="font-medium text-ink">{selectedSiteId}</div>
+                <div className="font-medium text-ink">{selectedSiteLabel ?? common.notAvailable}</div>
                 <div>{`${summary.n_patients} ${pick(locale, "patients", "?섏옄")} / ${summary.n_images} ${pick(locale, "images", "?대?吏")}`}</div>
               </div>
             ) : null}
@@ -520,6 +522,7 @@ export function AdminWorkspace({
               loadingLabel={common.loading}
               notAvailableLabel={common.notAvailable}
               selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
               selectedValidationRun={selectedValidationRun}
               validationExportBusy={validationExportBusy}
               siteValidationBusy={siteValidationBusy}
@@ -561,6 +564,7 @@ export function AdminWorkspace({
             <ImportsSection
               locale={locale}
               selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
               bulkCsvFile={bulkCsvFile}
               bulkImportBusy={bulkImportBusy}
               bulkImportResult={bulkImportResult}
@@ -592,6 +596,7 @@ export function AdminWorkspace({
               locale={locale}
               notAvailableLabel={common.notAvailable}
               selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
               selectedReport={selectedReport}
               crossValidationExportBusy={crossValidationExportBusy}
               initialForm={initialForm}
@@ -674,7 +679,7 @@ export function AdminWorkspace({
               storageSettingsBusy={storageSettingsBusy}
               instanceStorageRootForm={instanceStorageRootForm}
               siteStorageRootForm={siteStorageRootForm}
-              selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
               selectedManagedSite={selectedManagedSite}
               summary={summary}
               projects={projects}

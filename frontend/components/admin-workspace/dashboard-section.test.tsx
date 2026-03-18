@@ -13,6 +13,7 @@ function buildProps(
     loadingLabel: "Loading...",
     notAvailableLabel: "n/a",
     selectedSiteId: "HTTP_SITE",
+    selectedSiteLabel: "HTTP Hospital",
     selectedValidationRun: null,
     validationExportBusy: false,
     siteValidationBusy: false,

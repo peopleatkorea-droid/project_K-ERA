@@ -126,6 +126,8 @@ import {
   workspaceTitleRowClass,
   workspaceToastClass,
 } from "./ui/workspace-patterns";
+import { getSiteDisplayName } from "../lib/site-labels";
+import { formatPublicAlias } from "../lib/public-alias";
 import {
   type CaseHistoryResponse,
   type CaseValidationCompareResponse,
@@ -146,6 +148,7 @@ import {
   enrollResearchRegistry,
   fetchCases,
   fetchImageBlob,
+  fetchImagePreviewBlob,
   fetchLiveLesionPreviewJob,
   fetchImageSemanticPromptScores,
   fetchVisits,
@@ -756,6 +759,8 @@ export function CaseWorkspace({
   const { locale, localeTag, common } = useI18n();
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+  const selectedSiteRecord = sites.find((site) => site.site_id === selectedSiteId) ?? null;
+  const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
   const isAlreadyExistsError = (nextError: unknown) => {
     if (!(nextError instanceof Error)) {
       return false;
@@ -772,7 +777,7 @@ export function CaseWorkspace({
   const [saveBusy, setSaveBusy] = useState(false);
   const [editDraftBusy, setEditDraftBusy] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
-  const [railView, setRailView] = useState<"cases" | "patients">("cases");
+  const [railView, setRailView] = useState<"cases" | "patients">("patients");
   const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
   const [contributionBusy, setContributionBusy] = useState(false);
   const [researchRegistryBusy, setResearchRegistryBusy] = useState(false);
@@ -847,8 +852,8 @@ export function CaseWorkspace({
     cultureSpeciesRequired: pick(locale, "Select the primary organism.", "???洹좎쥌???좏깮?섏꽭??"),
     imageRequired: pick(locale, "Add at least one slit-lamp image to save this case.", "耳?댁뒪瑜???ν븯?ㅻ㈃ ?멸레???대?吏瑜??섎굹 ?댁긽 異붽??섏꽭??"),
     patientCreationFailed: pick(locale, "Patient creation failed.", "?섏옄 ?앹꽦???ㅽ뙣?덉뒿?덈떎."),
-    caseSaved: (patientId: string, visitDate: string, siteId: string) =>
-      pick(locale, `Case ${patientId} / ${visitDate} saved to hospital ${siteId}.`, `${patientId} / ${visitDate} 耳?댁뒪媛 蹂묒썝 ${siteId}????λ릺?덉뒿?덈떎.`),
+    caseSaved: (patientId: string, visitDate: string, siteLabel: string) =>
+      pick(locale, `Case ${patientId} / ${visitDate} saved to ${siteLabel}.`, `${patientId} / ${visitDate} 케이스가 ${siteLabel}에 저장되었습니다.`),
     caseSaveFailed: pick(locale, "Case save failed.", "耳?댁뒪 ??μ뿉 ?ㅽ뙣?덉뒿?덈떎."),
     organismAdded: pick(locale, "Organism added to this visit.", "??諛⑸Ц??洹좎쥌??異붽??덉뒿?덈떎."),
     organismDuplicate: pick(locale, "That organism is already attached to this visit.", "?대? ??諛⑸Ц??異붽???洹좎쥌?낅땲??"),
@@ -954,7 +959,6 @@ export function CaseWorkspace({
     unableLoadSiteValidationHistory: copy.unableLoadSiteValidationHistory,
     unableLoadCaseHistory: copy.unableLoadCaseHistory,
     defaultModelCompareSelection,
-    caseTimestamp,
     describeError,
     pick,
     setToast,
@@ -2014,7 +2018,7 @@ export function CaseWorkspace({
       await loadSiteActivity(selectedSiteId!);
       setToast({
         tone: "success",
-        message: copy.caseSaved(patientId, visitReference, selectedSiteId!),
+        message: copy.caseSaved(patientId, visitReference, selectedSiteLabel ?? selectedSiteId!),
       });
       clearDraftStorage(selectedSiteId!);
       resetDraft();
@@ -2203,6 +2207,7 @@ export function CaseWorkspace({
     const currentSiteId = selectedSiteId;
     let cancelled = false;
     const createdUrls: string[] = [];
+    const controller = new AbortController();
     async function loadPatientListThumbs() {
       setPatientListThumbs({});
       await Promise.all(
@@ -2210,7 +2215,10 @@ export function CaseWorkspace({
           const thumbs = await Promise.all(
             row.representative_thumbnails.map(async (item) => {
               try {
-                const blob = await fetchImageBlob(currentSiteId, item.image_id, token);
+                const blob = await fetchImagePreviewBlob(currentSiteId, item.image_id, token, {
+                  maxSide: 256,
+                  signal: controller.signal,
+                });
                 if (cancelled) {
                   return { ...item, preview_url: null };
                 }
@@ -2238,6 +2246,7 @@ export function CaseWorkspace({
     void loadPatientListThumbs();
     return () => {
       cancelled = true;
+      controller.abort();
       for (const url of createdUrls) {
         URL.revokeObjectURL(url);
       }
@@ -2444,8 +2453,7 @@ export function CaseWorkspace({
                 type="button"
                 onClick={() => onSelectSite(site.site_id)}
               >
-                <strong>{site.display_name}</strong>
-                <span>{site.hospital_name || site.site_id}</span>
+                <strong>{getSiteDisplayName(site)}</strong>
               </button>
             ))}
           </div>
@@ -2587,9 +2595,12 @@ export function CaseWorkspace({
                 ))}
                 {siteActivity?.recent_contributions.slice(0, 2).map((item) => (
                   <div key={item.contribution_id} className={railActivityItemClass}>
-                    <strong>{item.case_reference_id ?? common.notAvailable}</strong>
+                    <strong>{formatPublicAlias(item.public_alias, locale) ?? common.notAvailable}</strong>
                     <span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span>
-                    <span>{item.update_status ?? pick(locale, "queued", "?湲곗뿴 ?깅줉")}</span>
+                    <span>
+                      {item.update_status ?? pick(locale, "queued", "?湲곗뿴 ?깅줉")}
+                      {item.case_reference_id ? ` · ${item.case_reference_id}` : ""}
+                    </span>
                   </div>
                 ))}
                 {!activityBusy && !siteActivity?.recent_validations.length && !siteActivity?.recent_contributions.length ? (
@@ -2694,7 +2705,7 @@ export function CaseWorkspace({
               locale={locale}
               localeTag={localeTag}
               commonNotAvailable={common.notAvailable}
-              selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
               selectedPatientId={selectedCase?.patient_id}
               patientListRows={patientListRows}
               patientListTotalCount={patientListTotalCount}
@@ -2724,29 +2735,23 @@ export function CaseWorkspace({
               localeTag={localeTag}
               commonLoading={common.loading}
               commonNotAvailable={common.notAvailable}
-              selectedSiteId={selectedSiteId}
               selectedCase={selectedCase}
               selectedPatientCases={selectedPatientCases}
+              panelBusy={panelBusy}
               patientVisitGalleryBusy={patientVisitGalleryBusy}
               patientVisitGallery={patientVisitGallery}
               liveLesionPreviews={liveLesionPreviews}
-              lesionPromptDrafts={lesionPromptDrafts}
-              lesionPromptSaved={lesionPromptSaved}
               editDraftBusy={editDraftBusy}
               pick={pick}
               translateOption={translateOption}
               displayVisitReference={displayVisitReference}
               formatDateTime={formatDateTime}
               organismSummaryLabel={organismSummaryLabel}
-              organismKey={organismKey}
               onStartEditDraft={startEditDraftFromSelectedCase}
               onStartFollowUpDraft={startFollowUpDraftFromSelectedCase}
               onToggleFavorite={toggleFavoriteCase}
               onOpenSavedCase={openSavedCase}
               onDeleteSavedCase={handleDeleteSavedCase}
-              onLesionPointerDown={handleLesionPointerDown}
-              onLesionPointerMove={handleLesionPointerMove}
-              onFinishLesionPointer={finishLesionPointer}
               isFavoriteCase={isFavoriteCase}
               caseTitle={formatCaseTitle(selectedCase)}
             />
@@ -2822,7 +2827,7 @@ export function CaseWorkspace({
                 <div className="grid gap-3">
                   <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
                     <span className={canvasHeaderKickerClass}>{pick(locale, "Structured case canvas", "구조화 케이스 캔버스")}</span>
-                    <span className={canvasHeaderMetaChipClass}>{selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}</span>
+                    <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>
                     <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
                     <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
                   </div>
@@ -2917,6 +2922,8 @@ export function CaseWorkspace({
                   researchRegistryBusy={researchRegistryBusy}
                   contributionBusy={contributionBusy}
                   contributionResult={contributionResult}
+                  currentUserPublicAlias={user.public_alias ?? contributionResult?.stats.user_public_alias ?? null}
+                  contributionLeaderboard={siteActivity?.contribution_leaderboard ?? contributionResult?.stats.leaderboard ?? null}
                   historyBusy={historyBusy}
                   caseHistory={caseHistory}
                   onJoinResearchRegistry={() => void handleJoinResearchRegistry()}
@@ -2937,7 +2944,7 @@ export function CaseWorkspace({
                         <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Draft state", "초안 상태")}</span>
                         <strong className="text-[1.1rem] font-semibold tracking-[-0.03em] text-ink">{draftStatusLabel}</strong>
                       </div>
-                      <span className={canvasHeaderMetaChipClass}>{selectedSiteId ?? pick(locale, "No hospital", "병원 없음")}</span>
+                      <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "No hospital", "병원 없음")}</span>
                     </div>
                     <div className={canvasSidebarMetricGridClass}>
                       <div className={canvasSidebarMetricCardClass}>
@@ -3029,7 +3036,7 @@ export function CaseWorkspace({
                       title={pick(locale, "Selected hospital", "선택한 병원")}
                       aside={
                         <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4">
-                          {selectedSiteId ?? pick(locale, "none", "없음")}
+                          {selectedSiteLabel ?? pick(locale, "none", "없음")}
                         </span>
                       }
                     />

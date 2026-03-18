@@ -79,6 +79,7 @@ export type AuthUser = {
   user_id: string;
   username: string;
   full_name: string;
+  public_alias?: string | null;
   role: string;
   site_ids: string[] | null;
   approval_status: AuthState;
@@ -479,6 +480,25 @@ export type ContributionStats = {
   user_contributions: number;
   user_contribution_pct: number;
   current_model_version: string;
+  user_public_alias?: string | null;
+  user_rank?: number | null;
+  leaderboard?: ContributionLeaderboard | null;
+};
+
+export type ContributionLeaderboardEntry = {
+  rank: number;
+  user_id: string;
+  public_alias: string;
+  contribution_count: number;
+  last_contribution_at?: string | null;
+  is_current_user?: boolean;
+};
+
+export type ContributionLeaderboard = {
+  scope: "global" | "site";
+  site_id?: string | null;
+  leaderboard: ContributionLeaderboardEntry[];
+  current_user?: ContributionLeaderboardEntry | null;
 };
 
 export type CaseContributionResponse = {
@@ -634,6 +654,7 @@ export type CaseHistoryContributionRecord = {
   contribution_group_id?: string | null;
   created_at: string;
   user_id: string;
+  public_alias?: string | null;
   case_reference_id?: string | null;
   update_id: string;
   update_status: string | null;
@@ -665,6 +686,7 @@ export type SiteActivityContributionRecord = {
   contribution_group_id?: string | null;
   created_at: string;
   user_id: string;
+  public_alias?: string | null;
   case_reference_id?: string | null;
   update_id: string;
   update_status: string | null;
@@ -675,6 +697,7 @@ export type SiteActivityResponse = {
   pending_updates: number;
   recent_validations: SiteActivityValidationRecord[];
   recent_contributions: SiteActivityContributionRecord[];
+  contribution_leaderboard?: ContributionLeaderboard | null;
 };
 
 export type RocCurveRecord = {

@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useState } from "react";
 
 import type { SiteRecord } from "../../lib/api";
+import { getSiteDisplayName } from "../../lib/site-labels";
 
 type KoreanLandingViewProps = {
   authBusy: boolean;
@@ -66,22 +67,22 @@ const koFeaturePreviewOptions = [
 ];
 
 const koFedPoints = [
-  "중앙에 올라가는 것: 저해상도 검토용 썸네일(최대 128px), Weight Delta",
+  "중앙에 올라가는 것: 저해상도 각막 미리보기(최대 128px), 가중치 변화량",
   "병원 밖으로 나가지 않는 것: 원본 이미지, 환자 ID, full-size crop, 임상 기록",
   "참여 병원이 늘어날수록: 새로운 병원의 합류 자체가 자연스러운 external validation이 됩니다",
 ];
 
 const koStats = [
-  { number: "77%", label: "단일 기관 초기 모델\n5-fold cross-validation accuracy" },
-  { number: "85%+", label: "BK · FK 각 5,000장 규모\n달성 시 예상 accuracy" },
-  { number: "3종", label: "White · Fluorescein · Slit\n멀티모달 이미지 지원" },
-  { number: "0건", label: "원본 데이터 외부 유출\n(Federated 구조 보장)" },
+  { number: "77%", label: "단일 기관 초기 모델\n5-fold cross-validation accuracy", context: "단일 기관의 한계가 그대로 보이는 숫자입니다" },
+  { number: "85%+", label: "BK · FK 각 5,000장 규모\n달성 시 예상 accuracy", context: "참여 병원이 늘어야 도달할 수 있는 목표입니다" },
+  { number: "3종", label: "White · Fluorescein · Slit\n멀티모달 이미지 지원", context: "세 장을 함께 봐야 흔들리지 않습니다" },
+  { number: "0건", label: "원본 데이터 외부 유출\n(Federated 구조 보장)", context: "약속이 아니라 구조로 보장합니다" },
 ];
 
 const koFaqs = [
   {
     q: "K-ERA는 AI 모델을 대신 만들어 주나요?",
-    a: "아니요. K-ERA의 원칙은 대체가 아니라 보조입니다. 케이스 등록, 병변 분할, 학습 실행 — 반복 작업을 자동화해 드리지만, 판단은 언제나 임상의가 합니다.",
+    a: "'이게 BK 같은데 FL 소견도 있네'라고 생각하는 순간, K-ERA가 두 번째 의견을 줍니다. 케이스 등록·병변 분할·학습 실행 같은 반복 작업은 자동화하되, 최종 처방은 선생님 몫입니다.",
   },
   {
     q: "코딩을 전혀 몰라도 쓸 수 있나요?",
@@ -89,7 +90,7 @@ const koFaqs = [
   },
   {
     q: "환자 데이터가 외부로 유출되지 않나요?",
-    a: "원본 이미지와 환자 정보는 병원 내부에만 존재합니다. 중앙 서버로는 Weight Delta와 저해상도 썸네일만 전송되며, SHA256 해시와 EXIF 제거로 보안을 강화합니다.",
+    a: "원본 이미지와 환자 정보는 병원 내부에만 존재합니다. 중앙 서버로는 가중치 변화량과 저해상도 각막 미리보기(최대 128px)만 전송되며, SHA256 해시와 EXIF 제거로 보안을 강화합니다.",
   },
   {
     q: "참여하면 어떤 이점이 있나요?",
@@ -101,7 +102,7 @@ const koFaqs = [
   },
   {
     q: "병원 IT 인프라가 복잡해야 하나요?",
-    a: "아닙니다. Local Node는 병원 내부 PC 한 대로 구동 가능하도록 설계되었습니다. 설치 스크립트(PowerShell)와 웹 UI로 기술적 장벽을 최소화했습니다.",
+    a: "아닙니다. 내부 노드는 병원 내부 PC 한 대로 구동 가능하도록 설계되었습니다. 설치 스크립트(PowerShell)와 웹 UI로 기술적 장벽을 최소화했습니다.",
   },
 ];
 
@@ -115,13 +116,17 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
     alt: string;
   } | null>(null);
 
-  const hospitals = [
-    ...props.publicSites.slice(0, 5).map((site) => ({ label: site.display_name, active: true })),
-    ...Array.from({ length: Math.max(0, 5 - props.publicSites.slice(0, 5).length) }, () => ({
-      label: "참여 모집 중",
-      active: false,
-    })),
-  ];
+  const hospitals = props.publicSites.slice(0, 5).map((site) => ({ label: getSiteDisplayName(site), active: true }));
+
+  useEffect(() => {
+    const html = document.documentElement;
+    html.style.scrollSnapType = "y proximity";
+    html.style.scrollBehavior = "smooth";
+    return () => {
+      html.style.scrollSnapType = "";
+      html.style.scrollBehavior = "";
+    };
+  }, []);
 
   useEffect(() => {
     if (featurePreviewOverride) {
@@ -138,7 +143,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
   const activeFeaturePreview = featurePreviewOverride ?? koFeaturePreviewOptions[featurePreviewIndex];
 
   return (
-    <main className="bg-[#090d18] text-[#e4e8f5] font-ko-sans">
+    <main className="bg-[#0d0f14] text-[#e4e8f5] font-ko-sans">
       <nav className="fixed inset-x-0 top-0 z-50 flex items-center justify-between border-b border-[rgba(45,212,192,0.13)] bg-[rgba(9,13,24,0.88)] px-5 py-3 backdrop-blur-xl md:px-12 md:py-4">
         <div className="flex items-center gap-3">
           <div className="text-[1.35rem] tracking-[0.04em] text-[#2dd4c0] font-ko-serif">
@@ -179,7 +184,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </nav>
 
-      <section className="relative overflow-hidden px-6 pb-20 pt-16 md:px-8">
+      <section className="relative overflow-hidden px-6 pb-20 pt-16 md:px-8 snap-start">
         <div className="pointer-events-none absolute inset-0 [background:radial-gradient(ellipse_55%_45%_at_50%_30%,rgba(45,212,192,0.1)_0%,transparent_70%),radial-gradient(ellipse_35%_25%_at_80%_75%,rgba(245,158,11,0.06)_0%,transparent_60%)]" />
         <div className="pointer-events-none absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(45,212,192,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(45,212,192,0.03)_1px,transparent_1px)] [background-size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_20%,transparent_75%)]" />
 
@@ -200,7 +205,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <br />
               진균성일까…"
               <br />
-              <em className="italic text-[#2dd4c0]">AI와 상의하는 시간</em>
+              <em className="italic text-[#f59e0b]">AI와 상의하는 시간</em>
             </h1>
 
             <p
@@ -245,9 +250,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-gradient-to-b from-[#090d18] to-[#0e1426] px-6 py-24 md:px-8" id="origin">
+      <section className="bg-gradient-to-b from-[#0d0f14] to-[#111420] px-6 pt-14 pb-24 md:px-8" id="origin">
         <div className="mx-auto max-w-[1080px]">
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">AI 연구, 안과 임상 의사가 직접 하기에는</div>
+          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">AI 연구, 안과 임상 의사가 직접 하기에는</div>
           <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
             생각보다 너무 많은 일이 필요했습니다
           </h2>
@@ -285,15 +290,6 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 실제 진료에서 쓸 수 없다는 것.</strong>
               </p>
               <p className="mt-7 text-[0.76rem] italic tracking-[0.04em] text-[#3f4b6a]">— K-ERA 개발자 노트, 제주대학교병원 안과</p>
-              <div className="landing-reveal mt-8 overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)]" data-reveal="" data-reveal-order={koPainItems.length}>
-                <Image
-                  src="/landing/pain%20point%201.png"
-                  alt="AI 연구 시작 단계의 현실적인 부담을 보여주는 이미지"
-                  width={1600}
-                  height={900}
-                  className="h-auto w-full object-cover"
-                />
-              </div>
             </div>
 
             <div className="flex flex-col px-12 pb-8 pt-7">
@@ -329,7 +325,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#090d18] px-6 py-24 md:px-8" id="about">
+      <section className="bg-[#0d0f14] px-6 py-24 md:px-8 snap-start" id="about">
         <div className="mx-auto max-w-[1080px]">
           <div className="grid items-center gap-15 md:grid-cols-2">
             <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-[rgba(45,212,192,0.13)] bg-[#121a30]">
@@ -354,7 +350,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             </div>
 
             <div>
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">K-ERA란</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">K-ERA란</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
                 AI 연구를
                 <br />
@@ -373,17 +369,17 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#0e1426] px-6 py-24 md:px-8" id="features">
+      <section className="bg-[#111420] px-6 py-24 md:px-8 snap-start" id="features">
         <div className="mx-auto max-w-[1080px]">
           <div className="grid items-center gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
             <div className="text-center">
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">핵심 기능</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">핵심 기능</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                수십 시간의 수작업을
+                ROI 그리는 데
                 <br />
-                클릭 몇 번으로
+                반나절 쓰셨다면
               </h2>
-              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">반복적이고 기계적인 작업은 K-ERA가 처리합니다. 임상의는 판단에만 집중하면 됩니다.</p>
+              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나면 MedSAM이 경계를 잡습니다. 나머지 반복 작업은 K-ERA가 처리합니다.</p>
             </div>
             <div
               className="landing-reveal justify-self-center w-full max-w-[460px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[320px]"
@@ -428,21 +424,21 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#090d18] px-6 py-24 md:px-8" id="federated">
+      <section className="bg-[#0d0f14] px-6 py-24 md:px-8 snap-start" id="federated">
         <div className="mx-auto max-w-[1080px]">
           <div className="grid items-center gap-15 md:grid-cols-2">
             <div className="rounded-2xl border border-[rgba(45,212,192,0.13)] bg-[#121a30] p-9">
               <div className="mb-4 rounded-[10px] border border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] p-[18px] text-center">
-                <div className="text-[0.65rem] uppercase tracking-[0.12em] text-[#2dd4c0]">중앙 Control Plane</div>
-                <div className="mt-1 text-[0.95rem] font-medium">모델 버전 관리 · FedAvg 집계</div>
+                <div className="text-[0.65rem] uppercase tracking-[0.12em] text-[#2dd4c0]">중앙 서버</div>
+                <div className="mt-1 text-[0.95rem] font-medium">모델 버전 관리 · 연합 집계</div>
               </div>
-              <div className="my-2.5 text-center text-[0.7rem] tracking-[0.05em] text-[#3f4b6a]">↑ Weight Delta만 암호화 전송 · 원본 데이터 절대 불가 ↑</div>
+              <div className="my-2.5 text-center text-[0.7rem] tracking-[0.05em] text-[#3f4b6a]">↑ 가중치 변화량만 암호화 전송 · 원본 데이터 절대 불가 ↑</div>
               <div className="grid grid-cols-3 gap-2">
                 {["병원 A", "병원 B", "병원 C"].map((name) => (
                   <div key={name} className="rounded-[8px] border border-[rgba(45,212,192,0.13)] bg-white/[0.025] px-1.5 py-3 text-center text-[0.7rem] leading-[1.4] text-[#7b88a8]">
                     {name}
                     <br />
-                    Local Node
+                    내부 노드
                   </div>
                 ))}
               </div>
@@ -452,14 +448,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             </div>
 
             <div>
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">데이터 프라이버시</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">데이터 프라이버시</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                데이터는 병원 안에.
+                원본은 병원 안에 두고,
                 <br />
-                지식은 모두와 함께.
+                모델만 함께 키웁니다
               </h2>
               <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">기존 다기관 AI 연구의 가장 큰 벽은 <strong className="font-medium text-[#e4e8f5]">데이터를 꺼낼 수 없다는 것</strong>이었습니다. K-ERA는 다른 방법을 선택했습니다.</p>
-              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">Weight Delta만 SHA256 해시와 함께 암호화해 전송</strong>합니다.</p>
+              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">가중치 변화량만 SHA256 해시와 함께 암호화해 전송</strong>합니다.</p>
               <div className="mt-1 flex flex-col gap-3.5">
                 {koFedPoints.map((point) => {
                   const [strong, rest] = point.split(": ");
@@ -483,17 +479,17 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#090d18] px-6 py-24 md:px-8">
+      <section className="bg-[#0d0f14] px-6 py-24 md:px-8 snap-start">
         <div className="mx-auto max-w-[1080px]">
           <div className="grid items-center gap-8 md:grid-cols-2">
             <div className="text-center">
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">지금까지</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">지금까지</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                제주에서 시작한 경험을
+                제주에서 시작된 가능성,
                 <br />
-                다른 현장과도
+                더 많은 진료에
                 <br />
-                나눌 수 있게 준비하고 있습니다
+                닿도록 준비합니다
               </h2>
             </div>
             <div className="landing-reveal justify-self-center w-full max-w-[420px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[280px]" data-reveal="" data-reveal-order={0}>
@@ -517,22 +513,23 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <div className="mb-2 text-[2.5rem] leading-none text-[#2dd4c0] font-ko-serif">
                   {stat.number}
                 </div>
-                <div className="whitespace-pre-line text-[0.76rem] leading-[1.55] text-[#7b88a8]">{stat.label}</div>
+                <div className="whitespace-pre-line text-[0.84rem] leading-[1.55] text-[#7b88a8]">{stat.label}</div>
+                <div className="mt-3 text-[0.8rem] leading-[1.5] text-[#6b7a96]">{stat.context}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      <section className="bg-[#0e1426] px-6 py-24 md:px-8" id="collective">
+      <section className="bg-[#111420] px-6 py-24 md:px-8 snap-start" id="collective">
         <div className="mx-auto max-w-[1080px]">
           <div className="grid items-center gap-10 lg:grid-cols-2">
             <div className="text-center">
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">함께하는 병원들</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">함께하는 병원들</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                집단 지성이
+                내 케이스가
                 <br />
-                만들어 나가는 연구
+                AI를 성장시킵니다
               </h2>
               <p className="mx-auto mb-11 max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">
                 한국의 안과의사들이 각자의 케이스를 기여할 때마다,
@@ -580,9 +577,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="bg-[#090d18] px-6 py-24 md:px-8">
+      <section className="bg-[#0d0f14] px-6 py-24 md:px-8 snap-start">
         <div className="mx-auto max-w-[1080px]">
-          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">자주 묻는 질문</div>
+          <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">자주 묻는 질문</div>
           <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
             궁금한 점이 있으신가요?
           </h2>
@@ -605,7 +602,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <section className="border-t border-[rgba(45,212,192,0.13)] bg-[#090d18] px-6 py-[120px] md:px-8">
+      <section className="border-t border-[rgba(45,212,192,0.13)] bg-[#0d0f14] px-6 py-[120px] md:px-8 snap-start">
         <div className="mx-auto grid max-w-[1080px] items-center gap-10 lg:grid-cols-2">
           <div className="relative text-center">
             <h2 className="mb-4 text-[clamp(1.7rem,3.2vw,2.6rem)] leading-[1.26] font-ko-serif">
@@ -666,7 +663,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         </div>
       </section>
 
-      <footer className="flex flex-col items-center justify-between gap-3 border-t border-[rgba(45,212,192,0.13)] bg-[#090d18] px-5 py-7 text-center md:flex-row md:px-12">
+      <footer className="flex flex-col items-center justify-between gap-3 border-t border-[rgba(45,212,192,0.13)] bg-[#0d0f14] px-5 py-7 text-center md:flex-row md:px-12">
         <div className="text-[0.95rem] text-[#2dd4c0] font-ko-serif">
           K<span className="text-[#3f4b6a]">-ERA</span>
         </div>

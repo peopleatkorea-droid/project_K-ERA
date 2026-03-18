@@ -105,6 +105,7 @@ users = Table(
     Column("user_id", String(64), primary_key=True),
     Column("username", String(255), nullable=False, unique=True, index=True),
     Column("google_sub", String(255), nullable=True),
+    Column("public_alias", String(255), nullable=True),
     Column("password", Text, nullable=False),
     Column("role", String(32), nullable=False),
     Column("full_name", String(255), nullable=False),
@@ -443,6 +444,8 @@ def _migrate_control_plane_schema() -> None:
     with CONTROL_PLANE_ENGINE.begin() as conn:
         if "google_sub" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(255)"))
+        if "public_alias" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN public_alias VARCHAR(255)"))
         if "registry_consents" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN registry_consents JSON"))
 
@@ -453,8 +456,20 @@ def _migrate_control_plane_schema() -> None:
                     "ON users (google_sub) WHERE google_sub IS NOT NULL"
                 )
             )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_public_alias "
+                    "ON users (public_alias) WHERE public_alias IS NOT NULL"
+                )
+            )
         elif CONTROL_PLANE_ENGINE.dialect.name == "postgresql":
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub)"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_public_alias "
+                    "ON users (public_alias) WHERE public_alias IS NOT NULL"
+                )
+            )
 
         if "sites" in table_names:
             site_columns = {column["name"] for column in inspector.get_columns("sites")}

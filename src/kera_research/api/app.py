@@ -5,6 +5,7 @@ import inspect
 import io
 import mimetypes
 import os
+import platform
 import threading
 import time
 import zipfile
@@ -22,14 +23,27 @@ from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel, Field
 
-from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DIR, SITE_ROOT_DIR
+from kera_research.config import (
+    CASE_REFERENCE_SALT_FINGERPRINT,
+    CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS,
+    CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS,
+    MODEL_DIR,
+    SITE_ROOT_DIR,
+)
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
+from kera_research.services.node_credentials import (
+    clear_node_credentials,
+    load_node_credentials,
+    node_credentials_status,
+    save_node_credentials,
+)
 from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
 from kera_research.services.data_plane import InvalidImageUploadError, SiteStore, control_plane_split_enabled
 from kera_research.services.pipeline import ResearchWorkflowService
+from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
 from kera_research.storage import read_json
 from kera_research.api.route_helpers import (
@@ -107,11 +121,18 @@ def _local_login_enabled() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _local_control_plane_dev_auth_enabled() -> bool:
+    value = os.getenv("KERA_CONTROL_PLANE_DEV_AUTH", "false").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _create_access_token(user: dict[str, Any]) -> str:
     expires_at = datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS)
     payload = {
         "sub": user["user_id"],
         "username": user["username"],
+        "full_name": user.get("full_name", ""),
+        "public_alias": user.get("public_alias"),
         "role": user.get("role", "viewer"),
         "site_ids": user.get("site_ids"),
         "approval_status": user.get("approval_status", "approved"),
@@ -198,6 +219,7 @@ def get_current_user(
         "site_ids": token_payload.get("site_ids") or [],
         "approval_status": token_payload.get("approval_status", "approved"),
         "full_name": token_payload.get("full_name", ""),
+        "public_alias": token_payload.get("public_alias"),
     }
 
 
@@ -335,6 +357,10 @@ def _resolve_execution_device(selection: str) -> str:
 def _preferred_embedding_execution_device() -> str:
     hardware = detect_hardware()
     return "cuda" if hardware.get("gpu_available") else "cpu"
+
+
+def _remote_node_os_info() -> str:
+    return f"{platform.system()} {platform.release()} ({platform.machine()})".strip()
 
 
 def _call_with_supported_kwargs(func: Any, /, **kwargs: Any) -> Any:
@@ -747,7 +773,7 @@ def _visible_model_updates(
 
 
 def _is_pending_model_update(update: dict[str, Any]) -> bool:
-    return str(update.get("status") or "").strip().lower() in {"pending_review", "pending_upload"}
+    return str(update.get("status") or "").strip().lower() in {"pending", "pending_review", "pending_upload"}
 
 
 def _load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
@@ -1132,6 +1158,31 @@ class UserUpsertRequest(BaseModel):
     site_ids: list[str] = Field(default_factory=list)
 
 
+class LocalControlPlaneNodeRegisterRequest(BaseModel):
+    control_plane_base_url: str | None = None
+    control_plane_user_token: str
+    device_name: str = "local-node"
+    os_info: str = ""
+    app_version: str = ""
+    site_id: str | None = None
+    display_name: str | None = None
+    hospital_name: str | None = None
+    source_institution_id: str | None = None
+    overwrite: bool = False
+
+
+class LocalControlPlaneNodeCredentialsRequest(BaseModel):
+    control_plane_base_url: str
+    node_id: str
+    node_token: str
+    site_id: str | None = None
+    overwrite: bool = False
+
+
+class LocalControlPlaneSmokeRequest(BaseModel):
+    update_suffix: str = ""
+
+
 def _bool_from_value(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1235,11 +1286,234 @@ def create_app() -> FastAPI:
             "google_auth_configured": bool(_google_client_id()),
         }
 
+    @app.get("/api/control-plane/node/status")
+    def local_control_plane_node_status(cp=Depends(get_control_plane)) -> dict[str, Any]:
+        cp.reload_remote_control_plane_credentials()
+        bootstrap = cp.remote_bootstrap_state()
+        current_release = cp.current_global_model()
+        credential_status = node_credentials_status()
+        return {
+            "control_plane": {
+                "configured": cp.remote_control_plane_enabled(),
+                "node_sync_enabled": cp.remote_node_sync_enabled(),
+                "base_url": cp.remote_control_plane.base_url,
+                "node_id": cp.remote_control_plane.node_id,
+            },
+            "credentials": credential_status,
+            "stored_credentials_present": load_node_credentials() is not None,
+            "bootstrap": bootstrap,
+            "current_release": current_release,
+        }
+
+    @app.post("/api/control-plane/node/credentials")
+    def persist_local_control_plane_node_credentials(
+        payload: LocalControlPlaneNodeCredentialsRequest,
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        existing = load_node_credentials()
+        if existing is not None and not payload.overwrite:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Node credentials are already configured. Pass overwrite=true to replace them.",
+            )
+        saved = save_node_credentials(
+            control_plane_base_url=payload.control_plane_base_url,
+            node_id=payload.node_id,
+            node_token=payload.node_token,
+            site_id=payload.site_id,
+        )
+        cp.clear_remote_control_plane_state()
+        cp.reload_remote_control_plane_credentials()
+        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
+        if bootstrap is not None:
+            cp.record_remote_node_heartbeat(
+                app_version=app.version,
+                os_info=_remote_node_os_info(),
+                status="credentials_saved",
+            )
+        return {
+            "saved": True,
+            "credentials": node_credentials_status(),
+            "bootstrap": bootstrap,
+        }
+
+    @app.delete("/api/control-plane/node/credentials")
+    def clear_local_control_plane_node_credentials(cp=Depends(get_control_plane)) -> dict[str, Any]:
+        clear_node_credentials()
+        cp.clear_remote_control_plane_state()
+        return {
+            "cleared": True,
+            "credentials": node_credentials_status(),
+        }
+
+    @app.post("/api/control-plane/node/register")
+    def register_local_control_plane_node(
+        payload: LocalControlPlaneNodeRegisterRequest,
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        existing = load_node_credentials()
+        if existing is not None and not payload.overwrite:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Node credentials are already configured. Pass overwrite=true to replace them.",
+            )
+
+        client = RemoteControlPlaneClient(
+            base_url=payload.control_plane_base_url,
+            node_id="",
+            node_token="",
+        )
+        try:
+            registration = client.register_node(
+                user_bearer_token=payload.control_plane_user_token,
+                device_name=payload.device_name,
+                os_info=payload.os_info or _remote_node_os_info(),
+                app_version=payload.app_version or app.version,
+                site_id=payload.site_id,
+                display_name=payload.display_name,
+                hospital_name=payload.hospital_name,
+                source_institution_id=payload.source_institution_id,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Control plane node registration failed: {exc}",
+            ) from exc
+
+        node_id = str(registration.get("node_id") or "").strip()
+        node_token = str(registration.get("node_token") or "").strip()
+        if not node_id or not node_token:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Control plane node registration did not return node credentials.",
+            )
+        save_node_credentials(
+            control_plane_base_url=client.base_url,
+            node_id=node_id,
+            node_token=node_token,
+            site_id=str(payload.site_id or registration.get("bootstrap", {}).get("site", {}).get("site_id") or "").strip() or None,
+        )
+        cp.clear_remote_control_plane_state()
+        cp.reload_remote_control_plane_credentials()
+        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
+        cp.record_remote_node_heartbeat(
+            app_version=payload.app_version or app.version,
+            os_info=payload.os_info or _remote_node_os_info(),
+            status="registered",
+        )
+        return {
+            "registered": True,
+            "node_id": node_id,
+            "node_token": node_token,
+            "bootstrap": bootstrap,
+            "credentials": node_credentials_status(),
+        }
+
+    @app.post("/api/dev/control-plane/smoke")
+    def smoke_remote_control_plane(
+        payload: LocalControlPlaneSmokeRequest,
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        if not _local_control_plane_dev_auth_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Local control-plane smoke routes are disabled.",
+            )
+        if not cp.remote_node_sync_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Node credentials are not configured for remote control-plane sync.",
+            )
+
+        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
+        if not isinstance(bootstrap, dict):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Control plane bootstrap is unavailable.",
+            )
+        current_model = cp.current_global_model()
+        if current_model is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No current model release is available from the control plane.",
+            )
+
+        site = bootstrap.get("site") if isinstance(bootstrap.get("site"), dict) else {}
+        project = bootstrap.get("project") if isinstance(bootstrap.get("project"), dict) else {}
+        site_id = str(site.get("site_id") or "").strip()
+        project_id = str(project.get("project_id") or "project_default").strip() or "project_default"
+        if not site_id:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Bootstrap did not include an active site.",
+            )
+
+        suffix = str(payload.update_suffix or "").strip() or make_id("smoke")[-8:]
+        update_record = cp.register_model_update(
+            {
+                "update_id": f"update_smoke_{suffix}",
+                "site_id": site_id,
+                "base_model_version_id": current_model.get("version_id"),
+                "model_version_id": current_model.get("version_id"),
+                "version_name": current_model.get("version_name"),
+                "architecture": current_model.get("architecture"),
+                "upload_type": "weight delta",
+                "status": "pending_upload",
+                "n_cases": 1,
+                "n_images": 1,
+                "delta_l2_norm": 0.0,
+                "case_reference_id": f"case_ref_smoke_{suffix}",
+                "patient_reference_id": f"patient_ref_smoke_{suffix}",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
+                "artifact_distribution_status": "metadata_only",
+                "artifact_source_provider": "metadata_only",
+                "notes": "synthetic smoke-test update",
+            }
+        )
+
+        validation_id = f"validation_smoke_{suffix}"
+        validation_summary = cp.save_validation_run(
+            {
+                "validation_id": validation_id,
+                "project_id": project_id,
+                "site_id": site_id,
+                "model_version_id": current_model.get("version_id"),
+                "model_version": current_model.get("version_name"),
+                "model_architecture": current_model.get("architecture"),
+                "run_date": datetime.now(timezone.utc).isoformat(),
+                "n_cases": 0,
+                "n_images": 0,
+                "AUROC": None,
+                "accuracy": 1.0,
+                "sensitivity": None,
+                "specificity": None,
+                "F1": None,
+                "source": "control_plane_smoke",
+            },
+            [],
+        )
+
+        return {
+            "status": "ok",
+            "steps": [
+                "bootstrap",
+                "current-release",
+                "model-update-upload",
+                "validation-upload",
+            ],
+            "bootstrap": bootstrap,
+            "current_release": current_model,
+            "model_update": update_record,
+            "validation_summary": validation_summary,
+        }
+
     route_supports = build_route_supports(
         get_control_plane=get_control_plane,
         get_current_user=get_current_user,
         get_approved_user=get_approved_user,
         local_login_enabled=_local_login_enabled,
+        local_dev_auth_enabled=_local_control_plane_dev_auth_enabled,
         verify_google_id_token=_verify_google_id_token,
         build_auth_response=_build_auth_response,
         get_workflow=lambda cp: _get_workflow(cp),
@@ -1270,9 +1544,10 @@ def create_app() -> FastAPI:
         coerce_text=_coerce_text,
         site_level_validation_runs=_site_level_validation_runs,
         validation_case_rows=_validation_case_rows,
-        build_site_activity=lambda cp, site_id: _build_site_activity(
+        build_site_activity=lambda cp, site_id, current_user_id=None: _build_site_activity(
             cp,
             site_id,
+            current_user_id=current_user_id,
             is_pending_model_update=_is_pending_model_update,
         ),
         import_template_rows=IMPORT_TEMPLATE_ROWS,
@@ -1331,6 +1606,45 @@ def create_app() -> FastAPI:
     app.include_router(build_admin_router(route_supports.admin))
     app.include_router(build_sites_router(route_supports.sites))
     app.include_router(build_cases_router(route_supports.cases))
+
+    @app.on_event("startup")
+    def _startup_remote_control_plane_sync() -> None:
+        cp = get_control_plane()
+        if not cp.remote_node_sync_enabled():
+            return
+        stop_event = threading.Event()
+        app.state.control_plane_sync_stop = stop_event
+
+        def sync_loop() -> None:
+            last_bootstrap_sync = time.time()
+            bootstrap = cp.remote_bootstrap_state(force_refresh=True)
+            if bootstrap is not None:
+                cp.record_remote_node_heartbeat(
+                    app_version=app.version,
+                    os_info=_remote_node_os_info(),
+                    status="startup",
+                )
+            while not stop_event.wait(float(CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS)):
+                cp.record_remote_node_heartbeat(
+                    app_version=app.version,
+                    os_info=_remote_node_os_info(),
+                    status="ok",
+                )
+                if (time.time() - last_bootstrap_sync) >= float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS):
+                    cp.remote_bootstrap_state(force_refresh=True)
+                    last_bootstrap_sync = time.time()
+
+        threading.Thread(
+            target=sync_loop,
+            daemon=True,
+            name="kera-control-plane-sync",
+        ).start()
+
+    @app.on_event("shutdown")
+    def _shutdown_remote_control_plane_sync() -> None:
+        stop_event = getattr(app.state, "control_plane_sync_stop", None)
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
 
     return app
 

@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from kera_research.domain import utc_now
+from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 
 
 class AiClinicWorkflowAdvisor:
@@ -19,6 +20,7 @@ class AiClinicWorkflowAdvisor:
             or "https://api.openai.com/v1/responses"
         )
         self._timeout_seconds = float(os.getenv("KERA_AI_CLINIC_LLM_TIMEOUT_SECONDS", "45").strip() or "45")
+        self._remote_control_plane = RemoteControlPlaneClient()
 
     def generate_workflow_recommendation(
         self,
@@ -30,13 +32,19 @@ class AiClinicWorkflowAdvisor:
             report=report,
             classification_context=classification_context,
         )
-        if not self._api_key:
-            return fallback
         try:
-            llm_result = self._generate_openai_recommendation(
-                report=report,
-                classification_context=classification_context,
-            )
+            if self._api_key:
+                llm_result = self._generate_openai_recommendation(
+                    report=report,
+                    classification_context=classification_context,
+                )
+            elif self._remote_control_plane.is_configured() and self._remote_control_plane.has_node_credentials():
+                llm_result = self._generate_relay_recommendation(
+                    report=report,
+                    classification_context=classification_context,
+                )
+            else:
+                return fallback
         except Exception as exc:
             return {
                 **fallback,
@@ -325,7 +333,7 @@ class AiClinicWorkflowAdvisor:
         output_text = self._extract_output_text(payload)
         if not output_text:
             raise RuntimeError("The LLM response did not include structured output text.")
-        parsed = json.loads(output_text)
+        parsed = self._parse_recommendation_json(output_text)
         return {
             "mode": "openai",
             "model": self._model,
@@ -336,6 +344,56 @@ class AiClinicWorkflowAdvisor:
             "rationale": str(parsed.get("rationale") or "").strip(),
             "uncertainty": str(parsed.get("uncertainty") or "").strip(),
         }
+
+    def _generate_relay_recommendation(
+        self,
+        *,
+        report: dict[str, Any],
+        classification_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        system_prompt = (
+            "You are AI Clinic, a clinical workflow support assistant for infectious keratitis review. "
+            "Return JSON only with keys: summary, recommended_steps, flags_to_review, rationale, uncertainty. "
+            "Do not output markdown. Do not make a definitive diagnosis or prescribe treatment."
+        )
+        payload = self._build_llm_payload(
+            report=report,
+            classification_context=classification_context,
+        )
+        relay_result = self._remote_control_plane.relay_ai_clinic(
+            input_text=(
+                "Generate a JSON workflow recommendation from this case context. "
+                "The JSON must match the exact keys already specified.\n"
+                + json.dumps(payload, ensure_ascii=True)
+            ),
+            system_prompt=system_prompt,
+            model=self._model,
+        )
+        output_text = str(relay_result.get("output_text") or "").strip()
+        if not output_text:
+            raise RuntimeError("The control plane relay returned no output text.")
+        parsed = self._parse_recommendation_json(output_text)
+        return {
+            "mode": "control_plane_relay",
+            "model": str(relay_result.get("model") or self._model),
+            "generated_at": utc_now(),
+            "summary": str(parsed.get("summary") or "").strip(),
+            "recommended_steps": [str(item).strip() for item in parsed.get("recommended_steps") or [] if str(item).strip()],
+            "flags_to_review": [str(item).strip() for item in parsed.get("flags_to_review") or [] if str(item).strip()],
+            "rationale": str(parsed.get("rationale") or "").strip(),
+            "uncertainty": str(parsed.get("uncertainty") or "").strip(),
+        }
+
+    def _parse_recommendation_json(self, output_text: str) -> dict[str, Any]:
+        normalized = str(output_text or "").strip()
+        if normalized.startswith("```"):
+            normalized = normalized.strip("`").strip()
+            if normalized.lower().startswith("json"):
+                normalized = normalized[4:].strip()
+        parsed = json.loads(normalized)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("The LLM response was not a JSON object.")
+        return parsed
 
     def _extract_output_text(self, payload: dict[str, Any]) -> str:
         direct = str(payload.get("output_text") or "").strip()

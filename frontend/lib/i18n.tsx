@@ -194,6 +194,8 @@ const apiErrorExact = {
   },
   ko: {
     "Invalid token.": "유효하지 않은 토큰입니다.",
+    "Local API server is unavailable.": "로컬 API 서버에 연결할 수 없습니다. FastAPI 서버가 실행 중인지 확인해 주세요.",
+    "Local development admin login is disabled.": "로컬 개발용 관리자 로그인이 비활성화되어 있습니다.",
     "Google authentication is not configured on the server.": "서버에 Google 인증이 설정되지 않았습니다.",
     "Google token verification failed.": "Google 토큰 검증에 실패했습니다.",
     "Google token issuer mismatch.": "Google 토큰 발급자 정보가 일치하지 않습니다.",

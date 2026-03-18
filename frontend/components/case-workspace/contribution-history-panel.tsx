@@ -2,8 +2,9 @@
 
 import type { ReactNode } from "react";
 
-import type { CaseContributionResponse, CaseHistoryResponse, CaseSummaryRecord } from "../../lib/api";
+import type { CaseContributionResponse, CaseHistoryResponse, CaseSummaryRecord, ContributionLeaderboard } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
+import { formatPublicAlias } from "../../lib/public-alias";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
@@ -40,6 +41,8 @@ type Props = {
   researchRegistryBusy: boolean;
   contributionBusy: boolean;
   contributionResult: CaseContributionResponse | null;
+  currentUserPublicAlias: string | null;
+  contributionLeaderboard: ContributionLeaderboard | null;
   historyBusy: boolean;
   caseHistory: CaseHistoryResponse | null;
   onJoinResearchRegistry: () => void;
@@ -62,6 +65,8 @@ export function ContributionHistoryPanel({
   researchRegistryBusy,
   contributionBusy,
   contributionResult,
+  currentUserPublicAlias,
+  contributionLeaderboard,
   historyBusy,
   caseHistory,
   onJoinResearchRegistry,
@@ -99,6 +104,14 @@ export function ContributionHistoryPanel({
   ].filter(Boolean) as string[];
 
   const visitStatusLabel = translateOption(locale, "visitStatus", selectedCase.visit_status);
+  const anonymousLabel = pick(locale, "Anonymous member", "익명 참여자");
+  const leaderboardEntries = contributionLeaderboard?.leaderboard ?? [];
+  const currentLeaderboardEntry = contributionLeaderboard?.current_user ?? null;
+  const resolvedCurrentUserAlias = formatPublicAlias(
+    currentUserPublicAlias ?? contributionResult?.stats.user_public_alias ?? currentLeaderboardEntry?.public_alias ?? null,
+    locale
+  );
+  const resolvedCurrentUserRank = contributionResult?.stats.user_rank ?? currentLeaderboardEntry?.rank ?? null;
   const representativeViewLabel = selectedCase.representative_view
     ? translateOption(locale, "view", selectedCase.representative_view)
     : notAvailableLabel;
@@ -283,6 +296,55 @@ export function ContributionHistoryPanel({
             </p>
           </Card>
         )}
+
+        <Card as="div" variant="nested" className={contributionStatusCardClass}>
+          <div className="grid gap-3">
+            <div className={docBadgeRowClass}>
+              <span className={docSiteBadgeClass}>{`${pick(locale, "Public alias", "공개 별칭")} / ${resolvedCurrentUserAlias ?? anonymousLabel}`}</span>
+              {resolvedCurrentUserRank ? <span className={docSiteBadgeClass}>{`${pick(locale, "Rank", "순위")} / #${resolvedCurrentUserRank}`}</span> : null}
+            </div>
+            <p className="m-0 text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Contribution ranking keeps identities hidden and uses a stable alias instead.",
+                "기여 랭킹은 실명 대신 고정된 공개 별칭만 사용합니다."
+              )}
+            </p>
+            {leaderboardEntries.length ? (
+              <div className="grid gap-2">
+                {leaderboardEntries.map((entry) => (
+                  <div
+                    key={`${entry.user_id}-${entry.rank}`}
+                    className={`flex items-center justify-between gap-3 rounded-[1rem] border px-3 py-2 ${
+                      entry.is_current_user
+                        ? "border-[rgba(15,23,42,0.18)] bg-white"
+                        : "border-[rgba(15,23,42,0.08)] bg-[rgba(255,255,255,0.68)]"
+                    }`}
+                  >
+                    <div className="grid gap-0.5">
+                      <strong className="text-sm leading-6 text-ink">{`#${entry.rank} ${formatPublicAlias(entry.public_alias, locale) ?? anonymousLabel}`}</strong>
+                      <span className="text-xs leading-5 text-muted">
+                        {entry.is_current_user ? pick(locale, "You", "나") : pick(locale, "Contributor", "기여자")}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <strong className="text-sm leading-6 text-ink">{entry.contribution_count}</strong>
+                      <span className="block text-xs leading-5 text-muted">{pick(locale, "contributions", "기여")}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="m-0 text-sm leading-6 text-muted">
+                {pick(
+                  locale,
+                  "The anonymous leaderboard appears after the first contribution is recorded.",
+                  "첫 기여가 기록되면 익명 랭킹이 여기에 나타납니다."
+                )}
+              </p>
+            )}
+          </div>
+        </Card>
       </Card>
 
       <Card as="section" variant="panel" className={`grid gap-4 p-5 ${historyPanelClass}`}>
@@ -362,11 +424,14 @@ export function ContributionHistoryPanel({
                       <span>{item.created_at}</span>
                     </div>
                     <div className={historyEntryMetaClass}>
-                      <span>{item.upload_type ?? pick(locale, "weight delta", "weight delta")}</span>
+                      <span>{formatPublicAlias(item.public_alias, locale) ?? anonymousLabel}</span>
                       <span>{item.execution_device ?? pick(locale, "unknown device", "알 수 없는 디바이스")}</span>
                     </div>
                     <div className={historyEntryMetaClass}>
+                      <span>{item.upload_type ?? pick(locale, "weight delta", "weight delta")}</span>
                       <span>{item.update_status ?? pick(locale, "unknown status", "알 수 없는 상태")}</span>
+                    </div>
+                    <div className={historyEntryMetaClass}>
                       <span>{item.architecture ?? notAvailableLabel}</span>
                       {item.contribution_group_id ? <span>{item.contribution_group_id}</span> : null}
                     </div>

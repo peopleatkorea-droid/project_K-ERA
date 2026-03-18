@@ -285,6 +285,7 @@ class ResearchContributionWorkflow:
         model_version: dict[str, Any],
         execution_device: str,
         user_id: str,
+        user_public_alias: str | None = None,
         contribution_group_id: str | None = None,
     ) -> dict[str, Any]:
         service = self.service
@@ -403,6 +404,7 @@ class ResearchContributionWorkflow:
             "contribution_id": make_id("contrib"),
             "contribution_group_id": str(contribution_group_id or "").strip() or None,
             "user_id": user_id,
+            "public_alias": str(user_public_alias or "").strip() or None,
             "site_id": site_store.site_id,
             "case_reference_id": case_reference_id,
             "update_id": update_metadata["update_id"],
@@ -417,6 +419,7 @@ class ResearchContributionWorkflow:
                 "contribution_group_id": contribution.get("contribution_group_id"),
                 "created_at": contribution["created_at"],
                 "user_id": contribution["user_id"],
+                "public_alias": contribution.get("public_alias"),
                 "case_reference_id": contribution.get("case_reference_id"),
                 "update_id": update_metadata["update_id"],
                 "update_status": update_metadata.get("status"),

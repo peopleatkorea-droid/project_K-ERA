@@ -1,12 +1,14 @@
-import mimetypes
 import hashlib
+import mimetypes
 import threading
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel
 from kera_research.services.pipeline_case_support import lesion_prompt_box_signature, load_stored_lesion_crop
 
@@ -229,8 +231,6 @@ def build_cases_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         require_validation_permission(user)
         require_site_access(cp, user, site_id)
-        if control_plane_split_enabled():
-            return []
         versions = cp.list_model_versions()
         if ready_only:
             versions = [item for item in versions if item.get("ready", True)]
@@ -556,6 +556,46 @@ def build_cases_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
         media_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
         return FileResponse(path=image_path, media_type=media_type, filename=image_path.name)
+
+    @router.get("/api/sites/{site_id}/images/{image_id}/preview")
+    def get_image_preview(
+        site_id: str,
+        image_id: str,
+        max_side: int = 512,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> Response:
+        site_store = require_site_access(cp, user, site_id)
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
+        image_path = Path(image["image_path"])
+        if not image_path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
+
+        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
+        resampling = getattr(Image, "Resampling", Image)
+
+        try:
+            with Image.open(image_path) as handle:
+                normalized = ImageOps.exif_transpose(handle)
+                preview = normalized.copy()
+                preview.thumbnail((normalized_max_side, normalized_max_side), resampling.LANCZOS)
+                if preview.mode not in {"RGB", "L"}:
+                    preview = preview.convert("RGB")
+                output = BytesIO()
+                preview.save(output, format="JPEG", quality=82, optimize=True)
+        except (OSError, UnidentifiedImageError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Image preview could not be generated.",
+            ) from exc
+
+        return Response(
+            content=output.getvalue(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
 
     @router.post("/api/sites/{site_id}/images/{image_id}/lesion-live-preview")
     def start_live_lesion_preview(
@@ -951,6 +991,7 @@ def build_cases_router(support: Any) -> APIRouter:
                         model_version=model_version,
                         execution_device=execution_device,
                         user_id=user["user_id"],
+                        user_public_alias=str(user.get("public_alias") or "").strip() or None,
                         contribution_group_id=contribution_group_id,
                     )
                 )
@@ -1236,7 +1277,19 @@ def build_cases_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
-        return site_store.load_case_history(patient_id, visit_date)
+        history = site_store.load_case_history(patient_id, visit_date)
+        contribution_aliases = cp.list_user_public_aliases(
+            [str(item.get("user_id") or "").strip() for item in history.get("contributions", [])]
+        )
+        history["contributions"] = [
+            {
+                **item,
+                "public_alias": str(item.get("public_alias") or "").strip()
+                or contribution_aliases.get(str(item.get("user_id") or "").strip()),
+            }
+            for item in history.get("contributions", [])
+        ]
+        return history
 
     @router.get("/api/sites/{site_id}/patients/{patient_reference_id}/trajectory")
     def get_patient_trajectory(
@@ -1247,22 +1300,6 @@ def build_cases_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         if not user_can_access_site(user, site_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
-        if control_plane_split_enabled():
-            site_store = require_site_access(cp, user, site_id)
-            visits = [
-                {
-                    "visit_index": int(item.get("visit_index") or 0),
-                    "visit_label": item.get("visit_date"),
-                    "validations": [],
-                }
-                for item in site_store.list_visits()
-                if str(item.get("patient_reference_id") or "") == patient_reference_id
-            ]
-            visits.sort(key=lambda item: item["visit_index"])
-            return {
-                "patient_reference_id": patient_reference_id,
-                "trajectory": visits,
-            }
         return build_patient_trajectory(cp, site_id, patient_reference_id)
 
     @router.post("/api/sites/{site_id}/cases/research-registry")

@@ -1,9 +1,27 @@
 const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "") ?? "";
-const API_BASE_URL = configuredApiBaseUrl;
+const configuredLocalNodeApiBaseUrl =
+  process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL?.trim().replace(/\/+$/, "") ?? "";
+
+function resolveApiBaseUrl(): string {
+  if (configuredApiBaseUrl) {
+    return configuredApiBaseUrl;
+  }
+  if (configuredLocalNodeApiBaseUrl) {
+    return configuredLocalNodeApiBaseUrl;
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1") {
+      return `http://${host}:8000`;
+    }
+  }
+  return "";
+}
 
 export function buildApiUrl(path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath;
+  const baseUrl = resolveApiBaseUrl();
+  return baseUrl ? `${baseUrl}${normalizedPath}` : normalizedPath;
 }
 
 function stringifyApiDetail(detail: unknown): string {
@@ -50,10 +68,15 @@ export async function request<T>(path: string, init: RequestInit = {}, token?: s
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      ...init,
+      headers,
+    });
+  } catch {
+    throw new Error("Local API server is unavailable.");
+  }
   if (!response.ok) {
     throw new Error(await readErrorDetail(response, "Request failed"));
   }
@@ -68,10 +91,15 @@ export async function requestBlob(
 ): Promise<Blob> {
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      ...init,
+      headers,
+    });
+  } catch {
+    throw new Error("Local API server is unavailable.");
+  }
   if (!response.ok) {
     throw new Error(await readErrorDetail(response, fallbackLabel));
   }

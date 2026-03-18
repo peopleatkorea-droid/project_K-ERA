@@ -10,6 +10,7 @@ import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
 import type { AccessRequestRecord, InstitutionDirectorySyncResponse, ProjectRecord, SiteRecord } from "../../lib/api";
 import { pick, translateRole, translateStatus, type Locale } from "../../lib/i18n";
+import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
 import type { ReviewDraft } from "./use-admin-workspace-state";
 
 type Props = {
@@ -121,7 +122,7 @@ export function RequestsSection({
           {pendingRequests.map((request) => {
             const requestedSiteAvailable = sites.some((site) => site.site_id === request.requested_site_id);
             const defaultProjectId = projects[0]?.project_id ?? "";
-            const requestedSiteLabel = request.requested_site_label || request.requested_site_id;
+            const requestedSiteLabel = getRequestedSiteLabel(request);
             const needsSiteCreation =
               request.requested_site_source === "institution_directory" && !request.resolved_site_id;
             const draft = reviewDrafts[request.request_id] ?? {
@@ -141,7 +142,7 @@ export function RequestsSection({
               request.resolved_site_id ||
               (needsSiteCreation ? pick(locale, "Not mapped yet", "아직 매핑되지 않음") : notAvailableLabel);
             const approvalDisabled = draft.create_site_if_missing
-              ? !canManagePlatform || !draft.project_id || !draft.site_code.trim() || !draft.display_name.trim()
+              ? !canManagePlatform || !draft.project_id || !draft.site_code.trim() || !draft.hospital_name.trim()
               : !draft.assigned_site_id.trim();
 
             return (
@@ -210,7 +211,7 @@ export function RequestsSection({
                       <option value="">{pick(locale, "Select site", "site 선택")}</option>
                       {sites.map((site) => (
                         <option key={site.site_id} value={site.site_id}>
-                          {site.display_name}
+                          {getSiteDisplayName(site)}
                         </option>
                       ))}
                     </select>
@@ -286,11 +287,11 @@ export function RequestsSection({
                             </select>
                           </Field>
                           <Field
-                            label={pick(locale, "Site code", "site 코드")}
+                            label={pick(locale, "HIRA site ID", "HIRA 코드")}
                             hint={pick(
                               locale,
-                              "Uppercase letters, numbers, and underscores only.",
-                              "영문 대문자, 숫자, 밑줄만 사용합니다.",
+                              "Use the canonical 8-digit HIRA code for the new site.",
+                              "새 site에는 8자리 HIRA 코드를 사용하세요.",
                             )}
                           >
                             <input
@@ -304,13 +305,13 @@ export function RequestsSection({
                                   },
                                 }))
                               }
-                              placeholder="HIRA_PARK_EYE"
+                              placeholder="39100103"
                             />
                           </Field>
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-2">
-                          <Field label={pick(locale, "App display name", "앱 표시 이름")}>
+                          <Field label={pick(locale, "Alias (optional)", "별칭 (선택)")}>
                             <input
                               value={draft.display_name}
                               onChange={(event) =>

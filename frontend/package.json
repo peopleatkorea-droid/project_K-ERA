@@ -13,7 +13,10 @@
     "test:run": "vitest run"
   },
   "dependencies": {
+    "google-auth-library": "^10.1.0",
+    "jose": "^6.1.0",
     "next": "^15.2.0",
+    "postgres": "^3.4.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

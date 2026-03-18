@@ -16,6 +16,12 @@ export async function login(username: string, password: string): Promise<AuthRes
   });
 }
 
+export async function devLogin(): Promise<AuthResponse> {
+  return request<AuthResponse>("/api/auth/dev-login", {
+    method: "POST",
+  });
+}
+
 export async function googleLogin(idToken: string): Promise<AuthResponse> {
   return request<AuthResponse>("/api/auth/google", {
     method: "POST",

@@ -30,7 +30,7 @@ type PatientListBoardProps = {
   locale: Locale;
   localeTag: string;
   commonNotAvailable: string;
-  selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
   selectedPatientId: string | null | undefined;
   patientListRows: PatientListRow[];
   patientListTotalCount: number;
@@ -58,7 +58,7 @@ export function PatientListBoard({
   locale,
   localeTag,
   commonNotAvailable,
-  selectedSiteId,
+  selectedSiteLabel,
   selectedPatientId,
   patientListRows,
   patientListTotalCount,
@@ -93,7 +93,7 @@ export function PatientListBoard({
     <section className={docSurfaceClass}>
       <div className="flex min-w-0 flex-wrap items-center gap-2 pb-1">
         <div className="text-[0.88rem] font-semibold tracking-[-0.02em] text-ink">
-          {selectedSiteId ?? pick(locale, "Select a hospital", "병원 선택")}
+          {selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}
         </div>
         <span className={docSiteBadgeClass}>{`${patientListTotalCount} ${pick(locale, "patients", "환자")}`}</span>
         {casesLoading ? (

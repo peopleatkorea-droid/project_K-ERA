@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-03-18
+
+### 문서 / 실행 가이드 정리
+
+- README 빠른 실행 섹션에 local-first control plane 기준 최소 `.env.local` 예시를 추가했습니다.
+- README에 `2026-03-18 업데이트` 요약을 넣어 오늘 정리한 control plane, DPAPI credential 저장, remote 우선 경로, smoke test 흐름을 바로 확인할 수 있게 했습니다.
+- 현재 앱 실행 경로를 `setup_local_node -> .env.local -> run_local_node -> /control-plane 등록 -> smoke test` 순서로 문서화했습니다.
+
+### local-first control plane 마무리
+
+- Next.js 기반 중앙 control plane에 `dev-login`, `logout`, `health`, `validation-runs` admin 조회를 추가했습니다.
+- 기존 Neon/Postgres 레거시 스키마와 새 control-plane 스키마가 같이 동작하도록 호환 마이그레이션을 추가했습니다.
+- control plane UI에서 node 등록 후 로컬 FastAPI로 자격증명 저장까지 자동 시도하도록 연결했습니다.
+
+### 병원 PC remote control plane 경로 정리
+
+- 병원 PC는 `bootstrap`, `heartbeat`, `current release`, `model update metadata upload`, `validation summary upload`, `LLM relay`를 원격 control plane 우선으로 사용합니다.
+- `node_id` / `node_token`은 Windows에서 DPAPI로 저장하도록 추가했습니다.
+- `KERA_SITE_STORAGE_SOURCE=local` 기본 경로를 기준으로 site storage lookup을 remote-control-plane 안전 모드로 고정했습니다.
+
+### 레거시 workspace split mode 정리
+
+- split mode에서 빈 값으로 내려가던 `site summary`, `site activity`, `site validations`, `site model versions`, `patient trajectory` 응답을 remote bootstrap + local cache 기반으로 계속 제공하도록 수정했습니다.
+- remote 업로드 성공 시에도 로컬 cache를 유지해서 기존 workspace/history 흐름이 끊기지 않도록 했습니다.
+
+### 실행/검증 스크립트 추가
+
+- `scripts/register_local_node.ps1`: 수동 node 등록 + 로컬 credential 저장
+- `scripts/run_control_plane_e2e_smoke.ps1`: Next.js control plane + FastAPI local node 실제 런타임 E2E smoke test
+
+### 한국어 공개 랜딩 문구 정리
+
+- 한국어 랜딩의 개발자 노트 섹션에서 좌측 하단 보조 이미지를 제거해 메시지 집중도를 높였습니다.
+- 확장 메시지를 `제주에서 시작된 가능성, / 더 많은 진료에 / 닿도록 준비합니다`로 정리했습니다.
+- privacy / federated learning 설명 용어를 한국어 톤으로 통일했습니다.
+  - `Weight Delta` → `가중치 변화량`
+  - `Control Plane` → `중앙 서버`
+  - `Local Node` → `내부 노드`
+  - `FedAvg` → `연합 집계`
+- 원본 외부 반출 설명도 더 자연스럽게 다듬었습니다.
+  - `저해상도 각막 이미지` / `썸네일` → `저해상도 각막 미리보기`
+  - FAQ 문구는 `저해상도 각막 미리보기(최대 128px)` 기준으로 정리했습니다.
+
+### split mode 사이트 선택 안정화
+
+- 로컬 site directory 기준으로 사이트 목록이 바뀌었을 때, 현재 선택된 site가 더 이상 유효하지 않으면 프론트가 자동으로 첫 번째 유효 site로 fallback 하도록 수정했습니다.
+- site cleanup 이후 이전에 선택된 site id가 남아 화면이 비는 상태를 줄였습니다.
+
+### 케이스 / 목록 미리보기 성능 개선
+
+- 저장 케이스를 열 때 같은 환자의 전체 방문 갤러리를 즉시 prefetch 하던 동작을 제거했습니다.
+- 선택된 케이스 이미지는 대표 이미지를 먼저, 나머지는 병렬로 불러오도록 바꿨습니다.
+- 목록과 케이스 미리보기는 원본 image blob 대신 경량 preview blob을 사용하도록 전환했습니다.
+- 새 API 추가: `GET /api/sites/{site_id}/images/{image_id}/preview`
+  - EXIF orientation을 반영한 뒤 축소 JPEG preview를 반환합니다.
+  - patient list thumbnail과 saved case preview는 이 endpoint를 사용합니다.
+- 타임라인의 다른 방문은 더 이상 자동 preload 하지 않으므로, 이미지가 아직 로드되지 않은 방문에는 `방문 열기` 유도 문구가 보이도록 UI를 조정했습니다.
+
+### site_id / 병원 표기 정리
+
+- 제주대학교병원 로컬/중앙 데이터를 `JNUH`에서 HIRA 8자리 기준 `39100103`으로 마이그레이션했습니다.
+- `display_name`은 별칭(`JNUH`)으로 유지하고, UI의 기본 병원 표기는 `hospital_name` 우선으로 통일했습니다.
+- case workspace, admin workspace, 공개 랜딩, 접근 요청 화면에서 raw `site_id` 노출을 줄이고 병원 정식명칭 중심으로 보이도록 정리했습니다.
+- admin 병원 등록/승인 폼은 `HIRA site ID` 기준 문구로 바꾸고, 별칭 입력은 선택 사항으로 정리했습니다.
+- HIRA 연동 site 생성은 `source_institution_id`가 실제 8자리 코드일 때만 `site_id`로 승격하도록 backend 정규화를 추가했습니다.
+
+### Google 로그인 공개 별칭 / 기여 랭킹 익명화
+
+- control plane `users` 테이블에 `public_alias` 컬럼과 unique index를 추가했습니다.
+- Google 로그인 사용자는 첫 인증 시 `warm_gorilla_221` 같은 language-neutral canonical alias가 자동 생성되고, JWT / `/api/auth/me`에도 함께 내려가도록 정리했습니다.
+- 기여 이력에는 `user_id`와 함께 `public_alias`를 같이 기록해, 케이스 히스토리에서 실명 없이 익명 표시가 가능해졌습니다.
+- site activity 응답에 전역 contribution leaderboard를 추가하고, 최근 기여 내역도 alias 중심으로 보이도록 확장했습니다.
+- 프론트는 canonical alias를 locale에 맞춰 렌더하도록 바꿔서, 한국어에서는 `따스한 고릴라 #221`, 영어에서는 `Warm Gorilla #221`로 보이게 했습니다.
+- case workspace contribution 패널에 `공개 별칭`, 현재 순위, 익명 leaderboard를 추가했습니다.
+
+### 검증
+
+- `frontend`: `npx tsc --noEmit`
+- `frontend`: `npx vitest run components/case-workspace/contribution-history-panel.test.tsx`
+- `frontend`: `npx vitest run home-page.integration.test.tsx`
+- `python`: `py_compile` (`control_plane.py`, `api/app.py`, `api/route_helpers.py`, `pipeline.py`, `pipeline_domains.py`)
+
 ## 2026-03-14 ~ 2026-03-15
 
 ### 로그인 UI 분리

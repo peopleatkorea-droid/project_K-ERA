@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import { Field } from "../../components/ui/field";
 import { SectionHeader } from "../../components/ui/section-header";
-import { login } from "../../lib/api";
+import { devLogin, login } from "../../lib/api";
 import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
 
 const TOKEN_KEY = "kera_web_token";
@@ -20,6 +20,7 @@ export default function AdminLoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [nextPath, setNextPath] = useState("/");
+  const allowDevRecovery = Boolean(process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL) || process.env.NODE_ENV !== "production";
 
   const copy = {
     eyebrow: pick(locale, "Administrator Recovery", "관리자 복구"),
@@ -32,6 +33,7 @@ export default function AdminLoginPage() {
     username: pick(locale, "Username", "아이디"),
     password: pick(locale, "Password", "비밀번호"),
     signIn: pick(locale, "Enter admin recovery", "관리자 복구로 입장"),
+    devSignIn: pick(locale, "Enter local dev admin", "로컬 개발 관리자 입장"),
     signingIn: pick(locale, "Connecting...", "연결 중..."),
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
     backToMain: pick(locale, "Back to Google sign-in", "Google 로그인으로 돌아가기"),
@@ -47,6 +49,11 @@ export default function AdminLoginPage() {
       "계정 초기화, 장애 대응, 긴급 접근이 필요한 경우에만 사용하세요."
     ),
     researchUserSignIn: pick(locale, "Research user sign-in", "연구 사용자 로그인"),
+    devFootnote: pick(
+      locale,
+      "Use the development shortcut only on a local machine with development auth enabled.",
+      "개발용 단축 진입은 로컬 PC에서 개발 인증이 켜진 경우에만 사용하세요."
+    ),
   };
 
   const describeError = (nextError: unknown, fallback: string) =>
@@ -73,6 +80,20 @@ export default function AdminLoginPage() {
     setError(null);
     try {
       const auth = await login(loginForm.username, loginForm.password);
+      window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+      router.replace(nextPath);
+    } catch (nextError) {
+      setError(describeError(nextError, copy.loginFailed));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleDevLogin() {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const auth = await devLogin();
       window.localStorage.setItem(TOKEN_KEY, auth.access_token);
       router.replace(nextPath);
     } catch (nextError) {
@@ -147,6 +168,15 @@ export default function AdminLoginPage() {
             <Button type="submit" variant="primary" fullWidth disabled={authBusy}>
               {authBusy ? copy.signingIn : copy.signIn}
             </Button>
+
+            {allowDevRecovery ? (
+              <>
+                <Button type="button" variant="ghost" fullWidth disabled={authBusy} onClick={handleDevLogin}>
+                  {authBusy ? copy.signingIn : copy.devSignIn}
+                </Button>
+                <p className="m-0 text-xs leading-5 text-muted">{copy.devFootnote}</p>
+              </>
+            ) : null}
           </form>
 
           <div className="grid gap-3">

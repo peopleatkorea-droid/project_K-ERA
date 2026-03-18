@@ -1016,7 +1016,7 @@ export function useCaseWorkspaceAnalysis({
       }));
       setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
     } catch (nextError) {
-      const fallback = pick(locale, "Semantic prompt review failed.", "Semantic prompt review 실행에 실패했습니다.");
+      const fallback = pick(locale, "BiomedCLIP analysis failed.", "BiomedCLIP 분석 실행에 실패했습니다.");
       const message = describeError(nextError, fallback);
       setSemanticPromptErrors((current) => ({
         ...current,

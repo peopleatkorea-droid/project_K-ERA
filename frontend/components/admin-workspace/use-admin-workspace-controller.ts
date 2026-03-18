@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 
 import { pick, translateApiError } from "../../lib/i18n";
+import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
 import {
   autoPublishModelUpdate,
   autoPublishModelVersion,
@@ -53,6 +54,7 @@ import {
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
 
 const BENCHMARK_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 
 type AdminWorkspaceState = ReturnType<typeof useAdminWorkspaceState>;
 
@@ -83,16 +85,14 @@ function suggestedSiteCodeFromRequest(request: {
   requested_site_id: string;
   requested_site_source?: string;
 }) {
+  if (request.requested_site_source === "institution_directory") {
+    return HIRA_SITE_ID_PATTERN.test(request.requested_site_id) ? request.requested_site_id : "";
+  }
   const humanReadable = sanitizeSiteCodeSegment(request.requested_site_label ?? "");
   if (humanReadable) {
     return humanReadable;
   }
-  const hash = Array.from(request.requested_site_id).reduce(
-    (accumulator, char) => ((accumulator * 31) + char.charCodeAt(0)) >>> 0,
-    7,
-  );
-  const sourcePrefix = request.requested_site_source === "institution_directory" ? "HIRA" : "SITE";
-  return `${sourcePrefix}_${hash.toString(16).toUpperCase()}`.slice(0, 32);
+  return sanitizeSiteCodeSegment(request.requested_site_id);
 }
 
 function createReviewDraft(
@@ -105,7 +105,7 @@ function createReviewDraft(
   },
   projectId: string,
 ) {
-  const label = request.requested_site_label || request.requested_site_id;
+  const label = getRequestedSiteLabel(request);
   const hasResolvedSite = Boolean(request.resolved_site_id);
   const shouldCreateSite =
     request.requested_site_source === "institution_directory" && !hasResolvedSite;
@@ -328,6 +328,7 @@ export function useAdminWorkspaceController({
   const autoPublishEnabled = Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled);
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+  const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedManagedSite, selectedSiteId) : "";
   const copy = {
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
@@ -347,8 +348,8 @@ export function useAdminWorkspaceController({
     institutionSyncFailed: pick(locale, "Unable to sync the HIRA directory.", "HIRA 기관 디렉터리 동기화에 실패했습니다."),
     requestReviewed: (decision: "approved" | "rejected") =>
       pick(locale, `Request ${decision}.`, `요청이 ${decision === "approved" ? "승인" : "반려"} 처리되었습니다.`),
-    requestReviewedAndSiteCreated: (siteId: string) =>
-      pick(locale, `Request approved and site ${siteId} created.`, `요청을 승인했고 ${siteId} site를 생성했습니다.`),
+    requestReviewedAndSiteCreated: (siteLabel: string) =>
+      pick(locale, `Request approved and ${siteLabel} created.`, `요청을 승인했고 ${siteLabel} site를 생성했습니다.`),
     unableReview: pick(locale, "Unable to review request.", "요청 검토에 실패했습니다."),
     selectSiteForInitial: pick(locale, "Select a hospital before starting initial training.", "초기 학습을 시작하려면 병원을 선택하세요."),
     registeredVersion: (name: string) => pick(locale, `Registered ${name}.`, `${name} 버전을 등록했습니다.`),
@@ -394,22 +395,22 @@ export function useAdminWorkspaceController({
     templateDownloadFailed: pick(locale, "Template download failed.", "템플릿 다운로드에 실패했습니다."),
     selectSiteForImport: pick(locale, "Select a hospital before importing.", "임포트를 하려면 병원을 선택하세요."),
     chooseCsvFirst: pick(locale, "Choose a CSV file first.", "먼저 CSV 파일을 선택하세요."),
-    importedImages: (count: number, siteId: string) => pick(locale, `Imported ${count} images into hospital ${siteId}.`, `병원 ${siteId}에 이미지 ${count}개를 임포트했습니다.`),
+    importedImages: (count: number, siteLabel: string) => pick(locale, `Imported ${count} images into ${siteLabel}.`, `${siteLabel}에 이미지 ${count}개를 임포트했습니다.`),
     bulkImportFailed: pick(locale, "Bulk import failed.", "대량 임포트에 실패했습니다."),
     projectNameRequired: pick(locale, "Project name is required.", "프로젝트 이름은 필수입니다."),
     projectRegistered: pick(locale, "Project registered.", "프로젝트를 등록했습니다."),
     unableCreateProject: pick(locale, "Unable to create project.", "프로젝트 생성에 실패했습니다."),
-    siteFieldsRequired: pick(locale, "Project, hospital code, and app display name are required.", "프로젝트, 병원 코드, 앱 표시명은 필수입니다."),
-    siteNameRequired: pick(locale, "App display name is required.", "앱 표시명은 필수입니다."),
-    siteRegistered: (siteId: string) => pick(locale, `Hospital ${siteId} registered.`, `${siteId} 병원을 등록했습니다.`),
+    siteFieldsRequired: pick(locale, "Project, HIRA site ID, and official hospital name are required.", "프로젝트, HIRA site ID, 공식 병원명은 필수입니다."),
+    siteNameRequired: pick(locale, "Official hospital name is required.", "공식 병원명은 필수입니다."),
+    siteRegistered: (siteLabel: string) => pick(locale, `Registered ${siteLabel}.`, `${siteLabel} 병원을 등록했습니다.`),
     unableCreateSite: pick(locale, "Unable to create hospital.", "병원 생성에 실패했습니다."),
-    siteUpdated: (siteId: string) => pick(locale, `Updated hospital ${siteId}.`, `${siteId} 병원 정보를 수정했습니다.`),
+    siteUpdated: (siteLabel: string) => pick(locale, `Updated ${siteLabel}.`, `${siteLabel} 병원 정보를 수정했습니다.`),
     unableUpdateSite: pick(locale, "Unable to update hospital.", "병원 수정에 실패했습니다."),
     storageRootSaved: pick(locale, "Default storage root saved.", "기본 저장 경로를 저장했습니다."),
     unableSaveStorageRoot: pick(locale, "Unable to save storage root.", "저장 경로 저장에 실패했습니다."),
-    selectedSiteStorageRootSaved: (siteId: string) => pick(locale, `Saved storage root for ${siteId}.`, `${siteId}의 저장 경로를 저장했습니다.`),
+    selectedSiteStorageRootSaved: (siteLabel: string) => pick(locale, `Saved storage root for ${siteLabel}.`, `${siteLabel}의 저장 경로를 저장했습니다.`),
     unableSaveSelectedSiteStorageRoot: pick(locale, "Unable to save the selected hospital storage root.", "선택한 병원의 저장 경로 저장에 실패했습니다."),
-    selectedSiteStorageMigrated: (siteId: string) => pick(locale, `Migrated stored files for ${siteId}.`, `${siteId}의 저장 파일을 새 경로로 이동했습니다.`),
+    selectedSiteStorageMigrated: (siteLabel: string) => pick(locale, `Migrated stored files for ${siteLabel}.`, `${siteLabel}의 저장 파일을 새 경로로 이동했습니다.`),
     unableMigrateSelectedSiteStorageRoot: pick(locale, "Unable to migrate the selected hospital storage root.", "선택한 병원의 저장 경로 마이그레이션에 실패했습니다."),
     selectSiteForStorageRoot: pick(locale, "Select a hospital before changing its storage root.", "저장 경로를 바꾸려면 먼저 병원을 선택하세요."),
     usernameRequired: pick(locale, "Username is required.", "아이디는 필수입니다."),
@@ -861,7 +862,7 @@ export function useAdminWorkspaceController({
         create_site_if_missing: draft?.create_site_if_missing,
         project_id: draft?.project_id,
         site_code: draft?.site_code,
-        display_name: draft?.display_name,
+        display_name: draft?.display_name?.trim() || draft?.hospital_name?.trim(),
         hospital_name: draft?.hospital_name,
         research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
@@ -869,7 +870,10 @@ export function useAdminWorkspaceController({
       await refreshWorkspace();
       if (response.created_site?.site_id) {
         onSelectSite(response.created_site.site_id);
-        setToast({ tone: "success", message: copy.requestReviewedAndSiteCreated(response.created_site.site_id) });
+        setToast({
+          tone: "success",
+          message: copy.requestReviewedAndSiteCreated(getSiteDisplayName(response.created_site, response.created_site.site_id)),
+        });
       } else {
         setToast({ tone: "success", message: copy.requestReviewed(decision) });
       }
@@ -1336,7 +1340,7 @@ export function useAdminWorkspaceController({
       setBulkImportResult(result);
       await refreshWorkspace(true);
       setSection("dashboard");
-      setToast({ tone: "success", message: copy.importedImages(result.imported_images, selectedSiteId) });
+      setToast({ tone: "success", message: copy.importedImages(result.imported_images, selectedSiteLabel || selectedSiteId) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.bulkImportFailed) });
     } finally {
@@ -1379,30 +1383,36 @@ export function useAdminWorkspaceController({
 
   async function handleCreateSite() {
     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || "";
-    if (!effectiveProjectId || !siteForm.site_code.trim() || !siteForm.display_name.trim()) {
+    const normalizedDisplayName = siteForm.display_name.trim() || siteForm.hospital_name.trim();
+    if (!effectiveProjectId || !siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
-      const createdSite = await createAdminSite(token, { ...siteForm, project_id: effectiveProjectId });
+      const createdSite = await createAdminSite(token, {
+        ...siteForm,
+        project_id: effectiveProjectId,
+        display_name: normalizedDisplayName,
+      });
       handleResetSiteForm(effectiveProjectId);
       await onRefreshSites();
       await refreshWorkspace();
       onSelectSite(createdSite.site_id);
-      setToast({ tone: "success", message: copy.siteRegistered(createdSite.site_id) });
+      setToast({ tone: "success", message: copy.siteRegistered(getSiteDisplayName(createdSite, createdSite.site_id)) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableCreateSite) });
     }
   }
 
   async function handleUpdateSite() {
-    if (!editingSiteId || !siteForm.display_name.trim()) {
+    const normalizedDisplayName = siteForm.display_name.trim() || siteForm.hospital_name.trim();
+    if (!editingSiteId || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteNameRequired });
       return;
     }
     try {
       const updatedSite = await updateAdminSite(editingSiteId, token, {
-        display_name: siteForm.display_name,
+        display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
         research_registry_enabled: siteForm.research_registry_enabled,
       });
@@ -1410,7 +1420,7 @@ export function useAdminWorkspaceController({
       await onRefreshSites();
       await refreshWorkspace();
       onSelectSite(updatedSite.site_id);
-      setToast({ tone: "success", message: copy.siteUpdated(updatedSite.site_id) });
+      setToast({ tone: "success", message: copy.siteUpdated(getSiteDisplayName(updatedSite, updatedSite.site_id)) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableUpdateSite) });
     }
@@ -1447,7 +1457,7 @@ export function useAdminWorkspaceController({
     try {
       await updateAdminSiteStorageRoot(selectedSiteId, token, { storage_root: siteStorageRootForm });
       await refreshWorkspace();
-      setToast({ tone: "success", message: copy.selectedSiteStorageRootSaved(selectedSiteId) });
+      setToast({ tone: "success", message: copy.selectedSiteStorageRootSaved(selectedSiteLabel || selectedSiteId) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableSaveSelectedSiteStorageRoot) });
     } finally {
@@ -1468,7 +1478,7 @@ export function useAdminWorkspaceController({
     try {
       await migrateAdminSiteStorageRoot(selectedSiteId, token, { storage_root: siteStorageRootForm });
       await refreshWorkspace(true);
-      setToast({ tone: "success", message: copy.selectedSiteStorageMigrated(selectedSiteId) });
+      setToast({ tone: "success", message: copy.selectedSiteStorageMigrated(selectedSiteLabel || selectedSiteId) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableMigrateSelectedSiteStorageRoot) });
     } finally {

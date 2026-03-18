@@ -10,6 +10,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             get_control_plane=deps["get_control_plane"],
             get_current_user=deps["get_current_user"],
             local_login_enabled=deps["local_login_enabled"],
+            local_dev_auth_enabled=deps["local_dev_auth_enabled"],
             verify_google_id_token=deps["verify_google_id_token"],
             build_auth_response=deps["build_auth_response"],
             LoginRequest=deps["LoginRequest"],

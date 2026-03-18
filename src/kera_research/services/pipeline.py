@@ -1332,6 +1332,7 @@ class ResearchWorkflowService:
         model_version: dict[str, Any],
         execution_device: str,
         user_id: str,
+        user_public_alias: str | None = None,
         contribution_group_id: str | None = None,
     ) -> dict[str, Any]:
         return self.contribution_workflow.contribute_case(
@@ -1341,6 +1342,7 @@ class ResearchWorkflowService:
             model_version,
             execution_device,
             user_id,
+            user_public_alias=user_public_alias,
             contribution_group_id=contribution_group_id,
         )
 

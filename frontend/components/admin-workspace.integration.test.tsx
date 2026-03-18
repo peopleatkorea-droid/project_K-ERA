@@ -284,8 +284,8 @@ describe("AdminWorkspace integration", () => {
 
     await screen.findByRole("button", { name: "Register hospital" });
 
-    fireEvent.change(screen.getByLabelText("Hospital code"), { target: { value: "SITE_B" } });
-    fireEvent.change(screen.getByLabelText("App display name"), { target: { value: "Site B" } });
+    fireEvent.change(screen.getByPlaceholderText("e.g. 39100103"), { target: { value: "SITE_B" } });
+    fireEvent.change(screen.getByPlaceholderText("e.g. JNUH"), { target: { value: "Site B" } });
     fireEvent.change(screen.getByLabelText("Official hospital name"), { target: { value: "Hospital B" } });
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
@@ -302,7 +302,7 @@ describe("AdminWorkspace integration", () => {
       expect(onRefreshSites).toHaveBeenCalledTimes(1);
       expect(onSelectSite).toHaveBeenCalledWith("SITE_B");
     });
-    expect(await screen.findByText("Hospital SITE_B registered.")).toBeInTheDocument();
+    expect(await screen.findByText("Registered Hospital B.")).toBeInTheDocument();
   });
 
   it("searches HIRA institutions in management and prefills a new hospital mapping", async () => {
@@ -383,10 +383,11 @@ describe("AdminWorkspace integration", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
 
-    expect(screen.getByLabelText("App display name")).toHaveValue("Jeju National University Hospital");
+    expect(screen.getByPlaceholderText("e.g. JNUH")).toHaveValue("Jeju National University Hospital");
     expect(screen.getByLabelText("Official hospital name")).toHaveValue("Jeju National University Hospital");
     expect(screen.getByText(/Linked HIRA institution/i)).toBeInTheDocument();
     expect(screen.getByText(/Jeju National University Hospital/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("e.g. 39100103"), { target: { value: "39100103" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
@@ -395,6 +396,7 @@ describe("AdminWorkspace integration", () => {
         "test-token",
         expect.objectContaining({
           project_id: "project_1",
+          site_code: "39100103",
           display_name: "Jeju National University Hospital",
           hospital_name: "Jeju National University Hospital",
           source_institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",

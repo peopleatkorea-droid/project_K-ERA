@@ -1,4 +1,5 @@
 import type { SiteRecord } from "../../lib/api";
+import { getSiteDisplayName } from "../../lib/site-labels";
 
 type EnglishLandingViewProps = {
   authBusy: boolean;
@@ -96,7 +97,7 @@ const enTechnology = [
 
 export function EnglishLandingView(props: EnglishLandingViewProps) {
   const institutions = [
-    ...props.publicSites.slice(0, 1).map((site) => ({ label: site.display_name, active: true })),
+    ...props.publicSites.slice(0, 1).map((site) => ({ label: getSiteDisplayName(site), active: true })),
     ...Array.from({ length: Math.max(0, 5 - props.publicSites.slice(0, 1).length) }, (_, index) => ({
       label: `Institution ${index + 2}`,
       active: false,

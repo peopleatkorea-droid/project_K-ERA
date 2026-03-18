@@ -10,6 +10,7 @@ import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
 import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecord, type ProjectRecord, type PublicInstitutionRecord, type SiteSummary, type StorageSettingsRecord } from "../../lib/api";
 import { pick, translateApiError, translateRole, type Locale } from "../../lib/i18n";
+import { getSiteAlias, getSiteDisplayName } from "../../lib/site-labels";
 import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
@@ -29,7 +30,7 @@ type Props = {
   storageSettingsBusy: boolean;
   instanceStorageRootForm: string;
   siteStorageRootForm: string;
-  selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
   selectedManagedSite: ManagedSiteRecord | null;
   summary: SiteSummary | null;
   projects: ProjectRecord[];
@@ -55,6 +56,8 @@ type Props = {
   onResetUserForm: () => void;
   onSaveUser: () => void;
 };
+
+const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 
 function SiteRecordCard({
   title,
@@ -98,19 +101,17 @@ function normalizeSiteCode(value: string) {
 }
 
 function suggestedSiteCodeFromInstitution(institution: PublicInstitutionRecord): string {
-  const fromName = normalizeSiteCode(institution.name);
-  if (fromName) {
-    return fromName;
+  return HIRA_SITE_ID_PATTERN.test(institution.institution_id) ? institution.institution_id : "";
+}
+
+function siteHiraCode(site: ManagedSiteRecord, notAvailableLabel: string): string {
+  if (HIRA_SITE_ID_PATTERN.test(site.site_id)) {
+    return site.site_id;
   }
-  const fromId = normalizeSiteCode(`HIRA_${institution.institution_id}`);
-  if (fromId) {
-    return fromId;
+  if (HIRA_SITE_ID_PATTERN.test(String(site.source_institution_id ?? ""))) {
+    return String(site.source_institution_id);
   }
-  const hash = Array.from(institution.institution_id).reduce(
-    (accumulator, char) => ((accumulator * 31) + char.charCodeAt(0)) >>> 0,
-    7,
-  );
-  return `HIRA_${hash.toString(16).toUpperCase()}`.slice(0, 32);
+  return notAvailableLabel;
 }
 
 export function ManagementSection({
@@ -122,7 +123,7 @@ export function ManagementSection({
   storageSettingsBusy,
   instanceStorageRootForm,
   siteStorageRootForm,
-  selectedSiteId,
+  selectedSiteLabel,
   selectedManagedSite,
   summary,
   projects,
@@ -206,7 +207,7 @@ export function ManagementSection({
         description={pick(
           locale,
           "Manage storage roots, platform projects, hospital identities, and user access from one administrative document.",
-          "저장 경로, 프로젝트, 병원 ID, 사용자 접근 권한을 하나의 운영 문서에서 관리합니다."
+          "저장 경로, 프로젝트, 병원 정보, 사용자 접근 권한을 하나의 운영 문서에서 관리합니다."
         )}
         aside={<span className={docSiteBadgeClass}>{translateRole(locale, canManagePlatform ? "admin" : "site_admin")}</span>}
       />
@@ -240,12 +241,12 @@ export function ManagementSection({
             <SectionHeader
               title={pick(locale, "Selected hospital storage root", "선택 병원 저장 경로")}
               titleAs="h4"
-              aside={<span className={docSiteBadgeClass}>{selectedSiteId ?? notAvailableLabel}</span>}
+              aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? notAvailableLabel}</span>}
             />
             {selectedManagedSite ? (
               <>
                 <Field label={pick(locale, "Folder path", "폴더 경로")}>
-                  <input value={siteStorageRootForm} onChange={(event) => setSiteStorageRootForm(event.target.value)} placeholder="D:\\HospitalAData\\JNUH" />
+                  <input value={siteStorageRootForm} onChange={(event) => setSiteStorageRootForm(event.target.value)} placeholder="D:\\HospitalAData\\39100103" />
                 </Field>
                 <MetricGrid columns={2}>
                   <MetricItem value={selectedManagedSite.local_storage_root ?? notAvailableLabel} label={pick(locale, "Current root", "현재 경로")} />
@@ -349,10 +350,10 @@ export function ManagementSection({
                   {managedSites.map((site) => (
                     <SiteRecordCard
                       key={site.site_id}
-                      title={site.display_name}
-                      subtitle={site.hospital_name || pick(locale, "No hospital name", "병원명 없음")}
+                      title={getSiteDisplayName(site, pick(locale, "No hospital name", "병원명 없음"))}
+                      subtitle={getSiteAlias(site) ?? undefined}
                       metrics={[
-                        { label: pick(locale, "Site ID", "병원 ID"), value: site.site_id },
+                        { label: pick(locale, "HIRA code", "HIRA 코드"), value: siteHiraCode(site, notAvailableLabel) },
                         { label: pick(locale, "Project", "프로젝트"), value: site.project_id },
                         { label: pick(locale, "Created", "생성 시각"), value: formatDateTime(site.created_at, notAvailableLabel) },
                       ]}
@@ -369,7 +370,11 @@ export function ManagementSection({
                 titleAs="h4"
                 description={
                   editingSiteId
-                    ? pick(locale, `Editing ${editingSiteId}`, `${editingSiteId} 수정 중`)
+                    ? pick(
+                        locale,
+                        `Editing ${siteForm.hospital_name || siteForm.display_name || editingSiteId}`,
+                        `${siteForm.hospital_name || siteForm.display_name || editingSiteId} 수정 중`,
+                      )
                     : pick(locale, "Registering a new hospital", "새 병원 등록")
                 }
               />
@@ -424,7 +429,11 @@ export function ManagementSection({
                               </div>
                               {linkedSite ? (
                                 <span className={docSiteBadgeClass}>
-                                  {pick(locale, `Linked to ${linkedSite.site_id}`, `${linkedSite.site_id}에 연결됨`)}
+                                  {pick(
+                                    locale,
+                                    `Linked to ${getSiteDisplayName(linkedSite)}`,
+                                    `${getSiteDisplayName(linkedSite)}에 연결됨`,
+                                  )}
                                 </span>
                               ) : null}
                             </div>
@@ -446,8 +455,8 @@ export function ManagementSection({
                                     setSiteForm((current) => ({
                                       ...current,
                                       project_id: current.project_id || effectiveProjectId,
-                                      site_code: current.site_code || suggestedCode,
-                                      display_name: institution.name,
+                                      site_code: suggestedCode || current.site_code,
+                                      display_name: current.display_name || institution.name,
                                       hospital_name: institution.name,
                                       source_institution_id: institution.institution_id,
                                     }));
@@ -487,19 +496,33 @@ export function ManagementSection({
                 </select>
               </Field>
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label={pick(locale, "Hospital code", "병원 코드")}>
+                <Field
+                  label={pick(locale, "HIRA site ID", "HIRA 코드")}
+                  hint={pick(
+                    locale,
+                    "Use the canonical 8-digit HIRA code when standardising a hospital site.",
+                    "병원 site를 표준화할 때는 8자리 HIRA 코드를 사용하세요.",
+                  )}
+                >
                   <input
                     value={siteForm.site_code}
                     onChange={(event) => setSiteForm((current) => ({ ...current, site_code: event.target.value }))}
-                    placeholder={pick(locale, "e.g. JNUH", "예: JNUH")}
+                    placeholder={pick(locale, "e.g. 39100103", "예: 39100103")}
                     disabled={Boolean(editingSiteId)}
                   />
                 </Field>
-                <Field label={pick(locale, "App display name", "앱 표시 이름")}>
+                <Field
+                  label={pick(locale, "Alias (optional)", "별칭 (선택)")}
+                  hint={pick(
+                    locale,
+                    "Use a short internal label such as JNUH only if your team needs one.",
+                    "팀에서 필요할 때만 JNUH 같은 짧은 내부 별칭을 사용하세요.",
+                  )}
+                >
                   <input
                     value={siteForm.display_name}
                     onChange={(event) => setSiteForm((current) => ({ ...current, display_name: event.target.value }))}
-                    placeholder={pick(locale, "Jeju National University Hospital", "예: 제주대학교병원")}
+                    placeholder={pick(locale, "e.g. JNUH", "예: JNUH")}
                   />
                 </Field>
               </div>
@@ -512,10 +535,11 @@ export function ManagementSection({
               </Field>
               {siteForm.source_institution_id ? (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-brand/20 bg-brand-soft/60 px-4 py-3 text-sm text-ink">
-                  <span>
+                  <div className="grid gap-1">
                     <strong>{pick(locale, "Linked HIRA institution", "연결된 HIRA 기관")}:</strong>{" "}
-                    {siteForm.hospital_name || siteForm.display_name || "HIRA"}
-                  </span>
+                    <span>{siteForm.hospital_name || siteForm.display_name || "HIRA"}</span>
+                    <span className="text-xs text-muted">{siteForm.source_institution_id}</span>
+                  </div>
                   <Button
                     type="button"
                     variant="ghost"
@@ -632,7 +656,7 @@ export function ManagementSection({
               >
                 {managedSites.map((site) => (
                   <option key={site.site_id} value={site.site_id}>
-                    {site.display_name}
+                    {getSiteDisplayName(site)}
                   </option>
                 ))}
               </select>
@@ -657,10 +681,10 @@ export function ManagementSection({
               {managedSites.map((site) => (
                 <SiteRecordCard
                   key={site.site_id}
-                  title={site.display_name}
-                  subtitle={site.hospital_name || pick(locale, "No hospital name", "병원명 없음")}
+                  title={getSiteDisplayName(site, pick(locale, "No hospital name", "병원명 없음"))}
+                  subtitle={getSiteAlias(site) ?? undefined}
                   metrics={[
-                    { label: pick(locale, "Site ID", "병원 ID"), value: site.site_id },
+                    { label: pick(locale, "HIRA code", "HIRA 코드"), value: siteHiraCode(site, notAvailableLabel) },
                     { label: pick(locale, "Project", "프로젝트"), value: site.project_id },
                     { label: pick(locale, "Created", "생성 시각"), value: formatDateTime(site.created_at, notAvailableLabel) },
                   ]}

@@ -92,7 +92,7 @@ function SemanticPromptReviewPanel({
       ) : review ? (
         <>
           <div className={semanticPromptReviewHeadClass}>
-            <strong>{pick(locale, "BiomedCLIP prompt ranking", "BiomedCLIP prompt ranking")}</strong>
+            <strong>{pick(locale, "BiomedCLIP analysis", "BiomedCLIP 분석")}</strong>
             <span>
               {review.dictionary_name} · {review.model_name}
             </span>
@@ -137,7 +137,7 @@ function SemanticPromptReviewPanel({
           </div>
         </>
       ) : (
-        <div className={emptySurfaceClass}>{pick(locale, "Run the review once to inspect the top-ranked prompt matches.", "Top-ranked prompt score를 보려면 review를 실행해 주세요.")}</div>
+        <div className={emptySurfaceClass}>{pick(locale, "Run BiomedCLIP analysis once to inspect the top-ranked matches.", "Top-ranked 결과를 보려면 BiomedCLIP 분석을 실행해 주세요.")}</div>
       )}
     </Card>
   );
@@ -176,7 +176,7 @@ export function SavedCaseImageBoard({
         <div className="flex flex-wrap items-center gap-3">
           <div className={docSectionLabelClass}>{pick(locale, "Saved images", "저장 이미지")}</div>
           <select
-            aria-label={pick(locale, "Prompt input", "Prompt 입력")}
+            aria-label={pick(locale, "BiomedCLIP input", "BiomedCLIP 입력")}
             className="min-h-8 rounded-[10px] border border-border bg-white/60 px-3 text-[0.82rem] text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
             value={semanticPromptInputMode}
             onChange={(event) => onSemanticPromptInputModeChange(event.target.value as SemanticPromptInputMode)}
@@ -324,8 +324,8 @@ export function SavedCaseImageBoard({
                     {semanticPromptBusyImageId === image.image_id
                       ? commonLoading
                       : promptReviewOpen
-                        ? pick(locale, "Hide prompt review", "Prompt review 닫기")
-                        : pick(locale, "Review prompts", "Prompt review")}
+                        ? pick(locale, "Hide BiomedCLIP analysis", "BiomedCLIP 분석 닫기")
+                        : pick(locale, "Run BiomedCLIP analysis", "BiomedCLIP 분석")}
                   </Button>
                 </div>
 
