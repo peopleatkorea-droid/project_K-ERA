@@ -6,12 +6,10 @@ import json
 import os
 import re
 import threading
-from base64 import b64decode
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import bcrypt
 from sqlalchemy import func, select
 
 from kera_research.config import (
@@ -36,6 +34,12 @@ from kera_research.db import (
 from kera_research.domain import (
     utc_now,
     visit_label_from_index,
+)
+from kera_research.passwords import (
+    hash_password,
+    is_bcrypt_hash,
+    is_pbkdf2_sha256_hash,
+    verify_pbkdf2_sha256_hash,
 )
 from kera_research.services.control_plane_artifacts import ControlPlaneArtifactFacade
 from kera_research.services.control_plane_bootstrap_projection import ControlPlaneBootstrapProjectionFacade
@@ -285,34 +289,19 @@ INSTITUTION_SEARCH_ALIASES: dict[str, set[str]] = {
 
 
 def _hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return hash_password(plain)
 
 
 def _is_bcrypt_hash(value: str) -> bool:
-    return value.startswith(("$2b$", "$2a$", "$2y$"))
+    return is_bcrypt_hash(value)
 
 
 def _is_pbkdf2_sha256_hash(value: str) -> bool:
-    return str(value or "").startswith("pbkdf2_sha256$")
+    return is_pbkdf2_sha256_hash(value)
 
 
 def _verify_pbkdf2_sha256_hash(password: str, encoded: str) -> bool:
-    try:
-        algorithm, iteration_text, salt, expected_hash = str(encoded or "").split("$", 3)
-    except ValueError:
-        return False
-    if algorithm != "pbkdf2_sha256":
-        return False
-    try:
-        iterations = int(iteration_text)
-    except (TypeError, ValueError):
-        return False
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
-    try:
-        expected = b64decode(expected_hash)
-    except Exception:
-        return False
-    return hmac.compare_digest(candidate, expected)
+    return verify_pbkdf2_sha256_hash(password, encoded)
 
 
 def _normalize_password_storage(value: str) -> str:

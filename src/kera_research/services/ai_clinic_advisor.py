@@ -22,6 +22,14 @@ class AiClinicWorkflowAdvisor:
         self._timeout_seconds = float(os.getenv("KERA_AI_CLINIC_LLM_TIMEOUT_SECONDS", "45").strip() or "45")
         self._remote_control_plane = RemoteControlPlaneClient()
 
+    def _provider_label(self, mode: str | None) -> str:
+        normalized = str(mode or "").strip().lower()
+        if normalized == "openai":
+            return "OpenAI-compatible guidance"
+        if normalized == "control_plane_relay":
+            return "Control-plane relay guidance"
+        return "Rules-based local guidance"
+
     def generate_workflow_recommendation(
         self,
         *,
@@ -189,6 +197,7 @@ class AiClinicWorkflowAdvisor:
         )
         return {
             "mode": "local_fallback",
+            "provider_label": self._provider_label("local_fallback"),
             "model": None,
             "generated_at": utc_now(),
             "summary": " ".join(summary_parts),
@@ -336,6 +345,7 @@ class AiClinicWorkflowAdvisor:
         parsed = self._parse_recommendation_json(output_text)
         return {
             "mode": "openai",
+            "provider_label": self._provider_label("openai"),
             "model": self._model,
             "generated_at": utc_now(),
             "summary": str(parsed.get("summary") or "").strip(),
@@ -375,6 +385,7 @@ class AiClinicWorkflowAdvisor:
         parsed = self._parse_recommendation_json(output_text)
         return {
             "mode": "control_plane_relay",
+            "provider_label": self._provider_label("control_plane_relay"),
             "model": str(relay_result.get("model") or self._model),
             "generated_at": utc_now(),
             "summary": str(parsed.get("summary") or "").strip(),

@@ -14,6 +14,40 @@ class ResearchAiClinicWorkflow:
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
+    def _normalize_requested_backend(self, retrieval_backend: str | None) -> tuple[str, str]:
+        normalized = str(retrieval_backend or "standard").strip().lower()
+        if normalized not in {"standard", "classifier", "dinov2", "hybrid"}:
+            normalized = "standard"
+        effective_backend = "hybrid" if normalized == "standard" else normalized
+        return normalized, effective_backend
+
+    def _ai_clinic_profile_summary(
+        self,
+        *,
+        requested_backend: str,
+        effective_backend: str,
+        workflow_recommendation: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if requested_backend == "standard":
+            label = "AI Clinic standard"
+            description = (
+                "Combines similar-patient retrieval, metadata reranking, narrative case evidence, "
+                "differential ranking, and workflow guidance in one review flow."
+            )
+        else:
+            label = "AI Clinic custom retrieval"
+            description = (
+                "Runs AI Clinic with an explicitly selected retrieval engine while preserving the same "
+                "narrative evidence, differential ranking, and workflow guidance stages."
+            )
+        return {
+            "profile_id": requested_backend,
+            "label": label,
+            "description": description,
+            "effective_retrieval_backend": effective_backend,
+            "workflow_guidance_provider": ((workflow_recommendation or {}).get("provider_label")),
+        }
+
     def run_ai_clinic_similar_cases(
         self,
         site_store: SiteStore,
@@ -27,9 +61,7 @@ class ResearchAiClinicWorkflow:
     ) -> dict[str, Any]:
         service = self.service
         normalized_top_k = max(1, min(int(top_k or 3), 10))
-        requested_backend = str(retrieval_backend or "classifier").strip().lower()
-        if requested_backend not in {"classifier", "dinov2", "hybrid"}:
-            requested_backend = "classifier"
+        requested_profile, requested_backend = self._normalize_requested_backend(retrieval_backend)
         records = site_store.dataset_records()
         if not records:
             raise ValueError("No dataset records are available for AI Clinic retrieval.")
@@ -272,6 +304,24 @@ class ResearchAiClinicWorkflow:
             "dinov2": "dinov2_visual_embedding",
             "hybrid": "hybrid_classifier_dinov2",
         }[requested_backend]
+        profile_summary = self._ai_clinic_profile_summary(
+            requested_backend=requested_profile,
+            effective_backend=requested_backend,
+        )
+        technical_details = {
+            "similar_case_engine": {
+                "mode": retrieval_mode,
+                "vector_index_mode": "faiss_local" if candidate_keys else "brute_force_cache",
+                "backends_used": [
+                    key
+                    for key in ("classifier", "dinov2")
+                    if (key == "classifier" and query_classifier_embedding is not None)
+                    or (key == "dinov2" and query_dinov2_embedding is not None)
+                ],
+                "metadata_reranking": "enabled",
+                "warning": retrieval_warning,
+            }
+        }
         return {
             "query_case": {
                 "patient_id": patient_id,
@@ -286,14 +336,11 @@ class ResearchAiClinicWorkflow:
                 "crop_mode": service._resolve_model_crop_mode(model_version),
             },
             "execution_device": execution_device,
-            "retrieval_mode": retrieval_mode,
-            "vector_index_mode": "faiss_local" if candidate_keys else "brute_force_cache",
-            "retrieval_backends_used": [
-                key
-                for key in ("classifier", "dinov2")
-                if (key == "classifier" and query_classifier_embedding is not None)
-                or (key == "dinov2" and query_dinov2_embedding is not None)
-            ],
+            "ai_clinic_profile": profile_summary,
+            "technical_details": technical_details,
+            "retrieval_mode": "ai_clinic_standard" if requested_profile == "standard" else retrieval_mode,
+            "vector_index_mode": technical_details["similar_case_engine"]["vector_index_mode"],
+            "retrieval_backends_used": list(technical_details["similar_case_engine"]["backends_used"]),
             "retrieval_warning": retrieval_warning,
             "top_k": normalized_top_k,
             "eligible_candidate_count": len(candidates),
@@ -435,9 +482,28 @@ class ResearchAiClinicWorkflow:
             },
             classification_context=classification_context,
         )
+        ai_clinic_profile = self._ai_clinic_profile_summary(
+            requested_backend=str((report.get("ai_clinic_profile") or {}).get("profile_id") or "standard"),
+            effective_backend=str((report.get("ai_clinic_profile") or {}).get("effective_retrieval_backend") or "hybrid"),
+            workflow_recommendation=workflow_recommendation,
+        )
+        technical_details = dict(report.get("technical_details") or {})
+        technical_details["narrative_evidence_engine"] = {
+            "mode": str(text_report.get("text_retrieval_mode") or "unavailable"),
+            "model": text_report.get("text_embedding_model"),
+            "error": text_report.get("text_retrieval_error"),
+        }
+        technical_details["workflow_guidance_engine"] = {
+            "mode": workflow_recommendation.get("mode"),
+            "provider_label": workflow_recommendation.get("provider_label"),
+            "model": workflow_recommendation.get("model"),
+            "llm_error": workflow_recommendation.get("llm_error"),
+        }
 
         return {
             **merged_report,
+            "ai_clinic_profile": ai_clinic_profile,
+            "technical_details": technical_details,
             "classification_context": classification_context,
             "differential": differential,
             "workflow_recommendation": workflow_recommendation,

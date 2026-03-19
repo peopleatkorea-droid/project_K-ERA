@@ -1127,6 +1127,32 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(raw_after_login)
         self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_after_login["password"])))
 
+    def test_legacy_pbkdf2_long_password_rows_stay_authenticable_http(self):
+        long_password = "kera-long-password-" * 6
+        salt = "legacy-long-salt"
+        iterations = 210000
+        digest = hashlib.pbkdf2_hmac("sha256", long_password.encode("utf-8"), salt.encode("utf-8"), iterations)
+        encoded_password = f"pbkdf2_sha256${iterations}${salt}${base64.b64encode(digest).decode('ascii')}"
+        legacy_admin_id = self.app_module.make_id("user")
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.users.insert().values(
+                    user_id=legacy_admin_id,
+                    username="legacy_long_pbkdf2_admin",
+                    password=encoded_password,
+                    role="admin",
+                    full_name="Legacy Long Pbkdf2 Admin",
+                    site_ids=[],
+                    google_sub=None,
+                )
+            )
+
+        migrated_store = self.app_module.ControlPlaneStore()
+        self.assertIsNotNone(migrated_store.authenticate("legacy_long_pbkdf2_admin", long_password))
+        raw_after_login = migrated_store._load_user_by_username("legacy_long_pbkdf2_admin")
+        self.assertIsNotNone(raw_after_login)
+        self.assertTrue(str(raw_after_login["password"]).startswith("pbkdf2_sha256$"))
+
     def test_upsert_user_hashes_plaintext_password_http(self):
         created = self.cp.upsert_user(
             {
@@ -1142,6 +1168,30 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(raw_user)
         self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
         self.assertIsNotNone(self.cp.authenticate("hashed_on_upsert_admin", "admin-pass-123"))
+
+    def test_stringified_empty_site_ids_are_normalized_http(self):
+        legacy_user = self.app_module.make_id("user")
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.users.insert().values(
+                    user_id=legacy_user,
+                    username="legacy_string_site_ids",
+                    password="legacy123",
+                    role="viewer",
+                    full_name="Legacy String Site Ids",
+                    site_ids="[]",
+                    google_sub=None,
+                )
+            )
+
+        repaired_store = self.app_module.ControlPlaneStore()
+        repaired_user = repaired_store.get_user_by_username("legacy_string_site_ids")
+        self.assertIsNotNone(repaired_user)
+        self.assertEqual(repaired_user["site_ids"], [])
+
+        raw_user = repaired_store._load_user_by_username("legacy_string_site_ids")
+        self.assertIsNotNone(raw_user)
+        self.assertEqual(raw_user["site_ids"], [])
 
     def _seed_case(self, token: str, *, patient_id: str = "HTTP-001", visit_date: str = "Initial"):
         patient_response = self.client.post(

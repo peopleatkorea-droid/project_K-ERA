@@ -12,6 +12,7 @@ $webScript = Join-Path $repoRoot "scripts\run_web_frontend.ps1"
 $workerScript = Join-Path $repoRoot "scripts\run_job_worker.ps1"
 
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
+. (Join-Path $PSScriptRoot "dev_process_helpers.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
 
 $powershellExe = $null
@@ -53,6 +54,7 @@ if (-not $effectiveSharedApiBaseUrl) {
 }
 
 $useSharedApi = [bool]$effectiveSharedApiBaseUrl
+[void](Stop-ManagedProcessOnPort -Port $WebPort -Label "frontend" -RepoRoot $repoRoot)
 $resolvedWebPort = Resolve-Port -PreferredPort $WebPort -Label "frontend"
 
 if ($resolvedWebPort -ne $WebPort) {
@@ -62,6 +64,8 @@ if ($resolvedWebPort -ne $WebPort) {
 if ($useSharedApi) {
     $resolvedApiUrl = $effectiveSharedApiBaseUrl.TrimEnd("/")
 } else {
+    [void](Stop-ProcessesMatchingPatterns -Label "job worker" -CommandPatterns @("kera_research.worker"))
+    [void](Stop-ManagedProcessOnPort -Port $ApiPort -Label "API" -RepoRoot $repoRoot -CommandPatterns @("kera_research.api.app:app"))
     $resolvedApiPort = Resolve-Port -PreferredPort $ApiPort -Label "API"
     $resolvedApiUrl = "http://localhost:$resolvedApiPort"
     if ($resolvedApiPort -ne $ApiPort) {

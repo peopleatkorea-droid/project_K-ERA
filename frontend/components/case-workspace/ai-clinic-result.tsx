@@ -97,6 +97,57 @@ function joinValues(values: string[] | undefined, fallback: string) {
   return values && values.length > 0 ? values.join(" / ") : fallback;
 }
 
+function formatProfileLabel(result: AiClinicPreviewResponse, locale: Locale) {
+  return result.ai_clinic_profile?.label ?? pick(locale, "AI Clinic standard", "AI Clinic standard");
+}
+
+function formatProfileDescription(result: AiClinicPreviewResponse, locale: Locale) {
+  return (
+    result.ai_clinic_profile?.description ??
+    pick(
+      locale,
+      "AI Clinic combines similar-patient retrieval, narrative evidence, differential ranking, and workflow guidance in one review flow.",
+      "AI Clinic은 유사 환자 검색, 서술 근거, differential ranking, 워크플로 가이드를 하나의 리뷰 흐름으로 묶습니다."
+    )
+  );
+}
+
+function formatVisualEngineLabel(value: string | null | undefined, locale: Locale) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "classifier_penultimate_feature") {
+    return pick(locale, "Model-space similarity", "모델 공간 유사도");
+  }
+  if (normalized === "dinov2_visual_embedding") {
+    return pick(locale, "Visual similarity", "시각 유사도");
+  }
+  if (normalized === "hybrid_classifier_dinov2") {
+    return pick(locale, "Combined visual and model-space similarity", "시각 유사도 + 모델 공간 유사도 결합");
+  }
+  if (normalized === "ai_clinic_standard") {
+    return pick(locale, "AI Clinic standard retrieval", "AI Clinic 표준 검색");
+  }
+  return value || "";
+}
+
+function formatNarrativeEngineLabel(value: string | null | undefined, locale: Locale) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "biomedclip_image_to_text") {
+    return pick(locale, "Image-to-case narrative retrieval", "이미지-서술 근거 검색");
+  }
+  if (normalized === "unavailable") {
+    return pick(locale, "Unavailable", "사용 불가");
+  }
+  return value || "";
+}
+
+function formatWorkflowProviderLabel(result: AiClinicPreviewResponse, locale: Locale) {
+  return (
+    result.workflow_recommendation?.provider_label ??
+    result.technical_details?.workflow_guidance_engine?.provider_label ??
+    pick(locale, "Rules-based local guidance", "규칙 기반 로컬 가이드")
+  );
+}
+
 export function AiClinicResult({
   locale,
   result,
@@ -122,9 +173,55 @@ export function AiClinicResult({
 
   const queryCase = result.query_case;
   const classification = result.classification_context;
+  const profileLabel = formatProfileLabel(result, locale);
+  const profileDescription = formatProfileDescription(result, locale);
+  const similarCaseEngine = result.technical_details?.similar_case_engine;
+  const narrativeEngine = result.technical_details?.narrative_evidence_engine;
+  const workflowProviderLabel = formatWorkflowProviderLabel(result, locale);
 
   return (
     <div className="grid gap-4">
+      <Section title={pick(locale, "AI Clinic overview", "AI Clinic 개요")} subtitle={profileLabel}>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard label={pick(locale, "similar patients", "유사 환자")} value={result.similar_cases.length} />
+          <KpiCard label={pick(locale, "eligible cases", "검색 가능 케이스")} value={result.eligible_candidate_count} />
+          <KpiCard label={pick(locale, "narrative evidence", "서술 근거")} value={result.text_evidence.length} />
+          <KpiCard
+            label={pick(locale, "workflow steps", "워크플로 단계")}
+            value={result.workflow_recommendation?.recommended_steps.length ?? 0}
+          />
+        </div>
+
+        <Message>{profileDescription}</Message>
+
+        <details className="rounded-[18px] border border-border bg-surface px-4 py-3">
+          <summary className="cursor-pointer text-sm font-semibold text-ink">
+            {pick(locale, "Technical details", "기술 세부정보")}
+          </summary>
+          <div className="mt-4 grid gap-4">
+            <FieldGrid
+              items={[
+                {
+                  label: pick(locale, "Similar-case engine", "유사 증례 엔진"),
+                  value: formatVisualEngineLabel(similarCaseEngine?.mode ?? result.retrieval_mode, locale) || notAvailableLabel,
+                },
+                {
+                  label: pick(locale, "Narrative evidence engine", "서술 근거 엔진"),
+                  value: formatNarrativeEngineLabel(narrativeEngine?.mode ?? result.text_retrieval_mode, locale) || notAvailableLabel,
+                },
+                {
+                  label: pick(locale, "Workflow guidance provider", "워크플로 가이드 제공자"),
+                  value: workflowProviderLabel || notAvailableLabel,
+                },
+                {
+                  label: pick(locale, "Execution device", "실행 디바이스"),
+                  value: result.execution_device,
+                },
+              ]}
+            />
+          </div>
+        </details>
+      </Section>
       <Section title={pick(locale, "Retrieval overview", "검색 개요")}>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <KpiCard label={pick(locale, "similar patients", "유사 환자")} value={result.similar_cases.length} />

@@ -74,9 +74,9 @@ describe("TrainingSection", () => {
     const updater = setInitialForm.mock.calls.at(-1)?.[0];
     expect(updater(buildProps().initialForm).use_pretrained).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Run 8-model initial training" }));
-    expect(screen.getByRole("dialog", { name: "8-model training confirmation" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Start 8-model training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run 8-model staged initial training" }));
+    expect(screen.getByRole("dialog", { name: "8-model staged training confirmation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start 8-model staged training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);
@@ -138,6 +138,7 @@ describe("TrainingSection", () => {
 
     expect(settingsHeading).toBeInTheDocument();
     expect(screen.getByText("Loaded from the queued job payload.")).toBeInTheDocument();
+    expect(screen.getByText("Current phase: Phase 1 · Main benchmark")).toBeInTheDocument();
     expect(screen.getByText("remaining")).toBeInTheDocument();
     expect(screen.getByText(/Estimated remaining time:/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop benchmark" })).toBeInTheDocument();
@@ -198,7 +199,7 @@ describe("TrainingSection", () => {
     const cropSelect = screen.getByLabelText("Crop mode") as HTMLSelectElement;
     expect(cropSelect.value).toBe("paired");
     expect(cropSelect).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run 8-model initial training" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run 8-model staged initial training" })).toBeEnabled();
     expect(screen.getByText(/always uses paired cornea \+ lesion crops/i)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Architecture"), { target: { value: "dual_input_concat" } });

@@ -1298,7 +1298,7 @@ export function useCaseWorkspaceAnalysis({
         model_version_id: validationResult.model_version.version_id,
         model_version_ids: selectedCompareModelVersionIds,
         top_k: 3,
-        retrieval_backend: "hybrid",
+        retrieval_backend: "standard",
       });
       const similarCases = await Promise.all(
         result.similar_cases.map(async (item) => {

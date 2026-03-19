@@ -1029,7 +1029,7 @@ class CaseAiClinicRequest(BaseModel):
     model_version_id: str | None = None
     model_version_ids: list[str] = Field(default_factory=list)
     top_k: int = 3
-    retrieval_backend: str = "hybrid"
+    retrieval_backend: str = "standard"
 
 
 class CaseContributionRequest(BaseModel):

@@ -1,43 +1,51 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
+import json
 from typing import Any, Callable
 
-import bcrypt
 from sqlalchemy import select, update
 
 from kera_research.config import PUBLIC_ALIAS_SALT
 from kera_research.db import CONTROL_PLANE_ENGINE, access_requests, users
 from kera_research.domain import make_id, utc_now
+from kera_research.passwords import (
+    is_bcrypt_hash,
+    is_pbkdf2_sha256_hash,
+    verify_bcrypt_password,
+    verify_pbkdf2_sha256_hash,
+)
 
-
-def _is_bcrypt_hash(value: str) -> bool:
-    return str(value or "").startswith(("$2b$", "$2a$", "$2y$"))
-
-
-def _is_pbkdf2_sha256_hash(value: str) -> bool:
-    return str(value or "").startswith("pbkdf2_sha256$")
-
-
-def _verify_pbkdf2_sha256_hash(password: str, encoded: str) -> bool:
-    try:
-        algorithm, iteration_text, salt, expected_hash = str(encoded or "").split("$", 3)
-    except ValueError:
-        return False
-    if algorithm != "pbkdf2_sha256":
-        return False
-    try:
-        iterations = int(iteration_text)
-    except (TypeError, ValueError):
-        return False
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
-    try:
-        expected = base64.b64decode(expected_hash)
-    except Exception:
-        return False
-    return hmac.compare_digest(candidate, expected)
+def _normalize_site_ids(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if parsed is not None and parsed != value:
+            return _normalize_site_ids(parsed)
+        values = [text]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    elif value is None:
+        values = []
+    else:
+        try:
+            values = list(value)
+        except TypeError:
+            values = [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for entry in values:
+        text = str(entry or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
 
 
 class ControlPlaneIdentityFacade:
@@ -123,12 +131,12 @@ class ControlPlaneIdentityFacade:
         stored = user_record.get("password", "")
         if stored == self.google_auth_sentinel:
             return None
-        if _is_bcrypt_hash(stored):
-            if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
+        if is_bcrypt_hash(stored):
+            if not verify_bcrypt_password(password, stored):
                 return None
             return self.serialize_user(user_record)
-        if _is_pbkdf2_sha256_hash(stored):
-            if not _verify_pbkdf2_sha256_hash(password, stored):
+        if is_pbkdf2_sha256_hash(stored):
+            if not verify_pbkdf2_sha256_hash(password, stored):
                 return None
             migrated_password = self.normalize_password_storage(password)
             with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -143,7 +151,7 @@ class ControlPlaneIdentityFacade:
 
     def serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         serialized = dict(user_record)
-        serialized["site_ids"] = list(serialized.get("site_ids") or [])
+        serialized["site_ids"] = _normalize_site_ids(serialized.get("site_ids"))
         serialized["registry_consents"] = self.normalize_registry_consents(serialized.get("registry_consents"))
         if not str(serialized.get("public_alias") or "").strip():
             with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -219,7 +227,7 @@ class ControlPlaneIdentityFacade:
         return aliases
 
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
-        normalized_site_ids = list(dict.fromkeys(user_record.get("site_ids") or []))
+        normalized_site_ids = _normalize_site_ids(user_record.get("site_ids"))
         normalized = {
             **user_record,
             "username": user_record["username"].strip().lower(),
@@ -316,7 +324,7 @@ class ControlPlaneIdentityFacade:
             return "approved"
         if user.get("password") != self.google_auth_sentinel:
             return "approved"
-        if user.get("site_ids"):
+        if _normalize_site_ids(user.get("site_ids")):
             return "approved"
         latest_request = self.latest_access_request(user["user_id"])
         if latest_request is None:
@@ -455,7 +463,7 @@ class ControlPlaneIdentityFacade:
                 raise ValueError(f"Unknown user_id: {request_row['user_id']}")
 
             if decision_value == "approved":
-                next_site_ids = list(user_row["site_ids"] or [])
+                next_site_ids = _normalize_site_ids(user_row["site_ids"])
                 if site_id and site_id not in next_site_ids:
                     next_site_ids.append(site_id)
                 conn.execute(update(users).where(users.c.user_id == request_row["user_id"]).values(role=role_value, site_ids=next_site_ids))
@@ -475,7 +483,7 @@ class ControlPlaneIdentityFacade:
         all_sites = self.store.list_sites()
         if user.get("role") == "admin":
             return all_sites
-        allowed_site_ids = set(user.get("site_ids") or [])
+        allowed_site_ids = set(_normalize_site_ids(user.get("site_ids")))
         return [site for site in all_sites if site["site_id"] in allowed_site_ids]
 
     def user_can_access_site(self, user: dict[str, Any], site_id: str | None) -> bool:
@@ -483,4 +491,4 @@ class ControlPlaneIdentityFacade:
             return False
         if user.get("role") == "admin":
             return True
-        return site_id in set(user.get("site_ids") or [])
+        return site_id in set(_normalize_site_ids(user.get("site_ids")))

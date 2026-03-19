@@ -278,9 +278,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <strong className="font-medium text-[#e4e8f5]">"이걸 정말 내가 할 수 있는 연구일까?"</strong>
                 <br />
                 <br />
-                몇 달을 쏟아부어 만든 모델이
+                논문 코드를 그대로 돌렸는데
                 <br />
-                다른 병원에서는 형편없는 성적을 보일 때의 허탈함.
+                결과는 전혀 다르게 나올 때.
                 <br />
                 <br />
                 그리고 무엇보다 —

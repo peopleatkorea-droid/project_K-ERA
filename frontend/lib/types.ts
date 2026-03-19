@@ -550,6 +550,7 @@ export type AiClinicTextEvidenceRecord = {
 
 export type AiClinicWorkflowRecommendation = {
   mode: string;
+  provider_label?: string | null;
   model?: string | null;
   generated_at?: string | null;
   summary: string;
@@ -609,6 +610,33 @@ export type AiClinicResponse = {
     architecture?: string | null;
     crop_mode?: string | null;
   };
+  ai_clinic_profile?: {
+    profile_id: string;
+    label: string;
+    description: string;
+    effective_retrieval_backend?: string | null;
+    workflow_guidance_provider?: string | null;
+  } | null;
+  technical_details?: {
+    similar_case_engine?: {
+      mode?: string | null;
+      vector_index_mode?: string | null;
+      backends_used?: string[];
+      metadata_reranking?: string | null;
+      warning?: string | null;
+    } | null;
+    narrative_evidence_engine?: {
+      mode?: string | null;
+      model?: string | null;
+      error?: string | null;
+    } | null;
+    workflow_guidance_engine?: {
+      mode?: string | null;
+      provider_label?: string | null;
+      model?: string | null;
+      llm_error?: string | null;
+    } | null;
+  } | null;
   execution_device: string;
   retrieval_mode: string;
   vector_index_mode?: string | null;

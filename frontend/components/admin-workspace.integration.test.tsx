@@ -753,6 +753,58 @@ describe("AdminWorkspace integration", () => {
     ).toBeInTheDocument();
   });
 
+  it("explains that the default storage root is the parent directory for per-site folders", async () => {
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    await screen.findByRole("button", { name: "Register hospital" });
+    const folderInputs = await screen.findAllByLabelText("Folder path");
+    expect(folderInputs[0]).toHaveAttribute("placeholder", "D:\\KERA_DATA\\sites");
+    expect(
+      screen.getByText(
+        "Enter the parent folder that will contain per-site subfolders, usually ending in \\KERA_DATA\\sites. For example, SITE_A is stored under D:\\KERA_DATA\\sites\\SITE_A."
+      )
+    ).toBeInTheDocument();
+  });
+
   it("runs HIRA institution sync from the requests section", async () => {
     render(
       <LocaleProvider>

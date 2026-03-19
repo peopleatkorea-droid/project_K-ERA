@@ -23,6 +23,8 @@ export function controlPlaneSessionSecret(): string {
 export function controlPlaneDatabaseUrl(): string {
   return (
     process.env.KERA_CONTROL_PLANE_DATABASE_URL?.trim() ||
+    process.env.KERA_AUTH_DATABASE_URL?.trim() ||
+    process.env.KERA_DATABASE_URL?.trim() ||
     process.env.DATABASE_URL?.trim() ||
     process.env.POSTGRES_URL?.trim() ||
     ""

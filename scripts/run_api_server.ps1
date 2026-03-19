@@ -5,8 +5,10 @@ param(
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$apiCommandPatterns = @("kera_research.api.app:app")
 
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
+. (Join-Path $PSScriptRoot "dev_process_helpers.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
 
 if (-not $env:KERA_GOOGLE_CLIENT_ID -and $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
@@ -41,6 +43,18 @@ if (-not (Test-Path $venvPython)) {
 
 Set-Location $repoRoot
 $env:PYTHONPATH = "src"
+
+[void](Stop-ManagedProcessOnPort -Port $Port -Label "API" -RepoRoot $repoRoot -CommandPatterns $apiCommandPatterns)
+$existingListener = Get-ListeningProcessInfo -Port $Port
+if ($existingListener) {
+    $processDescription = if ($existingListener.CommandLine) {
+        $existingListener.CommandLine
+    } else {
+        $existingListener.Name
+    }
+
+    throw "Port $Port is already in use by PID $($existingListener.ProcessId): $processDescription"
+}
 
 Write-Host "[K-ERA] Starting API server on port $Port ..." -ForegroundColor Cyan
 

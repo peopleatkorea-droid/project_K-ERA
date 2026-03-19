@@ -105,7 +105,7 @@ export async function runCaseAiClinic(
     model_version_id?: string;
     model_version_ids?: string[];
     top_k?: number;
-    retrieval_backend?: "classifier" | "dinov2" | "hybrid";
+    retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
   },
 ) {
   return request<AiClinicResponse>(
@@ -115,7 +115,7 @@ export async function runCaseAiClinic(
       body: JSON.stringify({
         execution_mode: "auto",
         top_k: 3,
-        retrieval_backend: "hybrid",
+        retrieval_backend: "standard",
         ...payload,
       }),
     },

@@ -22,7 +22,42 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
 ];
 
-const BENCHMARK_ARCHITECTURE_OPTIONS = TRAINING_ARCHITECTURE_OPTIONS;
+const TRAINING_ARCHITECTURE_LABELS = new Map(TRAINING_ARCHITECTURE_OPTIONS.map((option) => [option.value, option.label]));
+const BENCHMARK_PHASES = [
+  {
+    key: "main",
+    title: { en: "Phase 1 · Main benchmark", ko: "1단계 · 메인 benchmark" },
+    description: {
+      en: "Six single-image baselines with one shared patient split.",
+      ko: "하나의 patient split으로 6개 single-image baseline을 먼저 학습합니다.",
+    },
+    architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2"],
+  },
+  {
+    key: "mil",
+    title: { en: "Phase 2 · Visit-level extension", ko: "2단계 · visit-level 확장" },
+    description: {
+      en: "DINOv2 Attention MIL runs separately so visit-level aggregation is interpreted on its own.",
+      ko: "visit-level 집계를 별도로 해석할 수 있도록 DINOv2 Attention MIL을 따로 실행합니다.",
+    },
+    architectures: ["dinov2_mil"],
+  },
+  {
+    key: "fusion",
+    title: { en: "Phase 3 · Paired-input extension", ko: "3단계 · paired-input 확장" },
+    description: {
+      en: "Dual-input Concat Fusion runs last with forced paired cornea + lesion crops.",
+      ko: "Dual-input Concat Fusion은 각막 + 병변 paired crop을 강제로 적용해 마지막에 실행합니다.",
+    },
+    architectures: ["dual_input_concat"],
+  },
+] as const;
+const BENCHMARK_ARCHITECTURE_OPTIONS = BENCHMARK_PHASES.flatMap((phase) =>
+  phase.architectures.map((architecture) => ({
+    value: architecture,
+    label: TRAINING_ARCHITECTURE_LABELS.get(architecture) ?? architecture,
+  }))
+);
 const BENCHMARK_MODEL_COUNT = BENCHMARK_ARCHITECTURE_OPTIONS.length;
 const CASE_AGGREGATION_OPTIONS = [
   { value: "mean", label: "Mean" },
@@ -87,6 +122,16 @@ type Props = {
   onRunInitialTraining: () => void;
   onResumeBenchmark: () => void;
 };
+
+type BenchmarkPhaseDefinition = (typeof BENCHMARK_PHASES)[number];
+
+function getBenchmarkPhase(architecture: string | null | undefined): BenchmarkPhaseDefinition | null {
+  const normalized = String(architecture || "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return BENCHMARK_PHASES.find((phase) => phase.architectures.some((candidate) => candidate === normalized)) ?? null;
+}
 
 function getEstimatedRemainingSeconds(job: SiteJobRecord | null, percent: number): number | null {
   if (!job) {
@@ -207,6 +252,12 @@ export function TrainingSection({
 }: Props) {
   const [benchmarkConfirmOpen, setBenchmarkConfirmOpen] = useState(false);
   const benchmarkModelLabels = BENCHMARK_ARCHITECTURE_OPTIONS.map((option) => option.label);
+  const benchmarkPhaseGroups = BENCHMARK_PHASES.map((phase) => ({
+    ...phase,
+    titleLabel: pick(locale, phase.title.en, phase.title.ko),
+    descriptionLabel: pick(locale, phase.description.en, phase.description.ko),
+    labels: phase.architectures.map((architecture) => TRAINING_ARCHITECTURE_LABELS.get(architecture) ?? architecture),
+  }));
   const benchmarkPayload = (benchmarkJob?.payload ?? {}) as BenchmarkJobPayload;
   const isDualInputArchitecture = initialForm.architecture === "dual_input_concat";
   const effectiveCropMode = isDualInputArchitecture ? "paired" : initialForm.crop_mode;
@@ -246,6 +297,7 @@ export function TrainingSection({
   const benchmarkEtaLabel = formatRemainingTime(getEstimatedRemainingSeconds(benchmarkJob, benchmarkPercent), locale, notAvailableLabel);
   const benchmarkActive = ["queued", "running", "cancelling"].includes(String(benchmarkJob?.status || "").trim().toLowerCase());
   const initialActive = ["queued", "running", "cancelling"].includes(String(initialJob?.status || "").trim().toLowerCase());
+  const currentBenchmarkPhase = getBenchmarkPhase((benchmarkProgress as { architecture?: string } | null)?.architecture ?? null);
   const canResumeBenchmark =
     benchmarkJob !== null &&
     !benchmarkActive &&
@@ -353,8 +405,8 @@ export function TrainingSection({
         titleAs="h3"
         description={pick(
           locale,
-          `Configure a single baseline run or queue a ${BENCHMARK_MODEL_COUNT}-model sequential initial-training run with one shared split. Dual-input concat is included and always runs with paired cornea + lesion crops.`,
-          `단일 기준 모델을 학습하거나, 하나의 split으로 ${BENCHMARK_MODEL_COUNT}종 순차 초기 학습을 실행할 수 있습니다. dual-input concat도 포함되며 항상 각막 + 병변 paired crop으로 실행됩니다.`
+          `Configure a single baseline run or queue one staged initial-training job: 6 single-image models first, then visit-level MIL, then paired-input fusion with one shared split.`,
+          `단일 기준 모델을 학습하거나, 하나의 split으로 6개 single-image 모델을 먼저 학습한 뒤 visit-level MIL과 paired-input fusion을 이어서 실행하는 단계형 초기 학습을 선택할 수 있습니다.`
         )}
         aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
@@ -491,19 +543,19 @@ export function TrainingSection({
 
       <Card as="section" variant="nested" className="grid gap-4 p-5">
         <SectionHeader
-          title={pick(locale, `Run ${BENCHMARK_MODEL_COUNT} sequential baseline models in one job`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습`)}
+          title={pick(locale, `Run ${BENCHMARK_MODEL_COUNT} staged baseline models in one job`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습`)}
           titleAs="h4"
           description={pick(
             locale,
-            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, EfficientNetV2-S, DINOv2, DINOv2 Attention MIL, and Dual-input Concat Fusion are trained sequentially. Dual-input concat always uses paired cornea + lesion crops.",
-            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, EfficientNetV2-S, DINOv2, DINOv2 Attention MIL, Dual-input Concat Fusion을 순차 학습합니다. dual-input concat은 항상 각막 + 병변 paired crop을 사용합니다."
+            "One queued job runs Phase 1 main single-image baselines, Phase 2 visit-level MIL, and Phase 3 paired-input fusion. Dual-input concat always uses paired cornea + lesion crops.",
+            "하나의 작업으로 1단계 main single-image baseline, 2단계 visit-level MIL, 3단계 paired-input fusion을 실행합니다. dual-input concat은 항상 각막 + 병변 paired crop을 사용합니다."
           )}
         />
         <div className="text-sm leading-6 text-muted">
           {pick(
             locale,
-            "Progress shows overall percent, current architecture, sequence, effective crop mode, and worker stage.",
-            "진행 상황에는 전체 퍼센트, 현재 아키텍처, 순서, 적용 crop 모드, 작업 단계가 함께 표시됩니다."
+            "Progress shows the active phase, overall percent, current architecture, sequence, effective crop mode, and worker stage.",
+            "진행 상황에는 현재 단계, 전체 퍼센트, 현재 아키텍처, 순서, 적용 crop 모드, 작업 단계가 함께 표시됩니다."
           )}
         </div>
         <div
@@ -516,6 +568,21 @@ export function TrainingSection({
             </span>
           ))}
         </div>
+        <div className="grid gap-3" aria-label={pick(locale, "Staged benchmark phases", "단계형 benchmark 단계")}>
+          {benchmarkPhaseGroups.map((phase) => (
+            <div key={phase.key} className="rounded-[18px] border border-border bg-surface-muted/60 px-4 py-3">
+              <div className="text-sm font-semibold text-ink">{phase.titleLabel}</div>
+              <p className="mb-3 mt-1 text-sm leading-6 text-muted">{phase.descriptionLabel}</p>
+              <div className="flex flex-wrap gap-2">
+                {phase.labels.map((label) => (
+                  <span key={`${phase.key}-${label}`} className={docSiteBadgeClass}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
         <div className="flex justify-end">
           <Button
             type="button"
@@ -523,7 +590,9 @@ export function TrainingSection({
             disabled={benchmarkBusy || !selectedSiteId}
             onClick={() => setBenchmarkConfirmOpen(true)}
           >
-            {benchmarkBusy ? pick(locale, `Training ${BENCHMARK_MODEL_COUNT} models...`, `${BENCHMARK_MODEL_COUNT}개 모델 학습 중...`) : pick(locale, `Run ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 실행`)}
+            {benchmarkBusy
+              ? pick(locale, `Training ${BENCHMARK_MODEL_COUNT} staged models...`, `${BENCHMARK_MODEL_COUNT}개 단계형 모델 학습 중...`)
+              : pick(locale, `Run ${BENCHMARK_MODEL_COUNT}-model staged initial training`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 실행`)}
           </Button>
         </div>
       </Card>
@@ -533,22 +602,37 @@ export function TrainingSection({
           className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training confirmation`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 확인`)}
+          aria-label={pick(locale, `${BENCHMARK_MODEL_COUNT}-model staged training confirmation`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 확인`)}
         >
           <Card as="div" variant="panel" className="w-full max-w-4xl grid gap-5 p-6">
             <SectionHeader
-              title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 확인`)}
+              title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model staged initial training`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 확인`)}
               titleAs="h4"
-              description={pick(locale, "One queued job, sequential execution.", "하나의 작업으로 순차 실행됩니다.")}
+              description={pick(locale, "One queued job, three staged phases.", "하나의 작업으로 3단계 순차 실행합니다.")}
             />
             <p className="m-0 text-sm leading-6 text-muted">
               {pick(
                 locale,
-                `The current runtime settings will be applied to all ${BENCHMARK_MODEL_COUNT} architectures, with dual-input concat forced to paired cornea + lesion crops.`,
-                `현재 실행 설정이 ${BENCHMARK_MODEL_COUNT}개 아키텍처 전체에 적용되며, dual-input concat은 각막 + 병변 paired crop으로 강제됩니다.`
+                `The current runtime settings will be applied across all three phases, with dual-input concat forced to paired cornea + lesion crops.`,
+                `현재 실행 설정은 3단계 전체에 적용되며, dual-input concat은 각막 + 병변 paired crop으로 강제됩니다.`
               )}
             </p>
             <SummaryGrid items={benchmarkSummaryItems} />
+            <div className="grid gap-3" aria-label={pick(locale, "Benchmark phases", "benchmark 단계")}>
+              {benchmarkPhaseGroups.map((phase) => (
+                <div key={`confirm-${phase.key}`} className="rounded-[18px] border border-border bg-surface-muted/60 px-4 py-3">
+                  <div className="text-sm font-semibold text-ink">{phase.titleLabel}</div>
+                  <p className="mb-3 mt-1 text-sm leading-6 text-muted">{phase.descriptionLabel}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {phase.labels.map((label) => (
+                      <span key={`confirm-${phase.key}-${label}`} className={docSiteBadgeClass}>
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
             <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Models to train", "학습 대상 모델")}>
               {benchmarkModelLabels.map((label) => (
                 <span key={`confirm-${label}`} className={docSiteBadgeClass}>
@@ -568,7 +652,7 @@ export function TrainingSection({
                   onRunBenchmark();
                 }}
               >
-                {pick(locale, `Start ${BENCHMARK_MODEL_COUNT}-model training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 시작`)}
+                {pick(locale, `Start ${BENCHMARK_MODEL_COUNT}-model staged training`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 시작`)}
               </Button>
             </div>
           </Card>
@@ -654,13 +738,18 @@ export function TrainingSection({
       {benchmarkJob ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training progress`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 진행 상태`)}
+            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model staged training progress`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 진행 상태`)}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{formatTrainingStage((benchmarkProgress as { stage?: string } | null)?.stage ?? null)}</span>}
           />
           <div className="h-2.5 overflow-hidden rounded-full bg-brand/10" aria-hidden="true">
             <div className="h-full rounded-full bg-brand" style={{ width: `${benchmarkPercent}%` }} />
           </div>
+          {currentBenchmarkPhase ? (
+            <p className="m-0 text-sm leading-6 text-muted">
+              {pick(locale, "Current phase", "현재 단계")}: {pick(locale, currentBenchmarkPhase.title.en, currentBenchmarkPhase.title.ko)}
+            </p>
+          ) : null}
           <MetricGrid columns={4}>
             <MetricItem value={`${benchmarkPercent}%`} label={pick(locale, "progress", "진행률")} />
             <MetricItem value={(benchmarkProgress as { architecture?: string } | null)?.architecture ?? notAvailableLabel} label={pick(locale, "architecture", "아키텍처")} />
@@ -717,8 +806,8 @@ export function TrainingSection({
               ? (benchmarkProgress as { message: string }).message
               : pick(
                   locale,
-                  `Waiting for the ${BENCHMARK_MODEL_COUNT}-model training worker to report progress.`,
-                  `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 작업 상태를 기다리는 중입니다.`
+                  `Waiting for the ${BENCHMARK_MODEL_COUNT}-model staged training worker to report progress.`,
+                  `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 작업 상태를 기다리는 중입니다.`
                 )}
           </p>
         </Card>
@@ -727,7 +816,7 @@ export function TrainingSection({
       {benchmarkResult ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training summary`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 요약`)}
+            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model staged training summary`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 요약`)}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{benchmarkResult.best_architecture ?? notAvailableLabel}</span>}
           />

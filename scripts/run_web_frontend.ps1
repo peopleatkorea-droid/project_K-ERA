@@ -40,6 +40,7 @@ function Resolve-WebPort {
 }
 
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
+. (Join-Path $PSScriptRoot "dev_process_helpers.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
 
 if (-not $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID -and $env:KERA_GOOGLE_CLIENT_ID) {
@@ -59,6 +60,7 @@ try {
         throw "Next.js CLI not found. Run npm install in the frontend directory first."
     }
 
+    [void](Stop-ManagedProcessOnPort -Port $Port -Label "frontend" -RepoRoot $repoRoot)
     $resolvedPort = Resolve-WebPort -PreferredPort $Port
     if ($resolvedPort -ne $Port) {
         Write-Host "[K-ERA] Port $Port is already in use. Starting frontend on $resolvedPort instead." -ForegroundColor Yellow

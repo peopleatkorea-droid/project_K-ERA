@@ -374,8 +374,15 @@ export function ManagementSection({
               }
             />
             <Field label={pick(locale, "Folder path", "폴더 경로")}>
-              <input value={instanceStorageRootForm} onChange={(event) => setInstanceStorageRootForm(event.target.value)} placeholder="D:\\KERA_DATA" />
+              <input value={instanceStorageRootForm} onChange={(event) => setInstanceStorageRootForm(event.target.value)} placeholder="D:\KERA_DATA\sites" />
             </Field>
+            <div className="text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Enter the parent folder that will contain per-site subfolders, usually ending in \\KERA_DATA\\sites. For example, SITE_A is stored under D:\\KERA_DATA\\sites\\SITE_A.",
+                "병원별 하위 폴더를 담는 부모 경로를 입력하세요. 보통 \\KERA_DATA\\sites 로 끝나는 경로이며, 예를 들어 SITE_A는 D:\\KERA_DATA\\sites\\SITE_A 아래에 저장됩니다."
+              )}
+            </div>
             <MetricGrid columns={hasEnvironmentDefaultOverride ? 3 : 2}>
               <MetricItem value={storageSettings?.default_storage_root ?? notAvailableLabel} label={pick(locale, "Built-in default", "내장 기본 경로")} />
               {hasEnvironmentDefaultOverride ? (
@@ -426,7 +433,7 @@ export function ManagementSection({
             {selectedManagedSite ? (
               <>
                 <Field label={pick(locale, "Folder path", "폴더 경로")}>
-                  <input value={siteStorageRootForm} onChange={(event) => setSiteStorageRootForm(event.target.value)} placeholder="D:\\HospitalAData\\39100103" />
+                  <input value={siteStorageRootForm} onChange={(event) => setSiteStorageRootForm(event.target.value)} placeholder="D:\HospitalAData\39100103" />
                 </Field>
                 <MetricGrid columns={selectedSiteUsesPinnedStorageRoot ? 3 : 2}>
                   <MetricItem value={selectedSiteCurrentStorageRoot ?? notAvailableLabel} label={pick(locale, "Current root", "현재 경로")} />

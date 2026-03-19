@@ -55,7 +55,16 @@ import {
 } from "../../lib/api";
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
 
-const BENCHMARK_ARCHITECTURES = ["vit", "swin", "dinov2", "dinov2_mil", "dual_input_concat", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const BENCHMARK_ARCHITECTURES = [
+  "densenet121",
+  "convnext_tiny",
+  "vit",
+  "swin",
+  "efficientnet_v2_s",
+  "dinov2",
+  "dinov2_mil",
+  "dual_input_concat",
+];
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
@@ -1064,8 +1073,8 @@ export function useAdminWorkspaceController({
           latestJob.result?.error ||
             pick(
               locale,
-              `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
-              `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`
+              `${BENCHMARK_ARCHITECTURES.length}-model staged initial training failed.`,
+              `${BENCHMARK_ARCHITECTURES.length}종 단계형 초기 학습에 실패했습니다.`
             )
         );
       }
@@ -1073,8 +1082,8 @@ export function useAdminWorkspaceController({
         throw new Error(
           pick(
             locale,
-            `${BENCHMARK_ARCHITECTURES.length}-model initial training result is missing.`,
-            `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습 결과가 없습니다.`
+            `${BENCHMARK_ARCHITECTURES.length}-model staged initial-training result is missing.`,
+            `${BENCHMARK_ARCHITECTURES.length}종 단계형 초기 학습 결과가 없습니다.`
           )
         );
       }
@@ -1085,8 +1094,8 @@ export function useAdminWorkspaceController({
         tone: "success",
         message: pick(
           locale,
-          `${BENCHMARK_ARCHITECTURES.length}-model initial training completed for ${result.results.length} architecture(s).`,
-          `${result.results.length}개 아키텍처의 ${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습이 완료되었습니다.`
+          `${BENCHMARK_ARCHITECTURES.length}-model staged initial training completed for ${result.results.length} architecture(s).`,
+          `${result.results.length}개 아키텍처의 ${BENCHMARK_ARCHITECTURES.length}종 단계형 초기 학습이 완료되었습니다.`
         ),
       });
     } catch (nextError) {
@@ -1096,8 +1105,8 @@ export function useAdminWorkspaceController({
           nextError,
           pick(
             locale,
-            `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
-            `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`
+            `${BENCHMARK_ARCHITECTURES.length}-model staged initial training failed.`,
+            `${BENCHMARK_ARCHITECTURES.length}종 단계형 초기 학습에 실패했습니다.`
           )
         ),
       });
@@ -1170,8 +1179,8 @@ export function useAdminWorkspaceController({
           latestJob.result?.error ||
             pick(
               locale,
-              `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
-              `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`,
+              `${BENCHMARK_ARCHITECTURES.length}-model staged initial training failed.`,
+              `${BENCHMARK_ARCHITECTURES.length}종 단계형 초기 학습에 실패했습니다.`,
             ),
         );
       }

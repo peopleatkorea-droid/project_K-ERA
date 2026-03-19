@@ -30,16 +30,16 @@ export function AiClinicPanel({
     <Card as="section" variant="panel" className="grid gap-4 p-5">
       <SectionHeader
         eyebrow={<div className={docSectionLabelClass}>{pick(locale, "AI Clinic", "AI Clinic")}</div>}
-        title={pick(locale, "Find similar patients", "유사 환자 찾기")}
+        title={pick(locale, "Run AI Clinic review", "AI Clinic 리뷰 실행")}
         titleAs="h4"
         description={pick(
           locale,
-          "Use the saved validation result to pull nearby patients from the retrieval index.",
-          "저장된 검증 결과를 바탕으로 retrieval index에서 가까운 환자를 찾습니다."
+          "Use the saved validation result to assemble similar-patient evidence, narrative evidence, and workflow guidance in one AI Clinic flow.",
+          "저장된 검증 결과를 바탕으로 유사 환자 근거, 서술 근거, 워크플로 가이드를 하나의 AI Clinic 흐름으로 묶습니다."
         )}
         aside={
           <Button type="button" variant="ghost" onClick={onRunAiClinic} disabled={aiClinicBusy || !canRunAiClinic}>
-            {aiClinicBusy ? pick(locale, "Searching...", "검색 중...") : pick(locale, "Run similarity search", "유사도 검색 실행")}
+            {aiClinicBusy ? pick(locale, "Running...", "실행 중...") : pick(locale, "Run AI Clinic", "AI Clinic 실행")}
           </Button>
         }
       />
@@ -48,8 +48,8 @@ export function AiClinicPanel({
         <div className={emptySurfaceClass}>
           {pick(
             locale,
-            "Run validation first, then AI Clinic can retrieve up to three similar patients.",
-            "먼저 검증을 실행하면 AI Clinic이 최대 3명의 유사 환자를 찾아줍니다."
+            "Run validation first, then AI Clinic can build a combined review from similar patients, narrative evidence, and workflow guidance.",
+            "먼저 검증을 실행하면 AI Clinic이 유사 환자, 서술 근거, 워크플로 가이드를 묶어 리뷰를 구성합니다."
           )}
         </div>
       ) : (
