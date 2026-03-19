@@ -4,7 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 
-import bcrypt
+from kera_research.passwords import hash_password
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 BUILT_IN_STORAGE_DIR = (BASE_DIR.parent / "KERA_DATA").resolve()
@@ -238,7 +238,7 @@ def _env_seed_user(
     password = os.getenv(password_env, "").strip()
     if not username or not password:
         return None
-    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    hashed = hash_password(password)
     return {
         "user_id": user_id,
         "username": username,
