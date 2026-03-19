@@ -69,13 +69,21 @@ try {
         }
     }
 
-    if ($ApiBaseUrl) {
-        $env:KERA_INTERNAL_API_BASE_URL = $ApiBaseUrl
+    try {
+        if ($ApiBaseUrl) {
+            $env:KERA_INTERNAL_API_BASE_URL = $ApiBaseUrl
+        }
+        if (-not $env:NEXT_PUBLIC_API_BASE_URL) {
+            Remove-Item Env:NEXT_PUBLIC_API_BASE_URL -ErrorAction SilentlyContinue
+        }
+        & $nextCli dev --hostname 0.0.0.0 --port $resolvedPort
+    } catch {
+        Write-Host ""
+        Write-Host "[ERROR] Frontend server failed: $_" -ForegroundColor Red
+        Write-Host ""
+        Read-Host "Press Enter to close"
+        exit 1
     }
-    if (-not $env:NEXT_PUBLIC_API_BASE_URL) {
-        Remove-Item Env:NEXT_PUBLIC_API_BASE_URL -ErrorAction SilentlyContinue
-    }
-    & $nextCli dev --hostname 0.0.0.0 --port $resolvedPort
 }
 finally {
     Pop-Location

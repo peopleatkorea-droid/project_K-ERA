@@ -55,6 +55,7 @@ if (-not $effectiveSharedApiBaseUrl) {
 
 $useSharedApi = [bool]$effectiveSharedApiBaseUrl
 [void](Stop-ManagedProcessOnPort -Port $WebPort -Label "frontend" -RepoRoot $repoRoot)
+[void](Stop-ProcessesMatchingPatterns -Label "frontend launcher" -CommandPatterns @($webScript) -ProcessNames @("powershell.exe", "pwsh.exe"))
 $resolvedWebPort = Resolve-Port -PreferredPort $WebPort -Label "frontend"
 
 if ($resolvedWebPort -ne $WebPort) {
@@ -65,6 +66,8 @@ if ($useSharedApi) {
     $resolvedApiUrl = $effectiveSharedApiBaseUrl.TrimEnd("/")
 } else {
     [void](Stop-ProcessesMatchingPatterns -Label "job worker" -CommandPatterns @("kera_research.worker"))
+    [void](Stop-ProcessesMatchingPatterns -Label "API launcher" -CommandPatterns @($apiScript) -ProcessNames @("powershell.exe", "pwsh.exe"))
+    [void](Stop-ProcessesMatchingPatterns -Label "job worker launcher" -CommandPatterns @($workerScript) -ProcessNames @("powershell.exe", "pwsh.exe"))
     [void](Stop-ManagedProcessOnPort -Port $ApiPort -Label "API" -RepoRoot $repoRoot -CommandPatterns @("kera_research.api.app:app"))
     $resolvedApiPort = Resolve-Port -PreferredPort $ApiPort -Label "API"
     $resolvedApiUrl = "http://localhost:$resolvedApiPort"
@@ -83,18 +86,18 @@ if ($useSharedApi) {
 } else {
     Write-Host "[K-ERA] Starting API server..." -ForegroundColor Cyan
     Start-Process -FilePath $powershellExe -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $quotedApiScript, "-Port", $resolvedApiPort
+        "-ExecutionPolicy", "Bypass", "-File", $quotedApiScript, "-Port", $resolvedApiPort
     )
 
     Write-Host "[K-ERA] Starting job worker..." -ForegroundColor Cyan
     Start-Process -FilePath $powershellExe -ArgumentList @(
-        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $quotedWorkerScript
+        "-ExecutionPolicy", "Bypass", "-File", $quotedWorkerScript
     )
 }
 
 Write-Host "[K-ERA] Starting frontend..." -ForegroundColor Cyan
 Start-Process -FilePath $powershellExe -ArgumentList @(
-    "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $quotedWebScript,
+    "-ExecutionPolicy", "Bypass", "-File", $quotedWebScript,
     "-ApiBaseUrl", $resolvedApiUrl, "-Port", $resolvedWebPort
 )
 
