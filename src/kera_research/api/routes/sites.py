@@ -66,6 +66,10 @@ def build_sites_router(support: Any) -> APIRouter:
     EmbeddingBackfillRequest = support.EmbeddingBackfillRequest
     CrossValidationRunRequest = support.CrossValidationRunRequest
 
+    def assert_site_access_only(user: dict[str, Any], site_id: str) -> None:
+        if not user_can_access_site(user, site_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
+
     def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
         patients = site_store.list_patients()
         visits = site_store.list_visits()
@@ -175,7 +179,7 @@ def build_sites_router(support: Any) -> APIRouter:
         authorization: str | None = Header(default=None),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         site_record = site_record_for_request(
             cp,
             site_id=site_id,
@@ -202,7 +206,7 @@ def build_sites_router(support: Any) -> APIRouter:
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         site_record = site_record_for_request(
             cp,
             site_id=site_id,
@@ -249,7 +253,7 @@ def build_sites_router(support: Any) -> APIRouter:
         authorization: str | None = Header(default=None),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         site_record = site_record_for_request(
             cp,
             site_id=site_id,
@@ -278,7 +282,7 @@ def build_sites_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> Response:
         require_admin_workspace_permission(user)
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         template_csv = "\n".join(import_template_rows).encode("utf-8-sig")
         return Response(
             content=template_csv,
@@ -460,7 +464,7 @@ def build_sites_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         return build_site_activity(cp, site_id, current_user_id=user["user_id"])
 
     @router.get("/api/sites/{site_id}/validations")
@@ -469,7 +473,7 @@ def build_sites_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
-        require_site_access(cp, user, site_id)
+        assert_site_access_only(user, site_id)
         return site_level_validation_runs(cp.list_validation_runs(site_id=site_id))
 
     @router.get("/api/sites/{site_id}/validations/{validation_id}/cases")

@@ -269,7 +269,13 @@ def _local_site_records_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
 def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: str) -> SiteStore:
     if not _user_can_access_site(user, site_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
-    return SiteStore(site_id)
+    try:
+        return SiteStore(site_id)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Configured storage root for site {site_id} is inaccessible: {exc}",
+        ) from exc
 
 
 def _build_auth_response(cp: ControlPlaneStore, user: dict[str, Any]) -> dict[str, Any]:

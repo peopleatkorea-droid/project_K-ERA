@@ -2859,6 +2859,18 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(blocked_response.status_code, 400, blocked_response.text)
         self.assertIn("Storage root can only be changed", blocked_response.json()["detail"])
 
+    def test_site_validations_list_http_does_not_require_site_store_initialization(self):
+        token = self._token_for_username("http_researcher")
+
+        with patch.object(self.app_module, "SiteStore", side_effect=PermissionError("storage root is inaccessible")):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/validations",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), [])
+
     def test_site_storage_root_migration_rewrites_existing_paths(self):
         site_admin_token = self._token_for_username("http_site_admin")
         original_root = Path(self.tempdir.name) / "site-original-root" / self.site_id

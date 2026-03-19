@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { useEffect, useRef, useState } from "react";
+
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { MetricGrid, MetricItem } from "./ui/metric-grid";
@@ -7,6 +9,9 @@ import { SectionHeader } from "./ui/section-header";
 import {
   docSectionLabelClass,
   docSiteBadgeClass,
+  emptySurfaceClass,
+  railActivityItemClass,
+  railActivityListClass,
   railSiteButtonClass,
   researchLaunchActionsClass,
   researchLaunchCopyClass,
@@ -144,7 +149,8 @@ export function AdminWorkspace({
     section,
     setSection,
     toast,
-    setToast,
+    toastHistory,
+    clearToastHistory,
     overview,
     setOverview,
     storageSettings,
@@ -330,6 +336,45 @@ export function AdminWorkspace({
   });
   const selectedSiteRecord = visibleRailSites.find((site) => site.site_id === selectedSiteId) ?? selectedManagedSite ?? null;
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
+  const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
+  const alertsPanelRef = useRef<HTMLDivElement | null>(null);
+  const alertsCopy = {
+    recentAlerts: pick(locale, "Recent alerts", "최근 알림"),
+    recentAlertsCopy: pick(locale, "Transient toasts stay here for this session.", "짧게 사라지는 토스트도 현재 세션에서는 여기 남겨둡니다."),
+    noAlertsYet: pick(locale, "No alerts yet in this session.", "현재 세션에는 아직 알림이 없습니다."),
+    clearAlerts: pick(locale, "Clear alerts", "알림 비우기"),
+    alertsKept: pick(locale, "kept", "보관"),
+  };
+
+  useEffect(() => {
+    if (!alertsPanelOpen) {
+      return;
+    }
+
+    function handleDocumentPointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (alertsPanelRef.current?.contains(target)) {
+        return;
+      }
+      setAlertsPanelOpen(false);
+    }
+
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setAlertsPanelOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleDocumentPointerDown);
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentPointerDown);
+      document.removeEventListener("keydown", handleDocumentKeyDown);
+    };
+  }, [alertsPanelOpen]);
 
 
 
@@ -506,6 +551,80 @@ export function AdminWorkspace({
           )}
           aside={
             <div className="flex flex-wrap items-center justify-end gap-3">
+              <div className="relative" ref={alertsPanelRef}>
+                <Button
+                  type="button"
+                  variant={alertsPanelOpen ? "primary" : "ghost"}
+                  aria-haspopup="dialog"
+                  aria-expanded={alertsPanelOpen}
+                  onClick={() => setAlertsPanelOpen((current) => !current)}
+                  trailingIcon={
+                    toastHistory.length ? (
+                      <span
+                        aria-hidden="true"
+                        className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[0.72rem] font-semibold ${
+                          alertsPanelOpen
+                            ? "border border-white/20 bg-white/16 text-[var(--accent-contrast)]"
+                            : "border border-border/70 bg-surface text-muted"
+                        }`}
+                      >
+                        {toastHistory.length}
+                      </span>
+                    ) : null
+                  }
+                >
+                  {alertsCopy.recentAlerts}
+                </Button>
+                {alertsPanelOpen ? (
+                  <Card
+                    as="section"
+                    variant="nested"
+                    role="dialog"
+                    aria-label={alertsCopy.recentAlerts}
+                    className="absolute right-0 top-full z-40 mt-3 grid w-[min(420px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-4 border border-border/80 bg-surface p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="grid gap-1">
+                        <strong className="text-sm font-semibold text-ink">{alertsCopy.recentAlerts}</strong>
+                        <p className="m-0 text-sm leading-6 text-muted">{alertsCopy.recentAlertsCopy}</p>
+                      </div>
+                      <div className="grid gap-2 justify-items-end">
+                        <span className={docSiteBadgeClass}>{`${toastHistory.length} ${alertsCopy.alertsKept}`}</span>
+                        <Button type="button" size="sm" variant="ghost" onClick={clearToastHistory} disabled={toastHistory.length === 0}>
+                          {alertsCopy.clearAlerts}
+                        </Button>
+                      </div>
+                    </div>
+                    {toastHistory.length ? (
+                      <div className={railActivityListClass}>
+                        {toastHistory.map((entry) => (
+                          <div
+                            key={entry.id}
+                            className={`${railActivityItemClass} ${
+                              entry.tone === "error"
+                                ? "border-danger/25 bg-danger/6"
+                                : "border-emerald-300/35 bg-emerald-500/6"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <strong>{entry.tone === "success" ? common.saved : common.actionNeeded}</strong>
+                              <span className="text-[0.72rem] text-muted">
+                                {new Date(entry.created_at).toLocaleTimeString(localeTag, {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                            <span>{entry.message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={emptySurfaceClass}>{alertsCopy.noAlertsYet}</div>
+                    )}
+                  </Card>
+                ) : null}
+              </div>
               <LocaleToggle />
               <Button type="button" variant="ghost" onClick={onToggleTheme}>
                 {theme === "dark" ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶") : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}

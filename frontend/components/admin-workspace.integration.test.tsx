@@ -1,6 +1,6 @@
 import React from "react";
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/i18n";
@@ -798,11 +798,7 @@ describe("AdminWorkspace integration", () => {
     await screen.findByRole("button", { name: "Register hospital" });
     const folderInputs = await screen.findAllByLabelText("Folder path");
     expect(folderInputs[0]).toHaveAttribute("placeholder", "D:\\KERA_DATA\\sites");
-    expect(
-      screen.getByText(
-        "Enter the parent folder that will contain per-site subfolders, usually ending in \\KERA_DATA\\sites. For example, SITE_A is stored under D:\\KERA_DATA\\sites\\SITE_A."
-      )
-    ).toBeInTheDocument();
+    expect(screen.getByText("Enter the parent folder that will contain per-site subfolders.")).toBeInTheDocument();
   });
 
   it("runs HIRA institution sync from the requests section", async () => {
@@ -1712,5 +1708,17 @@ describe("AdminWorkspace integration", () => {
     }, { timeout: 6000 });
     expect(await screen.findByText("Registered global-vit-2026.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Model registry" })).toHaveClass("active");
+
+    fireEvent.click(screen.getByRole("button", { name: "Recent alerts" }));
+
+    const alertsDialog = await screen.findByRole("dialog", { name: "Recent alerts" });
+    expect(within(alertsDialog).getByText("Transient toasts stay here for this session.")).toBeInTheDocument();
+    expect(within(alertsDialog).getByText("Registered global-vit-2026.")).toBeInTheDocument();
+
+    fireEvent.click(within(alertsDialog).getByRole("button", { name: "Clear alerts" }));
+
+    await waitFor(() => {
+      expect(within(alertsDialog).getByText("No alerts yet in this session.")).toBeInTheDocument();
+    });
   }, 8000);
 });

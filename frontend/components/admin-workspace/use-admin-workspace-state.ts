@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useState } from "react";
 
 import { pick, useI18n } from "../../lib/i18n";
 import {
@@ -71,6 +71,13 @@ export type SiteFormState = {
 };
 
 export type ToastState = { tone: "success" | "error"; message: string } | null;
+
+export type ToastLogEntry = {
+  id: string;
+  tone: "success" | "error";
+  message: string;
+  created_at: string;
+};
 
 export type UpdateThresholdAlert = {
   scope: "pending_review" | "aggregation_ready" | "aggregation_blocked";
@@ -269,7 +276,8 @@ function summarizeUpdateThresholdAlerts(modelUpdates: ModelUpdateRecord[]): Upda
 export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }: UseAdminWorkspaceStateOptions) {
   const { locale, localeTag, common } = useI18n();
   const [section, setSection] = useState<WorkspaceSection>(initialSection ?? "dashboard");
-  const [toast, setToast] = useState<ToastState>(null);
+  const [toast, setToastState] = useState<ToastState>(null);
+  const [toastHistory, setToastHistory] = useState<ToastLogEntry[]>([]);
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
   const [storageSettings, setStorageSettings] = useState<StorageSettingsRecord | null>(null);
   const [pendingRequests, setPendingRequests] = useState<AccessRequestRecord[]>([]);
@@ -424,6 +432,28 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const benchmarkPercent = Math.max(0, Math.min(100, Math.round(benchmarkProgress?.percent ?? 0)));
   const crossValidationProgress = crossValidationJob?.result?.progress ?? null;
   const crossValidationPercent = Math.max(0, Math.min(100, Math.round(crossValidationProgress?.percent ?? 0)));
+  const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
+    setToastState((current) => {
+      const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
+      if (resolved) {
+        setToastHistory((existing) =>
+          [
+            {
+              id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              tone: resolved.tone,
+              message: resolved.message,
+              created_at: new Date().toISOString(),
+            },
+            ...existing,
+          ].slice(0, 8),
+        );
+      }
+      return resolved;
+    });
+  }, []);
+  const clearToastHistory = useCallback(() => {
+    setToastHistory([]);
+  }, []);
 
   const formatTrainingStage = (stage: string | null | undefined) => {
     switch (stage) {
@@ -497,6 +527,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setSection,
     toast,
     setToast,
+    toastHistory,
+    clearToastHistory,
     overview,
     setOverview,
     storageSettings,

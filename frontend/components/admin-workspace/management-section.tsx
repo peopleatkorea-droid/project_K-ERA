@@ -379,8 +379,8 @@ export function ManagementSection({
             <div className="text-sm leading-6 text-muted">
               {pick(
                 locale,
-                "Enter the parent folder that will contain per-site subfolders, usually ending in \\KERA_DATA\\sites. For example, SITE_A is stored under D:\\KERA_DATA\\sites\\SITE_A.",
-                "병원별 하위 폴더를 담는 부모 경로를 입력하세요. 보통 \\KERA_DATA\\sites 로 끝나는 경로이며, 예를 들어 SITE_A는 D:\\KERA_DATA\\sites\\SITE_A 아래에 저장됩니다."
+                "Enter the parent folder that will contain per-site subfolders.",
+                "병원별 하위 폴더를 담는 부모 경로를 입력하세요."
               )}
             </div>
             <MetricGrid columns={hasEnvironmentDefaultOverride ? 3 : 2}>
