@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-03-19
+
+### 예측 post-mortem 피드백 루프 추가
+
+- case validation 직후 `prediction snapshot -> structured analysis -> root-cause/action tag -> human-readable summary` 흐름을 생성하는 post-mortem 모듈을 추가했습니다.
+- validation 결과에는 아래 정보가 함께 저장되고 UI에 출력됩니다.
+  - prediction snapshot (`predicted_label`, `confidence`, `model_version`, representative image, embedding reference, peer-model disagreement)
+  - structured analysis (`cam overlap`, `neighbor purity / distance`, `image quality`, `site-level concentration`)
+  - root-cause tags / action tags
+  - LLM 또는 local fallback 기반 post-mortem summary
+- validation panel과 contribution history에서 post-mortem 결과를 바로 확인할 수 있게 했습니다.
+- control plane validation record payload에도 post-mortem을 다시 반영하도록 저장 경로를 확장했습니다.
+
+### dual-input concat fusion baseline 추가
+
+- 새 supervised architecture `dual_input_concat`을 추가했습니다.
+  - shared DINOv2 encoder
+  - `cornea crop + lesion crop` paired input
+  - feature concat 후 single classifier로 최종 예측
+- 새 crop mode `paired`를 추가해 모든 이미지에서 `cornea crop + lesion crop` 쌍을 한 번에 준비할 수 있게 했습니다.
+- initial training, cross-validation, inference, case embedding, CLI, model version metadata, admin training UI까지 `dual_input_concat + paired` 경로를 연결했습니다.
+- 기존 weighted-average late ensemble(`crop_mode=both`)은 유지하고, 새 fusion baseline은 별도 architecture로 병행 비교할 수 있게 했습니다.
+- 7-model benchmark는 기존 single-input baseline 비교용으로 유지하고, `dual_input_concat`은 benchmark 대상에서 제외했습니다.
+- 현재 `dual_input_concat`에는 branch-aware explanation이 아직 없어서 Grad-CAM은 비활성화됩니다.
+
+### DINOv2 학습 backbone / 7종 benchmark 확장
+
+- supervised initial training architecture에 `dinov2`를 추가해 DenseNet/ConvNeXt처럼 확률 출력 분류기로 학습할 수 있게 했습니다.
+- 기본 benchmark 세트를 `vit`, `swin`, `dinov2`, `dinov2_mil`, `convnext_tiny`, `densenet121`, `efficientnet_v2_s`의 7종 순차 학습으로 확장했습니다.
+- 모델 버전 메타데이터와 UI 옵션에 `case_aggregation`, `bag_level`을 함께 저장하도록 정리했습니다.
+
+### visit 기반 집계 / DINOv2 Attention MIL 추가
+
+- image-level 모델의 visit 단위 집계 방식으로 `mean`, `logit_mean`, `quality_weighted_mean`을 추가했습니다.
+- `dinov2_mil` 아키텍처를 새로 추가했습니다.
+  - DINOv2 feature extractor
+  - attention-based MIL pooling
+  - visit-level bag training / inference
+- `dinov2_mil`은 attention score가 가장 높은 이미지를 model-representative image로 자동 선택하고, validation 결과에 attention score를 함께 남깁니다.
+- case validation / external validation / model version serialization에 visit aggregation 관련 메타데이터를 확장했습니다.
+
+### 학습 job UX 개선
+
+- 단일 initial training과 7종 benchmark 카드에 `예상 남은 시간(ETA)`을 추가했습니다.
+- 단일 initial training과 benchmark에 `중단(Stop)` 버튼을 추가했습니다.
+- benchmark는 중단 또는 일부 실패 후 `남은 architecture만 재시작`할 수 있게 resume endpoint와 UI를 추가했습니다.
+- job status에 `cancelling`, `cancelled` 흐름을 추가했고, benchmark는 partial result와 completed/remaining architecture 목록을 유지합니다.
+
+### API / 운영 경로 추가
+
+- 새 endpoint:
+  - `POST /api/sites/{site_id}/training/initial/benchmark/resume`
+  - `POST /api/sites/{site_id}/jobs/{job_id}/cancel`
+- job worker는 cancel 요청을 polling하면서 안전 지점에서 중단하도록 변경했습니다.
+
+### 검증
+
+- `python -m py_compile src/kera_research/services/job_runner.py src/kera_research/services/data_plane.py src/kera_research/api/app.py src/kera_research/api/routes/sites.py src/kera_research/api/route_support.py`
+- `frontend`: `npm run test:run -- training-section.test.tsx`
+- `python`: `py -3 -m py_compile src/kera_research/services/modeling.py src/kera_research/services/pipeline.py src/kera_research/services/pipeline_case_support.py src/kera_research/services/pipeline_domains.py src/kera_research/api/case_model_versions.py src/kera_research/domain.py src/kera_research/cli.py`
+- `frontend`: `npx vitest run components/admin-workspace/training-section.test.tsx`
+- `frontend`: `npx tsc --noEmit`
+
 ## 2026-03-18
 
 ### 문서 / 실행 가이드 정리

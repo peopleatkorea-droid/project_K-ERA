@@ -17,14 +17,25 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "vit", label: "ViT" },
   { value: "swin", label: "Swin" },
   { value: "efficientnet_v2_s", label: "EfficientNetV2-S" },
+  { value: "dinov2", label: "DINOv2" },
+  { value: "dinov2_mil", label: "DINOv2 Attention MIL" },
+  { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
 ];
 
-const BENCHMARK_MODEL_COUNT = TRAINING_ARCHITECTURE_OPTIONS.length;
+const BENCHMARK_ARCHITECTURE_OPTIONS = TRAINING_ARCHITECTURE_OPTIONS;
+const BENCHMARK_MODEL_COUNT = BENCHMARK_ARCHITECTURE_OPTIONS.length;
+const CASE_AGGREGATION_OPTIONS = [
+  { value: "mean", label: "Mean" },
+  { value: "logit_mean", label: "Logit mean" },
+  { value: "quality_weighted_mean", label: "Quality-weighted mean" },
+  { value: "attention_mil", label: "Attention MIL" },
+];
 
 type InitialTrainingForm = {
   architecture: string;
   execution_mode: "auto" | "cpu" | "gpu";
-  crop_mode: "automated" | "manual" | "both";
+  crop_mode: "automated" | "manual" | "both" | "paired";
+  case_aggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil";
   epochs: number;
   learning_rate: number;
   batch_size: number;
@@ -38,6 +49,7 @@ type BenchmarkJobPayload = Partial<{
   architectures: string[];
   execution_mode: "auto" | "cpu" | "gpu" | string;
   crop_mode: "automated" | "manual" | "both" | string;
+  case_aggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil" | string;
   epochs: number;
   learning_rate: number;
   batch_size: number;
@@ -69,9 +81,84 @@ type Props = {
   formatMetric: (value: number | null | undefined, emptyLabel?: string) => string;
   formatTrainingStage: (stage: string | null | undefined) => string;
   onExportSelectedReport: () => void;
+  onCancelBenchmark: () => void;
+  onCancelInitialTraining: () => void;
   onRunBenchmark: () => void;
   onRunInitialTraining: () => void;
+  onResumeBenchmark: () => void;
 };
+
+function getEstimatedRemainingSeconds(job: SiteJobRecord | null, percent: number): number | null {
+  if (!job) {
+    return null;
+  }
+  const normalizedPercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (normalizedPercent <= 0 || normalizedPercent >= 100) {
+    return null;
+  }
+  const anchor = job.started_at ?? job.created_at;
+  const startedAt = Date.parse(anchor);
+  if (!Number.isFinite(startedAt)) {
+    return null;
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  if (elapsedSeconds <= 0) {
+    return null;
+  }
+  const projectedTotalSeconds = elapsedSeconds / (normalizedPercent / 100);
+  const remainingSeconds = Math.max(0, Math.round(projectedTotalSeconds - elapsedSeconds));
+  return Number.isFinite(remainingSeconds) && remainingSeconds > 0 ? remainingSeconds : null;
+}
+
+function formatRemainingTime(seconds: number | null, locale: Locale, emptyLabel: string): string {
+  if (seconds === null) {
+    return emptyLabel;
+  }
+  if (seconds < 60) {
+    return pick(locale, "<1 min", "<1분");
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.max(1, Math.ceil((seconds % 3600) / 60));
+  if (hours > 0) {
+    return pick(locale, `${hours}h ${minutes}m`, `${hours}시간 ${minutes}분`);
+  }
+  return pick(locale, `${minutes} min`, `${minutes}분`);
+}
+
+function isBenchmarkResponse(
+  response: unknown,
+): response is {
+  results: Array<{ architecture: string; status: string }>;
+} {
+  return Boolean(response && typeof response === "object" && Array.isArray((response as { results?: unknown }).results));
+}
+
+function getCompletedBenchmarkArchitectures(job: SiteJobRecord | null): string[] {
+  if (!job) {
+    return [];
+  }
+  const progressCompleted = Array.isArray(job.result?.progress?.completed_architectures)
+    ? job.result?.progress?.completed_architectures.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const response = job.result?.response;
+  const responseCompleted = isBenchmarkResponse(response)
+    ? response.results
+        .filter((entry) => entry.status === "completed" && typeof entry.architecture === "string")
+        .map((entry) => entry.architecture)
+    : [];
+  return Array.from(new Set([...progressCompleted, ...responseCompleted]));
+}
+
+function getRemainingBenchmarkArchitectures(job: SiteJobRecord | null): string[] {
+  if (!job) {
+    return [];
+  }
+  const payloadArchitectures = Array.isArray((job.payload as BenchmarkJobPayload | undefined)?.architectures)
+    ? ((job.payload as BenchmarkJobPayload).architectures ?? []).filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const completedSet = new Set(getCompletedBenchmarkArchitectures(job));
+  return payloadArchitectures.filter((architecture) => !completedSet.has(architecture));
+}
 
 function SummaryGrid({
   items,
@@ -112,12 +199,32 @@ export function TrainingSection({
   formatMetric,
   formatTrainingStage,
   onExportSelectedReport,
+  onCancelBenchmark,
+  onCancelInitialTraining,
   onRunBenchmark,
   onRunInitialTraining,
+  onResumeBenchmark,
 }: Props) {
   const [benchmarkConfirmOpen, setBenchmarkConfirmOpen] = useState(false);
-  const benchmarkModelLabels = TRAINING_ARCHITECTURE_OPTIONS.map((option) => option.label);
+  const benchmarkModelLabels = BENCHMARK_ARCHITECTURE_OPTIONS.map((option) => option.label);
   const benchmarkPayload = (benchmarkJob?.payload ?? {}) as BenchmarkJobPayload;
+  const isDualInputArchitecture = initialForm.architecture === "dual_input_concat";
+  const effectiveCropMode = isDualInputArchitecture ? "paired" : initialForm.crop_mode;
+  const effectiveCaseAggregation = initialForm.architecture === "dinov2_mil" ? "attention_mil" : initialForm.case_aggregation;
+  const benchmarkBaseCropMode = effectiveCropMode === "paired" ? "automated" : effectiveCropMode;
+  const benchmarkCropLabel = pick(
+    locale,
+    benchmarkBaseCropMode === "manual"
+      ? "Manual lesion crop + paired cornea + lesion"
+      : benchmarkBaseCropMode === "both"
+        ? "Both ensemble + paired cornea + lesion"
+        : "Automated cornea crop + paired cornea + lesion",
+    benchmarkBaseCropMode === "manual"
+      ? "Manual 병변 crop + 각막 + 병변 paired"
+      : benchmarkBaseCropMode === "both"
+        ? "둘 다 앙상블 + 각막 + 병변 paired"
+        : "Automated 각막 crop + 각막 + 병변 paired"
+  );
   const benchmarkArchitectureCount =
     typeof (benchmarkProgress as { architecture_count?: number } | null)?.architecture_count === "number"
       ? (benchmarkProgress as { architecture_count: number }).architecture_count
@@ -128,10 +235,22 @@ export function TrainingSection({
     typeof (benchmarkProgress as { architecture_index?: number } | null)?.architecture_index === "number"
       ? (benchmarkProgress as { architecture_index: number }).architecture_index
       : null;
+  const benchmarkRemainingArchitectures = getRemainingBenchmarkArchitectures(benchmarkJob);
   const benchmarkRemainingCount =
-    benchmarkArchitectureIndex !== null && benchmarkArchitectureCount
-      ? Math.max(benchmarkArchitectureCount - benchmarkArchitectureIndex, 0)
+    benchmarkRemainingArchitectures.length > 0
+      ? benchmarkRemainingArchitectures.length
+      : benchmarkArchitectureIndex !== null && benchmarkArchitectureCount
+        ? Math.max(benchmarkArchitectureCount - benchmarkArchitectureIndex, 0)
       : null;
+  const initialEtaLabel = formatRemainingTime(getEstimatedRemainingSeconds(initialJob, progressPercent), locale, notAvailableLabel);
+  const benchmarkEtaLabel = formatRemainingTime(getEstimatedRemainingSeconds(benchmarkJob, benchmarkPercent), locale, notAvailableLabel);
+  const benchmarkActive = ["queued", "running", "cancelling"].includes(String(benchmarkJob?.status || "").trim().toLowerCase());
+  const initialActive = ["queued", "running", "cancelling"].includes(String(initialJob?.status || "").trim().toLowerCase());
+  const canResumeBenchmark =
+    benchmarkJob !== null &&
+    !benchmarkActive &&
+    ["cancelled", "failed", "completed"].includes(String(benchmarkJob.status || "").trim().toLowerCase()) &&
+    benchmarkRemainingArchitectures.length > 0;
   const benchmarkRuntimeSummaryItems = [
     {
       label: pick(locale, "Execution", "실행"),
@@ -142,7 +261,29 @@ export function TrainingSection({
     },
     {
       label: pick(locale, "Crop", "Crop"),
-      value: typeof benchmarkPayload.crop_mode === "string" ? benchmarkPayload.crop_mode : initialForm.crop_mode,
+      value:
+        typeof benchmarkPayload.crop_mode === "string"
+          ? pick(
+              locale,
+              benchmarkPayload.crop_mode === "manual"
+                ? "Manual lesion crop + paired cornea + lesion"
+                : benchmarkPayload.crop_mode === "both"
+                  ? "Both ensemble + paired cornea + lesion"
+                  : "Automated cornea crop + paired cornea + lesion",
+              benchmarkPayload.crop_mode === "manual"
+                ? "Manual 병변 crop + 각막 + 병변 paired"
+                : benchmarkPayload.crop_mode === "both"
+                  ? "둘 다 앙상블 + 각막 + 병변 paired"
+                  : "Automated 각막 crop + 각막 + 병변 paired"
+            )
+          : benchmarkCropLabel,
+    },
+    {
+      label: pick(locale, "Visit agg", "Visit 집계"),
+      value:
+        typeof benchmarkPayload.case_aggregation === "string"
+          ? benchmarkPayload.case_aggregation
+          : initialForm.case_aggregation,
     },
     {
       label: pick(locale, "Epochs", "에폭"),
@@ -190,7 +331,11 @@ export function TrainingSection({
   const benchmarkSummaryItems = [
     { label: pick(locale, "Site", "병원"), value: selectedSiteLabel ?? notAvailableLabel },
     { label: pick(locale, "Execution", "실행"), value: initialForm.execution_mode.toUpperCase() },
-    { label: pick(locale, "Crop", "Crop"), value: initialForm.crop_mode },
+    { label: pick(locale, "Crop", "Crop"), value: benchmarkCropLabel },
+    {
+      label: pick(locale, "Visit agg", "Visit 집계"),
+      value: CASE_AGGREGATION_OPTIONS.find((option) => option.value === effectiveCaseAggregation)?.label ?? effectiveCaseAggregation,
+    },
     { label: pick(locale, "Epochs", "에폭"), value: String(initialForm.epochs) },
     { label: pick(locale, "Batch", "배치"), value: String(initialForm.batch_size) },
     { label: pick(locale, "LR", "학습률"), value: String(initialForm.learning_rate) },
@@ -208,8 +353,8 @@ export function TrainingSection({
         titleAs="h3"
         description={pick(
           locale,
-          "Configure a single baseline run or queue a five-model sequential initial-training run with the same data split and crop policy.",
-          "단일 기준 모델을 학습하거나, 같은 split과 crop 정책으로 5종 순차 초기 학습을 실행할 수 있습니다."
+          `Configure a single baseline run or queue a ${BENCHMARK_MODEL_COUNT}-model sequential initial-training run with one shared split. Dual-input concat is included and always runs with paired cornea + lesion crops.`,
+          `단일 기준 모델을 학습하거나, 하나의 split으로 ${BENCHMARK_MODEL_COUNT}종 순차 초기 학습을 실행할 수 있습니다. dual-input concat도 포함되며 항상 각막 + 병변 paired crop으로 실행됩니다.`
         )}
         aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
@@ -222,7 +367,21 @@ export function TrainingSection({
 
       <div className="grid gap-4 xl:grid-cols-4">
         <Field label={pick(locale, "Architecture", "아키텍처")}>
-          <select value={initialForm.architecture} onChange={(event) => setInitialForm((current) => ({ ...current, architecture: event.target.value }))}>
+          <select
+            value={initialForm.architecture}
+            onChange={(event) =>
+              setInitialForm((current) => ({
+                ...current,
+                architecture: event.target.value,
+                crop_mode:
+                  event.target.value === "dual_input_concat"
+                    ? "paired"
+                    : current.crop_mode === "paired"
+                      ? "automated"
+                      : current.crop_mode,
+              }))
+            }
+          >
             {TRAINING_ARCHITECTURE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -242,12 +401,34 @@ export function TrainingSection({
         </Field>
         <Field label={pick(locale, "Crop mode", "Crop 모드")}>
           <select
-            value={initialForm.crop_mode}
-            onChange={(event) => setInitialForm((current) => ({ ...current, crop_mode: event.target.value as "automated" | "manual" | "both" }))}
+            value={effectiveCropMode}
+            disabled={isDualInputArchitecture}
+            onChange={(event) =>
+              setInitialForm((current) => ({ ...current, crop_mode: event.target.value as "automated" | "manual" | "both" | "paired" }))
+            }
           >
             <option value="automated">{pick(locale, "Automated cornea crop", "Automated 각막 crop")}</option>
             <option value="manual">{pick(locale, "Manual lesion crop", "Manual 병변 crop")}</option>
             <option value="both">{pick(locale, "Both ensemble", "둘 다 앙상블")}</option>
+            {isDualInputArchitecture ? <option value="paired">{pick(locale, "Paired cornea + lesion", "각막 + 병변 paired")}</option> : null}
+          </select>
+        </Field>
+        <Field label={pick(locale, "Visit aggregation", "Visit 집계 방식")}>
+          <select
+            value={effectiveCaseAggregation}
+            disabled={initialForm.architecture === "dinov2_mil"}
+            onChange={(event) =>
+              setInitialForm((current) => ({
+                ...current,
+                case_aggregation: event.target.value as "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
+              }))
+            }
+          >
+            {CASE_AGGREGATION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </Field>
         <Field label={pick(locale, "Epochs", "에폭")}>
@@ -314,18 +495,21 @@ export function TrainingSection({
           titleAs="h4"
           description={pick(
             locale,
-            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, and EfficientNetV2-S are trained sequentially with the current runtime settings.",
-            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, EfficientNetV2-S를 현재 실행 설정으로 순차 학습합니다."
+            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, EfficientNetV2-S, DINOv2, DINOv2 Attention MIL, and Dual-input Concat Fusion are trained sequentially. Dual-input concat always uses paired cornea + lesion crops.",
+            "DenseNet121, ConvNeXt-Tiny, ViT, Swin, EfficientNetV2-S, DINOv2, DINOv2 Attention MIL, Dual-input Concat Fusion을 순차 학습합니다. dual-input concat은 항상 각막 + 병변 paired crop을 사용합니다."
           )}
         />
         <div className="text-sm leading-6 text-muted">
           {pick(
             locale,
-            "Progress shows overall percent, current architecture, sequence, mode, and worker stage.",
-            "진행 상황에는 전체 퍼센트, 현재 아키텍처, 순서, 모드, 작업 단계가 함께 표시됩니다."
+            "Progress shows overall percent, current architecture, sequence, effective crop mode, and worker stage.",
+            "진행 상황에는 전체 퍼센트, 현재 아키텍처, 순서, 적용 crop 모드, 작업 단계가 함께 표시됩니다."
           )}
         </div>
-        <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Five-model training architectures", "5종 순차 학습 아키텍처")}>
+        <div
+          className="flex flex-wrap gap-2"
+          aria-label={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training architectures`, `${BENCHMARK_MODEL_COUNT}종 순차 학습 아키텍처`)}
+        >
           {benchmarkModelLabels.map((label) => (
             <span key={label} className={docSiteBadgeClass}>
               {label}
@@ -333,14 +517,24 @@ export function TrainingSection({
           ))}
         </div>
         <div className="flex justify-end">
-          <Button type="button" variant="primary" disabled={benchmarkBusy || !selectedSiteId} onClick={() => setBenchmarkConfirmOpen(true)}>
+          <Button
+            type="button"
+            variant="primary"
+            disabled={benchmarkBusy || !selectedSiteId}
+            onClick={() => setBenchmarkConfirmOpen(true)}
+          >
             {benchmarkBusy ? pick(locale, `Training ${BENCHMARK_MODEL_COUNT} models...`, `${BENCHMARK_MODEL_COUNT}개 모델 학습 중...`) : pick(locale, `Run ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 실행`)}
           </Button>
         </div>
       </Card>
 
       {benchmarkConfirmOpen ? (
-        <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={pick(locale, "Five-model training confirmation", "5종 순차 초기 학습 확인")}>
+        <div
+          className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training confirmation`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 확인`)}
+        >
           <Card as="div" variant="panel" className="w-full max-w-4xl grid gap-5 p-6">
             <SectionHeader
               title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model initial training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 확인`)}
@@ -350,8 +544,8 @@ export function TrainingSection({
             <p className="m-0 text-sm leading-6 text-muted">
               {pick(
                 locale,
-                "The current initial-training settings will be applied to all five architectures.",
-                "현재 초기 학습 설정이 5개 아키텍처 전체에 동일하게 적용됩니다."
+                `The current runtime settings will be applied to all ${BENCHMARK_MODEL_COUNT} architectures, with dual-input concat forced to paired cornea + lesion crops.`,
+                `현재 실행 설정이 ${BENCHMARK_MODEL_COUNT}개 아키텍처 전체에 적용되며, dual-input concat은 각막 + 병변 paired crop으로 강제됩니다.`
               )}
             </p>
             <SummaryGrid items={benchmarkSummaryItems} />
@@ -374,7 +568,7 @@ export function TrainingSection({
                   onRunBenchmark();
                 }}
               >
-                {pick(locale, "Start 5-model training", "5종 순차 초기 학습 시작")}
+                {pick(locale, `Start ${BENCHMARK_MODEL_COUNT}-model training`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 시작`)}
               </Button>
             </div>
           </Card>
@@ -432,6 +626,24 @@ export function TrainingSection({
             />
           </MetricGrid>
           <p className="m-0 text-sm leading-6 text-muted">
+            {pick(locale, "Estimated remaining time", "예상 남은 시간")}: {initialEtaLabel}
+          </p>
+          {initialActive ? (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={String(initialJob?.status || "").trim().toLowerCase() === "cancelling"}
+                onClick={onCancelInitialTraining}
+              >
+                {String(initialJob?.status || "").trim().toLowerCase() === "cancelling"
+                  ? pick(locale, "Stopping...", "중단 요청 중...")
+                  : pick(locale, "Stop", "중단")}
+              </Button>
+            </div>
+          ) : null}
+          <p className="m-0 text-sm leading-6 text-muted">
             {(initialProgress as { message?: string } | null)?.message
               ? (initialProgress as { message: string }).message
               : pick(locale, "Waiting for the training worker to report progress.", "학습 작업 상태를 기다리는 중입니다.")}
@@ -442,7 +654,7 @@ export function TrainingSection({
       {benchmarkJob ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, "Five-model training progress", "5종 순차 초기 학습 진행 상태")}
+            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training progress`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 진행 상태`)}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{formatTrainingStage((benchmarkProgress as { stage?: string } | null)?.stage ?? null)}</span>}
           />
@@ -463,6 +675,35 @@ export function TrainingSection({
             />
             <MetricItem value={benchmarkRemainingCount !== null ? String(benchmarkRemainingCount) : notAvailableLabel} label={pick(locale, "remaining", "남은 모델")} />
           </MetricGrid>
+          <p className="m-0 text-sm leading-6 text-muted">
+            {pick(locale, "Estimated remaining time", "예상 남은 시간")}: {benchmarkEtaLabel}
+          </p>
+          {benchmarkActive || canResumeBenchmark ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              {benchmarkActive ? (
+                <Button
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  disabled={String(benchmarkJob?.status || "").trim().toLowerCase() === "cancelling"}
+                  onClick={onCancelBenchmark}
+                >
+                  {String(benchmarkJob?.status || "").trim().toLowerCase() === "cancelling"
+                    ? pick(locale, "Stopping...", "중단 요청 중...")
+                    : pick(locale, "Stop benchmark", "benchmark 중단")}
+                </Button>
+              ) : null}
+              {canResumeBenchmark ? (
+                <Button type="button" variant="primary" size="sm" onClick={onResumeBenchmark}>
+                  {pick(
+                    locale,
+                    `Resume remaining (${benchmarkRemainingArchitectures.length})`,
+                    `남은 항목 재시작 (${benchmarkRemainingArchitectures.length})`,
+                  )}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           <div className={trainingProgressSettingsClass} data-testid="training-progress-settings">
             <SectionHeader
               title={pick(locale, "Run settings", "실행 설정")}
@@ -474,7 +715,11 @@ export function TrainingSection({
           <p className="m-0 text-sm leading-6 text-muted">
             {(benchmarkProgress as { message?: string } | null)?.message
               ? (benchmarkProgress as { message: string }).message
-              : pick(locale, "Waiting for the five-model training worker to report progress.", "5종 순차 초기 학습 작업 상태를 기다리는 중입니다.")}
+              : pick(
+                  locale,
+                  `Waiting for the ${BENCHMARK_MODEL_COUNT}-model training worker to report progress.`,
+                  `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 작업 상태를 기다리는 중입니다.`
+                )}
           </p>
         </Card>
       ) : null}
@@ -482,7 +727,7 @@ export function TrainingSection({
       {benchmarkResult ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, "Five-model training summary", "5종 순차 초기 학습 요약")}
+            title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model training summary`, `${BENCHMARK_MODEL_COUNT}종 순차 초기 학습 요약`)}
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{benchmarkResult.best_architecture ?? notAvailableLabel}</span>}
           />

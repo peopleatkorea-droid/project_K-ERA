@@ -59,7 +59,16 @@ class ControlPlaneResultsFacade:
         )
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        merged_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row.get("payload_json") or {})
+            merged_rows.append(
+                {
+                    **payload,
+                    **dict(row),
+                }
+            )
+        return merged_rows
 
     def save_validation_run(
         self,
@@ -121,10 +130,15 @@ class ControlPlaneResultsFacade:
                 "is_correct": prediction.get("is_correct"),
                 "n_source_images": prediction.get("n_source_images"),
                 "crop_mode": prediction.get("crop_mode"),
-                "has_gradcam": bool(prediction.get("gradcam_path")),
+                "has_gradcam": bool(
+                    prediction.get("gradcam_path")
+                    or prediction.get("gradcam_cornea_path")
+                    or prediction.get("gradcam_lesion_path")
+                ),
                 "has_roi_crop": bool(prediction.get("roi_crop_path")),
                 "has_medsam_mask": bool(prediction.get("medsam_mask_path")),
                 "created_at": summary.get("run_date", utc_now()),
+                "payload_json": prediction,
             }
             for prediction in normalized_predictions
             if str(prediction.get("case_reference_id") or "").strip()
@@ -155,6 +169,7 @@ class ControlPlaneResultsFacade:
         rows = self.list_validation_cases(validation_id=validation_id)
         return [
             {
+                **dict(row.get("payload_json") or {}),
                 "validation_id": row["validation_id"],
                 "patient_reference_id": row["patient_reference_id"],
                 "case_reference_id": row["case_reference_id"],
@@ -166,6 +181,10 @@ class ControlPlaneResultsFacade:
                 "crop_mode": row.get("crop_mode"),
                 "n_source_images": row.get("n_source_images"),
                 "gradcam_path": None,
+                "gradcam_cornea_path": None,
+                "gradcam_cornea_heatmap_path": None,
+                "gradcam_lesion_path": None,
+                "gradcam_lesion_heatmap_path": None,
                 "medsam_mask_path": None,
                 "roi_crop_path": None,
                 "lesion_mask_path": None,
@@ -173,6 +192,73 @@ class ControlPlaneResultsFacade:
             }
             for row in rows
         ]
+
+    def update_validation_case_prediction(
+        self,
+        validation_id: str,
+        *,
+        case_reference_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        normalized_validation_id = str(validation_id or "").strip()
+        normalized_case_reference_id = str(case_reference_id or "").strip()
+        if not normalized_validation_id or not normalized_case_reference_id:
+            return None
+
+        case_path = CONTROL_PLANE_CASE_DIR / f"{normalized_validation_id}.json"
+        saved_predictions = read_json(case_path, [])
+        updated_prediction: dict[str, Any] | None = None
+        rewritten_predictions: list[dict[str, Any]] = []
+        for item in saved_predictions if isinstance(saved_predictions, list) else []:
+            prediction = dict(item) if isinstance(item, dict) else {}
+            if str(prediction.get("case_reference_id") or "").strip() == normalized_case_reference_id:
+                prediction = {
+                    **prediction,
+                    **updates,
+                }
+                updated_prediction = prediction
+            rewritten_predictions.append(prediction)
+        if updated_prediction is not None:
+            write_json(case_path, rewritten_predictions)
+
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(validation_cases).where(
+                    validation_cases.c.validation_id == normalized_validation_id,
+                    validation_cases.c.case_reference_id == normalized_case_reference_id,
+                )
+            ).mappings().first()
+            if row is None:
+                return updated_prediction
+            merged_payload = {
+                **dict(row.get("payload_json") or {}),
+                **(updated_prediction or {}),
+                **updates,
+            }
+            conn.execute(
+                update(validation_cases)
+                .where(
+                    validation_cases.c.validation_id == normalized_validation_id,
+                    validation_cases.c.case_reference_id == normalized_case_reference_id,
+                )
+                .values(
+                    true_label=merged_payload.get("true_label"),
+                    predicted_label=str(merged_payload.get("predicted_label") or ""),
+                    prediction_probability=float(merged_payload.get("prediction_probability") or 0.0),
+                    is_correct=merged_payload.get("is_correct"),
+                    n_source_images=merged_payload.get("n_source_images"),
+                    crop_mode=merged_payload.get("crop_mode"),
+                    has_gradcam=bool(
+                        merged_payload.get("gradcam_path")
+                        or merged_payload.get("gradcam_cornea_path")
+                        or merged_payload.get("gradcam_lesion_path")
+                    ),
+                    has_roi_crop=bool(merged_payload.get("roi_crop_path")),
+                    has_medsam_mask=bool(merged_payload.get("medsam_mask_path")),
+                    payload_json=merged_payload,
+                )
+            )
+        return merged_payload
 
     def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(experiment_record)

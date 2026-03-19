@@ -21,6 +21,8 @@ import {
   trimText,
 } from "./main-app-bridge-shared";
 
+const SYSTEM_PROJECT_OWNER_ID = "system";
+
 export async function ensureDefaultProject(): Promise<void> {
   const sql = await controlPlaneSql();
   await sql`
@@ -36,7 +38,7 @@ export async function ensureDefaultProject(): Promise<void> {
       ${DEFAULT_PROJECT_ID},
       ${DEFAULT_PROJECT_NAME},
       ${""},
-      ${null},
+      ${SYSTEM_PROJECT_OWNER_ID},
       ${JSON.stringify([])}::jsonb,
       now(),
       now()
@@ -64,7 +66,7 @@ export async function upsertProjectRecord(
       ${trimText(record.project_id)},
       ${trimText(record.name)},
       ${trimText(record.description)},
-      ${trimText(record.owner_user_id) || null},
+      ${trimText(record.owner_user_id) || SYSTEM_PROJECT_OWNER_ID},
       ${JSON.stringify(normalizeStringArray(record.site_ids))}::jsonb,
       ${trimText(record.created_at) || new Date().toISOString()},
       now()
@@ -113,7 +115,7 @@ export async function upsertSiteRecord(
     project_id: projectId,
     name: projectId === DEFAULT_PROJECT_ID ? DEFAULT_PROJECT_NAME : projectId,
     description: "",
-    owner_user_id: "",
+    owner_user_id: SYSTEM_PROJECT_OWNER_ID,
     site_ids: [],
   });
   const siteId = normalizeSiteIdPreservingCase(record.site_id);
@@ -250,7 +252,7 @@ export async function upsertAccessRequestRecord(
       ${trimText(record.requested_role) || "viewer"},
       ${trimText(record.message)},
       ${trimText(record.status) || "pending"},
-      ${null},
+      ${trimText(record.reviewed_by) || null},
       ${trimText(record.reviewer_notes)},
       ${trimText(record.created_at) || new Date().toISOString()},
       ${trimText(record.reviewed_at) || null}
@@ -264,7 +266,7 @@ export async function upsertAccessRequestRecord(
       requested_role = excluded.requested_role,
       message = excluded.message,
       status = excluded.status,
-      reviewed_by = null,
+      reviewed_by = excluded.reviewed_by,
       reviewer_notes = excluded.reviewer_notes,
       created_at = excluded.created_at,
       reviewed_at = excluded.reviewed_at
@@ -275,17 +277,21 @@ export async function siteRowById(siteId: string): Promise<Row | null> {
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
-      site_id,
-      project_id,
-      display_name,
-      hospital_name,
-      source_institution_id,
-      local_storage_root,
-      research_registry_enabled,
-      status,
-      created_at
+      sites.site_id,
+      sites.project_id,
+      sites.display_name,
+      sites.hospital_name,
+      sites.source_institution_id,
+      sites.local_storage_root,
+      sites.research_registry_enabled,
+      sites.status,
+      sites.created_at,
+      institution_directory.name as source_institution_name,
+      institution_directory.address as source_institution_address
     from sites
-    where site_id = ${siteId}
+    left join institution_directory
+      on institution_directory.institution_id = sites.source_institution_id
+    where sites.site_id = ${siteId}
     limit 1
   `;
   return rows[0] ?? null;
@@ -295,17 +301,21 @@ export async function siteRowBySourceInstitutionId(sourceInstitutionId: string):
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
-      site_id,
-      project_id,
-      display_name,
-      hospital_name,
-      source_institution_id,
-      local_storage_root,
-      research_registry_enabled,
-      status,
-      created_at
+      sites.site_id,
+      sites.project_id,
+      sites.display_name,
+      sites.hospital_name,
+      sites.source_institution_id,
+      sites.local_storage_root,
+      sites.research_registry_enabled,
+      sites.status,
+      sites.created_at,
+      institution_directory.name as source_institution_name,
+      institution_directory.address as source_institution_address
     from sites
-    where source_institution_id = ${sourceInstitutionId}
+    left join institution_directory
+      on institution_directory.institution_id = sites.source_institution_id
+    where sites.source_institution_id = ${sourceInstitutionId}
     limit 1
   `;
   return rows[0] ?? null;
@@ -354,6 +364,8 @@ export function serializeManagedSiteRecord(row: Row): ManagedSiteRecord {
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
     source_institution_id: rowValue<string | null>(row, "source_institution_id"),
+    source_institution_name: rowValue<string | null>(row, "source_institution_name"),
+    source_institution_address: rowValue<string | null>(row, "source_institution_address"),
     local_storage_root: rowValue<string>(row, "local_storage_root"),
     research_registry_enabled: Boolean(rowValue<boolean>(row, "research_registry_enabled")),
     created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
@@ -396,12 +408,12 @@ export function serializeInstitutionRecord(row: Row): PublicInstitutionRecord {
 export async function serializeAccessRequestRecord(row: Row): Promise<AccessRequestRecord> {
   const requestedSiteId = rowValue<string>(row, "requested_site_id");
   const requestedSiteSource = trimText(rowValue<string>(row, "requested_site_source") || "site") || "site";
+  const directSite = await siteRowById(requestedSiteId);
   const mappedSite =
-    requestedSiteSource === "institution_directory"
-      ? await siteRowBySourceInstitutionId(requestedSiteId)
-      : await siteRowById(requestedSiteId);
+    directSite ??
+    (requestedSiteSource === "institution_directory" ? await siteRowBySourceInstitutionId(requestedSiteId) : null);
   const institution =
-    requestedSiteSource === "institution_directory" ? await institutionRowById(requestedSiteId) : null;
+    requestedSiteSource === "institution_directory" && !directSite ? await institutionRowById(requestedSiteId) : null;
   const requestedSiteLabel =
     trimText(rowValue<string>(row, "requested_site_label")) ||
     (mappedSite ? rowValue<string>(mappedSite, "display_name") : "") ||
@@ -412,7 +424,7 @@ export async function serializeAccessRequestRecord(row: Row): Promise<AccessRequ
     email: rowValue<string>(row, "email"),
     requested_site_id: requestedSiteId,
     requested_site_label: requestedSiteLabel,
-    requested_site_source: requestedSiteSource,
+    requested_site_source: directSite ? "site" : requestedSiteSource,
     resolved_site_id: mappedSite ? rowValue<string>(mappedSite, "site_id") : null,
     resolved_site_label: mappedSite
       ? rowValue<string>(mappedSite, "display_name") || rowValue<string>(mappedSite, "hospital_name")

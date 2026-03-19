@@ -17,6 +17,7 @@ from sklearn.model_selection import StratifiedKFold, train_test_split
 from kera_research.config import DEFAULT_GLOBAL_MODELS
 from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.model_artifacts import ModelArtifactStore
+from kera_research.services.retrieval import DINOv2_MODEL_ID
 
 try:
     import torch
@@ -56,6 +57,9 @@ DEFAULT_IMAGE_SIZE = 224
 DEFAULT_NUM_CLASSES = len(LABEL_TO_INDEX)
 IMAGENET_CHANNEL_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_CHANNEL_STD = (0.229, 0.224, 0.225)
+DEFAULT_CASE_AGGREGATION = "mean"
+CASE_AGGREGATIONS = ("mean", "logit_mean", "quality_weighted_mean", "attention_mil")
+DUAL_INPUT_ARCHITECTURES = ("dual_input_concat",)
 
 
 def _legacy_preprocess_metadata(image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
@@ -388,6 +392,162 @@ if nn is not None:
         def classifier(self) -> nn.Module:
             return self.model.classifier
 
+
+    class Dinov2FeatureExtractor(nn.Module):
+        def __init__(self, num_classes: int = 2, *, pretrained: bool = False) -> None:
+            super().__init__()
+            try:
+                from transformers import Dinov2Config, Dinov2Model
+            except ImportError as exc:  # pragma: no cover - dependency guard
+                raise RuntimeError("transformers is required for DINOv2. Run: pip install transformers") from exc
+
+            if pretrained:
+                backbone = Dinov2Model.from_pretrained(DINOv2_MODEL_ID)
+            else:
+                backbone = Dinov2Model(Dinov2Config())
+
+            self.backbone = backbone
+            self.hidden_size = int(backbone.config.hidden_size)
+
+        def encode(self, inputs: torch.Tensor) -> torch.Tensor:
+            outputs = self.backbone(pixel_values=inputs)
+            return outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+
+
+    class Dinov2Keratitis(nn.Module):
+        def __init__(self, num_classes: int = 2, *, pretrained: bool = False) -> None:
+            super().__init__()
+            encoder = Dinov2FeatureExtractor(num_classes=num_classes, pretrained=pretrained)
+            self.backbone = encoder.backbone
+            self.hidden_size = encoder.hidden_size
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            outputs = self.backbone(pixel_values=inputs)
+            features = outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+            return self.classifier(features)
+
+
+    class DualInputConcatKeratitis(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            dropout: float = 0.2,
+        ) -> None:
+            super().__init__()
+            encoder = Dinov2FeatureExtractor(num_classes=num_classes, pretrained=pretrained)
+            self.backbone = encoder.backbone
+            self.hidden_size = encoder.hidden_size
+            self.fusion_projection = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * 2),
+                nn.Linear(self.hidden_size * 2, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+            self._cam_active_branch: str | None = None
+
+        def encode(self, inputs: torch.Tensor, *, branch_name: str | None = None) -> torch.Tensor:
+            self._cam_active_branch = branch_name
+            try:
+                outputs = self.backbone(pixel_values=inputs)
+            finally:
+                self._cam_active_branch = None
+            return outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+
+        def forward_features(self, cornea_inputs: torch.Tensor, lesion_inputs: torch.Tensor) -> torch.Tensor:
+            cornea_features = self.encode(cornea_inputs, branch_name="cornea")
+            lesion_features = self.encode(lesion_inputs, branch_name="lesion")
+            fused_features = torch.cat([cornea_features, lesion_features], dim=1)
+            return self.fusion_projection(fused_features)
+
+        def forward(self, cornea_inputs: torch.Tensor, lesion_inputs: torch.Tensor) -> torch.Tensor:
+            return self.classifier(self.forward_features(cornea_inputs, lesion_inputs))
+
+
+    class AttentionMILPool(nn.Module):
+        def __init__(self, hidden_size: int, attention_size: int = 256) -> None:
+            super().__init__()
+            self.attn_v = nn.Linear(hidden_size, attention_size)
+            self.attn_u = nn.Linear(hidden_size, attention_size)
+            self.attn_w = nn.Linear(attention_size, 1)
+
+        def forward(
+            self,
+            instance_features: torch.Tensor,
+            *,
+            mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            gated = torch.tanh(self.attn_v(instance_features)) * torch.sigmoid(self.attn_u(instance_features))
+            scores = self.attn_w(gated).squeeze(-1)
+            if mask is not None:
+                scores = scores.masked_fill(~mask, float("-inf"))
+            attention = torch.softmax(scores, dim=1)
+            if mask is not None:
+                attention = attention * mask.to(dtype=attention.dtype)
+                attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-6)
+            pooled = torch.sum(attention.unsqueeze(-1) * instance_features, dim=1)
+            return pooled, attention
+
+
+    class Dinov2AttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+        ) -> None:
+            super().__init__()
+            encoder = Dinov2FeatureExtractor(num_classes=num_classes, pretrained=pretrained)
+            self.backbone = encoder.backbone
+            self.hidden_size = encoder.hidden_size
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def encode_instances(self, inputs: torch.Tensor) -> torch.Tensor:
+            if inputs.ndim == 4:
+                batch_size = inputs.shape[0]
+                outputs = self.backbone(pixel_values=inputs)
+                features = outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+                return features.view(batch_size, 1, -1)
+            if inputs.ndim != 5:
+                raise ValueError(f"Dinov2AttentionMIL expects a 4D or 5D tensor, got shape {tuple(inputs.shape)}.")
+            batch_size, bag_size, channels, height, width = inputs.shape
+            flattened = inputs.view(batch_size * bag_size, channels, height, width)
+            outputs = self.backbone(pixel_values=flattened)
+            features = outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+            return features.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
 else:  # pragma: no cover - dependency guard
     class TinyKeratitisCNN:  # type: ignore[override]
         pass
@@ -402,6 +562,15 @@ else:  # pragma: no cover - dependency guard
         pass
 
     class ConvNeXtTinyKeratitis:  # type: ignore[override]
+        pass
+
+    class Dinov2Keratitis:  # type: ignore[override]
+        pass
+
+    class Dinov2AttentionMIL:  # type: ignore[override]
+        pass
+
+    class DualInputConcatKeratitis:  # type: ignore[override]
         pass
 
 
@@ -543,6 +712,113 @@ class ManifestImageDataset(Dataset):
         return tensor, torch.tensor(label_value, dtype=torch.long)
 
 
+class PairedCropDataset(Dataset):
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.records = list(records)
+        self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        record = self.records[index]
+        image_size = _preprocess_image_size(self.preprocess_metadata)
+        cornea_path = str(record.get("cornea_image_path") or record.get("roi_crop_path") or record.get("image_path") or "")
+        lesion_path = str(record.get("lesion_image_path") or record.get("lesion_crop_path") or "")
+        if not cornea_path or not lesion_path:
+            raise ValueError("Dual-input fusion requires both cornea and lesion crop paths.")
+
+        _, cornea_tensor = _load_image_tensor(cornea_path, image_size=image_size)
+        _, lesion_tensor = _load_image_tensor(lesion_path, image_size=image_size)
+        cornea_tensor = cornea_tensor.squeeze(0)
+        lesion_tensor = lesion_tensor.squeeze(0)
+        if self.augment:
+            cornea_tensor = _augment_tensor(cornea_tensor, view=record.get("view"))
+            lesion_tensor = _augment_tensor(lesion_tensor, view=record.get("view"))
+        cornea_tensor = _apply_preprocess_to_tensor(cornea_tensor, self.preprocess_metadata)
+        lesion_tensor = _apply_preprocess_to_tensor(lesion_tensor, self.preprocess_metadata)
+        label_value = LABEL_TO_INDEX[str(record["culture_category"])]
+        return cornea_tensor, lesion_tensor, torch.tensor(label_value, dtype=torch.long)
+
+
+def _group_records_by_visit(records: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for record in records:
+        key = (str(record["patient_id"]), str(record["visit_date"]))
+        grouped.setdefault(key, []).append(record)
+    return list(grouped.values())
+
+
+class VisitBagDataset(Dataset):
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.visit_records = _group_records_by_visit(records)
+        self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
+
+    def __len__(self) -> int:
+        return len(self.visit_records)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        bag_records = self.visit_records[index]
+        tensors: list[torch.Tensor] = []
+        image_paths: list[str] = []
+        source_image_paths: list[str] = []
+        views: list[str] = []
+        for record in bag_records:
+            _, tensor = _load_image_tensor(
+                record["image_path"],
+                image_size=_preprocess_image_size(self.preprocess_metadata),
+            )
+            next_tensor = tensor.squeeze(0)
+            if self.augment:
+                next_tensor = _augment_tensor(next_tensor, view=record.get("view"))
+            next_tensor = _apply_preprocess_to_tensor(next_tensor, self.preprocess_metadata)
+            tensors.append(next_tensor)
+            image_paths.append(str(record["image_path"]))
+            source_image_paths.append(str(record.get("source_image_path") or record["image_path"]))
+            views.append(str(record.get("view") or ""))
+        label_value = LABEL_TO_INDEX[str(bag_records[0]["culture_category"])]
+        return {
+            "images": torch.stack(tensors, dim=0),
+            "label": torch.tensor(label_value, dtype=torch.long),
+            "patient_id": str(bag_records[0]["patient_id"]),
+            "visit_date": str(bag_records[0]["visit_date"]),
+            "image_paths": image_paths,
+            "source_image_paths": source_image_paths,
+            "views": views,
+        }
+
+
+def collate_visit_bags(items: list[dict[str, Any]]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if not items:
+        raise ValueError("Visit bag collation requires at least one item.")
+    max_bag_size = max(int(item["images"].shape[0]) for item in items)
+    channels, height, width = items[0]["images"].shape[1:]
+    batch_images = torch.zeros((len(items), max_bag_size, channels, height, width), dtype=items[0]["images"].dtype)
+    batch_mask = torch.zeros((len(items), max_bag_size), dtype=torch.bool)
+    labels = torch.zeros((len(items),), dtype=torch.long)
+    for index, item in enumerate(items):
+        bag = item["images"]
+        bag_size = int(bag.shape[0])
+        batch_images[index, :bag_size] = bag
+        batch_mask[index, :bag_size] = True
+        labels[index] = item["label"]
+    return batch_images, batch_mask, labels
+
+
 @dataclass
 class Prediction:
     predicted_label: str
@@ -554,6 +830,25 @@ class ModelManager:
     def __init__(self) -> None:
         seed_everything()
         self.artifact_store = ModelArtifactStore()
+
+    def is_dual_input_architecture(self, architecture: str | None) -> bool:
+        normalized = str(architecture or "").strip().lower()
+        return normalized in DUAL_INPUT_ARCHITECTURES
+
+    def supports_gradcam(self, architecture: str | None) -> bool:
+        normalized = str(architecture or "").strip().lower()
+        if normalized in DENSENET_VARIANTS:
+            return True
+        return normalized in {
+            "cnn",
+            "vit",
+            "swin",
+            "convnext_tiny",
+            "efficientnet_v2_s",
+            "dinov2",
+            "dinov2_mil",
+            "dual_input_concat",
+        }
 
     def preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
         return _imagenet_preprocess_metadata(image_size=image_size)
@@ -610,6 +905,8 @@ class ModelManager:
         architecture: str,
         artifact_type: str = "model",
         crop_mode: str | None = None,
+        case_aggregation: str | None = None,
+        bag_level: bool | None = None,
         training_input_policy: str | None = None,
         image_size: int = DEFAULT_IMAGE_SIZE,
         num_classes: int = DEFAULT_NUM_CLASSES,
@@ -631,6 +928,10 @@ class ModelManager:
         }
         if crop_mode is not None:
             metadata["crop_mode"] = str(crop_mode)
+        if case_aggregation is not None:
+            metadata["case_aggregation"] = str(case_aggregation)
+        if bag_level is not None:
+            metadata["bag_level"] = bool(bag_level)
         if training_input_policy is not None:
             metadata["training_input_policy"] = str(training_input_policy)
         return metadata
@@ -711,6 +1012,12 @@ class ModelManager:
             in_features = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
             return backbone
+        if architecture == "dinov2":
+            return Dinov2Keratitis(pretrained=False)
+        if architecture == "dinov2_mil":
+            return Dinov2AttentionMIL(pretrained=False)
+        if architecture == "dual_input_concat":
+            return DualInputConcatKeratitis(pretrained=False)
         if architecture in DENSENET_VARIANTS:
             return DenseNetKeratitis(variant=architecture)
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -870,6 +1177,31 @@ class ModelManager:
             logits=[float(value) for value in logits.squeeze(0).tolist()],
         )
 
+    def predict_paired_image(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any],
+        cornea_image_path: str | Path,
+        lesion_image_path: str | Path,
+        device: str,
+    ) -> Prediction:
+        require_torch()
+        preprocess_metadata = self.model_preprocess_metadata(model, model_reference)
+        _, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
+        _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
+        cornea_tensor = cornea_tensor.to(device)
+        lesion_tensor = lesion_tensor.to(device)
+        model.eval()
+        with torch.no_grad():
+            logits = model(cornea_tensor, lesion_tensor)
+            probabilities = torch.softmax(logits, dim=1).squeeze(0)
+        pred_index = int(torch.argmax(probabilities).item())
+        return Prediction(
+            predicted_label=INDEX_TO_LABEL[pred_index],
+            probability=float(probabilities[1].item()),
+            logits=[float(value) for value in logits.squeeze(0).tolist()],
+        )
+
     def extract_image_embedding(
         self,
         model: nn.Module,
@@ -906,6 +1238,28 @@ class ModelManager:
         embedding = captured_inputs[0].reshape(captured_inputs[0].shape[0], -1)[0].cpu().numpy().astype(np.float32)
         return embedding
 
+    def extract_paired_image_embedding(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any],
+        cornea_image_path: str | Path,
+        lesion_image_path: str | Path,
+        device: str,
+    ) -> np.ndarray:
+        require_torch()
+        if not hasattr(model, "forward_features"):
+            raise RuntimeError("Dual-input model does not expose fused feature extraction.")
+        preprocess_metadata = self.model_preprocess_metadata(model, model_reference)
+        _, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
+        _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
+        cornea_tensor = cornea_tensor.to(device)
+        lesion_tensor = lesion_tensor.to(device)
+        model.eval()
+        with torch.no_grad():
+            fused_features = model.forward_features(cornea_tensor, lesion_tensor)
+        embedding = fused_features[0].detach().cpu().numpy().astype(np.float32)
+        return embedding
+
     def generate_explanation(
         self,
         model: nn.Module,
@@ -915,13 +1269,64 @@ class ModelManager:
         output_path: str | Path,
         target_class: int | None = None,
     ) -> str:
+        return self.generate_explanation_artifacts(
+            model,
+            model_reference,
+            image_path,
+            device,
+            output_path,
+            target_class=target_class,
+        )["overlay_path"]
+
+    def generate_explanation_artifacts(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any],
+        image_path: str | Path,
+        device: str,
+        output_path: str | Path,
+        target_class: int | None = None,
+        heatmap_output_path: str | Path | None = None,
+    ) -> dict[str, str]:
         architecture = model_reference.get("architecture", "densenet121")
-        return self._generate_cam_from_layer(
+        return self._generate_cam_artifacts_from_layer(
             model=model,
             preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
             image_path=image_path,
             device=device,
             output_path=output_path,
+            heatmap_output_path=heatmap_output_path,
+            target_layer=self._gradcam_target_layer(model, architecture),
+            target_class=target_class,
+        )
+
+    def generate_paired_explanation_artifacts(
+        self,
+        model: nn.Module,
+        model_reference: dict[str, Any],
+        *,
+        cornea_image_path: str | Path,
+        lesion_image_path: str | Path,
+        device: str,
+        cornea_output_path: str | Path,
+        lesion_output_path: str | Path,
+        target_class: int | None = None,
+        cornea_heatmap_output_path: str | Path | None = None,
+        lesion_heatmap_output_path: str | Path | None = None,
+    ) -> dict[str, str]:
+        architecture = str(model_reference.get("architecture") or "densenet121")
+        if not self.is_dual_input_architecture(architecture):
+            raise ValueError("Paired Grad-CAM is only available for dual-input architectures.")
+        return self._generate_paired_cam_artifacts_from_layer(
+            model=model,
+            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
+            cornea_image_path=cornea_image_path,
+            lesion_image_path=lesion_image_path,
+            device=device,
+            cornea_output_path=cornea_output_path,
+            lesion_output_path=lesion_output_path,
+            cornea_heatmap_output_path=cornea_heatmap_output_path,
+            lesion_heatmap_output_path=lesion_heatmap_output_path,
             target_layer=self._gradcam_target_layer(model, architecture),
             target_class=target_class,
         )
@@ -937,6 +1342,12 @@ class ModelManager:
             return model.classifier[-1]
         if architecture == "efficientnet_v2_s":
             return model.classifier[-1]
+        if architecture == "dinov2":
+            return model.classifier
+        if architecture == "dinov2_mil":
+            return model.classifier
+        if architecture == "dual_input_concat":
+            return model.classifier
         if architecture in DENSENET_VARIANTS:
             return model.classifier
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -952,9 +1363,22 @@ class ModelManager:
             return model.features[-1]
         if architecture == "efficientnet_v2_s":
             return model.features[-1]
+        if architecture == "dinov2":
+            return self._dinov2_gradcam_projection(model, "DINOv2")
+        if architecture == "dinov2_mil":
+            return self._dinov2_gradcam_projection(model, "DINOv2 MIL")
+        if architecture == "dual_input_concat":
+            return self._dinov2_gradcam_projection(model, "Dual-input DINOv2")
         if architecture in DENSENET_VARIANTS:
             return model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
         raise ValueError(f"Unsupported architecture: {architecture}")
+
+    def _dinov2_gradcam_projection(self, model: nn.Module, label: str) -> nn.Module:
+        patch_embeddings = getattr(getattr(getattr(model, "backbone", None), "embeddings", None), "patch_embeddings", None)
+        projection = getattr(patch_embeddings, "projection", None)
+        if projection is None:
+            raise ValueError(f"{label} Grad-CAM target layer is unavailable.")
+        return projection
 
     def _normalize_cam_feature_map(self, tensor: torch.Tensor) -> torch.Tensor:
         if tensor.ndim != 3:
@@ -962,6 +1386,19 @@ class ModelManager:
         if tensor.shape[0] <= tensor.shape[-1]:
             return tensor
         return tensor.permute(2, 0, 1).contiguous()
+
+    def _cam_array_from_tensors(
+        self,
+        activation_tensor: torch.Tensor,
+        gradient_tensor: torch.Tensor,
+    ) -> np.ndarray:
+        activation = self._normalize_cam_feature_map(activation_tensor[0].detach())
+        gradient = self._normalize_cam_feature_map(gradient_tensor[0].detach())
+        weights = gradient.mean(dim=(1, 2), keepdim=True)
+        cam = torch.relu((weights * activation).sum(dim=0)).cpu().numpy()
+        cam = cam - cam.min()
+        denominator = cam.max() if cam.max() > 0 else 1.0
+        return np.asarray(cam / denominator, dtype=np.float32)
 
     def _generate_cam_from_layer(
         self,
@@ -973,6 +1410,28 @@ class ModelManager:
         target_layer: nn.Module,
         target_class: int | None = None,
     ) -> str:
+        return self._generate_cam_artifacts_from_layer(
+            model=model,
+            preprocess_metadata=preprocess_metadata,
+            image_path=image_path,
+            device=device,
+            output_path=output_path,
+            heatmap_output_path=None,
+            target_layer=target_layer,
+            target_class=target_class,
+        )["overlay_path"]
+
+    def _generate_cam_artifacts_from_layer(
+        self,
+        model: nn.Module,
+        preprocess_metadata: dict[str, Any] | None,
+        image_path: str | Path,
+        device: str,
+        output_path: str | Path,
+        heatmap_output_path: str | Path | None,
+        target_layer: nn.Module,
+        target_class: int | None = None,
+    ) -> dict[str, str]:
         require_torch()
         original_image, tensor = preprocess_image(image_path, preprocess_metadata=preprocess_metadata)
         tensor = tensor.to(device)
@@ -1004,19 +1463,106 @@ class ModelManager:
         forward_handle.remove()
         backward_handle.remove()
 
-        activation = self._normalize_cam_feature_map(activations[-1][0])
-        gradient = self._normalize_cam_feature_map(gradients[-1][0])
-        weights = gradient.mean(dim=(1, 2), keepdim=True)
-        cam = torch.relu((weights * activation).sum(dim=0)).cpu().numpy()
-        cam = cam - cam.min()
-        denominator = cam.max() if cam.max() > 0 else 1.0
-        cam = cam / denominator
+        cam = self._cam_array_from_tensors(activations[-1], gradients[-1])
 
         overlay = self._overlay_heatmap(np.asarray(original_image), cam)
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(overlay).save(output)
-        return str(output)
+        resolved_heatmap_path = Path(heatmap_output_path) if heatmap_output_path is not None else output.with_suffix(".npy")
+        resolved_heatmap_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(resolved_heatmap_path, np.asarray(cam, dtype=np.float32))
+        return {
+            "overlay_path": str(output),
+            "heatmap_path": str(resolved_heatmap_path),
+        }
+
+    def _generate_paired_cam_artifacts_from_layer(
+        self,
+        *,
+        model: nn.Module,
+        preprocess_metadata: dict[str, Any] | None,
+        cornea_image_path: str | Path,
+        lesion_image_path: str | Path,
+        device: str,
+        cornea_output_path: str | Path,
+        lesion_output_path: str | Path,
+        cornea_heatmap_output_path: str | Path | None,
+        lesion_heatmap_output_path: str | Path | None,
+        target_layer: nn.Module,
+        target_class: int | None = None,
+    ) -> dict[str, str]:
+        require_torch()
+        if not hasattr(model, "forward"):
+            raise RuntimeError("Paired Grad-CAM requires a callable dual-input model.")
+
+        cornea_original, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
+        lesion_original, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
+        cornea_tensor = cornea_tensor.to(device)
+        lesion_tensor = lesion_tensor.to(device)
+        model.eval()
+
+        branch_activations: dict[str, torch.Tensor] = {}
+        branch_gradients: dict[str, torch.Tensor] = {}
+
+        def forward_hook(_module: nn.Module, _input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+            branch_name = str(getattr(model, "_cam_active_branch", "") or f"branch_{len(branch_activations)}")
+            if not torch.is_tensor(output):
+                return
+            output.retain_grad()
+            branch_activations[branch_name] = output
+
+        forward_handle = target_layer.register_forward_hook(forward_hook)
+        scores = model(cornea_tensor, lesion_tensor)
+        if target_class is None:
+            target_class = int(torch.argmax(scores, dim=1).item())
+        model.zero_grad()
+        scores[:, target_class].backward()
+        forward_handle.remove()
+
+        for branch_name, activation in branch_activations.items():
+            if activation.grad is not None:
+                branch_gradients[branch_name] = activation.grad.detach()
+
+        branch_specs = (
+            (
+                "cornea",
+                cornea_original,
+                cornea_output_path,
+                cornea_heatmap_output_path,
+                "cornea_overlay_path",
+                "cornea_heatmap_path",
+            ),
+            (
+                "lesion",
+                lesion_original,
+                lesion_output_path,
+                lesion_heatmap_output_path,
+                "lesion_overlay_path",
+                "lesion_heatmap_path",
+            ),
+        )
+        artifacts: dict[str, str] = {}
+        for branch_name, original_image, output_path, heatmap_output_path, overlay_key, heatmap_key in branch_specs:
+            activation = branch_activations.get(branch_name)
+            gradient = branch_gradients.get(branch_name)
+            if activation is None or gradient is None:
+                raise RuntimeError(f"Unable to collect Grad-CAM tensors for the {branch_name} branch.")
+            cam = self._cam_array_from_tensors(activation.detach(), gradient)
+            overlay = self._overlay_heatmap(np.asarray(original_image), cam)
+            resolved_output_path = Path(output_path)
+            resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(overlay).save(resolved_output_path)
+            resolved_heatmap_path = (
+                Path(heatmap_output_path)
+                if heatmap_output_path is not None
+                else resolved_output_path.with_suffix(".npy")
+            )
+            resolved_heatmap_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(resolved_heatmap_path, np.asarray(cam, dtype=np.float32))
+            artifacts[overlay_key] = str(resolved_output_path)
+            artifacts[heatmap_key] = str(resolved_heatmap_path)
+        return artifacts
 
     def _overlay_heatmap(self, original_array: np.ndarray, heatmap: np.ndarray) -> np.ndarray:
         resized_heatmap = np.array(
@@ -1052,14 +1598,20 @@ class ModelManager:
         if not records:
             raise ValueError("No records are available for fine-tuning.")
 
-        dataset = ManifestImageDataset(
-            records,
-            preprocess_metadata=self.resolve_preprocess_metadata(base_model_reference),
-        )
-        loader = DataLoader(dataset, batch_size=min(8, len(records)), shuffle=True)
-
         model = self.load_model(base_model_reference, device)
         architecture = base_model_reference.get("architecture", "densenet121")
+        preprocess_metadata = self.resolve_preprocess_metadata(base_model_reference)
+        if self.is_dual_input_architecture(architecture):
+            dataset = PairedCropDataset(
+                records,
+                preprocess_metadata=preprocess_metadata,
+            )
+        else:
+            dataset = ManifestImageDataset(
+                records,
+                preprocess_metadata=preprocess_metadata,
+            )
+        loader = DataLoader(dataset, batch_size=min(8, len(records)), shuffle=True)
         if not full_finetune:
             self._freeze_backbone(model, architecture)
 
@@ -1073,15 +1625,27 @@ class ModelManager:
         epoch_losses: list[float] = []
         for _ in range(max(1, epochs)):
             batch_losses: list[float] = []
-            for batch_inputs, batch_labels in loader:
-                batch_inputs = batch_inputs.to(device)
-                batch_labels = batch_labels.to(device)
-                optimizer.zero_grad()
-                logits = model(batch_inputs)
-                loss = loss_fn(logits, batch_labels)
-                loss.backward()
-                optimizer.step()
-                batch_losses.append(float(loss.item()))
+            if self.is_dual_input_architecture(architecture):
+                for cornea_inputs, lesion_inputs, batch_labels in loader:
+                    cornea_inputs = cornea_inputs.to(device)
+                    lesion_inputs = lesion_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    logits = model(cornea_inputs, lesion_inputs)
+                    loss = loss_fn(logits, batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    batch_losses.append(float(loss.item()))
+            else:
+                for batch_inputs, batch_labels in loader:
+                    batch_inputs = batch_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    logits = model(batch_inputs)
+                    loss = loss_fn(logits, batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    batch_losses.append(float(loss.item()))
             epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else math.nan)
 
         output = Path(output_model_path)
@@ -1094,8 +1658,10 @@ class ModelManager:
                     architecture=architecture,
                     artifact_type="model",
                     crop_mode=str(base_model_reference.get("crop_mode") or ""),
+                    case_aggregation=str(base_model_reference.get("case_aggregation") or self.normalize_case_aggregation(None, architecture)),
+                    bag_level=bool(base_model_reference.get("bag_level", architecture == "dinov2_mil")),
                     training_input_policy=str(base_model_reference.get("training_input_policy") or ""),
-                    preprocess_metadata=self.resolve_preprocess_metadata(base_model_reference),
+                    preprocess_metadata=preprocess_metadata,
                 ),
             },
             output,
@@ -1139,6 +1705,26 @@ class ModelManager:
             for parameter in model.classifier.parameters():
                 parameter.requires_grad = True
             return
+        if architecture == "dinov2":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.classifier.parameters():
+                parameter.requires_grad = True
+            return
+        if architecture == "dinov2_mil":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for module in (model.attention_pool, model.classifier):
+                for parameter in module.parameters():
+                    parameter.requires_grad = True
+            return
+        if architecture == "dual_input_concat":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for module in (model.fusion_projection, model.classifier):
+                for parameter in module.parameters():
+                    parameter.requires_grad = True
+            return
         if architecture in DENSENET_VARIANTS:
             for parameter in model.parameters():
                 parameter.requires_grad = False
@@ -1151,7 +1737,8 @@ class ModelManager:
         """ImageNet pretrained 가중치로 학습용 backbone을 초기화합니다."""
         require_torch()
         if not _TORCHVISION_AVAILABLE:
-            raise RuntimeError("torchvision is required. Run: pip install torchvision")
+            if architecture not in {"dinov2", "dinov2_mil", "dual_input_concat"}:
+                raise RuntimeError("torchvision is required. Run: pip install torchvision")
         if architecture == "vit":
             from torchvision.models import ViT_B_16_Weights
 
@@ -1197,6 +1784,12 @@ class ModelManager:
             in_features = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(in_features, num_classes)
             return backbone
+        if architecture == "dinov2":
+            return Dinov2Keratitis(num_classes=num_classes, pretrained=True)
+        if architecture == "dinov2_mil":
+            return Dinov2AttentionMIL(num_classes=num_classes, pretrained=True)
+        if architecture == "dual_input_concat":
+            return DualInputConcatKeratitis(num_classes=num_classes, pretrained=True)
         raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
 
     def _split_ids_with_fallback(
@@ -1223,6 +1816,54 @@ class ModelManager:
             right_ids = shuffled[:test_size]
             left_ids = shuffled[test_size:]
         return list(left_ids), list(right_ids)
+
+    def normalize_case_aggregation(self, value: str | None, architecture: str | None = None) -> str:
+        normalized = str(value or "").strip().lower()
+        if architecture == "dinov2_mil":
+            return "attention_mil"
+        if normalized not in CASE_AGGREGATIONS or normalized == "attention_mil":
+            return DEFAULT_CASE_AGGREGATION
+        return normalized
+
+    def _bag_forward(
+        self,
+        model: nn.Module,
+        batch_inputs: torch.Tensor,
+        batch_mask: torch.Tensor | None = None,
+        *,
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if batch_mask is None:
+            if return_attention:
+                return model(batch_inputs, return_attention=True)
+            return model(batch_inputs)
+        if return_attention:
+            return model(batch_inputs, bag_mask=batch_mask, return_attention=True)
+        return model(batch_inputs, batch_mask)
+
+    def _collect_bag_loader_outputs(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+    ) -> dict[str, list[float] | list[int]]:
+        require_torch()
+        model.eval()
+        true_labels: list[int] = []
+        positive_probabilities: list[float] = []
+        with torch.no_grad():
+            for batch_inputs, batch_mask, batch_labels in loader:
+                batch_inputs = batch_inputs.to(device)
+                batch_mask = batch_mask.to(device)
+                batch_labels = batch_labels.to(device)
+                logits = self._bag_forward(model, batch_inputs, batch_mask)
+                probabilities = torch.softmax(logits, dim=1)
+                true_labels.extend(int(value) for value in batch_labels.tolist())
+                positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
+        return {
+            "true_labels": true_labels,
+            "positive_probabilities": positive_probabilities,
+        }
 
     def _build_patient_split(
         self,
@@ -1324,6 +1965,30 @@ class ModelManager:
             "positive_probabilities": positive_probabilities,
         }
 
+    def _collect_paired_loader_outputs(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+    ) -> dict[str, list[float] | list[int]]:
+        require_torch()
+        model.eval()
+        true_labels: list[int] = []
+        positive_probabilities: list[float] = []
+        with torch.no_grad():
+            for cornea_inputs, lesion_inputs, batch_labels in loader:
+                cornea_inputs = cornea_inputs.to(device)
+                lesion_inputs = lesion_inputs.to(device)
+                batch_labels = batch_labels.to(device)
+                logits = model(cornea_inputs, lesion_inputs)
+                probabilities = torch.softmax(logits, dim=1)
+                true_labels.extend(int(value) for value in batch_labels.tolist())
+                positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
+        return {
+            "true_labels": true_labels,
+            "positive_probabilities": positive_probabilities,
+        }
+
     def _evaluate_loader(
         self,
         model: nn.Module,
@@ -1332,6 +1997,26 @@ class ModelManager:
         threshold: float = 0.5,
     ) -> dict[str, Any]:
         outputs = self._collect_loader_outputs(model, loader, device)
+        true_labels = [int(value) for value in outputs["true_labels"]]
+        positive_probabilities = [float(value) for value in outputs["positive_probabilities"]]
+        predicted_labels = self._predicted_labels_from_threshold(positive_probabilities, threshold=threshold)
+        metrics = self.classification_metrics(
+            true_labels,
+            predicted_labels,
+            positive_probabilities,
+            threshold=threshold,
+        )
+        metrics["n_samples"] = len(true_labels)
+        return metrics
+
+    def _evaluate_paired_loader(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+        threshold: float = 0.5,
+    ) -> dict[str, Any]:
+        outputs = self._collect_paired_loader_outputs(model, loader, device)
         true_labels = [int(value) for value in outputs["true_labels"]]
         positive_probabilities = [float(value) for value in outputs["positive_probabilities"]]
         predicted_labels = self._predicted_labels_from_threshold(positive_probabilities, threshold=threshold)
@@ -1453,42 +2138,24 @@ class ModelManager:
             )
         return folds
 
-    def initial_train(
+    def _initial_train_attention_mil(
         self,
+        *,
         records: list[dict[str, Any]],
         architecture: str,
         output_model_path: str | Path,
         device: str,
-        epochs: int = 30,
-        learning_rate: float = 1e-4,
-        batch_size: int = 16,
-        val_split: float = 0.2,
-        test_split: float = 0.2,
-        use_pretrained: bool = True,
-        saved_split: dict[str, Any] | None = None,
-        crop_mode: str | None = None,
-        training_input_policy: str | None = None,
-        progress_callback: Any = None,
+        epochs: int,
+        learning_rate: float,
+        batch_size: int,
+        val_split: float,
+        test_split: float,
+        use_pretrained: bool,
+        saved_split: dict[str, Any] | None,
+        crop_mode: str | None,
+        training_input_policy: str | None,
+        progress_callback: Any,
     ) -> dict[str, Any]:
-        """처음부터 학습 가능한 backbone을 학습합니다 (ImageNet pretrained 권장).
-
-        Args:
-            records: manifest 레코드 리스트
-            architecture: 지원되는 training architecture 이름
-            output_model_path: 저장 경로
-            device: cpu / cuda
-            epochs: 학습 에포크
-            learning_rate: 초기 학습률
-            batch_size: 배치 크기
-            val_split: validation 비율 (0~1)
-            use_pretrained: ImageNet 초기화 사용 여부
-            progress_callback: (epoch, total, train_loss, val_acc) → None
-        """
-        require_torch()
-        if len(records) < 4:
-            raise ValueError(f"최소 4개 케이스가 필요합니다 (현재 {len(records)}개).")
-
-        seed_everything(42)
         patient_to_records: dict[str, list[dict[str, Any]]] = {}
         patient_to_label: dict[str, str] = {}
         for record in records:
@@ -1517,16 +2184,249 @@ class ModelManager:
         test_records = [record for patient_id in test_patient_ids for record in patient_to_records[patient_id]]
 
         preprocess_metadata = self.preprocess_metadata()
-        train_ds = ManifestImageDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
-        val_ds = ManifestImageDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
-        test_ds = ManifestImageDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+        train_ds = VisitBagDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+        val_ds = VisitBagDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+        test_ds = VisitBagDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+
+        train_case_count = len(train_ds)
+        val_case_count = len(val_ds)
+        test_case_count = len(test_ds)
+        if train_case_count == 0 or val_case_count == 0 or test_case_count == 0:
+            raise ValueError("Attention MIL training requires at least one visit in each train/val/test split.")
+
+        bs = max(1, min(batch_size, train_case_count))
+        train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, collate_fn=collate_visit_bags)
+        val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, val_case_count)), shuffle=False, collate_fn=collate_visit_bags)
+        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, test_case_count)), shuffle=False, collate_fn=collate_visit_bags)
+
+        model = (self.build_model_pretrained(architecture) if use_pretrained else self.build_model(architecture)).to(device)
+        backbone_frozen = bool(use_pretrained)
+        if backbone_frozen:
+            self._freeze_backbone(model, architecture)
+
+        optimizer = torch.optim.Adam(
+            [param for param in model.parameters() if param.requires_grad],
+            lr=learning_rate,
+            weight_decay=1e-4,
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        train_case_labels = [LABEL_TO_INDEX[str(visit_records[0]["culture_category"])] for visit_records in train_ds.visit_records]
+        class_counts = np.bincount(train_case_labels, minlength=len(LABEL_TO_INDEX))
+        class_weights = np.array(
+            [0.0 if count == 0 else len(train_case_labels) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+            dtype=np.float32,
+        )
+        loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
+
+        best_val_acc = -1.0
+        best_state: dict[str, Any] = {}
+        history: list[dict[str, Any]] = []
+
+        for epoch in range(1, epochs + 1):
+            model.train()
+            train_losses: list[float] = []
+            for batch_inputs, batch_mask, batch_labels in train_loader:
+                batch_inputs = batch_inputs.to(device)
+                batch_mask = batch_mask.to(device)
+                batch_labels = batch_labels.to(device)
+                optimizer.zero_grad()
+                logits = self._bag_forward(model, batch_inputs, batch_mask)
+                loss = loss_fn(logits, batch_labels)
+                loss.backward()
+                optimizer.step()
+                train_losses.append(float(loss.item()))
+            scheduler.step()
+
+            model.eval()
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for batch_inputs, batch_mask, batch_labels in val_loader:
+                    batch_inputs = batch_inputs.to(device)
+                    batch_mask = batch_mask.to(device)
+                    batch_labels = batch_labels.to(device)
+                    preds = torch.argmax(self._bag_forward(model, batch_inputs, batch_mask), dim=1)
+                    correct += int((preds == batch_labels).sum().item())
+                    total += len(batch_labels)
+
+            train_loss = float(np.mean(train_losses)) if train_losses else math.nan
+            val_acc = correct / total if total > 0 else 0.0
+            history.append({"epoch": epoch, "train_loss": train_loss, "val_acc": val_acc})
+
+            if val_acc >= best_val_acc:
+                best_val_acc = val_acc
+                best_state = {key: value.cpu().clone() for key, value in model.state_dict().items()}
+
+            if progress_callback:
+                progress_callback(epoch, epochs, train_loss, val_acc)
+
+        output = Path(output_model_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        model.load_state_dict(best_state)
+        val_outputs = self._collect_bag_loader_outputs(model, val_loader, device)
+        threshold_selection = self.select_decision_threshold(
+            [int(value) for value in val_outputs["true_labels"]],
+            [float(value) for value in val_outputs["positive_probabilities"]],
+        )
+        decision_threshold = float(threshold_selection["decision_threshold"])
+        val_metrics = self.classification_metrics(
+            [int(value) for value in val_outputs["true_labels"]],
+            [],
+            [float(value) for value in val_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
+        val_metrics["n_samples"] = len(val_outputs["true_labels"])
+        test_outputs = self._collect_bag_loader_outputs(model, test_loader, device)
+        test_metrics = self.classification_metrics(
+            [int(value) for value in test_outputs["true_labels"]],
+            [],
+            [float(value) for value in test_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
+        test_metrics["n_samples"] = len(test_outputs["true_labels"])
+        torch.save(
+            {
+                "architecture": architecture,
+                "state_dict": best_state,
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model",
+                    crop_mode=crop_mode,
+                    case_aggregation="attention_mil",
+                    bag_level=True,
+                    training_input_policy=training_input_policy,
+                ),
+            },
+            output,
+        )
+
+        return {
+            "training_id": make_id("train"),
+            "output_model_path": str(output),
+            "architecture": architecture,
+            "epochs": epochs,
+            "n_train": len(train_records),
+            "n_val": len(val_records),
+            "n_test": len(test_records),
+            "n_train_cases": train_case_count,
+            "n_val_cases": val_case_count,
+            "n_test_cases": test_case_count,
+            "n_train_patients": len(train_patient_ids),
+            "n_val_patients": len(val_patient_ids),
+            "n_test_patients": len(test_patient_ids),
+            "best_val_acc": round(best_val_acc, 4),
+            "use_pretrained": use_pretrained,
+            "history": history,
+            "patient_split": patient_split,
+            "decision_threshold": decision_threshold,
+            "threshold_selection_metric": threshold_selection["selection_metric"],
+            "threshold_selection_metrics": threshold_selection["selection_metrics"],
+            "val_metrics": val_metrics,
+            "test_metrics": test_metrics,
+            "case_aggregation": "attention_mil",
+            "bag_level": True,
+            "backbone_frozen": backbone_frozen,
+        }
+
+    def initial_train(
+        self,
+        records: list[dict[str, Any]],
+        architecture: str,
+        output_model_path: str | Path,
+        device: str,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        val_split: float = 0.2,
+        test_split: float = 0.2,
+        use_pretrained: bool = True,
+        saved_split: dict[str, Any] | None = None,
+        crop_mode: str | None = None,
+        case_aggregation: str | None = None,
+        training_input_policy: str | None = None,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        """처음부터 학습 가능한 backbone을 학습합니다 (ImageNet pretrained 권장).
+
+        Args:
+            records: manifest 레코드 리스트
+            architecture: 지원되는 training architecture 이름
+            output_model_path: 저장 경로
+            device: cpu / cuda
+            epochs: 학습 에포크
+            learning_rate: 초기 학습률
+            batch_size: 배치 크기
+            val_split: validation 비율 (0~1)
+            use_pretrained: ImageNet 초기화 사용 여부
+            progress_callback: (epoch, total, train_loss, val_acc) → None
+        """
+        require_torch()
+        if len(records) < 4:
+            raise ValueError(f"최소 4개 케이스가 필요합니다 (현재 {len(records)}개).")
+
+        seed_everything(42)
+        normalized_case_aggregation = self.normalize_case_aggregation(case_aggregation, architecture)
+        if architecture == "dinov2_mil":
+            return self._initial_train_attention_mil(
+                records=records,
+                architecture=architecture,
+                output_model_path=output_model_path,
+                device=device,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                val_split=val_split,
+                test_split=test_split,
+                use_pretrained=use_pretrained,
+                saved_split=saved_split,
+                crop_mode=crop_mode,
+                training_input_policy=training_input_policy,
+                progress_callback=progress_callback,
+            )
+
+        patient_to_records: dict[str, list[dict[str, Any]]] = {}
+        patient_to_label: dict[str, str] = {}
+        for record in records:
+            patient_id = str(record["patient_id"])
+            patient_to_records.setdefault(patient_id, []).append(record)
+            patient_to_label.setdefault(patient_id, str(record["culture_category"]))
+
+        patient_ids = list(patient_to_records)
+        if len(patient_ids) < 4:
+            raise ValueError(f"최소 4명의 환자가 필요합니다 (현재 {len(patient_ids)}명).")
+
+        patient_split = self._build_patient_split(
+            patient_ids=patient_ids,
+            patient_labels=patient_to_label,
+            val_split=val_split,
+            test_split=test_split,
+            saved_split=saved_split,
+            seed=42,
+        )
+        train_patient_ids = patient_split["train_patient_ids"]
+        val_patient_ids = patient_split["val_patient_ids"]
+        test_patient_ids = patient_split["test_patient_ids"]
+
+        train_records = [record for patient_id in train_patient_ids for record in patient_to_records[patient_id]]
+        val_records = [record for patient_id in val_patient_ids for record in patient_to_records[patient_id]]
+        test_records = [record for patient_id in test_patient_ids for record in patient_to_records[patient_id]]
+
+        preprocess_metadata = self.preprocess_metadata()
+        if self.is_dual_input_architecture(architecture):
+            train_ds = PairedCropDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+            val_ds = PairedCropDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+            test_ds = PairedCropDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+        else:
+            train_ds = ManifestImageDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+            val_ds = ManifestImageDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+            test_ds = ManifestImageDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
         bs = max(1, min(batch_size, len(train_records)))
         train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False)
         test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_records))), shuffle=False)
 
         # 모델 초기화
-        if use_pretrained and architecture in {"vit", "swin", "convnext_tiny", "efficientnet_v2_s", *DENSENET_VARIANTS}:
+        if use_pretrained and architecture in {"vit", "swin", "convnext_tiny", "efficientnet_v2_s", "dinov2", "dual_input_concat", *DENSENET_VARIANTS}:
             model = self.build_model_pretrained(architecture).to(device)
         else:
             model = self.build_model(architecture).to(device)
@@ -1551,14 +2451,25 @@ class ModelManager:
             # Train
             model.train()
             train_losses: list[float] = []
-            for batch_inputs, batch_labels in train_loader:
-                batch_inputs = batch_inputs.to(device)
-                batch_labels = batch_labels.to(device)
-                optimizer.zero_grad()
-                loss = loss_fn(model(batch_inputs), batch_labels)
-                loss.backward()
-                optimizer.step()
-                train_losses.append(float(loss.item()))
+            if self.is_dual_input_architecture(architecture):
+                for cornea_inputs, lesion_inputs, batch_labels in train_loader:
+                    cornea_inputs = cornea_inputs.to(device)
+                    lesion_inputs = lesion_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    loss = loss_fn(model(cornea_inputs, lesion_inputs), batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
+            else:
+                for batch_inputs, batch_labels in train_loader:
+                    batch_inputs = batch_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    loss = loss_fn(model(batch_inputs), batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
             scheduler.step()
 
             # Validation
@@ -1566,12 +2477,21 @@ class ModelManager:
             correct = 0
             total = 0
             with torch.no_grad():
-                for batch_inputs, batch_labels in val_loader:
-                    batch_inputs = batch_inputs.to(device)
-                    batch_labels = batch_labels.to(device)
-                    preds = torch.argmax(model(batch_inputs), dim=1)
-                    correct += int((preds == batch_labels).sum().item())
-                    total += len(batch_labels)
+                if self.is_dual_input_architecture(architecture):
+                    for cornea_inputs, lesion_inputs, batch_labels in val_loader:
+                        cornea_inputs = cornea_inputs.to(device)
+                        lesion_inputs = lesion_inputs.to(device)
+                        batch_labels = batch_labels.to(device)
+                        preds = torch.argmax(model(cornea_inputs, lesion_inputs), dim=1)
+                        correct += int((preds == batch_labels).sum().item())
+                        total += len(batch_labels)
+                else:
+                    for batch_inputs, batch_labels in val_loader:
+                        batch_inputs = batch_inputs.to(device)
+                        batch_labels = batch_labels.to(device)
+                        preds = torch.argmax(model(batch_inputs), dim=1)
+                        correct += int((preds == batch_labels).sum().item())
+                        total += len(batch_labels)
 
             train_loss = float(np.mean(train_losses)) if train_losses else math.nan
             val_acc = correct / total if total > 0 else 0.0
@@ -1587,7 +2507,11 @@ class ModelManager:
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         model.load_state_dict(best_state)
-        val_outputs = self._collect_loader_outputs(model, val_loader, device)
+        val_outputs = (
+            self._collect_paired_loader_outputs(model, val_loader, device)
+            if self.is_dual_input_architecture(architecture)
+            else self._collect_loader_outputs(model, val_loader, device)
+        )
         threshold_selection = self.select_decision_threshold(
             [int(value) for value in val_outputs["true_labels"]],
             [float(value) for value in val_outputs["positive_probabilities"]],
@@ -1600,7 +2524,11 @@ class ModelManager:
             threshold=decision_threshold,
         )
         val_metrics["n_samples"] = len(val_outputs["true_labels"])
-        test_metrics = self._evaluate_loader(model, test_loader, device, threshold=decision_threshold)
+        test_metrics = (
+            self._evaluate_paired_loader(model, test_loader, device, threshold=decision_threshold)
+            if self.is_dual_input_architecture(architecture)
+            else self._evaluate_loader(model, test_loader, device, threshold=decision_threshold)
+        )
         torch.save(
             {
                 "architecture": architecture,
@@ -1609,7 +2537,10 @@ class ModelManager:
                     architecture=architecture,
                     artifact_type="model",
                     crop_mode=crop_mode,
+                    case_aggregation=normalized_case_aggregation,
+                    bag_level=False,
                     training_input_policy=training_input_policy,
+                    preprocess_metadata=preprocess_metadata,
                 ),
             },
             output,
@@ -1635,6 +2566,8 @@ class ModelManager:
             "threshold_selection_metrics": threshold_selection["selection_metrics"],
             "val_metrics": val_metrics,
             "test_metrics": test_metrics,
+            "case_aggregation": normalized_case_aggregation,
+            "bag_level": False,
         }
 
     def cross_validate(
@@ -1649,6 +2582,7 @@ class ModelManager:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        case_aggregation: str | None = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
         patient_labels = {
@@ -1705,6 +2639,7 @@ class ModelManager:
                 test_split=fold["test_split"],
                 use_pretrained=use_pretrained,
                 saved_split=fold,
+                case_aggregation=case_aggregation,
                 progress_callback=fold_progress_callback,
             )
             fold_results.append(

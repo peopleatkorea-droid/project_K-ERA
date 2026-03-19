@@ -12,6 +12,7 @@ export async function PATCH(
     const body = (await request.json()) as {
       display_name?: string;
       hospital_name?: string;
+      source_institution_id?: string | null;
       research_registry_enabled?: boolean;
     };
     return Response.json(await updateMainAdminSite(request, siteId, body));

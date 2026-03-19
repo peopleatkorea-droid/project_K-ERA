@@ -260,10 +260,10 @@ class ResearchCaseSupport:
     ) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         normalized_crop_mode = self.service._normalize_crop_mode(crop_mode)
-        if normalized_crop_mode == "manual":
+        if normalized_crop_mode in {"manual", "paired"}:
             records = [record for record in records if isinstance(record.get("lesion_prompt_box"), dict)]
             if not records:
-                raise ValueError("Manual lesion crop requires at least one saved lesion box.")
+                raise ValueError("This crop mode requires at least one saved lesion box.")
 
         for record in records:
             item = {**record, "source_image_path": record["image_path"]}
@@ -279,6 +279,17 @@ class ResearchCaseSupport:
                 item["lesion_crop_path"] = lesion["lesion_crop_path"]
                 item["image_path"] = lesion["lesion_crop_path"]
                 item["crop_mode"] = "manual"
+            elif normalized_crop_mode == "paired":
+                roi = self._ensure_roi_crop(site_store, record["image_path"])
+                lesion = self._ensure_lesion_crop(site_store, record)
+                item["medsam_mask_path"] = roi["medsam_mask_path"]
+                item["roi_crop_path"] = roi["roi_crop_path"]
+                item["lesion_mask_path"] = lesion["lesion_mask_path"]
+                item["lesion_crop_path"] = lesion["lesion_crop_path"]
+                item["cornea_image_path"] = roi["roi_crop_path"]
+                item["lesion_image_path"] = lesion["lesion_crop_path"]
+                item["image_path"] = roi["roi_crop_path"]
+                item["crop_mode"] = "paired"
             prepared.append(item)
         return prepared
 

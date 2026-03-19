@@ -6,8 +6,22 @@ from fastapi.responses import FileResponse, Response
 from kera_research.api.admin_workflows import (
     build_admin_overview as build_admin_workspace_overview,
 )
-from kera_research.api.control_plane_proxy import call_remote_control_plane_method
+from kera_research.api.control_plane_proxy import call_remote_control_plane_method, remote_control_plane_is_primary
 from kera_research.services.institution_directory import HiraApiError
+
+FIXED_PROJECT_ID = "project_default"
+FIXED_PROJECT_NAME = "Default Workspace"
+FIXED_RESEARCHER_ROLE = "researcher"
+
+
+def resolve_fixed_project(cp: Any, owner_user_id: str | None = None) -> dict[str, Any]:
+    projects = cp.list_projects()
+    fixed_project = next((project for project in projects if project.get("project_id") == FIXED_PROJECT_ID), None)
+    if fixed_project is not None:
+        return fixed_project
+    if projects:
+        return projects[0]
+    return cp.create_project(FIXED_PROJECT_NAME, "", str(owner_user_id or "").strip() or "system")
 
 
 def build_admin_router(support: Any) -> APIRouter:
@@ -60,6 +74,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_requests is not None:
             return remote_requests
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane access requests are unavailable.",
+            )
         if user.get("role") == "admin":
             return cp.list_access_requests(status=status_filter)
         if user.get("role") == "site_admin":
@@ -88,13 +107,21 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_review is not None:
             return remote_review
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane request review is unavailable.",
+            )
         access_request = next((item for item in cp.list_access_requests() if item["request_id"] == request_id), None)
         if access_request is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown access request.")
         if payload.decision not in {"approved", "rejected"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid review decision.")
-        if payload.decision == "approved" and payload.assigned_role not in {None, "site_admin", "researcher", "viewer"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assigned role.")
+        if payload.decision == "approved" and payload.assigned_role not in {None, FIXED_RESEARCHER_ROLE}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Access requests can only be approved as researcher accounts.",
+            )
         created_site = None
         target_site_id = (
             payload.assigned_site_id
@@ -117,15 +144,16 @@ def build_admin_router(support: Any) -> APIRouter:
             institution_id = str(access_request.get("requested_site_id") or "").strip()
             mapped_site = cp.get_site_by_source_institution_id(institution_id)
             if mapped_site is None:
-                if not payload.project_id or not payload.site_code or not payload.display_name:
+                if not payload.site_code or not payload.display_name:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="project_id, site_code, and display_name are required to create a site from this request.",
+                        detail="site_code and display_name are required to create a site from this request.",
                     )
                 institution = cp.get_institution(institution_id)
+                fixed_project = resolve_fixed_project(cp, user.get("user_id"))
                 try:
                     created_site = cp.create_site(
-                        payload.project_id,
+                        str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
                         payload.site_code,
                         payload.display_name,
                         payload.hospital_name
@@ -151,7 +179,7 @@ def build_admin_router(support: Any) -> APIRouter:
                 request_id=request_id,
                 reviewer_user_id=user["user_id"],
                 decision=payload.decision,
-                assigned_role=payload.assigned_role,
+                assigned_role=FIXED_RESEARCHER_ROLE if payload.decision == "approved" else payload.assigned_role,
                 assigned_site_id=target_site_id,
                 reviewer_notes=payload.reviewer_notes,
             )
@@ -204,6 +232,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_status is not None:
             return remote_status
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane institution status is unavailable.",
+            )
         return cp.institution_directory_sync_status()
 
     @router.get("/api/admin/overview")
@@ -222,6 +255,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_overview is not None:
             return remote_overview
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane admin overview is unavailable.",
+            )
         return build_admin_workspace_overview(
             cp,
             user,
@@ -236,11 +274,15 @@ def build_admin_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         default_root = str(cp.default_instance_storage_root())
+        effective_default_root = str(cp.configured_default_instance_storage_root())
         current_root = cp.instance_storage_root()
+        source = cp.instance_storage_root_source()
         return {
             "storage_root": current_root,
             "default_storage_root": default_root,
-            "uses_custom_root": current_root != default_root,
+            "effective_default_storage_root": effective_default_root,
+            "storage_root_source": source,
+            "uses_custom_root": source == "custom",
         }
 
     @router.patch("/api/admin/storage-settings")
@@ -256,10 +298,14 @@ def build_admin_router(support: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         default_root = str(cp.default_instance_storage_root())
+        effective_default_root = str(cp.configured_default_instance_storage_root())
+        source = cp.instance_storage_root_source()
         return {
             "storage_root": cp.instance_storage_root(),
             "default_storage_root": default_root,
-            "uses_custom_root": cp.instance_storage_root() != default_root,
+            "effective_default_storage_root": effective_default_root,
+            "storage_root_source": source,
+            "uses_custom_root": source == "custom",
         }
 
     @router.get("/api/admin/system/salt-fingerprint")
@@ -285,6 +331,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_versions is not None:
             return remote_versions
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane model versions are unavailable.",
+            )
         return cp.list_model_versions()
 
     @router.get("/api/admin/experiments")
@@ -381,6 +432,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_updates is not None:
             return remote_updates
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane model updates are unavailable.",
+            )
         if site_id:
             require_site_access(cp, user, site_id)
         return visible_model_updates(cp, user, site_id=site_id, status_filter=status_filter)
@@ -488,6 +544,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_aggregations is not None:
             return remote_aggregations
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane aggregations are unavailable.",
+            )
         return cp.list_aggregations()
 
     @router.post("/api/admin/aggregations/run")
@@ -535,7 +596,12 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_projects is not None:
             return remote_projects
-        return cp.list_projects()
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane projects are unavailable.",
+            )
+        return [resolve_fixed_project(cp, user.get("user_id"))]
 
     @router.post("/api/admin/projects")
     def create_project(
@@ -546,19 +612,10 @@ def build_admin_router(support: Any) -> APIRouter:
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        remote_project = call_remote_control_plane_method(
-            cp,
-            authorization=authorization,
-            control_plane_owner=control_plane_owner,
-            method_name="main_admin_create_project",
-            payload_json=payload.model_dump(),
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Projects are fixed to the default workspace.",
         )
-        if remote_project is not None:
-            return remote_project
-        try:
-            return cp.create_project(payload.name, payload.description, user["user_id"])
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     @router.get("/api/admin/sites")
     def list_admin_sites(
@@ -578,6 +635,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_sites is not None:
             return remote_sites
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane sites are unavailable.",
+            )
         if user.get("role") == "admin":
             return cp.list_sites(project_id=project_id)
         sites = cp.accessible_sites_for_user(user)
@@ -603,9 +665,15 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_site is not None:
             return remote_site
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane site creation is unavailable.",
+            )
+        fixed_project = resolve_fixed_project(cp, user.get("user_id"))
         try:
             return cp.create_site(
-                payload.project_id,
+                str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
                 payload.site_code,
                 payload.display_name,
                 payload.hospital_name,
@@ -635,6 +703,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_site is not None:
             return remote_site
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane site update is unavailable.",
+            )
         try:
             return cp.update_site_metadata(
                 site_id,
@@ -661,6 +734,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_users is not None:
             return remote_users
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane users are unavailable.",
+            )
         return cp.list_users()
 
     @router.post("/api/admin/users")
@@ -681,6 +759,11 @@ def build_admin_router(support: Any) -> APIRouter:
         )
         if remote_user is not None:
             return remote_user
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane user management is unavailable.",
+            )
         if payload.role not in {"admin", "site_admin", "researcher", "viewer"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user role.")
         if payload.role != "admin" and not payload.site_ids:

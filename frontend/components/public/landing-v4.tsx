@@ -80,6 +80,11 @@ export function LandingV4(props: LandingV4Props) {
       {props.googleClientId ? (
         <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onLoad={props.onGoogleReady} />
       ) : null}
+      {props.error ? (
+        <div className="fixed inset-x-0 top-4 z-[70] mx-auto w-[min(calc(100%-2rem),42rem)] rounded-[18px] border border-danger/25 bg-danger/92 px-4 py-3 text-sm text-white shadow-[0_20px_50px_rgba(120,26,26,0.28)] backdrop-blur">
+          {props.error}
+        </div>
+      ) : null}
       <div ref={rootRef}>
         {props.locale === "ko" ? (
           <KoreanLandingView

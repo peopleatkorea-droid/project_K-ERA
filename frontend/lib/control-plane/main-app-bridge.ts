@@ -10,6 +10,7 @@ import type {
   SiteRecord,
 } from "../types";
 import { makeControlPlaneId } from "./crypto";
+import { controlPlaneDevAuthEnabled } from "./config";
 import { controlPlaneSql } from "./db";
 import { verifyGoogleIdentityToken } from "./google";
 export {
@@ -49,17 +50,17 @@ import {
   listAccessRequestsForCanonicalUser,
   serializeSiteRecord,
   siteRowById,
+  siteRowBySourceInstitutionId,
   upsertAccessRequestRecord,
 } from "./main-app-bridge-records";
-import { seedAccessRequestsFromLocal } from "./main-app-bridge-admin";
 import {
+  authenticateMainAppUser,
   buildLegacyAuthUser,
-  buildMainAuthFromLocalToken,
+  buildMainAuthResponse,
   canonicalUserRowById,
   requireMainAppBridgeUser,
 } from "./main-app-bridge-users";
 import {
-  buildLocalAuthResponse,
   fetchLegacyLocalNodeApi,
   legacyEmailForLocalUser,
   normalizeRegistryConsents,
@@ -70,25 +71,34 @@ import {
 } from "./main-app-bridge-shared";
 import { ensureControlPlaneIdentity } from "./store";
 
+const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
+
 export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
   const siteIds = normalizeStringArray(user.site_ids);
-  if (!siteIds.length) {
+  if (user.role !== "admin" && !siteIds.length) {
     return [];
   }
   const sql = await controlPlaneSql();
-  const rows = await sql`
-    select site_id, display_name, hospital_name
-    from sites
-    where site_id = any(${siteIds})
-    order by display_name asc, site_id asc
-  `;
+  const rows =
+    user.role === "admin"
+      ? await sql`
+          select site_id, display_name, hospital_name
+          from sites
+          order by display_name asc, site_id asc
+        `
+      : await sql`
+          select site_id, display_name, hospital_name
+          from sites
+          where site_id = any(${siteIds})
+          order by display_name asc, site_id asc
+        `;
   return rows.map((row) => serializeSiteRecord(row));
 }
 
 export async function fetchMainUserAuth(request: NextRequest): Promise<AuthResponse> {
-  const { user } = await requireMainAppBridgeUser(request);
-  return buildLocalAuthResponse(user);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  return buildMainAuthResponse(canonicalUserId, user);
 }
 
 export async function loginMainWithGoogle(request: NextRequest, idToken: string): Promise<AuthResponse> {
@@ -97,57 +107,41 @@ export async function loginMainWithGoogle(request: NextRequest, idToken: string)
     throw new Error("id_token is required.");
   }
   const identity = await verifyGoogleIdentityToken(normalizedIdToken);
-  await ensureControlPlaneIdentity(identity);
-  const localAuth = await fetchLegacyLocalNodeApi<AuthResponse>(
-    request,
-    "/api/auth/google",
-    {
-      method: "POST",
-      body: JSON.stringify({ id_token: normalizedIdToken }),
-    },
-  );
-  const localToken = trimText(localAuth.access_token);
-  if (!localToken) {
-    throw new Error("Local node did not return an access token.");
+  const user = await ensureControlPlaneIdentity(identity);
+  const auth = await buildMainAuthResponse(user.user_id, {
+    username: user.email,
+    full_name: user.full_name,
+  });
+  if (auth.user.role === "admin" || auth.user.role === "site_admin") {
+    throw new Error("Admin and site admin accounts must use local password sign-in.");
   }
-  return buildMainAuthFromLocalToken(request, localToken);
+  return auth;
 }
 
 export async function loginMainWithLocalCredentials(
-  request: NextRequest,
+  _request: NextRequest,
   payload: { username?: string; password?: string },
 ): Promise<AuthResponse> {
-  const localAuth = await fetchLegacyLocalNodeApi<AuthResponse>(
-    request,
-    "/api/auth/login",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        username: trimText(payload.username),
-        password: trimText(payload.password),
-      }),
-    },
+  const { canonicalUserId, user } = await authenticateMainAppUser(
+    trimText(payload.username),
+    trimText(payload.password),
   );
-  const localToken = trimText(localAuth.access_token);
-  if (!localToken) {
-    throw new Error("Local node did not return an access token.");
-  }
-  return buildMainAuthFromLocalToken(request, localToken);
+  return buildMainAuthResponse(canonicalUserId, user);
 }
 
-export async function devLoginMain(request: NextRequest): Promise<AuthResponse> {
-  const localAuth = await fetchLegacyLocalNodeApi<AuthResponse>(
-    request,
-    "/api/auth/dev-login",
-    {
-      method: "POST",
-    },
-  );
-  const localToken = trimText(localAuth.access_token);
-  if (!localToken) {
-    throw new Error("Local node did not return an access token.");
+export async function devLoginMain(_request: NextRequest): Promise<AuthResponse> {
+  if (!controlPlaneDevAuthEnabled()) {
+    throw new Error("Development auth is disabled.");
   }
-  return buildMainAuthFromLocalToken(request, localToken);
+  const user = await ensureControlPlaneIdentity({
+    email: "admin@local.invalid",
+    fullName: "Platform Administrator",
+    googleSub: null,
+  });
+  return buildMainAuthResponse(user.user_id, {
+    username: user.email,
+    full_name: user.full_name,
+  });
 }
 
 export async function enrollMainResearchRegistry(
@@ -196,7 +190,7 @@ export async function enrollMainResearchRegistry(
     ...localUser,
     registry_consents: registryConsents,
   });
-  const auth = await buildLocalAuthResponse(refreshedUser);
+  const auth = await buildMainAuthResponse(canonicalUserId, refreshedUser);
   return {
     site_id: siteId,
     research_registry_enabled: true,
@@ -209,14 +203,8 @@ export async function enrollMainResearchRegistry(
 }
 
 export async function fetchMyAccessRequests(request: NextRequest): Promise<AccessRequestRecord[]> {
-  const token = readBearerToken(request);
-  const { canonicalUserId, localUser } = await requireMainAppBridgeUser(request);
-  let records = await listAccessRequestsForCanonicalUser(canonicalUserId);
-  if (!records.length) {
-    await seedAccessRequestsFromLocal(request, token, canonicalUserId, legacyEmailForLocalUser(localUser), "self");
-    records = await listAccessRequestsForCanonicalUser(canonicalUserId);
-  }
-  return records;
+  const { canonicalUserId } = await requireMainAppBridgeUser(request);
+  return listAccessRequestsForCanonicalUser(canonicalUserId);
 }
 
 export async function submitMainAccessRequest(
@@ -233,10 +221,7 @@ export async function submitMainAccessRequest(
   }
 > {
   const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
-  const requestedRole = trimText(payload.requested_role) || "viewer";
-  if (!["site_admin", "researcher", "viewer"].includes(requestedRole)) {
-    throw new Error("Invalid requested role.");
-  }
+  const requestedRole = "researcher";
   const requestedSiteId = trimText(payload.requested_site_id);
   if (!requestedSiteId) {
     throw new Error("Requested institution is required.");
@@ -246,6 +231,8 @@ export async function submitMainAccessRequest(
   if (!site && !institution) {
     throw new Error("Unknown site.");
   }
+  const mappedSite = site ? null : await siteRowBySourceInstitutionId(requestedSiteId);
+  const resolvedSite = site ?? mappedSite;
   const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
   if (latestRequest?.status === "pending") {
     throw new Error("There is already a pending approval request for this user.");
@@ -268,8 +255,50 @@ export async function submitMainAccessRequest(
     reviewed_at: null,
   };
   await upsertAccessRequestRecord(canonicalUserId, legacyEmailForLocalUser(user), requestRecord);
+  if (resolvedSite) {
+    const resolvedSiteId = rowValue<string>(resolvedSite, "site_id");
+    const sql = await controlPlaneSql();
+    await sql`
+      insert into site_memberships (
+        membership_id,
+        user_id,
+        site_id,
+        role,
+        status,
+        approved_at,
+        created_at,
+        updated_at
+      ) values (
+        ${makeControlPlaneId("membership")},
+        ${canonicalUserId},
+        ${resolvedSiteId},
+        ${"member"},
+        ${"approved"},
+        now(),
+        now(),
+        now()
+      )
+      on conflict (user_id, site_id) do update set
+        role = excluded.role,
+        status = 'approved',
+        approved_at = coalesce(site_memberships.approved_at, excluded.approved_at),
+        updated_at = now()
+    `;
+    await sql`
+      update access_requests
+      set
+        requested_site_id = ${resolvedSiteId},
+        requested_site_source = ${"site"},
+        requested_role = ${requestedRole},
+        status = ${"approved"},
+        reviewed_by = ${null},
+        reviewer_notes = ${AUTO_APPROVAL_REVIEWER_NOTE},
+        reviewed_at = now()
+      where request_id = ${requestRecord.request_id}
+    `;
+  }
   const refreshedUser = await buildLegacyAuthUser(canonicalUserId, user);
-  const auth = await buildLocalAuthResponse(refreshedUser);
+  const auth = await buildMainAuthResponse(canonicalUserId, refreshedUser);
   const stored = await listAccessRequestsForCanonicalUser(canonicalUserId);
   return {
     ...auth,

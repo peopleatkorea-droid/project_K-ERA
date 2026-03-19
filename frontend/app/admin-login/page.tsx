@@ -12,6 +12,7 @@ import { devLogin, login } from "../../lib/api";
 import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
 
 const TOKEN_KEY = "kera_web_token";
+const DEFAULT_ADMIN_NEXT_PATH = "/?workspace=operations&section=dashboard";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -19,20 +20,20 @@ export default function AdminLoginPage() {
   const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
-  const [nextPath, setNextPath] = useState("/");
+  const [nextPath, setNextPath] = useState(DEFAULT_ADMIN_NEXT_PATH);
   const allowDevRecovery = Boolean(process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL) || process.env.NODE_ENV !== "production";
 
   const copy = {
-    eyebrow: pick(locale, "Administrator Recovery", "관리자 복구"),
-    title: pick(locale, "Local admin sign-in", "로컬 관리자 로그인"),
+    eyebrow: pick(locale, "Operator Sign-In", "운영 계정 로그인"),
+    title: pick(locale, "Local admin / site admin sign-in", "로컬 admin / site admin 로그인"),
     body: pick(
       locale,
-      "Use this path only for administrator recovery, setup, or incident response. Research users should return to Google sign-in.",
-      "이 경로는 관리자 복구, 초기 설정, 장애 대응 용도로만 사용하세요. 연구 사용자는 Google 로그인으로 돌아가야 합니다."
+      "Use this path for admin and site admin accounts. Research users should return to Google sign-in.",
+      "이 경로는 admin 및 site admin 계정 전용입니다. 연구 사용자는 Google 로그인으로 돌아가야 합니다."
     ),
     username: pick(locale, "Username", "아이디"),
     password: pick(locale, "Password", "비밀번호"),
-    signIn: pick(locale, "Enter admin recovery", "관리자 복구로 입장"),
+    signIn: pick(locale, "Enter operator workspace", "운영 계정으로 입장"),
     devSignIn: pick(locale, "Enter local dev admin", "로컬 개발 관리자 입장"),
     signingIn: pick(locale, "Connecting...", "연결 중..."),
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
@@ -40,13 +41,13 @@ export default function AdminLoginPage() {
     safetyTitle: pick(locale, "Restricted entry", "제한된 진입"),
     safetyBody: pick(
       locale,
-      "This route bypasses the standard researcher flow. Treat it like an operational console, not a normal landing page.",
-      "이 경로는 일반 연구자 흐름을 우회합니다. 일반 랜딩 페이지가 아니라 운영 콘솔처럼 다뤄야 합니다."
+      "This route bypasses the standard researcher flow. Use it only for operational accounts.",
+      "이 경로는 일반 연구자 흐름을 우회합니다. 운영 계정에만 사용하세요."
     ),
     safetyFootnote: pick(
       locale,
-      "Use only when account bootstrap, incident response, or emergency access is required.",
-      "계정 초기화, 장애 대응, 긴급 접근이 필요한 경우에만 사용하세요."
+      "Admin and site admin accounts should sign in here with passwords.",
+      "admin 및 site admin 계정은 이곳에서 비밀번호로 로그인해야 합니다."
     ),
     researchUserSignIn: pick(locale, "Research user sign-in", "연구 사용자 로그인"),
     devFootnote: pick(

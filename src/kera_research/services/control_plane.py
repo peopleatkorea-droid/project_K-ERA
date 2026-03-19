@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
 import re
 import threading
+from base64 import b64decode
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -289,9 +292,37 @@ def _is_bcrypt_hash(value: str) -> bool:
     return value.startswith(("$2b$", "$2a$", "$2y$"))
 
 
+def _is_pbkdf2_sha256_hash(value: str) -> bool:
+    return str(value or "").startswith("pbkdf2_sha256$")
+
+
+def _verify_pbkdf2_sha256_hash(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iteration_text, salt, expected_hash = str(encoded or "").split("$", 3)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    try:
+        iterations = int(iteration_text)
+    except (TypeError, ValueError):
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+    try:
+        expected = b64decode(expected_hash)
+    except Exception:
+        return False
+    return hmac.compare_digest(candidate, expected)
+
+
 def _normalize_password_storage(value: str) -> str:
     normalized = str(value or "")
-    if not normalized or normalized == GOOGLE_AUTH_SENTINEL or _is_bcrypt_hash(normalized):
+    if (
+        not normalized
+        or normalized == GOOGLE_AUTH_SENTINEL
+        or _is_bcrypt_hash(normalized)
+        or _is_pbkdf2_sha256_hash(normalized)
+    ):
         return normalized
     return _hash_password(normalized)
 
@@ -300,9 +331,29 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     return dict(row._mapping)
 
 
+def _coerce_payload_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return {}
+
+
 def _payload_record(row: Any, payload_key: str, extra_keys: list[str]) -> dict[str, Any]:
     mapping = row._mapping
-    payload = dict(mapping[payload_key] or {})
+    payload = _coerce_payload_object(mapping[payload_key])
     for key in extra_keys:
         if key not in payload and mapping.get(key) is not None:
             payload[key] = mapping.get(key)
@@ -502,6 +553,12 @@ class ControlPlaneStore:
 
     def default_instance_storage_root(self) -> Path:
         return self.instance_state.default_instance_storage_root()
+
+    def configured_default_instance_storage_root(self) -> Path:
+        return self.instance_state.configured_default_instance_storage_root()
+
+    def instance_storage_root_source(self) -> str:
+        return self.instance_state.instance_storage_root_source()
 
     def get_app_setting(self, setting_key: str) -> str | None:
         return self.instance_state.get_app_setting(setting_key)
@@ -822,6 +879,19 @@ class ControlPlaneStore:
 
     def load_case_predictions(self, validation_id: str) -> list[dict[str, Any]]:
         return self.results.load_case_predictions(validation_id)
+
+    def update_validation_case_prediction(
+        self,
+        validation_id: str,
+        *,
+        case_reference_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return self.results.update_validation_case_prediction(
+            validation_id,
+            case_reference_id=case_reference_id,
+            updates=updates,
+        )
 
     def save_experiment(self, experiment_record: dict[str, Any]) -> dict[str, Any]:
         return self.results.save_experiment(experiment_record)

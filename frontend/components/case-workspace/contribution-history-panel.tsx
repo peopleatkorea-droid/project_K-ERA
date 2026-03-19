@@ -402,6 +402,16 @@ export function ContributionHistoryPanel({
                       <span>{item.true_label}</span>
                       <span>{item.is_correct ? pick(locale, "match", "일치") : pick(locale, "mismatch", "불일치")}</span>
                     </div>
+                    {item.post_mortem?.summary ? (
+                      <p className="m-0 text-sm leading-6 text-muted">{item.post_mortem.summary}</p>
+                    ) : null}
+                    {item.post_mortem?.structured_analysis?.root_cause_tags?.length ? (
+                      <div className={historyEntryMetaClass}>
+                        {item.post_mortem.structured_analysis.root_cause_tags.slice(0, 2).map((tag) => (
+                          <span key={`${item.validation_id}-${tag}`}>{tag}</span>
+                        ))}
+                      </div>
+                    ) : null}
                   </Card>
                 ))
               ) : (

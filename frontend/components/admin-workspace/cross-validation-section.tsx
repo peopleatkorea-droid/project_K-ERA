@@ -17,12 +17,22 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "vit", label: "ViT" },
   { value: "swin", label: "Swin" },
   { value: "efficientnet_v2_s", label: "EfficientNetV2-S" },
+  { value: "dinov2", label: "DINOv2" },
+  { value: "dinov2_mil", label: "DINOv2 Attention MIL" },
+  { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
+];
+const CASE_AGGREGATION_OPTIONS = [
+  { value: "mean", label: "Mean" },
+  { value: "logit_mean", label: "Logit mean" },
+  { value: "quality_weighted_mean", label: "Quality-weighted mean" },
+  { value: "attention_mil", label: "Attention MIL" },
 ];
 
 type CrossValidationForm = {
   architecture: string;
   execution_mode: "auto" | "cpu" | "gpu";
-  crop_mode: "automated" | "manual";
+  crop_mode: "automated" | "manual" | "paired";
+  case_aggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil";
   num_folds: number;
   epochs: number;
   learning_rate: number;
@@ -104,6 +114,9 @@ export function CrossValidationSection({
   getFoldConfusionMatrix,
   onRunCrossValidation,
 }: Props) {
+  const isDualInputArchitecture = crossValidationForm.architecture === "dual_input_concat";
+  const effectiveCropMode = isDualInputArchitecture ? "paired" : crossValidationForm.crop_mode;
+  const effectiveCaseAggregation = crossValidationForm.architecture === "dinov2_mil" ? "attention_mil" : crossValidationForm.case_aggregation;
   const progressState = crossValidationProgress as
     | {
         stage?: string;
@@ -134,7 +147,18 @@ export function CrossValidationSection({
         <Field label={pick(locale, "Architecture", "아키텍처")}>
           <select
             value={crossValidationForm.architecture}
-            onChange={(event) => setCrossValidationForm((current) => ({ ...current, architecture: event.target.value }))}
+            onChange={(event) =>
+              setCrossValidationForm((current) => ({
+                ...current,
+                architecture: event.target.value,
+                crop_mode:
+                  event.target.value === "dual_input_concat"
+                    ? "paired"
+                    : current.crop_mode === "paired"
+                      ? "automated"
+                      : current.crop_mode,
+              }))
+            }
           >
             {TRAINING_ARCHITECTURE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -160,16 +184,36 @@ export function CrossValidationSection({
         </Field>
         <Field label={pick(locale, "Crop mode", "Crop 모드")}>
           <select
-            value={crossValidationForm.crop_mode}
+            value={effectiveCropMode}
+            disabled={isDualInputArchitecture}
             onChange={(event) =>
               setCrossValidationForm((current) => ({
                 ...current,
-                crop_mode: event.target.value as "automated" | "manual",
+                crop_mode: event.target.value as "automated" | "manual" | "paired",
               }))
             }
           >
             <option value="automated">{pick(locale, "Automated cornea crop", "Automated 각막 crop")}</option>
             <option value="manual">{pick(locale, "Manual lesion crop", "Manual 병변 crop")}</option>
+            {isDualInputArchitecture ? <option value="paired">{pick(locale, "Paired cornea + lesion", "각막 + 병변 paired")}</option> : null}
+          </select>
+        </Field>
+        <Field label={pick(locale, "Visit aggregation", "Visit 집계 방식")}>
+          <select
+            value={effectiveCaseAggregation}
+            disabled={crossValidationForm.architecture === "dinov2_mil"}
+            onChange={(event) =>
+              setCrossValidationForm((current) => ({
+                ...current,
+                case_aggregation: event.target.value as "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
+              }))
+            }
+          >
+            {CASE_AGGREGATION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </Field>
         <Field label={pick(locale, "Folds", "폴드 수")}>

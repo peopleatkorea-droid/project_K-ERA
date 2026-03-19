@@ -46,6 +46,8 @@ export type ProjectRecord = {
 export type ManagedSiteRecord = SiteRecord & {
   project_id: string;
   source_institution_id?: string | null;
+  source_institution_name?: string | null;
+  source_institution_address?: string | null;
   local_storage_root?: string;
   created_at?: string;
   research_registry_enabled?: boolean;
@@ -54,6 +56,8 @@ export type ManagedSiteRecord = SiteRecord & {
 export type StorageSettingsRecord = {
   storage_root: string;
   default_storage_root: string;
+  effective_default_storage_root: string;
+  storage_root_source: "built_in_default" | "environment_default" | "custom";
   uses_custom_root: boolean;
 };
 
@@ -274,6 +278,7 @@ export type CaseValidationSummary = {
   model_version: string;
   model_version_id: string;
   model_architecture: string;
+  case_aggregation?: string | null;
   run_date: string;
   patient_id: string;
   visit_date: string;
@@ -292,14 +297,33 @@ export type CaseValidationPrediction = {
   predicted_label: string;
   prediction_probability: number;
   is_correct: boolean;
-  crop_mode?: "automated" | "manual" | "both";
+  decision_threshold?: number | null;
+  crop_mode?: "automated" | "manual" | "both" | "paired";
+  case_aggregation?: string | null;
   gradcam_path?: string | null;
+  gradcam_heatmap_path?: string | null;
+  gradcam_cornea_path?: string | null;
+  gradcam_cornea_heatmap_path?: string | null;
+  gradcam_lesion_path?: string | null;
+  gradcam_lesion_heatmap_path?: string | null;
   medsam_mask_path?: string | null;
   roi_crop_path?: string | null;
   lesion_mask_path?: string | null;
   lesion_crop_path?: string | null;
   ensemble_weights?: Record<string, number> | null;
   ensemble_component_predictions?: Array<Record<string, unknown>> | null;
+  quality_weights?: number[] | null;
+  model_representative_source_image_path?: string | null;
+  model_representative_image_path?: string | null;
+  model_representative_index?: number | null;
+  instance_attention_scores?: Array<{
+    image_path: string;
+    source_image_path: string;
+    view?: string | null;
+    attention: number;
+  }> | null;
+  prediction_snapshot?: PredictionPostMortemSnapshot | null;
+  post_mortem?: PredictionPostMortem | null;
 };
 
 export type CaseValidationResponse = {
@@ -310,17 +334,155 @@ export type CaseValidationResponse = {
     version_name: string;
     architecture: string;
     requires_medsam_crop: boolean;
-    crop_mode?: "automated" | "manual" | "both";
+    crop_mode?: "automated" | "manual" | "both" | "paired";
+    case_aggregation?: string | null;
+    bag_level?: boolean | null;
     ensemble_mode?: string | null;
+    component_model_version_ids?: string[];
   };
   execution_device: string;
   artifact_availability: {
     gradcam: boolean;
+    gradcam_cornea: boolean;
+    gradcam_lesion: boolean;
     roi_crop: boolean;
     medsam_mask: boolean;
     lesion_crop: boolean;
     lesion_mask: boolean;
   };
+  post_mortem?: PredictionPostMortem | null;
+};
+
+export type PredictionPostMortem = {
+  mode: string;
+  model?: string | null;
+  generated_at?: string | null;
+  outcome: string;
+  summary: string;
+  likely_causes: string[];
+  supporting_evidence: string[];
+  contradictory_evidence: string[];
+  follow_up_actions: string[];
+  learning_signal: string;
+  uncertainty: string;
+  disclaimer: string;
+  structured_analysis?: PredictionPostMortemStructuredAnalysis | null;
+  llm_error?: string | null;
+};
+
+export type PredictionPostMortemSnapshot = {
+  patient_id?: string;
+  visit_date?: string;
+  model_version_id?: string | null;
+  model_version_name?: string | null;
+  model_architecture?: string | null;
+  execution_device?: string | null;
+  crop_mode?: string | null;
+  decision_threshold?: number | null;
+  predicted_label?: string | null;
+  prediction_probability?: number | null;
+  predicted_confidence?: number | null;
+  representative_image_id?: string | null;
+  representative_source_image_path?: string | null;
+  representative_view?: string | null;
+  representative_quality_score?: number | null;
+  representative_view_score?: number | null;
+  contact_lens_use?: string | null;
+  predisposing_factor?: string[];
+  smear_result?: string | null;
+  polymicrobial?: boolean | null;
+  additional_organisms?: string[];
+  gradcam_path?: string | null;
+  gradcam_heatmap_path?: string | null;
+  gradcam_cornea_path?: string | null;
+  gradcam_cornea_heatmap_path?: string | null;
+  gradcam_lesion_path?: string | null;
+  gradcam_lesion_heatmap_path?: string | null;
+  medsam_mask_path?: string | null;
+  roi_crop_path?: string | null;
+  lesion_mask_path?: string | null;
+  lesion_crop_path?: string | null;
+  n_source_images?: number | null;
+  n_model_inputs?: number | null;
+  classifier_embedding?: {
+    backend?: string | null;
+    embedding_id?: string | null;
+    signature?: string | null;
+    vector_path?: string | null;
+    metadata_path?: string | null;
+    cached?: boolean | null;
+    error?: string | null;
+  } | null;
+  dinov2_embedding?: {
+    backend?: string | null;
+    embedding_id?: string | null;
+    signature?: string | null;
+    vector_path?: string | null;
+    metadata_path?: string | null;
+    cached?: boolean | null;
+    error?: string | null;
+  } | null;
+  peer_model_consensus?: PredictionPostMortemPeerConsensus | null;
+  error?: string | null;
+};
+
+export type PredictionPostMortemPeerPrediction = {
+  model_version_id?: string | null;
+  model_version_name?: string | null;
+  architecture?: string | null;
+  predicted_label?: string | null;
+  prediction_probability?: number | null;
+  predicted_confidence?: number | null;
+  crop_mode?: string | null;
+  error?: string | null;
+};
+
+export type PredictionPostMortemPeerConsensus = {
+  models_evaluated?: number | null;
+  models_requested?: number | null;
+  leading_label?: string | null;
+  agreement_rate?: number | null;
+  disagreement_score?: number | null;
+  vote_entropy?: number | null;
+  peer_predictions?: PredictionPostMortemPeerPrediction[];
+  error?: string | null;
+};
+
+export type PredictionPostMortemStructuredAnalysis = {
+  outcome?: string | null;
+  prediction_confidence?: number | null;
+  learning_signal?: string | null;
+  root_cause_tags: string[];
+  action_tags: string[];
+  scores: {
+    cam_overlap_score?: number | null;
+    cam_peak_inside_score?: number | null;
+    cam_hotspot_ratio?: number | null;
+    cam_cornea_overlap_score?: number | null;
+    cam_cornea_peak_inside_score?: number | null;
+    cam_cornea_hotspot_ratio?: number | null;
+    cam_lesion_overlap_score?: number | null;
+    cam_lesion_peak_inside_score?: number | null;
+    cam_lesion_hotspot_ratio?: number | null;
+    dino_neighbor_count?: number | null;
+    dino_true_label_purity?: number | null;
+    dino_predicted_label_purity?: number | null;
+    dino_mean_similarity?: number | null;
+    dino_mean_distance?: number | null;
+    multi_model_agreement?: number | null;
+    multi_model_disagreement?: number | null;
+    multi_model_vote_entropy?: number | null;
+    image_quality_score?: number | null;
+    image_view_score?: number | null;
+    support_density?: number | null;
+    similar_case_count?: number | null;
+    text_evidence_count?: number | null;
+    site_recent_case_count?: number | null;
+    site_recent_miss_rate?: number | null;
+    site_error_concentration?: number | null;
+  };
+  peer_model_consensus?: PredictionPostMortemPeerConsensus | null;
+  prediction_snapshot?: PredictionPostMortemSnapshot | null;
 };
 
 export type CaseValidationCompareItem = {
@@ -647,6 +809,8 @@ export type CaseHistoryValidationRecord = {
   true_label: string;
   prediction_probability: number;
   is_correct: boolean;
+  prediction_snapshot?: PredictionPostMortemSnapshot | null;
+  post_mortem?: PredictionPostMortem | null;
 };
 
 export type CaseHistoryContributionRecord = {
@@ -750,6 +914,7 @@ export type AdminOverviewResponse = {
   site_count: number;
   model_version_count: number;
   pending_access_requests: number;
+  auto_approved_access_requests?: number;
   pending_model_updates: number;
   current_model_version?: string | null;
   aggregation_count?: number;
@@ -789,7 +954,9 @@ export type ModelVersionRecord = {
   base_version_id?: string | null;
   requires_medsam_crop?: boolean;
   training_input_policy?: string;
-  crop_mode?: "automated" | "manual" | "both";
+  crop_mode?: "automated" | "manual" | "both" | "paired";
+  case_aggregation?: string | null;
+  bag_level?: boolean | null;
   ensemble_mode?: string | null;
   component_model_version_ids?: string[];
   ensemble_weights?: Record<string, number> | null;
@@ -939,6 +1106,9 @@ export type InitialTrainingResult = {
   n_train: number;
   n_val: number;
   n_test: number;
+  n_train_cases?: number;
+  n_val_cases?: number;
+  n_test_cases?: number;
   n_train_patients: number;
   n_val_patients: number;
   n_test_patients: number;
@@ -949,7 +1119,10 @@ export type InitialTrainingResult = {
   val_metrics?: Record<string, number | null>;
   test_metrics?: Record<string, number | null>;
   model_version?: ModelVersionRecord;
-  crop_mode?: "automated" | "manual" | "both";
+  crop_mode?: "automated" | "manual" | "both" | "paired";
+  case_aggregation?: string | null;
+  bag_level?: boolean | null;
+  backbone_frozen?: boolean | null;
   component_results?: Array<Record<string, unknown>>;
   model_versions?: ModelVersionRecord[];
 };
@@ -981,6 +1154,8 @@ export type InitialTrainingBenchmarkResponse = {
   }>;
   best_architecture?: string | null;
   best_model_version?: ModelVersionRecord | null;
+  completed_architectures?: string[] | null;
+  remaining_architectures?: string[] | null;
 };
 
 export type TrainingJobProgress = {
@@ -991,6 +1166,7 @@ export type TrainingJobProgress = {
   architecture_index?: number | null;
   architecture_count?: number | null;
   crop_mode?: "automated" | "manual" | "both" | string | null;
+  case_aggregation?: string | null;
   component_crop_mode?: "automated" | "manual" | string | null;
   component_index?: number | null;
   component_count?: number | null;
@@ -1000,6 +1176,9 @@ export type TrainingJobProgress = {
   epochs?: number | null;
   train_loss?: number | null;
   val_acc?: number | null;
+  completed_architectures?: string[] | null;
+  remaining_architectures?: string[] | null;
+  failed_architectures?: string[] | null;
 };
 
 export type SiteJobRecord = {
@@ -1167,6 +1346,9 @@ export type ValidationCasePredictionRecord = {
   roi_crop_available: boolean;
   gradcam_available: boolean;
   medsam_mask_available: boolean;
+  root_cause_tags?: string[];
+  action_tags?: string[];
+  learning_signal?: string | null;
   representative_image_id?: string | null;
   representative_view?: string | null;
 };

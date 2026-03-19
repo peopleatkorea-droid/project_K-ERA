@@ -11,6 +11,8 @@ def serialize_site_model_version(model_version: dict[str, Any] | None) -> dict[s
         "version_id": model_version.get("version_id") if model_version else None,
         "version_name": model_version.get("version_name") if model_version else None,
         "architecture": model_version.get("architecture") if model_version else None,
+        "case_aggregation": model_version.get("case_aggregation") if model_version else None,
+        "bag_level": bool(model_version.get("bag_level")) if model_version else None,
     }
 
 
@@ -106,6 +108,7 @@ def start_initial_training(
             "execution_mode": payload.execution_mode,
             "execution_device": execution_device,
             "crop_mode": payload.crop_mode,
+            "case_aggregation": payload.case_aggregation,
             "epochs": int(payload.epochs),
             "learning_rate": float(payload.learning_rate),
             "batch_size": int(payload.batch_size),
@@ -126,6 +129,7 @@ def start_initial_training(
                 "message": "Training job queued.",
                 "percent": 0,
                 "crop_mode": payload.crop_mode,
+                "case_aggregation": payload.case_aggregation,
             }
         },
     )
@@ -152,6 +156,7 @@ def start_initial_training_benchmark(
             "execution_mode": payload.execution_mode,
             "execution_device": execution_device,
             "crop_mode": payload.crop_mode,
+            "case_aggregation": payload.case_aggregation,
             "epochs": int(payload.epochs),
             "learning_rate": float(payload.learning_rate),
             "batch_size": int(payload.batch_size),
@@ -171,6 +176,7 @@ def start_initial_training_benchmark(
                 "message": "Benchmark training job queued.",
                 "percent": 0,
                 "crop_mode": payload.crop_mode,
+                "case_aggregation": payload.case_aggregation,
                 "architecture_count": len(architectures),
             }
         },
@@ -200,6 +206,7 @@ def start_cross_validation(
             "execution_mode": payload.execution_mode,
             "execution_device": execution_device,
             "crop_mode": payload.crop_mode,
+            "case_aggregation": payload.case_aggregation,
             "num_folds": int(payload.num_folds),
             "epochs": int(payload.epochs),
             "learning_rate": float(payload.learning_rate),
@@ -219,6 +226,7 @@ def start_cross_validation(
                 "message": "Cross-validation job queued.",
                 "percent": 0,
                 "crop_mode": payload.crop_mode,
+                "case_aggregation": payload.case_aggregation,
                 "num_folds": payload.num_folds,
             }
         },

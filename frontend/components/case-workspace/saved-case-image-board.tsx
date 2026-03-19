@@ -230,7 +230,7 @@ export function SavedCaseImageBoard({
                 </div>
 
                 {image.preview_url ? (
-                  <div className="grid min-h-[280px] place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2.5">
+                  <div className="grid place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2">
                     <div
                       className="relative mx-auto w-fit max-w-full cursor-crosshair overflow-hidden rounded-[12px] border border-border/60 bg-surface-elevated touch-none"
                       onPointerDown={(event) => onLesionPointerDown(image.image_id, event)}

@@ -8,66 +8,23 @@ import {
   ensureDefaultProject,
   serializeInstitutionRecord,
   serializeSiteRecord,
-  upsertInstitutionRecord,
-  upsertSiteRecord,
 } from "./main-app-bridge-records";
-import { fetchLegacyLocalNodeApi, trimText } from "./main-app-bridge-shared";
+import { trimText } from "./main-app-bridge-shared";
 
-async function seedPublicSitesFromLocal(request: NextRequest): Promise<void> {
-  const localSites = await fetchLegacyLocalNodeApi<SiteRecord[]>(request, "/api/public/sites");
-  for (const site of localSites) {
-    await upsertSiteRecord(site);
-  }
-}
-
-async function seedInstitutionsFromLocal(
-  request: NextRequest,
-  query: string,
-  options?: { sido_code?: string; sggu_code?: string; limit?: number },
-): Promise<void> {
-  const params = new URLSearchParams();
-  if (trimText(query)) {
-    params.set("q", trimText(query));
-  }
-  if (trimText(options?.sido_code)) {
-    params.set("sido_code", trimText(options?.sido_code));
-  }
-  if (trimText(options?.sggu_code)) {
-    params.set("sggu_code", trimText(options?.sggu_code));
-  }
-  params.set("limit", String(Math.max(1, Math.min(options?.limit ?? 12, 50))));
-  const institutions = await fetchLegacyLocalNodeApi<PublicInstitutionRecord[]>(
-    request,
-    `/api/public/institutions/search?${params.toString()}`,
-  );
-  for (const institution of institutions) {
-    await upsertInstitutionRecord(institution);
-  }
-}
-
-export async function listPublicSites(request: NextRequest): Promise<SiteRecord[]> {
+export async function listPublicSites(_request: NextRequest): Promise<SiteRecord[]> {
   await ensureDefaultProject();
   const sql = await controlPlaneSql();
-  let rows = await sql`
+  const rows = await sql`
     select site_id, display_name, hospital_name
     from sites
     where status = 'active'
     order by display_name asc, site_id asc
   `;
-  if (!rows.length) {
-    await seedPublicSitesFromLocal(request);
-    rows = await sql`
-      select site_id, display_name, hospital_name
-      from sites
-      where status = 'active'
-      order by display_name asc, site_id asc
-    `;
-  }
   return rows.map((row) => serializeSiteRecord(row));
 }
 
 export async function searchPublicInstitutions(
-  request: NextRequest,
+  _request: NextRequest,
   query: string,
   options?: { sido_code?: string; sggu_code?: string; limit?: number },
 ): Promise<PublicInstitutionRecord[]> {
@@ -94,7 +51,7 @@ export async function searchPublicInstitutions(
   }
   const limit = Math.max(1, Math.min(options?.limit ?? 12, 50));
   values.push(limit);
-  let rows = await sql.unsafe(
+  const rows = await sql.unsafe(
     `
       select
         institution_id,
@@ -121,40 +78,10 @@ export async function searchPublicInstitutions(
     `,
     values,
   );
-  if (!rows.length) {
-    await seedInstitutionsFromLocal(request, query, options);
-    rows = await sql.unsafe(
-      `
-        select
-          institution_id,
-          source,
-          name,
-          institution_type_code,
-          institution_type_name,
-          address,
-          phone,
-          homepage,
-          sido_code,
-          sggu_code,
-          emdong_name,
-          postal_code,
-          x_pos,
-          y_pos,
-          ophthalmology_available,
-          open_status,
-          synced_at
-        from institution_directory
-        where ${conditions.join(" and ")}
-        order by name asc
-        limit $${values.length}
-      `,
-      values,
-    );
-  }
   return rows.map((row) => serializeInstitutionRecord(row));
 }
 
-export async function fetchPublicStatistics(request: NextRequest): Promise<PublicStatistics> {
+export async function fetchPublicStatistics(_request: NextRequest): Promise<PublicStatistics> {
   const sql = await controlPlaneSql();
   const [siteCountRows, currentModelRows, validationRows] = await Promise.all([
     sql`select count(*)::int as count from sites where status = 'active'`,
@@ -176,9 +103,6 @@ export async function fetchPublicStatistics(request: NextRequest): Promise<Publi
   const totalCases = Number(validationRows[0]?.total_cases || 0);
   const totalImages = Number(validationRows[0]?.total_images || 0);
   const currentModelVersion = trimText(currentModelRows[0]?.version_name) || null;
-  if (!siteCount && !currentModelVersion && !totalCases && !totalImages) {
-    return fetchLegacyLocalNodeApi<PublicStatistics>(request, "/api/public/statistics");
-  }
   return {
     site_count: siteCount,
     total_cases: totalCases,

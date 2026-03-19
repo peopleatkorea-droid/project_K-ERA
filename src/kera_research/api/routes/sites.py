@@ -1,4 +1,5 @@
 import io
+from types import SimpleNamespace
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
-from kera_research.api.control_plane_proxy import call_remote_control_plane_method, site_record_for_request
+from kera_research.api.control_plane_proxy import call_remote_control_plane_method, remote_control_plane_is_primary, site_record_for_request
 from kera_research.api.site_jobs import (
     require_ready_model_version,
     resolve_execution_device_or_raise,
@@ -61,6 +62,7 @@ def build_sites_router(support: Any) -> APIRouter:
     SiteValidationRunRequest = support.SiteValidationRunRequest
     InitialTrainingRequest = support.InitialTrainingRequest
     InitialTrainingBenchmarkRequest = support.InitialTrainingBenchmarkRequest
+    ResumeBenchmarkRequest = support.ResumeBenchmarkRequest
     EmbeddingBackfillRequest = support.EmbeddingBackfillRequest
     CrossValidationRunRequest = support.CrossValidationRunRequest
 
@@ -105,6 +107,11 @@ def build_sites_router(support: Any) -> APIRouter:
         )
         if remote_sites is not None:
             return remote_sites
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane sites are unavailable.",
+            )
         accessible_sites = cp.accessible_sites_for_user(user)
         if accessible_sites:
             return accessible_sites
@@ -217,6 +224,11 @@ def build_sites_router(support: Any) -> APIRouter:
                 "site_id": site_id,
                 "research_registry_enabled": bool(remote_site.get("research_registry_enabled", True)),
             }
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane site settings are unavailable.",
+            )
         updated = cp.update_site_metadata(
             site_id,
             str(site_record.get("display_name") or site_id),
@@ -575,6 +587,76 @@ def build_sites_router(support: Any) -> APIRouter:
             queue_name_for_job_type=queue_name_for_job_type,
         )
 
+    @router.post("/api/sites/{site_id}/training/initial/benchmark/resume")
+    def resume_initial_training_benchmark(
+        site_id: str,
+        payload: ResumeBenchmarkRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        source_job = site_store.get_job(payload.job_id)
+        if source_job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source benchmark job not found.")
+        if str(source_job.get("job_type") or "") != "initial_training_benchmark":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only benchmark training jobs can be resumed.")
+        if str(source_job.get("status") or "").strip().lower() in {"queued", "running", "cancelling"}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The selected benchmark job is still active.")
+
+        source_payload = dict(source_job.get("payload") or {})
+        requested_architectures = [str(item).strip() for item in source_payload.get("architectures") or [] if str(item).strip()]
+        if not requested_architectures:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The selected benchmark job does not contain architectures.")
+
+        result_payload = dict(source_job.get("result") or {})
+        response_payload = dict(result_payload.get("response") or {})
+        progress_payload = dict(result_payload.get("progress") or {})
+        completed_architectures = {
+            str(item.get("architecture") or "").strip()
+            for item in response_payload.get("results", [])
+            if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "completed"
+        }
+        completed_architectures.update(
+            str(item).strip()
+            for item in progress_payload.get("completed_architectures", [])
+            if str(item).strip()
+        )
+        remaining_architectures = [
+            architecture
+            for architecture in requested_architectures
+            if architecture and architecture not in completed_architectures
+        ]
+        if not remaining_architectures:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="There are no incomplete architectures to resume.")
+
+        execution_mode = str(payload.execution_mode or source_payload.get("execution_mode") or "auto")
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=execution_mode,
+            unavailable_label="Benchmark resume",
+        )
+        resume_payload = SimpleNamespace(
+            execution_mode=execution_mode,
+            crop_mode=str(source_payload.get("crop_mode") or "automated"),
+            case_aggregation=str(source_payload.get("case_aggregation") or "mean"),
+            epochs=int(source_payload.get("epochs") or 30),
+            learning_rate=float(source_payload.get("learning_rate") or 1e-4),
+            batch_size=int(source_payload.get("batch_size") or 16),
+            val_split=float(source_payload.get("val_split") or 0.2),
+            test_split=float(source_payload.get("test_split") or 0.2),
+            use_pretrained=bool(source_payload.get("use_pretrained", True)),
+            regenerate_split=False,
+        )
+        return start_initial_training_benchmark(
+            site_store,
+            site_id=site_id,
+            payload=resume_payload,
+            architectures=remaining_architectures,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
+        )
+
     @router.get("/api/sites/{site_id}/jobs/{job_id}")
     def get_site_job(
         site_id: str,
@@ -585,6 +667,20 @@ def build_sites_router(support: Any) -> APIRouter:
         require_admin_workspace_permission(user)
         site_store = require_site_access(cp, user, site_id)
         job = site_store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        return job
+
+    @router.post("/api/sites/{site_id}/jobs/{job_id}/cancel")
+    def cancel_site_job(
+        site_id: str,
+        job_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        job = site_store.request_job_cancel(job_id)
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
         return job

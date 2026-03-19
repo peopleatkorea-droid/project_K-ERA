@@ -1,21 +1,10 @@
 const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "") ?? "";
-const configuredLocalNodeApiBaseUrl =
-  process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL?.trim().replace(/\/+$/, "") ?? "";
 
 function resolveApiBaseUrl(): string {
-  if (configuredApiBaseUrl) {
-    return configuredApiBaseUrl;
-  }
-  if (configuredLocalNodeApiBaseUrl) {
-    return configuredLocalNodeApiBaseUrl;
-  }
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    if (host === "localhost" || host === "127.0.0.1") {
-      return `http://${host}:8000`;
-    }
-  }
-  return "";
+  // The main app should default to same-origin `/api/*` so Next.js rewrites can
+  // proxy requests to the local node. `NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL` is
+  // reserved for explicit local-node control-plane helpers.
+  return configuredApiBaseUrl;
 }
 
 export function buildApiUrl(path: string): string {

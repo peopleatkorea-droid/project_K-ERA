@@ -1,0 +1,10 @@
+
+> kera-web@0.1.0 start
+> next start
+
+   ▲ Next.js 15.5.12
+   - Local:        http://localhost:3001
+   - Network:      http://10.90.20.3:3001
+
+ ✓ Starting...
+[Error: Could not find a production build in the '.next' directory. Try building your app with 'next build' before starting the production server. https://nextjs.org/docs/messages/production-start-no-build-id]

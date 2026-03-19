@@ -23,11 +23,12 @@ import {
   organismChipRemoveClass,
   organismChipRowClass,
   organismChipStaticClass,
+  predisposingFactorPillClass,
+  selectedCaseChipClass,
+  selectedCaseChipStripClass,
   supportFieldClass,
   supportHintClass,
   supportLabelClass,
-  summaryNoteClass,
-  tagPillClass,
 } from "../ui/workspace-patterns";
 
 type DraftState = {
@@ -52,7 +53,6 @@ type DraftState = {
 type Props = {
   locale: Locale;
   draft: DraftState;
-  draftImagesCount: number;
   notAvailableLabel: string;
   sexOptions: string[];
   contactLensOptions: string[];
@@ -91,10 +91,15 @@ function SummaryProperty({ label, value }: SummaryPropertyProps) {
   );
 }
 
+const compactPatientFieldClassName =
+  "grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-[18px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.82))] px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.03)] dark:bg-white/4";
+const compactPatientLabelClassName = "text-[0.78rem] font-semibold text-muted whitespace-nowrap";
+const compactPatientControlClassName =
+  "min-h-11 w-full rounded-[12px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/4";
+
 export function PatientVisitForm({
   locale,
   draft,
-  draftImagesCount,
   notAvailableLabel,
   sexOptions,
   contactLensOptions,
@@ -119,10 +124,6 @@ export function PatientVisitForm({
   onCompleteIntake,
 }: Props) {
   const sexLabel = translateOption(locale, "sex", draft.sex);
-  const contactLensSummary =
-    draft.contact_lens_use !== "none"
-      ? translateOption(locale, "contactLens", draft.contact_lens_use)
-      : pick(locale, "No lens use", "렌즈 사용 없음");
   const predisposingSummary =
     draft.predisposing_factor.length > 0
       ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" / ")
@@ -138,22 +139,15 @@ export function PatientVisitForm({
   const identityComplete = Boolean(draft.patient_id.trim() && draft.age.trim());
   const visitComplete = Boolean(draft.visit_status && draft.contact_lens_use);
   const organismComplete = Boolean(draft.culture_category && draft.culture_species.trim());
-  const noteComplete = Boolean(draft.other_history.trim());
-  const identitySummary = [
-    draft.patient_id.trim() || pick(locale, "Untitled case", "제목 없는 케이스"),
-    sexLabel,
-    draft.age.trim() ? `${draft.age} ${pick(locale, "years", "세")}` : notAvailableLabel,
-  ].join(" · ");
-  const visitSummary = [
+  const lockedPatientSummary = draft.patient_id.trim() || notAvailableLabel;
+  const lockedVisitSummary = [
     resolvedVisitReferenceLabel,
     translateOption(locale, "visitStatus", draft.visit_status),
-    contactLensSummary,
-  ].join(" · ");
-  const currentVisitSummary = [
-    visitSummary,
-    ...(draft.actual_visit_date.trim() ? [actualVisitDateLabel] : []),
-  ].join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const organismSummary = [organismCategorySummary, primaryOrganismLabel].join(" / ");
+  const lockedOrganismSummary = primaryOrganismLabel;
 
   if (draft.intake_completed) {
     return (
@@ -173,13 +167,19 @@ export function PatientVisitForm({
           </Button>
         }
       >
-        <div className={canvasPropertyGridClass}>
-          <SummaryProperty label={pick(locale, "Patient", "환자")} value={identitySummary} />
-          <SummaryProperty label={pick(locale, "Visit", "방문")} value={`${visitSummary} · ${actualVisitDateLabel}`} />
-          <SummaryProperty label={pick(locale, "Organism", "원인균")} value={`${organismSummary} · ${organismToneCopy}`} />
-          <SummaryProperty label={pick(locale, "Predisposing", "선행 인자")} value={predisposingSummary} />
-          <SummaryProperty label={pick(locale, "Draft images", "초안 이미지")} value={String(draftImagesCount)} />
-          <SummaryProperty label={pick(locale, "Local case code", "로컬 케이스 코드")} value={draft.local_case_code.trim() || notAvailableLabel} />
+        <div className={selectedCaseChipStripClass}>
+          <div className={selectedCaseChipClass}>
+            <span className={canvasPropertyLabelClass}>{pick(locale, "Patient", "환자")}</span>
+            <span className={canvasPropertyValueClass}>{lockedPatientSummary}</span>
+          </div>
+          <div className={selectedCaseChipClass}>
+            <span className={canvasPropertyLabelClass}>{pick(locale, "Visit", "방문")}</span>
+            <span className={canvasPropertyValueClass}>{lockedVisitSummary}</span>
+          </div>
+          <div className={selectedCaseChipClass}>
+            <span className={canvasPropertyLabelClass}>{pick(locale, "Organism", "원인균")}</span>
+            <span className={canvasPropertyValueClass}>{lockedOrganismSummary}</span>
+          </div>
         </div>
         {draft.additional_organisms.length > 0 ? (
           <div className={organismChipRowClass}>
@@ -193,7 +193,6 @@ export function PatientVisitForm({
             ))}
           </div>
         ) : null}
-        {draft.other_history.trim() ? <p className={summaryNoteClass}>{draft.other_history.trim()}</p> : null}
       </CanvasBlock>
     );
   }
@@ -202,47 +201,46 @@ export function PatientVisitForm({
     <div className="grid gap-5">
       <CanvasBlock
         eyebrow={pick(locale, "Patient", "환자")}
-        title={pick(locale, "Start with a clean patient snapshot", "환자 스냅샷부터 가볍게 시작합니다")}
+        title={pick(locale, "Start with patient information", "환자 정보 입력부터 가볍게 시작합니다")}
         headerInline
         statusLabel={identityComplete ? pick(locale, "Ready", "준비됨") : pick(locale, "Needs basics", "기본 정보 필요")}
         statusTone={identityComplete ? "complete" : "active"}
       >
-        <div className={canvasPropertyGridClass}>
-          <Field className={canvasPropertyCardClass} label={pick(locale, "Patient ID", "환자 ID")}>
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className={compactPatientFieldClassName}>
+            <span className={compactPatientLabelClassName}>{pick(locale, "Patient ID", "환자 ID")}</span>
             <input
+              className={compactPatientControlClassName}
               value={draft.patient_id}
               onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
               placeholder="17635992"
               spellCheck={false}
             />
-          </Field>
-          <Field className={canvasPropertyCardClass} label={pick(locale, "Sex", "성별")}>
-            <select value={draft.sex} onChange={(event) => setDraft((current) => ({ ...current, sex: event.target.value }))}>
+          </label>
+          <label className={compactPatientFieldClassName}>
+            <span className={compactPatientLabelClassName}>{pick(locale, "Sex", "성별")}</span>
+            <select
+              className={compactPatientControlClassName}
+              value={draft.sex}
+              onChange={(event) => setDraft((current) => ({ ...current, sex: event.target.value }))}
+            >
               {sexOptions.map((option) => (
                 <option key={option} value={option}>
                   {translateOption(locale, "sex", option)}
                 </option>
               ))}
             </select>
-          </Field>
-          <Field className={canvasPropertyCardClass} label={pick(locale, "Age", "나이")}>
+          </label>
+          <label className={compactPatientFieldClassName}>
+            <span className={compactPatientLabelClassName}>{pick(locale, "Age", "나이")}</span>
             <input
+              className={compactPatientControlClassName}
               type="number"
               min={0}
               value={draft.age}
               onChange={(event) => setDraft((current) => ({ ...current, age: event.target.value }))}
             />
-          </Field>
-          <Field className={canvasPropertyCardClass} label={pick(locale, "Local case code", "로컬 케이스 코드")}>
-            <input
-              value={draft.local_case_code}
-              onChange={(event) => setDraft((current) => ({ ...current, local_case_code: event.target.value }))}
-              placeholder={pick(locale, "Optional local label", "기관 내 라벨")}
-              spellCheck={false}
-            />
-          </Field>
-          <SummaryProperty label={pick(locale, "Visit reference", "방문 기준")} value={resolvedVisitReferenceLabel} />
-          <SummaryProperty label={pick(locale, "Draft images", "초안 이미지")} value={String(draftImagesCount)} />
+          </label>
         </div>
       </CanvasBlock>
 
@@ -257,19 +255,7 @@ export function PatientVisitForm({
         statusLabel={visitComplete ? pick(locale, "Context set", "맥락 설정됨") : pick(locale, "Visit context", "방문 맥락")}
         statusTone={visitComplete ? "complete" : "pending"}
       >
-        <div className={canvasPropertyGridClass}>
-          <SummaryProperty label={pick(locale, "Visit reference", "방문 기준")} value={resolvedVisitReferenceLabel} />
-          <Field
-            className={canvasPropertyCardClass}
-            label={pick(locale, "Date", "날짜")}
-            hint={pick(
-              locale,
-              "Optional. The canvas keeps the visit label even when a calendar date is not set.",
-              "선택 사항입니다. 날짜가 없어도 방문 라벨은 유지됩니다."
-            )}
-          >
-            <input type="date" value={draft.actual_visit_date} onChange={(event) => setDraft((current) => ({ ...current, actual_visit_date: event.target.value }))} />
-          </Field>
+        <div className="grid gap-3 md:grid-cols-3">
           <Field className={canvasPropertyCardClass} label={pick(locale, "Status", "상태")}>
             <select value={draft.visit_status} onChange={(event) => setDraft((current) => ({ ...current, visit_status: event.target.value }))}>
               {visitStatusOptions.map((option) => (
@@ -297,7 +283,7 @@ export function PatientVisitForm({
               {predisposingFactorOptions.map((factor) => (
                 <Button
                   key={factor}
-                  className={tagPillClass(draft.predisposing_factor.includes(factor))}
+                  className={predisposingFactorPillClass(draft.predisposing_factor.includes(factor))}
                   type="button"
                   size="sm"
                   variant="ghost"
@@ -307,15 +293,7 @@ export function PatientVisitForm({
                 </Button>
               ))}
             </div>
-            <div className={supportHintClass}>
-              {pick(
-                locale,
-                "Select only what matters for this visit. These tags flow straight into review.",
-                "이 방문에 의미 있는 항목만 선택하세요. 선택한 태그는 이후 리뷰에 그대로 이어집니다."
-              )}
-            </div>
           </div>
-          <SummaryProperty label={pick(locale, "Current summary", "현재 요약")} value={currentVisitSummary} />
         </div>
       </CanvasBlock>
 
@@ -460,38 +438,6 @@ export function PatientVisitForm({
             </div>
           ))}
         </div>
-      </CanvasBlock>
-
-      <CanvasBlock
-        eyebrow={pick(locale, "Clinical note", "임상 노트")}
-        title={pick(locale, "Keep the note short and clinical", "노트는 짧고 임상적으로 유지합니다")}
-        summary={pick(
-          locale,
-          "Use this for ocular surface context, referral history, or procedural notes worth keeping.",
-          "안구 표면 맥락, 의뢰 경과, 시술 메모처럼 이후에도 남겨둘 만한 정보만 적으세요."
-        )}
-        statusLabel={noteComplete ? pick(locale, "Noted", "기록됨") : pick(locale, "Optional", "선택 사항")}
-        statusTone={noteComplete ? "complete" : "pending"}
-      >
-        <Field
-          label={pick(locale, "Case note", "케이스 노트")}
-          hint={pick(
-            locale,
-            "Write this as something another clinician would want to read later.",
-            "단순 입력 메모가 아니라, 다른 임상의가 나중에 다시 읽을 문장이라고 생각하고 작성하세요."
-          )}
-        >
-          <textarea
-            rows={4}
-            value={draft.other_history}
-            onChange={(event) => setDraft((current) => ({ ...current, other_history: event.target.value }))}
-            placeholder={pick(
-              locale,
-              "Referral context, ocular surface status, procedural notes...",
-              "의뢰 맥락, 안구 표면 상태, 시술 메모..."
-            )}
-          />
-        </Field>
       </CanvasBlock>
 
       <div className={canvasFooterClass}>

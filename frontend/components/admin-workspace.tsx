@@ -32,7 +32,7 @@ import { useAdminWorkspaceController } from "./admin-workspace/use-admin-workspa
 import { LocaleToggle, pick, translateRole } from "../lib/i18n";
 import { type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
 import { cn } from "../lib/cn";
-import { getSiteDisplayName } from "../lib/site-labels";
+import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
 
 export type WorkspaceSection =
   | "dashboard"
@@ -48,6 +48,7 @@ type AdminWorkspaceProps = {
   token: string;
   user: AuthUser;
   sites: SiteRecord[];
+  sitesBusy?: boolean;
   selectedSiteId: string | null;
   summary: SiteSummary | null;
   theme: "dark" | "light";
@@ -118,6 +119,7 @@ export function AdminWorkspace({
   token,
   user,
   sites,
+  sitesBusy = false,
   selectedSiteId,
   summary,
   theme,
@@ -129,6 +131,7 @@ export function AdminWorkspace({
   onSiteDataChanged,
   onToggleTheme,
 }: AdminWorkspaceProps) {
+  const visibleSites = filterVisibleSites(sites);
   const state = useAdminWorkspaceState({
     user,
     initialSection,
@@ -148,6 +151,8 @@ export function AdminWorkspace({
     setStorageSettings,
     pendingRequests,
     setPendingRequests,
+    autoApprovedRequests,
+    setAutoApprovedRequests,
     reviewDrafts,
     setReviewDrafts,
     modelVersions,
@@ -281,11 +286,16 @@ export function AdminWorkspace({
     formatEmbeddingStage,
     toggleRocValidationSelection,
   } = state;
+  const visibleManagedSites = filterVisibleSites(managedSites);
+  const visibleRailSites = visibleSites.length > 0 ? visibleSites : visibleManagedSites;
   const {
     handleInstitutionSync,
     handleReview,
     handleInitialTraining,
+    handleCancelInitialTraining,
     handleBenchmarkTraining,
+    handleCancelBenchmarkTraining,
+    handleResumeBenchmarkTraining,
     handleCrossValidation,
     handleSiteValidation,
     handleRefreshEmbeddingStatus,
@@ -318,7 +328,7 @@ export function AdminWorkspace({
     onSiteDataChanged,
     onSelectSite,
   });
-  const selectedSiteRecord = sites.find((site) => site.site_id === selectedSiteId) ?? selectedManagedSite ?? null;
+  const selectedSiteRecord = visibleRailSites.find((site) => site.site_id === selectedSiteId) ?? selectedManagedSite ?? null;
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
 
 
@@ -355,14 +365,28 @@ export function AdminWorkspace({
               eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Hospitals", "蹂묒썝")}</div>}
               title={pick(locale, "Linked sites", "?곌껐??蹂묒썝")}
               titleAs="h4"
-              aside={<span className={docSiteBadgeClass}>{`${sites.length} ${pick(locale, "linked", "연결됨")}`}</span>}
+              aside={
+                <span className={docSiteBadgeClass}>
+                  {sitesBusy && visibleRailSites.length === 0
+                    ? pick(locale, "Loading...", "불러오는 중...")
+                    : `${visibleRailSites.length} ${pick(locale, "linked", "연결됨")}`}
+                </span>
+              }
             />
             <div className="grid gap-2">
-            {sites.map((site) => (
-              <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
-                <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{getSiteDisplayName(site)}</strong>
-              </button>
-            ))}
+            {visibleRailSites.length > 0 ? (
+              visibleRailSites.map((site) => (
+                <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
+                  <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{getSiteDisplayName(site)}</strong>
+                </button>
+              ))
+            ) : (
+              <div className="rounded-[18px] border border-border/80 bg-surface-muted/80 px-4 py-3 text-sm text-muted">
+                {sitesBusy
+                  ? pick(locale, "Loading linked hospitals...", "연결된 병원을 불러오는 중...")
+                  : pick(locale, "No linked hospital is available yet.", "연결된 병원이 아직 없습니다.")}
+              </div>
+            )}
             </div>
           </Card>
 
@@ -407,6 +431,7 @@ export function AdminWorkspace({
             />
             <MetricGrid columns={2}>
               <MetricItem value={overview?.pending_access_requests ?? pendingRequests.length} label={pick(locale, "Pending access", "?湲??묎렐 ?붿껌")} />
+              <MetricItem value={overview?.auto_approved_access_requests ?? autoApprovedRequests.length} label={pick(locale, "Auto-approved access", "자동 승인 접근")} />
               <MetricItem value={overview?.pending_model_updates ?? pendingReviewUpdates.length} label={pick(locale, "Pending updates", "?湲??낅뜲?댄듃")} />
               <MetricItem value={overview?.model_version_count ?? modelVersions.length} label={pick(locale, "Models", "紐⑤뜽")} />
               <MetricItem value={overview?.current_model_version ?? currentModel?.version_name ?? common.notAvailable} label={pick(locale, "Current model", "?꾩옱 紐⑤뜽")} />
@@ -576,15 +601,16 @@ export function AdminWorkspace({
           ) : null}
           {section === "requests" ? (
             <RequestsSection
-              locale={locale}
-              notAvailableLabel={common.notAvailable}
-              pendingRequests={pendingRequests}
+                locale={locale}
+                notAvailableLabel={common.notAvailable}
+                pendingRequests={pendingRequests}
+                autoApprovedRequests={autoApprovedRequests}
               reviewDrafts={reviewDrafts}
               canManagePlatform={canManagePlatform}
               institutionSyncBusy={institutionSyncBusy}
               institutionSyncStatus={institutionSyncStatus}
               projects={projects}
-              sites={sites}
+              sites={visibleSites}
               setReviewDrafts={setReviewDrafts}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
               onInstitutionSync={() => void handleInstitutionSync()}
@@ -614,8 +640,11 @@ export function AdminWorkspace({
               formatMetric={formatMetric}
               formatTrainingStage={formatTrainingStage}
               onExportSelectedReport={() => void handleExportCrossValidationReport()}
+              onCancelBenchmark={() => void handleCancelBenchmarkTraining()}
+              onCancelInitialTraining={() => void handleCancelInitialTraining()}
               onRunBenchmark={() => void handleBenchmarkTraining()}
               onRunInitialTraining={() => void handleInitialTraining()}
+              onResumeBenchmark={() => void handleResumeBenchmarkTraining()}
             />
           ) : null}
           {section === "cross_validation" ? (

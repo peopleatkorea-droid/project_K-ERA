@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { pick, translateApiError } from "../../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
 import {
+  cancelSiteJob,
   autoPublishModelUpdate,
   autoPublishModelVersion,
   backfillAiClinicEmbeddings,
@@ -36,6 +37,7 @@ import {
   publishModelUpdate,
   reviewAccessRequest,
   reviewModelUpdate,
+  resumeInitialTrainingBenchmark,
   syncInstitutionDirectory,
   runBulkImport,
   runCrossValidation,
@@ -53,8 +55,10 @@ import {
 } from "../../lib/api";
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
 
-const BENCHMARK_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const BENCHMARK_ARCHITECTURES = ["vit", "swin", "dinov2", "dinov2_mil", "dual_input_concat", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
+const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
+const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
 
 type AdminWorkspaceState = ReturnType<typeof useAdminWorkspaceState>;
 
@@ -70,6 +74,26 @@ type UseAdminWorkspaceControllerOptions = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isActiveJobStatus(status: string | null | undefined) {
+  return ["queued", "running", "cancelling"].includes(String(status || "").trim().toLowerCase());
+}
+
+function isBenchmarkResponse(
+  response: unknown,
+): response is {
+  results: Array<{ architecture: string; status: string }>;
+  completed_architectures?: string[] | null;
+} {
+  return Boolean(response && typeof response === "object" && Array.isArray((response as { results?: unknown }).results));
+}
+
+function effectiveCaseAggregation(
+  architecture: string,
+  caseAggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
+) {
+  return architecture === "dinov2_mil" ? "attention_mil" : caseAggregation;
 }
 
 function sanitizeSiteCodeSegment(value: string): string {
@@ -110,7 +134,7 @@ function createReviewDraft(
   const shouldCreateSite =
     request.requested_site_source === "institution_directory" && !hasResolvedSite;
   return {
-    assigned_role: request.requested_role,
+    assigned_role: "researcher",
     assigned_site_id:
       request.resolved_site_id ??
       (request.requested_site_source === "site" ? request.requested_site_id : ""),
@@ -241,7 +265,9 @@ export function useAdminWorkspaceController({
     setOverview,
     storageSettings,
     setStorageSettings,
+    pendingRequests,
     setPendingRequests,
+    setAutoApprovedRequests,
     reviewDrafts,
     setReviewDrafts,
     setModelVersions,
@@ -282,10 +308,12 @@ export function useAdminWorkspaceController({
     userForm,
     setUserForm,
     initialForm,
+    initialJob,
     setInitialBusy,
     setInitialResult,
     setInitialJob,
     benchmarkBusy,
+    benchmarkJob,
     setBenchmarkBusy,
     setBenchmarkResult,
     setBenchmarkJob,
@@ -354,6 +382,13 @@ export function useAdminWorkspaceController({
     selectSiteForInitial: pick(locale, "Select a hospital before starting initial training.", "초기 학습을 시작하려면 병원을 선택하세요."),
     registeredVersion: (name: string) => pick(locale, `Registered ${name}.`, `${name} 버전을 등록했습니다.`),
     initialTrainingFailed: pick(locale, "Initial training failed.", "초기 학습에 실패했습니다."),
+    initialTrainingCancelled: pick(locale, "Initial training was cancelled.", "초기 학습이 중단되었습니다."),
+    cancellationRequested: pick(locale, "Cancellation requested.", "중단 요청을 보냈습니다."),
+    benchmarkResumeCompleted: (count: number) =>
+      pick(locale, `Benchmark resume completed for ${count} architecture(s).`, `${count}개 아키텍처에 대한 benchmark 재시작이 완료되었습니다.`),
+    benchmarkCancelled: (count: number) =>
+      pick(locale, `Benchmark stopped after ${count} completed architecture(s).`, `${count}개 아키텍처 완료 후 benchmark가 중단되었습니다.`),
+    benchmarkResumeFailed: pick(locale, "Unable to resume the benchmark.", "benchmark 재시작에 실패했습니다."),
     selectSiteForCrossValidation: pick(locale, "Select a hospital before running cross-validation.", "교차 검증을 실행하려면 병원을 선택하세요."),
     savedReport: (reportId: string) => pick(locale, `Saved report ${reportId}.`, `${reportId} 리포트를 저장했습니다.`),
     crossValidationFailed: pick(locale, "Cross-validation failed.", "교차 검증에 실패했습니다."),
@@ -400,8 +435,12 @@ export function useAdminWorkspaceController({
     projectNameRequired: pick(locale, "Project name is required.", "프로젝트 이름은 필수입니다."),
     projectRegistered: pick(locale, "Project registered.", "프로젝트를 등록했습니다."),
     unableCreateProject: pick(locale, "Unable to create project.", "프로젝트 생성에 실패했습니다."),
-    siteFieldsRequired: pick(locale, "Project, HIRA site ID, and official hospital name are required.", "프로젝트, HIRA site ID, 공식 병원명은 필수입니다."),
-    siteNameRequired: pick(locale, "Official hospital name is required.", "공식 병원명은 필수입니다."),
+    siteFieldsRequired: pick(
+      locale,
+      "A linked HIRA institution is required.",
+      "연결된 HIRA 기관은 필수입니다.",
+    ),
+    siteNameRequired: pick(locale, "A linked hospital is required.", "연결된 병원 정보는 필수입니다."),
     siteRegistered: (siteLabel: string) => pick(locale, `Registered ${siteLabel}.`, `${siteLabel} 병원을 등록했습니다.`),
     unableCreateSite: pick(locale, "Unable to create hospital.", "병원 생성에 실패했습니다."),
     siteUpdated: (siteLabel: string) => pick(locale, `Updated ${siteLabel}.`, `${siteLabel} 병원 정보를 수정했습니다.`),
@@ -454,7 +493,8 @@ export function useAdminWorkspaceController({
         const [
           nextOverview,
           nextStorageSettings,
-          nextRequests,
+          nextPendingRequests,
+          nextApprovedRequests,
           nextVersions,
           nextUpdates,
           nextAggregations,
@@ -469,6 +509,7 @@ export function useAdminWorkspaceController({
           fetchAdminOverview(token),
           fetchStorageSettings(token),
           fetchAccessRequests(token, "pending"),
+          fetchAccessRequests(token, "approved"),
           fetchModelVersions(token),
           fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
           canAggregate ? fetchAggregations(token) : Promise.resolve([]),
@@ -483,7 +524,12 @@ export function useAdminWorkspaceController({
         if (cancelled) return;
         setOverview(nextOverview);
         setStorageSettings(nextStorageSettings);
-        setPendingRequests(nextRequests);
+        setPendingRequests(nextPendingRequests);
+        setAutoApprovedRequests(
+          nextApprovedRequests
+            .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
+            .slice(0, 8),
+        );
         setModelVersions(nextVersions);
         setModelUpdates(nextUpdates);
         setAggregations(nextAggregations);
@@ -505,12 +551,16 @@ export function useAdminWorkspaceController({
         });
         setSiteForm((current) => ({
           ...current,
-          project_id: current.project_id || nextProjects[0]?.project_id || "",
+          project_id: current.project_id || nextProjects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID,
         }));
         setReviewDrafts((current) => {
           const next = { ...current };
-          for (const item of nextRequests) {
-            next[item.request_id] = mergeReviewDraft(next[item.request_id], item, nextProjects[0]?.project_id ?? "");
+          for (const item of nextPendingRequests) {
+            next[item.request_id] = mergeReviewDraft(
+              next[item.request_id],
+              item,
+              nextProjects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID,
+            );
           }
           return next;
         });
@@ -549,6 +599,7 @@ export function useAdminWorkspaceController({
     setModelVersions,
     setOverview,
     setPendingRequests,
+    setAutoApprovedRequests,
     setProjects,
     setReviewDrafts,
     setSelectedReportId,
@@ -810,7 +861,8 @@ export function useAdminWorkspaceController({
       nextSiteComparison,
       nextCrossValidationReports,
       nextSiteValidationRuns,
-      nextRequests,
+      nextPendingRequests,
+      nextApprovedRequests,
     ] = await Promise.all([
       fetchAdminOverview(token),
       fetchStorageSettings(token),
@@ -825,6 +877,7 @@ export function useAdminWorkspaceController({
       selectedSiteId ? fetchCrossValidationReports(selectedSiteId, token) : Promise.resolve([]),
       selectedSiteId ? fetchSiteValidations(selectedSiteId, token) : Promise.resolve([]),
       fetchAccessRequests(token, "pending"),
+      fetchAccessRequests(token, "approved"),
     ]);
     setOverview(nextOverview);
     setStorageSettings(nextStorageSettings);
@@ -838,10 +891,15 @@ export function useAdminWorkspaceController({
     setSiteComparison(nextSiteComparison);
     setCrossValidationReports(nextCrossValidationReports);
     setSiteValidationRuns(nextSiteValidationRuns);
-    setPendingRequests(nextRequests);
+    setPendingRequests(nextPendingRequests);
+    setAutoApprovedRequests(
+      nextApprovedRequests
+        .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
+        .slice(0, 8),
+    );
     setReviewDrafts((current) => {
       const next = { ...current };
-      for (const item of nextRequests) {
+      for (const item of nextPendingRequests) {
         next[item.request_id] = mergeReviewDraft(next[item.request_id], item, nextProjects[0]?.project_id ?? "");
       }
       return next;
@@ -853,21 +911,37 @@ export function useAdminWorkspaceController({
   }
 
   async function handleReview(requestId: string, decision: "approved" | "rejected") {
-    const draft = reviewDrafts[requestId];
+    const request = pendingRequests.find((item) => item.request_id === requestId);
+    const draft = request ? reviewDrafts[requestId] ?? createReviewDraft(request, projects[0]?.project_id ?? "") : reviewDrafts[requestId];
     try {
       const response = await reviewAccessRequest(requestId, token, {
         decision,
-        assigned_role: draft?.assigned_role,
+        assigned_role: "researcher",
         assigned_site_id: draft?.assigned_site_id,
         create_site_if_missing: draft?.create_site_if_missing,
-        project_id: draft?.project_id,
         site_code: draft?.site_code,
         display_name: draft?.display_name?.trim() || draft?.hospital_name?.trim(),
         hospital_name: draft?.hospital_name,
         research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
       });
-      await refreshWorkspace();
+      setPendingRequests((current) => current.filter((item) => item.request_id !== requestId));
+      setReviewDrafts((current) => {
+        if (!(requestId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+      setOverview((current) =>
+        current
+          ? {
+              ...current,
+              pending_access_requests: Math.max(0, Number(current.pending_access_requests ?? 0) - 1),
+            }
+          : current
+      );
       if (response.created_site?.site_id) {
         onSelectSite(response.created_site.site_id);
         setToast({
@@ -876,6 +950,12 @@ export function useAdminWorkspaceController({
         });
       } else {
         setToast({ tone: "success", message: copy.requestReviewed(decision) });
+      }
+      try {
+        // Keep the review outcome visible even if one of the follow-up refresh calls fails.
+        await refreshWorkspace();
+      } catch {
+        // Ignore refresh failures here because the review itself already succeeded.
       }
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.unableReview) });
@@ -909,13 +989,20 @@ export function useAdminWorkspaceController({
     setInitialBusy(true);
     setInitialJob(null);
     try {
-      const started = await runInitialTraining(selectedSiteId, token, initialForm);
+      const started = await runInitialTraining(selectedSiteId, token, {
+        ...initialForm,
+        case_aggregation: effectiveCaseAggregation(initialForm.architecture, initialForm.case_aggregation),
+      });
       setInitialJob(started.job);
       let latestJob = started.job;
-      while (latestJob.status === "queued" || latestJob.status === "running") {
+      while (isActiveJobStatus(latestJob.status)) {
         await sleep(1000);
         latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
         setInitialJob(latestJob);
+      }
+      if (latestJob.status === "cancelled") {
+        setToast({ tone: "success", message: copy.initialTrainingCancelled });
+        return;
       }
       if (latestJob.status === "failed") {
         throw new Error(latestJob.result?.error || copy.initialTrainingFailed);
@@ -946,7 +1033,8 @@ export function useAdminWorkspaceController({
       const started = await runInitialTrainingBenchmark(selectedSiteId, token, {
         architectures: BENCHMARK_ARCHITECTURES,
         execution_mode: initialForm.execution_mode,
-        crop_mode: initialForm.crop_mode,
+        crop_mode: initialForm.crop_mode === "paired" ? "automated" : initialForm.crop_mode,
+        case_aggregation: initialForm.case_aggregation,
         epochs: initialForm.epochs,
         learning_rate: initialForm.learning_rate,
         batch_size: initialForm.batch_size,
@@ -957,30 +1045,140 @@ export function useAdminWorkspaceController({
       });
       setBenchmarkJob(started.job);
       let latestJob = started.job;
-      while (latestJob.status === "queued" || latestJob.status === "running") {
+      while (isActiveJobStatus(latestJob.status)) {
         await sleep(1000);
         latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
         setBenchmarkJob(latestJob);
       }
-      if (latestJob.status === "failed") {
-        throw new Error(latestJob.result?.error || pick(locale, "Five-model initial training failed.", "5종 순차 초기 학습에 실패했습니다."));
-      }
       const result = latestJob.result?.response;
-      if (!result || !("results" in result)) {
-        throw new Error(pick(locale, "Five-model initial training result is missing.", "5종 순차 초기 학습 결과가 없습니다."));
+      if (isBenchmarkResponse(result)) {
+        setBenchmarkResult(result);
+      }
+      if (latestJob.status === "cancelled") {
+        const completedCount = isBenchmarkResponse(result) && Array.isArray(result.completed_architectures) ? result.completed_architectures.length : 0;
+        setToast({ tone: "success", message: copy.benchmarkCancelled(completedCount) });
+        return;
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(
+          latestJob.result?.error ||
+            pick(
+              locale,
+              `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
+              `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`
+            )
+        );
+      }
+      if (!isBenchmarkResponse(result)) {
+        throw new Error(
+          pick(
+            locale,
+            `${BENCHMARK_ARCHITECTURES.length}-model initial training result is missing.`,
+            `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습 결과가 없습니다.`
+          )
+        );
       }
       setBenchmarkResult(result);
       await refreshWorkspace(true);
       setSection("registry");
       setToast({
         tone: "success",
-        message: pick(locale, `Five-model initial training completed for ${result.results.length} architecture(s).`, `${result.results.length}개 아키텍처의 5종 순차 초기 학습이 완료되었습니다.`),
+        message: pick(
+          locale,
+          `${BENCHMARK_ARCHITECTURES.length}-model initial training completed for ${result.results.length} architecture(s).`,
+          `${result.results.length}개 아키텍처의 ${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습이 완료되었습니다.`
+        ),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Five-model initial training failed.", "5종 순차 초기 학습에 실패했습니다.")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
+            `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`
+          )
+        ),
       });
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  }
+
+  async function handleCancelInitialTraining() {
+    if (!selectedSiteId || !initialJob) {
+      return;
+    }
+    try {
+      const job = await cancelSiteJob(selectedSiteId, initialJob.job_id, token);
+      setInitialJob(job);
+      setToast({ tone: "success", message: copy.cancellationRequested });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.initialTrainingFailed) });
+    }
+  }
+
+  async function handleCancelBenchmarkTraining() {
+    if (!selectedSiteId || !benchmarkJob) {
+      return;
+    }
+    try {
+      const job = await cancelSiteJob(selectedSiteId, benchmarkJob.job_id, token);
+      setBenchmarkJob(job);
+      setToast({ tone: "success", message: copy.cancellationRequested });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(
+          nextError,
+          pick(locale, "Unable to stop benchmark training.", "benchmark 중단에 실패했습니다."),
+        ),
+      });
+    }
+  }
+
+  async function handleResumeBenchmarkTraining() {
+    if (!selectedSiteId || !benchmarkJob) {
+      return;
+    }
+    setBenchmarkBusy(true);
+    try {
+      const started = await resumeInitialTrainingBenchmark(selectedSiteId, token, {
+        job_id: benchmarkJob.job_id,
+        execution_mode: initialForm.execution_mode,
+      });
+      setBenchmarkResult(null);
+      setBenchmarkJob(started.job);
+      let latestJob = started.job;
+      while (isActiveJobStatus(latestJob.status)) {
+        await sleep(1000);
+        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
+        setBenchmarkJob(latestJob);
+      }
+      const result = latestJob.result?.response;
+      if (isBenchmarkResponse(result)) {
+        setBenchmarkResult(result);
+      }
+      if (latestJob.status === "cancelled") {
+        const completedCount = isBenchmarkResponse(result) && Array.isArray(result.completed_architectures) ? result.completed_architectures.length : 0;
+        setToast({ tone: "success", message: copy.benchmarkCancelled(completedCount) });
+        return;
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(
+          latestJob.result?.error ||
+            pick(
+              locale,
+              `${BENCHMARK_ARCHITECTURES.length}-model initial training failed.`,
+              `${BENCHMARK_ARCHITECTURES.length}종 순차 초기 학습에 실패했습니다.`,
+            ),
+        );
+      }
+      const completedCount = isBenchmarkResponse(result) ? result.results.length : 0;
+      setToast({ tone: "success", message: copy.benchmarkResumeCompleted(completedCount) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.benchmarkResumeFailed) });
     } finally {
       setBenchmarkBusy(false);
     }
@@ -994,10 +1192,13 @@ export function useAdminWorkspaceController({
     setCrossValidationBusy(true);
     setCrossValidationJob(null);
     try {
-      const started = await runCrossValidation(selectedSiteId, token, crossValidationForm);
+      const started = await runCrossValidation(selectedSiteId, token, {
+        ...crossValidationForm,
+        case_aggregation: effectiveCaseAggregation(crossValidationForm.architecture, crossValidationForm.case_aggregation),
+      });
       setCrossValidationJob(started.job);
       let latestJob = started.job;
-      while (latestJob.status === "queued" || latestJob.status === "running") {
+      while (isActiveJobStatus(latestJob.status)) {
         await sleep(1000);
         latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
         setCrossValidationJob(latestJob);
@@ -1031,7 +1232,7 @@ export function useAdminWorkspaceController({
     try {
       const started = await runSiteValidation(selectedSiteId, token);
       let latestJob = started.job;
-      while (latestJob.status === "queued" || latestJob.status === "running") {
+      while (isActiveJobStatus(latestJob.status)) {
         await sleep(1000);
         latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
       }
@@ -1364,7 +1565,7 @@ export function useAdminWorkspaceController({
     }
   }
 
-  function handleResetSiteForm(projectId = siteForm.project_id || projects[0]?.project_id || "") {
+  function handleResetSiteForm(projectId = siteForm.project_id || projects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID) {
     setEditingSiteId(null);
     setSiteForm(createSiteForm(projectId));
   }
@@ -1378,21 +1579,26 @@ export function useAdminWorkspaceController({
       hospital_name: site.hospital_name ?? "",
       research_registry_enabled: site.research_registry_enabled ?? true,
       source_institution_id: site.source_institution_id ?? undefined,
+      source_institution_name: site.source_institution_name ?? undefined,
+      source_institution_address: site.source_institution_address ?? undefined,
     });
   }
 
   async function handleCreateSite() {
-    const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || "";
+    const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID;
     const normalizedDisplayName = siteForm.display_name.trim() || siteForm.hospital_name.trim();
-    if (!effectiveProjectId || !siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
+    if (!siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
       const createdSite = await createAdminSite(token, {
-        ...siteForm,
         project_id: effectiveProjectId,
+        site_code: siteForm.site_code,
         display_name: normalizedDisplayName,
+        hospital_name: siteForm.hospital_name,
+        source_institution_id: siteForm.source_institution_id ?? null,
+        research_registry_enabled: siteForm.research_registry_enabled,
       });
       handleResetSiteForm(effectiveProjectId);
       await onRefreshSites();
@@ -1414,6 +1620,7 @@ export function useAdminWorkspaceController({
       const updatedSite = await updateAdminSite(editingSiteId, token, {
         display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
+        source_institution_id: siteForm.source_institution_id ?? null,
         research_registry_enabled: siteForm.research_registry_enabled,
       });
       handleResetSiteForm(updatedSite.project_id);
@@ -1521,7 +1728,10 @@ export function useAdminWorkspaceController({
     handleInstitutionSync,
     handleReview,
     handleInitialTraining,
+    handleCancelInitialTraining,
     handleBenchmarkTraining,
+    handleCancelBenchmarkTraining,
+    handleResumeBenchmarkTraining,
     handleCrossValidation,
     handleSiteValidation,
     handleRefreshEmbeddingStatus,

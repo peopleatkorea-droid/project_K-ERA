@@ -160,6 +160,25 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 .\scripts\configure_shared_control_plane_client.ps1 -ControlPlaneDatabaseUrl "postgresql://.../kera_control_plane?sslmode=require&channel_binding=require"
 ```
 
+### 7. 2026-03-19 업데이트
+
+- initial training 기준 supervised backbone이 8종으로 확장되었습니다.
+  - `DenseNet121`
+  - `ConvNeXt-Tiny`
+  - `ViT`
+  - `Swin`
+  - `EfficientNetV2-S`
+  - `DINOv2`
+  - `DINOv2 Attention MIL`
+  - `Dual-input Concat Fusion`
+- `dual_input_concat`은 `paired` crop mode에서 `cornea crop + lesion crop` feature를 concat한 single classifier baseline입니다.
+- benchmark는 비교 일관성을 위해 기존 7개 single-input backbone만 순차 학습합니다. `dual_input_concat`은 단일 학습/교차검증용 baseline입니다.
+- visit 단위 분석을 위해 `mean`, `logit_mean`, `quality_weighted_mean`, `attention_mil` 집계를 지원합니다.
+- `dinov2_mil`은 visit 안의 여러 이미지를 attention으로 통합해 visit-level 예측을 수행하고, 대표 이미지는 highest-attention 컷으로 자동 선택합니다.
+- case validation 뒤에는 prediction snapshot, structured analysis, root-cause/action tag, LLM/local fallback summary를 포함한 post-mortem이 함께 생성됩니다.
+- 7종 benchmark 진행 카드에는 전체 퍼센트, 현재 architecture, 순서, 남은 모델 수와 함께 ETA가 표시됩니다.
+- 단일 initial training과 benchmark는 작업 중단이 가능하고, benchmark는 완료되지 않은 architecture만 다시 시작할 수 있습니다.
+
 ---
 
 ## 환경변수
@@ -263,6 +282,7 @@ Single-DB에서 split control/data plane으로 전환할 때는 [docs/control_pl
 - **ROI preview**: MedSAM 기반 각막 ROI crop/mask 자동 생성 (실패 시 fallback ROI 사용)
 - **Validation**: 글로벌 모델로 bacterial/fungal 예측 + 신뢰도 + Grad-CAM 시각화
 - **Lesion annotation**: 사용자가 병변 bounding box를 그리면 비동기로 lesion mask + lesion crop 자동 생성
+- **Prediction post-mortem**: validation 직후 structured analysis와 root-cause/action tag, 사람용 요약을 함께 생성
 - **AI Clinic**: 유사 증례 검색, 텍스트 근거 조회, differential ranking, LLM 기반 워크플로우 추천
 - **Contribution**: validation 완료된 active 병변 케이스를 글로벌 모델에 기여 (weight delta 생성)
 - Validation / contribution history 조회
@@ -299,6 +319,35 @@ Retrieval backend: `classifier` / `dinov2` / `hybrid` 모드 지원
 | Federated aggregation 실행 | O | - |
 | Experiment registry 조회 | O | - |
 | Project / site / user 관리 | O | - |
+
+### 학습 / benchmark / visit 분석
+
+- **initial training architectures**:
+  - single-input: `DenseNet121`, `ConvNeXt-Tiny`, `ViT`, `Swin`, `EfficientNetV2-S`, `DINOv2`
+  - visit-level MIL: `DINOv2 Attention MIL`
+  - dual-input fusion: `Dual-input Concat Fusion`
+- **7-model supervised benchmark**: 동일 split과 runtime 설정으로 7개 backbone을 순차 학습합니다.
+- **DINOv2 classifier**: retrieval 전용이 아니라 supervised classifier backbone으로도 학습할 수 있습니다.
+- **Dual-input Concat Fusion**:
+  - 입력 단위: `paired` crop mode의 `cornea crop + lesion crop`
+  - shared DINOv2 encoder로 두 crop feature를 추출
+  - feature concat 후 single classifier로 예측
+  - case-level aggregation은 현재 `mean`, `logit_mean`, `quality_weighted_mean`을 사용
+  - branch-aware Grad-CAM은 아직 지원하지 않습니다
+- **visit aggregation**:
+  - `mean`
+  - `logit_mean`
+  - `quality_weighted_mean`
+  - `attention_mil` (`dinov2_mil`)
+- **DINOv2 Attention MIL**:
+  - 입력 단위: `patient_id + visit_date`
+  - 각 이미지에서 DINOv2 feature 추출
+  - attention pooling으로 visit-level logits 생성
+  - attention top image를 model-representative image로 사용
+- **job UX**:
+  - benchmark progress에 현재 architecture, 순서, remaining count, ETA 표시
+  - running job 중단 지원
+  - cancelled / partial benchmark는 남은 architecture만 resume 가능
 
 ### 연합학습 (Federated Learning)
 
@@ -361,7 +410,9 @@ HTTP API와 별개로 직접 실행 가능합니다.
 
 ```powershell
 python -m kera_research.cli train --site-id <SITE_ID>
+python -m kera_research.cli train --site-id <SITE_ID> --architecture dual_input_concat --crop-mode paired
 python -m kera_research.cli cross-validate --site-id <SITE_ID>
+python -m kera_research.cli cross-validate --site-id <SITE_ID> --architecture dual_input_concat --crop-mode paired
 python -m kera_research.cli external-validate --site-id <SITE_ID> --project-id <PROJECT_ID>
 python -m kera_research.cli export-report --validation-id <VALIDATION_ID> --output .\report.json
 ```
@@ -453,7 +504,11 @@ KERA_MODEL_DISTRIBUTION_MODE=download_url
 - `POST /api/sites/{site_id}/ai-clinic/embeddings/backfill`
 - `POST /api/sites/{site_id}/validations/run`
 - `POST /api/sites/{site_id}/training/initial`
+- `POST /api/sites/{site_id}/training/initial/benchmark`
+- `POST /api/sites/{site_id}/training/initial/benchmark/resume`
 - `POST /api/sites/{site_id}/training/cross-validation`
+- `GET /api/sites/{site_id}/jobs/{job_id}`
+- `POST /api/sites/{site_id}/jobs/{job_id}/cancel`
 - `POST /api/sites/{site_id}/import/bulk`
 
 운영 / 관리자:
@@ -498,6 +553,9 @@ python -m unittest tests.test_modeling
 
 - 케이스 단위 validation, AI Clinic retrieval/report 생성 등 일부 작업은 여전히 API 요청-응답 안에서 동기 실행됩니다.
 - 사이트 단위 validation, initial training, multi-model benchmark, cross-validation은 `site_jobs`에 큐잉되며, 별도 worker(`python -m kera_research.worker`)가 처리합니다. `.\scripts\run_local_node.ps1`는 이 worker를 함께 실행하지만, API만 단독 실행하면 해당 작업은 `queued` 상태에 머무를 수 있습니다.
+- training / benchmark ETA는 `elapsed time + current percent` 기반 추정치이므로 정확한 wall-clock 보장은 아닙니다.
+- job cancel은 안전 지점에서 반영됩니다. 보통 현재 epoch 또는 stage가 끝난 뒤 중단됩니다.
+- benchmark resume은 `남은 architecture 재큐잉` 방식입니다. 중단된 architecture의 mid-epoch checkpoint resume은 아직 지원하지 않습니다.
 - AI Clinic embedding indexing / backfill, lesion live preview, 관리자 aggregation은 현재 별도 외부 큐가 아니라 API 프로세스 내부 daemon thread로 실행됩니다. 따라서 API 프로세스 재시작이나 종료 시 해당 작업은 중단될 수 있습니다.
 - MedSAM은 로컬 스크립트와 체크포인트가 준비된 경우에만 사용하며, 그렇지 않으면 fallback ROI 경로를 사용합니다.
 - 프론트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.

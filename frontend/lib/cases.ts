@@ -76,6 +76,7 @@ export async function fetchPatientListPage(
     page?: number;
     page_size?: number;
     search?: string;
+    signal?: AbortSignal;
   } = {},
 ) {
   const params = new URLSearchParams();
@@ -92,7 +93,7 @@ export async function fetchPatientListPage(
     params.set("q", options.search.trim());
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<PatientListPageResponse>(`/api/sites/${siteId}/patients/list-board${suffix}`, {}, token);
+  return request<PatientListPageResponse>(`/api/sites/${siteId}/patients/list-board${suffix}`, { signal: options.signal }, token);
 }
 
 export async function fetchVisits(siteId: string, token: string, patientId?: string) {

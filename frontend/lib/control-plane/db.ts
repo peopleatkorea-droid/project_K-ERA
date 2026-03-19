@@ -6,6 +6,7 @@ export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
+const SYSTEM_PROJECT_OWNER_ID = "system";
 
 function sqlClient(): ControlPlaneSql {
   if (cachedSql) {
@@ -28,6 +29,10 @@ function indexNameFor(tableName: string, suffix: string) {
   return `${tableName}_${suffix}`.replace(/[^a-zA-Z0-9_]+/g, "_");
 }
 
+function quoteIdentifier(identifier: string) {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
 async function createIndex(sql: ControlPlaneSql, tableName: string, suffix: string, statement: string): Promise<void> {
   const indexName = indexNameFor(tableName, suffix);
   await sql.unsafe(`create index if not exists ${indexName} on ${tableName} ${statement}`);
@@ -38,6 +43,34 @@ async function createUniqueIndex(sql: ControlPlaneSql, tableName: string, suffix
   await sql.unsafe(`create unique index if not exists ${indexName} on ${tableName} ${statement}`);
 }
 
+async function ensureJsonbColumn(
+  sql: ControlPlaneSql,
+  tableName: string,
+  columnName: string,
+  defaultExpression: string,
+): Promise<void> {
+  const rows = await sql`
+    select data_type
+    from information_schema.columns
+    where table_schema = current_schema()
+      and table_name = ${tableName}
+      and column_name = ${columnName}
+    limit 1
+  `;
+  const dataType = typeof rows[0]?.data_type === "string" ? rows[0].data_type : null;
+  if (!dataType) {
+    return;
+  }
+  if (dataType === "json") {
+    await sql.unsafe(
+      `alter table ${quoteIdentifier(tableName)} alter column ${quoteIdentifier(columnName)} type jsonb using ${quoteIdentifier(columnName)}::jsonb`,
+    );
+  }
+  await sql.unsafe(
+    `alter table ${quoteIdentifier(tableName)} alter column ${quoteIdentifier(columnName)} set default ${defaultExpression}`,
+  );
+}
+
 async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists users add column if not exists username text`;
   await sql`alter table if exists users add column if not exists legacy_local_user_id text`;
@@ -46,6 +79,8 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists users add column if not exists role text`;
   await sql`alter table if exists users add column if not exists site_ids jsonb default '[]'::jsonb`;
   await sql`alter table if exists users add column if not exists registry_consents jsonb default '{}'::jsonb`;
+  await ensureJsonbColumn(sql, "users", "site_ids", "'[]'::jsonb");
+  await ensureJsonbColumn(sql, "users", "registry_consents", "'{}'::jsonb");
   await sql`alter table if exists users add column if not exists email text`;
   await sql`alter table if exists users add column if not exists full_name text`;
   await sql`alter table if exists users add column if not exists global_role text`;
@@ -99,15 +134,19 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists projects add column if not exists description text default ''`;
   await sql`alter table if exists projects add column if not exists owner_user_id text`;
   await sql`alter table if exists projects add column if not exists site_ids jsonb default '[]'::jsonb`;
+  await ensureJsonbColumn(sql, "projects", "site_ids", "'[]'::jsonb");
   await sql`alter table if exists projects add column if not exists created_at timestamptz default now()`;
   await sql`alter table if exists projects add column if not exists updated_at timestamptz default now()`;
+  await sql.unsafe(`alter table if exists projects alter column owner_user_id set default '${SYSTEM_PROJECT_OWNER_ID}'`);
   await sql`
     update projects
     set
       description = coalesce(description, ''),
+      owner_user_id = coalesce(nullif(trim(owner_user_id), ''), ${SYSTEM_PROJECT_OWNER_ID}),
       site_ids = coalesce(site_ids, '[]'::jsonb),
       updated_at = now()
   `;
+  await sql.unsafe(`alter table if exists projects alter column owner_user_id set not null`);
 
   await sql`alter table if exists sites add column if not exists project_id text default 'project_default'`;
   await sql`alter table if exists sites add column if not exists local_storage_root text default ''`;
@@ -156,6 +195,7 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists institution_directory add column if not exists ophthalmology_available boolean not null default true`;
   await sql`alter table if exists institution_directory add column if not exists open_status text default 'active'`;
   await sql`alter table if exists institution_directory add column if not exists source_payload jsonb default '{}'::jsonb`;
+  await ensureJsonbColumn(sql, "institution_directory", "source_payload", "'{}'::jsonb");
   await sql`alter table if exists institution_directory add column if not exists synced_at timestamptz default now()`;
 
   await sql`alter table if exists access_requests add column if not exists email text`;
@@ -180,6 +220,8 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists model_versions add column if not exists sha256 text`;
   await sql`alter table if exists model_versions add column if not exists size_bytes bigint default 0`;
   await sql`alter table if exists model_versions add column if not exists metadata_json jsonb default '{}'::jsonb`;
+  await ensureJsonbColumn(sql, "model_versions", "payload_json", "'{}'::jsonb");
+  await ensureJsonbColumn(sql, "model_versions", "metadata_json", "'{}'::jsonb");
   await sql`alter table if exists model_versions add column if not exists updated_at timestamptz default now()`;
   await sql`
     update model_versions
@@ -199,6 +241,7 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists model_updates add column if not exists reviewer_notes text default ''`;
   await sql`alter table if exists model_updates add column if not exists reviewed_at timestamptz`;
   await sql`alter table if exists model_updates add column if not exists updated_at timestamptz default now()`;
+  await ensureJsonbColumn(sql, "model_updates", "payload_json", "'{}'::jsonb");
   await sql`
     update model_updates
     set
@@ -223,6 +266,8 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists aggregations add column if not exists summary_json jsonb default '{}'::jsonb`;
   await sql`alter table if exists aggregations add column if not exists finished_at timestamptz`;
   await sql`alter table if exists aggregations add column if not exists updated_at timestamptz default now()`;
+  await ensureJsonbColumn(sql, "aggregations", "payload_json", "'{}'::jsonb");
+  await ensureJsonbColumn(sql, "aggregations", "summary_json", "'{}'::jsonb");
   await sql`
     update aggregations
     set
@@ -246,6 +291,7 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists validation_runs add column if not exists "F1" double precision`;
   await sql`alter table if exists validation_runs add column if not exists created_at timestamptz default now()`;
   await sql`alter table if exists validation_runs add column if not exists updated_at timestamptz default now()`;
+  await ensureJsonbColumn(sql, "validation_runs", "summary_json", "'{}'::jsonb");
   await sql`
     update validation_runs
     set
@@ -267,6 +313,10 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
       n_images = coalesce(n_images, nullif(summary_json::jsonb ->> 'n_images', '')::integer),
       updated_at = now()
   `;
+
+  await sql`alter table if exists audit_events add column if not exists payload_json jsonb default '{}'::jsonb`;
+  await ensureJsonbColumn(sql, "audit_events", "payload_json", "'{}'::jsonb");
+  await sql`alter table if exists audit_events add column if not exists created_at timestamptz default now()`;
 }
 
 export async function ensureControlPlaneSchema(): Promise<void> {
@@ -307,7 +357,7 @@ export async function ensureControlPlaneSchema(): Promise<void> {
         project_id text primary key,
         name text not null,
         description text not null default '',
-        owner_user_id text,
+        owner_user_id text not null default 'system',
         site_ids jsonb not null default '[]'::jsonb,
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
@@ -502,7 +552,10 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createIndex(sql, "audit_events", "created_at", "(created_at desc)");
-  })();
+  })().catch((error) => {
+    schemaPromise = null;
+    throw error;
+  });
   return schemaPromise;
 }
 

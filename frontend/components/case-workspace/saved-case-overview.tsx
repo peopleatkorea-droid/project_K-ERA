@@ -11,8 +11,7 @@ import {
   representativeImageTagClass,
   savedCaseActionButtonClass,
 } from "../ui/workspace-patterns";
-import { MaskOverlayPreview } from "./preview-media";
-import type { LiveLesionPreviewMap, SavedImagePreview, TranslateOption } from "./shared";
+import type { SavedImagePreview, TranslateOption } from "./shared";
 
 const savedCaseMintLabelClass =
   "inline-flex min-h-9 items-center rounded-[10px] border border-brand/18 bg-brand-soft/80 px-4 text-[0.76rem] font-semibold tracking-[-0.01em] text-brand dark:border-brand/20 dark:bg-brand-soft/75 dark:text-brand";
@@ -37,7 +36,6 @@ type SavedCaseOverviewProps = {
   panelBusy: boolean;
   patientVisitGalleryBusy: boolean;
   patientVisitGallery: Record<string, SavedImagePreview[]>;
-  liveLesionPreviews: LiveLesionPreviewMap;
   editDraftBusy: boolean;
   pick: (locale: Locale, en: string, ko: string) => string;
   translateOption: TranslateOption;
@@ -81,7 +79,6 @@ export function SavedCaseOverview({
   panelBusy,
   patientVisitGalleryBusy,
   patientVisitGallery,
-  liveLesionPreviews,
   editDraftBusy,
   pick,
   translateOption,
@@ -218,31 +215,17 @@ export function SavedCaseOverview({
                   {visibleVisitImages.length > 0 ? (
                     <div className="grid gap-x-3 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
                       {visibleVisitImages.map((image) => {
-                        const livePreview = liveLesionPreviews[image.image_id];
-                        const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
-
                         return (
                           <div key={`timeline-${image.image_id}`} className="grid gap-2.5">
                             {image.preview_url ? (
                               <div className="relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55">
-                                {maskReady ? (
-                                  <MaskOverlayPreview
-                                    sourceUrl={image.preview_url}
-                                    maskUrl={livePreview?.lesion_mask_url}
-                                    alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
-                                    tint={[242, 164, 154]}
-                                    className="pointer-events-none !aspect-square block !h-full !w-full object-cover select-none"
-                                    fallbackClassName="pointer-events-none !aspect-square block !h-full !w-full object-cover select-none"
-                                  />
-                                ) : (
-                                  <img
-                                    src={image.preview_url}
-                                    alt={image.image_id}
-                                    className="block h-full w-full object-cover"
-                                    draggable={false}
-                                    onDragStart={(event) => event.preventDefault()}
-                                  />
-                                )}
+                                <img
+                                  src={image.preview_url}
+                                  alt={image.image_id}
+                                  className="block h-full w-full object-cover"
+                                  draggable={false}
+                                  onDragStart={(event) => event.preventDefault()}
+                                />
                               </div>
                             ) : (
                               <div className="grid aspect-square w-full place-items-center rounded-[18px] bg-surface-muted/55 text-sm text-muted">

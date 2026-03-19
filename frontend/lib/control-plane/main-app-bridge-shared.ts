@@ -3,11 +3,11 @@ import "server-only";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
-import { SignJWT } from "jose";
+import { jwtVerify, SignJWT } from "jose";
 import { NextRequest } from "next/server";
 import type { Row } from "postgres";
 
-import type { AuthResponse, AuthUser } from "../types";
+import type { AuthResponse, AuthState, AuthUser } from "../types";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import type { ControlPlaneSiteRole } from "./types";
 
@@ -20,6 +20,17 @@ const LOCAL_OWNER_PREFERENCE_HEADER = "x-kera-control-plane-owner";
 const LOCAL_OWNER_PREFERENCE_VALUE = "local";
 
 type LocalMainAppUser = AuthUser;
+
+export type MainAppTokenClaims = {
+  sub?: string | null;
+  username?: string | null;
+  full_name?: string | null;
+  public_alias?: string | null;
+  role?: string | null;
+  site_ids?: string[] | null;
+  approval_status?: AuthState | null;
+  registry_consents?: Record<string, { enrolled_at: string; version?: string }> | null;
+};
 
 export function rowValue<T>(row: Row, key: string): T {
   return row[key] as T;
@@ -172,6 +183,36 @@ export function readBearerToken(request: NextRequest): string {
     throw new Error("Missing bearer token.");
   }
   return token;
+}
+
+function localApiSecretKey(): Uint8Array {
+  const secret = loadLocalApiSecret();
+  if (!secret) {
+    throw new Error("KERA_API_SECRET is not available to verify local access tokens.");
+  }
+  return new TextEncoder().encode(secret);
+}
+
+export async function readMainAppTokenClaims(request: NextRequest): Promise<MainAppTokenClaims> {
+  const token = readBearerToken(request);
+  try {
+    const verified = await jwtVerify(token, localApiSecretKey());
+    return {
+      sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
+      username: typeof verified.payload.username === "string" ? verified.payload.username : null,
+      full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
+      public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
+      role: typeof verified.payload.role === "string" ? verified.payload.role : null,
+      site_ids: normalizeStringArray(verified.payload.site_ids),
+      approval_status:
+        typeof verified.payload.approval_status === "string"
+          ? (verified.payload.approval_status as AuthState)
+          : null,
+      registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
+    };
+  } catch {
+    throw new Error("Authentication required.");
+  }
 }
 
 let cachedLocalApiSecret: string | null | undefined;

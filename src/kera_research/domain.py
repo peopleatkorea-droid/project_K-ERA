@@ -28,7 +28,7 @@ VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 DENSENET_VARIANTS = ["densenet121"]
-TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s"]
+TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"]
 MODEL_ARCHITECTURES = list(dict.fromkeys(TRAINING_ARCHITECTURES))
 
 CULTURE_SPECIES = {

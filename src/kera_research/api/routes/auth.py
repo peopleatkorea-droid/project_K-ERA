@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from kera_research.api.control_plane_proxy import (
     call_remote_control_plane_method,
     call_remote_public_control_plane_method,
+    remote_control_plane_is_primary,
 )
+
+AUTO_APPROVAL_REVIEWER_ID = "system_auto_approve"
+AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request."
 
 
 def build_auth_router(support: Any) -> APIRouter:
@@ -32,6 +36,11 @@ def build_auth_router(support: Any) -> APIRouter:
         )
         if remote_sites is not None:
             return remote_sites
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane public sites are unavailable.",
+            )
         return cp.list_sites()
 
     @router.get("/api/public/institutions/search")
@@ -54,6 +63,11 @@ def build_auth_router(support: Any) -> APIRouter:
         )
         if remote_results is not None:
             return remote_results
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane institution search is unavailable.",
+            )
         return cp.list_institutions(
             search=q,
             sido_code=sido_code,
@@ -73,6 +87,11 @@ def build_auth_router(support: Any) -> APIRouter:
         )
         if remote_stats is not None:
             return remote_stats
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane public statistics are unavailable.",
+            )
         return cp.get_public_statistics()
 
     @router.post("/api/auth/login")
@@ -85,10 +104,10 @@ def build_auth_router(support: Any) -> APIRouter:
         user = cp.authenticate(payload.username.strip().lower(), payload.password)
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
-        if user.get("role") != "admin":
+        if user.get("role") not in {"admin", "site_admin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Local username/password login is restricted to platform admins. Use Google sign-in.",
+                detail="Local username/password login is restricted to admin and site admin accounts. Researchers use Google sign-in.",
             )
         return build_auth_response(cp, user)
 
@@ -123,6 +142,11 @@ def build_auth_router(support: Any) -> APIRouter:
             user = cp.ensure_google_user(identity["google_sub"], identity["email"], identity["name"])
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if user.get("role") in {"admin", "site_admin"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin and site admin accounts must use local password sign-in.",
+            )
         return build_auth_response(cp, user)
 
     @router.get("/api/auth/me")
@@ -144,6 +168,11 @@ def build_auth_router(support: Any) -> APIRouter:
         )
         if remote_requests is not None:
             return remote_requests
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane access requests are unavailable.",
+            )
         return cp.list_access_requests(user_id=user["user_id"])
 
     @router.post("/api/auth/request-access")
@@ -162,14 +191,18 @@ def build_auth_router(support: Any) -> APIRouter:
             payload_json={
                 "requested_site_id": payload.requested_site_id,
                 "requested_site_label": payload.requested_site_label,
-                "requested_role": payload.requested_role,
+                "requested_role": "researcher",
                 "message": payload.message,
             },
         )
         if remote_response is not None:
             return remote_response
-        if payload.requested_role not in {"site_admin", "researcher", "viewer"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid requested role.")
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane access request submission is unavailable.",
+            )
+        requested_role = "researcher"
         requested_site_id = payload.requested_site_id.strip()
         if not requested_site_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requested institution is required.")
@@ -186,11 +219,21 @@ def build_auth_router(support: Any) -> APIRouter:
         request_record = cp.submit_access_request(
             user_id=user["user_id"],
             requested_site_id=requested_site_id,
-            requested_role=payload.requested_role,
+            requested_role=requested_role,
             message=payload.message,
             requested_site_label=requested_site_label,
             requested_site_source=requested_site_source,
         )
+        resolved_site = requested_site or cp.get_site_by_source_institution_id(requested_site_id)
+        if resolved_site is not None:
+            request_record = cp.review_access_request(
+                request_id=request_record["request_id"],
+                reviewer_user_id=AUTO_APPROVAL_REVIEWER_ID,
+                decision="approved",
+                assigned_role=requested_role,
+                assigned_site_id=str(resolved_site.get("site_id") or requested_site_id),
+                reviewer_notes=AUTO_APPROVAL_REVIEWER_NOTE,
+            )
         refreshed_user = cp.get_user_by_id(user["user_id"]) or user
         return {
             "request": request_record,

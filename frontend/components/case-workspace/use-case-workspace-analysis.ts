@@ -47,7 +47,14 @@ type ToastState = {
   message: string;
 } | null;
 
-type ValidationArtifactKind = "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask";
+type ValidationArtifactKind =
+  | "gradcam"
+  | "gradcam_cornea"
+  | "gradcam_lesion"
+  | "roi_crop"
+  | "medsam_mask"
+  | "lesion_crop"
+  | "lesion_mask";
 type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
 
 type AnalysisCopy = {
@@ -1135,7 +1142,17 @@ export function useCaseWorkspaceAnalysis({
         model_version_ids: selectedCompareModelVersionIds,
       });
       const nextArtifacts: ValidationArtifactPreviews = {};
-      const artifactKinds: ValidationArtifactKind[] = ["roi_crop", "gradcam", "medsam_mask", "lesion_crop", "lesion_mask"];
+      const hasBranchAwareGradcam =
+        result.artifact_availability.gradcam_cornea || result.artifact_availability.gradcam_lesion;
+      const artifactKinds: ValidationArtifactKind[] = [
+        "roi_crop",
+        ...(hasBranchAwareGradcam ? [] : ["gradcam" as const]),
+        "gradcam_cornea",
+        "gradcam_lesion",
+        "medsam_mask",
+        "lesion_crop",
+        "lesion_mask",
+      ];
 
       for (const artifactKind of artifactKinds) {
         const isAvailable =
@@ -1143,6 +1160,10 @@ export function useCaseWorkspaceAnalysis({
             ? result.artifact_availability.roi_crop
             : artifactKind === "gradcam"
               ? result.artifact_availability.gradcam
+              : artifactKind === "gradcam_cornea"
+                ? result.artifact_availability.gradcam_cornea
+                : artifactKind === "gradcam_lesion"
+                  ? result.artifact_availability.gradcam_lesion
               : artifactKind === "medsam_mask"
                 ? result.artifact_availability.medsam_mask
                 : artifactKind === "lesion_crop"

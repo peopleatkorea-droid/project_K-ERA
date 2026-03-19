@@ -13,7 +13,7 @@ const sections = [
     enTitle: "1. Personal Data and Research Data We Process",
     koItems: [
       "K-ERA는 감염성 각막염 연구 워크플로를 제공하기 위해 다음 정보를 처리할 수 있습니다.",
-      "계정 및 인증 정보: Google 로그인 시 제공되는 이메일, 표시 이름, 프로필 이미지, Google 계정 식별자. 관리자 복구 경로를 사용하는 경우에는 로컬 계정 정보가 포함될 수 있습니다.",
+      "계정 및 인증 정보: Google 로그인 시 제공되는 이메일, 표시 이름, 프로필 이미지, Google 계정 식별자. admin 또는 site admin 비밀번호 로그인 경로를 사용하는 경우에는 로컬 계정 정보가 포함될 수 있습니다.",
       "기관 및 권한 정보: 소속 병원, 요청 역할, 접근 요청 메시지, 승인 상태, 검토 메모.",
       "케이스 및 임상 메타데이터: 환자 ID, chart alias, local case code, 방문일, 실제 방문일, 성별, 나이, 배양 결과, 원인균 분류, 콘택트렌즈 사용력, 위험인자, 도말검사 결과, 병력, 방문 상태 등 사용자가 입력한 연구 데이터.",
       "이미지 및 파생 산출물: 업로드된 세극등/형광염색/백색광 이미지, 대표 이미지 설정, 병변 박스, ROI crop, lesion crop, segmentation mask, Grad-CAM, validation artifact 등 서비스가 생성하거나 저장하는 연구 산출물.",
@@ -22,7 +22,7 @@ const sections = [
     ],
     enItems: [
       "K-ERA processes the following categories of data to operate its infectious keratitis research workflow.",
-      "Account and authentication data: email address, display name, profile image, and Google account identifier returned during Google Sign-In. Local account credentials may be processed for administrator recovery only.",
+      "Account and authentication data: email address, display name, profile image, and Google account identifier returned during Google Sign-In. Local account credentials may be processed for admin or site admin password sign-in.",
       "Institution and access data: hospital affiliation, requested role, access request message, approval state, and reviewer notes.",
       "Case and clinical metadata: patient ID, chart alias, local case code, visit dates, sex, age, culture confirmation, organism category, contact lens history, risk factors, smear result, history, visit status, and other research data entered by users.",
       "Images and derived artifacts: uploaded slit-lamp, fluorescein, and white-light images, representative image settings, lesion boxes, ROI crops, lesion crops, segmentation masks, Grad-CAM outputs, validation artifacts, and related derived files.",

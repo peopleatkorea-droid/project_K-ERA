@@ -196,7 +196,8 @@ export async function runInitialTraining(
   payload: {
     architecture?: string;
     execution_mode?: "auto" | "cpu" | "gpu";
-    crop_mode?: "automated" | "manual" | "both";
+    crop_mode?: "automated" | "manual" | "both" | "paired";
+    case_aggregation?: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil";
     epochs?: number;
     learning_rate?: number;
     batch_size?: number;
@@ -214,6 +215,7 @@ export async function runInitialTraining(
         architecture: "convnext_tiny",
         execution_mode: "auto",
         crop_mode: "automated",
+        case_aggregation: "mean",
         epochs: 30,
         learning_rate: 1e-4,
         batch_size: 16,
@@ -234,7 +236,8 @@ export async function runInitialTrainingBenchmark(
   payload: {
     architectures: string[];
     execution_mode?: "auto" | "cpu" | "gpu";
-    crop_mode?: "automated" | "manual" | "both";
+    crop_mode?: "automated" | "manual" | "both" | "paired";
+    case_aggregation?: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil";
     epochs?: number;
     learning_rate?: number;
     batch_size?: number;
@@ -251,6 +254,7 @@ export async function runInitialTrainingBenchmark(
       body: JSON.stringify({
         execution_mode: "auto",
         crop_mode: "automated",
+        case_aggregation: "mean",
         epochs: 30,
         learning_rate: 1e-4,
         batch_size: 16,
@@ -265,8 +269,36 @@ export async function runInitialTrainingBenchmark(
   );
 }
 
+export async function resumeInitialTrainingBenchmark(
+  siteId: string,
+  token: string,
+  payload: {
+    job_id: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+  },
+) {
+  return request<InitialTrainingBenchmarkJobResponse>(
+    `/api/sites/${siteId}/training/initial/benchmark/resume`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
 export async function fetchSiteJob(siteId: string, jobId: string, token: string) {
   return request<SiteJobRecord>(`/api/sites/${siteId}/jobs/${jobId}`, {}, token);
+}
+
+export async function cancelSiteJob(siteId: string, jobId: string, token: string) {
+  return request<SiteJobRecord>(
+    `/api/sites/${siteId}/jobs/${jobId}/cancel`,
+    {
+      method: "POST",
+    },
+    token,
+  );
 }
 
 export async function fetchCrossValidationReports(siteId: string, token: string) {
@@ -279,7 +311,8 @@ export async function runCrossValidation(
   payload: {
     architecture?: string;
     execution_mode?: "auto" | "cpu" | "gpu";
-    crop_mode?: "automated" | "manual";
+    crop_mode?: "automated" | "manual" | "paired";
+    case_aggregation?: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil";
     num_folds?: number;
     epochs?: number;
     learning_rate?: number;
@@ -296,6 +329,7 @@ export async function runCrossValidation(
         architecture: "convnext_tiny",
         execution_mode: "auto",
         crop_mode: "automated",
+        case_aggregation: "mean",
         num_folds: 5,
         epochs: 10,
         learning_rate: 1e-4,

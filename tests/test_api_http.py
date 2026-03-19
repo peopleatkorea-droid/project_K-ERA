@@ -38,7 +38,10 @@ def reload_app_module(
         "KERA_AUTH_DATABASE_URL",
         "KERA_DATA_PLANE_DATABASE_URL",
         "KERA_LOCAL_DATABASE_URL",
+        "KERA_STORAGE_DIR",
+        "KERA_CONTROL_PLANE_DIR",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
+        "KERA_MODEL_DIR",
         "KERA_CASE_REFERENCE_SALT",
         "KERA_PATIENT_REFERENCE_SALT",
         "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
@@ -204,6 +207,84 @@ class FakeWorkflow:
             },
             "differential": [],
             "workflow_recommendation": None,
+        }
+
+    def run_case_postmortem(
+        self,
+        site_store,
+        *,
+        patient_id,
+        visit_date,
+        model_version,
+        execution_device,
+        classification_context=None,
+        case_prediction=None,
+        top_k=3,
+        retrieval_backend="hybrid",
+    ):
+        is_correct = bool((classification_context or {}).get("is_correct"))
+        return {
+            "mode": "local_fallback",
+            "model": None,
+            "generated_at": "2026-03-11T00:00:01+00:00",
+            "outcome": "correct" if is_correct else "incorrect",
+            "summary": "The prediction aligned with the available evidence and was retained as a reference case."
+            if is_correct
+            else "The prediction missed the culture label and should be reviewed as a hard case.",
+            "likely_causes": [
+                "Classifier and retrieval signals were directionally aligned."
+                if is_correct
+                else "The classifier favored the wrong direction with insufficient margin."
+            ],
+            "supporting_evidence": ["Grad-CAM artifact is available for visual review."],
+            "contradictory_evidence": [],
+            "follow_up_actions": ["Review the saved artifacts before using the case for training."],
+            "learning_signal": "retain_as_reference" if is_correct else "hard_case_priority",
+            "uncertainty": "Limited",
+            "disclaimer": "Research support only.",
+            "structured_analysis": {
+                "outcome": "correct" if is_correct else "incorrect",
+                "prediction_confidence": 0.91 if is_correct else 0.82,
+                "learning_signal": "retain_as_reference" if is_correct else "hard_case_priority",
+                "root_cause_tags": [] if is_correct else ["natural_boundary"],
+                "action_tags": [] if is_correct else ["human_review", "hard_case_train"],
+                "scores": {
+                    "cam_overlap_score": 0.71 if is_correct else 0.32,
+                    "multi_model_disagreement": 0.18 if is_correct else 0.44,
+                    "image_quality_score": 78.0,
+                    "site_error_concentration": 0.12 if is_correct else 0.41,
+                    "similar_case_count": 3,
+                    "text_evidence_count": 2,
+                },
+                "peer_model_consensus": {
+                    "models_evaluated": 3,
+                    "models_requested": 3,
+                    "leading_label": "bacterial" if is_correct else "fungal",
+                    "agreement_rate": 0.82 if is_correct else 0.56,
+                    "disagreement_score": 0.18 if is_correct else 0.44,
+                    "vote_entropy": 0.21 if is_correct else 0.63,
+                    "peer_predictions": [],
+                },
+                "prediction_snapshot": {
+                    "predicted_label": "bacterial" if is_correct else "fungal",
+                    "prediction_probability": 0.91 if is_correct else 0.82,
+                    "predicted_confidence": 0.91 if is_correct else 0.82,
+                    "crop_mode": "automated",
+                    "representative_quality_score": 78.0,
+                    "classifier_embedding": {"embedding_id": "classifier:model_http:abc123"},
+                    "dinov2_embedding": {"embedding_id": "dinov2:model_http:def456"},
+                    "peer_model_consensus": {
+                        "models_evaluated": 3,
+                        "models_requested": 3,
+                        "leading_label": "bacterial" if is_correct else "fungal",
+                        "agreement_rate": 0.82 if is_correct else 0.56,
+                        "disagreement_score": 0.18 if is_correct else 0.44,
+                        "vote_entropy": 0.21 if is_correct else 0.63,
+                        "peer_predictions": [],
+                    },
+                },
+            },
+            "llm_error": None,
         }
 
     def contribute_case(self, site_store, patient_id, visit_date, model_version, execution_device, user_id, contribution_group_id=None):
@@ -951,10 +1032,14 @@ class ApiHttpTests(unittest.TestCase):
             SiteStore.heartbeat_job("missing-job", "test-worker")
             self.assertTrue(mocked_init.called)
 
-    def test_local_login_is_admin_only_http(self):
-        response = self.client.post("/api/auth/login", json={"username": "http_researcher", "password": "research123"})
-        self.assertEqual(response.status_code, 403, response.text)
-        self.assertIn("restricted to platform admins", response.text)
+    def test_local_login_is_restricted_to_admin_and_site_admin_http(self):
+        researcher_response = self.client.post("/api/auth/login", json={"username": "http_researcher", "password": "research123"})
+        self.assertEqual(researcher_response.status_code, 403, researcher_response.text)
+        self.assertIn("admin and site admin accounts", researcher_response.text)
+
+        site_admin_response = self.client.post("/api/auth/login", json={"username": "http_site_admin", "password": "siteadmin123"})
+        self.assertEqual(site_admin_response.status_code, 200, site_admin_response.text)
+        self.assertEqual(site_admin_response.json()["user"]["role"], "site_admin")
 
     def test_local_login_can_be_disabled_http(self):
         os.environ["KERA_LOCAL_LOGIN_ENABLED"] = "false"
@@ -1012,6 +1097,35 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(raw_user)
         self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
         self.assertIsNotNone(migrated_store.authenticate("legacy_plain_admin", "plain-admin-pass"))
+
+    def test_legacy_pbkdf2_password_rows_migrate_to_bcrypt_after_login_http(self):
+        salt = "legacy-salt"
+        iterations = 210000
+        digest = hashlib.pbkdf2_hmac("sha256", b"legacy-admin-pass", salt.encode("utf-8"), iterations)
+        encoded_password = f"pbkdf2_sha256${iterations}${salt}${base64.b64encode(digest).decode('ascii')}"
+        legacy_admin_id = self.app_module.make_id("user")
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.users.insert().values(
+                    user_id=legacy_admin_id,
+                    username="legacy_pbkdf2_admin",
+                    password=encoded_password,
+                    role="admin",
+                    full_name="Legacy Pbkdf2 Admin",
+                    site_ids=[],
+                    google_sub=None,
+                )
+            )
+
+        migrated_store = self.app_module.ControlPlaneStore()
+        raw_before_login = migrated_store._load_user_by_username("legacy_pbkdf2_admin")
+        self.assertIsNotNone(raw_before_login)
+        self.assertEqual(raw_before_login["password"], encoded_password)
+        self.assertIsNotNone(migrated_store.authenticate("legacy_pbkdf2_admin", "legacy-admin-pass"))
+
+        raw_after_login = migrated_store._load_user_by_username("legacy_pbkdf2_admin")
+        self.assertIsNotNone(raw_after_login)
+        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_after_login["password"])))
 
     def test_upsert_user_hashes_plaintext_password_http(self):
         created = self.cp.upsert_user(
@@ -1520,6 +1634,9 @@ class ApiHttpTests(unittest.TestCase):
             validation_payload = validation_response.json()
             self.assertEqual(validation_payload["summary"]["predicted_label"], "bacterial")
             self.assertTrue(validation_payload["artifact_availability"]["roi_crop"])
+            self.assertIsNotNone(validation_payload["post_mortem"])
+            self.assertEqual(validation_payload["post_mortem"]["outcome"], "correct")
+            self.assertEqual(validation_payload["post_mortem"]["learning_signal"], "retain_as_reference")
             saved_predictions = self.cp.load_case_predictions(validation_payload["summary"]["validation_id"])
             self.assertIn("case_reference_id", saved_predictions[0])
             self.assertNotIn("patient_id", saved_predictions[0])
@@ -2235,7 +2352,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["onedrive_item_id"], "item_delta")
         self.assertEqual(payload["onedrive_drive_id"], "drive_delta")
 
-    def test_access_request_review_http(self):
+    def test_access_request_auto_approval_http(self):
         requester_token = self._token_for_username("http_viewer")
         access_response = self.client.post(
             "/api/auth/request-access",
@@ -2243,20 +2360,30 @@ class ApiHttpTests(unittest.TestCase):
             json={"requested_site_id": self.site_id, "requested_role": "researcher", "message": "Need site access"},
         )
         self.assertEqual(access_response.status_code, 200, access_response.text)
+        access_payload = access_response.json()
+        self.assertEqual(access_payload["request"]["status"], "approved")
+        self.assertEqual(access_payload["auth_state"], "approved")
+        self.assertEqual(access_payload["user"]["approval_status"], "approved")
+        self.assertEqual(access_payload["user"]["role"], "researcher")
+        self.assertIn(self.site_id, access_payload["user"]["site_ids"] or [])
 
         admin_token = self._login("admin", "admin123")
         queue_response = self.client.get("/api/admin/access-requests?status_filter=pending", headers={"Authorization": f"Bearer {admin_token}"})
         self.assertEqual(queue_response.status_code, 200, queue_response.text)
-        self.assertEqual(len(queue_response.json()), 1)
-        request_id = queue_response.json()[0]["request_id"]
+        self.assertEqual(queue_response.json(), [])
 
-        review_response = self.client.post(
-            f"/api/admin/access-requests/{request_id}/review",
+        approved_response = self.client.get(
+            "/api/admin/access-requests?status_filter=approved",
             headers={"Authorization": f"Bearer {admin_token}"},
-            json={"decision": "approved", "assigned_role": "researcher", "assigned_site_id": self.site_id, "reviewer_notes": "approved"},
         )
-        self.assertEqual(review_response.status_code, 200, review_response.text)
+        self.assertEqual(approved_response.status_code, 200, approved_response.text)
+        approved_request = next(item for item in approved_response.json() if item["request_id"] == access_payload["request"]["request_id"])
+        self.assertEqual(approved_request["requested_site_id"], self.site_id)
+        self.assertEqual(approved_request["resolved_site_id"], self.site_id)
+        self.assertEqual(approved_request["reviewer_notes"], "Automatically approved researcher access request.")
+
         refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
+        self.assertEqual(refreshed_user["role"], "researcher")
         self.assertIn(self.site_id, refreshed_user["site_ids"] or [])
 
     def test_public_institution_search_and_access_request_http(self):
@@ -2291,7 +2418,7 @@ class ApiHttpTests(unittest.TestCase):
             json={
                 "requested_site_id": "HIRA_EYE_001",
                 "requested_site_label": "Kim Eye Clinic",
-                "requested_role": "researcher",
+                "requested_role": "site_admin",
                 "message": "Need ophthalmology directory onboarding",
             },
         )
@@ -2299,6 +2426,7 @@ class ApiHttpTests(unittest.TestCase):
         request_payload = access_response.json()["request"]
         self.assertEqual(request_payload["requested_site_id"], "HIRA_EYE_001")
         self.assertEqual(request_payload["requested_site_label"], "Kim Eye Clinic")
+        self.assertEqual(request_payload["requested_role"], "researcher")
         self.assertEqual(request_payload["requested_site_source"], "institution_directory")
 
     def test_public_institution_search_matches_korean_and_english_region_aliases_http(self):
@@ -2405,17 +2533,16 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(queue_response.status_code, 200, queue_response.text)
         matching_request = next(item for item in queue_response.json() if item["requested_site_id"] == "HIRA_EYE_002")
         self.assertEqual(matching_request["requested_site_source"], "institution_directory")
+        self.assertEqual(matching_request["requested_role"], "researcher")
         self.assertIsNone(matching_request["resolved_site_id"])
 
-        project_id = self.cp.list_projects()[0]["project_id"]
         review_response = self.client.post(
             f"/api/admin/access-requests/{matching_request['request_id']}/review",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "decision": "approved",
-                "assigned_role": "site_admin",
+                "assigned_role": "researcher",
                 "create_site_if_missing": True,
-                "project_id": project_id,
                 "site_code": "HIRA_PARK_EYE",
                 "display_name": "Park Eye Hospital",
                 "hospital_name": "Park Eye Hospital",
@@ -2427,6 +2554,7 @@ class ApiHttpTests(unittest.TestCase):
         review_payload = review_response.json()
         self.assertEqual(review_payload["request"]["status"], "approved")
         self.assertEqual(review_payload["request"]["requested_site_id"], "HIRA_PARK_EYE")
+        self.assertEqual(review_payload["request"]["requested_role"], "researcher")
         self.assertEqual(review_payload["request"]["resolved_site_id"], "HIRA_PARK_EYE")
         self.assertIsNotNone(review_payload["created_site"])
         self.assertEqual(review_payload["created_site"]["site_id"], "HIRA_PARK_EYE")
@@ -2434,6 +2562,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertFalse(review_payload["created_site"]["research_registry_enabled"])
 
         refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
+        self.assertEqual(refreshed_user["role"], "researcher")
         self.assertIn("HIRA_PARK_EYE", refreshed_user["site_ids"] or [])
         created_site = self.cp.get_site("HIRA_PARK_EYE")
         self.assertIsNotNone(created_site)
@@ -2514,14 +2643,16 @@ class ApiHttpTests(unittest.TestCase):
 
         projects_response = self.client.get("/api/admin/projects", headers={"Authorization": f"Bearer {admin_token}"})
         self.assertEqual(projects_response.status_code, 200, projects_response.text)
+        self.assertEqual(len(projects_response.json()), 1)
+        project_id = projects_response.json()[0]["project_id"]
 
         create_project_response = self.client.post(
           "/api/admin/projects",
           headers={"Authorization": f"Bearer {admin_token}"},
           json={"name": "Ops Project", "description": "ops"},
         )
-        self.assertEqual(create_project_response.status_code, 200, create_project_response.text)
-        project_id = create_project_response.json()["project_id"]
+        self.assertEqual(create_project_response.status_code, 400, create_project_response.text)
+        self.assertIn("Projects are fixed to the default workspace.", create_project_response.text)
 
         create_site_response = self.client.post(
             "/api/admin/sites",
@@ -2641,6 +2772,14 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {site_admin_token}"},
         )
         self.assertEqual(settings_response.status_code, 200, settings_response.text)
+        settings_payload = settings_response.json()
+        self.assertEqual(
+            settings_payload["default_storage_root"],
+            str((ROOT_DIR.parent / "KERA_DATA" / "sites").resolve()),
+        )
+        self.assertEqual(settings_payload["effective_default_storage_root"], settings_payload["default_storage_root"])
+        self.assertEqual(settings_payload["storage_root_source"], "built_in_default")
+        self.assertFalse(settings_payload["uses_custom_root"])
 
         update_settings_response = self.client.patch(
             "/api/admin/storage-settings",
@@ -2648,7 +2787,10 @@ class ApiHttpTests(unittest.TestCase):
             json={"storage_root": str(temp_storage_root)},
         )
         self.assertEqual(update_settings_response.status_code, 200, update_settings_response.text)
-        self.assertEqual(update_settings_response.json()["storage_root"], str(temp_storage_root.resolve()))
+        update_settings_payload = update_settings_response.json()
+        self.assertEqual(update_settings_payload["storage_root"], str(temp_storage_root.resolve()))
+        self.assertEqual(update_settings_payload["storage_root_source"], "custom")
+        self.assertTrue(update_settings_payload["uses_custom_root"])
 
         update_site_root_response = self.client.patch(
             f"/api/admin/sites/{self.site_id}/storage-root",

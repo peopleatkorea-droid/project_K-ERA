@@ -141,6 +141,8 @@ type Props = {
   representativePreviewUrl: string | null | undefined;
   roiCropUrl: string | null | undefined;
   gradcamUrl: string | null | undefined;
+  gradcamCorneaUrl: string | null | undefined;
+  gradcamLesionUrl: string | null | undefined;
   medsamMaskUrl: string | null | undefined;
   lesionCropUrl: string | null | undefined;
   lesionMaskUrl: string | null | undefined;
@@ -151,6 +153,8 @@ export function ValidationArtifactStack({
   representativePreviewUrl,
   roiCropUrl,
   gradcamUrl,
+  gradcamCorneaUrl,
+  gradcamLesionUrl,
   medsamMaskUrl,
   lesionCropUrl,
   lesionMaskUrl,
@@ -166,12 +170,30 @@ export function ValidationArtifactStack({
           </div>
         </div>
       ) : null}
-      {gradcamUrl ? (
+      {gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl ? (
         <div className={panelImageCardClass}>
           <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong>
             <span>{pick(locale, "Model evidence overlay", "모델 근거 오버레이")}</span>
+          </div>
+        </div>
+      ) : null}
+      {gradcamCorneaUrl ? (
+        <div className={panelImageCardClass}>
+          <img src={gradcamCorneaUrl} alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")} className={panelImagePreviewClass} />
+          <div className={panelImageCopyClass}>
+            <strong>{pick(locale, "Cornea Grad-CAM", "각막 Grad-CAM")}</strong>
+            <span>{pick(locale, "Context branch attention", "문맥 branch attention")}</span>
+          </div>
+        </div>
+      ) : null}
+      {gradcamLesionUrl ? (
+        <div className={panelImageCardClass}>
+          <img src={gradcamLesionUrl} alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")} className={panelImagePreviewClass} />
+          <div className={panelImageCopyClass}>
+            <strong>{pick(locale, "Lesion Grad-CAM", "병변 Grad-CAM")}</strong>
+            <span>{pick(locale, "Lesion-detail branch attention", "병변 세부 branch attention")}</span>
           </div>
         </div>
       ) : null}
@@ -212,7 +234,7 @@ export function ValidationArtifactStack({
           </div>
         </div>
       ) : null}
-      {!roiCropUrl && !gradcamUrl && !medsamMaskUrl && !lesionCropUrl && !lesionMaskUrl ? (
+      {!roiCropUrl && !gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl && !medsamMaskUrl && !lesionCropUrl && !lesionMaskUrl ? (
         <div className={panelImageFallbackClass}>
           {pick(locale, "No validation artifacts were produced for this run.", "이 실행에서는 검증 아티팩트가 생성되지 않았습니다.")}
         </div>

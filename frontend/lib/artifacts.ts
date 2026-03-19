@@ -60,7 +60,7 @@ export async function fetchValidationArtifactBlob(
   validationId: string,
   patientId: string,
   visitDate: string,
-  artifactKind: "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
+  artifactKind: "gradcam" | "gradcam_cornea" | "gradcam_lesion" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
   token: string,
 ) {
   const params = new URLSearchParams({

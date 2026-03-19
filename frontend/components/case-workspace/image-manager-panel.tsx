@@ -325,7 +325,7 @@ export function ImageManagerPanel({
 
       <div className={canvasSidebarItemClass}>{imageSummary}</div>
 
-      <div className="grid gap-4">
+      <div className="grid gap-4 xl:grid-cols-2">
         <ImageBucket
           locale={locale}
           title={pick(locale, "White (Slit) lane", "White (Slit) 레인")}

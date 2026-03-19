@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from fastapi import HTTPException, status
+
 T = TypeVar("T")
 
 
@@ -24,6 +26,25 @@ def remote_control_plane_client(cp: Any, *, control_plane_owner: str | None) -> 
     if not cp.remote_control_plane_enabled():
         return None
     return cp.remote_control_plane
+
+
+def remote_control_plane_is_primary(cp: Any, *, control_plane_owner: str | None) -> bool:
+    return remote_control_plane_client(cp, control_plane_owner=control_plane_owner) is not None
+
+
+def require_remote_control_plane_result(
+    result: T | None,
+    *,
+    cp: Any,
+    control_plane_owner: str | None,
+    detail: str,
+    status_code: int = status.HTTP_503_SERVICE_UNAVAILABLE,
+) -> T:
+    if result is not None:
+        return result
+    if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+        raise HTTPException(status_code=status_code, detail=detail)
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail)
 
 
 def call_remote_public_control_plane(

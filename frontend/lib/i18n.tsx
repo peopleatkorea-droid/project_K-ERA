@@ -15,7 +15,7 @@ const localeTags: Record<Locale, string> = {
 
 const koreanOverrides: Record<string, string> = {
   "Access requests": "접근 요청",
-  "Administrator recovery only": "관리자 복구 전용",
+  "Administrator recovery only": "운영 계정 로그인 전용",
   "Approval Required": "승인 필요",
   "Approved accounts receive hospital access and enter the clinician console automatically.":
     "승인된 계정은 병원 접근 권한을 받고 임상 워크스페이스로 바로 들어갑니다.",
@@ -38,7 +38,7 @@ const koreanOverrides: Record<string, string> = {
   "Dashboard": "대시보드",
   "Dark mode": "다크 모드",
   "draft images": "임시 이미지",
-  "Enter admin recovery": "관리자 복구로 입장",
+  "Enter admin recovery": "운영 계정으로 입장",
   "Enter the case workspace": "케이스 워크스페이스 입장",
   "Export manifest": "매니페스트 내보내기",
   "Failed to connect.": "연결에 실패했습니다.",
@@ -266,9 +266,12 @@ const apiErrorExact = {
     "Cross-validation fold construction failed. Not enough patients in a fold.": "교차 검증 fold 생성에 실패했습니다. 한 fold에 환자 수가 충분하지 않습니다.",
     "test_size must leave at least one patient on each side of the split.": "test_size 설정 후 분할 양쪽에 최소 한 명 이상의 환자가 남아야 합니다.",
     "Only culture-proven keratitis cases are allowed.": "배양으로 확인된 각막염 케이스만 허용됩니다.",
-    "Cross-validation currently supports automated or manual crop mode, not both.": "교차 검증은 현재 automated 또는 manual crop mode만 지원하며 both는 지원하지 않습니다.",
+    "Cross-validation currently supports automated, manual, or paired crop mode, not both.": "교차 검증은 현재 automated, manual, paired crop mode만 지원하며 both는 지원하지 않습니다.",
     "Ensemble models are not supported for local fine-tuning contributions.": "앙상블 모델은 현재 로컬 파인튜닝 기여를 지원하지 않습니다.",
     "Manual lesion crop requires at least one saved lesion box.": "Manual lesion crop에는 저장된 병변 박스가 최소 한 개 이상 필요합니다.",
+    "This crop mode requires at least one saved lesion box.": "이 crop mode에는 저장된 병변 박스가 최소 한 개 이상 필요합니다.",
+    "Dual-input concat fusion requires paired crop mode.": "Dual-input concat fusion은 paired crop mode가 필요합니다.",
+    "Paired crop mode is currently reserved for dual-input concat fusion.": "Paired crop mode는 현재 dual-input concat fusion 전용입니다.",
     "This case requires at least one saved lesion box.": "이 케이스에는 저장된 병변 박스가 최소 한 개 이상 필요합니다.",
     "Visit must exist before image upload.": "이미지를 업로드하기 전에 방문 기록이 먼저 있어야 합니다.",
     "There is already a pending approval request for this user.": "이 사용자에 대해서는 이미 대기 중인 승인 요청이 있습니다.",
@@ -343,9 +346,25 @@ const apiErrorPatterns: Record<Locale, ApiErrorPattern[]> = {
         pattern: /^OneDrive upload request failed with HTTP (\d+): (.+)$/,
         render: (code: string, detail: string) => `OneDrive 업로드 요청에 실패했습니다 (${code}): ${detail}`,
       },
-      { pattern: /^Unknown user_id: (.+)$/, render: (userId: string) => `알 수 없는 사용자 ID: ${userId}` },
+    { pattern: /^Unknown user_id: (.+)$/, render: (userId: string) => `알 수 없는 사용자 ID: ${userId}` },
     { pattern: /^Unknown request_id: (.+)$/, render: (requestId: string) => `알 수 없는 요청 ID: ${requestId}` },
     { pattern: /^Unknown project_id: (.+)$/, render: (projectId: string) => `알 수 없는 프로젝트 ID: ${projectId}` },
+    {
+      pattern: /^Local username\/password login is restricted to admin and site admin accounts\. Researchers use Google sign-in\.$/,
+      render: () => "로컬 아이디/비밀번호 로그인은 admin 및 site admin 계정에만 허용됩니다. 연구자는 Google 로그인을 사용하세요.",
+    },
+    {
+      pattern: /^Admin and site admin accounts must use local password sign-in\.$/,
+      render: () => "admin 및 site admin 계정은 로컬 비밀번호 로그인만 사용할 수 있습니다.",
+    },
+    {
+      pattern: /^Access requests can only be approved as researcher accounts\.$/,
+      render: () => "접근 요청은 researcher 계정으로만 승인할 수 있습니다.",
+    },
+    {
+      pattern: /^Projects are fixed to the default workspace\.$/,
+      render: () => "프로젝트는 기본 워크스페이스 하나로 고정됩니다.",
+    },
     { pattern: /^Patient (.+) already exists\.$/, render: (patientId: string) => `환자 ${patientId}는 이미 존재합니다.` },
     { pattern: /^Patient (.+) does not exist\.$/, render: (patientId: string) => `환자 ${patientId}가 존재하지 않습니다.` },
     { pattern: /^Visit (.+) \/ (.+) already exists\.$/, render: (patientId: string, visitDate: string) => `방문 ${patientId} / ${visitDate}는 이미 존재합니다.` },

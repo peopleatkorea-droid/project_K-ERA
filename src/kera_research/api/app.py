@@ -1051,6 +1051,7 @@ class InitialTrainingRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
     crop_mode: str = "automated"
+    case_aggregation: str = "mean"
     epochs: int = 30
     learning_rate: float = 1e-4
     batch_size: int = 16
@@ -1061,9 +1062,10 @@ class InitialTrainingRequest(BaseModel):
 
 
 class InitialTrainingBenchmarkRequest(BaseModel):
-    architectures: list[str] = Field(default_factory=lambda: ["vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"])
+    architectures: list[str] = Field(default_factory=lambda: ["vit", "swin", "dinov2", "dinov2_mil", "dual_input_concat", "convnext_tiny", "densenet121", "efficientnet_v2_s"])
     execution_mode: str = "auto"
     crop_mode: str = "automated"
+    case_aggregation: str = "mean"
     epochs: int = 30
     learning_rate: float = 1e-4
     batch_size: int = 16
@@ -1073,10 +1075,16 @@ class InitialTrainingBenchmarkRequest(BaseModel):
     regenerate_split: bool = False
 
 
+class ResumeBenchmarkRequest(BaseModel):
+    job_id: str
+    execution_mode: str | None = None
+
+
 class CrossValidationRunRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"
     crop_mode: str = "automated"
+    case_aggregation: str = "mean"
     num_folds: int = 5
     epochs: int = 10
     learning_rate: float = 1e-4
@@ -1579,6 +1587,7 @@ def create_app() -> FastAPI:
         SiteValidationRunRequest=SiteValidationRunRequest,
         InitialTrainingRequest=InitialTrainingRequest,
         InitialTrainingBenchmarkRequest=InitialTrainingBenchmarkRequest,
+        ResumeBenchmarkRequest=ResumeBenchmarkRequest,
         CrossValidationRunRequest=CrossValidationRunRequest,
         CaseValidationCompareRequest=CaseValidationCompareRequest,
         EmbeddingBackfillRequest=EmbeddingBackfillRequest,

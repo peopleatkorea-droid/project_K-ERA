@@ -17,6 +17,7 @@ type Props = {
   locale: Locale;
   notAvailableLabel: string;
   pendingRequests: AccessRequestRecord[];
+  autoApprovedRequests: AccessRequestRecord[];
   reviewDrafts: Record<string, ReviewDraft>;
   canManagePlatform: boolean;
   institutionSyncBusy: boolean;
@@ -41,6 +42,7 @@ export function RequestsSection({
   locale,
   notAvailableLabel,
   pendingRequests,
+  autoApprovedRequests,
   reviewDrafts,
   canManagePlatform,
   institutionSyncBusy,
@@ -60,12 +62,13 @@ export function RequestsSection({
         titleAs="h3"
         description={pick(
           locale,
-          "Review institution access requests, assign the final role and site, and leave a short reviewer note before approval.",
-          "기관 접근 요청을 검토하고 최종 역할과 site를 배정한 뒤 승인 메모를 남길 수 있습니다.",
+          "Researcher requests are auto-approved when the selected hospital already exists. Only unmapped institution requests stay in the manual review queue.",
+          "선택한 기관이 이미 K-ERA site에 연결되어 있으면 researcher 요청은 자동 승인됩니다. 아직 매핑되지 않은 기관 요청만 수동 검토 대기열에 남습니다.",
         )}
         aside={
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className={docSiteBadgeClass}>{`${pendingRequests.length} ${pick(locale, "pending", "대기")}`}</span>
+            <span className={docSiteBadgeClass}>{`${autoApprovedRequests.length} ${pick(locale, "auto-approved", "자동 승인")}`}</span>
             {canManagePlatform ? (
               <Button
                 type="button"
@@ -113,11 +116,46 @@ export function RequestsSection({
         </div>
       </Card>
 
-      {pendingRequests.length === 0 ? (
+      {autoApprovedRequests.length > 0 ? (
+        <div className="grid gap-4">
+          <SectionHeader
+            title={pick(locale, "Recent auto-approved researcher access", "최근 자동 승인 researcher 접근")}
+            titleAs="h4"
+            description={pick(
+              locale,
+              "These requests were approved immediately because the requested hospital already mapped to an active K-ERA site.",
+              "이 요청들은 선택한 기관이 이미 활성 K-ERA site에 연결되어 있어서 즉시 승인되었습니다.",
+            )}
+          />
+          {autoApprovedRequests.map((request) => (
+            <Card key={request.request_id} as="article" variant="nested" className="grid gap-4 p-5">
+              <SectionHeader
+                title={request.email}
+                titleAs="h4"
+                description={request.message || pick(locale, "No requester note was provided.", "요청 메모가 없습니다.")}
+                aside={
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <span className={docSiteBadgeClass}>{translateStatus(locale, request.status)}</span>
+                    <span className={docSiteBadgeClass}>{formatDateTime(request.reviewed_at, notAvailableLabel)}</span>
+                  </div>
+                }
+              />
+              <MetricGrid columns={4}>
+                <MetricItem value={getRequestedSiteLabel(request)} label={pick(locale, "Requested hospital", "요청 기관")} />
+                <MetricItem value={request.resolved_site_label || request.resolved_site_id || notAvailableLabel} label={pick(locale, "Approved site", "승인 site")} />
+                <MetricItem value={translateRole(locale, request.requested_role)} label={pick(locale, "Assigned role", "배정 역할")} />
+                <MetricItem value={formatDateTime(request.created_at, notAvailableLabel)} label={pick(locale, "Requested at", "요청 시각")} />
+              </MetricGrid>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {pendingRequests.length === 0 && autoApprovedRequests.length === 0 ? (
         <div className={emptySurfaceClass}>
           {pick(locale, "No pending access requests are assigned to this account.", "이 계정에 배정된 대기 중 접근 요청이 없습니다.")}
         </div>
-      ) : (
+      ) : pendingRequests.length > 0 ? (
         <div className="grid gap-4">
           {pendingRequests.map((request) => {
             const requestedSiteAvailable = sites.some((site) => site.site_id === request.requested_site_id);
@@ -126,7 +164,7 @@ export function RequestsSection({
             const needsSiteCreation =
               request.requested_site_source === "institution_directory" && !request.resolved_site_id;
             const draft = reviewDrafts[request.request_id] ?? {
-              assigned_role: request.requested_role,
+              assigned_role: "researcher",
               assigned_site_id:
                 request.resolved_site_id ?? (requestedSiteAvailable ? request.requested_site_id : ""),
               create_site_if_missing: needsSiteCreation,
@@ -142,7 +180,7 @@ export function RequestsSection({
               request.resolved_site_id ||
               (needsSiteCreation ? pick(locale, "Not mapped yet", "아직 매핑되지 않음") : notAvailableLabel);
             const approvalDisabled = draft.create_site_if_missing
-              ? !canManagePlatform || !draft.project_id || !draft.site_code.trim() || !draft.hospital_name.trim()
+              ? !canManagePlatform || !draft.site_code.trim() || !draft.hospital_name.trim()
               : !draft.assigned_site_id.trim();
 
             return (
@@ -163,24 +201,21 @@ export function RequestsSection({
                   <MetricItem value={requestedSiteLabel} label={pick(locale, "Requested hospital", "요청 기관")} />
                   <MetricItem value={translateRole(locale, request.requested_role)} label={pick(locale, "Requested role", "요청 역할")} />
                   <MetricItem value={mappedSiteLabel} label={pick(locale, "Mapped hospital", "매핑된 site")} />
-                  <MetricItem value={translateRole(locale, draft.assigned_role)} label={pick(locale, "Assigned role", "배정 역할")} />
+                  <MetricItem value={translateRole(locale, "researcher")} label={pick(locale, "Assigned role", "배정 역할")} />
                 </MetricGrid>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <Field label={pick(locale, "Assigned role", "배정 역할")}>
-                    <select
-                      value={draft.assigned_role}
-                      onChange={(event) =>
-                        setReviewDrafts((current) => ({
-                          ...current,
-                          [request.request_id]: { ...draft, assigned_role: event.target.value },
-                        }))
-                      }
-                    >
-                      {canManagePlatform ? <option value="site_admin">{translateRole(locale, "site_admin")}</option> : null}
-                      <option value="researcher">{translateRole(locale, "researcher")}</option>
-                      <option value="viewer">{translateRole(locale, "viewer")}</option>
-                    </select>
+                    <div className="rounded-[var(--radius-md)] border border-border bg-white/55 px-3.5 py-3 text-sm font-semibold text-ink dark:bg-white/4">
+                      {translateRole(locale, "researcher")}
+                    </div>
+                    <div className="mt-2 text-sm leading-6 text-muted">
+                      {pick(
+                        locale,
+                        "Institution access requests always resolve to researcher access. Admin and site admin accounts are created separately with passwords.",
+                        "기관 접근 요청은 researcher 권한으로만 승인됩니다. admin 및 site admin 계정은 비밀번호 기반으로 별도 생성합니다.",
+                      )}
+                    </div>
                   </Field>
                   <Field
                     label={pick(locale, "Assigned hospital", "배정 site")}
@@ -268,24 +303,6 @@ export function RequestsSection({
                     {draft.create_site_if_missing ? (
                       <>
                         <div className="grid gap-4 md:grid-cols-2">
-                          <Field label={pick(locale, "Project", "프로젝트")}>
-                            <select
-                              value={draft.project_id}
-                              onChange={(event) =>
-                                setReviewDrafts((current) => ({
-                                  ...current,
-                                  [request.request_id]: { ...draft, project_id: event.target.value },
-                                }))
-                              }
-                            >
-                              <option value="">{pick(locale, "Select project", "프로젝트 선택")}</option>
-                              {projects.map((project) => (
-                                <option key={project.project_id} value={project.project_id}>
-                                  {project.name}
-                                </option>
-                              ))}
-                            </select>
-                          </Field>
                           <Field
                             label={pick(locale, "HIRA site ID", "HIRA 코드")}
                             hint={pick(
@@ -396,7 +413,7 @@ export function RequestsSection({
             );
           })}
         </div>
-      )}
+      ) : null}
     </Card>
   );
 }

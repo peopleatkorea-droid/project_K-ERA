@@ -1,6 +1,6 @@
 import React from "react";
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/i18n";
@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchImagePreviewBlob: vi.fn(),
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
+  enrollResearchRegistry: vi.fn(),
   runCaseValidation: vi.fn(),
   runCaseValidationCompare: vi.fn(),
   runCaseContribution: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock("../lib/api", async () => {
     fetchImagePreviewBlob: apiMocks.fetchImagePreviewBlob,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
+    enrollResearchRegistry: apiMocks.enrollResearchRegistry,
     runCaseValidation: apiMocks.runCaseValidation,
     runCaseValidationCompare: apiMocks.runCaseValidationCompare,
     runCaseContribution: apiMocks.runCaseContribution,
@@ -86,32 +88,67 @@ describe("CaseWorkspace integration", () => {
       is_representative: true,
     });
     apiMocks.updateImageLesionBox.mockResolvedValue({});
-    apiMocks.fetchCases
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          case_id: "case_1",
-          patient_id: "KERA-2026-001",
-          chart_alias: "",
-          culture_category: "bacterial",
-          culture_species: "Staphylococcus aureus",
-          additional_organisms: [],
-          visit_date: "Initial",
-          actual_visit_date: null,
-          created_by_user_id: "user_researcher",
-          created_at: "2026-03-15T00:00:00Z",
-          image_count: 1,
-          representative_image_id: "image_1",
-          age: 0,
-          sex: "female",
-          visit_status: "active",
-        },
-      ]);
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+      },
+    ]);
     apiMocks.fetchPatientListPage.mockResolvedValue({
-      items: [],
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-15T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_1",
+            representative_view: "white",
+            age: 0,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: null,
+            },
+          ],
+        },
+      ],
       page: 1,
       page_size: 25,
-      total_count: 0,
+      total_count: 1,
       total_pages: 1,
     });
     apiMocks.fetchSiteActivity.mockResolvedValue({
@@ -161,6 +198,13 @@ describe("CaseWorkspace integration", () => {
       contributions: [],
     });
     apiMocks.fetchStoredCaseLesionPreview.mockResolvedValue([]);
+    apiMocks.enrollResearchRegistry.mockResolvedValue({
+      site_enabled: true,
+      user_enrolled: true,
+      user_enrolled_at: "2026-03-15T00:00:00Z",
+      included_cases: 0,
+      excluded_cases: 0,
+    });
     apiMocks.runCaseValidation.mockResolvedValue({
       summary: {
         validation_id: "validation_1",
@@ -183,10 +227,70 @@ describe("CaseWorkspace integration", () => {
       execution_device: "cpu",
       artifact_availability: {
         gradcam: false,
+        gradcam_cornea: false,
+        gradcam_lesion: false,
         roi_crop: false,
         medsam_mask: false,
         lesion_crop: false,
         lesion_mask: false,
+      },
+      post_mortem: {
+        mode: "local_fallback",
+        model: null,
+        generated_at: "2026-03-15T00:01:00Z",
+        outcome: "incorrect",
+        summary: "The model favored fungal, but the available evidence suggests the case should be reviewed as a boundary miss.",
+        likely_causes: ["The classifier margin was limited and the case looks visually ambiguous."],
+        supporting_evidence: ["The saved validation record preserved the predicted fungal signal."],
+        contradictory_evidence: ["Culture confirmed a bacterial label."],
+        follow_up_actions: ["Review the saved crop artifacts before adding this case to training."],
+        learning_signal: "boundary_case_review",
+        uncertainty: "Moderate",
+        disclaimer: "Research support only.",
+        structured_analysis: {
+          outcome: "incorrect",
+          prediction_confidence: 0.82,
+          learning_signal: "boundary_case_review",
+          root_cause_tags: ["natural_boundary", "data_sparse"],
+          action_tags: ["human_review", "collect_more_cases"],
+          scores: {
+            cam_overlap_score: 0.31,
+            dino_true_label_purity: 0.33,
+            dino_mean_distance: 0.42,
+            multi_model_disagreement: 0.44,
+            image_quality_score: 71,
+            site_error_concentration: 0.38,
+            similar_case_count: 3,
+            text_evidence_count: 2,
+          },
+          peer_model_consensus: {
+            models_evaluated: 5,
+            models_requested: 5,
+            leading_label: "fungal",
+            agreement_rate: 0.56,
+            disagreement_score: 0.44,
+            vote_entropy: 0.62,
+            peer_predictions: [],
+          },
+          prediction_snapshot: {
+            prediction_probability: 0.82,
+            predicted_confidence: 0.82,
+            crop_mode: "automated",
+            representative_quality_score: 71,
+            classifier_embedding: { embedding_id: "classifier:model_convnext:abc123" },
+            dinov2_embedding: { embedding_id: "dinov2:model_convnext:def456" },
+            peer_model_consensus: {
+              models_evaluated: 5,
+              models_requested: 5,
+              leading_label: "fungal",
+              agreement_rate: 0.56,
+              disagreement_score: 0.44,
+              vote_entropy: 0.62,
+              peer_predictions: [],
+            },
+          },
+        },
+        llm_error: null,
       },
     });
     apiMocks.runCaseValidationCompare.mockResolvedValue({
@@ -285,7 +389,30 @@ describe("CaseWorkspace integration", () => {
     );
   }
 
-  function renderWorkspace(onSiteDataChanged = vi.fn(async () => undefined)) {
+  function renderWorkspace(
+    onSiteDataChanged = vi.fn(async () => undefined),
+    summaryOverrides: Partial<{
+      site_id: string;
+      n_patients: number;
+      n_visits: number;
+      n_images: number;
+      n_active_visits: number;
+      n_validation_runs: number;
+      latest_validation: Record<string, unknown> | null;
+      research_registry: {
+        site_enabled: boolean;
+        user_enrolled: boolean;
+        user_enrolled_at?: string | null;
+        included_cases: number;
+        excluded_cases: number;
+      };
+    }> = {},
+    sitesOverride?: Array<{
+      site_id: string;
+      display_name: string;
+      hospital_name: string;
+    }>
+  ) {
     return render(
       <LocaleProvider>
         <CaseWorkspace
@@ -298,13 +425,15 @@ describe("CaseWorkspace integration", () => {
             site_ids: ["SITE_A"],
             approval_status: "approved",
           }}
-          sites={[
-            {
-              site_id: "SITE_A",
-              display_name: "Site A",
-              hospital_name: "Hospital A",
-            },
-          ]}
+          sites={
+            sitesOverride ?? [
+              {
+                site_id: "SITE_A",
+                display_name: "Site A",
+                hospital_name: "Hospital A",
+              },
+            ]
+          }
           selectedSiteId="SITE_A"
           summary={{
             site_id: "SITE_A",
@@ -314,6 +443,7 @@ describe("CaseWorkspace integration", () => {
             n_active_visits: 0,
             n_validation_runs: 0,
             latest_validation: null,
+            ...summaryOverrides,
           }}
           canOpenOperations
           theme="light"
@@ -330,18 +460,201 @@ describe("CaseWorkspace integration", () => {
 
   async function addDraftImage(container: HTMLElement) {
     const file = new File(["white-image"], "slit.png", { type: "image/png" });
-    const fileInputs = container.querySelectorAll('input[type="file"]');
-    fireEvent.change(fileInputs[0] as HTMLInputElement, {
+    await waitFor(() => {
+      expect(container.querySelector('input[type="file"]')).not.toBeNull();
+    });
+    const fileInput = container.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("Unable to find the draft image file input.");
+    }
+    fireEvent.change(fileInput, {
       target: { files: [file] },
     });
     return file;
   }
 
-  it("keeps startup recovery toasts in the recent alerts card", async () => {
+  async function openNewCaseCanvas() {
+    fireEvent.click(await screen.findByRole("button", { name: /New case/i }));
+    await screen.findByRole("button", { name: "Lock intake" });
+  }
+
+  function completeRequiredIntakeFields(patientId = "KERA-2026-001") {
+    fireEvent.change(screen.getByLabelText("Patient ID"), {
+      target: { value: patientId },
+    });
+    fireEvent.change(screen.getByLabelText("Age"), {
+      target: { value: "65" },
+    });
+    fireEvent.change(screen.getByLabelText("Category"), {
+      target: { value: "bacterial" },
+    });
+    fireEvent.change(screen.getByLabelText("Species"), {
+      target: { value: "Staphylococcus aureus" },
+    });
+  }
+
+  async function openSavedCase(patientId = "KERA-2026-001") {
+    await screen.findByText("Patient list");
+    const caseButton = (await screen.findAllByRole("button")).find(
+      (button) =>
+        button.textContent?.includes(patientId) &&
+        button.textContent?.includes("Staphylococcus aureus"),
+    );
+
+    if (!caseButton) {
+      throw new Error(`Unable to find a saved case button for ${patientId}.`);
+    }
+
+    fireEvent.click(caseButton);
+    await screen.findByText("Case summary");
+  }
+
+  it("marks the active workspace mode in the top rail", async () => {
+    renderWorkspace();
+
+    let newCaseButton = await screen.findByRole("button", { name: /New case/i });
+    let listViewButton = screen.getByRole("button", { name: /List view/i });
+
+    expect(newCaseButton).toHaveAttribute("aria-pressed", "false");
+    expect(listViewButton).toHaveAttribute("aria-pressed", "true");
+    expect(newCaseButton).toHaveAttribute("data-variant", "ghost");
+    expect(listViewButton).toHaveAttribute("data-variant", "primary");
+    expect(screen.queryByText("Now")).not.toBeInTheDocument();
+
+    fireEvent.click(newCaseButton);
+    await screen.findByRole("button", { name: "Lock intake" });
+
+    newCaseButton = screen.getByRole("button", { name: /New case/i });
+    listViewButton = screen.getByRole("button", { name: /List view/i });
+
+    expect(newCaseButton).toHaveAttribute("aria-pressed", "true");
+    expect(listViewButton).toHaveAttribute("aria-pressed", "false");
+    expect(newCaseButton).toHaveAttribute("data-variant", "primary");
+    expect(listViewButton).toHaveAttribute("data-variant", "ghost");
+    expect(screen.queryByText("Now")).not.toBeInTheDocument();
+
+    fireEvent.click(listViewButton);
+    await screen.findByText("Patient list");
+
+    expect(screen.getByRole("button", { name: /New case/i })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /List view/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /New case/i })).toHaveAttribute("data-variant", "ghost");
+    expect(screen.getByRole("button", { name: /List view/i })).toHaveAttribute("data-variant", "primary");
+    expect(screen.queryByText("Now")).not.toBeInTheDocument();
+  });
+
+  it("hides the image board until intake is locked", async () => {
+    renderWorkspace();
+
+    await openNewCaseCanvas();
+
+    expect(screen.queryByText("Build the image board before submission")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save to hospital" })).not.toBeInTheDocument();
+
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+
+    expect(await screen.findByText("Build the image board before submission")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save to hospital" })).toBeInTheDocument();
+  });
+
+  it("shows hospital summary metrics in the rail and removes duplicate list-view panels", async () => {
+    renderWorkspace(undefined, {
+      n_patients: 22,
+      n_visits: 43,
+      n_images: 112,
+      n_validation_runs: 0,
+    });
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    expect(within(hospitalSection).getByText("Hospital A")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("22")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("43")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("112")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("patients")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("visits")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("images")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("validations")).toBeInTheDocument();
+    expect(within(hospitalSection).queryByText("linked")).not.toBeInTheDocument();
+    expect(screen.queryByText("Selected hospital")).not.toBeInTheDocument();
+    expect(screen.queryByText("Momentum")).not.toBeInTheDocument();
+  });
+
+  it("shows the multi-hospital count on one line in the rail header", async () => {
+    renderWorkspace(
+      undefined,
+      {},
+      [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+        {
+          site_id: "SITE_B",
+          display_name: "Site B",
+          hospital_name: "Hospital B",
+        },
+      ],
+    );
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    expect(within(hospitalSection).getByText("2 linked")).toBeInTheDocument();
+  });
+
+  it("requires both registry confirmations before joining", async () => {
+    const onSiteDataChanged = vi.fn(async () => undefined);
+    renderWorkspace(onSiteDataChanged, {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: false,
+        included_cases: 0,
+        excluded_cases: 0,
+      },
+    });
+
+    await openSavedCase();
+
+    fireEvent.click(screen.getByRole("button", { name: "Join research registry" }));
+
+    const dialog = await screen.findByRole("dialog");
+    const joinButton = within(dialog).getByRole("button", { name: "Join research registry" });
+    const explanationCheckbox = within(dialog).getByRole("checkbox", {
+      name: /Acknowledge the registry explanation/i,
+    });
+    const usageConsentCheckbox = within(dialog).getByRole("checkbox", {
+      name: /Consent to registry use/i,
+    });
+
+    expect(joinButton).toBeDisabled();
+
+    fireEvent.click(explanationCheckbox);
+    expect(joinButton).toBeDisabled();
+
+    fireEvent.click(usageConsentCheckbox);
+    expect(joinButton).toBeEnabled();
+
+    fireEvent.click(joinButton);
+
+    await waitFor(() => {
+      expect(apiMocks.enrollResearchRegistry).toHaveBeenCalledWith("SITE_A", "test-token");
+      expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
+    });
+  });
+
+  it("opens recent alerts from the header button and clears them inside the panel", async () => {
     seedDraft();
     renderWorkspace();
 
-    expect(await screen.findByText("Recent alerts")).toBeInTheDocument();
+    const alertsButton = await screen.findByRole("button", { name: "Recent alerts" });
     expect(
       (
         await screen.findAllByText(
@@ -349,24 +662,79 @@ describe("CaseWorkspace integration", () => {
         )
       ).length
     ).toBeGreaterThan(0);
+    expect(alertsButton).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear alerts" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Transient toasts stay here for this session.")).not.toBeInTheDocument();
+
+    fireEvent.click(alertsButton);
+
+    const alertsDialog = await screen.findByRole("dialog", { name: "Recent alerts" });
+    expect(within(alertsDialog).getByText("Transient toasts stay here for this session.")).toBeInTheDocument();
+    expect(
+      within(alertsDialog).getByText(
+        "Recovered the last saved draft properties for this hospital. Re-attach image files before saving."
+      )
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(alertsDialog).getByRole("button", { name: "Clear alerts" }));
+
+    await waitFor(() => {
+      expect(within(alertsDialog).getByText("No alerts yet in this session.")).toBeInTheDocument();
+    });
   });
 
-  it("highlights selected predisposing factors and mirrors them in the authoring rail", async () => {
-    seedDraft();
+  it("restores draft images after the workspace is reopened", async () => {
+    const { container, unmount } = renderWorkspace();
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    const file = await addDraftImage(container);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Draft autosaved/i).length).toBeGreaterThan(0);
+      expect(window.localStorage.getItem("kera_workspace_draft:user_researcher:SITE_A")).toContain("\"patient_id\":\"KERA-2026-001\"");
+    });
+
+    unmount();
+
     renderWorkspace();
 
-    expect(await screen.findByText("No predisposing factor selected yet.")).toBeInTheDocument();
+    expect(
+      (
+        await screen.findAllByText("Recovered the last saved draft for this hospital, including local images.")
+      ).length
+    ).toBeGreaterThan(0);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New case/i }));
+    await screen.findByText("Build the image board before submission");
+
+    expect(screen.getAllByText(/KERA-2026-001/).length).toBeGreaterThan(0);
+    expect(screen.getByText(file.name)).toBeInTheDocument();
+  });
+
+  it("highlights selected predisposing factors without showing a duplicate sidebar card", async () => {
+    seedDraft();
+    renderWorkspace();
+    await openNewCaseCanvas();
+
+    expect(screen.queryByText("No predisposing factor selected yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Selected visit factors stay visible here while you finish the draft.")).not.toBeInTheDocument();
 
     const traumaButton = screen.getByRole("button", { name: "trauma" });
-    expect(traumaButton.className).not.toContain("border-amber-300/70");
+    expect(traumaButton.className).not.toContain("!bg-blue-600");
 
     fireEvent.click(traumaButton);
 
     await waitFor(() => {
-      expect(traumaButton.className).toContain("border-amber-300/70");
+      expect(traumaButton.className).toContain("!border-blue-700");
+      expect(traumaButton.className).toContain("!bg-blue-600");
+      expect(traumaButton.className).toContain("!text-white");
+      expect(traumaButton.className).toContain("ring-2");
+      expect(traumaButton.className).not.toContain("bg-[linear-gradient(180deg,rgba(255,233,133,1),rgba(251,191,36,0.98))]");
+      expect(traumaButton.className).not.toContain("ring-2 ring-amber-200/85");
     });
-    expect(screen.queryByText("No predisposing factor selected yet.")).not.toBeInTheDocument();
-    expect(screen.getAllByText("trauma").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("trauma")).toHaveLength(1);
   });
 
   it("completes intake, uploads an image, and saves a new case", async () => {
@@ -375,13 +743,15 @@ describe("CaseWorkspace integration", () => {
     const { container } = renderWorkspace(onSiteDataChanged);
 
     await waitFor(() => {
-      expect(apiMocks.fetchCases).toHaveBeenCalledWith(
-        "SITE_A",
-        "test-token",
-        expect.objectContaining({ mine: false, signal: expect.any(AbortSignal) }),
-      );
-    });
+        expect(apiMocks.fetchCases).toHaveBeenCalledWith(
+          "SITE_A",
+          "test-token",
+          expect.objectContaining({ mine: false, signal: expect.any(AbortSignal) }),
+        );
+      });
 
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
 
     const file = await addDraftImage(container);
@@ -392,7 +762,7 @@ describe("CaseWorkspace integration", () => {
       expect(apiMocks.createPatient).toHaveBeenCalledWith("SITE_A", "test-token", {
         patient_id: "KERA-2026-001",
         sex: "female",
-        age: 0,
+        age: 65,
         chart_alias: "",
         local_case_code: "",
       });
@@ -411,6 +781,18 @@ describe("CaseWorkspace integration", () => {
     expect((await screen.findAllByText("Case KERA-2026-001 / Initial saved to Hospital A.")).length).toBeGreaterThan(0);
   });
 
+  it("removes the duplicate header summary after the intake is locked", async () => {
+    seedDraft();
+    renderWorkspace();
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields("17461463");
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+
+    await screen.findByText("Case intake locked and ready for image work");
+    expect(screen.getAllByText("17461463")).toHaveLength(1);
+  });
+
   it("overwrites an existing visit when the user confirms overwrite", async () => {
     seedDraft();
     const confirmMock = vi.fn(() => true);
@@ -418,7 +800,8 @@ describe("CaseWorkspace integration", () => {
     apiMocks.createVisit.mockRejectedValueOnce(new Error("Visit KERA-2026-001 / Initial already exists."));
 
     const { container } = renderWorkspace();
-    await screen.findByRole("button", { name: "Lock intake" });
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
     fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
@@ -494,7 +877,8 @@ describe("CaseWorkspace integration", () => {
     ]);
 
     const { container } = renderWorkspace();
-    await screen.findByRole("button", { name: "Lock intake" });
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
     fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
@@ -537,8 +921,7 @@ describe("CaseWorkspace integration", () => {
     ]);
 
     renderWorkspace();
-
-    expect(await screen.findByText("Case summary")).toBeInTheDocument();
+    await openSavedCase();
 
     await act(async () => {
       window.history.back();
@@ -580,17 +963,81 @@ describe("CaseWorkspace integration", () => {
         };
       }),
     );
+    apiMocks.fetchPatientListPage.mockImplementation(async (_siteId, _token, options = {}) => {
+      const page = Number(options.page ?? 1);
+      const start = (page - 1) * 25;
+      const items = Array.from({ length: page === 1 ? 25 : 5 }, (_, index) => {
+        const caseNumber = start + index + 1;
+        const padded = String(caseNumber).padStart(3, "0");
+        return {
+          patient_id: `KERA-2026-${padded}`,
+          latest_case: {
+            case_id: `case_${caseNumber}`,
+            patient_id: `KERA-2026-${padded}`,
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "bacterial",
+            culture_species: caseNumber === 26 ? "Pseudomonas aeruginosa" : "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: `2026-03-${String(Math.min(caseNumber, 28)).padStart(2, "0")}T00:00:00Z`,
+            latest_image_uploaded_at: `2026-03-${String(Math.min(caseNumber, 28)).padStart(2, "0")}T00:00:00Z`,
+            image_count: 1,
+            representative_image_id: `image_${caseNumber}`,
+            representative_view: "white",
+            age: 60,
+            sex: caseNumber % 2 === 0 ? "male" : "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+          case_count: 1,
+          organism_summary: caseNumber === 26 ? "Pseudomonas aeruginosa" : "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: `case_${caseNumber}`,
+              image_id: `image_${caseNumber}`,
+              view: "white",
+              preview_url: null,
+            },
+          ],
+        };
+      });
+      return {
+        items,
+        page,
+        page_size: 25,
+        total_count: 30,
+        total_pages: 2,
+      };
+    });
 
     renderWorkspace();
 
-    fireEvent.click(await screen.findByRole("button", { name: "List view" }));
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
 
     expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument();
-    expect(apiMocks.fetchPatientListPage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ page: 1, page_size: 25, search: "", mine: false }),
+      );
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "2" }));
 
     expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ page: 2, page_size: 25, search: "", mine: false }),
+      );
+    });
   });
 
   it("auto-runs five-model analysis after AI validation", async () => {
@@ -617,6 +1064,8 @@ describe("CaseWorkspace integration", () => {
     apiMocks.fetchSiteModelVersions.mockResolvedValue([
       { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", ready: true },
       { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", ready: true },
+      { version_id: "model_dinov2", version_name: "dinov2-v1", architecture: "dinov2", ready: true },
+      { version_id: "model_dinov2_mil", version_name: "dinov2-mil-v1", architecture: "dinov2_mil", ready: true },
       { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", ready: true },
       { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
       { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
@@ -637,7 +1086,7 @@ describe("CaseWorkspace integration", () => {
             is_correct: false,
           },
           model_version: { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", crop_mode: "automated" },
-          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+          artifact_availability: { gradcam: false, gradcam_cornea: false, gradcam_lesion: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
         },
         {
           summary: {
@@ -650,7 +1099,7 @@ describe("CaseWorkspace integration", () => {
             is_correct: false,
           },
           model_version: { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", crop_mode: "automated" },
-          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+          artifact_availability: { gradcam: false, gradcam_cornea: false, gradcam_lesion: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
         },
         {
           summary: {
@@ -663,7 +1112,7 @@ describe("CaseWorkspace integration", () => {
             is_correct: false,
           },
           model_version: { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", crop_mode: "automated" },
-          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+          artifact_availability: { gradcam: false, gradcam_cornea: false, gradcam_lesion: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
         },
         {
           summary: {
@@ -676,7 +1125,7 @@ describe("CaseWorkspace integration", () => {
             is_correct: true,
           },
           model_version: { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", crop_mode: "automated" },
-          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+          artifact_availability: { gradcam: false, gradcam_cornea: false, gradcam_lesion: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
         },
         {
           summary: {
@@ -689,7 +1138,7 @@ describe("CaseWorkspace integration", () => {
             is_correct: false,
           },
           model_version: { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", crop_mode: "automated" },
-          artifact_availability: { gradcam: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
+          artifact_availability: { gradcam: false, gradcam_cornea: false, gradcam_lesion: false, roi_crop: false, medsam_mask: false, lesion_crop: false, lesion_mask: false },
         },
       ],
     });
@@ -699,6 +1148,7 @@ describe("CaseWorkspace integration", () => {
     await waitFor(() => {
       expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
     });
+    await openSavedCase();
 
     fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
 
@@ -707,7 +1157,7 @@ describe("CaseWorkspace integration", () => {
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
         model_version_id: undefined,
-        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+        model_version_ids: ["model_vit", "model_swin", "model_dinov2", "model_dinov2_mil", "model_convnext", "model_dense", "model_eff"],
       });
     });
 
@@ -715,13 +1165,29 @@ describe("CaseWorkspace integration", () => {
       expect(apiMocks.runCaseValidationCompare).toHaveBeenCalledWith("SITE_A", "test-token", {
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
-        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+        model_version_ids: ["model_vit", "model_swin", "model_dinov2", "model_dinov2_mil", "model_convnext", "model_dense", "model_eff"],
         execution_mode: "cpu",
       });
     });
 
     expect(await screen.findByText("Consensus snapshot")).toBeInTheDocument();
     expect(screen.getByText("4 / 5")).toBeInTheDocument();
+  });
+
+  it("renders prediction post-mortem after AI validation", async () => {
+    renderWorkspace();
+    await openSavedCase();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
+
+    expect(await screen.findByText("Prediction post-mortem")).toBeInTheDocument();
+    expect(
+      screen.getByText("The model favored fungal, but the available evidence suggests the case should be reviewed as a boundary miss.")
+    ).toBeInTheDocument();
+    expect(screen.getByText("Boundary-case review")).toBeInTheDocument();
+    expect(screen.getByText("Culture confirmed a bacterial label.")).toBeInTheDocument();
+    expect(screen.getByText("Structured analysis")).toBeInTheDocument();
+    expect(screen.getByText("Boundary case")).toBeInTheDocument();
   });
 
   it("submits contribution with the selected five-model set", async () => {
@@ -748,6 +1214,8 @@ describe("CaseWorkspace integration", () => {
     apiMocks.fetchSiteModelVersions.mockResolvedValue([
       { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", ready: true },
       { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", ready: true },
+      { version_id: "model_dinov2", version_name: "dinov2-v1", architecture: "dinov2", ready: true },
+      { version_id: "model_dinov2_mil", version_name: "dinov2-mil-v1", architecture: "dinov2_mil", ready: true },
       { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", ready: true },
       { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
       { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
@@ -819,6 +1287,7 @@ describe("CaseWorkspace integration", () => {
     await waitFor(() => {
       expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
     });
+    await openSavedCase();
 
     fireEvent.click(await screen.findByRole("button", { name: "Contribute case update" }));
 
@@ -828,7 +1297,7 @@ describe("CaseWorkspace integration", () => {
         visit_date: "Initial",
         execution_mode: "auto",
         model_version_id: undefined,
-        model_version_ids: ["model_vit", "model_swin", "model_convnext", "model_dense", "model_eff"],
+        model_version_ids: ["model_vit", "model_swin", "model_dinov2", "model_dinov2_mil", "model_convnext", "model_dense", "model_eff"],
       });
     });
   });

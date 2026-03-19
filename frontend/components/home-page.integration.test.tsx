@@ -155,6 +155,32 @@ describe("HomePage history guard", () => {
     expect(screen.queryByText("Landing")).not.toBeInTheDocument();
   });
 
+  it("does not restart bootstrap when fetchMe rotates the stored token", async () => {
+    apiMocks.fetchMe.mockReset();
+    apiMocks.fetchMe.mockImplementation(async () => {
+      window.localStorage.setItem("kera_web_token", "rotated-token");
+      return {
+        user_id: "user_researcher",
+        username: "researcher",
+        full_name: "Researcher",
+        role: "researcher",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+      };
+    });
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(apiMocks.fetchMe).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchSites).toHaveBeenCalledTimes(1);
+  });
+
   it("filters existing fallback institutions with Korean region aliases", async () => {
     apiMocks.fetchMe.mockResolvedValueOnce({
       user_id: "user_pending",
@@ -189,6 +215,161 @@ describe("HomePage history guard", () => {
     await waitFor(() => {
       expect(screen.getByRole("option", { name: "Jeju National University Hospital" })).toBeInTheDocument();
       expect(screen.queryByRole("option", { name: "Seoul St. Mary's Hospital" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("opens the workspace immediately after an auto-approved institution request", async () => {
+    const approvedRequest = {
+      request_id: "access_auto_1",
+      user_id: "user_pending",
+      email: "pending@example.com",
+      requested_site_id: "SITE_A",
+      requested_site_label: "Site A",
+      requested_site_source: "site",
+      resolved_site_id: "SITE_A",
+      resolved_site_label: "Site A",
+      requested_role: "researcher",
+      message: "Need access",
+      status: "approved",
+      reviewed_by: null,
+      reviewer_notes: "Automatically approved researcher access request.",
+      created_at: "2026-03-17T00:00:00Z",
+      reviewed_at: "2026-03-17T00:01:00Z",
+    };
+    apiMocks.fetchMe.mockResolvedValueOnce({
+      user_id: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    });
+    apiMocks.fetchPublicSites.mockResolvedValueOnce([
+      {
+        site_id: "SITE_A",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+      },
+    ]);
+    apiMocks.fetchMyAccessRequests.mockResolvedValueOnce([]).mockResolvedValueOnce([approvedRequest]);
+    apiMocks.submitAccessRequest.mockResolvedValueOnce({
+      access_token: "test-token",
+      token_type: "bearer",
+      user: {
+        user_id: "user_pending",
+        username: "pending",
+        full_name: "Pending User",
+        role: "researcher",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+      },
+      request: approvedRequest,
+      auth_state: "approved",
+    });
+
+    render(<HomePage />);
+
+    const siteSelect = await screen.findByRole("combobox");
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "Hospital A" })).toBeInTheDocument();
+    });
+    fireEvent.change(siteSelect, { target: { value: "SITE_A" } });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Submit institution request" })).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit institution request" }));
+
+    await waitFor(() => {
+      expect(apiMocks.submitAccessRequest).toHaveBeenCalledWith("test-token", expect.objectContaining({ requested_site_id: "SITE_A" }));
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("test-token");
+    });
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+  });
+
+  it("opens the admin workspace when an approved admin lands on the operations route", async () => {
+    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
+    apiMocks.fetchMe.mockResolvedValueOnce({
+      user_id: "user_admin",
+      username: "admin",
+      full_name: "Admin",
+      role: "admin",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    });
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Landing")).not.toBeInTheDocument();
+  });
+
+  it("shows the case workspace before the site list bootstrap finishes for approved users", async () => {
+    let releaseSites: ((value: Array<{ site_id: string; display_name: string; hospital_name: string }>) => void) | null = null;
+    apiMocks.fetchMe.mockResolvedValueOnce({
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    });
+    apiMocks.fetchSites.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseSites = resolve;
+        }),
+    );
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Opening your workspace")).not.toBeInTheDocument();
+
+    await act(async () => {
+      releaseSites?.([
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ]);
+      await Promise.resolve();
+    });
+  });
+
+  it("shows admin operations before the site list bootstrap finishes", async () => {
+    let releaseSites: ((value: Array<{ site_id: string; display_name: string; hospital_name: string }>) => void) | null = null;
+    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
+    apiMocks.fetchMe.mockResolvedValueOnce({
+      user_id: "user_admin",
+      username: "admin",
+      full_name: "Admin",
+      role: "admin",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    });
+    apiMocks.fetchSites.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseSites = resolve;
+        }),
+    );
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
+
+    await act(async () => {
+      releaseSites?.([
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ]);
+      await Promise.resolve();
     });
   });
 });

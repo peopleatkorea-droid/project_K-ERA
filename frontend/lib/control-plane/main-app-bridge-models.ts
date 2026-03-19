@@ -3,9 +3,10 @@ import "server-only";
 import { NextRequest } from "next/server";
 
 import type { AggregationRecord, AggregationRunResponse, AuthUser, ModelUpdateRecord, ModelVersionRecord } from "../types";
+import { makeControlPlaneId } from "./crypto";
 import { controlPlaneSql } from "./db";
 import { requireMainAppBridgeUser } from "./main-app-bridge-users";
-import { fetchLegacyLocalNodeApi, normalizeStringArray, readBearerToken, rowValue, trimText } from "./main-app-bridge-shared";
+import { normalizeStringArray, rowValue, trimText } from "./main-app-bridge-shared";
 
 function assertAdminWorkspacePermission(user: AuthUser): void {
   if (user.role !== "admin" && user.role !== "site_admin") {
@@ -168,198 +169,9 @@ function serializeMainAggregationRow(row: Record<string, unknown>): AggregationR
   };
 }
 
-async function syncModelVersionsFromLocal(request: NextRequest, token: string): Promise<void> {
-  const records = await fetchLegacyLocalNodeApi<ModelVersionRecord[]>(request, "/api/admin/model-versions", {}, token);
-  if (!records.length) {
-    return;
-  }
-  await persistModelVersionRecords(records);
-}
-
-async function persistModelVersionRecords(records: ModelVersionRecord[]): Promise<void> {
-  const sql = await controlPlaneSql();
-  for (const record of records) {
-    const versionId = trimText(record.version_id);
-    const versionName = trimText(record.version_name);
-    const architecture = trimText(record.architecture);
-    if (!versionId || !versionName || !architecture) {
-      continue;
-    }
-    const createdAt = isoStringOrNull(record.created_at) || new Date().toISOString();
-    const downloadUrl = trimText(record.download_url);
-    const sourceProvider = trimText(record.source_provider);
-    const sha256 = trimText(record.sha256);
-    await sql`
-      insert into model_versions (
-        version_id,
-        version_name,
-        architecture,
-        stage,
-        payload_json,
-        source_provider,
-        download_url,
-        sha256,
-        size_bytes,
-        ready,
-        is_current,
-        metadata_json,
-        created_at,
-        updated_at
-      ) values (
-        ${versionId},
-        ${versionName},
-        ${architecture},
-        ${trimText(record.stage)},
-        ${JSON.stringify(record)}::jsonb,
-        ${sourceProvider},
-        ${downloadUrl},
-        ${sha256},
-        ${Math.max(0, Math.floor(Number(record.size_bytes || 0)))},
-        ${Boolean(record.ready)},
-        ${Boolean(record.is_current)},
-        ${JSON.stringify(record)}::jsonb,
-        ${createdAt},
-        now()
-      )
-      on conflict (version_id) do update set
-        version_name = excluded.version_name,
-        architecture = excluded.architecture,
-        stage = excluded.stage,
-        payload_json = excluded.payload_json,
-        source_provider = excluded.source_provider,
-        download_url = excluded.download_url,
-        sha256 = excluded.sha256,
-        size_bytes = excluded.size_bytes,
-        ready = excluded.ready,
-        is_current = excluded.is_current,
-        metadata_json = excluded.metadata_json,
-        updated_at = now()
-    `;
-  }
-}
-
-async function syncModelUpdatesFromLocal(
-  request: NextRequest,
-  token: string,
-  options: {
-    siteId?: string | null;
-    statusFilter?: string | null;
-  } = {},
-): Promise<void> {
-  await syncModelVersionsFromLocal(request, token);
-  const params = new URLSearchParams();
-  if (trimText(options.siteId)) {
-    params.set("site_id", trimText(options.siteId));
-  }
-  if (trimText(options.statusFilter)) {
-    params.set("status_filter", trimText(options.statusFilter));
-  }
-  const suffix = params.size ? `?${params.toString()}` : "";
-  const records = await fetchLegacyLocalNodeApi<ModelUpdateRecord[]>(request, `/api/admin/model-updates${suffix}`, {}, token);
-  if (!records.length) {
-    return;
-  }
-  await persistModelUpdateRecords(records);
-}
-
-async function persistModelUpdateRecords(records: ModelUpdateRecord[]): Promise<void> {
-  const sql = await controlPlaneSql();
-  for (const record of records) {
-    const updateId = trimText(record.update_id);
-    if (!updateId) {
-      continue;
-    }
-    const createdAt = isoStringOrNull(record.created_at) || new Date().toISOString();
-    const reviewedAt = isoStringOrNull(record.reviewed_at);
-    await sql`
-      insert into model_updates (
-        update_id,
-        site_id,
-        base_model_version_id,
-        status,
-        payload_json,
-        reviewer_user_id,
-        reviewer_notes,
-        created_at,
-        reviewed_at,
-        updated_at
-      ) values (
-        ${updateId},
-        ${trimText(record.site_id)},
-        ${trimText(record.base_model_version_id)},
-        ${trimText(record.status) || "pending_review"},
-        ${JSON.stringify(record)}::jsonb,
-        ${trimText(record.reviewed_by)},
-        ${trimText(record.reviewer_notes)},
-        ${createdAt},
-        ${reviewedAt},
-        now()
-      )
-      on conflict (update_id) do update set
-        site_id = excluded.site_id,
-        base_model_version_id = excluded.base_model_version_id,
-        status = excluded.status,
-        payload_json = excluded.payload_json,
-        reviewer_user_id = excluded.reviewer_user_id,
-        reviewer_notes = excluded.reviewer_notes,
-        reviewed_at = excluded.reviewed_at,
-        updated_at = now()
-    `;
-  }
-}
-
-async function syncAggregationsFromLocal(request: NextRequest, token: string): Promise<void> {
-  await syncModelVersionsFromLocal(request, token);
-  const records = await fetchLegacyLocalNodeApi<AggregationRecord[]>(request, "/api/admin/aggregations", {}, token);
-  if (!records.length) {
-    return;
-  }
-  await persistAggregationRecords(records);
-}
-
-async function persistAggregationRecords(records: AggregationRecord[]): Promise<void> {
-  const sql = await controlPlaneSql();
-  for (const record of records) {
-    const aggregationId = trimText(record.aggregation_id);
-    if (!aggregationId) {
-      continue;
-    }
-    const createdAt = isoStringOrNull(record.created_at) || new Date().toISOString();
-    await sql`
-      insert into aggregations (
-        aggregation_id,
-        base_model_version_id,
-        new_version_name,
-        status,
-        payload_json,
-        summary_json,
-        created_at,
-        updated_at
-      ) values (
-        ${aggregationId},
-        ${trimText(record.base_model_version_id)},
-        ${trimText(record.new_version_name) || "pending-aggregation"},
-        ${"completed"},
-        ${JSON.stringify(record)}::jsonb,
-        ${JSON.stringify(record)}::jsonb,
-        ${createdAt},
-        now()
-      )
-      on conflict (aggregation_id) do update set
-        base_model_version_id = excluded.base_model_version_id,
-        new_version_name = excluded.new_version_name,
-        payload_json = excluded.payload_json,
-        summary_json = excluded.summary_json,
-        updated_at = now()
-    `;
-  }
-}
-
 export async function listMainModelVersions(request: NextRequest): Promise<ModelVersionRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
-  await syncModelVersionsFromLocal(request, token);
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
@@ -389,15 +201,10 @@ export async function listMainModelUpdates(
     statusFilter?: string | null;
   } = {},
 ): Promise<ModelUpdateRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   const normalizedSiteId = trimText(options.siteId);
   const normalizedStatus = trimText(options.statusFilter);
-  await syncModelUpdatesFromLocal(request, token, {
-    siteId: normalizedSiteId,
-    statusFilter: normalizedStatus,
-  });
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
@@ -431,10 +238,8 @@ export async function listMainModelUpdates(
 }
 
 export async function listMainAggregations(request: NextRequest): Promise<AggregationRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
-  await syncAggregationsFromLocal(request, token);
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
@@ -454,22 +259,38 @@ export async function deleteMainModelVersion(
   request: NextRequest,
   versionId: string,
 ): Promise<{ model_version: ModelVersionRecord }> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedVersionId = trimText(versionId);
   if (!normalizedVersionId) {
     throw new Error("Model version id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ model_version: ModelVersionRecord }>(
-    request,
-    `/api/admin/model-versions/${encodeURIComponent(normalizedVersionId)}`,
-    { method: "DELETE" },
-    token,
-  );
   const sql = await controlPlaneSql();
+  const existingRows = await sql`
+    select
+      version_id,
+      version_name,
+      architecture,
+      stage,
+      payload_json,
+      source_provider,
+      download_url,
+      sha256,
+      size_bytes,
+      ready,
+      is_current,
+      metadata_json,
+      created_at
+    from model_versions
+    where version_id = ${normalizedVersionId}
+    limit 1
+  `;
+  if (!existingRows[0]) {
+    throw new Error("Model version not found.");
+  }
+  const modelVersion = serializeMainModelVersionRow(existingRows[0] as Record<string, unknown>);
   await sql`delete from model_versions where version_id = ${normalizedVersionId}`;
-  return response;
+  return { model_version: modelVersion };
 }
 
 export async function publishMainModelVersion(
@@ -480,29 +301,48 @@ export async function publishMainModelVersion(
     set_current?: boolean;
   },
 ): Promise<{ model_version: ModelVersionRecord }> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedVersionId = trimText(versionId);
   if (!normalizedVersionId) {
     throw new Error("Model version id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ model_version: ModelVersionRecord }>(
-    request,
-    `/api/admin/model-versions/${encodeURIComponent(normalizedVersionId)}/publish`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        download_url: trimText(payload.download_url),
-        set_current: Boolean(payload.set_current),
-      }),
-    },
-    token,
-  );
-  if (response.model_version) {
-    await persistModelVersionRecords([response.model_version]);
+  const sql = await controlPlaneSql();
+  if (payload.set_current) {
+    await sql`update model_versions set is_current = false, updated_at = now() where is_current = true`;
   }
-  return response;
+  await sql`
+    update model_versions
+    set
+      download_url = case when ${trimText(payload.download_url)} = '' then download_url else ${trimText(payload.download_url)} end,
+      ready = true,
+      is_current = ${Boolean(payload.set_current)},
+      updated_at = now()
+    where version_id = ${normalizedVersionId}
+  `;
+  const rows = await sql`
+    select
+      version_id,
+      version_name,
+      architecture,
+      stage,
+      payload_json,
+      source_provider,
+      download_url,
+      sha256,
+      size_bytes,
+      ready,
+      is_current,
+      metadata_json,
+      created_at
+    from model_versions
+    where version_id = ${normalizedVersionId}
+    limit 1
+  `;
+  if (!rows[0]) {
+    throw new Error("Model version not found.");
+  }
+  return { model_version: serializeMainModelVersionRow(rows[0] as Record<string, unknown>) };
 }
 
 export async function autoPublishMainModelVersion(
@@ -512,28 +352,15 @@ export async function autoPublishMainModelVersion(
     set_current?: boolean;
   },
 ): Promise<{ model_version: ModelVersionRecord }> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedVersionId = trimText(versionId);
   if (!normalizedVersionId) {
     throw new Error("Model version id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ model_version: ModelVersionRecord }>(
-    request,
-    `/api/admin/model-versions/${encodeURIComponent(normalizedVersionId)}/auto-publish`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        set_current: Boolean(payload.set_current),
-      }),
-    },
-    token,
-  );
-  if (response.model_version) {
-    await persistModelVersionRecords([response.model_version]);
-  }
-  return response;
+  return publishMainModelVersion(request, normalizedVersionId, {
+    set_current: payload.set_current,
+  });
 }
 
 export async function reviewMainModelUpdate(
@@ -544,29 +371,46 @@ export async function reviewMainModelUpdate(
     reviewer_notes?: string;
   },
 ): Promise<{ update: ModelUpdateRecord }> {
-  const token = readBearerToken(request);
-  const { user } = await requireMainAppBridgeUser(request);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   const normalizedUpdateId = trimText(updateId);
   if (!normalizedUpdateId) {
     throw new Error("Model update id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ update: ModelUpdateRecord }>(
-    request,
-    `/api/admin/model-updates/${encodeURIComponent(normalizedUpdateId)}/review`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        decision: payload.decision,
-        reviewer_notes: trimText(payload.reviewer_notes),
-      }),
-    },
-    token,
-  );
-  if (response.update) {
-    await persistModelUpdateRecords([response.update]);
+  const decision = payload.decision;
+  if (decision !== "approved" && decision !== "rejected") {
+    throw new Error("Review decision is required.");
   }
-  return response;
+  const sql = await controlPlaneSql();
+  await sql`
+    update model_updates
+    set
+      status = ${decision},
+      reviewer_user_id = ${canonicalUserId},
+      reviewer_notes = ${trimText(payload.reviewer_notes)},
+      reviewed_at = now(),
+      updated_at = now()
+    where update_id = ${normalizedUpdateId}
+  `;
+  const rows = await sql`
+    select
+      update_id,
+      site_id,
+      base_model_version_id,
+      status,
+      payload_json,
+      reviewer_user_id,
+      reviewer_notes,
+      created_at,
+      reviewed_at
+    from model_updates
+    where update_id = ${normalizedUpdateId}
+    limit 1
+  `;
+  if (!rows[0]) {
+    throw new Error("Model update not found.");
+  }
+  return { update: serializeMainModelUpdateRow(rows[0] as Record<string, unknown>) };
 }
 
 export async function publishMainModelUpdate(
@@ -576,54 +420,73 @@ export async function publishMainModelUpdate(
     download_url?: string;
   },
 ): Promise<{ update: ModelUpdateRecord }> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedUpdateId = trimText(updateId);
   if (!normalizedUpdateId) {
     throw new Error("Model update id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ update: ModelUpdateRecord }>(
-    request,
-    `/api/admin/model-updates/${encodeURIComponent(normalizedUpdateId)}/publish`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        download_url: trimText(payload.download_url),
-      }),
-    },
-    token,
-  );
-  if (response.update) {
-    await persistModelUpdateRecords([response.update]);
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      update_id,
+      site_id,
+      base_model_version_id,
+      status,
+      payload_json,
+      reviewer_user_id,
+      reviewer_notes,
+      created_at,
+      reviewed_at
+    from model_updates
+    where update_id = ${normalizedUpdateId}
+    limit 1
+  `;
+  if (!rows[0]) {
+    throw new Error("Model update not found.");
   }
-  return response;
+  const current = rows[0] as Record<string, unknown>;
+  const payloadJson = {
+    ...recordFromValue(rowValue<unknown>(current as never, "payload_json")),
+    artifact_download_url: trimText(payload.download_url) || undefined,
+    artifact_distribution_status: "published",
+  };
+  await sql`
+    update model_updates
+    set
+      payload_json = ${JSON.stringify(payloadJson)}::jsonb,
+      updated_at = now()
+    where update_id = ${normalizedUpdateId}
+  `;
+  const refreshedRows = await sql`
+    select
+      update_id,
+      site_id,
+      base_model_version_id,
+      status,
+      payload_json,
+      reviewer_user_id,
+      reviewer_notes,
+      created_at,
+      reviewed_at
+    from model_updates
+    where update_id = ${normalizedUpdateId}
+    limit 1
+  `;
+  return { update: serializeMainModelUpdateRow(refreshedRows[0] as Record<string, unknown>) };
 }
 
 export async function autoPublishMainModelUpdate(
   request: NextRequest,
   updateId: string,
 ): Promise<{ update: ModelUpdateRecord }> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedUpdateId = trimText(updateId);
   if (!normalizedUpdateId) {
     throw new Error("Model update id is required.");
   }
-  const response = await fetchLegacyLocalNodeApi<{ update: ModelUpdateRecord }>(
-    request,
-    `/api/admin/model-updates/${encodeURIComponent(normalizedUpdateId)}/auto-publish`,
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    },
-    token,
-  );
-  if (response.update) {
-    await persistModelUpdateRecords([response.update]);
-  }
-  return response;
+  return publishMainModelUpdate(request, normalizedUpdateId, {});
 }
 
 export async function runMainFederatedAggregation(
@@ -633,23 +496,80 @@ export async function runMainFederatedAggregation(
     new_version_name?: string;
   },
 ): Promise<AggregationRunResponse> {
-  const token = readBearerToken(request);
-  const { user } = await requireMainAppBridgeUser(request);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
-  const response = await fetchLegacyLocalNodeApi<AggregationRunResponse>(
-    request,
-    "/api/admin/aggregations/run",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        update_ids: Array.isArray(payload.update_ids) ? payload.update_ids : [],
-        new_version_name: trimText(payload.new_version_name) || undefined,
-      }),
-    },
-    token,
-  );
-  await syncModelVersionsFromLocal(request, token);
-  await syncModelUpdatesFromLocal(request, token);
-  await syncAggregationsFromLocal(request, token);
-  return response;
+  const sql = await controlPlaneSql();
+  const selectedUpdateIds = Array.isArray(payload.update_ids)
+    ? Array.from(new Set(payload.update_ids.map((value) => trimText(value)).filter(Boolean)))
+    : [];
+  const updateRows = selectedUpdateIds.length
+    ? await sql`
+        select
+          update_id,
+          base_model_version_id
+        from model_updates
+        where update_id = any(${selectedUpdateIds})
+      `
+    : [];
+  const baseModelVersionId = trimText(updateRows[0]?.base_model_version_id) || null;
+  const aggregationId = makeControlPlaneId("aggregation");
+  const newVersionName = trimText(payload.new_version_name) || `aggregation-${new Date().toISOString().slice(0, 10)}`;
+  const summaryJson = {
+    update_ids: selectedUpdateIds,
+    new_version_name: newVersionName,
+  };
+  await sql`
+    insert into aggregations (
+      aggregation_id,
+      base_model_version_id,
+      new_version_name,
+      status,
+      triggered_by_user_id,
+      payload_json,
+      summary_json,
+      created_at,
+      finished_at,
+      updated_at
+    ) values (
+      ${aggregationId},
+      ${baseModelVersionId},
+      ${newVersionName},
+      ${"completed"},
+      ${canonicalUserId},
+      ${JSON.stringify(summaryJson)}::jsonb,
+      ${JSON.stringify(summaryJson)}::jsonb,
+      now(),
+      now(),
+      now()
+    )
+  `;
+  if (selectedUpdateIds.length) {
+    await sql`
+      update model_updates
+      set
+        status = 'aggregated',
+        updated_at = now()
+      where update_id = any(${selectedUpdateIds})
+    `;
+  }
+  const aggregationRows = await sql`
+    select
+      aggregation_id,
+      base_model_version_id,
+      new_version_name,
+      payload_json,
+      summary_json,
+      created_at
+    from aggregations
+    where aggregation_id = ${aggregationId}
+    limit 1
+  `;
+  if (!aggregationRows[0]) {
+    throw new Error("Unable to create aggregation.");
+  }
+  return {
+    aggregation: serializeMainAggregationRow(aggregationRows[0] as Record<string, unknown>),
+    model_version: null,
+    aggregated_update_ids: selectedUpdateIds,
+  };
 }

@@ -13,7 +13,7 @@ from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.differential import AiClinicDifferentialRanker
-from kera_research.services.modeling import ModelManager
+from kera_research.services.modeling import ModelManager, preprocess_image, torch
 from kera_research.services.pipeline_ai_clinic_workflow import ResearchAiClinicWorkflow
 from kera_research.services.pipeline_case_support import ResearchCaseSupport
 from kera_research.services.pipeline_domains import (
@@ -22,7 +22,11 @@ from kera_research.services.pipeline_domains import (
     ResearchValidationWorkflow,
 )
 from kera_research.services.pipeline_embedding_workflow import ResearchEmbeddingWorkflow
+from kera_research.services.pipeline_postmortem_workflow import ResearchPostmortemWorkflow
 from kera_research.services.pipeline_review_support import ResearchReviewSupport
+from kera_research.services.prediction_postmortem_analyzer import PredictionPostmortemAnalyzer
+from kera_research.services.prediction_postmortem_advisor import PredictionPostmortemAdvisor
+from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.retrieval import BiomedClipTextRetriever, Dinov2ImageRetriever
 from kera_research.services.vector_index import FaissCaseIndexManager
 from kera_research.storage import ensure_dir, read_json, write_json
@@ -37,12 +41,15 @@ class ResearchWorkflowService:
         self.dinov2_retriever = Dinov2ImageRetriever()
         self.vector_index = FaissCaseIndexManager()
         self.ai_clinic_advisor = AiClinicWorkflowAdvisor()
+        self.prediction_postmortem_analyzer = PredictionPostmortemAnalyzer(self)
+        self.prediction_postmortem_advisor = PredictionPostmortemAdvisor()
         self.differential_ranker = AiClinicDifferentialRanker()
         self.validation_workflow = ResearchValidationWorkflow(self)
         self.contribution_workflow = ResearchContributionWorkflow(self)
         self.training_workflow = ResearchTrainingWorkflow(self)
         self.embedding_workflow = ResearchEmbeddingWorkflow(self)
         self.ai_clinic_workflow = ResearchAiClinicWorkflow(self)
+        self.postmortem_workflow = ResearchPostmortemWorkflow(self)
         self.case_support = ResearchCaseSupport(self)
         self.review_support = ResearchReviewSupport(self)
         self._crop_metadata_dir = self.case_support._crop_metadata_dir
@@ -73,7 +80,7 @@ class ResearchWorkflowService:
 
     def _normalize_crop_mode(self, crop_mode: str | None) -> str:
         normalized = str(crop_mode or "automated").strip().lower()
-        if normalized in {"automated", "manual", "both"}:
+        if normalized in {"automated", "manual", "both", "paired"}:
             return normalized
         return "automated"
 
@@ -86,7 +93,124 @@ class ResearchWorkflowService:
         crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
         if crop_mode:
             return self._normalize_crop_mode(crop_mode)
+        if self.model_manager.is_dual_input_architecture(str(model_version.get("architecture") or "")):
+            return "paired"
         return "automated" if model_version.get("requires_medsam_crop", False) else "raw"
+
+    def _resolve_model_case_aggregation(self, model_version: dict[str, Any]) -> str:
+        if model_version.get("ensemble_mode") == "weighted_average":
+            return "weighted_average"
+        return self.model_manager.normalize_case_aggregation(
+            str(model_version.get("case_aggregation") or ""),
+            str(model_version.get("architecture") or ""),
+        )
+
+    def _is_dual_input_model_version(self, model_version: dict[str, Any]) -> bool:
+        return self.model_manager.is_dual_input_architecture(str(model_version.get("architecture") or ""))
+
+    def _quality_weight_for_record(
+        self,
+        record: dict[str, Any],
+        quality_cache: dict[str, float] | None = None,
+    ) -> float:
+        image_path = str(record.get("image_path") or "").strip()
+        if not image_path:
+            return 1.0
+        if quality_cache is not None and image_path in quality_cache:
+            return quality_cache[image_path]
+        try:
+            quality_summary = score_slit_lamp_image(image_path, view=record.get("view"))
+            weight = max(float(quality_summary.get("quality_score") or 0.0) / 100.0, 0.05)
+        except Exception:
+            weight = 1.0
+        if quality_cache is not None:
+            quality_cache[image_path] = weight
+        return weight
+
+    def _aggregate_image_predictions(
+        self,
+        prepared_records: list[dict[str, Any]],
+        image_predictions: list[Any],
+        case_aggregation: str,
+    ) -> dict[str, Any]:
+        if not image_predictions:
+            raise ValueError("No image-level predictions are available for case aggregation.")
+        normalized_aggregation = self.model_manager.normalize_case_aggregation(case_aggregation)
+        if normalized_aggregation == "logit_mean":
+            mean_logits = np.mean(
+                np.asarray([prediction.logits for prediction in image_predictions], dtype=np.float32),
+                axis=0,
+            )
+            shifted_logits = mean_logits - float(np.max(mean_logits))
+            probabilities = np.exp(shifted_logits)
+            denominator = float(np.sum(probabilities)) or 1.0
+            return {
+                "predicted_probability": float(probabilities[1] / denominator),
+                "quality_weights": None,
+            }
+        if normalized_aggregation == "quality_weighted_mean":
+            quality_cache: dict[str, float] = {}
+            weights = [self._quality_weight_for_record(record, quality_cache) for record in prepared_records]
+            total_weight = float(sum(weights))
+            if total_weight > 0:
+                probability = sum(weight * float(prediction.probability) for weight, prediction in zip(weights, image_predictions)) / total_weight
+                return {
+                    "predicted_probability": float(probability),
+                    "quality_weights": [round(float(weight), 4) for weight in weights],
+                }
+        return {
+            "predicted_probability": float(sum(float(prediction.probability) for prediction in image_predictions) / len(image_predictions)),
+            "quality_weights": None,
+        }
+
+    def _prepare_bag_inputs(
+        self,
+        model: Any,
+        model_version: dict[str, Any],
+        prepared_records: list[dict[str, Any]],
+        execution_device: str,
+    ) -> tuple[Any, Any]:
+        if torch is None:
+            raise RuntimeError("PyTorch is required for visit-level MIL inference.")
+        preprocess_metadata = self.model_manager.model_preprocess_metadata(model, model_version)
+        tensors = []
+        for record in prepared_records:
+            _, tensor = preprocess_image(record["image_path"], preprocess_metadata=preprocess_metadata)
+            tensors.append(tensor.squeeze(0))
+        bag_inputs = torch.stack(tensors, dim=0).unsqueeze(0).to(execution_device)
+        bag_mask = torch.ones((1, len(prepared_records)), dtype=torch.bool, device=execution_device)
+        return bag_inputs, bag_mask
+
+    def _predict_case_with_attention_mil(
+        self,
+        model: Any,
+        model_version: dict[str, Any],
+        prepared_records: list[dict[str, Any]],
+        execution_device: str,
+    ) -> dict[str, Any]:
+        if torch is None:
+            raise RuntimeError("PyTorch is required for attention MIL inference.")
+        bag_inputs, bag_mask = self._prepare_bag_inputs(model, model_version, prepared_records, execution_device)
+        model.eval()
+        with torch.no_grad():
+            logits, attention = model(bag_inputs, bag_mask=bag_mask, return_attention=True)
+            probabilities = torch.softmax(logits, dim=1)[0]
+        attention_values = [float(value) for value in attention[0, : len(prepared_records)].tolist()]
+        representative_index = int(np.argmax(attention_values)) if attention_values else 0
+        return {
+            "predicted_probability": float(probabilities[1].item()),
+            "predicted_logits": [float(value) for value in logits[0].tolist()],
+            "attention_scores": [
+                {
+                    "image_path": str(record["image_path"]),
+                    "source_image_path": str(record.get("source_image_path") or record["image_path"]),
+                    "view": record.get("view"),
+                    "attention": round(float(score), 6),
+                }
+                for record, score in zip(prepared_records, attention_values)
+            ],
+            "representative_index": representative_index,
+        }
 
     def _dataset_version_metadata(self, manifest_df: pd.DataFrame) -> dict[str, Any]:
         if manifest_df.empty:
@@ -199,11 +323,37 @@ class ResearchWorkflowService:
     ) -> dict[str, Any]:
         crop_mode = self._resolve_model_crop_mode(model_version)
         prepared_records = self._prepare_records_for_model(site_store, case_records, crop_mode=crop_mode)
-        image_probabilities: list[float] = []
-        for record in prepared_records:
-            prediction = self.model_manager.predict_image(model, record["image_path"], execution_device)
-            image_probabilities.append(float(prediction.probability))
-        predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
+        case_aggregation = self._resolve_model_case_aggregation(model_version)
+        if case_aggregation == "attention_mil":
+            aggregated_prediction = self._predict_case_with_attention_mil(
+                model,
+                model_version,
+                prepared_records,
+                execution_device,
+            )
+        else:
+            if self._is_dual_input_model_version(model_version):
+                image_predictions = [
+                    self.model_manager.predict_paired_image(
+                        model,
+                        model_version,
+                        str(record.get("cornea_image_path") or record["image_path"]),
+                        str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                        execution_device,
+                    )
+                    for record in prepared_records
+                ]
+            else:
+                image_predictions = [
+                    self.model_manager.predict_image(model, record["image_path"], execution_device)
+                    for record in prepared_records
+                ]
+            aggregated_prediction = self._aggregate_image_predictions(
+                prepared_records,
+                image_predictions,
+                case_aggregation,
+            )
+        predicted_probability = float(aggregated_prediction["predicted_probability"])
         true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
         decision_threshold = self._resolve_model_threshold(model_version)
         return {
@@ -214,6 +364,7 @@ class ResearchWorkflowService:
             "predicted_index": 1 if predicted_probability >= decision_threshold else 0,
             "decision_threshold": decision_threshold,
             "crop_mode": crop_mode,
+            "case_aggregation": case_aggregation,
             "n_model_inputs": len(prepared_records),
         }
 
@@ -559,10 +710,30 @@ class ResearchWorkflowService:
         prepared_records = self._prepare_records_for_model(site_store, case_records, crop_mode=crop_mode)
         if not prepared_records:
             raise ValueError("No prepared records are available for AI Clinic retrieval.")
-        embeddings = [
-            self.model_manager.extract_image_embedding(model, model_version, record["image_path"], execution_device)
-            for record in prepared_records
-        ]
+        if str(model_version.get("architecture") or "") == "dinov2_mil" and hasattr(model, "forward_features"):
+            if torch is None:
+                raise RuntimeError("PyTorch is required for DINOv2 MIL embeddings.")
+            bag_inputs, bag_mask = self._prepare_bag_inputs(model, model_version, prepared_records, execution_device)
+            model.eval()
+            with torch.no_grad():
+                pooled_features, _attention = model.forward_features(bag_inputs, bag_mask=bag_mask)
+            return self._normalize_embedding(pooled_features[0].detach().cpu().numpy().astype(np.float32))
+        if self._is_dual_input_model_version(model_version):
+            embeddings = [
+                self.model_manager.extract_paired_image_embedding(
+                    model,
+                    model_version,
+                    str(record.get("cornea_image_path") or record["image_path"]),
+                    str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                    execution_device,
+                )
+                for record in prepared_records
+            ]
+        else:
+            embeddings = [
+                self.model_manager.extract_image_embedding(model, model_version, record["image_path"], execution_device)
+                for record in prepared_records
+            ]
         return self._normalize_embedding(np.mean(np.stack(embeddings, axis=0), axis=0))
 
     def _prepared_case_image_paths(
@@ -575,6 +746,13 @@ class ResearchWorkflowService:
         prepared_paths: list[str] = []
         if crop_mode != "both":
             prepared_records = self._prepare_records_for_model(site_store, case_records, crop_mode=crop_mode)
+            if crop_mode == "paired":
+                for record in prepared_records:
+                    for image_key in ("cornea_image_path", "lesion_image_path"):
+                        next_path = str(record.get(image_key) or "")
+                        if next_path and next_path not in prepared_paths:
+                            prepared_paths.append(next_path)
+                return prepared_paths
             return [str(record["image_path"]) for record in prepared_records]
 
         components, _weights = self._resolve_ensemble_components(model_version)
@@ -941,6 +1119,31 @@ class ResearchWorkflowService:
             retrieval_backend=retrieval_backend,
         )
 
+    def run_case_postmortem(
+        self,
+        site_store: SiteStore,
+        *,
+        patient_id: str,
+        visit_date: str,
+        model_version: dict[str, Any],
+        execution_device: str,
+        classification_context: dict[str, Any] | None = None,
+        case_prediction: dict[str, Any] | None = None,
+        top_k: int = 3,
+        retrieval_backend: str = "hybrid",
+    ) -> dict[str, Any]:
+        return self.postmortem_workflow.run_case_postmortem(
+            site_store,
+            patient_id=patient_id,
+            visit_date=visit_date,
+            model_version=model_version,
+            execution_device=execution_device,
+            classification_context=classification_context,
+            case_prediction=case_prediction,
+            top_k=top_k,
+            retrieval_backend=retrieval_backend,
+        )
+
     def _artifact_refs_for_case(
         self,
         site_store: SiteStore,
@@ -957,30 +1160,62 @@ class ResearchWorkflowService:
     ) -> dict[str, Any]:
         artifact_refs: dict[str, Any] = {
             "gradcam_path": None,
+            "gradcam_heatmap_path": None,
+            "gradcam_cornea_path": None,
+            "gradcam_cornea_heatmap_path": None,
+            "gradcam_lesion_path": None,
+            "gradcam_lesion_heatmap_path": None,
             "medsam_mask_path": None,
             "roi_crop_path": None,
             "lesion_mask_path": None,
             "lesion_crop_path": None,
         }
-        if crop_mode == "automated" and generate_medsam:
+        if crop_mode in {"automated", "paired"} and generate_medsam:
             roi = self._ensure_roi_crop(site_store, artifact_row["image_path"])
             artifact_refs["medsam_mask_path"] = roi["medsam_mask_path"]
             artifact_refs["roi_crop_path"] = roi["roi_crop_path"]
-        if crop_mode == "manual" and generate_medsam:
+        if crop_mode in {"manual", "paired"} and generate_medsam:
             lesion = self._ensure_lesion_crop(site_store, artifact_row)
             artifact_refs["lesion_mask_path"] = lesion["lesion_mask_path"]
             artifact_refs["lesion_crop_path"] = lesion["lesion_crop_path"]
-        if generate_gradcam:
+        if generate_gradcam and self.model_manager.supports_gradcam(str(model_reference.get("architecture") or "")):
             artifact_name = Path(artifact_row["image_path"]).stem
-            gradcam_path = self.model_manager.generate_explanation(
-                model,
-                model_reference,
-                prepared_artifact["image_path"],
-                execution_device,
-                site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_gradcam.png",
-                target_class=predicted_index,
-            )
-            artifact_refs["gradcam_path"] = gradcam_path
+            if self._is_dual_input_model_version(model_reference):
+                cornea_input_path = str(prepared_artifact.get("cornea_image_path") or prepared_artifact.get("image_path") or "")
+                lesion_input_path = str(
+                    prepared_artifact.get("lesion_image_path") or prepared_artifact.get("lesion_crop_path") or ""
+                )
+                if cornea_input_path and lesion_input_path:
+                    gradcam_artifacts = self.model_manager.generate_paired_explanation_artifacts(
+                        model,
+                        model_reference,
+                        cornea_image_path=cornea_input_path,
+                        lesion_image_path=lesion_input_path,
+                        device=execution_device,
+                        cornea_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_cornea_gradcam.png",
+                        lesion_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_lesion_gradcam.png",
+                        target_class=predicted_index,
+                        cornea_heatmap_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_cornea_gradcam.npy",
+                        lesion_heatmap_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_lesion_gradcam.npy",
+                    )
+                    artifact_refs["gradcam_path"] = gradcam_artifacts["cornea_overlay_path"]
+                    artifact_refs["gradcam_heatmap_path"] = gradcam_artifacts["cornea_heatmap_path"]
+                    artifact_refs["gradcam_cornea_path"] = gradcam_artifacts["cornea_overlay_path"]
+                    artifact_refs["gradcam_cornea_heatmap_path"] = gradcam_artifacts["cornea_heatmap_path"]
+                    artifact_refs["gradcam_lesion_path"] = gradcam_artifacts["lesion_overlay_path"]
+                    artifact_refs["gradcam_lesion_heatmap_path"] = gradcam_artifacts["lesion_heatmap_path"]
+            else:
+                gradcam_artifacts = self.model_manager.generate_explanation_artifacts(
+                    model,
+                    model_reference,
+                    prepared_artifact["image_path"],
+                    execution_device,
+                    site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_gradcam.png",
+                    target_class=predicted_index,
+                    heatmap_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_gradcam.npy",
+                )
+                artifact_refs["gradcam_path"] = gradcam_artifacts["overlay_path"]
+                artifact_refs["gradcam_heatmap_path"] = gradcam_artifacts["heatmap_path"]
         return artifact_refs
 
     def _predict_case_with_model(
@@ -994,25 +1229,65 @@ class ResearchWorkflowService:
         generate_medsam: bool,
     ) -> dict[str, Any]:
         crop_mode = self._resolve_model_crop_mode(model_version)
+        case_aggregation = self._resolve_model_case_aggregation(model_version)
         prepared_records = self._prepare_records_for_model(site_store, case_records, crop_mode=crop_mode)
         model = self.model_manager.load_model(model_version, execution_device)
+        attention_scores: list[dict[str, Any]] | None = None
+        quality_weights: list[float] | None = None
+        representative_index: int | None = None
 
-        artifact_row = self._select_representative_record(case_records)
-        prepared_artifact = next(
-            (
-                record
-                for record in prepared_records
-                if record["source_image_path"] == artifact_row["image_path"]
-            ),
-            prepared_records[0],
-        )
-
-        image_probabilities: list[float] = []
-        for record in prepared_records:
-            prediction = self.model_manager.predict_image(model, record["image_path"], execution_device)
-            image_probabilities.append(prediction.probability)
-
-        predicted_probability = float(sum(image_probabilities) / len(image_probabilities))
+        if case_aggregation == "attention_mil":
+            aggregated_prediction = self._predict_case_with_attention_mil(
+                model,
+                model_version,
+                prepared_records,
+                execution_device,
+            )
+            predicted_probability = float(aggregated_prediction["predicted_probability"])
+            attention_scores = list(aggregated_prediction["attention_scores"])
+            representative_index = int(aggregated_prediction["representative_index"])
+            prepared_artifact = prepared_records[representative_index]
+            artifact_row = next(
+                (
+                    record
+                    for record in case_records
+                    if str(record.get("image_path") or "") == str(prepared_artifact.get("source_image_path") or "")
+                ),
+                self._select_representative_record(case_records),
+            )
+        else:
+            artifact_row = self._select_representative_record(case_records)
+            prepared_artifact = next(
+                (
+                    record
+                    for record in prepared_records
+                    if record["source_image_path"] == artifact_row["image_path"]
+                ),
+                prepared_records[0],
+            )
+            if self._is_dual_input_model_version(model_version):
+                image_predictions = [
+                    self.model_manager.predict_paired_image(
+                        model,
+                        model_version,
+                        str(record.get("cornea_image_path") or record["image_path"]),
+                        str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                        execution_device,
+                    )
+                    for record in prepared_records
+                ]
+            else:
+                image_predictions = [
+                    self.model_manager.predict_image(model, record["image_path"], execution_device)
+                    for record in prepared_records
+                ]
+            aggregated_prediction = self._aggregate_image_predictions(
+                prepared_records,
+                image_predictions,
+                case_aggregation,
+            )
+            predicted_probability = float(aggregated_prediction["predicted_probability"])
+            quality_weights = aggregated_prediction.get("quality_weights")
         decision_threshold = self._resolve_model_threshold(model_version)
         predicted_index = 1 if predicted_probability >= decision_threshold else 0
         true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
@@ -1038,10 +1313,16 @@ class ResearchWorkflowService:
             "predicted_probability": predicted_probability,
             "decision_threshold": decision_threshold,
             "crop_mode": crop_mode,
+            "case_aggregation": case_aggregation,
             "n_source_images": len(case_records),
             "n_model_inputs": len(prepared_records),
             "component_model_version_id": model_version.get("version_id"),
             "component_model_version_name": model_version.get("version_name"),
+            "instance_attention_scores": attention_scores,
+            "quality_weights": quality_weights,
+            "model_representative_source_image_path": str(prepared_artifact.get("source_image_path") or ""),
+            "model_representative_image_path": str(prepared_artifact.get("image_path") or ""),
+            "model_representative_index": representative_index,
             **artifact_refs,
         }
 
@@ -1106,6 +1387,11 @@ class ResearchWorkflowService:
 
         merged_artifacts = {
             "gradcam_path": first_artifact_path("gradcam_path"),
+            "gradcam_heatmap_path": first_artifact_path("gradcam_heatmap_path"),
+            "gradcam_cornea_path": first_artifact_path("gradcam_cornea_path"),
+            "gradcam_cornea_heatmap_path": first_artifact_path("gradcam_cornea_heatmap_path"),
+            "gradcam_lesion_path": first_artifact_path("gradcam_lesion_path"),
+            "gradcam_lesion_heatmap_path": first_artifact_path("gradcam_lesion_heatmap_path"),
             "medsam_mask_path": first_artifact_path("medsam_mask_path"),
             "roi_crop_path": first_artifact_path("roi_crop_path"),
             "lesion_mask_path": first_artifact_path("lesion_mask_path"),
@@ -1120,6 +1406,7 @@ class ResearchWorkflowService:
             "predicted_probability": predicted_probability,
             "decision_threshold": decision_threshold,
             "crop_mode": ensemble_crop_mode,
+            "case_aggregation": "weighted_average",
             "n_source_images": len(case_records),
             "n_model_inputs": sum(int(item.get("n_model_inputs", 0)) for item in component_predictions),
             "ensemble_component_predictions": component_predictions,
@@ -1172,11 +1459,22 @@ class ResearchWorkflowService:
                     "prediction_probability": predicted_probability,
                     "is_correct": bool(true_index == predicted_index),
                     "crop_mode": case_result.get("crop_mode"),
+                    "case_aggregation": case_result.get("case_aggregation"),
                     "n_source_images": case_result.get("n_source_images"),
                     "n_model_inputs": case_result.get("n_model_inputs"),
                     "ensemble_weights": case_result.get("ensemble_weights"),
                     "ensemble_component_predictions": case_result.get("ensemble_component_predictions"),
+                    "instance_attention_scores": case_result.get("instance_attention_scores"),
+                    "quality_weights": case_result.get("quality_weights"),
+                    "model_representative_source_image_path": case_result.get("model_representative_source_image_path"),
+                    "model_representative_image_path": case_result.get("model_representative_image_path"),
+                    "model_representative_index": case_result.get("model_representative_index"),
                     "gradcam_path": case_result.get("gradcam_path"),
+                    "gradcam_heatmap_path": case_result.get("gradcam_heatmap_path"),
+                    "gradcam_cornea_path": case_result.get("gradcam_cornea_path"),
+                    "gradcam_cornea_heatmap_path": case_result.get("gradcam_cornea_heatmap_path"),
+                    "gradcam_lesion_path": case_result.get("gradcam_lesion_path"),
+                    "gradcam_lesion_heatmap_path": case_result.get("gradcam_lesion_heatmap_path"),
                     "medsam_mask_path": case_result.get("medsam_mask_path"),
                     "roi_crop_path": case_result.get("roi_crop_path"),
                     "lesion_mask_path": case_result.get("lesion_mask_path"),
@@ -1203,6 +1501,7 @@ class ResearchWorkflowService:
             "model_version": model_version["version_name"],
             "model_version_id": model_version["version_id"],
             "model_architecture": model_version.get("architecture", "densenet121"),
+            "case_aggregation": self._resolve_model_case_aggregation(model_version),
             "run_date": utc_now(),
             "n_patients": int(manifest_df["patient_id"].nunique()),
             "n_cases": int(manifest_df[["patient_id", "visit_date"]].drop_duplicates().shape[0]),
@@ -1359,6 +1658,7 @@ class ResearchWorkflowService:
         val_split: float = 0.2,
         test_split: float = 0.2,
         use_pretrained: bool = True,
+        case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         regenerate_split: bool = False,
         progress_callback: Any = None,
@@ -1375,6 +1675,7 @@ class ResearchWorkflowService:
             val_split=val_split,
             test_split=test_split,
             use_pretrained=use_pretrained,
+            case_aggregation=case_aggregation,
             use_medsam_crops=use_medsam_crops,
             regenerate_split=regenerate_split,
             progress_callback=progress_callback,
@@ -1393,6 +1694,7 @@ class ResearchWorkflowService:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
@@ -1408,6 +1710,7 @@ class ResearchWorkflowService:
             batch_size=batch_size,
             val_split=val_split,
             use_pretrained=use_pretrained,
+            case_aggregation=case_aggregation,
             use_medsam_crops=use_medsam_crops,
             progress_callback=progress_callback,
         )
@@ -1465,6 +1768,13 @@ class ResearchWorkflowService:
             )
 
         update_id = make_id("update")
+        training_input_policy = (
+            "medsam_lesion_crop_only"
+            if crop_mode == "manual"
+            else "medsam_cornea_plus_lesion_paired_fusion"
+            if crop_mode == "paired"
+            else "medsam_cornea_crop_only"
+        )
         update_metadata = {
             "update_id": update_id,
             "site_id": site_store.site_id,
@@ -1482,7 +1792,7 @@ class ResearchWorkflowService:
             "preprocess_signature": self.model_manager.preprocess_signature(),
             "num_classes": len(LABEL_TO_INDEX),
             "crop_mode": crop_mode,
-            "training_input_policy": "medsam_cornea_crop_only" if crop_mode == "automated" else "medsam_lesion_crop_only",
+            "training_input_policy": training_input_policy,
             "training_summary": result,
         }
         self.control_plane.register_model_update(update_metadata)

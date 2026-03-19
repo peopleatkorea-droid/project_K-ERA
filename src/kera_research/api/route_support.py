@@ -78,6 +78,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             SiteValidationRunRequest=deps["SiteValidationRunRequest"],
             InitialTrainingRequest=deps["InitialTrainingRequest"],
             InitialTrainingBenchmarkRequest=deps["InitialTrainingBenchmarkRequest"],
+            ResumeBenchmarkRequest=deps["ResumeBenchmarkRequest"],
             EmbeddingBackfillRequest=deps["EmbeddingBackfillRequest"],
             CrossValidationRunRequest=deps["CrossValidationRunRequest"],
         ),

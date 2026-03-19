@@ -66,6 +66,8 @@ export type SiteFormState = {
   hospital_name: string;
   research_registry_enabled: boolean;
   source_institution_id?: string;
+  source_institution_name?: string;
+  source_institution_address?: string;
 };
 
 export type ToastState = { tone: "success" | "error"; message: string } | null;
@@ -184,6 +186,9 @@ export function createSiteForm(projectId = ""): SiteFormState {
     display_name: "",
     hospital_name: "",
     research_registry_enabled: true,
+    source_institution_id: undefined,
+    source_institution_name: undefined,
+    source_institution_address: undefined,
   };
 }
 
@@ -268,6 +273,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
   const [storageSettings, setStorageSettings] = useState<StorageSettingsRecord | null>(null);
   const [pendingRequests, setPendingRequests] = useState<AccessRequestRecord[]>([]);
+  const [autoApprovedRequests, setAutoApprovedRequests] = useState<AccessRequestRecord[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [modelVersions, setModelVersions] = useState<ModelVersionRecord[]>([]);
   const [modelUpdates, setModelUpdates] = useState<ModelUpdateRecord[]>([]);
@@ -326,7 +332,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [initialForm, setInitialForm] = useState({
     architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
-    crop_mode: "automated" as "automated" | "manual" | "both",
+    crop_mode: "automated" as "automated" | "manual" | "both" | "paired",
+    case_aggregation: "mean" as "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
     epochs: 30,
     learning_rate: 1e-4,
     batch_size: 16,
@@ -338,7 +345,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [crossValidationForm, setCrossValidationForm] = useState({
     architecture: "convnext_tiny",
     execution_mode: "auto" as "auto" | "cpu" | "gpu",
-    crop_mode: "automated" as "automated" | "manual",
+    crop_mode: "automated" as "automated" | "manual" | "paired",
+    case_aggregation: "mean" as "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
     num_folds: 5,
     epochs: 10,
     learning_rate: 1e-4,
@@ -421,6 +429,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     switch (stage) {
       case "queued":
         return pick(locale, "Queued", "대기 중");
+      case "cancelling":
+        return pick(locale, "Cancelling", "중단 요청");
       case "preparing_data":
         return pick(locale, "Preparing data", "데이터 준비");
       case "preparing_component":
@@ -429,6 +439,10 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
         return pick(locale, "Preparing fold", "fold 준비");
       case "training_component":
         return pick(locale, "Training", "학습 중");
+      case "benchmark_component_completed":
+        return pick(locale, "Model completed", "모델 완료");
+      case "benchmark_component_failed":
+        return pick(locale, "Model failed", "모델 실패");
       case "training_fold":
         return pick(locale, "Training fold", "fold 학습");
       case "registering_component":
@@ -437,6 +451,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
         return pick(locale, "Selecting ensemble weight", "앙상블 가중치 선택");
       case "finalizing":
         return pick(locale, "Finalizing", "마무리");
+      case "cancelled":
+        return pick(locale, "Cancelled", "중단됨");
       case "completed":
         return pick(locale, "Completed", "완료");
       case "failed":
@@ -487,6 +503,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setStorageSettings,
     pendingRequests,
     setPendingRequests,
+    autoApprovedRequests,
+    setAutoApprovedRequests,
     reviewDrafts,
     setReviewDrafts,
     modelVersions,

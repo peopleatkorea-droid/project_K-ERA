@@ -105,11 +105,29 @@ def validation_case_rows(
                 ),
                 "gradcam_available": bool(
                     (file_prediction.get("gradcam_path") and Path(file_prediction["gradcam_path"]).exists())
+                    or (file_prediction.get("gradcam_cornea_path") and Path(file_prediction["gradcam_cornea_path"]).exists())
+                    or (file_prediction.get("gradcam_lesion_path") and Path(file_prediction["gradcam_lesion_path"]).exists())
                     or prediction.get("has_gradcam")
                 ),
                 "medsam_mask_available": bool(
                     (file_prediction.get("medsam_mask_path") and Path(file_prediction["medsam_mask_path"]).exists())
                     or prediction.get("has_medsam_mask")
+                ),
+                "root_cause_tags": list(
+                    (
+                        (((file_prediction.get("post_mortem") or {}).get("structured_analysis") or {}).get("root_cause_tags"))
+                        or []
+                    )
+                ),
+                "action_tags": list(
+                    (
+                        (((file_prediction.get("post_mortem") or {}).get("structured_analysis") or {}).get("action_tags"))
+                        or []
+                    )
+                ),
+                "learning_signal": (
+                    (((file_prediction.get("post_mortem") or {}).get("structured_analysis") or {}).get("learning_signal"))
+                    or (file_prediction.get("post_mortem") or {}).get("learning_signal")
                 ),
                 "representative_image_id": representative.get("image_id") if representative else None,
                 "representative_view": representative.get("view") if representative else None,

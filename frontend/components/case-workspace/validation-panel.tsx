@@ -57,6 +57,88 @@ function toneClass(tone: "high" | "medium" | "low" | "neutral" | "match" | "mism
   }
 }
 
+function postMortemOutcomeLabel(locale: Locale, outcome: string | null | undefined): string {
+  switch (String(outcome || "").trim().toLowerCase()) {
+    case "correct":
+      return pick(locale, "Correct", "정답");
+    case "incorrect":
+      return pick(locale, "Incorrect", "오답");
+    default:
+      return pick(locale, "Unknown", "미확정");
+  }
+}
+
+function postMortemSignalLabel(locale: Locale, signal: string | null | undefined): string {
+  switch (String(signal || "").trim().toLowerCase()) {
+    case "hard_case_priority":
+      return pick(locale, "Hard-case priority", "하드 케이스 우선");
+    case "boundary_case_review":
+      return pick(locale, "Boundary-case review", "경계 케이스 검토");
+    case "low_quality_watch":
+      return pick(locale, "Low-quality watch", "저품질 입력 주의");
+    case "collect_more_reference_cases":
+      return pick(locale, "Collect more references", "참조 케이스 추가 수집");
+    case "label_review_or_multilabel_watch":
+      return pick(locale, "Label / polymicrobial review", "라벨 / 다균종 검토");
+    case "retain_as_reference":
+      return pick(locale, "Reference case", "참조 케이스");
+    case "correct_but_low_margin":
+      return pick(locale, "Low-margin correct", "저여유 정답");
+    default:
+      return String(signal || "").trim().replaceAll("_", " ") || pick(locale, "Unknown", "미확정");
+  }
+}
+
+function postMortemRootCauseLabel(locale: Locale, code: string | null | undefined): string {
+  switch (String(code || "").trim().toLowerCase()) {
+    case "shortcut_suspected":
+      return pick(locale, "Shortcut suspected", "shortcut 의심");
+    case "domain_shift":
+      return pick(locale, "Domain shift", "도메인 시프트");
+    case "label_review_needed":
+      return pick(locale, "Label review", "라벨 재검토");
+    case "natural_boundary":
+      return pick(locale, "Boundary case", "경계 케이스");
+    case "low_quality":
+      return pick(locale, "Low quality", "저품질 입력");
+    case "data_sparse":
+      return pick(locale, "Data sparse", "희소 데이터");
+    default:
+      return String(code || "").trim().replaceAll("_", " ") || pick(locale, "Unknown", "미확정");
+  }
+}
+
+function postMortemActionLabel(locale: Locale, code: string | null | undefined): string {
+  switch (String(code || "").trim().toLowerCase()) {
+    case "hard_case_train":
+      return pick(locale, "Hard-case train", "하드케이스 학습");
+    case "collect_more_cases":
+      return pick(locale, "Collect more cases", "케이스 추가 수집");
+    case "exclude_from_train":
+      return pick(locale, "Exclude from train", "학습 제외");
+    case "site_weight_watch":
+      return pick(locale, "Site weight watch", "사이트 가중치 관찰");
+    case "human_review":
+      return pick(locale, "Human review", "사람 검토");
+    default:
+      return String(code || "").trim().replaceAll("_", " ") || pick(locale, "Unknown", "미확정");
+  }
+}
+
+function formatRatio(value: number | null | undefined, emptyLabel: string): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return emptyLabel;
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatScore(value: number | null | undefined, emptyLabel: string): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return emptyLabel;
+  }
+  return value >= 10 ? value.toFixed(1) : value.toFixed(2);
+}
+
 export function ValidationPanel({
   locale,
   common,
@@ -77,10 +159,24 @@ export function ValidationPanel({
   modelCompareResult,
   formatProbability,
 }: Props) {
+  const ensembleComponentCount = validationResult?.model_version.component_model_version_ids?.length ?? 0;
+  const postMortem = validationResult?.post_mortem ?? null;
+  const attentionScores = validationResult?.case_prediction?.instance_attention_scores ?? [];
+  const topAttention = attentionScores.reduce<
+    { image_path: string; source_image_path: string; view?: string | null; attention: number } | null
+  >((current, item) => (current == null || item.attention > current.attention ? item : current), null);
+  const structuredAnalysis = postMortem?.structured_analysis ?? null;
+  const structuredScores = structuredAnalysis?.scores ?? null;
+  const predictionSnapshot = structuredAnalysis?.prediction_snapshot ?? validationResult?.case_prediction?.prediction_snapshot ?? null;
+  const peerConsensus = structuredAnalysis?.peer_model_consensus ?? predictionSnapshot?.peer_model_consensus ?? null;
   const validationModelLabel =
     validationResult?.model_version.ensemble_mode === "weighted_average" &&
     validationResult.model_version.architecture === "multi_model_ensemble"
-      ? pick(locale, "5-model ensemble", "5모델 ensemble")
+      ? pick(
+          locale,
+          `${Math.max(ensembleComponentCount, 1)}-model ensemble`,
+          `${Math.max(ensembleComponentCount, 1)}모델 ensemble`
+        )
       : validationResult?.model_version.architecture ?? common.notAvailable;
   const successfulComparisons = (modelCompareResult?.comparisons ?? []).filter(
     (item): item is NonNullable<typeof modelCompareResult>["comparisons"][number] & { summary: NonNullable<NonNullable<typeof modelCompareResult>["comparisons"][number]["summary"]> } =>
@@ -221,6 +317,14 @@ export function ValidationPanel({
                 label={pick(locale, "confidence", "신뢰도")}
               />
               <MetricItem value={validationResult.execution_device} label={pick(locale, "device", "디바이스")} />
+              <MetricItem
+                value={validationResult.summary.case_aggregation ?? validationResult.model_version.case_aggregation ?? common.notAvailable}
+                label={pick(locale, "visit aggregation", "visit 집계")}
+              />
+              <MetricItem
+                value={topAttention ? `${Math.round(topAttention.attention * 100)}%` : common.notAvailable}
+                label={pick(locale, "top attention", "최고 attention")}
+              />
             </MetricGrid>
 
             <p className="m-0 text-sm leading-6 text-muted">
@@ -230,12 +334,318 @@ export function ValidationPanel({
                 ? pick(locale, `mode ${validationResult.model_version.crop_mode}`, `모드 ${validationResult.model_version.crop_mode}`)
                 : null}
               {validationResult.model_version.crop_mode ? " · " : ""}
+              {(validationResult.summary.case_aggregation ?? validationResult.model_version.case_aggregation)
+                ? `${pick(locale, "aggregation", "집계")} ${
+                    validationResult.summary.case_aggregation ?? validationResult.model_version.case_aggregation
+                  } · `
+                : ""}
               {validationResult.summary.is_correct
                 ? pick(locale, "prediction matched culture", "예측이 배양 결과와 일치합니다.")
                 : pick(locale, "prediction diverged from culture", "예측이 배양 결과와 다릅니다.")}
             </p>
 
             {artifactContent}
+
+            {postMortem ? (
+              <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
+                <SectionHeader
+                  title={pick(locale, "Prediction post-mortem", "예측 post-mortem")}
+                  titleAs="h4"
+                  description={pick(
+                    locale,
+                    "A structured review of why this prediction likely matched or missed the culture label.",
+                    "이 예측이 왜 배양 라벨과 맞았거나 어긋났는지 구조화해 다시 정리한 결과입니다."
+                  )}
+                  className={docSectionHeadClass}
+                  aside={
+                    <div className="flex flex-wrap gap-2">
+                      <span
+                        className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                          postMortem.outcome === "correct" ? "match" : postMortem.outcome === "incorrect" ? "mismatch" : "neutral"
+                        )}`}
+                      >
+                        {postMortemOutcomeLabel(locale, postMortem.outcome)}
+                      </span>
+                      <span
+                        className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                          "neutral"
+                        )}`}
+                      >
+                        {postMortem.mode}
+                      </span>
+                    </div>
+                  }
+                />
+
+                <MetricGrid columns={3}>
+                  <MetricItem value={postMortem.model ?? common.notAvailable} label={pick(locale, "LLM model", "LLM 모델")} />
+                  <MetricItem value={postMortem.generated_at ?? common.notAvailable} label={pick(locale, "Generated", "생성 시각")} />
+                  <MetricItem value={postMortemSignalLabel(locale, postMortem.learning_signal)} label={pick(locale, "Learning signal", "학습 신호")} />
+                </MetricGrid>
+
+                {predictionSnapshot ? (
+                  <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
+                    <SectionHeader
+                      title={pick(locale, "Prediction snapshot", "예측 스냅샷")}
+                      titleAs="h4"
+                      description={pick(
+                        locale,
+                        "Signals captured at prediction time before the post-mortem summary was generated.",
+                        "post-mortem 요약을 만들기 전에 예측 시점에서 저장한 핵심 신호입니다."
+                      )}
+                      className={docSectionHeadClass}
+                    />
+                    <MetricGrid columns={4}>
+                      <MetricItem
+                        value={formatProbability(predictionSnapshot.prediction_probability, common.notAvailable)}
+                        label={pick(locale, "raw probability", "원시 확률")}
+                      />
+                      <MetricItem
+                        value={formatRatio(predictionSnapshot.predicted_confidence, common.notAvailable)}
+                        label={pick(locale, "predicted confidence", "예측 신뢰도")}
+                      />
+                      <MetricItem value={predictionSnapshot.crop_mode ?? common.notAvailable} label={pick(locale, "crop mode", "crop 모드")} />
+                      <MetricItem
+                        value={formatScore(predictionSnapshot.representative_quality_score, common.notAvailable)}
+                        label={pick(locale, "Q-score", "Q-score")}
+                      />
+                    </MetricGrid>
+                    <MetricGrid columns={3}>
+                      <MetricItem
+                        value={predictionSnapshot.classifier_embedding?.embedding_id ?? common.notAvailable}
+                        label={pick(locale, "classifier embedding", "classifier embedding")}
+                      />
+                      <MetricItem
+                        value={predictionSnapshot.dinov2_embedding?.embedding_id ?? common.notAvailable}
+                        label={pick(locale, "DINOv2 embedding", "DINOv2 embedding")}
+                      />
+                      <MetricItem
+                        value={formatRatio(peerConsensus?.disagreement_score, common.notAvailable)}
+                        label={pick(locale, "peer disagreement", "모델 불일치")}
+                      />
+                    </MetricGrid>
+                    <MetricGrid columns={4}>
+                      <MetricItem
+                        value={
+                          predictionSnapshot.gradcam_cornea_path
+                            ? pick(locale, "Available", "있음")
+                            : predictionSnapshot.gradcam_path
+                              ? pick(locale, "Legacy only", "기존 단일 CAM")
+                              : common.notAvailable
+                        }
+                        label={pick(locale, "cornea CAM", "각막 CAM")}
+                      />
+                      <MetricItem
+                        value={predictionSnapshot.gradcam_lesion_path ? pick(locale, "Available", "있음") : common.notAvailable}
+                        label={pick(locale, "lesion CAM", "병변 CAM")}
+                      />
+                      <MetricItem
+                        value={predictionSnapshot.roi_crop_path ? pick(locale, "Available", "있음") : common.notAvailable}
+                        label={pick(locale, "cornea crop", "각막 crop")}
+                      />
+                      <MetricItem
+                        value={predictionSnapshot.lesion_crop_path ? pick(locale, "Available", "있음") : common.notAvailable}
+                        label={pick(locale, "lesion crop", "병변 crop")}
+                      />
+                    </MetricGrid>
+                  </Card>
+                ) : null}
+
+                {structuredAnalysis && structuredScores ? (
+                  <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
+                    <SectionHeader
+                      title={pick(locale, "Structured analysis", "구조화 분석")}
+                      titleAs="h4"
+                      description={pick(
+                        locale,
+                        "Stored numeric scores, root-cause tags, and follow-up actions derived before the human-readable summary.",
+                        "사람용 요약 이전 단계에서 계산된 수치 점수, 원인 태그, 후속 액션입니다."
+                      )}
+                      className={docSectionHeadClass}
+                    />
+                    <MetricGrid columns={4}>
+                      <MetricItem
+                        value={formatRatio(structuredScores.cam_overlap_score, common.notAvailable)}
+                        label={pick(locale, "CAM overlap", "CAM overlap")}
+                      />
+                      <MetricItem
+                        value={formatRatio(structuredScores.cam_cornea_overlap_score, common.notAvailable)}
+                        label={pick(locale, "Cornea CAM overlap", "각막 CAM overlap")}
+                      />
+                      <MetricItem
+                        value={formatRatio(structuredScores.cam_lesion_overlap_score, common.notAvailable)}
+                        label={pick(locale, "Lesion CAM overlap", "병변 CAM overlap")}
+                      />
+                      <MetricItem
+                        value={formatRatio(structuredScores.dino_true_label_purity, common.notAvailable)}
+                        label={pick(locale, "DINO true purity", "DINO 정답 purity")}
+                      />
+                      <MetricItem
+                        value={formatScore(structuredScores.dino_mean_distance, common.notAvailable)}
+                        label={pick(locale, "DINO distance", "DINO 거리")}
+                      />
+                      <MetricItem
+                        value={formatRatio(structuredScores.multi_model_disagreement, common.notAvailable)}
+                        label={pick(locale, "model disagreement", "모델 불일치")}
+                      />
+                      <MetricItem
+                        value={formatScore(structuredScores.image_quality_score, common.notAvailable)}
+                        label={pick(locale, "image quality", "이미지 품질")}
+                      />
+                      <MetricItem
+                        value={formatRatio(structuredScores.site_error_concentration, common.notAvailable)}
+                        label={pick(locale, "site concentration", "사이트 집중도")}
+                      />
+                      <MetricItem
+                        value={String(structuredScores.similar_case_count ?? common.notAvailable)}
+                        label={pick(locale, "similar cases", "유사 케이스")}
+                      />
+                      <MetricItem
+                        value={String(structuredScores.text_evidence_count ?? common.notAvailable)}
+                        label={pick(locale, "text evidence", "텍스트 근거")}
+                      />
+                    </MetricGrid>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <Card as="div" variant="panel" className="grid gap-3 p-4">
+                        <SectionHeader title={pick(locale, "Root-cause tags", "원인 태그")} titleAs="h4" className={docSectionHeadClass} />
+                        <div className="flex flex-wrap gap-2">
+                          {structuredAnalysis.root_cause_tags.length > 0 ? (
+                            structuredAnalysis.root_cause_tags.map((tag) => (
+                              <span key={tag} className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass("mismatch")}`}>
+                                {postMortemRootCauseLabel(locale, tag)}
+                              </span>
+                            ))
+                          ) : (
+                            <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                          )}
+                        </div>
+                      </Card>
+
+                      <Card as="div" variant="panel" className="grid gap-3 p-4">
+                        <SectionHeader title={pick(locale, "Action tags", "액션 태그")} titleAs="h4" className={docSectionHeadClass} />
+                        <div className="flex flex-wrap gap-2">
+                          {structuredAnalysis.action_tags.length > 0 ? (
+                            structuredAnalysis.action_tags.map((tag) => (
+                              <span key={tag} className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass("medium")}`}>
+                                {postMortemActionLabel(locale, tag)}
+                              </span>
+                            ))
+                          ) : (
+                            <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                          )}
+                        </div>
+                      </Card>
+                    </div>
+
+                    {peerConsensus ? (
+                      <Card as="div" variant="panel" className="grid gap-3 p-4">
+                        <SectionHeader
+                          title={pick(locale, "Peer-model consensus", "peer-model 합의")}
+                          titleAs="h4"
+                          className={docSectionHeadClass}
+                          description={pick(
+                            locale,
+                            "Cross-model comparison reused as an ambiguity signal for this case.",
+                            "이 케이스의 애매함을 보기 위해 재사용한 다중 모델 비교 신호입니다."
+                          )}
+                        />
+                        <MetricGrid columns={4}>
+                          <MetricItem value={String(peerConsensus.models_evaluated ?? common.notAvailable)} label={pick(locale, "models", "모델 수")} />
+                          <MetricItem value={peerConsensus.leading_label ?? common.notAvailable} label={pick(locale, "leading label", "우세 라벨")} />
+                          <MetricItem value={formatRatio(peerConsensus.agreement_rate, common.notAvailable)} label={pick(locale, "agreement", "합의율")} />
+                          <MetricItem value={formatScore(peerConsensus.vote_entropy, common.notAvailable)} label={pick(locale, "vote entropy", "의견 엔트로피")} />
+                        </MetricGrid>
+                      </Card>
+                    ) : null}
+                  </Card>
+                ) : null}
+
+                {postMortem.llm_error ? (
+                  <div className={panelImageFallbackClass}>
+                    {pick(
+                      locale,
+                      `LLM generation failed and the local fallback post-mortem was used instead. ${postMortem.llm_error}`,
+                      `LLM 생성에 실패하여 로컬 fallback post-mortem을 사용했습니다. ${postMortem.llm_error}`
+                    )}
+                  </div>
+                ) : null}
+
+                <Card as="div" variant="panel" className="grid gap-3 p-4">
+                  <SectionHeader title={pick(locale, "Summary", "요약")} titleAs="h4" className={docSectionHeadClass} />
+                  <p className="m-0 text-sm leading-6 text-muted">{postMortem.summary}</p>
+                </Card>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                    <SectionHeader title={pick(locale, "Likely factors", "가능한 요인")} titleAs="h4" className={docSectionHeadClass} />
+                    <div className="grid gap-3">
+                      {postMortem.likely_causes.length > 0 ? (
+                        postMortem.likely_causes.map((entry, index) => (
+                          <Card key={`postmortem-cause-${index}`} as="article" variant="panel" className="p-4">
+                            <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
+                          </Card>
+                        ))
+                      ) : (
+                        <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                      )}
+                    </div>
+                  </Card>
+
+                  <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                    <SectionHeader title={pick(locale, "Follow-up actions", "후속 조치")} titleAs="h4" className={docSectionHeadClass} />
+                    <div className="grid gap-3">
+                      {postMortem.follow_up_actions.length > 0 ? (
+                        postMortem.follow_up_actions.map((entry, index) => (
+                          <Card key={`postmortem-action-${index}`} as="article" variant="panel" className="p-4">
+                            <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
+                          </Card>
+                        ))
+                      ) : (
+                        <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                      )}
+                    </div>
+                  </Card>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                    <SectionHeader title={pick(locale, "Supporting evidence", "지지 신호")} titleAs="h4" className={docSectionHeadClass} />
+                    <div className="grid gap-3">
+                      {postMortem.supporting_evidence.length > 0 ? (
+                        postMortem.supporting_evidence.map((entry, index) => (
+                          <Card key={`postmortem-support-${index}`} as="article" variant="panel" className="p-4">
+                            <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
+                          </Card>
+                        ))
+                      ) : (
+                        <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                      )}
+                    </div>
+                  </Card>
+
+                  <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                    <SectionHeader title={pick(locale, "Contradictory evidence", "상충 신호")} titleAs="h4" className={docSectionHeadClass} />
+                    <div className="grid gap-3">
+                      {postMortem.contradictory_evidence.length > 0 ? (
+                        postMortem.contradictory_evidence.map((entry, index) => (
+                          <Card key={`postmortem-conflict-${index}`} as="article" variant="panel" className="p-4">
+                            <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
+                          </Card>
+                        ))
+                      ) : (
+                        <div className={panelImageFallbackClass}>{common.notAvailable}</div>
+                      )}
+                    </div>
+                  </Card>
+                </div>
+
+                <MetricGrid columns={2}>
+                  <MetricItem value={postMortem.uncertainty} label={pick(locale, "Uncertainty", "불확실성")} />
+                  <MetricItem value={postMortem.disclaimer} label={pick(locale, "Disclaimer", "주의")} />
+                </MetricGrid>
+              </Card>
+            ) : null}
           </div>
         ) : (
           <div className={emptySurfaceClass}>

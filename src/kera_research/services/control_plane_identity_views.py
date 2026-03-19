@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 from typing import Any, Callable
 
 import bcrypt
@@ -13,6 +15,29 @@ from kera_research.domain import make_id, utc_now
 
 def _is_bcrypt_hash(value: str) -> bool:
     return str(value or "").startswith(("$2b$", "$2a$", "$2y$"))
+
+
+def _is_pbkdf2_sha256_hash(value: str) -> bool:
+    return str(value or "").startswith("pbkdf2_sha256$")
+
+
+def _verify_pbkdf2_sha256_hash(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iteration_text, salt, expected_hash = str(encoded or "").split("$", 3)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    try:
+        iterations = int(iteration_text)
+    except (TypeError, ValueError):
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+    try:
+        expected = base64.b64decode(expected_hash)
+    except Exception:
+        return False
+    return hmac.compare_digest(candidate, expected)
 
 
 class ControlPlaneIdentityFacade:
@@ -98,11 +123,23 @@ class ControlPlaneIdentityFacade:
         stored = user_record.get("password", "")
         if stored == self.google_auth_sentinel:
             return None
-        if not _is_bcrypt_hash(stored):
-            return None
-        if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
-            return None
-        return self.serialize_user(user_record)
+        if _is_bcrypt_hash(stored):
+            if not bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")):
+                return None
+            return self.serialize_user(user_record)
+        if _is_pbkdf2_sha256_hash(stored):
+            if not _verify_pbkdf2_sha256_hash(password, stored):
+                return None
+            migrated_password = self.normalize_password_storage(password)
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                conn.execute(
+                    update(users)
+                    .where(users.c.user_id == user_record["user_id"])
+                    .values(password=migrated_password)
+                )
+            user_record["password"] = migrated_password
+            return self.serialize_user(user_record)
+        return None
 
     def serialize_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         serialized = dict(user_record)

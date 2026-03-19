@@ -61,15 +61,30 @@ class ModelManagerTests(unittest.TestCase):
         self.assertIn("calibration", metrics)
         self.assertIsInstance(metrics["calibration"]["bins"], list)
 
-    def test_build_model_supports_torchvision_backbones(self):
+    def test_normalize_case_aggregation_respects_attention_mil_architecture(self):
+        manager = ModelManager()
+        self.assertEqual(manager.normalize_case_aggregation("attention_mil", "dinov2_mil"), "attention_mil")
+        self.assertEqual(manager.normalize_case_aggregation("attention_mil", "convnext_tiny"), "mean")
+        self.assertEqual(manager.normalize_case_aggregation("quality_weighted_mean", "convnext_tiny"), "quality_weighted_mean")
+
+    def test_build_model_supports_supported_backbones(self):
         manager = ModelManager()
         vit_model = manager.build_model("vit")
         swin_model = manager.build_model("swin")
         efficientnet_model = manager.build_model("efficientnet_v2_s")
+        dinov2_model = manager.build_model("dinov2")
+        dinov2_mil_model = manager.build_model("dinov2_mil")
 
         self.assertTrue(hasattr(vit_model, "heads"))
         self.assertTrue(hasattr(swin_model, "head"))
         self.assertTrue(hasattr(efficientnet_model, "classifier"))
+        self.assertTrue(hasattr(dinov2_model, "classifier"))
+        self.assertTrue(hasattr(dinov2_mil_model, "attention_pool"))
+
+    def test_dual_input_concat_is_marked_as_gradcam_capable(self):
+        manager = ModelManager()
+        self.assertTrue(manager.is_dual_input_architecture("dual_input_concat"))
+        self.assertTrue(manager.supports_gradcam("dual_input_concat"))
 
 
 if __name__ == "__main__":

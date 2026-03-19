@@ -23,7 +23,9 @@ const apiMocks = vi.hoisted(() => ({
   fetchSiteValidations: vi.fn(),
   fetchAiClinicEmbeddingStatus: vi.fn(),
   syncInstitutionDirectory: vi.fn(),
+  reviewAccessRequest: vi.fn(),
   createAdminSite: vi.fn(),
+  updateAdminSite: vi.fn(),
   autoPublishModelVersion: vi.fn(),
   autoPublishModelUpdate: vi.fn(),
   publishModelVersion: vi.fn(),
@@ -53,7 +55,9 @@ vi.mock("../lib/api", async () => {
     fetchSiteValidations: apiMocks.fetchSiteValidations,
     fetchAiClinicEmbeddingStatus: apiMocks.fetchAiClinicEmbeddingStatus,
     syncInstitutionDirectory: apiMocks.syncInstitutionDirectory,
+    reviewAccessRequest: apiMocks.reviewAccessRequest,
     createAdminSite: apiMocks.createAdminSite,
+    updateAdminSite: apiMocks.updateAdminSite,
     autoPublishModelVersion: apiMocks.autoPublishModelVersion,
     autoPublishModelUpdate: apiMocks.autoPublishModelUpdate,
     publishModelVersion: apiMocks.publishModelVersion,
@@ -80,16 +84,18 @@ describe("AdminWorkspace integration", () => {
     apiMocks.fetchStorageSettings.mockResolvedValue({
       storage_root: "C:\\KERA",
       default_storage_root: "C:\\KERA",
+      effective_default_storage_root: "C:\\KERA",
+      storage_root_source: "built_in_default",
       uses_custom_root: false,
     });
-    apiMocks.fetchAccessRequests.mockResolvedValue([]);
+    apiMocks.fetchAccessRequests.mockImplementation((_token, statusFilter = "pending") => Promise.resolve(statusFilter === "approved" ? [] : []));
     apiMocks.fetchModelVersions.mockResolvedValue([]);
     apiMocks.fetchModelUpdates.mockResolvedValue([]);
     apiMocks.fetchAggregations.mockResolvedValue([]);
     apiMocks.fetchProjects.mockResolvedValue([
       {
-        project_id: "project_1",
-        name: "Alpha Project",
+        project_id: "project_default",
+        name: "Default Workspace",
         description: "test",
         site_ids: ["SITE_A"],
         created_at: "2026-03-15T00:00:00Z",
@@ -98,7 +104,7 @@ describe("AdminWorkspace integration", () => {
     apiMocks.fetchAdminSites.mockResolvedValue([
       {
         site_id: "SITE_A",
-        project_id: "project_1",
+        project_id: "project_default",
         display_name: "Site A",
         hospital_name: "Hospital A",
         local_storage_root: "C:\\KERA\\SITE_A",
@@ -141,9 +147,29 @@ describe("AdminWorkspace integration", () => {
       total_count: 128,
       institutions_synced: 128,
     });
+    apiMocks.reviewAccessRequest.mockResolvedValue({
+      request: {
+        request_id: "access_1",
+        user_id: "user_researcher",
+        email: "researcher@example.com",
+        requested_site_id: "SITE_A",
+        requested_site_label: "Site A",
+        requested_site_source: "site",
+        resolved_site_id: "SITE_A",
+        resolved_site_label: "Site A",
+        requested_role: "researcher",
+        message: "Need access",
+        status: "rejected",
+        reviewed_by: "user_admin",
+        reviewer_notes: "",
+        created_at: "2026-03-17T00:00:00Z",
+        reviewed_at: "2026-03-17T00:01:00Z",
+      },
+      created_site: null,
+    });
     apiMocks.createAdminSite.mockResolvedValue({
       site_id: "SITE_B",
-      project_id: "project_1",
+      project_id: "project_default",
       display_name: "Site B",
       hospital_name: "Hospital B",
     });
@@ -240,6 +266,27 @@ describe("AdminWorkspace integration", () => {
   it("creates a hospital through the management section and refreshes workspace state", async () => {
     const onSelectSite = vi.fn();
     const onRefreshSites = vi.fn(async () => undefined);
+    apiMocks.searchPublicInstitutions.mockResolvedValue([
+      {
+        institution_id: "39100103",
+        source: "hira",
+        name: "Jeju National University Hospital",
+        institution_type_code: "11",
+        institution_type_name: "Tertiary hospital",
+        address: "Jeju Special Self-Governing Province",
+        phone: "064-000-0000",
+        homepage: "",
+        sido_code: "50",
+        sggu_code: "500",
+        emdong_name: "",
+        postal_code: "",
+        x_pos: "",
+        y_pos: "",
+        ophthalmology_available: true,
+        open_status: "active",
+        synced_at: "2026-03-17T00:00:00Z",
+      },
+    ]);
 
     render(
       <LocaleProvider>
@@ -284,19 +331,28 @@ describe("AdminWorkspace integration", () => {
 
     await screen.findByRole("button", { name: "Register hospital" });
 
-    fireEvent.change(screen.getByPlaceholderText("e.g. 39100103"), { target: { value: "SITE_B" } });
-    fireEvent.change(screen.getByPlaceholderText("e.g. JNUH"), { target: { value: "Site B" } });
-    fireEvent.change(screen.getByLabelText("Official hospital name"), { target: { value: "Hospital B" } });
+    fireEvent.change(screen.getByPlaceholderText("Jeju, Seoul, Kim's Eye..."), { target: { value: "Jeju" } });
+
+    await waitFor(() => {
+      expect(apiMocks.searchPublicInstitutions).toHaveBeenCalledWith("Jeju", { limit: 8 });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. JNUH"), { target: { value: "JNUH" } });
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
     await waitFor(() => {
-      expect(apiMocks.createAdminSite).toHaveBeenCalledWith("test-token", {
-        project_id: "project_1",
-        site_code: "SITE_B",
-        display_name: "Site B",
-        hospital_name: "Hospital B",
-        research_registry_enabled: true,
-      });
+      expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
+        "test-token",
+        expect.objectContaining({
+          project_id: "project_default",
+          site_code: "39100103",
+          display_name: "JNUH",
+          hospital_name: "Jeju National University Hospital",
+          source_institution_id: "39100103",
+          research_registry_enabled: true,
+        }),
+      );
     });
     await waitFor(() => {
       expect(onRefreshSites).toHaveBeenCalledTimes(1);
@@ -305,17 +361,68 @@ describe("AdminWorkspace integration", () => {
     expect(await screen.findByText("Registered Hospital B.")).toBeInTheDocument();
   });
 
+  it("hides smoke test hospitals from the linked site rail", async () => {
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A", "smoke-site"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+            {
+              site_id: "smoke-site",
+              display_name: "Smoke Site",
+              hospital_name: "Smoke Hospital",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("1 linked")).toBeInTheDocument();
+    expect(screen.queryByText("Smoke Hospital")).not.toBeInTheDocument();
+  });
+
   it("searches HIRA institutions in management and prefills a new hospital mapping", async () => {
     const onSelectSite = vi.fn();
     const onRefreshSites = vi.fn(async () => undefined);
     apiMocks.searchPublicInstitutions.mockResolvedValue([
       {
-        institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
+        institution_id: "39100103",
         source: "hira",
         name: "Jeju National University Hospital",
         institution_type_code: "11",
         institution_type_name: "Tertiary hospital",
-        address: "Jeju",
+        address: "Jeju Special Self-Governing Province",
         phone: "064-000-0000",
         homepage: "",
         sido_code: "50",
@@ -378,32 +485,272 @@ describe("AdminWorkspace integration", () => {
       expect(apiMocks.searchPublicInstitutions).toHaveBeenCalledWith("Jeju", { limit: 8 });
     });
 
-    expect(screen.queryByText("HIRA")).not.toBeInTheDocument();
-    expect(screen.queryByText("JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("HIRA site ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Official hospital name")).not.toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
 
-    expect(screen.getByPlaceholderText("e.g. JNUH")).toHaveValue("Jeju National University Hospital");
-    expect(screen.getByLabelText("Official hospital name")).toHaveValue("Jeju National University Hospital");
+    await waitFor(() => {
+      expect(hiraSearch).toHaveValue("");
+    });
+    expect(screen.queryByRole("button", { name: "Select this hospital" })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("e.g. JNUH")).toHaveValue("");
+    expect(screen.getAllByText("Jeju National University Hospital").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Jeju National University Hospital - HIRA 39100103 - Jeju Special Self-Governing Province/i)).toBeInTheDocument();
     expect(screen.getByText(/Linked HIRA institution/i)).toBeInTheDocument();
-    expect(screen.getByText(/Jeju National University Hospital/i)).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("e.g. 39100103"), { target: { value: "39100103" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
     await waitFor(() => {
-      expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
+        expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
         "test-token",
         expect.objectContaining({
-          project_id: "project_1",
+          project_id: "project_default",
           site_code: "39100103",
           display_name: "Jeju National University Hospital",
           hospital_name: "Jeju National University Hospital",
-          source_institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
+          source_institution_id: "39100103",
           research_registry_enabled: true,
         }),
       );
     });
+  });
+
+  it("shows detailed registry guidance in the hospital registration form", async () => {
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("Enable research registry for this hospital")).toBeInTheDocument();
+    expect(
+      screen.getByText("This is not a patient consent form. It is the registry explanation shown to K-ERA researchers and institution users at this hospital.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The central registry stores case_reference_id instead of raw patient identifiers.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Each case can still be reviewed later as Included or Excluded and opted out individually when needed.")
+    ).toBeInTheDocument();
+  });
+
+  it("hides opaque source institution ids in hospital management", async () => {
+    apiMocks.fetchAdminSites.mockResolvedValue([
+      {
+        site_id: "39100103",
+        project_id: "project_default",
+        display_name: "JNUH",
+        hospital_name: "Jeju National University Hospital",
+        source_institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
+        source_institution_name: "Jeju National University Hospital",
+        source_institution_address: "Jeju Special Self-Governing Province",
+        local_storage_root: "C:\\KERA\\39100103",
+      },
+    ]);
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["39100103"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "39100103",
+              display_name: "JNUH",
+              hospital_name: "Jeju National University Hospital",
+            },
+          ]}
+          selectedSiteId="39100103"
+          summary={{
+            site_id: "39100103",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("39100103")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("JNUH"));
+    expect(await screen.findByText(/HIRA 39100103/)).toBeInTheDocument();
+    expect(screen.queryByText("JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz")).not.toBeInTheDocument();
+  });
+
+  it("explains when a hospital storage root is pinned away from the active default root", async () => {
+    apiMocks.fetchStorageSettings.mockResolvedValue({
+      storage_root: "D:\\ActiveRoot",
+      default_storage_root: "C:\\KERA\\sites",
+      effective_default_storage_root: "D:\\EnvDefault",
+      storage_root_source: "custom",
+      uses_custom_root: true,
+    });
+    apiMocks.fetchAdminSites.mockResolvedValue([
+      {
+        site_id: "SITE_A",
+        project_id: "project_default",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+        local_storage_root: "C:\\KERA\\sites\\SITE_A",
+      },
+    ]);
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 22,
+            n_visits: 43,
+            n_images: 112,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("This hospital is pinned to its own storage root, so it does not currently follow the active default root.")).toBeInTheDocument();
+    expect(screen.getByText("D:\\ActiveRoot\\SITE_A")).toBeInTheDocument();
+    expect(screen.getByText("22/43/112")).toBeInTheDocument();
+  });
+
+  it("separates the built-in fallback root from an environment-provided default root", async () => {
+    apiMocks.fetchStorageSettings.mockResolvedValue({
+      storage_root: "D:\\EnvDefault",
+      default_storage_root: "C:\\InstallParent\\KERA_DATA\\sites",
+      effective_default_storage_root: "D:\\EnvDefault",
+      storage_root_source: "environment_default",
+      uses_custom_root: false,
+    });
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("Environment")).toBeInTheDocument();
+    expect(screen.getByText("C:\\InstallParent\\KERA_DATA\\sites")).toBeInTheDocument();
+    expect(screen.getAllByText("D:\\EnvDefault").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("This node is using an environment-provided default root. The built-in fallback is the install-relative location shown separately above.")
+    ).toBeInTheDocument();
   });
 
   it("runs HIRA institution sync from the requests section", async () => {
@@ -501,6 +848,199 @@ describe("AdminWorkspace integration", () => {
 
     expect(await screen.findByText("Last HIRA sync")).toBeInTheDocument();
     expect(screen.getByText(/4,385 institutions cached/i)).toBeInTheDocument();
+  });
+
+  it("shows recent auto-approved researcher access in the requests section", async () => {
+    apiMocks.fetchAccessRequests.mockImplementation((_token, statusFilter = "pending") =>
+      Promise.resolve(
+        statusFilter === "approved"
+          ? [
+              {
+                request_id: "access_auto_1",
+                user_id: "user_researcher",
+                email: "researcher@example.com",
+                requested_site_id: "SITE_A",
+                requested_site_label: "Site A",
+                requested_site_source: "site",
+                resolved_site_id: "SITE_A",
+                resolved_site_label: "Site A",
+                requested_role: "researcher",
+                message: "Immediate access",
+                status: "approved",
+                reviewed_by: null,
+                reviewer_notes: "Automatically approved researcher access request.",
+                created_at: "2026-03-17T00:00:00Z",
+                reviewed_at: "2026-03-17T00:01:00Z",
+              },
+            ]
+          : [],
+      ),
+    );
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="requests"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("Recent auto-approved researcher access")).toBeInTheDocument();
+    expect(screen.getByText("researcher@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Immediate access")).toBeInTheDocument();
+  });
+
+  it("keeps a rejected request removed even if the follow-up refresh fails", async () => {
+    apiMocks.fetchAdminOverview
+      .mockResolvedValueOnce({
+        site_count: 1,
+        model_version_count: 1,
+        pending_access_requests: 1,
+        pending_model_updates: 0,
+        current_model_version: "global-http-seed",
+        aggregation_count: 0,
+      })
+      .mockRejectedValueOnce(new Error("overview refresh failed"));
+    apiMocks.fetchAccessRequests.mockImplementation((_token, statusFilter = "pending") =>
+      Promise.resolve(
+        statusFilter === "approved"
+          ? []
+          : [
+              {
+                request_id: "access_1",
+                user_id: "user_researcher",
+                email: "people.at.korea@gmail.com",
+                requested_site_id: "SITE_A",
+                requested_site_label: "Jeju National University Hospital",
+                requested_site_source: "site",
+                resolved_site_id: "SITE_A",
+                resolved_site_label: "JNUH",
+                requested_role: "researcher",
+                message: "",
+                status: "pending",
+                reviewed_by: null,
+                reviewer_notes: "",
+                created_at: "2026-03-17T00:57:00Z",
+                reviewed_at: null,
+              },
+            ],
+      ),
+    );
+    apiMocks.reviewAccessRequest.mockResolvedValueOnce({
+      request: {
+        request_id: "access_1",
+        user_id: "user_researcher",
+        email: "people.at.korea@gmail.com",
+        requested_site_id: "SITE_A",
+        requested_site_label: "Jeju National University Hospital",
+        requested_site_source: "site",
+        resolved_site_id: "SITE_A",
+        resolved_site_label: "JNUH",
+        requested_role: "researcher",
+        message: "",
+        status: "rejected",
+        reviewed_by: "user_admin",
+        reviewer_notes: "",
+        created_at: "2026-03-17T00:57:00Z",
+        reviewed_at: "2026-03-17T00:58:00Z",
+      },
+      created_site: null,
+    });
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="requests"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("people.at.korea@gmail.com")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+    await waitFor(() => {
+      expect(apiMocks.reviewAccessRequest).toHaveBeenCalledWith(
+        "access_1",
+        "test-token",
+        expect.objectContaining({
+          decision: "rejected",
+          assigned_role: "researcher",
+          assigned_site_id: "SITE_A",
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("people.at.korea@gmail.com")).not.toBeInTheDocument();
+      expect(screen.getByText("Request rejected.")).toBeInTheDocument();
+    });
   });
 
   it("shows contribution threshold alerts when 10 approved cases are ready for aggregation", async () => {

@@ -1403,6 +1403,60 @@ class SiteStore:
             return None
         return self._job_row_to_dict(row)
 
+    def request_job_cancel(self, job_id: str) -> dict[str, Any] | None:
+        with DATA_PLANE_ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+            ).mappings().first()
+            if existing is None:
+                return None
+
+            current_status = str(existing.get("status") or "").strip().lower()
+            if current_status in {"completed", "failed", "cancelled"}:
+                return self._job_row_to_dict(existing)
+
+            result_json = dict(existing.get("result_json") or {})
+            progress = dict(result_json.get("progress") or {})
+            now = utc_now()
+
+            if current_status == "queued":
+                next_status = "cancelled"
+                progress = {
+                    **progress,
+                    "stage": "cancelled",
+                    "message": "Job cancelled before execution.",
+                    "percent": int(progress.get("percent", 0) or 0),
+                }
+                values: dict[str, Any] = {
+                    "status": next_status,
+                    "result_json": {**result_json, "progress": progress},
+                    "finished_at": now,
+                    "updated_at": now,
+                }
+            else:
+                next_status = "cancelling"
+                progress = {
+                    **progress,
+                    "stage": "cancelling",
+                    "message": "Cancellation requested. Waiting for the worker to stop safely.",
+                    "percent": int(progress.get("percent", 0) or 0),
+                }
+                values = {
+                    "status": next_status,
+                    "result_json": {**result_json, "progress": progress},
+                    "updated_at": now,
+                }
+
+            conn.execute(
+                update(site_jobs)
+                .where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+                .values(**values)
+            )
+            row = conn.execute(
+                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
+            ).mappings().first()
+        return self._job_row_to_dict(row) if row is not None else None
+
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:
             existing = conn.execute(

@@ -333,8 +333,8 @@ export default function HomePage() {
     enterWorkspace: pick(locale, "Enter the case workspace", "耳?댁뒪 ?뚰겕?ㅽ럹?댁뒪 ?낆옣"),
     signInBody: pick(
       locale,
-      "Google is the default path for researchers. Local username/password stays admin-only for recovery.",
-      "?곌뎄?먮뒗 Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?대ŉ, 濡쒖뺄 ?꾩씠??鍮꾨?踰덊샇??愿由ъ옄 蹂듦뎄?⑹쑝濡쒕쭔 ?좎??⑸땲??"
+      "Google is the default path for researchers. Admin and site admin accounts use password sign-in separately.",
+      "연구자는 Google 로그인을 기본 경로로 사용하고, admin 및 site admin 계정은 비밀번호 로그인으로 별도 진입합니다."
     ),
     googleLogin: pick(locale, "Institution Google login", "기관 Google 로그인"),
     googleDisabled: pick(
@@ -342,10 +342,10 @@ export default function HomePage() {
       "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.",
       "`NEXT_PUBLIC_GOOGLE_CLIENT_ID`媛 ?ㅼ젙?섍린 ?꾧퉴吏 Google 濡쒓렇?몄씠 鍮꾪솢?깊솕?⑸땲??"
     ),
-    adminRecoveryOnly: pick(locale, "Administrator recovery only", "愿由ъ옄 蹂듦뎄 ?꾩슜"),
+    adminRecoveryOnly: pick(locale, "Password sign-in for admin and site admin", "admin 및 site admin 비밀번호 로그인"),
     username: pick(locale, "Username", "아이디"),
     password: pick(locale, "Password", "鍮꾨?踰덊샇"),
-    enterAdminRecovery: pick(locale, "Enter admin recovery", "愿由ъ옄 蹂듦뎄濡??낆옣"),
+    enterAdminRecovery: pick(locale, "Open operator sign-in", "운영 계정 로그인 열기"),
     approvalRequired: pick(locale, "Approval Required", "?뱀씤 ?꾩슂"),
     institutionAccessRequest: pick(locale, "Institution access request", "湲곌? ?묎렐 ?붿껌"),
     signedInAs: (name: string, username: string) =>
@@ -373,6 +373,11 @@ export default function HomePage() {
     existingInstitutionEmpty: pick(locale, "No existing K-ERA institution matched this search.", "기존 K-ERA 기관에서도 일치하는 결과가 없습니다."),
     hospital: pick(locale, "Hospital", "蹂묒썝"),
     requestedRole: pick(locale, "Requested role", "?붿껌 ??븷"),
+    requestedRoleHelp: pick(
+      locale,
+      "Research access requests are fixed to researcher. Admin and site admin accounts are issued separately with passwords.",
+      "일반 접근 요청은 researcher로 고정됩니다. admin과 site admin 계정은 비밀번호 기반으로 별도 발급합니다."
+    ),
     noteForReviewer: pick(locale, "Note for reviewer", "寃?좎옄 硫붾え"),
     requestPlaceholder: pick(
       locale,
@@ -399,11 +404,11 @@ export default function HomePage() {
       "Create, validate, and contribute cases from one workspace.",
       "?섎굹???묒뾽怨듦컙?먯꽌 利앸? ?묒꽦, 寃利? 湲곗뿬瑜?泥섎━?⑸땲??"
     ),
-    highlightRecoveryTitle: pick(locale, "Admin Recovery", "愿由ъ옄 蹂듦뎄"),
+    highlightRecoveryTitle: pick(locale, "Operator Sign-In", "운영 계정 로그인"),
     highlightRecoveryBody: pick(
       locale,
-      "A local admin fallback remains available for setup and incident recovery.",
-      "珥덇린 ?ㅼ젙怨??μ븷 ??묒쓣 ?꾪븳 濡쒖뺄 愿由ъ옄 寃쎈줈???좎??⑸땲??"
+      "Local password sign-in remains available for admin and site admin accounts.",
+      "admin 및 site admin 계정은 로컬 비밀번호 로그인 경로를 계속 사용합니다."
     ),
     landingBadge: pick(locale, "Corneal Research Network", "媛먯뿼??媛곷쭑???곌뎄 ?ㅽ듃?뚰겕"),
     landingScene: pick(
@@ -421,8 +426,8 @@ export default function HomePage() {
     landingSecondaryCta: pick(locale, "See how it flows", "?대뼸寃??댁뼱吏?붿? 蹂닿린"),
     landingCtaNote: pick(
       locale,
-      "Institution Google login remains the primary path. Admin recovery stays separate.",
-      "湲곌? Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?대ŉ, 愿由ъ옄 蹂듦뎄??蹂꾨룄 寃쎈줈濡??좎??⑸땲??"
+      "Institution Google login remains the primary path. Admin and site admin accounts sign in separately with passwords.",
+      "기관 Google 로그인이 기본 경로이며, admin 및 site admin 계정은 비밀번호로 별도 로그인합니다."
     ),
     landingAuthEyebrow: pick(locale, "Research access", "?곌뎄 ?묎렐"),
     landingAuthTitle: pick(locale, "Move into the workspace with your institution account", "기관 계정으로 워크스페이스에 들어가기"),
@@ -494,8 +499,8 @@ export default function HomePage() {
     accessTitle: pick(locale, "Continue with your institution Google account", "湲곌? Google 怨꾩젙?쇰줈 諛붾줈 ?쒖옉?섍린"),
     accessBody: pick(
       locale,
-      "Researchers use Google as the main path. The official Google button stays here for the real sign-in flow, while hospital onboarding and admin recovery remain separate.",
-      "?곌뎄?먮뒗 Google 濡쒓렇?몄씠 湲곕낯 寃쎈줈?낅땲?? ?ㅼ젣 ?몄쬆? ?꾨옒??怨듭떇 Google 踰꾪듉?쇰줈 吏꾪뻾?섍퀬, 蹂묒썝 李몄뿬 臾몄쓽? 愿由ъ옄 蹂듦뎄??蹂꾨룄 寃쎈줈濡??좎??⑸땲??"
+      "Researchers use Google as the main path. The official Google button stays here for researcher sign-in, while admin and site admin accounts use password sign-in separately.",
+      "연구자는 Google 로그인을 기본 경로로 사용합니다. 아래의 공식 Google 버튼은 researcher 로그인에 사용하고, admin 및 site admin 계정은 비밀번호 로그인으로 별도 진입합니다."
     ),
     accessGoogleHint: pick(locale, "Use a hospital or institution-linked Google account.", "蹂묒썝 ?먮뒗 ?곌뎄湲곌????곌껐??Google 怨꾩젙???ъ슜?섏꽭??"),
     accessRecruiting: pick(locale, "Hospitals can request onboarding separately.", "蹂묒썝 ?⑥쐞 李몄뿬??蹂꾨룄 臾몄쓽濡??쒖옉?⑸땲??"),
@@ -755,7 +760,7 @@ export default function HomePage() {
       ),
     },
   ];
-  const adminRecoveryLinkLabel = pick(locale, "Open administrator recovery", "愿由ъ옄 蹂듦뎄 ?닿린");
+  const adminRecoveryLinkLabel = pick(locale, "Open operator password sign-in", "운영 계정 비밀번호 로그인 열기");
   const adminLaunchLinks = [
     {
       label: pick(locale, "Admin training", "愿由ъ옄 ?숈뒿"),
@@ -947,15 +952,18 @@ export default function HomePage() {
     async function bootstrap() {
       setBootstrapBusy(true);
       setError(null);
+      const siteListResultPromise = fetchSites(currentToken)
+        .then((items) => ({ ok: true as const, items }))
+        .catch((nextError) => ({ ok: false as const, error: nextError }));
       try {
         const me = await fetchMe(currentToken);
-        const refreshedToken = window.localStorage.getItem(TOKEN_KEY) || currentToken;
-        if (refreshedToken !== currentToken) {
-          setToken(refreshedToken);
-        }
         setUser(me);
         if (me.approval_status === "approved") {
-          const nextSites = await fetchSites(refreshedToken);
+          const nextSiteResult = await siteListResultPromise;
+          if (!nextSiteResult.ok) {
+            throw nextSiteResult.error;
+          }
+          const nextSites = nextSiteResult.items;
           setSites(nextSites);
           setSelectedSiteId((current) =>
             current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
@@ -963,7 +971,7 @@ export default function HomePage() {
         } else {
           setSites([]);
           setSelectedSiteId(null);
-          setMyRequests(await fetchMyAccessRequests(refreshedToken));
+          setMyRequests(await fetchMyAccessRequests(currentToken));
         }
       } catch (nextError) {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -1012,7 +1020,7 @@ export default function HomePage() {
           const next = { ...current };
           for (const item of items) {
             next[item.request_id] = next[item.request_id] ?? {
-              assigned_role: item.requested_role,
+              assigned_role: "researcher",
               assigned_site_id: item.requested_site_id,
               reviewer_notes: "",
             };
@@ -1110,7 +1118,20 @@ export default function HomePage() {
         setToken(refreshedToken);
       }
       setUser(response.user);
-      setMyRequests(await fetchMyAccessRequests(refreshedToken));
+      const nextRequests = await fetchMyAccessRequests(refreshedToken);
+      setMyRequests(nextRequests);
+      if (response.user.approval_status === "approved") {
+        const nextSites = await fetchSites(refreshedToken);
+        setSites(nextSites);
+        const preferredSiteId =
+          response.request.resolved_site_id ||
+          response.request.requested_site_id;
+        setSelectedSiteId((current) =>
+          current && nextSites.some((site) => site.site_id === current)
+            ? current
+            : nextSites.find((site) => site.site_id === preferredSiteId)?.site_id || nextSites[0]?.site_id || null,
+        );
+      }
     } catch (nextError) {
       setError(describeError(nextError, copy.requestSubmissionFailed));
     } finally {
@@ -1128,7 +1149,7 @@ export default function HomePage() {
     try {
       await reviewAccessRequest(requestId, token, {
         decision,
-        assigned_role: draft?.assigned_role,
+        assigned_role: "researcher",
         assigned_site_id: draft?.assigned_site_id,
         reviewer_notes: draft?.reviewer_notes,
       });
@@ -1198,6 +1219,43 @@ export default function HomePage() {
       active: false,
     })),
   ];
+
+  if (token && (!user || (!approved && bootstrapBusy && (workspaceMode !== "operations" || !canOpenOperations)))) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-6xl justify-end">
+          <LocaleToggle />
+        </div>
+        <section className="mx-auto mt-6 grid w-full max-w-3xl gap-5">
+          <Card as="section" variant="surface" className="grid gap-5 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {pick(locale, "Operator Session", "운영 세션")}
+                </span>
+              }
+              title={pick(locale, "Opening your workspace", "워크스페이스를 여는 중입니다")}
+              description={pick(
+                locale,
+                "Your session token was detected. Waiting for the workspace profile and permissions to load.",
+                "세션 토큰을 확인했습니다. 워크스페이스 프로필과 권한 정보를 불러오는 중입니다."
+              )}
+            />
+            {error ? (
+              <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">
+                {error}
+              </div>
+            ) : null}
+            <div className="rounded-[20px] border border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
+              {bootstrapBusy
+                ? pick(locale, "Loading authenticated workspace state...", "인증된 워크스페이스 상태를 불러오는 중입니다...")
+                : pick(locale, "Preparing your authenticated session...", "인증 세션을 준비하는 중입니다...")}
+            </div>
+          </Card>
+        </section>
+      </main>
+    );
+  }
 
   if (!token || !user) {
     return (
@@ -1390,15 +1448,10 @@ export default function HomePage() {
                     ) : null}
                   </Field>
                   <Field as="div" label={copy.requestedRole}>
-                    <select
-                      id="requested_role"
-                      value={requestForm.requested_role}
-                      onChange={(event) => setRequestForm((current) => ({ ...current, requested_role: event.target.value }))}
-                    >
-                      <option value="researcher">{translateRole(locale, "researcher")}</option>
-                      <option value="viewer">{translateRole(locale, "viewer")}</option>
-                      <option value="site_admin">{translateRole(locale, "site_admin")}</option>
-                    </select>
+                    <div className="rounded-[18px] border border-border bg-white/55 px-4 py-3 text-sm font-semibold text-ink dark:bg-white/4">
+                      {translateRole(locale, "researcher")}
+                    </div>
+                    <div className="mt-2 text-sm leading-6 text-muted">{copy.requestedRoleHelp}</div>
                   </Field>
                   <Field as="div" label={copy.noteForReviewer}>
                     <textarea
@@ -1454,6 +1507,7 @@ export default function HomePage() {
         token={token}
         user={user}
         sites={sites}
+        sitesBusy={bootstrapBusy && sites.length === 0}
         selectedSiteId={selectedSiteId}
         summary={summary}
         initialSection={operationsSection}

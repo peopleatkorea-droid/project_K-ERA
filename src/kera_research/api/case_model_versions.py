@@ -8,12 +8,14 @@ from typing import Any, Callable
 def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
     if model_version.get("ensemble_mode") == "weighted_average":
         crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
-        if crop_mode in {"automated", "manual", "both"}:
+        if crop_mode in {"automated", "manual", "both", "paired"}:
             return crop_mode
         return "both"
     crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
-    if crop_mode in {"automated", "manual", "both"}:
+    if crop_mode in {"automated", "manual", "both", "paired"}:
         return crop_mode
+    if str(model_version.get("architecture") or "").strip().lower() == "dual_input_concat":
+        return "paired"
     return "automated" if model_version.get("requires_medsam_crop", False) else "raw"
 
 
@@ -170,13 +172,25 @@ def serialize_case_model_version(model_version: dict[str, Any]) -> dict[str, Any
         "architecture": model_version.get("architecture"),
         "requires_medsam_crop": bool(model_version.get("requires_medsam_crop", False)),
         "crop_mode": model_version.get("crop_mode"),
+        "case_aggregation": model_version.get("case_aggregation"),
+        "bag_level": bool(model_version.get("bag_level", False)),
         "ensemble_mode": model_version.get("ensemble_mode"),
+        "component_model_version_ids": list(model_version.get("component_model_version_ids") or []),
     }
 
 
 def serialize_case_artifact_availability(case_prediction: dict[str, Any] | None) -> dict[str, bool]:
     return {
-        "gradcam": bool(case_prediction and case_prediction.get("gradcam_path")),
+        "gradcam": bool(
+            case_prediction
+            and (
+                case_prediction.get("gradcam_path")
+                or case_prediction.get("gradcam_cornea_path")
+                or case_prediction.get("gradcam_lesion_path")
+            )
+        ),
+        "gradcam_cornea": bool(case_prediction and case_prediction.get("gradcam_cornea_path")),
+        "gradcam_lesion": bool(case_prediction and case_prediction.get("gradcam_lesion_path")),
         "roi_crop": bool(case_prediction and case_prediction.get("roi_crop_path")),
         "medsam_mask": bool(case_prediction and case_prediction.get("medsam_mask_path")),
         "lesion_crop": bool(case_prediction and case_prediction.get("lesion_crop_path")),

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextRequest } from "next/server";
+import type { Row } from "postgres";
 
 import type {
   AccessRequestRecord,
@@ -11,83 +12,38 @@ import type {
   ManagedUserRecord,
   ProjectRecord,
 } from "../types";
-import { makeControlPlaneId } from "./crypto";
+import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
   ensureDefaultProject,
-  latestAccessRequestForCanonicalUser,
-  listAccessRequestsForCanonicalUser,
   serializeAccessRequestRecord,
   serializeManagedSiteRecord,
   serializeProjectRecord,
   siteRowById,
   siteRowBySourceInstitutionId,
   upsertAccessRequestRecord,
-  upsertProjectRecord,
   upsertSiteRecord,
 } from "./main-app-bridge-records";
 import {
   buildLegacyAuthUser,
   canonicalUserRowById,
-  ensureCanonicalUserForSeed,
   requireMainAppBridgeUser,
-  seedUsersFromLocal,
   serializeManagedUserRecord,
   syncCanonicalMemberships,
-  upsertCanonicalUser,
 } from "./main-app-bridge-users";
 import {
   DEFAULT_PROJECT_ID,
-  fetchLegacyLocalNodeApi,
   HIRA_SITE_ID_PATTERN,
-  legacyEmailForLocalUser,
   mapLegacyRoleToMembershipRole,
   normalizeRegistryConsents,
   normalizeStringArray,
-  readBearerToken,
   rowValue,
   trimText,
 } from "./main-app-bridge-shared";
+import { hashControlPlanePassword } from "./passwords";
 
-export async function seedAccessRequestsFromLocal(
-  request: NextRequest,
-  token: string,
-  canonicalUserId: string,
-  email: string,
-  scope: "self" | "reviewer",
-  statusFilter = "pending",
-): Promise<void> {
-  const path =
-    scope === "self"
-      ? "/api/auth/access-requests"
-      : `/api/admin/access-requests?status_filter=${encodeURIComponent(statusFilter)}`;
-  const records = await fetchLegacyLocalNodeApi<AccessRequestRecord[]>(request, path, {}, token);
-  for (const record of records) {
-    const ownerCanonicalUserId =
-      scope === "self"
-        ? canonicalUserId
-        : await ensureCanonicalUserForSeed({
-            legacyLocalUserId: trimText(record.user_id) || null,
-            email: trimText(record.email) || email,
-            fullName: trimText(record.email) || trimText(record.user_id) || "External User",
-          });
-    await upsertAccessRequestRecord(ownerCanonicalUserId, trimText(record.email) || email, record);
-  }
-}
-
-async function seedProjectsFromLocal(request: NextRequest, token: string): Promise<void> {
-  const records = await fetchLegacyLocalNodeApi<ProjectRecord[]>(request, "/api/admin/projects", {}, token);
-  for (const record of records) {
-    await upsertProjectRecord(record);
-  }
-}
-
-async function seedAdminSitesFromLocal(request: NextRequest, token: string): Promise<void> {
-  const records = await fetchLegacyLocalNodeApi<ManagedSiteRecord[]>(request, "/api/admin/sites", {}, token);
-  for (const record of records) {
-    await upsertSiteRecord(record);
-  }
-}
+const FIXED_RESEARCHER_ROLE = "researcher";
+const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 
 function assertAdminWorkspacePermission(user: AuthUser): void {
   if (user.role !== "admin" && user.role !== "site_admin") {
@@ -101,12 +57,50 @@ function assertPlatformAdmin(user: AuthUser): void {
   }
 }
 
+async function managedUserRowForMutation(input: {
+  userId?: string;
+  username?: string;
+}): Promise<Row | null> {
+  const sql = await controlPlaneSql();
+  const normalizedUserId = trimText(input.userId);
+  const normalizedUsername = trimText(input.username).toLowerCase();
+  const normalizedEmail = normalizedUsername.includes("@") ? normalizeEmail(normalizedUsername) : "";
+  const rows = await sql`
+    select
+      user_id,
+      legacy_local_user_id,
+      username,
+      public_alias,
+      email,
+      full_name,
+      password,
+      role,
+      site_ids,
+      registry_consents,
+      global_role,
+      status,
+      created_at
+    from users
+    where user_id = ${normalizedUserId || null}
+       or username = ${normalizedUsername || null}
+       or email = ${normalizedEmail || null}
+    order by
+      case
+        when user_id = ${normalizedUserId || null} then 0
+        when username = ${normalizedUsername || null} then 1
+        when email = ${normalizedEmail || null} then 2
+        else 3
+      end
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
 async function listReviewerAccessRequests(
   request: NextRequest,
   statusFilter: string | null,
 ): Promise<AccessRequestRecord[]> {
-  const token = readBearerToken(request);
-  const { canonicalUserId, localUser, user } = await requireMainAppBridgeUser(request);
+  const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -127,36 +121,7 @@ async function listReviewerAccessRequests(
     from access_requests
     order by created_at desc
   `;
-  let records = await Promise.all(rows.map((row) => serializeAccessRequestRecord(row)));
-  if (!records.length) {
-    await seedAccessRequestsFromLocal(
-      request,
-      token,
-      canonicalUserId,
-      legacyEmailForLocalUser(localUser),
-      "reviewer",
-      statusFilter || "pending",
-    );
-    const refreshedRows = await sql`
-      select
-        request_id,
-        user_id,
-        email,
-        requested_site_id,
-        requested_site_label,
-        requested_site_source,
-        requested_role,
-        message,
-        status,
-        reviewed_by,
-        reviewer_notes,
-        created_at,
-        reviewed_at
-      from access_requests
-      order by created_at desc
-    `;
-    records = await Promise.all(refreshedRows.map((row) => serializeAccessRequestRecord(row)));
-  }
+  const records = await Promise.all(rows.map((row) => serializeAccessRequestRecord(row)));
   const normalizedStatus = trimText(statusFilter);
   const permittedSiteIds = new Set(normalizeStringArray(user.site_ids));
   return records.filter((record) => {
@@ -185,7 +150,7 @@ async function createAdminSiteRecord(
   },
 ): Promise<ManagedSiteRecord> {
   assertPlatformAdmin(user);
-  const projectId = trimText(payload.project_id) || DEFAULT_PROJECT_ID;
+  const projectId = DEFAULT_PROJECT_ID;
   const sourceInstitutionId = trimText(payload.source_institution_id) || null;
   let siteCode = trimText(payload.site_code);
   if (sourceInstitutionId && HIRA_SITE_ID_PATTERN.test(sourceInstitutionId)) {
@@ -233,6 +198,7 @@ async function updateAdminSiteRecord(
   payload: {
     display_name?: string;
     hospital_name?: string;
+    source_institution_id?: string | null;
     research_registry_enabled?: boolean;
   },
 ): Promise<ManagedSiteRecord> {
@@ -243,12 +209,24 @@ async function updateAdminSiteRecord(
   }
   const displayName = trimText(payload.display_name) || rowValue<string>(existing, "display_name");
   const hospitalName = trimText(payload.hospital_name) || rowValue<string>(existing, "hospital_name");
+  const currentSourceInstitutionId = trimText(rowValue<string | null>(existing, "source_institution_id")) || null;
+  const sourceInstitutionId =
+    payload.source_institution_id === undefined ? currentSourceInstitutionId : trimText(payload.source_institution_id) || null;
+  if (sourceInstitutionId && sourceInstitutionId !== currentSourceInstitutionId) {
+    const mapped = await siteRowBySourceInstitutionId(sourceInstitutionId);
+    if (mapped && rowValue<string>(mapped, "site_id") !== siteId) {
+      throw new Error(
+        `Institution ${sourceInstitutionId} is already linked to site ${rowValue<string>(mapped, "site_id")}.`,
+      );
+    }
+  }
   const sql = await controlPlaneSql();
   await sql`
     update sites
     set
       display_name = ${displayName},
       hospital_name = ${hospitalName},
+      source_institution_id = ${sourceInstitutionId},
       research_registry_enabled = ${payload.research_registry_enabled ?? Boolean(rowValue<boolean>(existing, "research_registry_enabled"))},
       updated_at = now()
     where site_id = ${siteId}
@@ -311,6 +289,9 @@ async function reviewMainAccessRequestRecord(
   if (decision !== "approved" && decision !== "rejected") {
     throw new Error("Invalid review decision.");
   }
+  if (decision === "approved" && trimText(payload.assigned_role) && trimText(payload.assigned_role) !== FIXED_RESEARCHER_ROLE) {
+    throw new Error("Access requests can only be approved as researcher accounts.");
+  }
   let createdSite: ManagedSiteRecord | null = null;
   let targetSiteId = trimText(payload.assigned_site_id) || current.resolved_site_id || current.requested_site_id;
   if (payload.create_site_if_missing) {
@@ -326,7 +307,6 @@ async function reviewMainAccessRequestRecord(
       targetSiteId = rowValue<string>(mappedSite, "site_id");
     } else {
       createdSite = await createAdminSiteRecord(reviewer, {
-        project_id: payload.project_id,
         site_code: payload.site_code,
         display_name: payload.display_name || current.requested_site_label,
         hospital_name: payload.hospital_name || current.requested_site_label,
@@ -350,7 +330,7 @@ async function reviewMainAccessRequestRecord(
         throw new Error("You cannot review requests for this site.");
       }
     }
-    const canonicalRole = mapLegacyRoleToMembershipRole(trimText(payload.assigned_role) || current.requested_role);
+    const canonicalRole = mapLegacyRoleToMembershipRole(FIXED_RESEARCHER_ROLE);
     await sql`
       insert into site_memberships (
         membership_id,
@@ -383,7 +363,7 @@ async function reviewMainAccessRequestRecord(
     set
       status = ${decision},
       requested_site_id = ${targetSiteId},
-      requested_role = ${trimText(payload.assigned_role) || current.requested_role},
+      requested_role = ${decision === "approved" ? FIXED_RESEARCHER_ROLE : current.requested_role},
       reviewed_by = ${reviewerCanonicalUserId},
       reviewer_notes = ${trimText(payload.reviewer_notes)},
       reviewed_at = now()
@@ -406,7 +386,7 @@ async function reviewMainAccessRequestRecord(
       site_ids: normalizeStringArray(target.site_ids),
       approval_status: decision === "approved" ? "approved" : "rejected",
       latest_access_request: null,
-      registry_consents: normalizeRegistryConsents(target.registry_consents),
+      registry_consents: normalizeRegistryConsents(rowValue<unknown>(target, "registry_consents")),
     };
     await buildLegacyAuthUser(current.user_id, localView);
   }
@@ -444,27 +424,54 @@ export async function listMainAdminAccessRequests(
 }
 
 export async function fetchMainAdminOverview(request: NextRequest): Promise<AdminOverviewResponse> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
-  const [sites, pendingRequests, localOverview] = await Promise.all([
-    listMainAdminSites(request),
-    listMainAdminAccessRequests(request, "pending"),
-    fetchLegacyLocalNodeApi<AdminOverviewResponse>(request, "/api/admin/overview", {}, token),
-  ]);
+  const sql = await controlPlaneSql();
+  const [
+    siteCountRows,
+    pendingRequestRows,
+    autoApprovedRequestRows,
+    modelVersionRows,
+    pendingUpdateRows,
+    aggregationRows,
+    currentModelRows,
+  ] =
+    await Promise.all([
+      sql`select count(*)::int as count from sites`,
+      sql`select count(*)::int as count from access_requests where status = 'pending'`,
+      sql`
+        select count(*)::int as count
+        from access_requests
+        where status = 'approved'
+          and reviewer_notes = ${AUTO_APPROVAL_REVIEWER_NOTE}
+      `,
+      sql`select count(*)::int as count from model_versions`,
+      sql`select count(*)::int as count from model_updates where status = 'pending'`,
+      sql`select count(*)::int as count from aggregations`,
+      sql`
+        select version_name
+        from model_versions
+        where is_current = true
+        order by updated_at desc, created_at desc
+        limit 1
+      `,
+    ]);
   return {
-    ...localOverview,
-    site_count: sites.length,
-    pending_access_requests: pendingRequests.length,
+    site_count: Number(siteCountRows[0]?.count || 0),
+    model_version_count: Number(modelVersionRows[0]?.count || 0),
+    pending_access_requests: Number(pendingRequestRows[0]?.count || 0),
+    auto_approved_access_requests: Number(autoApprovedRequestRows[0]?.count || 0),
+    pending_model_updates: Number(pendingUpdateRows[0]?.count || 0),
+    current_model_version: trimText(currentModelRows[0]?.version_name) || null,
+    aggregation_count: Number(aggregationRows[0]?.count || 0),
   };
 }
 
 export async function listMainUsers(request: NextRequest): Promise<ManagedUserRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const sql = await controlPlaneSql();
-  let rows = await sql`
+  const rows = await sql`
     select
       user_id,
       legacy_local_user_id,
@@ -481,26 +488,6 @@ export async function listMainUsers(request: NextRequest): Promise<ManagedUserRe
     from users
     order by lower(username) asc, created_at asc
   `;
-  if (rows.length <= 1) {
-    await seedUsersFromLocal(request, token);
-    rows = await sql`
-      select
-        user_id,
-        legacy_local_user_id,
-        username,
-        public_alias,
-        email,
-        full_name,
-        role,
-        site_ids,
-        registry_consents,
-        global_role,
-        status,
-        created_at
-      from users
-      order by lower(username) asc, created_at asc
-    `;
-  }
   return Promise.all(rows.map((row) => serializeManagedUserRecord(row)));
 }
 
@@ -515,35 +502,108 @@ export async function upsertMainUser(
     site_ids?: string[];
   },
 ): Promise<ManagedUserRecord> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const role = trimText(payload.role);
   if (!["admin", "site_admin", "researcher", "viewer"].includes(role)) {
     throw new Error("Invalid user role.");
   }
+  const username = trimText(payload.username).toLowerCase();
+  if (!username) {
+    throw new Error("Username is required.");
+  }
   const siteIds = normalizeStringArray(payload.site_ids);
   if (role !== "admin" && !siteIds.length) {
     throw new Error("Non-admin accounts must be assigned to at least one site.");
   }
-  const localProjection = await fetchLegacyLocalNodeApi<ManagedUserRecord>(
-    request,
-    "/api/admin/users",
+  if (siteIds.length) {
+    const sql = await controlPlaneSql();
+    const rows = await sql`
+      select site_id
+      from sites
+      where site_id = any(${siteIds})
+    `;
+    const knownSiteIds = new Set(rows.map((row) => trimText(rowValue<string>(row, "site_id"))));
+    const missing = siteIds.filter((siteId) => !knownSiteIds.has(siteId));
+    if (missing.length) {
+      throw new Error(`Unknown site assignment: ${missing.join(", ")}`);
+    }
+  }
+  const existing = await managedUserRowForMutation({
+    userId: trimText(payload.user_id),
+    username,
+  });
+  const canonicalUserId = existing ? rowValue<string>(existing, "user_id") : makeControlPlaneId("user");
+  const nextPassword = trimText(payload.password)
+    ? hashControlPlanePassword(trimText(payload.password))
+    : trimText(existing ? rowValue<string>(existing, "password") : "");
+  if (!nextPassword) {
+    throw new Error("Password is required for user creation.");
+  }
+  const fullName = trimText(payload.full_name) || username;
+  const email = username.includes("@") ? normalizeEmail(username) : normalizeEmail(`${username}@local.invalid`);
+  const sql = await controlPlaneSql();
+  const existingRegistryConsents = existing
+    ? normalizeRegistryConsents(rowValue<unknown>(existing, "registry_consents"))
+    : {};
+  await sql`
+    insert into users (
+      user_id,
+      legacy_local_user_id,
+      username,
+      email,
+      public_alias,
+      password,
+      role,
+      full_name,
+      site_ids,
+      registry_consents,
+      global_role,
+      status,
+      created_at,
+      updated_at
+    ) values (
+      ${canonicalUserId},
+      ${existing ? rowValue<string | null>(existing, "legacy_local_user_id") : null},
+      ${username},
+      ${email},
+      ${existing ? rowValue<string | null>(existing, "public_alias") : null},
+      ${nextPassword},
+      ${role},
+      ${fullName},
+      ${JSON.stringify(role === "admin" ? [] : siteIds)}::jsonb,
+      ${JSON.stringify(existingRegistryConsents)}::jsonb,
+      ${role === "admin" ? "admin" : trimText(existing ? rowValue<string>(existing, "global_role") : "") === "admin" ? "admin" : "member"},
+      ${"active"},
+      ${existing ? rowValue<string | Date>(existing, "created_at") : new Date().toISOString()},
+      now()
+    )
+    on conflict (user_id) do update set
+      username = excluded.username,
+      email = excluded.email,
+      password = excluded.password,
+      role = excluded.role,
+      full_name = excluded.full_name,
+      site_ids = excluded.site_ids,
+      global_role = excluded.global_role,
+      status = 'active',
+      updated_at = now()
+  `;
+  await syncCanonicalMemberships(
+    canonicalUserId,
     {
-      method: "POST",
-      body: JSON.stringify({
-        user_id: trimText(payload.user_id) || undefined,
-        username: trimText(payload.username),
-        full_name: trimText(payload.full_name),
-        password: trimText(payload.password),
-        role,
-        site_ids: siteIds,
-      }),
+      user_id: canonicalUserId,
+      username,
+      full_name: fullName,
+      public_alias: trimText(existing ? rowValue<string | null>(existing, "public_alias") : "") || null,
+      role,
+      site_ids: role === "admin" ? [] : siteIds,
+      approval_status: role === "admin" || siteIds.length ? "approved" : "application_required",
+      latest_access_request: null,
+      registry_consents: existingRegistryConsents,
     },
-    token,
+    { prune_absent: true },
   );
-  const canonicalUserId = await upsertCanonicalUser(localProjection);
-  await syncCanonicalMemberships(canonicalUserId, localProjection, { prune_absent: true });
   const canonicalRow = await canonicalUserRowById(canonicalUserId);
   if (!canonicalRow) {
     throw new Error("Unable to update user.");
@@ -572,63 +632,32 @@ export async function reviewMainAccessRequest(
 }
 
 export async function listMainProjects(request: NextRequest): Promise<ProjectRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   await ensureDefaultProject();
   const sql = await controlPlaneSql();
-  let rows = await sql`
+  const rows = await sql`
     select project_id, name, description, owner_user_id, site_ids, created_at
     from projects
     order by created_at asc
   `;
-  if (user.role === "admin" && rows.length <= 1) {
-    await seedProjectsFromLocal(request, token);
-    rows = await sql`
-      select project_id, name, description, owner_user_id, site_ids, created_at
-      from projects
-      order by created_at asc
-    `;
-  }
-  return rows.map((row) => serializeProjectRecord(row));
+  const fixedRows = rows.filter((row) => trimText(rowValue<string>(row, "project_id")) === DEFAULT_PROJECT_ID);
+  return (fixedRows.length ? fixedRows : rows.slice(0, 1)).map((row) => serializeProjectRecord(row));
 }
 
 export async function createMainProject(
   request: NextRequest,
-  payload: { name?: string; description?: string },
+  _payload: { name?: string; description?: string },
 ): Promise<ProjectRecord> {
   const { user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
-  const name = trimText(payload.name);
-  if (!name) {
-    throw new Error("Project name is required.");
-  }
-  const projectId = makeControlPlaneId("project");
-  await upsertProjectRecord({
-    project_id: projectId,
-    name,
-    description: trimText(payload.description),
-    owner_user_id: user.user_id,
-    site_ids: [],
-  });
-  const sql = await controlPlaneSql();
-  const rows = await sql`
-    select project_id, name, description, owner_user_id, site_ids, created_at
-    from projects
-    where project_id = ${projectId}
-    limit 1
-  `;
-  if (!rows[0]) {
-    throw new Error("Unable to create project.");
-  }
-  return serializeProjectRecord(rows[0]);
+  throw new Error("Projects are fixed to the default workspace.");
 }
 
 export async function listMainAdminSites(
   request: NextRequest,
   projectId?: string | null,
 ): Promise<ManagedSiteRecord[]> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
@@ -645,45 +674,28 @@ export async function listMainAdminSites(
     conditions.push(`site_id = any($${queryValues.length})`);
   }
   const whereClause = conditions.length ? `where ${conditions.join(" and ")}` : "";
-  let rows = await sql.unsafe(
+  const rows = await sql.unsafe(
     `
       select
-        site_id,
-        project_id,
-        display_name,
-        hospital_name,
-        source_institution_id,
-        local_storage_root,
-        research_registry_enabled,
-        status,
-        created_at
+        sites.site_id,
+        sites.project_id,
+        sites.display_name,
+        sites.hospital_name,
+        sites.source_institution_id,
+        sites.local_storage_root,
+        sites.research_registry_enabled,
+        sites.status,
+        sites.created_at,
+        institution_directory.name as source_institution_name,
+        institution_directory.address as source_institution_address
       from sites
+      left join institution_directory
+        on institution_directory.institution_id = sites.source_institution_id
       ${whereClause}
-      order by display_name asc, site_id asc
+      order by sites.display_name asc, sites.site_id asc
     `,
     queryValues,
   );
-  if (user.role === "admin" && !rows.length) {
-    await seedAdminSitesFromLocal(request, token);
-    rows = await sql.unsafe(
-      `
-        select
-          site_id,
-          project_id,
-          display_name,
-          hospital_name,
-          source_institution_id,
-          local_storage_root,
-          research_registry_enabled,
-          status,
-          created_at
-        from sites
-        ${whereClause}
-        order by display_name asc, site_id asc
-      `,
-      queryValues,
-    );
-  }
   return rows.map((row) => serializeManagedSiteRecord(row));
 }
 
@@ -708,6 +720,7 @@ export async function updateMainAdminSite(
   payload: {
     display_name?: string;
     hospital_name?: string;
+    source_institution_id?: string | null;
     research_registry_enabled?: boolean;
   },
 ): Promise<ManagedSiteRecord> {
@@ -716,7 +729,6 @@ export async function updateMainAdminSite(
 }
 
 export async function fetchMainInstitutionDirectoryStatus(request: NextRequest): Promise<InstitutionDirectorySyncResponse> {
-  const token = readBearerToken(request);
   const { user } = await requireMainAppBridgeUser(request);
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
@@ -727,14 +739,6 @@ export async function fetchMainInstitutionDirectoryStatus(request: NextRequest):
     from institution_directory
   `;
   const count = Number(rows[0]?.count || 0);
-  if (!count) {
-    return fetchLegacyLocalNodeApi<InstitutionDirectorySyncResponse>(
-      request,
-      "/api/admin/institutions/status",
-      {},
-      token,
-    );
-  }
   return {
     source: "hira",
     total_count: count,

@@ -641,12 +641,71 @@ def build_cases_router(support: Any) -> APIRouter:
             ) from exc
 
         case_prediction = case_predictions[0] if case_predictions else None
+        post_mortem = None
+        if case_prediction is not None:
+            case_reference_id = (
+                str(case_prediction.get("case_reference_id") or "").strip()
+                or cp.case_reference_id(site_id, payload.patient_id, payload.visit_date)
+            )
+            classification_context = {
+                "validation_id": summary.get("validation_id"),
+                "run_date": summary.get("run_date"),
+                "model_version_id": summary.get("model_version_id"),
+                "model_version": summary.get("model_version"),
+                "predicted_label": case_prediction.get("predicted_label"),
+                "true_label": case_prediction.get("true_label"),
+                "prediction_probability": case_prediction.get("prediction_probability"),
+                "is_correct": case_prediction.get("is_correct"),
+            }
+            try:
+                post_mortem = workflow.run_case_postmortem(
+                    site_store,
+                    patient_id=payload.patient_id,
+                    visit_date=payload.visit_date,
+                    model_version=model_version,
+                    execution_device=execution_device,
+                    classification_context=classification_context,
+                    case_prediction=case_prediction,
+                    top_k=3,
+                    retrieval_backend="hybrid",
+                )
+                if post_mortem is not None and case_reference_id:
+                    case_prediction["post_mortem"] = post_mortem
+                    cp.update_validation_case_prediction(
+                        str(summary.get("validation_id") or ""),
+                        case_reference_id=case_reference_id,
+                        updates={
+                            "post_mortem": post_mortem,
+                            "structured_analysis": post_mortem.get("structured_analysis"),
+                        },
+                    )
+                    site_store.record_case_validation_history(
+                        payload.patient_id,
+                        payload.visit_date,
+                        {
+                            "validation_id": summary.get("validation_id"),
+                            "run_date": summary.get("run_date"),
+                            "model_version": summary.get("model_version"),
+                            "model_version_id": summary.get("model_version_id"),
+                            "model_architecture": summary.get("model_architecture"),
+                            "run_scope": "case",
+                            "predicted_label": case_prediction.get("predicted_label"),
+                            "true_label": case_prediction.get("true_label"),
+                            "prediction_probability": case_prediction.get("prediction_probability"),
+                            "is_correct": case_prediction.get("is_correct"),
+                            "prediction_snapshot": case_prediction.get("prediction_snapshot"),
+                            "post_mortem": post_mortem,
+                        },
+                    )
+            except Exception:
+                post_mortem = None
         return {
             "summary": summary,
             "case_prediction": case_prediction,
             "model_version": serialize_case_model_version(model_version),
             "execution_device": execution_device,
             "artifact_availability": serialize_case_artifact_availability(case_prediction),
+            "post_mortem": post_mortem,
         }
 
     @router.post("/api/sites/{site_id}/cases/validate/compare")
@@ -1226,6 +1285,8 @@ def build_cases_router(support: Any) -> APIRouter:
 
         artifact_key = {
             "gradcam": "gradcam_path",
+            "gradcam_cornea": "gradcam_cornea_path",
+            "gradcam_lesion": "gradcam_lesion_path",
             "roi_crop": "roi_crop_path",
             "medsam_mask": "medsam_mask_path",
             "lesion_crop": "lesion_crop_path",

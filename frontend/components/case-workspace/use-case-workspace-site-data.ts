@@ -167,9 +167,9 @@ export function useCaseWorkspaceSiteData({
         setCases(nextCases);
         setSelectedCase((current) => {
           if (!current) {
-            return nextCases[0] ?? null;
+            return null;
           }
-          return nextCases.find((item) => item.case_id === current.case_id) ?? nextCases[0] ?? null;
+          return nextCases.find((item) => item.case_id === current.case_id) ?? null;
         });
       } catch (nextError) {
         if (isAbortError(nextError)) {

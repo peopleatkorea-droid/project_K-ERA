@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select, update
 
-from kera_research.config import BASE_DIR, SITE_ROOT_DIR
+from kera_research.config import BASE_DIR, BUILT_IN_SITE_ROOT_DIR, SITE_ROOT_DIR
 from kera_research.db import CONTROL_PLANE_ENGINE, app_settings, institution_directory
 from kera_research.domain import utc_now
 
@@ -23,7 +24,21 @@ class ControlPlaneInstanceStateFacade:
         self.instance_storage_root_setting_key = instance_storage_root_setting_key
         self.institution_directory_last_sync_setting_key = institution_directory_last_sync_setting_key
 
+    def _resolve_storage_path(self, value: str | Path) -> Path:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = (BASE_DIR / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        return candidate
+
+    def built_in_instance_storage_root(self) -> Path:
+        return BUILT_IN_SITE_ROOT_DIR.resolve()
+
     def default_instance_storage_root(self) -> Path:
+        return self.built_in_instance_storage_root()
+
+    def configured_default_instance_storage_root(self) -> Path:
         return SITE_ROOT_DIR.resolve()
 
     def get_app_setting(self, setting_key: str) -> str | None:
@@ -98,20 +113,30 @@ class ControlPlaneInstanceStateFacade:
             "synced_at": synced_at or None,
         }
 
+    def instance_storage_root_source(self) -> str:
+        built_in_root = str(self.built_in_instance_storage_root())
+        configured_default_root = str(self.configured_default_instance_storage_root())
+        configured = self.get_app_setting(self.instance_storage_root_setting_key)
+        if configured:
+            resolved_configured = str(self._resolve_storage_path(configured))
+            if resolved_configured == built_in_root:
+                return "built_in_default"
+            if resolved_configured == configured_default_root and os.getenv("KERA_STORAGE_DIR", "").strip():
+                return "environment_default"
+            return "custom"
+        if os.getenv("KERA_STORAGE_DIR", "").strip():
+            return "environment_default"
+        return "built_in_default"
+
     def instance_storage_root(self) -> str:
         configured = self.get_app_setting(self.instance_storage_root_setting_key)
         if configured:
-            return str(Path(configured).expanduser().resolve())
-        return str(self.default_instance_storage_root())
+            return str(self._resolve_storage_path(configured))
+        return str(self.configured_default_instance_storage_root())
 
     def site_storage_root(self, site_id: str) -> str:
         site = self.store.get_site(site_id)
         configured = str(site.get("local_storage_root") or "").strip() if site else ""
         if configured:
-            site_root = Path(configured).expanduser()
-            if not site_root.is_absolute():
-                site_root = (BASE_DIR / site_root).resolve()
-            else:
-                site_root = site_root.resolve()
-            return str(site_root)
+            return str(self._resolve_storage_path(configured))
         return str(Path(self.instance_storage_root()) / site_id)

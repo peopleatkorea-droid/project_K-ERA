@@ -15,17 +15,17 @@ import {
 import {
   buildLocalAuthResponse,
   DEFAULT_PROJECT_ID,
-  fetchLegacyLocalNodeApi,
-  fetchLocalNodeApi,
   legacyEmailForLocalUser,
+  MainAppTokenClaims,
   mapLegacyRoleToMembershipRole,
   normalizeRegistryConsents,
   normalizeSiteIdPreservingCase,
   normalizeStringArray,
-  readBearerToken,
+  readMainAppTokenClaims,
   rowValue,
   trimText,
 } from "./main-app-bridge-shared";
+import { verifyControlPlanePassword } from "./passwords";
 import { getControlPlaneUser } from "./store";
 
 export type LocalMainAppUser = AuthUser;
@@ -112,14 +112,6 @@ export async function canonicalUserRowById(canonicalUserId: string): Promise<Row
   return rows[0] ?? null;
 }
 
-export async function seedUsersFromLocal(request: NextRequest, token: string): Promise<void> {
-  const records = await fetchLegacyLocalNodeApi<ManagedUserRecord[]>(request, "/api/admin/users", {}, token);
-  for (const record of records) {
-    const canonicalUserId = await upsertCanonicalUser(record);
-    await syncCanonicalMemberships(canonicalUserId, record, { prune_absent: true });
-  }
-}
-
 async function canonicalUserRowForLocalUser(localUser: LocalMainAppUser): Promise<Row | null> {
   const sql = await controlPlaneSql();
   const email = legacyEmailForLocalUser(localUser);
@@ -140,6 +132,76 @@ async function canonicalUserRowForLocalUser(localUser: LocalMainAppUser): Promis
     from users
     where legacy_local_user_id = ${localUser.user_id} or email = ${email}
     order by case when legacy_local_user_id = ${localUser.user_id} then 0 else 1 end
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function canonicalUserRowForTokenClaims(claims: MainAppTokenClaims): Promise<Row | null> {
+  const sql = await controlPlaneSql();
+  const claimSub = trimText(claims.sub);
+  const claimUsername = trimText(claims.username).toLowerCase();
+  const claimEmail = claimUsername.includes("@") ? normalizeEmail(claimUsername) : "";
+  const rows = await sql`
+    select
+      user_id,
+      legacy_local_user_id,
+      username,
+      public_alias,
+      email,
+      full_name,
+      role,
+      site_ids,
+      registry_consents,
+      global_role,
+      status,
+      created_at
+    from users
+    where user_id = ${claimSub || null}
+       or legacy_local_user_id = ${claimSub || null}
+       or username = ${claimUsername || null}
+       or email = ${claimEmail || null}
+    order by
+      case
+        when user_id = ${claimSub || null} then 0
+        when legacy_local_user_id = ${claimSub || null} then 1
+        when username = ${claimUsername || null} then 2
+        when email = ${claimEmail || null} then 3
+        else 4
+      end
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function canonicalUserRowForLogin(login: string): Promise<Row | null> {
+  const sql = await controlPlaneSql();
+  const normalized = trimText(login).toLowerCase();
+  const email = normalized.includes("@") ? normalizeEmail(normalized) : "";
+  const rows = await sql`
+    select
+      user_id,
+      legacy_local_user_id,
+      username,
+      public_alias,
+      email,
+      full_name,
+      password,
+      role,
+      site_ids,
+      registry_consents,
+      global_role,
+      status,
+      created_at
+    from users
+    where username = ${normalized || null}
+       or email = ${email || null}
+    order by
+      case
+        when username = ${normalized || null} then 0
+        when email = ${email || null} then 1
+        else 2
+      end
     limit 1
   `;
   return rows[0] ?? null;
@@ -300,6 +362,22 @@ export async function serializeManagedUserRecord(row: Row): Promise<ManagedUserR
   };
 }
 
+function fallbackUserFromClaims(claims: MainAppTokenClaims): AuthUser {
+  const fallbackUserId = trimText(claims.sub) || makeControlPlaneId("user");
+  const fallbackUsername = trimText(claims.username) || fallbackUserId;
+  return {
+    user_id: fallbackUserId,
+    username: fallbackUsername,
+    full_name: trimText(claims.full_name) || fallbackUsername,
+    public_alias: trimText(claims.public_alias) || null,
+    role: (trimText(claims.role) || "viewer") as AuthUser["role"],
+    site_ids: normalizeStringArray(claims.site_ids),
+    approval_status: (claims.approval_status || "application_required") as AuthState,
+    latest_access_request: null,
+    registry_consents: normalizeRegistryConsents(claims.registry_consents),
+  };
+}
+
 function deriveLegacyRoleFromCanonical(
   user: Awaited<ReturnType<typeof getControlPlaneUser>>,
   fallbackRole: AuthUser["role"],
@@ -358,7 +436,9 @@ export async function buildLegacyAuthUser(
     site_ids: approvedSiteIds,
     approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
     latest_access_request: latestRequest,
-    registry_consents: normalizeRegistryConsents(canonicalRow?.registry_consents ?? localUser.registry_consents),
+    registry_consents: normalizeRegistryConsents(
+      canonicalRow ? rowValue<unknown>(canonicalRow, "registry_consents") : localUser.registry_consents,
+    ),
   };
   const sql = await controlPlaneSql();
   await sql`
@@ -377,20 +457,52 @@ export async function buildLegacyAuthUser(
   return nextUser;
 }
 
-export async function requireMainAppBridgeUser(request: NextRequest): Promise<CanonicalUserContext> {
-  return requireMainAppBridgeUserWithToken(request, readBearerToken(request));
+export async function buildMainAuthUser(
+  canonicalUserId: string,
+  fallback?: Partial<AuthUser>,
+): Promise<AuthUser> {
+  const canonicalUser = await getControlPlaneUser(canonicalUserId);
+  const canonicalRow = await canonicalUserRowById(canonicalUserId);
+  if (!canonicalUser || !canonicalRow) {
+    throw new Error("Authentication required.");
+  }
+  const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
+  const approvedSiteIds = canonicalUser.memberships
+    .filter((membership) => membership.status === "approved")
+    .map((membership) => membership.site_id);
+  return {
+    user_id: canonicalUserId,
+    username:
+      trimText(rowValue<string>(canonicalRow, "username")) ||
+      trimText(canonicalUser.email) ||
+      trimText(fallback?.username) ||
+      canonicalUserId,
+    full_name: trimText(canonicalUser.full_name) || trimText(fallback?.full_name) || canonicalUserId,
+    public_alias:
+      trimText(rowValue<string | null>(canonicalRow, "public_alias")) ||
+      trimText(fallback?.public_alias) ||
+      null,
+    role: deriveLegacyRoleFromCanonical(
+      canonicalUser,
+      ((trimText(fallback?.role) || trimText(rowValue<string>(canonicalRow, "role")) || "viewer") as AuthUser["role"]),
+    ),
+    site_ids: approvedSiteIds,
+    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
+    latest_access_request: latestRequest,
+    registry_consents: normalizeRegistryConsents(rowValue<unknown>(canonicalRow, "registry_consents")),
+  };
 }
 
-async function requireMainAppBridgeUserWithToken(
-  request: NextRequest,
-  token: string,
-): Promise<CanonicalUserContext> {
-  const localUser = await fetchLocalNodeApi<LocalMainAppUser>(request, "/api/auth/me", {}, token);
+export async function requireMainAppBridgeUser(request: NextRequest): Promise<CanonicalUserContext> {
+  const claims = await readMainAppTokenClaims(request);
   await ensureDefaultProject();
-  const canonicalUserId = await upsertCanonicalUser(localUser);
-  await syncCanonicalMemberships(canonicalUserId, localUser);
-  await syncLatestLocalAccessRequest(canonicalUserId, localUser);
-  const user = await buildLegacyAuthUser(canonicalUserId, localUser);
+  const canonicalRow = await canonicalUserRowForTokenClaims(claims);
+  if (!canonicalRow) {
+    throw new Error("Authentication required.");
+  }
+  const canonicalUserId = rowValue<string>(canonicalRow, "user_id");
+  const localUser = fallbackUserFromClaims(claims);
+  const user = await buildMainAuthUser(canonicalUserId, localUser);
   return {
     canonicalUserId,
     localUser,
@@ -398,7 +510,47 @@ async function requireMainAppBridgeUserWithToken(
   };
 }
 
-export async function buildMainAuthFromLocalToken(request: NextRequest, localToken: string): Promise<AuthResponse> {
-  const { user } = await requireMainAppBridgeUserWithToken(request, localToken);
+export async function authenticateMainAppUser(
+  usernameOrEmail: string,
+  password: string,
+): Promise<CanonicalUserContext> {
+  const normalizedLogin = trimText(usernameOrEmail);
+  const normalizedPassword = String(password || "");
+  if (!normalizedLogin || !normalizedPassword) {
+    throw new Error("Username and password are required.");
+  }
+  const row = await canonicalUserRowForLogin(normalizedLogin);
+  if (!row) {
+    throw new Error("Invalid credentials.");
+  }
+  const status = trimText(rowValue<string>(row, "status")) || "active";
+  if (status !== "active") {
+    throw new Error("This account is disabled.");
+  }
+  if (!verifyControlPlanePassword(normalizedPassword, trimText(rowValue<string>(row, "password")))) {
+    throw new Error("Invalid credentials.");
+  }
+  const canonicalUserId = rowValue<string>(row, "user_id");
+  const user = await buildMainAuthUser(canonicalUserId, {
+    username: trimText(rowValue<string>(row, "username")) || normalizedLogin,
+    full_name: trimText(rowValue<string>(row, "full_name")) || normalizedLogin,
+    public_alias: trimText(rowValue<string | null>(row, "public_alias")) || null,
+    role: (trimText(rowValue<string>(row, "role")) || "viewer") as AuthUser["role"],
+    site_ids: normalizeStringArray(rowValue<unknown>(row, "site_ids")),
+    approval_status: "application_required",
+    registry_consents: normalizeRegistryConsents(rowValue<unknown>(row, "registry_consents")),
+  });
+  if (user.role !== "admin" && user.role !== "site_admin") {
+    throw new Error("Local username/password login is restricted to admin and site admin accounts. Researchers use Google sign-in.");
+  }
+  return {
+    canonicalUserId,
+    localUser: user,
+    user,
+  };
+}
+
+export async function buildMainAuthResponse(canonicalUserId: string, fallback?: Partial<AuthUser>): Promise<AuthResponse> {
+  const user = await buildMainAuthUser(canonicalUserId, fallback);
   return buildLocalAuthResponse(user);
 }

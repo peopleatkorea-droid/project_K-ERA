@@ -11,6 +11,8 @@ from kera_research.config import (
 from kera_research.db import CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL
 from kera_research.services.onedrive_publisher import OneDrivePublisher
 
+AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request."
+
 
 def database_backend_label(database_url: str) -> str:
     normalized = str(database_url or "").strip().lower()
@@ -34,12 +36,20 @@ def build_admin_overview(
         if user.get("role") == "admin"
         else cp.list_access_requests(status="pending", site_ids=[site["site_id"] for site in visible_sites])
     )
+    approved_requests = (
+        cp.list_access_requests(status="approved")
+        if user.get("role") == "admin"
+        else cp.list_access_requests(status="approved", site_ids=[site["site_id"] for site in visible_sites])
+    )
     visible_updates = [item for item in visible_model_updates(cp, user) if is_pending_model_update(item)]
     current_model = cp.current_global_model()
     overview = {
         "site_count": len(visible_sites),
         "model_version_count": len(cp.list_model_versions()),
         "pending_access_requests": len(pending_requests),
+        "auto_approved_access_requests": len(
+            [item for item in approved_requests if str(item.get("reviewer_notes") or "") == AUTO_APPROVAL_REVIEWER_NOTE]
+        ),
         "pending_model_updates": len(visible_updates),
         "current_model_version": current_model.get("version_name") if current_model else None,
         "federation_setup": {

@@ -15,6 +15,7 @@ import type {
   SiteComparisonRecord,
   StorageSettingsRecord,
 } from "./types";
+import { filterVisibleSites } from "./site-labels";
 
 export async function fetchAccessRequests(token: string, statusFilter = "pending") {
   const suffix = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : "";
@@ -86,7 +87,7 @@ export async function createProject(token: string, payload: { name: string; desc
 
 export async function fetchAdminSites(token: string, projectId?: string) {
   const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
-  return requestMainControlPlane<ManagedSiteRecord[]>(`/admin/sites${suffix}`, {}, token);
+  return filterVisibleSites(await requestMainControlPlane<ManagedSiteRecord[]>(`/admin/sites${suffix}`, {}, token));
 }
 
 export async function createAdminSite(
@@ -120,6 +121,7 @@ export async function updateAdminSite(
   payload: {
     display_name: string;
     hospital_name?: string;
+    source_institution_id?: string | null;
     research_registry_enabled?: boolean;
   },
 ) {

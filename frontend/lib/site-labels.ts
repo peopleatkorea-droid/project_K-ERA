@@ -2,6 +2,22 @@ import type { SiteRecord } from "./types";
 
 type SiteLike = Partial<Pick<SiteRecord, "site_id" | "display_name" | "hospital_name">> | null | undefined;
 
+export function isVisibleSiteId(siteId: string | null | undefined): boolean {
+  const normalizedSiteId = String(siteId ?? "").trim().toLowerCase();
+  if (!normalizedSiteId) {
+    return false;
+  }
+  return !normalizedSiteId.startsWith("smoke-");
+}
+
+export function filterVisibleSiteIds(siteIds: Array<string | null | undefined>): string[] {
+  return siteIds.filter((siteId): siteId is string => isVisibleSiteId(siteId));
+}
+
+export function filterVisibleSites<T extends { site_id: string | null | undefined }>(sites: T[]): T[] {
+  return sites.filter((site) => isVisibleSiteId(site.site_id));
+}
+
 export function getSiteDisplayName(site: SiteLike, fallback = ""): string {
   const hospitalName = String(site?.hospital_name ?? "").trim();
   if (hospitalName) {

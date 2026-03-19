@@ -51,7 +51,7 @@ export function CanvasBlock({
           )}
         >
           {eyebrow ? <div className={cn(canvasBlockEyebrowClass, headerInline && "whitespace-nowrap")}>{eyebrow}</div> : null}
-          <h3 className={cn(canvasBlockTitleClass, headerInline && "text-[clamp(1rem,1.6vw,1.22rem)] leading-tight")}>{title}</h3>
+          <h3 className={cn(canvasBlockTitleClass, headerInline && "leading-tight")}>{title}</h3>
           {summary ? <p className={canvasBlockSummaryClass}>{summary}</p> : null}
         </div>
         <div className={cn("flex flex-wrap items-center justify-end gap-2", headerInline && "shrink-0")}>

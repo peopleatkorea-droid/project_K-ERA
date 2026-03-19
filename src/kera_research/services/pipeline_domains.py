@@ -47,6 +47,23 @@ class ResearchValidationWorkflow:
         predicted_probability = float(case_result["predicted_probability"])
         predicted_index = int(case_result["predicted_index"])
         true_index = int(case_result["true_index"])
+        case_records = case_df.to_dict("records")
+        prediction_snapshot: dict[str, Any] | None = None
+        try:
+            prediction_snapshot = service.prediction_postmortem_analyzer.build_prediction_snapshot(
+                site_store,
+                case_records=case_records,
+                model_version=model_version,
+                execution_device=execution_device,
+                case_result=case_result,
+            )
+        except Exception as exc:
+            prediction_snapshot = {
+                "error": str(exc),
+                "model_version_id": model_version.get("version_id"),
+                "model_version_name": model_version.get("version_name"),
+                "execution_device": execution_device,
+            }
 
         validation_id = make_id("validation")
         case_prediction: dict[str, Any] = {
@@ -57,16 +74,29 @@ class ResearchValidationWorkflow:
             "predicted_label": INDEX_TO_LABEL[predicted_index],
             "prediction_probability": predicted_probability,
             "is_correct": bool(true_index == predicted_index),
+            "decision_threshold": case_result.get("decision_threshold"),
             "crop_mode": case_result.get("crop_mode"),
+            "case_aggregation": case_result.get("case_aggregation"),
             "n_source_images": case_result.get("n_source_images"),
             "n_model_inputs": case_result.get("n_model_inputs"),
             "ensemble_weights": case_result.get("ensemble_weights"),
             "ensemble_component_predictions": case_result.get("ensemble_component_predictions"),
+            "instance_attention_scores": case_result.get("instance_attention_scores"),
+            "quality_weights": case_result.get("quality_weights"),
+            "model_representative_source_image_path": case_result.get("model_representative_source_image_path"),
+            "model_representative_image_path": case_result.get("model_representative_image_path"),
+            "model_representative_index": case_result.get("model_representative_index"),
             "gradcam_path": case_result.get("gradcam_path"),
+            "gradcam_heatmap_path": case_result.get("gradcam_heatmap_path"),
+            "gradcam_cornea_path": case_result.get("gradcam_cornea_path"),
+            "gradcam_cornea_heatmap_path": case_result.get("gradcam_cornea_heatmap_path"),
+            "gradcam_lesion_path": case_result.get("gradcam_lesion_path"),
+            "gradcam_lesion_heatmap_path": case_result.get("gradcam_lesion_heatmap_path"),
             "medsam_mask_path": case_result.get("medsam_mask_path"),
             "roi_crop_path": case_result.get("roi_crop_path"),
             "lesion_mask_path": case_result.get("lesion_mask_path"),
             "lesion_crop_path": case_result.get("lesion_crop_path"),
+            "prediction_snapshot": prediction_snapshot,
         }
 
         summary: dict[str, Any] = {
@@ -77,6 +107,7 @@ class ResearchValidationWorkflow:
             "model_version_id": model_version["version_id"],
             "model_architecture": model_version.get("architecture", "densenet121"),
             "crop_mode": case_result.get("crop_mode"),
+            "case_aggregation": case_result.get("case_aggregation"),
             "run_date": utc_now(),
             "patient_id": patient_id,
             "visit_date": visit_date,
@@ -103,6 +134,7 @@ class ResearchValidationWorkflow:
                 "true_label": case_prediction.get("true_label"),
                 "prediction_probability": case_prediction.get("prediction_probability"),
                 "is_correct": case_prediction.get("is_correct"),
+                "prediction_snapshot": prediction_snapshot,
             },
         )
         return saved_summary, [case_prediction]
@@ -370,7 +402,7 @@ class ResearchContributionWorkflow:
             "preprocess_signature": service.model_manager.preprocess_signature(),
             "num_classes": len(LABEL_TO_INDEX),
             "crop_mode": crop_mode,
-            "training_input_policy": "medsam_cornea_crop_only" if crop_mode == "automated" else "medsam_lesion_crop_only",
+            "training_input_policy": self.service.training_workflow._training_input_policy_for_crop_mode(crop_mode),
             "training_summary": result,
             "approval_report": approval_report,
             "quality_summary": quality_summary,
@@ -436,6 +468,27 @@ class ResearchTrainingWorkflow:
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
+    def _validate_architecture_crop_mode(self, architecture: str, crop_mode: str) -> None:
+        is_dual_input = self.service.model_manager.is_dual_input_architecture(architecture)
+        if is_dual_input and crop_mode != "paired":
+            raise ValueError("Dual-input concat fusion requires paired crop mode.")
+        if crop_mode == "paired" and not is_dual_input:
+            raise ValueError("Paired crop mode is currently reserved for dual-input concat fusion.")
+
+    def _training_input_policy_for_crop_mode(self, crop_mode: str) -> str:
+        if crop_mode == "manual":
+            return "medsam_lesion_crop_only"
+        if crop_mode == "paired":
+            return "medsam_cornea_plus_lesion_paired_fusion"
+        return "medsam_cornea_crop_only"
+
+    def _crop_mode_description(self, crop_mode: str) -> str:
+        if crop_mode == "manual":
+            return "MedSAM lesion-centered crops"
+        if crop_mode == "paired":
+            return "paired cornea and lesion crops"
+        return "MedSAM cornea crops"
+
     def run_initial_training(
         self,
         site_store: SiteStore,
@@ -449,6 +502,7 @@ class ResearchTrainingWorkflow:
         val_split: float = 0.2,
         test_split: float = 0.2,
         use_pretrained: bool = True,
+        case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         regenerate_split: bool = False,
         progress_callback: Any = None,
@@ -460,6 +514,8 @@ class ResearchTrainingWorkflow:
         if not use_medsam_crops:
             raise ValueError("Initial training is MedSAM cornea-crop-only.")
         normalized_crop_mode = service._normalize_crop_mode(crop_mode)
+        self._validate_architecture_crop_mode(architecture, normalized_crop_mode)
+        normalized_case_aggregation = service.model_manager.normalize_case_aggregation(case_aggregation, architecture)
         training_modes = ["automated", "manual"] if normalized_crop_mode == "both" else [normalized_crop_mode]
 
         def emit_progress(**payload: Any) -> None:
@@ -471,6 +527,7 @@ class ResearchTrainingWorkflow:
                     "message": payload.get("message"),
                     "percent": int(payload.get("percent", 0)),
                     "crop_mode": normalized_crop_mode,
+                    "case_aggregation": normalized_case_aggregation,
                     "component_crop_mode": payload.get("component_crop_mode"),
                     "component_index": payload.get("component_index"),
                     "component_count": len(training_modes),
@@ -537,9 +594,8 @@ class ResearchTrainingWorkflow:
                 use_pretrained=use_pretrained,
                 saved_split=shared_patient_split,
                 crop_mode=component_crop_mode,
-                training_input_policy=(
-                    "medsam_cornea_crop_only" if component_crop_mode == "automated" else "medsam_lesion_crop_only"
-                ),
+                case_aggregation=normalized_case_aggregation,
+                training_input_policy=self._training_input_policy_for_crop_mode(component_crop_mode),
                 progress_callback=component_progress_callback,
             )
             patient_split = {**result["patient_split"], "site_id": site_store.site_id}
@@ -559,9 +615,9 @@ class ResearchTrainingWorkflow:
                 "filename": Path(component_output_path).name,
                 "requires_medsam_crop": use_medsam_crops,
                 "crop_mode": component_crop_mode,
-                "training_input_policy": (
-                    "medsam_cornea_crop_only" if component_crop_mode == "automated" else "medsam_lesion_crop_only"
-                ),
+                "case_aggregation": result.get("case_aggregation", normalized_case_aggregation),
+                "bag_level": bool(result.get("bag_level", False)),
+                "training_input_policy": self._training_input_policy_for_crop_mode(component_crop_mode),
                 "preprocess_signature": service.model_manager.preprocess_signature(),
                 "num_classes": len(LABEL_TO_INDEX),
                 "decision_threshold": result.get("decision_threshold", 0.5),
@@ -575,17 +631,20 @@ class ResearchTrainingWorkflow:
                     and component_crop_mode == normalized_crop_mode
                 ),
                 "notes": (
-                    f"Initial training with {'MedSAM cornea crops' if component_crop_mode == 'automated' else 'MedSAM lesion-centered crops'}: "
+                    f"Initial training with {self._crop_mode_description(component_crop_mode)}"
+                    f" using {result.get('case_aggregation', normalized_case_aggregation)} aggregation: "
                     f"train {result['n_train_patients']} / val {result['n_val_patients']} / test {result['n_test_patients']} patients, "
                     f"best val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
                 ),
                 "notes_ko": (
-                    f"{'MedSAM cornea crop' if component_crop_mode == 'automated' else 'MedSAM lesion-centered crop'} 기반 초기 학습 모델: "
+                    f"{'MedSAM cornea crop' if component_crop_mode == 'automated' else 'MedSAM lesion-centered crop' if component_crop_mode == 'manual' else 'paired cornea + lesion crop'} 기반 "
+                    f"{result.get('case_aggregation', normalized_case_aggregation)} 집계 초기 학습 모델: "
                     f"train {result['n_train_patients']}명 / val {result['n_val_patients']}명 / test {result['n_test_patients']}명, "
                     f"최고 val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
                 ),
                 "notes_en": (
-                    f"Initial training with {'MedSAM cornea crops' if component_crop_mode == 'automated' else 'MedSAM lesion-centered crops'}: "
+                    f"Initial training with {self._crop_mode_description(component_crop_mode)}"
+                    f" using {result.get('case_aggregation', normalized_case_aggregation)} aggregation: "
                     f"train {result['n_train_patients']} / val {result['n_val_patients']} / test {result['n_test_patients']} patients, "
                     f"best val_acc={result['best_val_acc']:.3f}, test_acc={result['test_metrics']['accuracy']:.3f}"
                 ),
@@ -620,6 +679,7 @@ class ResearchTrainingWorkflow:
                     "val_split": float(val_split),
                     "test_split": float(test_split),
                     "use_pretrained": bool(use_pretrained),
+                    "case_aggregation": normalized_case_aggregation,
                     "regenerate_split": bool(regenerate_split),
                     "seed": 42,
                 },
@@ -678,6 +738,8 @@ class ResearchTrainingWorkflow:
                 "requires_medsam_crop": True,
                 "crop_mode": "both",
                 "ensemble_mode": "weighted_average",
+                "case_aggregation": "weighted_average",
+                "bag_level": False,
                 "component_model_version_ids": [item["version_id"] for item in created_versions],
                 "ensemble_weights": ensemble_selection["ensemble_weights"],
                 "training_input_policy": "medsam_cornea_plus_lesion_ensemble",
@@ -715,6 +777,7 @@ class ResearchTrainingWorkflow:
         experiment_result = {
             "training_id": make_id("train"),
             "crop_mode": "both",
+            "case_aggregation": "weighted_average",
             "component_results": component_results,
             "ensemble_weights": ensemble_selection["ensemble_weights"],
             "ensemble_selection_metric": ensemble_selection["selection_metric"],
@@ -744,6 +807,7 @@ class ResearchTrainingWorkflow:
                 "val_split": float(val_split),
                 "test_split": float(test_split),
                 "use_pretrained": bool(use_pretrained),
+                "case_aggregation": normalized_case_aggregation,
                 "regenerate_split": bool(regenerate_split),
                 "seed": 42,
             },
@@ -773,6 +837,7 @@ class ResearchTrainingWorkflow:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
@@ -783,8 +848,10 @@ class ResearchTrainingWorkflow:
         if not use_medsam_crops:
             raise ValueError("Cross-validation is MedSAM cornea-crop-only.")
         normalized_crop_mode = service._normalize_crop_mode(crop_mode)
+        self._validate_architecture_crop_mode(architecture, normalized_crop_mode)
+        normalized_case_aggregation = service.model_manager.normalize_case_aggregation(case_aggregation, architecture)
         if normalized_crop_mode == "both":
-            raise ValueError("Cross-validation currently supports automated or manual crop mode, not both.")
+            raise ValueError("Cross-validation currently supports automated, manual, or paired crop mode, not both.")
 
         records = service._prepare_records_for_model(
             site_store,
@@ -801,6 +868,7 @@ class ResearchTrainingWorkflow:
                     "message": payload.get("message"),
                     "percent": int(payload.get("percent", 0)),
                     "crop_mode": normalized_crop_mode,
+                    "case_aggregation": normalized_case_aggregation,
                     "fold_index": payload.get("fold_index"),
                     "num_folds": payload.get("num_folds", num_folds),
                     "epoch": payload.get("epoch"),
@@ -855,6 +923,7 @@ class ResearchTrainingWorkflow:
             batch_size=batch_size,
             val_split=val_split,
             use_pretrained=use_pretrained,
+            case_aggregation=normalized_case_aggregation,
             progress_callback=on_cross_validation_progress,
         )
         emit_progress(stage="finalizing", message="Saving cross-validation report.", percent=96)
@@ -862,7 +931,8 @@ class ResearchTrainingWorkflow:
             **result,
             "site_id": site_store.site_id,
             "crop_mode": normalized_crop_mode,
-            "training_input_policy": "medsam_cornea_crop_only" if normalized_crop_mode == "automated" else "medsam_lesion_crop_only",
+            "case_aggregation": normalized_case_aggregation,
+            "training_input_policy": self._training_input_policy_for_crop_mode(normalized_crop_mode),
         }
         report_path = site_store.validation_dir / f"{report['cross_validation_id']}.json"
         write_json(report_path, report)
@@ -883,6 +953,7 @@ class ResearchTrainingWorkflow:
                 "batch_size": int(batch_size),
                 "val_split": float(val_split),
                 "use_pretrained": bool(use_pretrained),
+                "case_aggregation": normalized_case_aggregation,
                 "seed": 42,
             },
             metrics=report.get("aggregate_metrics", {}),

@@ -260,6 +260,7 @@ validation_cases = Table(
     Column("has_roi_crop", Boolean, nullable=False, default=False),
     Column("has_medsam_mask", Boolean, nullable=False, default=False),
     Column("created_at", String(64), nullable=False),
+    Column("payload_json", JSON, nullable=False, default=dict),
     UniqueConstraint("validation_id", "case_reference_id", name="uq_validation_cases_validation_case"),
 )
 
@@ -453,6 +454,8 @@ def init_db() -> None:
 
 
 def _migrate_control_plane_schema() -> None:
+    if _control_plane_remote_api_enabled():
+        return
     inspector = inspect(CONTROL_PLANE_ENGINE)
     table_names = inspector.get_table_names()
     if "users" not in table_names:
@@ -530,6 +533,12 @@ def _migrate_control_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE institution_directory ALTER COLUMN institution_id TYPE VARCHAR(128)"))
 
         if "validation_cases" in table_names:
+            validation_case_columns = {column["name"] for column in inspector.get_columns("validation_cases")}
+            if "payload_json" not in validation_case_columns:
+                if CONTROL_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE validation_cases ADD COLUMN payload_json JSON NOT NULL DEFAULT '{}'"))
+                else:
+                    conn.execute(text("ALTER TABLE validation_cases ADD COLUMN payload_json JSON NOT NULL DEFAULT '{}'"))
             conn.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_validation_cases_site_patient_visit "

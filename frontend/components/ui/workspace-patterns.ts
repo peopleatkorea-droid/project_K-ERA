@@ -12,7 +12,16 @@ export const workspaceKickerClass =
 export const workspaceBrandClass = "mb-4 grid gap-4";
 export const workspaceBrandCopyClass = "grid gap-1";
 export const workspaceBrandTitleClass = "m-0 text-[1.85rem] font-semibold tracking-[-0.045em] text-ink";
-export const workspaceBrandActionsClass = "flex flex-wrap gap-2";
+export const workspaceBrandActionsClass =
+  "grid grid-cols-2 gap-2 rounded-[18px] border border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.94),rgba(241,245,249,0.84))] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.56)] dark:bg-[linear-gradient(180deg,rgba(24,31,40,0.94),rgba(18,23,30,0.9))]";
+export function workspaceBrandActionButtonClass(active = false) {
+  return cn(
+    "min-w-[108px] border-transparent text-[0.88rem] shadow-none",
+    active
+      ? "border-brand/22 bg-[linear-gradient(135deg,var(--accent),rgba(48,88,255,0.82))] text-[var(--accent-contrast)] shadow-[0_12px_24px_rgba(48,88,255,0.18)] hover:border-brand/28 hover:bg-[linear-gradient(135deg,var(--accent-strong),var(--accent))] hover:text-[var(--accent-contrast)]"
+      : "bg-transparent text-muted hover:border-brand/16 hover:bg-white/72 hover:text-ink dark:hover:bg-white/8 dark:hover:text-[rgba(241,245,249,0.94)]"
+  );
+}
 export const workspaceCenterClass = "grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]";
 export const workspacePanelClass = "grid gap-4";
 export const workspaceTitleRowClass = "grid gap-2";
@@ -300,8 +309,16 @@ export function tagPillClass(active = false) {
   return cn(
     "min-h-10 rounded-[10px] border px-4 text-sm font-semibold transition duration-150 ease-out",
     active
-      ? "border-amber-300/70 bg-[linear-gradient(180deg,rgba(255,244,214,1),rgba(255,226,156,0.97))] text-amber-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.58),0_10px_22px_rgba(245,158,11,0.15)] ring-1 ring-amber-200/75 dark:border-amber-300/35 dark:bg-[linear-gradient(180deg,rgba(120,53,15,0.5),rgba(146,64,14,0.32))] dark:text-amber-100 dark:ring-amber-300/20"
+      ? "border-blue-400 bg-blue-100 text-blue-700 shadow-[0_10px_20px_rgba(59,130,246,0.14)] hover:border-blue-500 hover:bg-blue-100 hover:text-blue-800 dark:border-blue-300/55 dark:bg-blue-500/24 dark:text-blue-50 dark:hover:border-blue-300/65 dark:hover:bg-blue-500/30"
       : "border-border bg-surface text-muted hover:border-brand/15 hover:bg-surface-muted/80 hover:text-ink"
+  );
+}
+export function predisposingFactorPillClass(active = false) {
+  return cn(
+    "min-h-11 rounded-full border px-5 text-[0.95rem] font-semibold tracking-[-0.02em] transition duration-150 ease-out",
+    active
+      ? "!border-blue-700 !bg-none !bg-blue-600 !text-white ring-2 ring-blue-200/90 shadow-[0_14px_28px_rgba(37,99,235,0.3)] hover:!border-blue-800 hover:!bg-blue-700 hover:!text-white dark:!border-blue-400 dark:!bg-blue-500 dark:!text-white dark:ring-blue-300/30 dark:hover:!border-blue-300 dark:hover:!bg-blue-400"
+      : "!border-slate-200 !bg-none !bg-white text-slate-700 shadow-[0_10px_24px_rgba(15,23,42,0.06)] hover:!border-blue-200 hover:!bg-blue-50 hover:text-blue-700 dark:!border-white/12 dark:!bg-[rgba(255,255,255,0.04)] dark:text-[rgba(226,232,240,0.84)] dark:hover:!border-blue-300/30 dark:hover:!bg-[rgba(59,130,246,0.12)] dark:hover:text-blue-100"
   );
 }
 export const visitContextSelectClass = "grid gap-2.5";

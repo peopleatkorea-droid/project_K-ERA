@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from kera_research.config import (
     CONTROL_PLANE_API_BASE_URL,
@@ -11,6 +13,8 @@ from kera_research.config import (
     CONTROL_PLANE_NODE_TOKEN,
 )
 from kera_research.services.node_credentials import load_node_credentials
+
+REMOTE_CONTROL_PLANE_HTTP_POOL_SIZE = 8
 
 
 class RemoteControlPlaneClient:
@@ -29,6 +33,7 @@ class RemoteControlPlaneClient:
         self.node_id = self._configured_node_id
         self.node_token = self._configured_node_token
         self.timeout_seconds = float(timeout_seconds or CONTROL_PLANE_API_TIMEOUT_SECONDS or 30.0)
+        self._session_state = threading.local()
         self.reload_credentials()
 
     def reload_credentials(self) -> dict[str, str] | None:
@@ -88,7 +93,7 @@ class RemoteControlPlaneClient:
         json_body: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
     ) -> Any:
-        response = requests.request(
+        response = self._session().request(
             method.upper(),
             self._url(path),
             headers=headers,
@@ -98,6 +103,20 @@ class RemoteControlPlaneClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def _session(self) -> requests.Session:
+        session = getattr(self._session_state, "session", None)
+        if session is not None:
+            return session
+        session = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=REMOTE_CONTROL_PLANE_HTTP_POOL_SIZE,
+            pool_maxsize=REMOTE_CONTROL_PLANE_HTTP_POOL_SIZE,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        self._session_state.session = session
+        return session
 
     def register_node(
         self,

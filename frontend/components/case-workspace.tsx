@@ -29,6 +29,7 @@ import type {
   LesionPreviewCard,
   LiveLesionPreviewMap,
   NormalizedBox,
+  PatientListRow,
   PatientListThumbnail,
   RoiPreviewCard,
   SavedImagePreview,
@@ -50,7 +51,6 @@ import {
   canvasHeaderClass,
   canvasHeaderContentClass,
   canvasHeaderGlowClass,
-  canvasHeaderKickerClass,
   canvasHeaderMetaChipClass,
   canvasHeaderMetaRowClass,
   canvasSidebarCardClass,
@@ -107,10 +107,10 @@ import {
   organismChipClass,
   organismChipRowClass,
   organismChipStaticClass,
-  predisposingChipClass,
   workspaceUserBadgeClass,
   validationRailHeadClass,
   workspaceBrandActionsClass,
+  workspaceBrandActionButtonClass,
   workspaceBrandClass,
   workspaceBrandCopyClass,
   workspaceBrandTitleClass,
@@ -126,7 +126,7 @@ import {
   workspaceTitleRowClass,
   workspaceToastClass,
 } from "./ui/workspace-patterns";
-import { getSiteDisplayName } from "../lib/site-labels";
+import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
 import { formatPublicAlias } from "../lib/public-alias";
 import {
   type CaseHistoryResponse,
@@ -149,6 +149,7 @@ import {
   fetchCases,
   fetchImageBlob,
   fetchImagePreviewBlob,
+  fetchPatientListPage,
   fetchLiveLesionPreviewJob,
   fetchImageSemanticPromptScores,
   fetchVisits,
@@ -198,7 +199,7 @@ const PREDISPOSING_FACTOR_OPTIONS = [
   "unknown",
 ];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
-const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "dinov2", "dinov2_mil", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
 const PATIENT_LIST_PAGE_SIZE = 25;
 const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
@@ -246,6 +247,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 type DraftImage = {
   draft_id: string;
   file: File;
@@ -254,7 +259,14 @@ type DraftImage = {
   is_representative: boolean;
 };
 
-type ValidationArtifactKind = "gradcam" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask";
+type ValidationArtifactKind =
+  | "gradcam"
+  | "gradcam_cornea"
+  | "gradcam_lesion"
+  | "roi_crop"
+  | "medsam_mask"
+  | "lesion_crop"
+  | "lesion_mask";
 
 type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
 
@@ -757,9 +769,13 @@ export function CaseWorkspace({
   onToggleTheme,
 }: CaseWorkspaceProps) {
   const { locale, localeTag, common } = useI18n();
-  const describeError = (nextError: unknown, fallback: string) =>
-    nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
-  const selectedSiteRecord = sites.find((site) => site.site_id === selectedSiteId) ?? null;
+  const visibleSites = filterVisibleSites(sites);
+  const describeError = useCallback(
+    (nextError: unknown, fallback: string) =>
+      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+    [locale],
+  );
+  const selectedSiteRecord = visibleSites.find((site) => site.site_id === selectedSiteId) ?? null;
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
   const isAlreadyExistsError = (nextError: unknown) => {
     if (!(nextError instanceof Error)) {
@@ -778,27 +794,35 @@ export function CaseWorkspace({
   const [editDraftBusy, setEditDraftBusy] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [railView, setRailView] = useState<"cases" | "patients">("patients");
-  const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
   const [contributionBusy, setContributionBusy] = useState(false);
   const [researchRegistryBusy, setResearchRegistryBusy] = useState(false);
   const [researchRegistryModalOpen, setResearchRegistryModalOpen] = useState(false);
   const [pendingResearchRegistryAutoInclude, setPendingResearchRegistryAutoInclude] = useState(false);
+  const [researchRegistryExplanationConfirmed, setResearchRegistryExplanationConfirmed] = useState(false);
+  const [researchRegistryUsageConsented, setResearchRegistryUsageConsented] = useState(false);
   const [contributionResult, setContributionResult] = useState<CaseContributionResponse | null>(null);
   const [completionState, setCompletionState] = useState<CompletionState | null>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [patientListPage, setPatientListPage] = useState(1);
+  const [patientListRows, setPatientListRows] = useState<PatientListRow[]>([]);
+  const [patientListTotalCount, setPatientListTotalCount] = useState(0);
+  const [patientListTotalPages, setPatientListTotalPages] = useState(1);
+  const [patientListLoading, setPatientListLoading] = useState(false);
   const [patientListThumbs, setPatientListThumbs] = useState<Record<string, PatientListThumbnail[]>>({});
   const [toast, setToastState] = useState<ToastState>(null);
   const [toastHistory, setToastHistory] = useState<ToastLogEntry[]>([]);
+  const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
   const whiteFileInputRef = useRef<HTMLInputElement | null>(null);
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
+  const alertsPanelRef = useRef<HTMLDivElement | null>(null);
   const patientListThumbUrlsRef = useRef<string[]>([]);
   const railListSectionRef = useRef<HTMLElement | null>(null);
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
   const workspacePopNavigationRef = useRef(false);
   const deferredSearch = useDeferredValue(caseSearch);
+  const researchRegistryJoinReady = researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
   const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
     setToastState((current) => {
       const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
@@ -818,8 +842,57 @@ export function CaseWorkspace({
       return resolved;
     });
   }, []);
+  const closeResearchRegistryModal = useCallback(() => {
+    setPendingResearchRegistryAutoInclude(false);
+    setResearchRegistryModalOpen(false);
+    setResearchRegistryExplanationConfirmed(false);
+    setResearchRegistryUsageConsented(false);
+  }, []);
+  const openResearchRegistryModal = useCallback((autoInclude = false) => {
+    setPendingResearchRegistryAutoInclude(autoInclude);
+    setResearchRegistryExplanationConfirmed(false);
+    setResearchRegistryUsageConsented(false);
+    setResearchRegistryModalOpen(true);
+  }, []);
+  const clearToastHistory = useCallback(() => {
+    setToastHistory([]);
+  }, []);
+  useEffect(() => {
+    if (!alertsPanelOpen) {
+      return;
+    }
+
+    function handleDocumentPointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (alertsPanelRef.current?.contains(target)) {
+        return;
+      }
+      setAlertsPanelOpen(false);
+    }
+
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setAlertsPanelOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleDocumentPointerDown);
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentPointerDown);
+      document.removeEventListener("keydown", handleDocumentKeyDown);
+    };
+  }, [alertsPanelOpen]);
   const copy = {
     recoveredDraft: pick(locale, "Recovered the last saved draft properties for this hospital. Re-attach image files before saving.", "??蹂묒썝??留덉?留?珥덉븞 ?띿꽦??蹂듦뎄?덉뒿?덈떎. ??????대?吏 ?뚯씪? ?ㅼ떆 泥⑤???二쇱꽭??"),
+    recoveredDraftWithAssets: pick(
+      locale,
+      "Recovered the last saved draft for this hospital, including local images.",
+      "이 병원의 마지막 초안을 로컬 이미지까지 포함해 복구했습니다."
+    ),
     unableLoadRecentCases: pick(locale, "Unable to load recent cases.", "理쒓렐 耳?댁뒪瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
     unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "蹂묒썝 ?쒕룞??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
     unableLoadSiteValidationHistory: pick(locale, "Unable to load hospital validation history.", "蹂묒썝 寃利??대젰??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
@@ -904,6 +977,8 @@ export function CaseWorkspace({
     setShowAdditionalOrganismForm,
     draftImages,
     setDraftImages,
+    draftLesionPromptBoxes,
+    setDraftLesionPromptBoxes,
     draftSavedAt,
     favoriteCaseIds,
     setFavoriteCaseIds,
@@ -913,6 +988,7 @@ export function CaseWorkspace({
     selectedSiteId,
     userId: user.user_id,
     recoveredDraftMessage: copy.recoveredDraft,
+    recoveredDraftWithAssetsMessage: copy.recoveredDraftWithAssets,
     cultureSpecies: CULTURE_SPECIES,
     setToast,
     createDraft,
@@ -924,7 +1000,6 @@ export function CaseWorkspace({
   const {
     cases,
     setCases,
-    casesLoading,
     selectedCase,
     setSelectedCase,
     selectedCaseImages,
@@ -1034,8 +1109,7 @@ export function CaseWorkspace({
         return;
       }
       if (!registry.user_enrolled) {
-        setPendingResearchRegistryAutoInclude(true);
-        setResearchRegistryModalOpen(true);
+        openResearchRegistryModal(true);
         return;
       }
       try {
@@ -1397,6 +1471,14 @@ export function CaseWorkspace({
   }
 
   function startNewCaseDraft() {
+    if (hasDraftContent(draft) || draftImages.length > 0) {
+      setRailView("cases");
+      setPanelOpen(true);
+      setSelectedCase(null);
+      setSelectedCaseImages([]);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     resetDraft();
     setPanelOpen(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1433,6 +1515,12 @@ export function CaseWorkspace({
   }
 
   function openSavedCase(caseRecord: CaseSummaryRecord, nextView: "cases" | "patients" = "cases") {
+    setCases((current) => {
+      if (current.some((item) => item.case_id === caseRecord.case_id)) {
+        return current;
+      }
+      return [caseRecord, ...current];
+    });
     setSelectedCase(caseRecord);
     setPanelOpen(true);
     setRailView(nextView);
@@ -1880,14 +1968,17 @@ export function CaseWorkspace({
   }
 
   async function handleJoinResearchRegistry() {
-    if (!selectedSiteId) {
+    if (!selectedSiteId || !researchRegistryJoinReady) {
       return;
     }
+    const shouldAutoInclude = pendingResearchRegistryAutoInclude;
     setResearchRegistryBusy(true);
     try {
       await enrollResearchRegistry(selectedSiteId, token);
       await onSiteDataChanged(selectedSiteId);
       setResearchRegistryModalOpen(false);
+      setResearchRegistryExplanationConfirmed(false);
+      setResearchRegistryUsageConsented(false);
       setToast({
         tone: "success",
         message: pick(
@@ -1896,7 +1987,7 @@ export function CaseWorkspace({
           "연구 레지스트리에 가입했습니다. 이제 적격 분석 케이스가 데이터셋 흐름에 포함될 수 있습니다."
         ),
       });
-      if (pendingResearchRegistryAutoInclude && selectedCase) {
+      if (shouldAutoInclude && selectedCase) {
         await includeCaseInResearchRegistry(
           selectedCase.patient_id,
           selectedCase.visit_date,
@@ -2131,61 +2222,65 @@ export function CaseWorkspace({
     setPatientListPage(1);
   }, [selectedSiteId]);
 
-  const normalizedPatientListSearch = deferredSearch.trim().toLowerCase();
-  const allPatientRows = useMemo(() => {
-    const groups = new Map<string, CaseSummaryRecord[]>();
-    for (const caseRecord of cases) {
-      if (normalizedPatientListSearch) {
-        const haystack = [
-          caseRecord.patient_id,
-          caseRecord.local_case_code,
-          caseRecord.chart_alias,
-          caseRecord.culture_category,
-          caseRecord.culture_species,
-          ...(caseRecord.additional_organisms ?? []).map((o) => o.culture_species),
-          caseRecord.visit_date,
-          caseRecord.actual_visit_date ?? "",
-        ].join(" ").toLowerCase();
-        if (!haystack.includes(normalizedPatientListSearch)) {
-          continue;
+  const normalizedPatientListSearch = deferredSearch.trim();
+  useEffect(() => {
+    if (!selectedSiteId) {
+      setPatientListRows([]);
+      setPatientListTotalCount(0);
+      setPatientListTotalPages(1);
+      setPatientListLoading(false);
+      return;
+    }
+
+    const currentSiteId = selectedSiteId;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function loadPatientListPage() {
+      setPatientListLoading(true);
+      try {
+        const response = await fetchPatientListPage(currentSiteId, token, {
+          mine: showOnlyMine,
+          page: patientListPage,
+          page_size: PATIENT_LIST_PAGE_SIZE,
+          search: normalizedPatientListSearch,
+          signal: controller.signal,
+        });
+        if (cancelled) {
+          return;
+        }
+        setPatientListRows(response.items);
+        setPatientListTotalCount(response.total_count);
+        setPatientListTotalPages(Math.max(1, response.total_pages || 1));
+        setPatientListPage((current) => (current === response.page ? current : response.page));
+      } catch (nextError) {
+        if (isAbortError(nextError)) {
+          return;
+        }
+        if (!cancelled) {
+          setPatientListRows([]);
+          setPatientListTotalCount(0);
+          setPatientListTotalPages(1);
+          setToast({
+            tone: "error",
+            message: describeError(nextError, copy.unableLoadPatientList),
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setPatientListLoading(false);
         }
       }
-      const group = groups.get(caseRecord.patient_id) ?? [];
-      group.push(caseRecord);
-      groups.set(caseRecord.patient_id, group);
     }
-    return Array.from(groups.entries())
-      .map(([patientId, groupedCases]) => {
-        const sortedCases = [...groupedCases].sort((left, right) => caseTimestamp(right) - caseTimestamp(left));
-        const latestCase = sortedCases[0];
-        return {
-          patient_id: patientId,
-          latest_case: latestCase,
-          case_count: groupedCases.length,
-          organism_summary: Array.from(
-            new Set(
-              sortedCases
-                .flatMap((item) => listOrganisms(item.culture_category, item.culture_species, item.additional_organisms))
-                .map((o) => o.culture_species),
-            ),
-          ).slice(0, 2).join(" · "),
-          representative_thumbnails: sortedCases
-            .filter((item) => item.representative_image_id)
-            .slice(0, 3)
-            .map((item) => ({
-              case_id: item.case_id,
-              image_id: item.representative_image_id as string,
-              view: item.representative_view,
-              preview_url: null,
-            })),
-        };
-      })
-      .sort((left, right) => caseTimestamp(right.latest_case) - caseTimestamp(left.latest_case));
-  }, [cases, normalizedPatientListSearch]);
-  const patientListTotalCount = allPatientRows.length;
-  const patientListTotalPages = Math.max(1, Math.ceil(patientListTotalCount / PATIENT_LIST_PAGE_SIZE));
+
+    void loadPatientListPage();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedSiteId, token, showOnlyMine, patientListPage, normalizedPatientListSearch, describeError, copy.unableLoadPatientList, setToast]);
+
   const safePage = Math.min(Math.max(1, patientListPage), patientListTotalPages);
-  const patientListRows = allPatientRows.slice((safePage - 1) * PATIENT_LIST_PAGE_SIZE, safePage * PATIENT_LIST_PAGE_SIZE);
 
   const selectedPatientCases = selectedCase
     ? [...cases]
@@ -2254,7 +2349,6 @@ export function CaseWorkspace({
   }, [patientListThumbKey, railView, selectedSiteId, token]);
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
-  const momentumPercent = cases.length === 0 ? 18 : Math.min(100, 18 + cases.length * 12);
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
   const canRunRoiPreview = canRunValidation;
   const canRunAiClinic = canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
@@ -2297,10 +2391,9 @@ export function CaseWorkspace({
   const resolvedVisitReference = buildVisitReference(draft);
   const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
   const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
-  const selectedPredisposingFactorLabels = draft.predisposing_factor.map((factor) =>
-    translateOption(locale, "predisposing", factor)
-  );
   const isAuthoringCanvas = railView !== "patients" && !selectedCase;
+  const newCaseModeActive = isAuthoringCanvas;
+  const listModeActive = railView === "patients" || Boolean(selectedCase);
   const draftRepresentativeCount = draftImages.filter((image) => image.is_representative).length;
   const draftLesionBoxCount = draftImages.filter((image) => Boolean(draftLesionPromptBoxes[image.draft_id])).length;
   const draftChecklist = [
@@ -2353,6 +2446,8 @@ export function CaseWorkspace({
           representativePreviewUrl={representativeSavedImage?.preview_url}
           roiCropUrl={validationArtifacts.roi_crop}
           gradcamUrl={validationArtifacts.gradcam}
+          gradcamCorneaUrl={validationArtifacts.gradcam_cornea}
+          gradcamLesionUrl={validationArtifacts.gradcam_lesion}
           medsamMaskUrl={validationArtifacts.medsam_mask}
           lesionCropUrl={validationArtifacts.lesion_crop}
           lesionMaskUrl={validationArtifacts.lesion_mask}
@@ -2412,6 +2507,7 @@ export function CaseWorkspace({
             "A structured document canvas for one clinical case. Capture the intake, image board, and submission state without the dashboard noise.",
             "한 건의 임상 케이스를 위한 구조화 문서 캔버스입니다. 대시보드 소음을 줄이고 intake, 이미지 보드, 제출 상태에 집중합니다."
           );
+  const showSecondaryPanel = isAuthoringCanvas || Boolean(selectedCase);
 
   return (
     <main className={workspaceShellClass} data-workspace-theme={theme}>
@@ -2422,14 +2518,23 @@ export function CaseWorkspace({
             <h1 className={workspaceBrandTitleClass}>{pick(locale, "K-ERA", "K-ERA")}</h1>
             <div className={workspaceKickerClass}>{pick(locale, "Case Studio", "케이스 스튜디오")}</div>
           </div>
-          <div className={workspaceBrandActionsClass}>
-            <Button className="min-w-[108px]" type="button" variant="primary" onClick={startNewCaseDraft}>
+          <div className={workspaceBrandActionsClass} role="group" aria-label={pick(locale, "Workspace mode", "작업 모드")}>
+            <Button
+              className={workspaceBrandActionButtonClass(newCaseModeActive)}
+              type="button"
+              variant={newCaseModeActive ? "primary" : "ghost"}
+              aria-pressed={newCaseModeActive}
+              data-state={newCaseModeActive ? "active" : "inactive"}
+              onClick={startNewCaseDraft}
+            >
               {pick(locale, "New case", "?좉퇋 耳?댁뒪")}
             </Button>
             <Button
-              className={railView === "patients" ? "min-w-[108px] border-brand/20 bg-brand-soft text-brand" : "min-w-[108px]"}
+              className={workspaceBrandActionButtonClass(listModeActive)}
               type="button"
-              variant="ghost"
+              variant={listModeActive ? "primary" : "ghost"}
+              aria-pressed={listModeActive}
+              data-state={listModeActive ? "active" : "inactive"}
               onClick={() => setRailView("patients")}
             >
               {pick(locale, "List view", "리스트")}
@@ -2440,13 +2545,12 @@ export function CaseWorkspace({
         <Card as="section" variant="nested" className={railSectionClass}>
           <div className={railSectionHeadClass}>
             <span className={railLabelClass}>{pick(locale, "Hospital", "蹂묒썝")}</span>
-            <div className={railSummaryClass}>
-              <strong className={railSummaryValueClass}>{sites.length}</strong>
-              <span className={railSummaryMetaClass}>{pick(locale, "linked", "연결됨")}</span>
-            </div>
+            {visibleSites.length > 1 ? (
+              <span className={docSiteBadgeClass}>{`${visibleSites.length} ${pick(locale, "linked", "연결됨")}`}</span>
+            ) : null}
           </div>
           <div className={railSiteListClass}>
-            {sites.map((site) => (
+            {visibleSites.map((site) => (
               <button
                 key={site.site_id}
                 className={railSiteButtonClass(selectedSiteId === site.site_id)}
@@ -2457,53 +2561,26 @@ export function CaseWorkspace({
               </button>
             ))}
           </div>
-        </Card>
-
-        <Card as="section" variant="nested" className={railSectionClass}>
-          <div className={railSectionHeadClass}>
-            <div className="grid gap-1">
-              <span className={railLabelClass}>{copy.recentAlerts}</span>
-              <p className="m-0 text-sm leading-6 text-muted">{copy.recentAlertsCopy}</p>
-            </div>
-            <div className={railSummaryClass}>
-              <strong className={railSummaryValueClass}>{toastHistory.length}</strong>
-              <span className={railSummaryMetaClass}>{copy.alertsKept}</span>
-            </div>
-          </div>
-          {toastHistory.length ? (
-            <>
-              <div className={railActivityListClass}>
-                {toastHistory.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className={`${railActivityItemClass} ${
-                      entry.tone === "error"
-                        ? "border-danger/25 bg-danger/6"
-                        : "border-emerald-300/35 bg-emerald-500/6"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <strong>{entry.tone === "success" ? common.saved : common.actionNeeded}</strong>
-                      <span className="text-[0.72rem] text-muted">
-                        {new Date(entry.created_at).toLocaleTimeString(localeTag, {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-                    </div>
-                    <span>{entry.message}</span>
-                  </div>
-                ))}
+          {selectedSiteId && summary ? (
+            <MetricGrid className={railMetricGridClass} columns={2}>
+              <div className={railMetricCardClass}>
+                <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
+                <span className={railMetricLabelClass}>{pick(locale, "patients", "환자")}</span>
               </div>
-              <div className="flex justify-end">
-                <Button type="button" size="sm" variant="ghost" onClick={() => setToastHistory([])}>
-                  {copy.clearAlerts}
-                </Button>
+              <div className={railMetricCardClass}>
+                <strong className={railMetricValueClass}>{summary.n_visits ?? 0}</strong>
+                <span className={railMetricLabelClass}>{pick(locale, "visits", "방문")}</span>
               </div>
-            </>
-          ) : (
-            <div className={emptySurfaceClass}>{copy.noAlertsYet}</div>
-          )}
+              <div className={railMetricCardClass}>
+                <strong className={railMetricValueClass}>{summary.n_images ?? 0}</strong>
+                <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
+              </div>
+              <div className={railMetricCardClass}>
+                <strong className={railMetricValueClass}>{summary.n_validation_runs ?? 0}</strong>
+                <span className={railMetricLabelClass}>{pick(locale, "validations", "검증")}</span>
+              </div>
+            </MetricGrid>
+          ) : null}
         </Card>
 
         {isAuthoringCanvas ? (
@@ -2540,26 +2617,6 @@ export function CaseWorkspace({
           </Card>
         ) : (
           <>
-            <Card as="section" variant="nested" className={railSectionClass}>
-              <div className={railSectionHeadClass}>
-                <span className={railLabelClass}>{pick(locale, "Momentum", "진행도")}</span>
-                <div className={railSummaryClass}>
-                  <strong className={railSummaryValueClass}>{cases.length}</strong>
-                  <span className={railSummaryMetaClass}>{copy.savedCases}</span>
-                </div>
-              </div>
-              <div className={momentumTrackClass}>
-                <div className={momentumFillClass} style={{ width: `${momentumPercent}%` }} />
-              </div>
-              <p className={railCopyClass}>
-                {pick(
-                  locale,
-                  "Each saved case expands the local dataset surface and keeps the migration grounded in real workflow.",
-                  "??λ맂 耳?댁뒪媛 ?섏뼱?좎닔濡?濡쒖뺄 ?곗씠?곗뀑???뺤옣?섍퀬 ?ㅼ젣 ?뚰겕?뚮줈??湲곗????댁쟾???좎??⑸땲??"
-                )}
-              </p>
-            </Card>
-
             <Card as="section" variant="nested" className={railSectionClass}>
               <div className={railSectionHeadClass}>
                 <div className="grid gap-1">
@@ -2681,6 +2738,80 @@ export function CaseWorkspace({
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
             <span className={workspaceUserBadgeClass}>{translateRole(locale, user.role)}</span>
+            <div className="relative" ref={alertsPanelRef}>
+              <Button
+                type="button"
+                variant={alertsPanelOpen ? "primary" : "ghost"}
+                aria-haspopup="dialog"
+                aria-expanded={alertsPanelOpen}
+                onClick={() => setAlertsPanelOpen((current) => !current)}
+                trailingIcon={
+                  toastHistory.length ? (
+                    <span
+                      aria-hidden="true"
+                      className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[0.72rem] font-semibold ${
+                        alertsPanelOpen
+                          ? "border border-white/20 bg-white/16 text-[var(--accent-contrast)]"
+                          : "border border-border/70 bg-surface text-muted"
+                      }`}
+                    >
+                      {toastHistory.length}
+                    </span>
+                  ) : null
+                }
+              >
+                {copy.recentAlerts}
+              </Button>
+              {alertsPanelOpen ? (
+                <Card
+                  as="section"
+                  variant="nested"
+                  role="dialog"
+                  aria-label={copy.recentAlerts}
+                  className="absolute right-0 top-full z-40 mt-3 grid w-[min(420px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-4 border border-border/80 bg-surface p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid gap-1">
+                      <strong className="text-sm font-semibold text-ink">{copy.recentAlerts}</strong>
+                      <p className="m-0 text-sm leading-6 text-muted">{copy.recentAlertsCopy}</p>
+                    </div>
+                    <div className="grid gap-2 justify-items-end">
+                      <span className={docSiteBadgeClass}>{`${toastHistory.length} ${copy.alertsKept}`}</span>
+                      <Button type="button" size="sm" variant="ghost" onClick={clearToastHistory} disabled={toastHistory.length === 0}>
+                        {copy.clearAlerts}
+                      </Button>
+                    </div>
+                  </div>
+                  {toastHistory.length ? (
+                    <div className={railActivityListClass}>
+                      {toastHistory.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className={`${railActivityItemClass} ${
+                            entry.tone === "error"
+                              ? "border-danger/25 bg-danger/6"
+                              : "border-emerald-300/35 bg-emerald-500/6"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <strong>{entry.tone === "success" ? common.saved : common.actionNeeded}</strong>
+                            <span className="text-[0.72rem] text-muted">
+                              {new Date(entry.created_at).toLocaleTimeString(localeTag, {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+                          </div>
+                          <span>{entry.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={emptySurfaceClass}>{copy.noAlertsYet}</div>
+                  )}
+                </Card>
+              ) : null}
+            </div>
             <LocaleToggle />
             <Button variant="ghost" type="button" onClick={onToggleTheme}>
               {theme === "dark" ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶") : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}
@@ -2699,7 +2830,7 @@ export function CaseWorkspace({
           </div>
         </header>
 
-        <div className={workspaceCenterClass}>
+        <div className={showSecondaryPanel ? workspaceCenterClass : "grid gap-6"}>
           {railView === "patients" ? (
             <PatientListBoard
               locale={locale}
@@ -2714,7 +2845,7 @@ export function CaseWorkspace({
               patientListThumbsByPatient={patientListThumbs}
               caseSearch={caseSearch}
               showOnlyMine={showOnlyMine}
-              casesLoading={casesLoading}
+              casesLoading={patientListLoading}
               copyPatients={copy.patients}
               copyAllRecords={copy.allRecords}
               copyMyPatientsOnly={copy.myPatientsOnly}
@@ -2740,7 +2871,6 @@ export function CaseWorkspace({
               panelBusy={panelBusy}
               patientVisitGalleryBusy={patientVisitGalleryBusy}
               patientVisitGallery={patientVisitGallery}
-              liveLesionPreviews={liveLesionPreviews}
               editDraftBusy={editDraftBusy}
               pick={pick}
               translateOption={translateOption}
@@ -2826,41 +2956,41 @@ export function CaseWorkspace({
               <div className={canvasHeaderContentClass}>
                 <div className="grid gap-3">
                   <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
-                    <span className={canvasHeaderKickerClass}>{pick(locale, "Structured case canvas", "구조화 케이스 캔버스")}</span>
                     <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>
                     <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
                     <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
                   </div>
                 </div>
 
-                <div className={canvasSummaryGridClass}>
-                  <div className={canvasSummaryCardClass}>
-                    <span className={canvasSummaryLabelClass}>{pick(locale, "Patient", "환자")}</span>
-                    <strong className={canvasSummaryValueClass}>
-                      {draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
-                    </strong>
+                {!draft.intake_completed ? (
+                  <div className={canvasSummaryGridClass}>
+                    <div className={canvasSummaryCardClass}>
+                      <span className={canvasSummaryLabelClass}>{pick(locale, "Patient", "환자")}</span>
+                      <strong className={canvasSummaryValueClass}>
+                        {draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
+                      </strong>
+                    </div>
+                    <div className={canvasSummaryCardClass}>
+                      <span className={canvasSummaryLabelClass}>{pick(locale, "Visit", "방문")}</span>
+                      <strong className={canvasSummaryValueClass}>
+                        {`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
+                      </strong>
+                    </div>
+                    <div className={canvasSummaryCardClass}>
+                      <span className={canvasSummaryLabelClass}>{pick(locale, "Organism", "원인균")}</span>
+                      <strong className={canvasSummaryValueClass}>
+                        {organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
+                          pick(locale, "Choose primary organism", "기본 원인균 선택")}
+                      </strong>
+                    </div>
                   </div>
-                  <div className={canvasSummaryCardClass}>
-                    <span className={canvasSummaryLabelClass}>{pick(locale, "Visit", "방문")}</span>
-                    <strong className={canvasSummaryValueClass}>
-                      {`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
-                    </strong>
-                  </div>
-                  <div className={canvasSummaryCardClass}>
-                    <span className={canvasSummaryLabelClass}>{pick(locale, "Organism", "원인균")}</span>
-                    <strong className={canvasSummaryValueClass}>
-                      {organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
-                        pick(locale, "Choose primary organism", "기본 원인균 선택")}
-                    </strong>
-                  </div>
-                </div>
+                ) : null}
               </div>
             </section>
 
             <PatientVisitForm
               locale={locale}
               draft={draft}
-              draftImagesCount={draftImages.length}
               notAvailableLabel={common.notAvailable}
               sexOptions={SEX_OPTIONS}
               contactLensOptions={CONTACT_LENS_OPTIONS}
@@ -2885,29 +3015,32 @@ export function CaseWorkspace({
               onCompleteIntake={handleCompleteIntake}
             />
 
-            <ImageManagerPanel
-              locale={locale}
-              intakeCompleted={draft.intake_completed}
-              resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
-              whiteDraftImages={whiteDraftImages}
-              fluoresceinDraftImages={fluoresceinDraftImages}
-              draftLesionPromptBoxes={draftLesionPromptBoxes}
-              whiteFileInputRef={whiteFileInputRef}
-              fluoresceinFileInputRef={fluoresceinFileInputRef}
-              openFilePicker={openFilePicker}
-              appendFiles={appendFiles}
-              handleDraftLesionPointerDown={handleDraftLesionPointerDown}
-              handleDraftLesionPointerMove={handleDraftLesionPointerMove}
-              finishDraftLesionPointer={finishDraftLesionPointer}
-              removeDraftImage={removeDraftImage}
-              setRepresentativeImage={setRepresentativeImage}
-              onSaveCase={() => void handleSaveCase()}
-              saveBusy={saveBusy}
-              selectedSiteId={selectedSiteId}
-            />
+            {draft.intake_completed ? (
+              <ImageManagerPanel
+                locale={locale}
+                intakeCompleted={draft.intake_completed}
+                resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
+                whiteDraftImages={whiteDraftImages}
+                fluoresceinDraftImages={fluoresceinDraftImages}
+                draftLesionPromptBoxes={draftLesionPromptBoxes}
+                whiteFileInputRef={whiteFileInputRef}
+                fluoresceinFileInputRef={fluoresceinFileInputRef}
+                openFilePicker={openFilePicker}
+                appendFiles={appendFiles}
+                handleDraftLesionPointerDown={handleDraftLesionPointerDown}
+                handleDraftLesionPointerMove={handleDraftLesionPointerMove}
+                finishDraftLesionPointer={finishDraftLesionPointer}
+                removeDraftImage={removeDraftImage}
+                setRepresentativeImage={setRepresentativeImage}
+                onSaveCase={() => void handleSaveCase()}
+                saveBusy={saveBusy}
+                selectedSiteId={selectedSiteId}
+              />
+            ) : null}
           </article>
           )}
 
+          {showSecondaryPanel ? (
           <aside className={workspacePanelClass}>
             {selectedCase ? (
               <div className={panelStackClass}>
@@ -2926,7 +3059,7 @@ export function CaseWorkspace({
                   contributionLeaderboard={siteActivity?.contribution_leaderboard ?? contributionResult?.stats.leaderboard ?? null}
                   historyBusy={historyBusy}
                   caseHistory={caseHistory}
-                  onJoinResearchRegistry={() => void handleJoinResearchRegistry()}
+                  onJoinResearchRegistry={() => openResearchRegistryModal(false)}
                   onIncludeResearchCase={() => void handleIncludeResearchCase()}
                   onExcludeResearchCase={() => void handleExcludeResearchCase()}
                   onContributeCase={() => void handleContributeCase()}
@@ -2995,62 +3128,11 @@ export function CaseWorkspace({
                     </div>
                   </section>
 
-                  <section className={canvasSidebarCardClass}>
-                    <div className="grid gap-1">
-                      <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Predisposing factors", "선행 인자")}</span>
-                      <p className="m-0 text-sm leading-6 text-muted">
-                        {pick(
-                          locale,
-                          "Selected visit factors stay visible here while you finish the draft.",
-                          "선택한 방문 인자는 초안을 마무리하는 동안 여기에서 계속 보입니다."
-                        )}
-                      </p>
-                    </div>
-                    {selectedPredisposingFactorLabels.length > 0 ? (
-                      <div className={organismChipRowClass}>
-                        {selectedPredisposingFactorLabels.map((label) => (
-                          <span
-                            key={`draft-predisposing-${label}`}
-                            className={predisposingChipClass}
-                          >
-                            {label}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className={canvasSidebarItemClass}>
-                        {pick(
-                          locale,
-                          "No predisposing factor selected yet.",
-                          "아직 선택된 선행 인자가 없습니다."
-                        )}
-                      </div>
-                    )}
-                  </section>
                 </div>
-              ) : (
-                <div className={panelStackClass}>
-                  <Card as="section" variant="panel" className="grid gap-4 p-5">
-                    <SectionHeader
-                      titleAs="h4"
-                      title={pick(locale, "Selected hospital", "선택한 병원")}
-                      aside={
-                        <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-white/55 px-3 text-[0.78rem] font-medium text-muted dark:bg-white/4">
-                          {selectedSiteLabel ?? pick(locale, "none", "없음")}
-                        </span>
-                      }
-                    />
-                    <MetricGrid columns={2}>
-                      <MetricItem value={summary?.n_patients ?? 0} label={pick(locale, "patients", "환자")} />
-                      <MetricItem value={summary?.n_visits ?? 0} label={pick(locale, "visits", "방문")} />
-                      <MetricItem value={summary?.n_images ?? 0} label={pick(locale, "images", "이미지")} />
-                      <MetricItem value={summary?.n_validation_runs ?? 0} label={pick(locale, "validations", "검증")} />
-                    </MetricGrid>
-                  </Card>
-                </div>
-              )
+              ) : null
             )}
           </aside>
+          ) : null}
         </div>
       </section>
 
@@ -3083,18 +3165,73 @@ export function CaseWorkspace({
                 )}
               </p>
             </Card>
+            <div className="grid gap-3">
+              <label className="grid gap-2 rounded-[var(--radius-md)] border border-border bg-white/70 px-4 py-3 text-sm text-ink dark:bg-white/4">
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0"
+                    checked={researchRegistryExplanationConfirmed}
+                    disabled={researchRegistryBusy}
+                    onChange={(event) => setResearchRegistryExplanationConfirmed(event.target.checked)}
+                  />
+                  <div className="grid gap-1">
+                    <span className="font-semibold">
+                      {pick(
+                        locale,
+                        "Acknowledge the registry explanation: pseudonymization, central storage scope, local source retention, and per-case exclusion remain available.",
+                        "설명 확인: 가명처리, 중앙 저장 범위, 원본 로컬 보관, 케이스별 제외 가능"
+                      )}
+                    </span>
+                    <span className="text-[0.82rem] leading-6 text-muted">
+                      {pick(
+                        locale,
+                        "I understand that the central registry receives de-identified research data only, while the source images and records remain at the contributing institution.",
+                        "중앙 레지스트리에는 비식별 연구데이터만 올라가고, 원본 이미지와 원자료는 기여 기관 내부에 보관된다는 점을 확인합니다."
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </label>
+              <label className="grid gap-2 rounded-[var(--radius-md)] border border-border bg-white/70 px-4 py-3 text-sm text-ink dark:bg-white/4">
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0"
+                    checked={researchRegistryUsageConsented}
+                    disabled={researchRegistryBusy}
+                    onChange={(event) => setResearchRegistryUsageConsented(event.target.checked)}
+                  />
+                  <div className="grid gap-1">
+                    <span className="font-semibold">
+                      {pick(
+                        locale,
+                        "Consent to registry use: allow registry inclusion plus model validation or improvement research use.",
+                        "활용 동의: registry 포함 및 모델 검증/개선 연구 활용 동의"
+                      )}
+                    </span>
+                    <span className="text-[0.82rem] leading-6 text-muted">
+                      {pick(
+                        locale,
+                        "I consent to eligible cases from this site being included in the registry flow and used for model validation or improvement studies, while keeping per-case opt-out available.",
+                        "이 병원의 적격 케이스가 레지스트리 흐름에 포함되고 모델 검증·개선 연구에 활용되는 데 동의하며, 이후에도 케이스별 제외가 가능함을 이해합니다."
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </label>
+            </div>
             <div className="flex flex-wrap justify-end gap-3">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setPendingResearchRegistryAutoInclude(false);
-                  setResearchRegistryModalOpen(false);
-                }}
-              >
+              <Button type="button" variant="ghost" onClick={closeResearchRegistryModal}>
                 {pick(locale, "Continue without joining", "가입 없이 계속")}
               </Button>
-              <Button type="button" variant="primary" loading={researchRegistryBusy} onClick={() => void handleJoinResearchRegistry()}>
+              <Button
+                type="button"
+                variant="primary"
+                loading={researchRegistryBusy}
+                disabled={!researchRegistryJoinReady}
+                onClick={() => void handleJoinResearchRegistry()}
+              >
                 {pick(locale, "Join research registry", "연구 레지스트리 가입")}
               </Button>
             </div>

@@ -25,6 +25,22 @@ def queue_name_for_job_type(job_type: str) -> str:
     return QUEUE_BY_JOB_TYPE.get(job_type, "default")
 
 
+def benchmark_crop_mode_for_architecture(base_crop_mode: str, architecture: str) -> str:
+    normalized_crop_mode = str(base_crop_mode or "automated").strip().lower() or "automated"
+    normalized_architecture = str(architecture or "").strip().lower()
+    if normalized_architecture == "dual_input_concat":
+        return "paired"
+    if normalized_crop_mode == "paired":
+        return "automated"
+    return normalized_crop_mode
+
+
+class JobCancelledError(RuntimeError):
+    def __init__(self, message: str = "Job cancelled.", *, response: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.response = response
+
+
 class SiteJobWorker:
     def __init__(
         self,
@@ -57,7 +73,18 @@ class SiteJobWorker:
     def _heartbeat(self, job_id: str) -> None:
         SiteStore.heartbeat_job(job_id, self.worker_id)
 
+    def _job_cancel_requested(self, site_store: SiteStore, job_id: str) -> bool:
+        current_job = site_store.get_job(job_id)
+        if current_job is None:
+            return False
+        return str(current_job.get("status") or "").strip().lower() in {"cancelling", "cancelled"}
+
+    def _raise_if_cancel_requested(self, site_store: SiteStore, job_id: str, message: str = "Job cancelled.") -> None:
+        if self._job_cancel_requested(site_store, job_id):
+            raise JobCancelledError(message)
+
     def _update_progress(self, site_store: SiteStore, job_id: str, progress_payload: dict[str, Any]) -> None:
+        self._raise_if_cancel_requested(site_store, job_id)
         site_store.update_job_status(job_id, "running", {"progress": progress_payload})
         self._heartbeat(job_id)
 
@@ -77,6 +104,7 @@ class SiteJobWorker:
         payload = dict(job.get("payload") or {})
         workflow = self._workflow_service()
         output_model_path = str(payload.get("output_model_path") or (MODEL_DIR / f"global_{payload['architecture']}_{make_id('init')[:8]}.pth"))
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Initial training cancelled.")
 
         def update_progress(progress_payload: dict[str, Any]) -> None:
             self._update_progress(site_store, job["job_id"], progress_payload)
@@ -94,6 +122,7 @@ class SiteJobWorker:
             val_split=float(payload.get("val_split") or 0.2),
             test_split=float(payload.get("test_split") or 0.2),
             use_pretrained=bool(payload.get("use_pretrained", True)),
+            case_aggregation=str(payload.get("case_aggregation") or "mean"),
             use_medsam_crops=True,
             regenerate_split=bool(payload.get("regenerate_split", False)),
             progress_callback=update_progress,
@@ -111,14 +140,40 @@ class SiteJobWorker:
         architectures = [str(item).strip() for item in payload.get("architectures") or [] if str(item).strip()]
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        crop_mode = str(payload.get("crop_mode") or "automated")
+        requested_crop_mode = str(payload.get("crop_mode") or "automated")
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
+
+        def build_partial_response() -> dict[str, Any]:
+            completed_architectures = [
+                str(item.get("architecture") or "").strip()
+                for item in results
+                if str(item.get("architecture") or "").strip()
+            ]
+            completed_set = set(completed_architectures)
+            remaining_architectures = [architecture for architecture in architectures if architecture not in completed_set]
+            best_entry = max(results, key=lambda item: float((item.get("result") or {}).get("best_val_acc") or 0.0)) if results else None
+            return {
+                "site_id": site_store.site_id,
+                "execution_device": str(payload["execution_device"]),
+                "architectures": architectures,
+                "results": results,
+                "failures": failures,
+                "completed_architectures": completed_architectures,
+                "remaining_architectures": remaining_architectures,
+                "best_architecture": best_entry.get("architecture") if best_entry else None,
+                "best_model_version": best_entry.get("model_version") if best_entry else None,
+            }
 
         for architecture_index, architecture in enumerate(architectures, start=1):
+            self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
+            crop_mode = benchmark_crop_mode_for_architecture(requested_crop_mode, architecture)
             output_model_path = str(MODEL_DIR / f"global_{architecture}_{make_id('bench')[:8]}.pth")
 
             def update_progress(progress_payload: dict[str, Any]) -> None:
+                self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
                 child_percent = int(progress_payload.get("percent", 0) or 0)
                 overall_percent = int(((architecture_index - 1) + (child_percent / 100.0)) / max(len(architectures), 1) * 100)
+                partial_response = build_partial_response()
                 self._update_progress(
                     site_store,
                     job["job_id"],
@@ -128,6 +183,9 @@ class SiteJobWorker:
                         "architecture": architecture,
                         "architecture_index": architecture_index,
                         "architecture_count": len(architectures),
+                        "completed_architectures": partial_response["completed_architectures"],
+                        "remaining_architectures": partial_response["remaining_architectures"],
+                        "failed_architectures": [item["architecture"] for item in failures],
                     },
                 )
 
@@ -145,6 +203,7 @@ class SiteJobWorker:
                     val_split=float(payload.get("val_split") or 0.2),
                     test_split=float(payload.get("test_split") or 0.2),
                     use_pretrained=bool(payload.get("use_pretrained", True)),
+                    case_aggregation=str(payload.get("case_aggregation") or "mean"),
                     use_medsam_crops=True,
                     regenerate_split=bool(payload.get("regenerate_split", False)) if architecture_index == 1 else False,
                     progress_callback=update_progress,
@@ -157,6 +216,26 @@ class SiteJobWorker:
                         "model_version": result.get("model_version"),
                     }
                 )
+                partial_response = build_partial_response()
+                self._update_progress(
+                    site_store,
+                    job["job_id"],
+                    {
+                        "stage": "benchmark_component_completed",
+                        "message": f"{architecture} completed.",
+                        "percent": int((architecture_index / max(len(architectures), 1)) * 100),
+                        "architecture": architecture,
+                        "architecture_index": architecture_index,
+                        "architecture_count": len(architectures),
+                        "crop_mode": crop_mode,
+                        "case_aggregation": str(payload.get("case_aggregation") or "mean"),
+                        "completed_architectures": partial_response["completed_architectures"],
+                        "remaining_architectures": partial_response["remaining_architectures"],
+                        "failed_architectures": [item["architecture"] for item in failures],
+                    },
+                )
+            except JobCancelledError as exc:
+                raise JobCancelledError(str(exc), response=build_partial_response()) from exc
             except Exception as exc:
                 failures.append(
                     {
@@ -165,25 +244,35 @@ class SiteJobWorker:
                         "error": str(exc),
                     }
                 )
+                partial_response = build_partial_response()
+                self._update_progress(
+                    site_store,
+                    job["job_id"],
+                    {
+                        "stage": "benchmark_component_failed",
+                        "message": f"{architecture} failed and the benchmark will continue.",
+                        "percent": int(((architecture_index - 1) / max(len(architectures), 1)) * 100),
+                        "architecture": architecture,
+                        "architecture_index": architecture_index,
+                        "architecture_count": len(architectures),
+                        "crop_mode": crop_mode,
+                        "case_aggregation": str(payload.get("case_aggregation") or "mean"),
+                        "completed_architectures": partial_response["completed_architectures"],
+                        "remaining_architectures": partial_response["remaining_architectures"],
+                        "failed_architectures": [item["architecture"] for item in failures],
+                    },
+                )
 
         if not results:
             raise RuntimeError("; ".join(item["error"] for item in failures) or "Benchmark training failed.")
 
-        best_entry = max(results, key=lambda item: float((item.get("result") or {}).get("best_val_acc") or 0.0))
-        return {
-            "site_id": site_store.site_id,
-            "execution_device": str(payload["execution_device"]),
-            "architectures": architectures,
-            "results": results,
-            "failures": failures,
-            "best_architecture": best_entry.get("architecture"),
-            "best_model_version": best_entry.get("model_version"),
-        }
+        return build_partial_response()
 
     def _handle_cross_validation(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job.get("payload") or {})
         workflow = self._workflow_service()
         output_dir = str(payload.get("output_dir") or (MODEL_DIR / f"cross_validation_{make_id('cvdir')[:8]}"))
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Cross-validation cancelled.")
 
         def update_progress(progress_payload: dict[str, Any]) -> None:
             self._update_progress(site_store, job["job_id"], progress_payload)
@@ -201,6 +290,7 @@ class SiteJobWorker:
             batch_size=int(payload.get("batch_size") or 16),
             val_split=float(payload.get("val_split") or 0.2),
             use_pretrained=bool(payload.get("use_pretrained", True)),
+            case_aggregation=str(payload.get("case_aggregation") or "mean"),
             use_medsam_crops=True,
             progress_callback=update_progress,
         )
@@ -213,6 +303,7 @@ class SiteJobWorker:
     def _handle_site_validation(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job.get("payload") or {})
         workflow = self._workflow_service()
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Hospital validation cancelled.")
         self._update_progress(
             site_store,
             job["job_id"],
@@ -289,15 +380,38 @@ class SiteJobWorker:
                 },
             )
             return site_store.get_job(job["job_id"])
+        except JobCancelledError as exc:
+            current_job = site_store.get_job(job["job_id"]) or job
+            existing_result = dict(current_job.get("result") or {})
+            existing_progress = dict(existing_result.get("progress") or {})
+            final_progress = {
+                **existing_progress,
+                "stage": "cancelled",
+                "message": str(exc) or f"{job['job_type']} cancelled.",
+                "percent": int(existing_progress.get("percent", 0) or 0),
+            }
+            final_result = {
+                **existing_result,
+                "progress": final_progress,
+            }
+            if exc.response is not None:
+                final_result["response"] = exc.response
+            site_store.update_job_status(job["job_id"], "cancelled", final_result)
+            return site_store.get_job(job["job_id"])
         except Exception as exc:
+            current_job = site_store.get_job(job["job_id"]) or job
+            existing_result = dict(current_job.get("result") or {})
+            existing_progress = dict(existing_result.get("progress") or {})
             site_store.update_job_status(
                 job["job_id"],
                 "failed",
                 {
+                    **existing_result,
                     "progress": {
+                        **existing_progress,
                         "stage": "failed",
                         "message": f"{job['job_type']} failed.",
-                        "percent": 100,
+                        "percent": int(existing_progress.get("percent", 100) or 100),
                     },
                     "error": str(exc),
                 },

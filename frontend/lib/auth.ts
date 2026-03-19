@@ -8,6 +8,7 @@ import type {
   PublicStatistics,
   SiteRecord,
 } from "./types";
+import { filterVisibleSites } from "./site-labels";
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
   return requestMainControlPlane<AuthResponse>("/auth/login", {
@@ -36,11 +37,11 @@ export async function fetchMe(token: string) {
 }
 
 export async function fetchSites(token: string) {
-  return requestMainControlPlane<SiteRecord[]>("/sites", {}, token);
+  return filterVisibleSites(await requestMainControlPlane<SiteRecord[]>("/sites", {}, token));
 }
 
 export async function fetchPublicSites() {
-  return requestMainControlPlane<SiteRecord[]>("/public/sites");
+  return filterVisibleSites(await requestMainControlPlane<SiteRecord[]>("/public/sites"));
 }
 
 export async function searchPublicInstitutions(

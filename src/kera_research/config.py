@@ -7,6 +7,8 @@ from pathlib import Path
 import bcrypt
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+BUILT_IN_STORAGE_DIR = (BASE_DIR.parent / "KERA_DATA").resolve()
+BUILT_IN_SITE_ROOT_DIR = BUILT_IN_STORAGE_DIR / "sites"
 
 
 def _resolve_path_env(env_name: str, default: Path) -> Path:
@@ -22,7 +24,7 @@ def _resolve_path_env(env_name: str, default: Path) -> Path:
 
 
 def _resolve_storage_dir() -> Path:
-    return _resolve_path_env("KERA_STORAGE_DIR", BASE_DIR.parent / "KERA_DATA")
+    return _resolve_path_env("KERA_STORAGE_DIR", BUILT_IN_STORAGE_DIR)
 
 
 STORAGE_DIR = _resolve_storage_dir()
