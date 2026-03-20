@@ -67,6 +67,32 @@ class ModelManagerTests(unittest.TestCase):
         self.assertEqual(manager.normalize_case_aggregation("attention_mil", "convnext_tiny"), "mean")
         self.assertEqual(manager.normalize_case_aggregation("quality_weighted_mean", "convnext_tiny"), "quality_weighted_mean")
 
+    def test_baseline_model_settings_cover_new_dual_input_and_mil_defaults(self):
+        manager = ModelManager()
+
+        dinov2_mil = manager.baseline_model_settings(
+            {
+                "architecture": "dinov2_mil",
+                "requires_medsam_crop": True,
+            }
+        )
+        self.assertEqual(dinov2_mil["crop_mode"], "automated")
+        self.assertEqual(dinov2_mil["case_aggregation"], "attention_mil")
+        self.assertTrue(dinov2_mil["bag_level"])
+        self.assertEqual(dinov2_mil["training_input_policy"], "medsam_cornea_crop_only")
+
+        dual_input = manager.baseline_model_settings(
+            {
+                "architecture": "dual_input_concat",
+                "requires_medsam_crop": True,
+                "crop_mode": "paired",
+            }
+        )
+        self.assertEqual(dual_input["crop_mode"], "paired")
+        self.assertEqual(dual_input["case_aggregation"], "mean")
+        self.assertFalse(dual_input["bag_level"])
+        self.assertEqual(dual_input["training_input_policy"], "medsam_cornea_plus_lesion_paired_fusion")
+
     def test_build_model_supports_supported_backbones(self):
         manager = ModelManager()
         vit_model = manager.build_model("vit")

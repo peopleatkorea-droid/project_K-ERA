@@ -841,8 +841,15 @@ class ControlPlaneStore:
         self,
         project_id: str | None = None,
         site_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        return self.results.list_validation_runs(project_id=project_id, site_id=site_id)
+        return self.results.list_validation_runs(project_id=project_id, site_id=site_id, limit=limit)
+
+    def site_validation_site_summaries(
+        self,
+        site_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.results.site_validation_site_summaries(site_ids=site_ids)
 
     def validation_run_summary(
         self,

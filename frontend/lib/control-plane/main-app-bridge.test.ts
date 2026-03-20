@@ -27,6 +27,7 @@ vi.mock("./main-app-bridge-admin", () => ({
   createMainAdminSite: vi.fn(),
   createMainProject: vi.fn(),
   fetchMainAdminOverview: vi.fn(),
+  fetchMainAdminWorkspaceBootstrap: vi.fn(),
   fetchMainInstitutionDirectoryStatus: vi.fn(),
   listMainAdminAccessRequests: vi.fn(),
   listMainAdminSites: vi.fn(),

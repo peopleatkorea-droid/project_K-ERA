@@ -23,6 +23,12 @@ import {
 
 const SYSTEM_PROJECT_OWNER_ID = "system";
 
+type AccessRequestResolutionLookups = {
+  directSitesById: Map<string, Row>;
+  mappedSitesBySourceInstitutionId: Map<string, Row>;
+  institutionsById: Map<string, Row>;
+};
+
 export async function ensureDefaultProject(): Promise<void> {
   const sql = await controlPlaneSql();
   await sql`
@@ -349,6 +355,92 @@ export async function institutionRowById(institutionId: string): Promise<Row | n
   return rows[0] ?? null;
 }
 
+export async function preloadAccessRequestLookups(rows: Row[]): Promise<AccessRequestResolutionLookups> {
+  const requestedSiteIds = Array.from(
+    new Set(rows.map((row) => trimText(rowValue<string>(row, "requested_site_id"))).filter(Boolean)),
+  );
+  const institutionIds = Array.from(
+    new Set(
+      rows
+        .filter((row) => trimText(rowValue<string>(row, "requested_site_source") || "site") === "institution_directory")
+        .map((row) => trimText(rowValue<string>(row, "requested_site_id")))
+        .filter(Boolean),
+    ),
+  );
+  const sql = await controlPlaneSql();
+  const [siteRows, institutionRows] = await Promise.all([
+    requestedSiteIds.length
+      ? sql`
+          select
+            sites.site_id,
+            sites.project_id,
+            sites.display_name,
+            sites.hospital_name,
+            sites.source_institution_id,
+            sites.local_storage_root,
+            sites.research_registry_enabled,
+            sites.status,
+            sites.created_at,
+            institution_directory.name as source_institution_name,
+            institution_directory.address as source_institution_address
+          from sites
+          left join institution_directory
+            on institution_directory.institution_id = sites.source_institution_id
+          where sites.site_id = any(${requestedSiteIds})
+             or sites.source_institution_id = any(${requestedSiteIds})
+        `
+      : Promise.resolve([] as Row[]),
+    institutionIds.length
+      ? sql`
+          select
+            institution_id,
+            source,
+            name,
+            institution_type_code,
+            institution_type_name,
+            address,
+            phone,
+            homepage,
+            sido_code,
+            sggu_code,
+            emdong_name,
+            postal_code,
+            x_pos,
+            y_pos,
+            ophthalmology_available,
+            open_status,
+            synced_at
+          from institution_directory
+          where institution_id = any(${institutionIds})
+        `
+      : Promise.resolve([] as Row[]),
+  ]);
+  const directSitesById = new Map<string, Row>();
+  const mappedSitesBySourceInstitutionId = new Map<string, Row>();
+  for (const row of siteRows) {
+    const siteId = trimText(rowValue<string>(row, "site_id"));
+    const sourceInstitutionId = trimText(rowValue<string | null>(row, "source_institution_id"));
+    if (siteId) {
+      directSitesById.set(siteId, row);
+    }
+    if (sourceInstitutionId) {
+      mappedSitesBySourceInstitutionId.set(sourceInstitutionId, row);
+    }
+  }
+  const institutionsById = new Map<string, Row>();
+  for (const row of institutionRows) {
+    const institutionId = trimText(rowValue<string>(row, "institution_id"));
+    if (institutionId) {
+      institutionsById.set(institutionId, row);
+    }
+  }
+  return {
+    directSitesById,
+    mappedSitesBySourceInstitutionId,
+    institutionsById,
+  };
+}
+
 export function serializeSiteRecord(row: Row): SiteRecord {
   return {
     site_id: rowValue<string>(row, "site_id"),
@@ -405,15 +497,18 @@ export function serializeInstitutionRecord(row: Row): PublicInstitutionRecord {
   };
 }
 
-export async function serializeAccessRequestRecord(row: Row): Promise<AccessRequestRecord> {
+export function serializeAccessRequestRecordWithLookups(
+  row: Row,
+  lookups: AccessRequestResolutionLookups,
+): AccessRequestRecord {
   const requestedSiteId = rowValue<string>(row, "requested_site_id");
   const requestedSiteSource = trimText(rowValue<string>(row, "requested_site_source") || "site") || "site";
-  const directSite = await siteRowById(requestedSiteId);
+  const directSite = lookups.directSitesById.get(requestedSiteId) ?? null;
   const mappedSite =
     directSite ??
-    (requestedSiteSource === "institution_directory" ? await siteRowBySourceInstitutionId(requestedSiteId) : null);
+    (requestedSiteSource === "institution_directory" ? lookups.mappedSitesBySourceInstitutionId.get(requestedSiteId) ?? null : null);
   const institution =
-    requestedSiteSource === "institution_directory" && !directSite ? await institutionRowById(requestedSiteId) : null;
+    requestedSiteSource === "institution_directory" && !directSite ? lookups.institutionsById.get(requestedSiteId) ?? null : null;
   const requestedSiteLabel =
     trimText(rowValue<string>(row, "requested_site_label")) ||
     (mappedSite ? rowValue<string>(mappedSite, "display_name") : "") ||
@@ -441,6 +536,11 @@ export async function serializeAccessRequestRecord(row: Row): Promise<AccessRequ
   };
 }
 
+export async function serializeAccessRequestRecord(row: Row): Promise<AccessRequestRecord> {
+  const lookups = await preloadAccessRequestLookups([row]);
+  return serializeAccessRequestRecordWithLookups(row, lookups);
+}
+
 export async function listAccessRequestsForCanonicalUser(canonicalUserId: string): Promise<AccessRequestRecord[]> {
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -462,7 +562,8 @@ export async function listAccessRequestsForCanonicalUser(canonicalUserId: string
     where user_id = ${canonicalUserId}
     order by created_at desc
   `;
-  return Promise.all(rows.map((row) => serializeAccessRequestRecord(row)));
+  const lookups = await preloadAccessRequestLookups(rows);
+  return rows.map((row) => serializeAccessRequestRecordWithLookups(row, lookups));
 }
 
 export async function latestAccessRequestForCanonicalUser(
@@ -492,5 +593,6 @@ export async function latestAccessRequestForCanonicalUser(
   if (!rows[0]) {
     return null;
   }
-  return serializeAccessRequestRecord(rows[0]);
+  const lookups = await preloadAccessRequestLookups(rows);
+  return serializeAccessRequestRecordWithLookups(rows[0], lookups);
 }

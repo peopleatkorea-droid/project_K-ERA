@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
+import { useEffect, useRef } from "react";
 
 import type { CaseSummaryRecord, MedsamArtifactListItem, MedsamArtifactStatusKey } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
@@ -62,6 +63,7 @@ type PatientListBoardProps = {
   onCloseMedsamArtifactBacklog: () => void;
   onMedsamArtifactScopeChange: (scope: "patient" | "visit" | "image") => void;
   onMedsamArtifactPageChange: (page: number) => void;
+  onRowVisible: (patientId: string) => void;
 };
 
 export function PatientListBoard({
@@ -100,7 +102,36 @@ export function PatientListBoard({
   onCloseMedsamArtifactBacklog,
   onMedsamArtifactScopeChange,
   onMedsamArtifactPageChange,
+  onRowVisible,
 }: PatientListBoardProps) {
+  const rowButtonRefsMap = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    const refsMap = rowButtonRefsMap.current;
+    if (refsMap.size === 0) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const patientId = (entry.target as HTMLElement).dataset.patientId;
+            if (patientId) {
+              onRowVisible(patientId);
+            }
+          }
+        }
+      },
+      { threshold: 0.1 },
+    );
+    for (const element of refsMap.values()) {
+      observer.observe(element);
+    }
+    return () => {
+      observer.disconnect();
+    };
+  }, [patientListRows, onRowVisible]);
+
   const pageWindow = 5;
   const patientPageStart = Math.max(1, patientListPage - Math.floor(pageWindow / 2));
   const patientPageEnd = Math.min(patientListTotalPages, patientPageStart + pageWindow - 1);
@@ -308,12 +339,24 @@ export function PatientListBoard({
                   key={`board-${row.patient_id}`}
                   className={patientListRowClass(selectedPatientId === row.patient_id)}
                   type="button"
+                  data-patient-id={row.patient_id}
+                  ref={(el) => {
+                    if (el) {
+                      rowButtonRefsMap.current.set(row.patient_id, el);
+                    } else {
+                      rowButtonRefsMap.current.delete(row.patient_id);
+                    }
+                  }}
                   onClick={() => onOpenSavedCase(row.latest_case, "cases")}
                 >
                   <div className={patientListRowMainClass}>
                     <div className={patientListRowChipsClass}>
-                      <span className={patientListChipClass(true)}>{row.latest_case.local_case_code || row.patient_id}</span>
-                      <span className={patientListChipClass()}>{row.patient_id}</span>
+                      {row.latest_case.local_case_code && row.latest_case.local_case_code !== row.patient_id ? (
+                        <span className={patientListChipClass(true)}>{row.latest_case.local_case_code}</span>
+                      ) : null}
+                      <span className={patientListChipClass(!row.latest_case.local_case_code || row.latest_case.local_case_code === row.patient_id)}>
+                        {row.patient_id}
+                      </span>
                       <span className={patientListChipClass()}>{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? commonNotAvailable}`}</span>
                       <span className={patientListChipClass()}>{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
                       <span className={patientListChipClass()}>{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>

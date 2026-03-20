@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -31,6 +31,7 @@ type ToastState = {
 
 type Args = {
   selectedSiteId: string | null;
+  railView: "cases" | "patients";
   token: string;
   showOnlyMine: boolean;
   locale: "en" | "ko";
@@ -46,6 +47,7 @@ type Args = {
 
 export function useCaseWorkspaceSiteData({
   selectedSiteId,
+  railView,
   token,
   showOnlyMine,
   locale,
@@ -78,9 +80,10 @@ export function useCaseWorkspaceSiteData({
   const selectedCaseImageCaseIdRef = useRef<string | null>(null);
   const imagePreviewCacheRef = useRef<Map<string, string>>(new Map());
   const imagePreviewPromiseCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
-  const caseImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
-  const caseImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
+  const patientImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
+  const patientImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
+  const caseHistoryCacheRef = useRef<Map<string, CaseHistoryResponse>>(new Map());
   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
   const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
   const siteModelVersionsLoadedSiteIdRef = useRef<string | null>(null);
@@ -95,8 +98,8 @@ export function useCaseWorkspaceSiteData({
     revokeObjectUrls(Array.from(imagePreviewCacheRef.current.values()));
     imagePreviewCacheRef.current.clear();
     imagePreviewPromiseCacheRef.current.clear();
-    caseImageRecordCacheRef.current.clear();
-    caseImageRecordPromiseCacheRef.current.clear();
+    patientImageRecordCacheRef.current.clear();
+    patientImageRecordPromiseCacheRef.current.clear();
     caseImageCacheRef.current.clear();
     selectedCaseImageCaseIdRef.current = null;
   }
@@ -106,6 +109,10 @@ export function useCaseWorkspaceSiteData({
       (error instanceof DOMException && error.name === "AbortError") ||
       (error instanceof Error && error.name === "AbortError")
     );
+  }
+
+  function buildCaseHistoryCacheKey(patientId: string, visitDate: string): string {
+    return `${patientId}::${visitDate}`;
   }
 
   async function loadImagePreviewUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
@@ -154,12 +161,22 @@ export function useCaseWorkspaceSiteData({
     siteActivityLoadedSiteIdRef.current = null;
     siteValidationLoadedSiteIdRef.current = null;
     siteModelVersionsLoadedSiteIdRef.current = null;
+    setCases([]);
+    setCasesLoading(false);
+    setSelectedCase(null);
+    setSelectedCaseImages([]);
+    setPatientVisitGallery({});
+    setPanelBusy(false);
+    setPatientVisitGalleryBusy(false);
+    caseHistoryCacheRef.current.clear();
     setActivityBusy(false);
     setSiteActivity(null);
     setSiteValidationBusy(false);
     setSiteValidationRuns([]);
     setSiteModelVersions([]);
     setSelectedCompareModelVersionIds([]);
+    setHistoryBusy(false);
+    setCaseHistory(null);
   }, [selectedSiteId]);
 
   useEffect(() => {
@@ -167,6 +184,10 @@ export function useCaseWorkspaceSiteData({
       setCases([]);
       setSelectedCase(null);
       setSelectedCaseImages([]);
+      return;
+    }
+    if (railView === "patients") {
+      setCasesLoading(false);
       return;
     }
     const currentSiteId = selectedSiteId;
@@ -209,7 +230,7 @@ export function useCaseWorkspaceSiteData({
       cancelled = true;
       controller.abort();
     };
-  }, [selectedSiteId, showOnlyMine, token, unableLoadRecentCases]);
+  }, [describeError, railView, selectedSiteId, setToast, showOnlyMine, token, unableLoadRecentCases]);
 
   useEffect(() => {
     setCaseHistory(null);
@@ -223,7 +244,8 @@ export function useCaseWorkspaceSiteData({
 
     const currentSiteId = selectedSiteId;
     const currentCase = selectedCase;
-    const patientCases = cases.filter((item) => item.patient_id === currentCase.patient_id);
+    const matchedPatientCases = cases.filter((item) => item.patient_id === currentCase.patient_id);
+    const patientCases = matchedPatientCases.length > 0 ? matchedPatientCases : [currentCase];
     let cancelled = false;
     const controller = new AbortController();
 
@@ -314,88 +336,132 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    async function loadCaseImageRecords(caseItem: CaseSummaryRecord): Promise<ImageRecord[]> {
-      const cachedRecords = caseImageRecordCacheRef.current.get(caseItem.case_id);
+    async function loadPatientImageRecords(patientId: string): Promise<ImageRecord[]> {
+      const cachedRecords = patientImageRecordCacheRef.current.get(patientId);
       if (cachedRecords) {
         return cachedRecords;
       }
-      const pendingRequest = caseImageRecordPromiseCacheRef.current.get(caseItem.case_id);
+      const pendingRequest = patientImageRecordPromiseCacheRef.current.get(patientId);
       if (pendingRequest) {
         return pendingRequest;
       }
       const nextRequest = fetchImages(
         currentSiteId,
         token,
-        caseItem.patient_id,
-        caseItem.visit_date,
-        controller.signal
+        patientId,
+        undefined,
+        controller.signal,
       )
         .then((imageRecords) => {
-          caseImageRecordCacheRef.current.set(caseItem.case_id, imageRecords);
+          patientImageRecordCacheRef.current.set(patientId, imageRecords);
           return imageRecords;
         })
         .finally(() => {
-          caseImageRecordPromiseCacheRef.current.delete(caseItem.case_id);
+          patientImageRecordPromiseCacheRef.current.delete(patientId);
         });
-      caseImageRecordPromiseCacheRef.current.set(caseItem.case_id, nextRequest);
+      patientImageRecordPromiseCacheRef.current.set(patientId, nextRequest);
       return nextRequest;
     }
 
-    async function loadSelectedCaseImages(): Promise<void> {
-      setPanelBusy(!cachedSelectedCaseImages);
-      try {
-        const imageRecords = await loadCaseImageRecords(currentCase);
-        if (cancelled) {
-          return;
-        }
-
-        const placeholders = preserveCachedPreviewUrls(currentCase.case_id, buildCaseImagePlaceholders(imageRecords));
-        selectedCaseImageCaseIdRef.current = currentCase.case_id;
-        commitCaseImages(currentCase.case_id, placeholders);
-
-        const prioritized = [...placeholders].sort((left, right) => {
+    async function loadCasePreviewUrls(
+      caseId: string,
+      images: SavedImagePreview[],
+      options?: { prioritizeRepresentative?: boolean },
+    ) {
+      const pendingImages = [...images]
+        .filter((image) => !image.preview_url)
+        .sort((left, right) => {
           if (left.is_representative === right.is_representative) {
             return 0;
           }
           return left.is_representative ? -1 : 1;
         });
-        const pendingImages = prioritized.filter((image) => !image.preview_url);
-        if (pendingImages.length === 0) {
-          return;
-        }
+      if (pendingImages.length === 0) {
+        return;
+      }
 
-        const [priorityImage, ...remainingImages] = pendingImages;
-        if (priorityImage) {
-          const previewUrl = await loadImagePreviewUrl(currentSiteId, priorityImage.image_id, controller.signal);
-          if (cancelled) {
+      const previewRequests = pendingImages.map((image) => ({
+        imageId: image.image_id,
+        request: loadImagePreviewUrl(currentSiteId, image.image_id, controller.signal),
+      }));
+      const priorityRequest = options?.prioritizeRepresentative ? previewRequests[0] ?? null : null;
+      if (priorityRequest) {
+        void priorityRequest.request.then((previewUrl) => {
+          if (cancelled || !previewUrl) {
             return;
           }
-          if (previewUrl) {
-            applyPreviewUpdates(currentCase.case_id, new Map([[priorityImage.image_id, previewUrl]]));
-          }
-        }
+          applyPreviewUpdates(caseId, new Map([[priorityRequest.imageId, previewUrl]]));
+        });
+      }
 
-        if (remainingImages.length === 0) {
-          return;
-        }
+      const resolvedEntries = await Promise.allSettled(
+        previewRequests.map(async ({ imageId, request }) => {
+          const previewUrl = await request;
+          return previewUrl ? ([imageId, previewUrl] as const) : null;
+        }),
+      );
+      if (cancelled) {
+        return;
+      }
 
-        const resolvedEntries = await Promise.allSettled(
-          remainingImages.map(async (image) => {
-            const previewUrl = await loadImagePreviewUrl(currentSiteId, image.image_id, controller.signal);
-            return previewUrl ? ([image.image_id, previewUrl] as const) : null;
-          })
-        );
+      const resolvedPreviewUrls = new Map<string, string>();
+      for (const entry of resolvedEntries) {
+        if (entry.status === "fulfilled" && entry.value) {
+          resolvedPreviewUrls.set(entry.value[0], entry.value[1]);
+        }
+      }
+      applyPreviewUpdates(caseId, resolvedPreviewUrls);
+    }
+
+    async function loadPatientCaseImages(): Promise<void> {
+      if (patientCases.length === 0) {
+        setPanelBusy(false);
+        setPatientVisitGalleryBusy(false);
+        return;
+      }
+
+      const hasUncachedVisit = patientCases.some((caseItem) => !caseImageCacheRef.current.has(caseItem.case_id));
+      setPanelBusy(!cachedSelectedCaseImages);
+      setPatientVisitGalleryBusy(hasUncachedVisit);
+      try {
+        const allImages = await loadPatientImageRecords(currentCase.patient_id);
         if (cancelled) {
           return;
         }
 
-        const resolvedPreviewUrls = new Map<string, string>();
-        for (const entry of resolvedEntries) {
-          if (entry.status === "fulfilled" && entry.value) {
-            resolvedPreviewUrls.set(entry.value[0], entry.value[1]);
-          }
+        const imagesByVisitId = new Map<string, ImageRecord[]>();
+        for (const image of allImages) {
+          const list = imagesByVisitId.get(image.visit_id) ?? [];
+          list.push(image);
+          imagesByVisitId.set(image.visit_id, list);
         }
-        applyPreviewUpdates(currentCase.case_id, resolvedPreviewUrls);
+
+        const nextGallery: Record<string, SavedImagePreview[]> = {};
+        for (const caseItem of patientCases) {
+          const imageRecords = imagesByVisitId.get(caseItem.visit_id) ?? [];
+          const placeholders = preserveCachedPreviewUrls(caseItem.case_id, buildCaseImagePlaceholders(imageRecords));
+          caseImageCacheRef.current.set(caseItem.case_id, placeholders);
+          nextGallery[caseItem.case_id] = placeholders;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const selectedImages = nextGallery[currentCase.case_id] ?? [];
+        selectedCaseImageCaseIdRef.current = currentCase.case_id;
+        setSelectedCaseImages(selectedImages);
+        setPatientVisitGallery(nextGallery);
+
+        const galleryCases = patientCases.filter((caseItem) => caseItem.case_id !== currentCase.case_id);
+        const galleryPreviewTask = Promise.allSettled(
+          galleryCases.map((caseItem) => loadCasePreviewUrls(caseItem.case_id, nextGallery[caseItem.case_id] ?? [])),
+        );
+        await loadCasePreviewUrls(currentCase.case_id, selectedImages, { prioritizeRepresentative: true });
+        if (!cancelled) {
+          setPanelBusy(false);
+        }
+        await galleryPreviewTask;
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -404,97 +470,25 @@ export function useCaseWorkspaceSiteData({
           selectedCaseImageCaseIdRef.current = currentCase.case_id;
           setToast({
             tone: "error",
-            message: describeError(
-              nextError,
-              pick(locale, "Unable to load case images.", "耳?댁뒪 ?대?吏瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??")
-            ),
+            message: describeError(nextError, pick(locale, "Unable to load case images.", "耳?댁뒪 ?대?吏瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??")),
           });
           commitCaseImages(currentCase.case_id, []);
         }
       } finally {
         if (!cancelled) {
           setPanelBusy(false);
-        }
-      }
-    }
-
-    async function loadPatientVisitGalleries() {
-      if (patientCases.length === 0) {
-        setPatientVisitGalleryBusy(false);
-        return;
-      }
-      const hasUncachedVisit = patientCases.some((caseItem) => !caseImageCacheRef.current.has(caseItem.case_id));
-      setPatientVisitGalleryBusy(hasUncachedVisit);
-      try {
-        const visitEntries = await Promise.all(
-          patientCases.map(async (caseItem) => {
-            const cachedImages = caseImageCacheRef.current.get(caseItem.case_id);
-            if (cachedImages) {
-              return [caseItem.case_id, cachedImages] as const;
-            }
-            const imageRecords = await loadCaseImageRecords(caseItem);
-            const placeholders = preserveCachedPreviewUrls(caseItem.case_id, buildCaseImagePlaceholders(imageRecords));
-            return [caseItem.case_id, placeholders] as const;
-          }),
-        );
-        if (cancelled) {
-          return;
-        }
-        const nextGallery: Record<string, SavedImagePreview[]> = {};
-        for (const [caseId, images] of visitEntries) {
-          const nextImages = preserveCachedPreviewUrls(caseId, images);
-          caseImageCacheRef.current.set(caseId, nextImages);
-          nextGallery[caseId] = nextImages;
-        }
-        setPatientVisitGallery(nextGallery);
-
-        for (const caseItem of patientCases) {
-          if (cancelled || caseItem.case_id === currentCase.case_id) {
-            continue;
-          }
-          const cachedImages = caseImageCacheRef.current.get(caseItem.case_id) ?? [];
-          const missingImages = cachedImages.filter((image) => !image.preview_url);
-          if (missingImages.length === 0) {
-            continue;
-          }
-          const resolvedEntries = await Promise.allSettled(
-            missingImages.map(async (image) => {
-              const previewUrl = await loadImagePreviewUrl(currentSiteId, image.image_id, controller.signal);
-              return previewUrl ? ([image.image_id, previewUrl] as const) : null;
-            }),
-          );
-          if (cancelled) {
-            return;
-          }
-          const resolvedPreviewUrls = new Map<string, string>();
-          for (const entry of resolvedEntries) {
-            if (entry.status === "fulfilled" && entry.value) {
-              resolvedPreviewUrls.set(entry.value[0], entry.value[1]);
-            }
-          }
-          applyPreviewUpdates(caseItem.case_id, resolvedPreviewUrls);
-        }
-      } catch (nextError) {
-        if (isAbortError(nextError)) {
-          return;
-        }
-        if (!cancelled) {
-          setToast({
-            tone: "error",
-            message: describeError(
-              nextError,
-              pick(locale, "Unable to load this patient's visit gallery.", "이 환자의 방문 이미지 갤러리를 불러오지 못했습니다."),
-            ),
-          });
-        }
-      } finally {
-        if (!cancelled) {
           setPatientVisitGalleryBusy(false);
         }
       }
     }
 
     async function loadSelectedCaseHistory() {
+      const historyKey = buildCaseHistoryCacheKey(currentCase.patient_id, currentCase.visit_date);
+      const cachedHistory = caseHistoryCacheRef.current.get(historyKey);
+      if (cachedHistory) {
+        setCaseHistory(cachedHistory);
+        return;
+      }
       setHistoryBusy(true);
       try {
         const nextHistory = await fetchCaseHistory(
@@ -505,6 +499,7 @@ export function useCaseWorkspaceSiteData({
           controller.signal,
         );
         if (!cancelled) {
+          caseHistoryCacheRef.current.set(historyKey, nextHistory);
           setCaseHistory(nextHistory);
         }
       } catch (nextError) {
@@ -525,8 +520,7 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    void loadSelectedCaseImages();
-    void loadPatientVisitGalleries();
+    void loadPatientCaseImages();
     void loadSelectedCaseHistory();
     return () => {
       cancelled = true;
@@ -545,10 +539,17 @@ export function useCaseWorkspaceSiteData({
     }));
   }, [selectedCase, selectedCaseImages]);
 
-  async function loadCaseHistory(siteId: string, patientId: string, visitDate: string) {
+  async function loadCaseHistory(siteId: string, patientId: string, visitDate: string, options?: { forceRefresh?: boolean }) {
+    const historyKey = buildCaseHistoryCacheKey(patientId, visitDate);
+    const cachedHistory = !options?.forceRefresh ? caseHistoryCacheRef.current.get(historyKey) : null;
+    if (cachedHistory) {
+      setCaseHistory(cachedHistory);
+      return;
+    }
     setHistoryBusy(true);
     try {
       const nextHistory = await fetchCaseHistory(siteId, patientId, visitDate, token);
+      caseHistoryCacheRef.current.set(historyKey, nextHistory);
       setCaseHistory(nextHistory);
     } catch (nextError) {
       setCaseHistory(null);
@@ -682,3 +683,6 @@ export function useCaseWorkspaceSiteData({
     ensureSiteModelVersionsLoaded,
   };
 }
+
+
+

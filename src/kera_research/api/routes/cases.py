@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from kera_research.api.case_model_versions import (
     resolve_requested_contribution_models as select_requested_contribution_models,
@@ -38,6 +38,28 @@ def build_cases_router(support: Any) -> APIRouter:
     class MedsamArtifactBackfillRequest(BaseModel):
         refresh_cache: bool = True
 
+    def private_json_response(payload: Any, *, max_age: int = 15) -> JSONResponse:
+        return JSONResponse(
+            content=payload,
+            headers={
+                "Cache-Control": f"private, max-age={max_age}, stale-while-revalidate={max_age}",
+                "Vary": "Authorization",
+            },
+        )
+
+    def schedule_image_derivative_backfill(site_store: Any, image_ids: list[str] | None) -> None:
+        requested_ids = sorted({str(image_id or "").strip() for image_id in (image_ids or []) if str(image_id or "").strip()})
+        if not requested_ids:
+            return
+
+        def run_backfill() -> None:
+            try:
+                site_store.backfill_image_derivatives(requested_ids)
+            except Exception:
+                return
+
+        threading.Thread(target=run_backfill, daemon=True).start()
+
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
     require_site_access = support.require_site_access
@@ -62,7 +84,6 @@ def build_cases_router(support: Any) -> APIRouter:
     lesion_preview_jobs = support.lesion_preview_jobs
     lesion_preview_jobs_lock = support.lesion_preview_jobs_lock
     max_image_bytes = support.max_image_bytes
-    score_slit_lamp_image = support.score_slit_lamp_image
     InvalidImageUploadError = support.InvalidImageUploadError
 
     PatientCreateRequest = support.PatientCreateRequest
@@ -106,10 +127,15 @@ def build_cases_router(support: Any) -> APIRouter:
         mine: bool = False,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
-    ) -> list[dict[str, Any]]:
+    ) -> Response:
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
-        return site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+        payload = site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+        schedule_image_derivative_backfill(
+            site_store,
+            [str(item.get("representative_image_id") or "").strip() for item in payload],
+        )
+        return private_json_response(payload, max_age=15)
 
     @router.get("/api/sites/{site_id}/model-versions")
     def list_site_model_versions(
@@ -158,19 +184,26 @@ def build_cases_router(support: Any) -> APIRouter:
         page_size: int = 25,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
-    ) -> dict[str, Any]:
+    ) -> Response:
         if page < 1:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be at least 1.")
         if page_size < 1 or page_size > 100:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page_size must be between 1 and 100.")
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
-        return site_store.list_patient_case_rows(
+        payload = site_store.list_patient_case_rows(
             created_by_user_id=created_by_user_id,
             search=q,
             page=page,
             page_size=page_size,
         )
+        representative_image_ids = [
+            str(item.get("image_id") or "").strip()
+            for row in payload.get("items", [])
+            for item in row.get("representative_thumbnails", [])
+        ]
+        schedule_image_derivative_backfill(site_store, representative_image_ids)
+        return private_json_response(payload, max_age=15)
 
     @router.get("/api/sites/{site_id}/medsam-artifacts/status")
     def get_medsam_artifact_status(
@@ -429,11 +462,19 @@ def build_cases_router(support: Any) -> APIRouter:
         visit_date: str | None = None,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
-    ) -> list[dict[str, Any]]:
+    ) -> Response:
         site_store = require_site_access(cp, user, site_id)
         if patient_id and visit_date:
-            return attach_image_quality_scores(site_store.list_images_for_visit(patient_id, visit_date))
-        return attach_image_quality_scores(site_store.list_images())
+            payload = attach_image_quality_scores(site_store.list_images_for_visit(patient_id, visit_date))
+        elif patient_id:
+            payload = attach_image_quality_scores(site_store.list_images_for_patient(patient_id))
+        else:
+            payload = attach_image_quality_scores(site_store.list_images())
+        schedule_image_derivative_backfill(
+            site_store,
+            [str(item.get("image_id") or "").strip() for item in payload],
+        )
+        return private_json_response(payload, max_age=30)
 
     @router.post("/api/sites/{site_id}/images")
     async def upload_image(
@@ -460,13 +501,6 @@ def build_cases_router(support: Any) -> APIRouter:
                 content=content,
                 created_by_user_id=user["user_id"],
             )
-            try:
-                saved_image["quality_scores"] = score_slit_lamp_image(
-                    str(saved_image.get("image_path") or ""),
-                    view=str(saved_image.get("view") or "white"),
-                )
-            except Exception:
-                saved_image["quality_scores"] = None
             queue_case_embedding_refresh(
                 cp,
                 site_store,
@@ -1385,7 +1419,7 @@ def build_cases_router(support: Any) -> APIRouter:
         visit_date: str,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
-    ) -> dict[str, Any]:
+    ) -> Response:
         site_store = require_site_access(cp, user, site_id)
         history = site_store.load_case_history(patient_id, visit_date)
         contribution_aliases = cp.list_user_public_aliases(
@@ -1399,7 +1433,7 @@ def build_cases_router(support: Any) -> APIRouter:
             }
             for item in history.get("contributions", [])
         ]
-        return history
+        return private_json_response(history, max_age=10)
 
     @router.get("/api/sites/{site_id}/patients/{patient_reference_id}/trajectory")
     def get_patient_trajectory(

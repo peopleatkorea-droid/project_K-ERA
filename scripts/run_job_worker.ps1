@@ -7,6 +7,7 @@ $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
+[void](Initialize-KeraStorageDir -RepoRoot $repoRoot)
 
 if (-not (Test-Path $venvPython)) {
     Write-Host ""

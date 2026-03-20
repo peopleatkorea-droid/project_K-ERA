@@ -8,6 +8,7 @@ import { AdminWorkspace } from "./admin-workspace";
 
 const apiMocks = vi.hoisted(() => ({
   fetchAdminOverview: vi.fn(),
+  fetchAdminWorkspaceBootstrap: vi.fn(),
   fetchStorageSettings: vi.fn(),
   fetchAccessRequests: vi.fn(),
   fetchModelVersions: vi.fn(),
@@ -21,9 +22,11 @@ const apiMocks = vi.hoisted(() => ({
   searchPublicInstitutions: vi.fn(),
   fetchCrossValidationReports: vi.fn(),
   fetchSiteValidations: vi.fn(),
+  fetchSiteActivity: vi.fn(),
   fetchAiClinicEmbeddingStatus: vi.fn(),
   syncInstitutionDirectory: vi.fn(),
   reviewAccessRequest: vi.fn(),
+  recoverAdminSiteMetadata: vi.fn(),
   createAdminSite: vi.fn(),
   updateAdminSite: vi.fn(),
   autoPublishModelVersion: vi.fn(),
@@ -40,6 +43,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     fetchAdminOverview: apiMocks.fetchAdminOverview,
+    fetchAdminWorkspaceBootstrap: apiMocks.fetchAdminWorkspaceBootstrap,
     fetchStorageSettings: apiMocks.fetchStorageSettings,
     fetchAccessRequests: apiMocks.fetchAccessRequests,
     fetchModelVersions: apiMocks.fetchModelVersions,
@@ -53,9 +57,11 @@ vi.mock("../lib/api", async () => {
     searchPublicInstitutions: apiMocks.searchPublicInstitutions,
     fetchCrossValidationReports: apiMocks.fetchCrossValidationReports,
     fetchSiteValidations: apiMocks.fetchSiteValidations,
+    fetchSiteActivity: apiMocks.fetchSiteActivity,
     fetchAiClinicEmbeddingStatus: apiMocks.fetchAiClinicEmbeddingStatus,
     syncInstitutionDirectory: apiMocks.syncInstitutionDirectory,
     reviewAccessRequest: apiMocks.reviewAccessRequest,
+    recoverAdminSiteMetadata: apiMocks.recoverAdminSiteMetadata,
     createAdminSite: apiMocks.createAdminSite,
     updateAdminSite: apiMocks.updateAdminSite,
     autoPublishModelVersion: apiMocks.autoPublishModelVersion,
@@ -122,6 +128,41 @@ describe("AdminWorkspace integration", () => {
     apiMocks.searchPublicInstitutions.mockResolvedValue([]);
     apiMocks.fetchCrossValidationReports.mockResolvedValue([]);
     apiMocks.fetchSiteValidations.mockResolvedValue([]);
+    apiMocks.fetchSiteActivity.mockResolvedValue({
+      pending_updates: 2,
+      recent_validations: [
+        {
+          validation_id: "validation_1",
+          run_date: "2026-03-17T00:00:00Z",
+          model_version: "global-http-seed",
+          model_architecture: "densenet121",
+          n_cases: 12,
+          n_images: 20,
+          accuracy: 0.91,
+          AUROC: 0.94,
+          site_id: "SITE_A",
+        },
+      ],
+      recent_contributions: [
+        {
+          contribution_id: "contribution_1",
+          contribution_group_id: "group_1",
+          created_at: "2026-03-17T01:00:00Z",
+          user_id: "user_researcher",
+          public_alias: "calm_owl_101",
+          case_reference_id: "case_ref_1",
+          update_id: "update_1",
+          update_status: "approved",
+          upload_type: "delta",
+        },
+      ],
+      contribution_leaderboard: {
+        scope: "site",
+        site_id: "SITE_A",
+        leaderboard: [],
+        current_user: null,
+      },
+    });
     apiMocks.fetchAiClinicEmbeddingStatus.mockResolvedValue({
       site_id: "SITE_A",
       total_images: 0,
@@ -147,6 +188,53 @@ describe("AdminWorkspace integration", () => {
       total_count: 128,
       institutions_synced: 128,
     });
+    apiMocks.fetchAdminWorkspaceBootstrap.mockImplementation(
+      async (token: string, options?: { site_id?: string; scope?: "full" | "initial" }) => {
+        const overview = await apiMocks.fetchAdminOverview(token);
+        const [projects, managedSites] = await Promise.all([apiMocks.fetchProjects(token), apiMocks.fetchAdminSites(token)]);
+        if (options?.scope === "initial") {
+          return {
+            overview,
+            pending_requests: [],
+            approved_requests: [],
+            model_versions: [],
+            model_updates: [],
+            aggregations: [],
+            projects,
+            managed_sites: managedSites,
+            managed_users: [],
+            institution_sync_status: {
+              source: "hira",
+              institutions_synced: 0,
+              total_count: 0,
+              synced_at: null,
+            },
+          };
+        }
+        const [pendingRequests, approvedRequests, modelVersions, modelUpdates, aggregations, managedUsers, institutionSyncStatus] =
+          await Promise.all([
+            apiMocks.fetchAccessRequests(token, "pending"),
+            apiMocks.fetchAccessRequests(token, "approved"),
+            apiMocks.fetchModelVersions(token),
+            apiMocks.fetchModelUpdates(token, { site_id: options?.site_id }),
+            apiMocks.fetchAggregations(token),
+            apiMocks.fetchUsers(token),
+            apiMocks.fetchInstitutionDirectoryStatus(token),
+          ]);
+        return {
+          overview,
+          pending_requests: pendingRequests,
+          approved_requests: approvedRequests,
+          model_versions: modelVersions,
+          model_updates: modelUpdates,
+          aggregations,
+          projects,
+          managed_sites: managedSites,
+          managed_users: managedUsers,
+          institution_sync_status: institutionSyncStatus,
+        };
+      },
+    );
     apiMocks.reviewAccessRequest.mockResolvedValue({
       request: {
         request_id: "access_1",
@@ -166,6 +254,16 @@ describe("AdminWorkspace integration", () => {
         reviewed_at: "2026-03-17T00:01:00Z",
       },
       created_site: null,
+    });
+    apiMocks.recoverAdminSiteMetadata.mockResolvedValue({
+      site_id: "SITE_A",
+      site_dir: "C:\\KERA\\SITE_A",
+      manifest_path: "C:\\KERA\\SITE_A\\manifests\\dataset_manifest.csv",
+      metadata_backup_path: "C:\\KERA\\SITE_A\\manifests\\metadata_backup.json",
+      source: "backup",
+      restored_patients: 1,
+      restored_visits: 2,
+      restored_images: 3,
     });
     apiMocks.createAdminSite.mockResolvedValue({
       site_id: "SITE_B",
@@ -261,6 +359,65 @@ describe("AdminWorkspace integration", () => {
           },
         },
       });
+  });
+
+  it("loads only initial and dashboard data on first dashboard render", async () => {
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>,
+    );
+
+    await screen.findByText("Validation trends, comparison, and misclassifications");
+
+    await waitFor(() => {
+      expect(apiMocks.fetchAdminWorkspaceBootstrap).toHaveBeenCalledWith("test-token", { scope: "initial" });
+      expect(apiMocks.fetchSiteComparison).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchSiteValidations).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchSiteActivity).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchAiClinicEmbeddingStatus).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMocks.fetchAccessRequests).not.toHaveBeenCalled();
+    expect(apiMocks.fetchModelVersions).not.toHaveBeenCalled();
+    expect(apiMocks.fetchModelUpdates).not.toHaveBeenCalled();
+    expect(apiMocks.fetchAggregations).not.toHaveBeenCalled();
+    expect(apiMocks.fetchUsers).not.toHaveBeenCalled();
+    expect(apiMocks.fetchStorageSettings).not.toHaveBeenCalled();
   });
 
   it("creates a hospital through the management section and refreshes workspace state", async () => {
@@ -359,6 +516,58 @@ describe("AdminWorkspace integration", () => {
       expect(onSelectSite).toHaveBeenCalledWith("SITE_B");
     });
     expect(await screen.findByText("Registered Hospital B.")).toBeInTheDocument();
+  });
+
+  it("loads hospital activity on the operations dashboard", async () => {
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              project_id: "project_default",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+              local_storage_root: "C:\\KERA\\SITE_A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="dashboard"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("Hospital activity")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteActivity).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
+    });
+    expect(screen.getByText("calm_owl_101")).toBeInTheDocument();
+    expect(screen.getAllByText("global-http-seed").length).toBeGreaterThan(0);
   });
 
   it("hides smoke test hospitals from the linked site rail", async () => {
@@ -631,7 +840,7 @@ describe("AdminWorkspace integration", () => {
     expect(screen.queryByText("JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz")).not.toBeInTheDocument();
   });
 
-  it("explains when a hospital storage root is pinned away from the active default root", async () => {
+  it("does not show the per-hospital storage root controls in management", async () => {
     apiMocks.fetchStorageSettings.mockResolvedValue({
       storage_root: "D:\\ActiveRoot",
       default_storage_root: "C:\\KERA\\sites",
@@ -690,9 +899,69 @@ describe("AdminWorkspace integration", () => {
       </LocaleProvider>
     );
 
-    expect(await screen.findByText("This hospital is pinned to its own storage root, so it does not currently follow the active default root.")).toBeInTheDocument();
-    expect(screen.getByText("D:\\ActiveRoot\\SITE_A")).toBeInTheDocument();
-    expect(screen.getByText("22/43/112")).toBeInTheDocument();
+    await screen.findByText("Default storage root");
+    expect(screen.queryByText("Selected hospital storage root")).not.toBeInTheDocument();
+    expect(screen.queryByText("This hospital is pinned to its own storage root, so it does not currently follow the active default root.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Save hospital root")).not.toBeInTheDocument();
+  });
+
+  it("runs metadata recovery for the selected hospital from management", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onSiteDataChanged = vi.fn(async () => undefined);
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={onSiteDataChanged}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Recover metadata" }));
+
+    await waitFor(() => {
+      expect(apiMocks.recoverAdminSiteMetadata).toHaveBeenCalledWith("SITE_A", "test-token", {
+        source: "auto",
+        force_replace: true,
+      });
+      expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
+    });
+    expect(await screen.findByText("Recovered Hospital A metadata from backup (1/2/3).")).toBeInTheDocument();
+
+    confirmSpy.mockRestore();
   });
 
   it("separates the built-in fallback root from an environment-provided default root", async () => {
@@ -753,7 +1022,7 @@ describe("AdminWorkspace integration", () => {
     ).toBeInTheDocument();
   });
 
-  it("explains that the default storage root is the parent directory for per-site folders", async () => {
+  it("explains that the default storage root accepts KERA_DATA or a direct site root", async () => {
     render(
       <LocaleProvider>
         <AdminWorkspace
@@ -797,8 +1066,12 @@ describe("AdminWorkspace integration", () => {
 
     await screen.findByRole("button", { name: "Register hospital" });
     const folderInputs = await screen.findAllByLabelText("Folder path");
-    expect(folderInputs[0]).toHaveAttribute("placeholder", "D:\\KERA_DATA\\sites");
-    expect(screen.getByText("Enter the parent folder that will contain per-site subfolders.")).toBeInTheDocument();
+    expect(folderInputs[0]).toHaveAttribute("placeholder", "D:\\KERA_DATA");
+    expect(
+      screen.getByText(
+        "Enter either the KERA_DATA folder or the direct site-root folder. If you provide KERA_DATA, the app will use its sites subfolder automatically.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("runs HIRA institution sync from the requests section", async () => {
@@ -895,7 +1168,7 @@ describe("AdminWorkspace integration", () => {
     );
 
     expect(await screen.findByText("Last HIRA sync")).toBeInTheDocument();
-    expect(screen.getByText(/4,385 institutions cached/i)).toBeInTheDocument();
+    expect(await screen.findByText(/4,385 institutions cached/i)).toBeInTheDocument();
   });
 
   it("shows recent auto-approved researcher access in the requests section", async () => {

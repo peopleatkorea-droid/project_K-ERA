@@ -39,6 +39,7 @@ def reload_app_module(
         "KERA_DATA_PLANE_DATABASE_URL",
         "KERA_LOCAL_DATABASE_URL",
         "KERA_STORAGE_DIR",
+        "KERA_STORAGE_STATE_FILE",
         "KERA_CONTROL_PLANE_DIR",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
         "KERA_MODEL_DIR",
@@ -64,6 +65,11 @@ def reload_app_module(
         os.environ["KERA_DATA_PLANE_DATABASE_URL"] = f"sqlite:///{data_plane_db_path.as_posix()}"
     if control_plane_artifact_dir is not None:
         os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
+    state_anchor = db_path or control_plane_db_path or data_plane_db_path or control_plane_artifact_dir
+    if state_anchor is not None:
+        storage_state_file = Path(state_anchor).resolve().parent / "storage_dir_state.txt"
+        os.environ["KERA_STORAGE_STATE_FILE"] = str(storage_state_file)
+        storage_state_file.unlink(missing_ok=True)
 
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
     os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
@@ -1513,6 +1519,84 @@ class ApiHttpTests(unittest.TestCase):
 
         self.assertEqual(cached_response.status_code, 200, cached_response.text)
         self.assertEqual(cached_response.content, response.content)
+
+    def test_image_upload_persists_quality_scores_and_prewarms_previews_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+
+        self.assertTrue(self.site_store.image_preview_cache_path(image_id, 256).exists())
+        self.assertTrue(self.site_store.image_preview_cache_path(image_id, 640).exists())
+
+        with patch("kera_research.api.app.score_slit_lamp_image", side_effect=AssertionError("quality scores should come from storage")):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["image_id"], image_id)
+        self.assertIsInstance(payload[0].get("quality_scores"), dict)
+        self.assertIn("quality_score", payload[0]["quality_scores"])
+
+    def test_image_list_triggers_background_derivative_backfill_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                self.db_module.images.update()
+                .where(self.db_module.images.c.image_id == image_id)
+                .values(quality_scores=None)
+            )
+
+        self.site_store.image_preview_cache_path(image_id, 256).unlink(missing_ok=True)
+        self.site_store.image_preview_cache_path(image_id, 640).unlink(missing_ok=True)
+
+        initial_response = self.client.get(
+            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(initial_response.status_code, 200, initial_response.text)
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            refreshed_response = self.client.get(
+                f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            if (
+                refreshed_response.status_code == 200
+                and refreshed_response.json()
+                and refreshed_response.json()[0].get("quality_scores")
+                and self.site_store.image_preview_cache_path(image_id, 256).exists()
+                and self.site_store.image_preview_cache_path(image_id, 640).exists()
+            ):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("background derivative backfill did not complete in time")
+
+    def test_workspace_json_endpoints_emit_private_cache_headers_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+
+        paths = [
+            f"/api/sites/{self.site_id}/cases",
+            f"/api/sites/{self.site_id}/patients/list-board?page=1&page_size=25",
+            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
+            f"/api/sites/{self.site_id}/cases/history?patient_id=HTTP-001&visit_date=Initial",
+        ]
+        for path in paths:
+            response = self.client.get(
+                path,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn("private", response.headers.get("cache-control", ""))
+            self.assertIn("max-age", response.headers.get("cache-control", ""))
+            self.assertEqual(response.headers.get("vary"), "Authorization")
 
     def test_embedding_backfill_reuses_running_job_http(self):
         admin_token = self._login("admin", "admin123")
@@ -3307,6 +3391,20 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(blocked_response.status_code, 400, blocked_response.text)
         self.assertIn("Storage root can only be changed", blocked_response.json()["detail"])
 
+    def test_site_admin_storage_settings_accept_kera_data_root(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        storage_bundle_root = Path(self.tempdir.name) / "KERA_DATA"
+
+        update_settings_response = self.client.patch(
+            "/api/admin/storage-settings",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"storage_root": str(storage_bundle_root)},
+        )
+        self.assertEqual(update_settings_response.status_code, 200, update_settings_response.text)
+        update_settings_payload = update_settings_response.json()
+        self.assertEqual(update_settings_payload["storage_root"], str((storage_bundle_root / "sites").resolve()))
+        self.assertTrue((storage_bundle_root / "sites").exists())
+
     def test_site_validations_list_http_does_not_require_site_store_initialization(self):
         token = self._token_for_username("http_researcher")
 
@@ -3318,6 +3416,39 @@ class ApiHttpTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), [])
+
+    def test_site_validations_list_http_accepts_limit(self):
+        token = self._token_for_username("http_researcher")
+        for index in range(3):
+            summary = {
+                "validation_id": f"validation_limit_{index}",
+                "project_id": "project_default",
+                "site_id": self.site_id,
+                "model_version": "global-http-seed",
+                "model_version_id": "model_http_seed",
+                "model_architecture": "densenet121",
+                "run_date": f"2026-03-{20 - index:02d}T00:00:00+00:00",
+                "n_patients": 4,
+                "n_cases": 4,
+                "n_images": 4,
+                "AUROC": 0.91 - (index * 0.01),
+                "accuracy": 0.9 - (index * 0.01),
+                "sensitivity": 0.89 - (index * 0.01),
+                "specificity": 0.88 - (index * 0.01),
+                "F1": 0.87 - (index * 0.01),
+            }
+            self.cp.save_validation_run(summary, [])
+
+        response = self.client.get(
+            f"/api/sites/{self.site_id}/validations?limit=2",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]["validation_id"], "validation_limit_0")
+        self.assertEqual(payload[1]["validation_id"], "validation_limit_1")
 
     def test_site_storage_root_migration_rewrites_existing_paths(self):
         site_admin_token = self._token_for_username("http_site_admin")
@@ -3364,6 +3495,61 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {site_admin_token}"},
         )
         self.assertEqual(artifact_response.status_code, 200, artifact_response.text)
+
+    def test_site_admin_can_recover_site_metadata_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        patient_id = "00324192"
+        self.site_store.create_patient(patient_id, "female", 54, created_by_user_id="owner")
+        self.site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="Initial",
+            actual_visit_date="2026-03-17",
+            culture_confirmed=True,
+            culture_category="bacterial",
+            culture_species="Bacillus",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        image = self.site_store.add_image(
+            patient_id=patient_id,
+            visit_date="Initial",
+            view="white",
+            is_representative=True,
+            file_name="recover.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+        self.site_store.update_lesion_prompt_box(
+            image["image_id"],
+            {"x0": 0.1, "y0": 0.2, "x1": 0.7, "y1": 0.8},
+        )
+        self.site_store.generate_manifest()
+        self.site_store.export_metadata_backup()
+        self.site_store._clear_site_metadata_rows()
+
+        response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/metadata/recover",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            json={"source": "auto", "force_replace": True},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["source"], "backup")
+        self.assertEqual(payload["restored_patients"], 1)
+        self.assertEqual(payload["restored_visits"], 1)
+        self.assertEqual(payload["restored_images"], 1)
+        self.assertTrue(Path(payload["manifest_path"]).exists())
+        self.assertTrue(Path(payload["metadata_backup_path"]).exists())
+        self.assertEqual(len(self.site_store.list_patients()), 1)
+        self.assertEqual(len(self.site_store.list_visits()), 1)
+        recovered_images = self.site_store.list_images()
+        self.assertEqual(len(recovered_images), 1)
+        self.assertTrue(Path(recovered_images[0]["image_path"]).exists())
 
 
 if __name__ == "__main__":

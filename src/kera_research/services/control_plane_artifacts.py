@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 
+from kera_research.config import resolve_portable_path
 from kera_research.services.onedrive_publisher import OneDrivePublisher
 from kera_research.storage import ensure_dir
 
@@ -117,13 +118,13 @@ class ControlPlaneArtifactFacade:
 
         legacy_central_path = str(record.get("central_artifact_path") or "").strip()
         if legacy_central_path:
-            legacy_candidate = Path(legacy_central_path).expanduser()
+            legacy_candidate, _ = resolve_portable_path(legacy_central_path, require_exists=True)
             if legacy_candidate.exists():
                 return legacy_candidate.resolve()
 
         local_artifact_path = str(record.get("artifact_path") or "").strip()
         if local_artifact_path:
-            local_candidate = Path(local_artifact_path).expanduser()
+            local_candidate, _ = resolve_portable_path(local_artifact_path, require_exists=True)
             if local_candidate.exists():
                 return local_candidate.resolve()
 

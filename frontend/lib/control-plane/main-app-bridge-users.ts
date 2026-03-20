@@ -4,10 +4,13 @@ import { NextRequest } from "next/server";
 import type { Row } from "postgres";
 
 import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, ManagedUserRecord } from "../types";
+import type { ControlPlaneMembership, ControlPlaneUser } from "./types";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
   latestAccessRequestForCanonicalUser,
+  preloadAccessRequestLookups,
+  serializeAccessRequestRecordWithLookups,
   upsertAccessRequestRecord,
   upsertSiteRecord,
 } from "./main-app-bridge-records";
@@ -34,6 +37,140 @@ export type CanonicalUserContext = {
   localUser: LocalMainAppUser;
   user: AuthUser;
 };
+
+type ManagedUserSerializationLookups = {
+  canonicalUsersById: Map<string, ControlPlaneUser>;
+  latestRequestsByUserId: Map<string, AccessRequestRecord | null>;
+};
+
+function serializeBulkMembership(row: Row): ControlPlaneMembership {
+  return {
+    membership_id: rowValue<string>(row, "membership_id"),
+    site_id: rowValue<string>(row, "site_id"),
+    role: rowValue<ControlPlaneMembership["role"]>(row, "role"),
+    status: rowValue<ControlPlaneMembership["status"]>(row, "status"),
+    approved_at: rowValue<string | Date | null>(row, "approved_at")
+      ? new Date(rowValue<string | Date>(row, "approved_at")).toISOString()
+      : null,
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    site: rowValue<string | null>(row, "site_id")
+      ? {
+          site_id: rowValue<string>(row, "site_id"),
+          display_name: rowValue<string>(row, "display_name"),
+          hospital_name: rowValue<string>(row, "hospital_name"),
+          source_institution_id: rowValue<string | null>(row, "source_institution_id"),
+          status: rowValue<string>(row, "status_1") || rowValue<string>(row, "status"),
+          created_at: new Date(rowValue<string | Date>(row, "created_at_1") || rowValue<string | Date>(row, "created_at")).toISOString(),
+        }
+      : null,
+  };
+}
+
+function serializeBulkCanonicalUser(row: Row, memberships: ControlPlaneMembership[]): ControlPlaneUser {
+  return {
+    user_id: rowValue<string>(row, "user_id"),
+    email: rowValue<string>(row, "email"),
+    full_name: rowValue<string>(row, "full_name"),
+    google_sub: rowValue<string | null>(row, "google_sub"),
+    global_role: rowValue<ControlPlaneUser["global_role"]>(row, "global_role"),
+    status: rowValue<ControlPlaneUser["status"]>(row, "status"),
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    memberships,
+  };
+}
+
+export async function preloadManagedUserLookups(rows: Row[]): Promise<ManagedUserSerializationLookups> {
+  const userIds = Array.from(new Set(rows.map((row) => trimText(rowValue<string>(row, "user_id"))).filter(Boolean)));
+  if (userIds.length === 0) {
+    return {
+      canonicalUsersById: new Map(),
+      latestRequestsByUserId: new Map(),
+    };
+  }
+  const sql = await controlPlaneSql();
+  const [userRows, membershipRows, latestRequestRows] = await Promise.all([
+    sql`
+      select user_id, email, google_sub, full_name, global_role, status, created_at
+      from users
+      where user_id = any(${userIds})
+    `,
+    sql`
+      select
+        m.user_id,
+        m.membership_id,
+        m.site_id,
+        m.role,
+        m.status,
+        m.approved_at,
+        m.created_at,
+        s.site_id,
+        s.display_name,
+        s.hospital_name,
+        s.source_institution_id,
+        s.status as status_1,
+        s.created_at as created_at_1
+      from site_memberships as m
+      left join sites as s on s.site_id = m.site_id
+      where m.user_id = any(${userIds})
+      order by m.created_at asc
+    `,
+    sql`
+      select distinct on (user_id)
+        request_id,
+        user_id,
+        email,
+        requested_site_id,
+        requested_site_label,
+        requested_site_source,
+        requested_role,
+        message,
+        status,
+        reviewed_by,
+        reviewer_notes,
+        created_at,
+        reviewed_at
+      from access_requests
+      where user_id = any(${userIds})
+      order by user_id, created_at desc
+    `,
+  ]);
+  const membershipsByUserId = new Map<string, ControlPlaneMembership[]>();
+  for (const row of membershipRows) {
+    const userId = trimText(rowValue<string>(row, "user_id"));
+    if (!userId) {
+      continue;
+    }
+    const items = membershipsByUserId.get(userId) ?? [];
+    items.push(serializeBulkMembership(row));
+    membershipsByUserId.set(userId, items);
+  }
+  const canonicalUsersById = new Map<string, ControlPlaneUser>();
+  for (const row of userRows) {
+    const userId = trimText(rowValue<string>(row, "user_id"));
+    if (!userId) {
+      continue;
+    }
+    canonicalUsersById.set(userId, serializeBulkCanonicalUser(row, membershipsByUserId.get(userId) ?? []));
+  }
+  const latestRequestLookups = await preloadAccessRequestLookups(latestRequestRows);
+  const latestRequestsByUserId = new Map<string, AccessRequestRecord | null>();
+  for (const row of latestRequestRows) {
+    const userId = trimText(rowValue<string>(row, "user_id"));
+    if (!userId) {
+      continue;
+    }
+    latestRequestsByUserId.set(userId, serializeAccessRequestRecordWithLookups(row, latestRequestLookups));
+  }
+  for (const userId of userIds) {
+    if (!latestRequestsByUserId.has(userId)) {
+      latestRequestsByUserId.set(userId, null);
+    }
+  }
+  return {
+    canonicalUsersById,
+    latestRequestsByUserId,
+  };
+}
 
 export async function ensureCanonicalUserForSeed(input: {
   legacyLocalUserId?: string | null;
@@ -335,10 +472,19 @@ async function syncLatestLocalAccessRequest(canonicalUserId: string, localUser: 
   await upsertAccessRequestRecord(canonicalUserId, legacyEmailForLocalUser(localUser), localUser.latest_access_request);
 }
 
-export async function serializeManagedUserRecord(row: Row): Promise<ManagedUserRecord> {
+export async function serializeManagedUserRecord(
+  row: Row,
+  lookups?: ManagedUserSerializationLookups,
+): Promise<ManagedUserRecord> {
   const canonicalUserId = rowValue<string>(row, "user_id");
-  const canonicalUser = await getControlPlaneUser(canonicalUserId);
-  const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
+  const canonicalUser =
+    lookups && lookups.canonicalUsersById.has(canonicalUserId)
+      ? lookups.canonicalUsersById.get(canonicalUserId) ?? null
+      : await getControlPlaneUser(canonicalUserId);
+  const latestRequest =
+    lookups && lookups.latestRequestsByUserId.has(canonicalUserId)
+      ? lookups.latestRequestsByUserId.get(canonicalUserId) ?? null
+      : await latestAccessRequestForCanonicalUser(canonicalUserId);
   const fallbackRole = (trimText(rowValue<string>(row, "role")) || "viewer") as AuthUser["role"];
   const approvedSiteIds =
     canonicalUser?.memberships.filter((membership) => membership.status === "approved").map((membership) => membership.site_id) ??

@@ -14,17 +14,16 @@ import {
   deleteModelVersion,
   downloadImportTemplate,
   fetchAccessRequests,
-  fetchAdminOverview,
-  fetchAdminSites,
+  fetchAdminWorkspaceBootstrap,
   fetchAggregations,
-  fetchAiClinicEmbeddingStatus,
-  fetchCrossValidationReports,
-  fetchImageBlob,
   fetchInstitutionDirectoryStatus,
-  fetchModelUpdateArtifactBlob,
   fetchModelUpdates,
   fetchModelVersions,
-  fetchProjects,
+  fetchAiClinicEmbeddingStatus,
+  fetchCrossValidationReports,
+  fetchSiteActivity,
+  fetchImageBlob,
+  fetchModelUpdateArtifactBlob,
   fetchSiteComparison,
   fetchSiteJob,
   fetchSiteValidations,
@@ -33,6 +32,7 @@ import {
   fetchValidationArtifactBlob,
   fetchValidationCases,
   migrateAdminSiteStorageRoot,
+  recoverAdminSiteMetadata,
   publishModelVersion,
   publishModelUpdate,
   reviewAccessRequest,
@@ -68,6 +68,7 @@ const BENCHMARK_ARCHITECTURES = [
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
+const DASHBOARD_VALIDATION_RUN_LIMIT = 24;
 
 type AdminWorkspaceState = ReturnType<typeof useAdminWorkspaceState>;
 
@@ -83,6 +84,13 @@ type UseAdminWorkspaceControllerOptions = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isAbortError(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 function isActiveJobStatus(status: string | null | undefined) {
@@ -291,6 +299,8 @@ export function useAdminWorkspaceController({
     setInstitutionSyncBusy,
     setInstitutionSyncStatus,
     setSiteComparison,
+    setSiteActivity,
+    setSiteActivityBusy,
     siteValidationRuns,
     setSiteValidationRuns,
     selectedValidationId,
@@ -357,6 +367,7 @@ export function useAdminWorkspaceController({
     selectedManagedSite,
     currentModel,
     setStorageSettingsBusy,
+    setMetadataRecoveryBusy,
     newVersionName,
     setNewVersionName,
   } = state;
@@ -370,6 +381,7 @@ export function useAdminWorkspaceController({
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
     unableLoadEmbeddingStatus: pick(locale, "Unable to load embedding status.", "임베딩 상태를 불러오지 못했습니다."),
+    unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "병원 활동을 불러오지 못했습니다."),
     institutionSyncSucceeded: (count: number, pages?: number | null) =>
       pages && pages > 0
         ? pick(
@@ -460,6 +472,20 @@ export function useAdminWorkspaceController({
     unableSaveSelectedSiteStorageRoot: pick(locale, "Unable to save the selected hospital storage root.", "선택한 병원의 저장 경로 저장에 실패했습니다."),
     selectedSiteStorageMigrated: (siteLabel: string) => pick(locale, `Migrated stored files for ${siteLabel}.`, `${siteLabel}의 저장 파일을 새 경로로 이동했습니다.`),
     unableMigrateSelectedSiteStorageRoot: pick(locale, "Unable to migrate the selected hospital storage root.", "선택한 병원의 저장 경로 마이그레이션에 실패했습니다."),
+    selectSiteForMetadataRecovery: pick(locale, "Select a hospital before recovering metadata.", "메타데이터를 복구하려면 먼저 병원을 선택하세요."),
+    recoverSelectedSiteMetadataConfirm: (siteLabel: string) =>
+      pick(
+        locale,
+        `Rebuild patients, visits, and images for ${siteLabel} from the saved metadata backup or manifest? Existing rows for this hospital will be replaced.`,
+        `${siteLabel}의 patients, visits, images를 저장된 metadata backup 또는 manifest 기준으로 다시 만들까요? 현재 병원 row는 교체됩니다.`,
+      ),
+    selectedSiteMetadataRecovered: (siteLabel: string, source: string, counts: string) =>
+      pick(
+        locale,
+        `Recovered ${siteLabel} metadata from ${source} (${counts}).`,
+        `${siteLabel} 메타데이터를 ${source} 기준으로 복구했습니다 (${counts}).`,
+      ),
+    unableRecoverSelectedSiteMetadata: pick(locale, "Unable to recover the selected hospital metadata.", "선택 병원 메타데이터 복구에 실패했습니다."),
     selectSiteForStorageRoot: pick(locale, "Select a hospital before changing its storage root.", "저장 경로를 바꾸려면 먼저 병원을 선택하세요."),
     usernameRequired: pick(locale, "Username is required.", "아이디는 필수입니다."),
     assignSiteRequired: pick(locale, "Assign at least one hospital for non-admin users.", "관리자가 아닌 사용자는 최소 한 개 이상의 병원을 지정해야 합니다."),
@@ -471,6 +497,139 @@ export function useAdminWorkspaceController({
     embeddingBackfillQueued: pick(locale, "Embedding backfill started in the background.", "임베딩 백필이 백그라운드에서 시작되었습니다."),
     embeddingBackfillFailed: pick(locale, "Embedding backfill failed.", "임베딩 백필에 실패했습니다."),
   };
+
+  function applyBaseWorkspaceData(nextWorkspaceBootstrap: {
+    overview: AdminWorkspaceState["overview"];
+    projects: typeof projects;
+    managed_sites: ManagedSiteRecord[];
+  }) {
+    const nextOverview = nextWorkspaceBootstrap.overview;
+    const nextProjects = nextWorkspaceBootstrap.projects;
+    const nextManagedSites = nextWorkspaceBootstrap.managed_sites;
+    setOverview(nextOverview);
+    setProjects(nextProjects);
+    setManagedSites(nextManagedSites);
+    setSiteStorageRootForm((current) => {
+      if (current) {
+        return current;
+      }
+      const activeSite = nextManagedSites.find((item) => item.site_id === selectedSiteId) ?? nextManagedSites[0];
+      return activeSite?.local_storage_root ?? "";
+    });
+    setSiteForm((current) => ({
+      ...current,
+      project_id: current.project_id || nextProjects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID,
+    }));
+  }
+
+  function applyRequestData(
+    nextPendingRequests: AdminWorkspaceState["pendingRequests"],
+    nextApprovedRequests: AdminWorkspaceState["autoApprovedRequests"],
+    projectIdHint: string,
+  ) {
+    setPendingRequests(nextPendingRequests);
+    setAutoApprovedRequests(
+      nextApprovedRequests
+        .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
+        .slice(0, 8),
+    );
+    setReviewDrafts((current) => {
+      const next = { ...current };
+      for (const item of nextPendingRequests) {
+        next[item.request_id] = mergeReviewDraft(next[item.request_id], item, projectIdHint);
+      }
+      return next;
+    });
+  }
+
+  function applyModelUpdateData(nextUpdates: ModelUpdateRecord[]) {
+    setModelUpdates(nextUpdates);
+    setModelUpdateReviewNotes((current) => {
+      const next = { ...current };
+      for (const item of nextUpdates) {
+        if (next[item.update_id] === undefined) {
+          next[item.update_id] = item.reviewer_notes ?? "";
+        }
+      }
+      return next;
+    });
+  }
+
+  async function loadRequestSectionData(projectIdHint = projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID) {
+    const [nextPendingRequests, nextApprovedRequests, nextInstitutionSyncStatus] = await Promise.all([
+      fetchAccessRequests(token, "pending"),
+      fetchAccessRequests(token, "approved"),
+      fetchInstitutionDirectoryStatus(token),
+    ]);
+    applyRequestData(nextPendingRequests, nextApprovedRequests, projectIdHint);
+    setInstitutionSyncStatus(nextInstitutionSyncStatus);
+  }
+
+  async function loadRegistrySectionData() {
+    const [nextVersions, nextUpdates] = await Promise.all([
+      fetchModelVersions(token),
+      fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+    ]);
+    setModelVersions(nextVersions);
+    applyModelUpdateData(nextUpdates);
+  }
+
+  async function loadFederationSectionData() {
+    const [nextUpdates, nextAggregations] = await Promise.all([
+      fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+      canAggregate ? fetchAggregations(token) : Promise.resolve([]),
+    ]);
+    applyModelUpdateData(nextUpdates);
+    setAggregations(nextAggregations);
+  }
+
+  async function loadManagementSectionData() {
+    setStorageSettingsBusy(true);
+    try {
+      const [nextStorageSettings, nextManagedUsers] = await Promise.all([
+        fetchStorageSettings(token),
+        canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+      ]);
+      setStorageSettings(nextStorageSettings);
+      setManagedUsers(nextManagedUsers);
+      setInstanceStorageRootForm(nextStorageSettings.storage_root);
+    } finally {
+      setStorageSettingsBusy(false);
+    }
+  }
+
+  async function loadDashboardComparisonData() {
+    setSiteComparison(await fetchSiteComparison(token));
+  }
+
+  async function loadDashboardValidationRuns() {
+    if (!selectedSiteId) {
+      setSiteValidationRuns([]);
+      return;
+    }
+    setSiteValidationBusy(true);
+    try {
+      setSiteValidationRuns([]);
+      setSiteValidationRuns(
+        await fetchSiteValidations(selectedSiteId, token, {
+          limit: DASHBOARD_VALIDATION_RUN_LIMIT,
+        }),
+      );
+    } finally {
+      setSiteValidationBusy(false);
+    }
+  }
+
+  async function loadCrossValidationSectionData() {
+    if (!selectedSiteId) {
+      setCrossValidationReports([]);
+      setSelectedReportId(null);
+      return;
+    }
+    const nextCrossValidationReports = await fetchCrossValidationReports(selectedSiteId, token);
+    setCrossValidationReports(nextCrossValidationReports);
+    setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
+  }
 
   useEffect(() => {
     if (initialSection) {
@@ -499,89 +658,11 @@ export function useAdminWorkspaceController({
     let cancelled = false;
     async function loadWorkspace() {
       try {
-        const [
-          nextOverview,
-          nextStorageSettings,
-          nextPendingRequests,
-          nextApprovedRequests,
-          nextVersions,
-          nextUpdates,
-          nextAggregations,
-          nextProjects,
-          nextManagedSites,
-          nextManagedUsers,
-          nextInstitutionSyncStatus,
-          nextSiteComparison,
-          nextCrossValidationReports,
-          nextSiteValidationRuns,
-        ] = await Promise.all([
-          fetchAdminOverview(token),
-          fetchStorageSettings(token),
-          fetchAccessRequests(token, "pending"),
-          fetchAccessRequests(token, "approved"),
-          fetchModelVersions(token),
-          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
-          canAggregate ? fetchAggregations(token) : Promise.resolve([]),
-          fetchProjects(token),
-          fetchAdminSites(token),
-          canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
-          fetchInstitutionDirectoryStatus(token),
-          fetchSiteComparison(token),
-          selectedSiteId ? fetchCrossValidationReports(selectedSiteId, token) : Promise.resolve([]),
-          selectedSiteId ? fetchSiteValidations(selectedSiteId, token) : Promise.resolve([]),
-        ]);
-        if (cancelled) return;
-        setOverview(nextOverview);
-        setStorageSettings(nextStorageSettings);
-        setPendingRequests(nextPendingRequests);
-        setAutoApprovedRequests(
-          nextApprovedRequests
-            .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
-            .slice(0, 8),
-        );
-        setModelVersions(nextVersions);
-        setModelUpdates(nextUpdates);
-        setAggregations(nextAggregations);
-        setProjects(nextProjects);
-        setManagedSites(nextManagedSites);
-        setManagedUsers(nextManagedUsers);
-        setInstitutionSyncStatus(nextInstitutionSyncStatus);
-        setSiteComparison(nextSiteComparison);
-        setCrossValidationReports(nextCrossValidationReports);
-        setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
-        setSiteValidationRuns(nextSiteValidationRuns);
-        setInstanceStorageRootForm((current) => current || nextStorageSettings.storage_root);
-        setSiteStorageRootForm((current) => {
-          if (current) {
-            return current;
-          }
-          const activeSite = nextManagedSites.find((item) => item.site_id === selectedSiteId) ?? nextManagedSites[0];
-          return activeSite?.local_storage_root ?? "";
-        });
-        setSiteForm((current) => ({
-          ...current,
-          project_id: current.project_id || nextProjects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID,
-        }));
-        setReviewDrafts((current) => {
-          const next = { ...current };
-          for (const item of nextPendingRequests) {
-            next[item.request_id] = mergeReviewDraft(
-              next[item.request_id],
-              item,
-              nextProjects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID,
-            );
-          }
-          return next;
-        });
-        setModelUpdateReviewNotes((current) => {
-          const next = { ...current };
-          for (const item of nextUpdates) {
-            if (next[item.update_id] === undefined) {
-              next[item.update_id] = item.reviewer_notes ?? "";
-            }
-          }
-          return next;
-        });
+        const nextWorkspaceBootstrap = await fetchAdminWorkspaceBootstrap(token, { scope: "initial" });
+        if (cancelled) {
+          return;
+        }
+        applyBaseWorkspaceData(nextWorkspaceBootstrap);
       } catch (nextError) {
         if (!cancelled) {
           setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
@@ -592,33 +673,234 @@ export function useAdminWorkspaceController({
     return () => {
       cancelled = true;
     };
-  }, [
-    token,
-    selectedSiteId,
-    canAggregate,
-    canManagePlatform,
-    setAggregations,
-    setCrossValidationReports,
-    setInstanceStorageRootForm,
-    setManagedSites,
-    setManagedUsers,
-    setInstitutionSyncStatus,
-    setModelUpdateReviewNotes,
-    setModelUpdates,
-    setModelVersions,
-    setOverview,
-    setPendingRequests,
-    setAutoApprovedRequests,
-    setProjects,
-    setReviewDrafts,
-    setSelectedReportId,
-    setSiteComparison,
-    setSiteForm,
-    setSiteStorageRootForm,
-    setSiteValidationRuns,
-    setStorageSettings,
-    setToast,
-  ]);
+  }, [token, setManagedSites, setOverview, setProjects, setSiteForm, setSiteStorageRootForm, setToast]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "requests") {
+      return;
+    }
+    let cancelled = false;
+    async function loadRequests() {
+      try {
+        const [nextPendingRequests, nextApprovedRequests, nextInstitutionSyncStatus] = await Promise.all([
+          fetchAccessRequests(token, "pending"),
+          fetchAccessRequests(token, "approved"),
+          fetchInstitutionDirectoryStatus(token),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        applyRequestData(nextPendingRequests, nextApprovedRequests, projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID);
+        setInstitutionSyncStatus(nextInstitutionSyncStatus);
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.unableReview) });
+        }
+      }
+    }
+    void loadRequests();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview, projects, section, setInstitutionSyncStatus, setPendingRequests, setAutoApprovedRequests, setReviewDrafts, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "registry") {
+      return;
+    }
+    let cancelled = false;
+    async function loadRegistry() {
+      try {
+        const [nextVersions, nextUpdates] = await Promise.all([
+          fetchModelVersions(token),
+          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setModelVersions(nextVersions);
+        applyModelUpdateData(nextUpdates);
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.updateReviewFailed) });
+        }
+      }
+    }
+    void loadRegistry();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview, section, selectedSiteId, setModelUpdateReviewNotes, setModelUpdates, setModelVersions, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "federation" || !canAggregate) {
+      return;
+    }
+    let cancelled = false;
+    async function loadFederation() {
+      try {
+        const [nextUpdates, nextAggregations] = await Promise.all([
+          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+          fetchAggregations(token),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        applyModelUpdateData(nextUpdates);
+        setAggregations(nextAggregations);
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
+        }
+      }
+    }
+    void loadFederation();
+    return () => {
+      cancelled = true;
+    };
+  }, [canAggregate, overview, section, selectedSiteId, setAggregations, setModelUpdateReviewNotes, setModelUpdates, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "management") {
+      return;
+    }
+    let cancelled = false;
+    async function loadManagement() {
+      try {
+        setStorageSettingsBusy(true);
+        const [nextStorageSettings, nextManagedUsers] = await Promise.all([
+          fetchStorageSettings(token),
+          canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setStorageSettings(nextStorageSettings);
+        setManagedUsers(nextManagedUsers);
+        setInstanceStorageRootForm(nextStorageSettings.storage_root);
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
+        }
+      } finally {
+        if (!cancelled) {
+          setStorageSettingsBusy(false);
+        }
+      }
+    }
+    void loadManagement();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManagePlatform, overview, section, setManagedUsers, setStorageSettings, setStorageSettingsBusy, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "dashboard") {
+      return;
+    }
+    let cancelled = false;
+    async function loadDashboardComparison() {
+      try {
+        const nextSiteComparison = await fetchSiteComparison(token);
+        if (!cancelled) {
+          setSiteComparison(nextSiteComparison);
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteActivity) });
+        }
+      }
+    }
+    void loadDashboardComparison();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview, section, setSiteComparison, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "dashboard") {
+      return;
+    }
+    let cancelled = false;
+    async function loadDashboardRuns() {
+      try {
+        if (!selectedSiteId) {
+          setSiteValidationRuns([]);
+          return;
+        }
+        setSiteValidationBusy(true);
+        setSiteValidationRuns([]);
+        const nextSiteValidationRuns = await fetchSiteValidations(selectedSiteId, token, {
+          limit: DASHBOARD_VALIDATION_RUN_LIMIT,
+        });
+        if (!cancelled) {
+          setSiteValidationRuns(nextSiteValidationRuns);
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadMisclassified) });
+        }
+      } finally {
+        if (!cancelled) {
+          setSiteValidationBusy(false);
+        }
+      }
+    }
+    void loadDashboardRuns();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview, section, selectedSiteId, setSiteValidationBusy, setSiteValidationRuns, setToast, token]);
+
+  useEffect(() => {
+    if (!overview) {
+      return;
+    }
+    if (section !== "cross_validation") {
+      return;
+    }
+    let cancelled = false;
+    async function loadCrossValidation() {
+      try {
+        if (!selectedSiteId) {
+          setCrossValidationReports([]);
+          setSelectedReportId(null);
+          return;
+        }
+        const nextCrossValidationReports = await fetchCrossValidationReports(selectedSiteId, token);
+        if (!cancelled) {
+          setCrossValidationReports(nextCrossValidationReports);
+          setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
+        }
+      } catch (nextError) {
+        if (!cancelled) {
+          setToast({ tone: "error", message: describeError(nextError, copy.crossValidationFailed) });
+        }
+      }
+    }
+    void loadCrossValidation();
+    return () => {
+      cancelled = true;
+    };
+  }, [overview, section, selectedSiteId, setCrossValidationReports, setSelectedReportId, setToast, token]);
 
   useEffect(() => {
     if (!siteValidationRuns.length) {
@@ -648,6 +930,54 @@ export function useAdminWorkspaceController({
   ]);
 
   useEffect(() => {
+    if (section !== "dashboard" || !selectedSiteId) {
+      if (!selectedSiteId) {
+        setSiteActivity(null);
+      }
+      setSiteActivityBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function loadSiteActivity() {
+      setSiteActivity(null);
+      setSiteActivityBusy(true);
+      try {
+        const nextActivity = await fetchSiteActivity(selectedSiteId, token, controller.signal);
+        if (cancelled) {
+          return;
+        }
+        setSiteActivity(nextActivity);
+      } catch (nextError) {
+        if (cancelled || isAbortError(nextError)) {
+          return;
+        }
+        setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteActivity) });
+      } finally {
+        if (!cancelled) {
+          setSiteActivityBusy(false);
+        }
+      }
+    }
+
+    void loadSiteActivity();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    copy.unableLoadSiteActivity,
+    section,
+    selectedSiteId,
+    setSiteActivity,
+    setSiteActivityBusy,
+    setToast,
+    token,
+  ]);
+
+  useEffect(() => {
     if (!modelUpdates.length) {
       setSelectedModelUpdateId(null);
       return;
@@ -658,7 +988,7 @@ export function useAdminWorkspaceController({
   }, [modelUpdates, setSelectedModelUpdateId]);
 
   useEffect(() => {
-    if (!selectedSiteId) {
+    if (section !== "dashboard" || !selectedSiteId) {
       setEmbeddingStatus(null);
       return;
     }
@@ -685,10 +1015,15 @@ export function useAdminWorkspaceController({
     return () => {
       cancelled = true;
     };
-  }, [selectedSiteId, token, setEmbeddingStatus, setEmbeddingStatusBusy, setToast]);
+  }, [section, selectedSiteId, token, setEmbeddingStatus, setEmbeddingStatusBusy, setToast]);
 
   useEffect(() => {
-    if (!selectedSiteId || !embeddingStatus?.active_job || !["queued", "running"].includes(embeddingStatus.active_job.status)) {
+    if (
+      section !== "dashboard" ||
+      !selectedSiteId ||
+      !embeddingStatus?.active_job ||
+      !["queued", "running"].includes(embeddingStatus.active_job.status)
+    ) {
       return;
     }
     const currentSiteId = selectedSiteId;
@@ -710,14 +1045,14 @@ export function useAdminWorkspaceController({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [selectedSiteId, token, embeddingStatus?.active_job?.job_id, embeddingStatus?.active_job?.status, setEmbeddingStatus, setToast]);
+  }, [section, selectedSiteId, token, embeddingStatus?.active_job?.job_id, embeddingStatus?.active_job?.status, setEmbeddingStatus, setToast]);
 
   useEffect(() => {
     for (const url of dashboardPreviewUrlsRef.current) {
       URL.revokeObjectURL(url);
     }
     dashboardPreviewUrlsRef.current = [];
-    if (!selectedSiteId || !selectedValidationId) {
+    if (section !== "dashboard" || !selectedSiteId || !selectedValidationId) {
       setMisclassifiedCases([]);
       return;
     }
@@ -805,7 +1140,7 @@ export function useAdminWorkspaceController({
     return () => {
       cancelled = true;
     };
-  }, [selectedSiteId, selectedValidationId, token, setDashboardBusy, setMisclassifiedCases, setToast]);
+  }, [section, selectedSiteId, selectedValidationId, token, setDashboardBusy, setMisclassifiedCases, setToast]);
 
   useEffect(() => {
     for (const url of modelUpdatePreviewUrlsRef.current) {
@@ -857,63 +1192,21 @@ export function useAdminWorkspaceController({
   }, [selectedManagedSite?.local_storage_root, selectedManagedSite?.site_id, setSiteStorageRootForm]);
 
   async function refreshWorkspace(siteScoped = false) {
-    const [
-      nextOverview,
-      nextStorageSettings,
-      nextVersions,
-      nextUpdates,
-      nextAggregations,
-      nextProjects,
-      nextManagedSites,
-      nextManagedUsers,
-      nextInstitutionSyncStatus,
-      nextSiteComparison,
-      nextCrossValidationReports,
-      nextSiteValidationRuns,
-      nextPendingRequests,
-      nextApprovedRequests,
-    ] = await Promise.all([
-      fetchAdminOverview(token),
-      fetchStorageSettings(token),
-      fetchModelVersions(token),
-      fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
-      canAggregate ? fetchAggregations(token) : Promise.resolve([]),
-      fetchProjects(token),
-      fetchAdminSites(token),
-      canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
-      fetchInstitutionDirectoryStatus(token),
-      fetchSiteComparison(token),
-      selectedSiteId ? fetchCrossValidationReports(selectedSiteId, token) : Promise.resolve([]),
-      selectedSiteId ? fetchSiteValidations(selectedSiteId, token) : Promise.resolve([]),
-      fetchAccessRequests(token, "pending"),
-      fetchAccessRequests(token, "approved"),
-    ]);
-    setOverview(nextOverview);
-    setStorageSettings(nextStorageSettings);
-    setModelVersions(nextVersions);
-    setModelUpdates(nextUpdates);
-    setAggregations(nextAggregations);
-    setProjects(nextProjects);
-    setManagedSites(nextManagedSites);
-    setManagedUsers(nextManagedUsers);
-    setInstitutionSyncStatus(nextInstitutionSyncStatus);
-    setSiteComparison(nextSiteComparison);
-    setCrossValidationReports(nextCrossValidationReports);
-    setSiteValidationRuns(nextSiteValidationRuns);
-    setPendingRequests(nextPendingRequests);
-    setAutoApprovedRequests(
-      nextApprovedRequests
-        .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
-        .slice(0, 8),
-    );
-    setReviewDrafts((current) => {
-      const next = { ...current };
-      for (const item of nextPendingRequests) {
-        next[item.request_id] = mergeReviewDraft(next[item.request_id], item, nextProjects[0]?.project_id ?? "");
-      }
-      return next;
-    });
-    setInstanceStorageRootForm(nextStorageSettings.storage_root);
+    const nextWorkspaceBootstrap = await fetchAdminWorkspaceBootstrap(token, { scope: "initial" });
+    applyBaseWorkspaceData(nextWorkspaceBootstrap);
+    if (section === "requests") {
+      await loadRequestSectionData(nextWorkspaceBootstrap.projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID);
+    } else if (section === "registry") {
+      await loadRegistrySectionData();
+    } else if (section === "federation" && canAggregate) {
+      await loadFederationSectionData();
+    } else if (section === "management") {
+      await loadManagementSectionData();
+    } else if (section === "dashboard") {
+      await Promise.all([loadDashboardComparisonData(), loadDashboardValidationRuns()]);
+    } else if (section === "cross_validation") {
+      await loadCrossValidationSectionData();
+    }
     if (siteScoped && selectedSiteId) {
       await onSiteDataChanged(selectedSiteId);
     }
@@ -1702,6 +1995,39 @@ export function useAdminWorkspaceController({
     }
   }
 
+  async function handleRecoverSelectedSiteMetadata() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForMetadataRecovery });
+      return;
+    }
+    const siteLabel = selectedSiteLabel || selectedSiteId;
+    const confirmed = window.confirm(copy.recoverSelectedSiteMetadataConfirm(siteLabel));
+    if (!confirmed) {
+      return;
+    }
+    setMetadataRecoveryBusy(true);
+    try {
+      const result = await recoverAdminSiteMetadata(selectedSiteId, token, {
+        source: "auto",
+        force_replace: true,
+      });
+      await refreshWorkspace(true);
+      setSection("dashboard");
+      setToast({
+        tone: "success",
+        message: copy.selectedSiteMetadataRecovered(
+          siteLabel,
+          result.source,
+          `${result.restored_patients}/${result.restored_visits}/${result.restored_images}`,
+        ),
+      });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableRecoverSelectedSiteMetadata) });
+    } finally {
+      setMetadataRecoveryBusy(false);
+    }
+  }
+
   function handleResetUserForm() {
     setUserForm(createUserForm());
   }
@@ -1762,6 +2088,7 @@ export function useAdminWorkspaceController({
     handleSaveStorageRoot,
     handleSaveSelectedSiteStorageRoot,
     handleMigrateSelectedSiteStorageRoot,
+    handleRecoverSelectedSiteMetadata,
     handleResetUserForm,
     handleSaveUser,
   };

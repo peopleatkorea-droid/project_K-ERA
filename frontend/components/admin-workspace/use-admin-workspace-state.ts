@@ -21,6 +21,7 @@ import {
   type ModelVersionRecord,
   type ProjectRecord,
   type SiteComparisonRecord,
+  type SiteActivityResponse,
   type SiteJobRecord,
   type SiteValidationRunRecord,
   type StorageSettingsRecord,
@@ -292,6 +293,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [institutionSyncBusy, setInstitutionSyncBusy] = useState(false);
   const [institutionSyncStatus, setInstitutionSyncStatus] = useState<InstitutionDirectorySyncResponse | null>(null);
   const [siteComparison, setSiteComparison] = useState<SiteComparisonRecord[]>([]);
+  const [siteActivity, setSiteActivity] = useState<SiteActivityResponse | null>(null);
+  const [siteActivityBusy, setSiteActivityBusy] = useState(false);
   const [siteValidationRuns, setSiteValidationRuns] = useState<SiteValidationRunRecord[]>([]);
   const [selectedValidationId, setSelectedValidationId] = useState<string | null>(null);
   const [baselineValidationId, setBaselineValidationId] = useState<string | null>(null);
@@ -336,6 +339,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [publishingModelUpdateId, setPublishingModelUpdateId] = useState<string | null>(null);
   const [aggregationBusy, setAggregationBusy] = useState(false);
   const [storageSettingsBusy, setStorageSettingsBusy] = useState(false);
+  const [metadataRecoveryBusy, setMetadataRecoveryBusy] = useState(false);
   const [newVersionName, setNewVersionName] = useState("");
   const [initialForm, setInitialForm] = useState({
     architecture: "convnext_tiny",
@@ -557,6 +561,10 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setInstitutionSyncStatus,
     siteComparison,
     setSiteComparison,
+    siteActivity,
+    setSiteActivity,
+    siteActivityBusy,
+    setSiteActivityBusy,
     siteValidationRuns,
     setSiteValidationRuns,
     selectedValidationId,
@@ -637,6 +645,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setAggregationBusy,
     storageSettingsBusy,
     setStorageSettingsBusy,
+    metadataRecoveryBusy,
+    setMetadataRecoveryBusy,
     newVersionName,
     setNewVersionName,
     initialForm,

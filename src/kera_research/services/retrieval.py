@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ class BiomedClipTextRetriever:
         self._preprocess: Any | None = None
         self._tokenizer: Any | None = None
         self._device: str | None = None
+        self._image_cache: dict[str, np.ndarray] = {}
+        self._text_cache: dict[str, np.ndarray] = {}
 
     def _resolve_runtime_device(self, requested_device: str) -> str:
         try:
@@ -58,27 +61,54 @@ class BiomedClipTextRetriever:
             raise ValueError("At least one image is required for BiomedCLIP retrieval.")
         torch, model, preprocess, _tokenizer = self._ensure_loaded(requested_device)
 
-        tensors = []
-        for image_path in image_paths:
-            image = Image.open(image_path).convert("RGB")
-            tensors.append(preprocess(image))
-        batch = torch.stack(tensors).to(self._device)
-
-        with torch.no_grad():
-            features = model.encode_image(batch)
-        features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-        return features.detach().cpu().numpy().astype(np.float32)
+        results: list[np.ndarray | None] = [None] * len(image_paths)
+        uncached_indices: list[int] = []
+        uncached_tensors: list[Any] = []
+        for i, image_path in enumerate(image_paths):
+            cached = self._image_cache.get(str(image_path))
+            if cached is not None:
+                results[i] = cached
+            else:
+                uncached_tensors.append(preprocess(Image.open(image_path).convert("RGB")))
+                uncached_indices.append(i)
+        if uncached_tensors:
+            batch = torch.stack(uncached_tensors).to(self._device)
+            with torch.no_grad():
+                features = model.encode_image(batch)
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            embeddings = features.detach().cpu().numpy().astype(np.float32)
+            for j, idx in enumerate(uncached_indices):
+                self._image_cache[str(image_paths[idx])] = embeddings[j]
+                results[idx] = embeddings[j]
+        return np.stack(results, axis=0)  # type: ignore[arg-type]
 
     def encode_texts(self, texts: list[str], requested_device: str) -> np.ndarray:
         if not texts:
             raise ValueError("At least one text is required for BiomedCLIP retrieval.")
         torch, model, _preprocess, tokenizer = self._ensure_loaded(requested_device)
-        tokens = tokenizer(texts).to(self._device)
 
-        with torch.no_grad():
-            features = model.encode_text(tokens)
-        features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-        return features.detach().cpu().numpy().astype(np.float32)
+        results: list[np.ndarray | None] = [None] * len(texts)
+        uncached_indices: list[int] = []
+        uncached_texts_batch: list[str] = []
+        for i, text in enumerate(texts):
+            cache_key = hashlib.sha256(text.encode()).hexdigest()
+            cached = self._text_cache.get(cache_key)
+            if cached is not None:
+                results[i] = cached
+            else:
+                uncached_indices.append(i)
+                uncached_texts_batch.append(text)
+        if uncached_texts_batch:
+            tokens = tokenizer(uncached_texts_batch).to(self._device)
+            with torch.no_grad():
+                features = model.encode_text(tokens)
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            embeddings = features.detach().cpu().numpy().astype(np.float32)
+            for j, idx in enumerate(uncached_indices):
+                cache_key = hashlib.sha256(texts[idx].encode()).hexdigest()
+                self._text_cache[cache_key] = embeddings[j]
+                results[idx] = embeddings[j]
+        return np.stack(results, axis=0)  # type: ignore[arg-type]
 
     def retrieve_texts(
         self,
@@ -131,6 +161,7 @@ class Dinov2ImageRetriever:
         self._model: Any | None = None
         self._processor: Any | None = None
         self._device: str | None = None
+        self._image_cache: dict[str, np.ndarray] = {}
 
     def _resolve_runtime_device(self, requested_device: str) -> str:
         try:
@@ -170,15 +201,28 @@ class Dinov2ImageRetriever:
             raise ValueError("At least one image is required for DINOv2 retrieval.")
         torch, processor, model = self._ensure_loaded(requested_device)
 
-        images = [Image.open(image_path).convert("RGB") for image_path in image_paths]
-        inputs = processor(images=images, return_tensors="pt")
-        batch = {key: value.to(self._device) for key, value in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model(**batch)
-        if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-            features = outputs.pooler_output
-        else:
-            features = outputs.last_hidden_state[:, 0]
-        features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
-        return features.detach().cpu().numpy().astype(np.float32)
+        results: list[np.ndarray | None] = [None] * len(image_paths)
+        uncached_indices: list[int] = []
+        uncached_images: list[Any] = []
+        for i, image_path in enumerate(image_paths):
+            cached = self._image_cache.get(str(image_path))
+            if cached is not None:
+                results[i] = cached
+            else:
+                uncached_images.append(Image.open(image_path).convert("RGB"))
+                uncached_indices.append(i)
+        if uncached_images:
+            inputs = processor(images=uncached_images, return_tensors="pt")
+            batch = {key: value.to(self._device) for key, value in inputs.items()}
+            with torch.no_grad():
+                outputs = model(**batch)
+            if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+                features = outputs.pooler_output
+            else:
+                features = outputs.last_hidden_state[:, 0]
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            embeddings = features.detach().cpu().numpy().astype(np.float32)
+            for j, idx in enumerate(uncached_indices):
+                self._image_cache[str(image_paths[idx])] = embeddings[j]
+                results[idx] = embeddings[j]
+        return np.stack(results, axis=0)  # type: ignore[arg-type]

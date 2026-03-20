@@ -28,6 +28,8 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             visible_model_updates=deps["visible_model_updates"],
             is_pending_model_update=deps["is_pending_model_update"],
             normalize_storage_root=deps["normalize_storage_root"],
+            normalize_default_storage_root=deps["normalize_default_storage_root"],
+            invalidate_site_storage_root_cache=deps["invalidate_site_storage_root_cache"],
             embedded_review_artifact_response=deps["embedded_review_artifact_response"],
             load_approval_report=deps["load_approval_report"],
             site_comparison_rows=deps["site_comparison_rows"],
@@ -46,6 +48,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             SiteUpdateRequest=deps["SiteUpdateRequest"],
             UserUpsertRequest=deps["UserUpsertRequest"],
             SiteStorageRootUpdateRequest=deps["SiteStorageRootUpdateRequest"],
+            SiteMetadataRecoveryRequest=deps["SiteMetadataRecoveryRequest"],
         ),
         sites=SimpleNamespace(
             get_control_plane=deps["get_control_plane"],

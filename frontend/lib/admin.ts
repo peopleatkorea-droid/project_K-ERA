@@ -3,6 +3,7 @@ import { requestMainControlPlane } from "./main-control-plane-client";
 import type {
   AccessRequestRecord,
   AdminOverviewResponse,
+  AdminWorkspaceBootstrapResponse,
   AggregationRecord,
   AggregationRunResponse,
   InstitutionDirectorySyncResponse,
@@ -13,6 +14,7 @@ import type {
   ProjectRecord,
   ResearchRegistrySettingsResponse,
   SiteComparisonRecord,
+  SiteMetadataRecoveryResponse,
   StorageSettingsRecord,
 } from "./types";
 import { filterVisibleSites } from "./site-labels";
@@ -24,6 +26,24 @@ export async function fetchAccessRequests(token: string, statusFilter = "pending
 
 export async function fetchAdminOverview(token: string) {
   return requestMainControlPlane<AdminOverviewResponse>("/admin/overview", {}, token);
+}
+
+export async function fetchAdminWorkspaceBootstrap(
+  token: string,
+  options: {
+    site_id?: string;
+    scope?: "full" | "initial";
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.site_id) {
+    params.set("site_id", options.site_id);
+  }
+  if (options.scope && options.scope !== "full") {
+    params.set("scope", options.scope);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return requestMainControlPlane<AdminWorkspaceBootstrapResponse>(`/admin/workspace-bootstrap${suffix}`, {}, token);
 }
 
 export async function fetchInstitutionDirectoryStatus(token: string) {
@@ -156,6 +176,29 @@ export async function migrateAdminSiteStorageRoot(siteId: string, token: string,
     {
       method: "POST",
       body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function recoverAdminSiteMetadata(
+  siteId: string,
+  token: string,
+  payload: {
+    source?: "auto" | "backup" | "manifest";
+    force_replace?: boolean;
+    backup_path?: string | null;
+  } = {},
+) {
+  return request<SiteMetadataRecoveryResponse>(
+    `/api/admin/sites/${siteId}/metadata/recover`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source: "auto",
+        force_replace: true,
+        ...payload,
+      }),
     },
     token,
   );

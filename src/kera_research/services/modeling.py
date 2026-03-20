@@ -830,6 +830,7 @@ class ModelManager:
     def __init__(self) -> None:
         seed_everything()
         self.artifact_store = ModelArtifactStore()
+        self._model_cache: dict[tuple[str, str], nn.Module] = {}
 
     def is_dual_input_architecture(self, architecture: str | None) -> bool:
         normalized = str(architecture or "").strip().lower()
@@ -985,6 +986,36 @@ class ModelManager:
 
         return metadata
 
+    def baseline_model_settings(self, template: dict[str, Any]) -> dict[str, Any]:
+        architecture = str(template.get("architecture") or "").strip().lower()
+        requires_medsam_crop = bool(template.get("requires_medsam_crop", False))
+        crop_mode = str(template.get("crop_mode") or "").strip().lower()
+        if not crop_mode:
+            crop_mode = "automated" if requires_medsam_crop else "raw"
+        case_aggregation = str(template.get("case_aggregation") or "").strip()
+        if not case_aggregation:
+            case_aggregation = self.normalize_case_aggregation(None, architecture)
+        bag_level_value = template.get("bag_level")
+        bag_level = bool(bag_level_value) if bag_level_value is not None else architecture == "dinov2_mil"
+        training_input_policy = str(template.get("training_input_policy") or "").strip()
+        if not training_input_policy:
+            if crop_mode == "manual":
+                training_input_policy = "medsam_lesion_crop_only"
+            elif crop_mode == "paired":
+                training_input_policy = "medsam_cornea_plus_lesion_paired_fusion"
+            elif requires_medsam_crop or crop_mode in {"automated", "both"}:
+                training_input_policy = "medsam_cornea_crop_only"
+            else:
+                training_input_policy = "raw_or_model_defined"
+        return {
+            "architecture": architecture,
+            "requires_medsam_crop": requires_medsam_crop,
+            "crop_mode": crop_mode,
+            "case_aggregation": case_aggregation,
+            "bag_level": bag_level,
+            "training_input_policy": training_input_policy,
+        }
+
     def build_model(self, architecture: str) -> nn.Module:
         require_torch()
         if architecture == "cnn":
@@ -1026,6 +1057,7 @@ class ModelManager:
         require_torch()
         baselines: list[dict[str, Any]] = []
         for template in DEFAULT_GLOBAL_MODELS:
+            baseline_settings = self.baseline_model_settings(template)
             model_path = Path(template["model_path"])
             checkpoint_metadata: dict[str, Any] = {}
             if not model_path.exists():
@@ -1033,12 +1065,10 @@ class ModelManager:
                 model = self.build_model_pretrained(template["architecture"])
                 checkpoint_metadata = self.build_artifact_metadata(
                     architecture=template["architecture"],
-                    crop_mode="automated" if template.get("requires_medsam_crop", False) else "raw",
-                    training_input_policy=(
-                        "medsam_cornea_crop_only"
-                        if template.get("requires_medsam_crop", False)
-                        else "raw_or_model_defined"
-                    ),
+                    crop_mode=baseline_settings["crop_mode"],
+                    case_aggregation=baseline_settings["case_aggregation"],
+                    bag_level=baseline_settings["bag_level"],
+                    training_input_policy=baseline_settings["training_input_policy"],
                 )
                 torch.save(
                     {
@@ -1072,10 +1102,11 @@ class ModelManager:
                     "sha256": sha256_value,
                     "size_bytes": int(model_path.stat().st_size),
                     "source_provider": "local",
-                    "requires_medsam_crop": template.get("requires_medsam_crop", False),
-                    "training_input_policy": (
-                        "medsam_cornea_crop_only" if template.get("requires_medsam_crop", False) else "raw_or_model_defined"
-                    ),
+                    "requires_medsam_crop": baseline_settings["requires_medsam_crop"],
+                    "crop_mode": baseline_settings["crop_mode"],
+                    "case_aggregation": baseline_settings["case_aggregation"],
+                    "bag_level": baseline_settings["bag_level"],
+                    "training_input_policy": baseline_settings["training_input_policy"],
                     "preprocess": resolved_preprocess,
                     "preprocess_signature": resolved_signature,
                     "num_classes": DEFAULT_NUM_CLASSES,
@@ -1112,6 +1143,9 @@ class ModelManager:
         resolved_reference = self.resolve_model_reference(model_reference, allow_download=True)
         architecture = resolved_reference.get("architecture", "densenet121")
         model_path = resolved_reference["model_path"]
+        cache_key = (str(model_path), str(device))
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         checkpoint_metadata = self.validate_model_artifact(resolved_reference, checkpoint)
         model = self.build_model(architecture).to(device)
@@ -1123,6 +1157,7 @@ class ModelManager:
             checkpoint_metadata,
         )
         model.eval()
+        self._model_cache[cache_key] = model
         return model
 
     def _extract_state_dict_from_checkpoint(self, checkpoint: Any, architecture: str) -> dict[str, Any]:

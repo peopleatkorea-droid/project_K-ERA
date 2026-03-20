@@ -38,12 +38,19 @@ vi.mock("../lib/api", async () => {
   };
 });
 
+class MockIntersectionObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 describe("CaseWorkspace stability", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     window.localStorage.clear();
     window.history.replaceState(null, "", "/");
     vi.stubGlobal("scrollTo", vi.fn());
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
     URL.createObjectURL = vi.fn(() => "blob:preview-url");
     URL.revokeObjectURL = vi.fn();
 
@@ -212,5 +219,61 @@ describe("CaseWorkspace stability", () => {
     ).toBe(false);
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it("fetches patient images once when opening a saved case", async () => {
+    render(
+      <LocaleProvider>
+        <CaseWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 1,
+            n_visits: 1,
+            n_images: 1,
+            n_active_visits: 1,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          canOpenOperations
+          theme="light"
+          onSelectSite={vi.fn()}
+          onExportManifest={vi.fn()}
+          onLogout={vi.fn()}
+          onOpenOperations={vi.fn()}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /KERA-2026-001/i }));
+
+    await waitFor(() => {
+      expect(apiMocks.fetchImages).toHaveBeenCalledTimes(1);
+    });
+    expect(apiMocks.fetchImages).toHaveBeenCalledWith(
+      "SITE_A",
+      "test-token",
+      "KERA-2026-001",
+      undefined,
+      expect.any(AbortSignal),
+    );
   });
 });

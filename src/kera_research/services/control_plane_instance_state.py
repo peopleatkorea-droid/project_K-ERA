@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 
-from kera_research.config import BASE_DIR, BUILT_IN_SITE_ROOT_DIR, SITE_ROOT_DIR
+from kera_research.config import BASE_DIR, BUILT_IN_SITE_ROOT_DIR, SITE_ROOT_DIR, STORAGE_DIR, remap_bundle_absolute_path
 from kera_research.db import CONTROL_PLANE_ENGINE, app_settings, institution_directory
 from kera_research.domain import utc_now
 
@@ -30,6 +30,26 @@ class ControlPlaneInstanceStateFacade:
             candidate = (BASE_DIR / candidate).resolve()
         else:
             candidate = candidate.resolve()
+        return candidate
+
+    def _normalize_instance_storage_root_path(self, candidate: Path) -> Path:
+        looks_like_storage_bundle = candidate.name.strip().lower() == "kera_data" or any(
+            (candidate / child_name).exists() for child_name in ("sites", "control_plane", "models")
+        )
+        if looks_like_storage_bundle and candidate.name.strip().lower() != "sites":
+            return (candidate / "sites").resolve()
+        return candidate.resolve()
+
+    def _follow_moved_bundle_root(self, candidate: Path) -> Path:
+        if not os.getenv("KERA_STORAGE_DIR", "").strip():
+            return candidate
+        if STORAGE_DIR.name.strip().lower() != "kera_data":
+            return candidate
+        if candidate.exists():
+            return candidate
+        remapped = remap_bundle_absolute_path(candidate)
+        if remapped is not None and remapped.exists():
+            return remapped.resolve()
         return candidate
 
     def built_in_instance_storage_root(self) -> Path:
@@ -118,7 +138,9 @@ class ControlPlaneInstanceStateFacade:
         configured_default_root = str(self.configured_default_instance_storage_root())
         configured = self.get_app_setting(self.instance_storage_root_setting_key)
         if configured:
-            resolved_configured = str(self._resolve_storage_path(configured))
+            resolved_configured = str(
+                self._normalize_instance_storage_root_path(self._follow_moved_bundle_root(self._resolve_storage_path(configured)))
+            )
             if resolved_configured == built_in_root:
                 return "built_in_default"
             if resolved_configured == configured_default_root and os.getenv("KERA_STORAGE_DIR", "").strip():
@@ -131,7 +153,9 @@ class ControlPlaneInstanceStateFacade:
     def instance_storage_root(self) -> str:
         configured = self.get_app_setting(self.instance_storage_root_setting_key)
         if configured:
-            return str(self._resolve_storage_path(configured))
+            return str(
+                self._normalize_instance_storage_root_path(self._follow_moved_bundle_root(self._resolve_storage_path(configured)))
+            )
         return str(self.configured_default_instance_storage_root())
 
     def site_storage_root(self, site_id: str) -> str:

@@ -10,6 +10,7 @@ $apiCommandPatterns = @("kera_research.api.app:app")
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
 . (Join-Path $PSScriptRoot "dev_process_helpers.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
+[void](Initialize-KeraStorageDir -RepoRoot $repoRoot)
 
 if (-not $env:KERA_GOOGLE_CLIENT_ID -and $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
     $env:KERA_GOOGLE_CLIENT_ID = $env:NEXT_PUBLIC_GOOGLE_CLIENT_ID

@@ -483,11 +483,13 @@ def build_sites_router(support: Any) -> APIRouter:
     @router.get("/api/sites/{site_id}/validations")
     def list_site_validations(
         site_id: str,
+        limit: int | None = None,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> list[dict[str, Any]]:
         assert_site_access_only(user, site_id)
-        return site_level_validation_runs(cp.list_validation_runs(site_id=site_id))
+        normalized_limit = max(1, min(int(limit or 0), 100)) if limit else None
+        return site_level_validation_runs(cp.list_validation_runs(site_id=site_id, limit=normalized_limit))
 
     @router.get("/api/sites/{site_id}/validations/{validation_id}/cases")
     def list_validation_cases(

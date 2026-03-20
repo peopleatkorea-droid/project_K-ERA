@@ -5,7 +5,13 @@ from typing import Any
 
 from sqlalchemy import delete, func, select, update
 
-from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_EXPERIMENT_DIR, CONTROL_PLANE_REPORT_DIR
+from kera_research.config import (
+    BASE_DIR,
+    CONTROL_PLANE_CASE_DIR,
+    CONTROL_PLANE_EXPERIMENT_DIR,
+    CONTROL_PLANE_REPORT_DIR,
+    remap_bundle_paths_in_value,
+)
 from kera_research.db import CONTROL_PLANE_ENGINE, experiments, validation_cases, validation_runs
 from kera_research.domain import utc_now
 from kera_research.storage import read_json, write_json
@@ -19,6 +25,7 @@ class ControlPlaneResultsFacade:
         self,
         project_id: str | None = None,
         site_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         query = select(validation_runs)
         if project_id:
@@ -26,14 +33,78 @@ class ControlPlaneResultsFacade:
         if site_id:
             query = query.where(validation_runs.c.site_id == site_id)
         query = query.order_by(validation_runs.c.run_date.desc())
+        if isinstance(limit, int) and limit > 0:
+            query = query.limit(limit)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         runs: list[dict[str, Any]] = []
         for row in rows:
-            payload = dict(row["summary_json"] or {})
-            payload["case_predictions_path"] = row["case_predictions_path"]
+            payload = dict(remap_bundle_paths_in_value(dict(row["summary_json"] or {})))
+            payload["case_predictions_path"] = remap_bundle_paths_in_value(row["case_predictions_path"])
             runs.append(payload)
         return runs
+
+    def site_validation_site_summaries(self, site_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        aggregate_query = select(
+            validation_runs.c.site_id.label("site_id"),
+            func.count().label("run_count"),
+            func.avg(validation_runs.c.accuracy).label("accuracy"),
+            func.avg(validation_runs.c.sensitivity).label("sensitivity"),
+            func.avg(validation_runs.c.specificity).label("specificity"),
+            func.avg(validation_runs.c.F1).label("F1"),
+            func.avg(validation_runs.c.AUROC).label("AUROC"),
+        ).group_by(validation_runs.c.site_id)
+        latest_runs = (
+            select(
+                validation_runs.c.site_id.label("site_id"),
+                validation_runs.c.validation_id.label("validation_id"),
+                validation_runs.c.run_date.label("run_date"),
+                func.row_number()
+                .over(
+                    partition_by=validation_runs.c.site_id,
+                    order_by=validation_runs.c.run_date.desc(),
+                )
+                .label("row_number"),
+            )
+            .subquery()
+        )
+        latest_query = select(
+            latest_runs.c.site_id,
+            latest_runs.c.validation_id,
+            latest_runs.c.run_date,
+        ).where(latest_runs.c.row_number == 1)
+        if site_ids:
+            aggregate_query = aggregate_query.where(validation_runs.c.site_id.in_(site_ids))
+            latest_query = latest_query.where(latest_runs.c.site_id.in_(site_ids))
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            aggregate_rows = conn.execute(aggregate_query).mappings().all()
+            latest_rows = conn.execute(latest_query).mappings().all()
+        latest_by_site_id = {
+            str(row.get("site_id") or "").strip(): {
+                "latest_validation_id": row.get("validation_id"),
+                "latest_run_date": row.get("run_date"),
+            }
+            for row in latest_rows
+            if str(row.get("site_id") or "").strip()
+        }
+        summaries: list[dict[str, Any]] = []
+        for row in aggregate_rows:
+            site_id_value = str(row.get("site_id") or "").strip()
+            latest = latest_by_site_id.get(site_id_value, {})
+            summaries.append(
+                {
+                    "site_id": site_id_value,
+                    "run_count": int(row.get("run_count") or 0),
+                    "accuracy": round(float(row["accuracy"]), 4) if row.get("accuracy") is not None else None,
+                    "sensitivity": round(float(row["sensitivity"]), 4) if row.get("sensitivity") is not None else None,
+                    "specificity": round(float(row["specificity"]), 4) if row.get("specificity") is not None else None,
+                    "F1": round(float(row["F1"]), 4) if row.get("F1") is not None else None,
+                    "AUROC": round(float(row["AUROC"]), 4) if row.get("AUROC") is not None else None,
+                    "latest_validation_id": latest.get("latest_validation_id"),
+                    "latest_run_date": latest.get("latest_run_date"),
+                }
+            )
+        return summaries
 
     def validation_run_summary(
         self,
@@ -56,8 +127,8 @@ class ControlPlaneResultsFacade:
 
         latest_run = None
         if latest_row is not None:
-            latest_run = dict(latest_row["summary_json"] or {})
-            latest_run["case_predictions_path"] = latest_row["case_predictions_path"]
+            latest_run = dict(remap_bundle_paths_in_value(dict(latest_row["summary_json"] or {})))
+            latest_run["case_predictions_path"] = remap_bundle_paths_in_value(latest_row["case_predictions_path"])
         return {
             "count": total_count,
             "latest_run": latest_run,
@@ -89,7 +160,7 @@ class ControlPlaneResultsFacade:
             rows = conn.execute(query).mappings().all()
         merged_rows: list[dict[str, Any]] = []
         for row in rows:
-            payload = dict(row.get("payload_json") or {})
+            payload = dict(remap_bundle_paths_in_value(dict(row.get("payload_json") or {})))
             merged_rows.append(
                 {
                     **payload,
@@ -193,11 +264,14 @@ class ControlPlaneResultsFacade:
         case_path = CONTROL_PLANE_CASE_DIR / f"{validation_id}.json"
         saved = read_json(case_path, [])
         if isinstance(saved, list) and saved:
-            return saved
+            normalized_saved = remap_bundle_paths_in_value(saved)
+            if normalized_saved != saved:
+                write_json(case_path, normalized_saved)
+            return [dict(item) for item in normalized_saved if isinstance(item, dict)]
         rows = self.list_validation_cases(validation_id=validation_id)
         return [
             {
-                **dict(row.get("payload_json") or {}),
+                **dict(remap_bundle_paths_in_value(dict(row.get("payload_json") or {}))),
                 "validation_id": row["validation_id"],
                 "patient_reference_id": row["patient_reference_id"],
                 "case_reference_id": row["case_reference_id"],

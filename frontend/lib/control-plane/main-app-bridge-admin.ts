@@ -6,6 +6,8 @@ import type { Row } from "postgres";
 import type {
   AccessRequestRecord,
   AdminOverviewResponse,
+  AdminWorkspaceBootstrapResponse,
+  AggregationRecord,
   AuthUser,
   InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
@@ -16,6 +18,8 @@ import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
   ensureDefaultProject,
+  preloadAccessRequestLookups,
+  serializeAccessRequestRecordWithLookups,
   serializeAccessRequestRecord,
   serializeManagedSiteRecord,
   serializeProjectRecord,
@@ -25,8 +29,14 @@ import {
   upsertSiteRecord,
 } from "./main-app-bridge-records";
 import {
+  listMainAggregationsForUser,
+  listMainModelUpdatesForUser,
+  listMainModelVersionsForUser,
+} from "./main-app-bridge-models";
+import {
   buildLegacyAuthUser,
   canonicalUserRowById,
+  preloadManagedUserLookups,
   requireMainAppBridgeUser,
   serializeManagedUserRecord,
   syncCanonicalMemberships,
@@ -101,33 +111,58 @@ async function listReviewerAccessRequests(
   statusFilter: string | null,
 ): Promise<AccessRequestRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listReviewerAccessRequestsForUser(user, statusFilter);
+}
+
+async function listReviewerAccessRequestsForUser(
+  user: AuthUser,
+  statusFilter: string | null,
+): Promise<AccessRequestRecord[]> {
   assertAdminWorkspacePermission(user);
-  const sql = await controlPlaneSql();
-  const rows = await sql`
-    select
-      request_id,
-      user_id,
-      email,
-      requested_site_id,
-      requested_site_label,
-      requested_site_source,
-      requested_role,
-      message,
-      status,
-      reviewed_by,
-      reviewer_notes,
-      created_at,
-      reviewed_at
-    from access_requests
-    order by created_at desc
-  `;
-  const records = await Promise.all(rows.map((row) => serializeAccessRequestRecord(row)));
   const normalizedStatus = trimText(statusFilter);
+  const sql = await controlPlaneSql();
+  const rows = normalizedStatus
+    ? await sql`
+        select
+          request_id,
+          user_id,
+          email,
+          requested_site_id,
+          requested_site_label,
+          requested_site_source,
+          requested_role,
+          message,
+          status,
+          reviewed_by,
+          reviewer_notes,
+          created_at,
+          reviewed_at
+        from access_requests
+        where status = ${normalizedStatus}
+        order by created_at desc
+      `
+    : await sql`
+        select
+          request_id,
+          user_id,
+          email,
+          requested_site_id,
+          requested_site_label,
+          requested_site_source,
+          requested_role,
+          message,
+          status,
+          reviewed_by,
+          reviewer_notes,
+          created_at,
+          reviewed_at
+        from access_requests
+        order by created_at desc
+      `;
+  const lookups = await preloadAccessRequestLookups(rows);
+  const records = rows.map((row) => serializeAccessRequestRecordWithLookups(row, lookups));
   const permittedSiteIds = new Set(normalizeStringArray(user.site_ids));
   return records.filter((record) => {
-    if (normalizedStatus && record.status !== normalizedStatus) {
-      return false;
-    }
     if (user.role === "admin") {
       return true;
     }
@@ -425,6 +460,10 @@ export async function listMainAdminAccessRequests(
 
 export async function fetchMainAdminOverview(request: NextRequest): Promise<AdminOverviewResponse> {
   const { user } = await requireMainAppBridgeUser(request);
+  return fetchMainAdminOverviewForUser(user);
+}
+
+async function fetchMainAdminOverviewForUser(user: AuthUser): Promise<AdminOverviewResponse> {
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
   const [
@@ -469,6 +508,10 @@ export async function fetchMainAdminOverview(request: NextRequest): Promise<Admi
 
 export async function listMainUsers(request: NextRequest): Promise<ManagedUserRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainUsersForUser(user);
+}
+
+async function listMainUsersForUser(user: AuthUser): Promise<ManagedUserRecord[]> {
   assertPlatformAdmin(user);
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -488,7 +531,8 @@ export async function listMainUsers(request: NextRequest): Promise<ManagedUserRe
     from users
     order by lower(username) asc, created_at asc
   `;
-  return Promise.all(rows.map((row) => serializeManagedUserRecord(row)));
+  const lookups = await preloadManagedUserLookups(rows);
+  return Promise.all(rows.map((row) => serializeManagedUserRecord(row, lookups)));
 }
 
 export async function upsertMainUser(
@@ -633,6 +677,10 @@ export async function reviewMainAccessRequest(
 
 export async function listMainProjects(request: NextRequest): Promise<ProjectRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainProjectsForUser(user);
+}
+
+async function listMainProjectsForUser(user: AuthUser): Promise<ProjectRecord[]> {
   assertAdminWorkspacePermission(user);
   await ensureDefaultProject();
   const sql = await controlPlaneSql();
@@ -659,6 +707,13 @@ export async function listMainAdminSites(
   projectId?: string | null,
 ): Promise<ManagedSiteRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainAdminSitesForUser(user, projectId);
+}
+
+async function listMainAdminSitesForUser(
+  user: AuthUser,
+  projectId?: string | null,
+): Promise<ManagedSiteRecord[]> {
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
   const normalizedProjectId = trimText(projectId || "");
@@ -730,6 +785,10 @@ export async function updateMainAdminSite(
 
 export async function fetchMainInstitutionDirectoryStatus(request: NextRequest): Promise<InstitutionDirectorySyncResponse> {
   const { user } = await requireMainAppBridgeUser(request);
+  return fetchMainInstitutionDirectoryStatusForUser(user);
+}
+
+async function fetchMainInstitutionDirectoryStatusForUser(user: AuthUser): Promise<InstitutionDirectorySyncResponse> {
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -744,5 +803,77 @@ export async function fetchMainInstitutionDirectoryStatus(request: NextRequest):
     total_count: count,
     institutions_synced: count,
     synced_at: rows[0]?.synced_at ? new Date(rows[0].synced_at as string | Date).toISOString() : null,
+  };
+}
+
+export async function fetchMainAdminWorkspaceBootstrap(
+  request: NextRequest,
+  options: {
+    siteId?: string | null;
+    scope?: "full" | "initial";
+  } = {},
+): Promise<AdminWorkspaceBootstrapResponse> {
+  const { user } = await requireMainAppBridgeUser(request);
+  const normalizedSiteId = trimText(options.siteId);
+  const scope = options.scope === "initial" ? "initial" : "full";
+  if (scope === "initial") {
+    const [overview, projects, managedSites] = await Promise.all([
+      fetchMainAdminOverviewForUser(user),
+      listMainProjectsForUser(user),
+      listMainAdminSitesForUser(user),
+    ]);
+    return {
+      overview,
+      pending_requests: [],
+      approved_requests: [],
+      model_versions: [],
+      model_updates: [],
+      aggregations: [],
+      projects,
+      managed_sites: managedSites,
+      managed_users: [],
+      institution_sync_status: {
+        source: "hira",
+        institutions_synced: 0,
+        total_count: 0,
+        synced_at: null,
+      },
+    };
+  }
+  const [
+    overview,
+    pendingRequests,
+    approvedRequests,
+    modelVersions,
+    modelUpdates,
+    aggregations,
+    projects,
+    managedSites,
+    managedUsers,
+    institutionSyncStatus,
+  ] = await Promise.all([
+    fetchMainAdminOverviewForUser(user),
+    listReviewerAccessRequestsForUser(user, "pending"),
+    listReviewerAccessRequestsForUser(user, "approved"),
+    listMainModelVersionsForUser(user),
+    listMainModelUpdatesForUser(user, { siteId: normalizedSiteId || undefined }),
+    user.role === "admin" ? listMainAggregationsForUser(user) : Promise.resolve([] as AggregationRecord[]),
+    listMainProjectsForUser(user),
+    listMainAdminSitesForUser(user),
+    user.role === "admin" ? listMainUsersForUser(user) : Promise.resolve([] as ManagedUserRecord[]),
+    fetchMainInstitutionDirectoryStatusForUser(user),
+  ]);
+
+  return {
+    overview,
+    pending_requests: pendingRequests,
+    approved_requests: approvedRequests,
+    model_versions: modelVersions,
+    model_updates: modelUpdates,
+    aggregations,
+    projects,
+    managed_sites: managedSites,
+    managed_users: managedUsers,
+    institution_sync_status: institutionSyncStatus,
   };
 }

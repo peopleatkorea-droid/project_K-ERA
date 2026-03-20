@@ -61,6 +61,30 @@ export type StorageSettingsRecord = {
   uses_custom_root: boolean;
 };
 
+export type SiteMetadataRecoveryResponse = {
+  site_id: string;
+  site_dir: string;
+  manifest_path: string;
+  metadata_backup_path: string;
+  source: "backup" | "manifest";
+  restored_patients: number;
+  restored_visits: number;
+  restored_images: number;
+};
+
+export type AdminWorkspaceBootstrapResponse = {
+  overview: AdminOverviewResponse;
+  pending_requests: AccessRequestRecord[];
+  approved_requests: AccessRequestRecord[];
+  model_versions: ModelVersionRecord[];
+  model_updates: ModelUpdateRecord[];
+  aggregations: AggregationRecord[];
+  projects: ProjectRecord[];
+  managed_sites: ManagedSiteRecord[];
+  managed_users: ManagedUserRecord[];
+  institution_sync_status: InstitutionDirectorySyncResponse;
+};
+
 export type AccessRequestRecord = {
   request_id: string;
   user_id: string;

@@ -37,6 +37,8 @@ def build_admin_router(support: Any) -> APIRouter:
     visible_model_updates = support.visible_model_updates
     is_pending_model_update = support.is_pending_model_update
     normalize_storage_root = support.normalize_storage_root
+    normalize_default_storage_root = support.normalize_default_storage_root
+    invalidate_site_storage_root_cache = support.invalidate_site_storage_root_cache
     embedded_review_artifact_response = support.embedded_review_artifact_response
     load_approval_report = support.load_approval_report
     site_comparison_rows = support.site_comparison_rows
@@ -56,6 +58,7 @@ def build_admin_router(support: Any) -> APIRouter:
     SiteUpdateRequest = support.SiteUpdateRequest
     UserUpsertRequest = support.UserUpsertRequest
     SiteStorageRootUpdateRequest = support.SiteStorageRootUpdateRequest
+    SiteMetadataRecoveryRequest = support.SiteMetadataRecoveryRequest
 
     @router.get("/api/admin/access-requests")
     def list_access_requests(
@@ -293,8 +296,9 @@ def build_admin_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         try:
-            normalized_root = normalize_storage_root(payload.storage_root)
+            normalized_root = normalize_default_storage_root(payload.storage_root)
             cp.set_app_setting("instance_storage_root", str(normalized_root))
+            invalidate_site_storage_root_cache()
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         default_root = str(cp.default_instance_storage_root())
@@ -843,5 +847,47 @@ def build_admin_router(support: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return updated_site
+
+    @router.post("/api/admin/sites/{site_id}/metadata/recover")
+    def recover_site_metadata(
+        site_id: str,
+        payload: SiteMetadataRecoveryRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        normalized_backup_path = str(payload.backup_path or "").strip() or None
+        try:
+            if payload.source == "backup":
+                backup_candidate = Path(normalized_backup_path).expanduser() if normalized_backup_path else site_store.metadata_backup_path()
+                if not backup_candidate.exists():
+                    raise ValueError(f"Backup file not found: {backup_candidate}")
+                result = site_store.recover_metadata(
+                    prefer_backup=True,
+                    force_replace=payload.force_replace,
+                    backup_path=str(backup_candidate),
+                )
+            elif payload.source == "manifest":
+                result = site_store.recover_metadata(
+                    prefer_backup=False,
+                    force_replace=payload.force_replace,
+                    backup_path=normalized_backup_path,
+                )
+            else:
+                result = site_store.recover_metadata(
+                    prefer_backup=True,
+                    force_replace=payload.force_replace,
+                    backup_path=normalized_backup_path,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {
+            "site_id": site_store.site_id,
+            "site_dir": str(site_store.site_dir),
+            "manifest_path": str(site_store.manifest_path),
+            "metadata_backup_path": str(site_store.metadata_backup_path()),
+            **result,
+        }
 
     return router

@@ -16,8 +16,27 @@ import type {
   ValidationCasePredictionRecord,
 } from "./types";
 
-export async function fetchSiteValidations(siteId: string, token: string, signal?: AbortSignal) {
-  return request<SiteValidationRunRecord[]>(`/api/sites/${siteId}/validations`, { signal }, token);
+export async function fetchSiteValidations(
+  siteId: string,
+  token: string,
+  optionsOrSignal:
+    | AbortSignal
+    | {
+        signal?: AbortSignal;
+        limit?: number;
+      }
+    | undefined = {},
+) {
+  const options =
+    optionsOrSignal instanceof AbortSignal
+      ? { signal: optionsOrSignal }
+      : optionsOrSignal ?? {};
+  const params = new URLSearchParams();
+  if (typeof options.limit === "number") {
+    params.set("limit", String(options.limit));
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<SiteValidationRunRecord[]>(`/api/sites/${siteId}/validations${suffix}`, { signal: options.signal }, token);
 }
 
 export async function fetchValidationCases(

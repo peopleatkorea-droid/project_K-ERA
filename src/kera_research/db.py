@@ -21,9 +21,23 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from kera_research.config import PATIENT_REFERENCE_SALT, STORAGE_DIR
+
+
+def _configure_sqlite_wal(dbapi_conn: object, _connection_record: object) -> None:
+    """Enable WAL journal mode for SQLite to allow concurrent reads during writes."""
+    cursor = dbapi_conn.cursor()  # type: ignore[attr-defined]
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
+
+def _apply_sqlite_wal(engine: Engine, database_url: str) -> None:
+    if database_url.startswith("sqlite"):
+        event.listen(engine, "connect", _configure_sqlite_wal)
 from kera_research.domain import make_patient_reference_id, visit_index_from_label
 
 
@@ -108,6 +122,8 @@ DATA_PLANE_ENGINE: Engine = create_engine(
     connect_args=_connect_args_for(DATA_PLANE_DATABASE_URL),
     **_engine_kwargs_for(DATA_PLANE_DATABASE_URL),
 )
+_apply_sqlite_wal(CONTROL_PLANE_ENGINE, CONTROL_PLANE_DATABASE_URL)
+_apply_sqlite_wal(DATA_PLANE_ENGINE, DATA_PLANE_DATABASE_URL)
 ENGINE = CONTROL_PLANE_ENGINE
 CONTROL_PLANE_METADATA = MetaData()
 DATA_PLANE_METADATA = MetaData()
@@ -394,6 +410,7 @@ images = Table(
     Column("has_medsam_mask", Boolean, nullable=False, default=False),
     Column("has_lesion_crop", Boolean, nullable=False, default=False),
     Column("has_lesion_mask", Boolean, nullable=False, default=False),
+    Column("quality_scores", JSON, nullable=True),
     Column("artifact_status_updated_at", String(64), nullable=True),
     Column("uploaded_at", String(64), nullable=False),
 )
@@ -639,6 +656,8 @@ def _migrate_data_plane_schema() -> None:
                     conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_mask BOOLEAN NOT NULL DEFAULT 0"))
                 else:
                     conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_mask BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "quality_scores" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN quality_scores JSON"))
             if "artifact_status_updated_at" not in image_columns:
                 conn.execute(text("ALTER TABLE images ADD COLUMN artifact_status_updated_at VARCHAR(64)"))
             conn.execute(

@@ -15,6 +15,7 @@ from kera_research.config import (
     MODEL_DIR,
     MODEL_DOWNLOAD_TIMEOUT_SECONDS,
     MODEL_KEEP_VERSIONS,
+    resolve_portable_path,
 )
 from kera_research.services.onedrive_publisher import OneDrivePublisher
 from kera_research.storage import ensure_dir, read_json, write_json
@@ -51,9 +52,11 @@ class ModelArtifactStore:
     ) -> Path:
         local_path = str(model_reference.get("model_path") or "").strip()
         if local_path:
-            candidate = Path(local_path).expanduser()
+            candidate, remapped = resolve_portable_path(local_path, require_exists=True)
             if candidate.exists():
                 return candidate.resolve()
+            if remapped:
+                local_path = str(candidate)
 
         cache_path = self._cache_path(model_reference)
         expected_sha = str(model_reference.get("sha256") or "").strip().lower()

@@ -1074,9 +1074,7 @@ export function CaseWorkspace({
     setPatientVisitGallery,
     panelBusy,
     patientVisitGalleryBusy,
-    activityBusy,
     siteActivity,
-    setSiteActivity,
     siteValidationBusy,
     setSiteValidationBusy,
     siteValidationRuns,
@@ -1090,11 +1088,11 @@ export function CaseWorkspace({
     loadCaseHistory,
     loadSiteActivity,
     loadSiteValidationRuns,
-    ensureSiteActivityLoaded,
     ensureSiteValidationRunsLoaded,
     ensureSiteModelVersionsLoaded,
   } = useCaseWorkspaceSiteData({
     selectedSiteId,
+    railView,
     token,
     showOnlyMine,
     locale,
@@ -2132,7 +2130,7 @@ export function CaseWorkspace({
       });
       setContributionResult(result);
       await onSiteDataChanged(selectedSiteId);
-      await loadCaseHistory(selectedSiteId, selectedCase.patient_id, selectedCase.visit_date);
+      await loadCaseHistory(selectedSiteId, selectedCase.patient_id, selectedCase.visit_date, { forceRefresh: true });
       await loadSiteActivity(selectedSiteId);
       setCompletionState({
         kind: "contributed",
@@ -2500,6 +2498,17 @@ export function CaseWorkspace({
     setPatientListPage(1);
   }, [selectedSiteId]);
 
+  useEffect(() => {
+    setMedsamArtifactStatus(null);
+    setMedsamArtifactStatusBusy(false);
+    setMedsamArtifactItems([]);
+    setMedsamArtifactItemsBusy(false);
+    setMedsamArtifactActiveStatus(null);
+    setMedsamArtifactPage(1);
+    setMedsamArtifactTotalCount(0);
+    setMedsamArtifactTotalPages(1);
+  }, [selectedSiteId, showOnlyMine]);
+
   const normalizedPatientListSearch = deferredSearch.trim();
   useEffect(() => {
     if (!selectedSiteId) {
@@ -2565,39 +2574,6 @@ export function CaseWorkspace({
       controller.abort();
     };
   }, [selectedSiteId, token, showOnlyMine, patientListPage, normalizedPatientListSearch, railView, describeError, copy.unableLoadPatientList, setToast]);
-
-  useEffect(() => {
-    if (!selectedSiteId || railView !== "patients") {
-      return;
-    }
-    let cancelled = false;
-    setMedsamArtifactStatusBusy(true);
-    void fetchMedsamArtifactStatus(selectedSiteId, token, {
-      mine: showOnlyMine,
-      refresh: true,
-    })
-      .then((nextStatus) => {
-        if (!cancelled) {
-          setMedsamArtifactStatus(nextStatus);
-        }
-      })
-      .catch((nextError) => {
-        if (!cancelled) {
-          setToast({
-            tone: "error",
-            message: describeError(nextError, pick(locale, "Unable to load artifact backlog.", "아티팩트 백로그를 불러오지 못했습니다.")),
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setMedsamArtifactStatusBusy(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSiteId, token, showOnlyMine, railView, describeError, locale, setToast]);
 
   useEffect(() => {
     if (!selectedSiteId || railView !== "patients" || !medsamArtifactActiveStatus) {
@@ -2697,69 +2673,72 @@ export function CaseWorkspace({
         .filter((item) => item.patient_id === selectedCase.patient_id)
         .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))
     : [];
-  const patientListThumbKey = patientListRows
-    .map((row) => `${row.patient_id}:${row.representative_thumbnails.map((item) => item.image_id).join(",")}`)
-    .join("|");
   useEffect(() => {
-    if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
+    if (!selectedSiteId || railView !== "patients") {
       setPatientListThumbs({});
-      return;
     }
-    const currentSiteId = selectedSiteId;
-    let cancelled = false;
-    const controller = new AbortController();
-    const buildRowThumbnails = (row: PatientListRow): PatientListThumbnail[] =>
-      row.representative_thumbnails.map((item) => ({
-        ...item,
-        preview_url: patientListThumbUrlCacheRef.current.get(item.image_id) ?? null,
-      }));
+  }, [railView, selectedSiteId]);
 
-    async function loadPatientListThumbs() {
-      setPatientListThumbs(
-        Object.fromEntries(
-          patientListRows.map((row) => [row.patient_id, buildRowThumbnails(row)]),
-        ) as Record<string, PatientListThumbnail[]>,
-      );
-      await Promise.all(
-        patientListRows.map(async (row) => {
-          const [primaryThumb, ...secondaryThumbs] = row.representative_thumbnails;
-          if (primaryThumb && !patientListThumbUrlCacheRef.current.has(primaryThumb.image_id)) {
-            await loadPatientListThumbUrl(currentSiteId, primaryThumb.image_id, controller.signal);
-            if (cancelled) {
-              return;
-            }
-            setPatientListThumbs((prev) => ({
-              ...prev,
-              [row.patient_id]: buildRowThumbnails(row),
-            }));
-          }
+  const handlePatientRowVisible = useCallback(
+    (patientId: string) => {
+      if (!selectedSiteId || railView !== "patients") {
+        return;
+      }
+      const currentSiteId = selectedSiteId;
+      const row = patientListRows.find((r) => r.patient_id === patientId);
+      if (!row) {
+        return;
+      }
+      const buildRowThumbnails = (): PatientListThumbnail[] =>
+        row.representative_thumbnails.map((item) => ({
+          ...item,
+          preview_url: patientListThumbUrlCacheRef.current.get(item.image_id) ?? null,
+        }));
 
-          const missingSecondaryThumbs = secondaryThumbs.filter(
-            (item) => !patientListThumbUrlCacheRef.current.has(item.image_id),
-          );
-          if (missingSecondaryThumbs.length === 0) {
-            return;
-          }
-          await Promise.allSettled(
-            missingSecondaryThumbs.map((item) =>
-              loadPatientListThumbUrl(currentSiteId, item.image_id, controller.signal),
-            ),
-          );
-          if (!cancelled) {
-            setPatientListThumbs((prev) => ({
-              ...prev,
-              [row.patient_id]: buildRowThumbnails(row),
-            }));
-          }
-        }),
+      const allAlreadyCached = row.representative_thumbnails.every((item) =>
+        patientListThumbUrlCacheRef.current.has(item.image_id),
       );
-    }
-    void loadPatientListThumbs();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [patientListThumbKey, railView, selectedSiteId, token]);
+      if (allAlreadyCached) {
+        return;
+      }
+
+      // Initialise placeholders for this row if not already present
+      setPatientListThumbs((prev) => {
+        if (prev[patientId]) {
+          return prev;
+        }
+        return { ...prev, [patientId]: buildRowThumbnails() };
+      });
+
+      void (async () => {
+        const [primaryThumb, ...secondaryThumbs] = row.representative_thumbnails;
+        if (primaryThumb && !patientListThumbUrlCacheRef.current.has(primaryThumb.image_id)) {
+          await loadPatientListThumbUrl(currentSiteId, primaryThumb.image_id);
+          setPatientListThumbs((prev) => ({
+            ...prev,
+            [patientId]: buildRowThumbnails(),
+          }));
+        }
+
+        const missingSecondaryThumbs = secondaryThumbs.filter(
+          (item) => !patientListThumbUrlCacheRef.current.has(item.image_id),
+        );
+        if (missingSecondaryThumbs.length === 0) {
+          return;
+        }
+        await Promise.allSettled(
+          missingSecondaryThumbs.map((item) =>
+            loadPatientListThumbUrl(currentSiteId, item.image_id),
+          ),
+        );
+        setPatientListThumbs((prev) => ({
+          ...prev,
+          [patientId]: buildRowThumbnails(),
+        }));
+      })();
+    },
+    [selectedSiteId, railView, patientListRows],
+  );
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
@@ -2775,17 +2754,13 @@ export function CaseWorkspace({
     }
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
-      void Promise.all([
-        ensureSiteActivityLoaded(selectedSiteId, controller.signal),
-        ensureSiteValidationRunsLoaded(selectedSiteId, controller.signal),
-      ]);
+      void ensureSiteValidationRunsLoaded(selectedSiteId, controller.signal);
     }, 120);
     return () => {
       window.clearTimeout(timeoutId);
       controller.abort();
     };
   }, [
-    ensureSiteActivityLoaded,
     ensureSiteValidationRunsLoaded,
     isAuthoringCanvas,
     patientListLoading,
@@ -2946,10 +2921,12 @@ export function CaseWorkspace({
           )
         : pick(
             locale,
-            "A structured document canvas for one clinical case. Capture the intake, image board, and submission state without the dashboard noise.",
-            "한 건의 임상 케이스를 위한 구조화 문서 캔버스입니다. 대시보드 소음을 줄이고 intake, 이미지 보드, 제출 상태에 집중합니다."
+            "Capture intake, images, and submission for one case.",
+            "한 케이스의 intake, 이미지, 제출 상태를 정리합니다."
           );
-  const showSecondaryPanel = isAuthoringCanvas || Boolean(selectedCase);
+  const showSecondaryPanel = railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
+  const showPatientListSidebar = railView === "patients";
+  const mainLayoutClass = showSecondaryPanel || showPatientListSidebar ? workspaceCenterClass : "grid gap-6";
 
   return (
     <main className={workspaceShellClass} data-workspace-theme={theme}>
@@ -3058,56 +3035,6 @@ export function CaseWorkspace({
             </div>
           </Card>
         ) : (
-          <>
-            <Card as="section" variant="nested" className={railSectionClass}>
-              <div className={railSectionHeadClass}>
-                <div className="grid gap-1">
-                  <span className={railLabelClass}>{pick(locale, "Activity", "활동")}</span>
-                  <p className="m-0 text-sm leading-6 text-muted">
-                    {pick(locale, "Recent validation and contribution flow", "최근 검증 및 기여 흐름")}
-                  </p>
-                </div>
-                <div className={railSummaryClass}>
-                  <strong className={railSummaryValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
-                  <span className={railSummaryMetaClass}>
-                    {activityBusy ? pick(locale, "syncing", "동기화 중") : pick(locale, "pending", "대기")}
-                  </span>
-                </div>
-              </div>
-              <MetricGrid className={railMetricGridClass} columns={2}>
-                <div className={railMetricCardClass}>
-                  <strong className={railMetricValueClass}>{siteActivity?.pending_updates ?? 0}</strong>
-                  <span className={railMetricLabelClass}>{pick(locale, "pending deltas", "대기 중 delta")}</span>
-                </div>
-                <div className={railMetricCardClass}>
-                  <strong className={railMetricValueClass}>{siteActivity?.recent_validations.length ?? 0}</strong>
-                  <span className={railMetricLabelClass}>{pick(locale, "recent validations", "최근 검증")}</span>
-                </div>
-              </MetricGrid>
-              <div className="mt-4 grid gap-3">
-                {siteActivity?.recent_validations.slice(0, 2).map((item) => (
-                  <div key={item.validation_id} className={railActivityItemClass}>
-                    <strong>{item.model_version}</strong>
-                    <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
-                    <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${formatProbability(item.accuracy, common.notAvailable)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
-                  </div>
-                ))}
-                {siteActivity?.recent_contributions.slice(0, 2).map((item) => (
-                  <div key={item.contribution_id} className={railActivityItemClass}>
-                    <strong>{formatPublicAlias(item.public_alias, locale) ?? common.notAvailable}</strong>
-                    <span>{formatDateTime(item.created_at, localeTag, common.notAvailable)}</span>
-                    <span>
-                      {item.update_status ?? pick(locale, "queued", "?湲곗뿴 ?깅줉")}
-                      {item.case_reference_id ? ` · ${item.case_reference_id}` : ""}
-                    </span>
-                  </div>
-                ))}
-                {!activityBusy && !siteActivity?.recent_validations.length && !siteActivity?.recent_contributions.length ? (
-                  <div className={emptySurfaceClass}>{pick(locale, "No hospital activity recorded yet.", "?꾩쭅 湲곕줉??蹂묒썝 ?쒕룞???놁뒿?덈떎.")}</div>
-                ) : null}
-              </div>
-            </Card>
-
             <Card as="section" variant="nested" className={railSectionClass}>
               <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
                 <div className="grid gap-1">
@@ -3164,7 +3091,6 @@ export function CaseWorkspace({
               </div>
               {!canRunValidation ? <p className={railCopyClass}>{pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "酉곗뼱 怨꾩젙? 吏?쒕쭔 ?뺤씤?????덇퀬 蹂묒썝 寃利앹? ?ㅽ뻾?????놁뒿?덈떎.")}</p> : null}
             </Card>
-          </>
         )}
 
       </aside>
@@ -3272,60 +3198,65 @@ export function CaseWorkspace({
           </div>
         </header>
 
-        <div className={showSecondaryPanel ? workspaceCenterClass : "grid gap-6"}>
+        <div className={mainLayoutClass}>
           {railView === "patients" ? (
-            <div className="grid gap-6">
-              <MedsamArtifactBacklogPanel
-                locale={locale}
-                pick={pick}
-                medsamArtifactStatus={medsamArtifactStatus}
-                medsamArtifactStatusBusy={medsamArtifactStatusBusy}
-                medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
-                medsamArtifactActiveStatus={medsamArtifactActiveStatus}
-                canBackfillMedsamArtifacts={canRunValidation}
-                onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
-                onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
-                onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
-                onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
-              />
-              <PatientListBoard
-                locale={locale}
-                localeTag={localeTag}
-                commonNotAvailable={common.notAvailable}
-                selectedSiteLabel={selectedSiteLabel}
-                selectedPatientId={selectedCase?.patient_id}
-                patientListRows={patientListRows}
-                patientListTotalCount={patientListTotalCount}
-                patientListPage={safePage}
-                patientListTotalPages={patientListTotalPages}
-                patientListThumbsByPatient={patientListThumbs}
-                caseSearch={caseSearch}
-                showOnlyMine={showOnlyMine}
-                casesLoading={patientListLoading}
-                copyPatients={copy.patients}
-                copyAllRecords={copy.allRecords}
-                copyMyPatientsOnly={copy.myPatientsOnly}
-                copyLoadingSavedCases={copy.loadingSavedCases}
-                pick={pick}
-                translateOption={translateOption}
-                displayVisitReference={displayVisitReference}
-                formatDateTime={formatDateTime}
-                onSearchChange={handlePatientListSearchChange}
-                onShowOnlyMineChange={handlePatientScopeChange}
-                onPageChange={handlePatientListPageChange}
-                onOpenSavedCase={openSavedCase}
-                medsamArtifactActiveStatus={medsamArtifactActiveStatus}
-                medsamArtifactScope={medsamArtifactScope}
-                medsamArtifactItems={medsamArtifactItems}
-                medsamArtifactItemsBusy={medsamArtifactItemsBusy}
-                medsamArtifactPage={medsamArtifactPage}
-                medsamArtifactTotalCount={medsamArtifactTotalCount}
-                medsamArtifactTotalPages={medsamArtifactTotalPages}
-                onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
-                onMedsamArtifactScopeChange={handleMedsamArtifactScopeChange}
-                onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
-              />
-            </div>
+            <>
+              <div className="order-2 xl:order-1">
+                <PatientListBoard
+                  locale={locale}
+                  localeTag={localeTag}
+                  commonNotAvailable={common.notAvailable}
+                  selectedSiteLabel={selectedSiteLabel}
+                  selectedPatientId={selectedCase?.patient_id}
+                  patientListRows={patientListRows}
+                  patientListTotalCount={patientListTotalCount}
+                  patientListPage={safePage}
+                  patientListTotalPages={patientListTotalPages}
+                  patientListThumbsByPatient={patientListThumbs}
+                  caseSearch={caseSearch}
+                  showOnlyMine={showOnlyMine}
+                  casesLoading={patientListLoading}
+                  copyPatients={copy.patients}
+                  copyAllRecords={copy.allRecords}
+                  copyMyPatientsOnly={copy.myPatientsOnly}
+                  copyLoadingSavedCases={copy.loadingSavedCases}
+                  pick={pick}
+                  translateOption={translateOption}
+                  displayVisitReference={displayVisitReference}
+                  formatDateTime={formatDateTime}
+                  onSearchChange={handlePatientListSearchChange}
+                  onShowOnlyMineChange={handlePatientScopeChange}
+                  onPageChange={handlePatientListPageChange}
+                  onOpenSavedCase={openSavedCase}
+                  medsamArtifactActiveStatus={medsamArtifactActiveStatus}
+                  medsamArtifactScope={medsamArtifactScope}
+                  medsamArtifactItems={medsamArtifactItems}
+                  medsamArtifactItemsBusy={medsamArtifactItemsBusy}
+                  medsamArtifactPage={medsamArtifactPage}
+                  medsamArtifactTotalCount={medsamArtifactTotalCount}
+                  medsamArtifactTotalPages={medsamArtifactTotalPages}
+                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
+                  onMedsamArtifactScopeChange={handleMedsamArtifactScopeChange}
+                  onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
+                  onRowVisible={handlePatientRowVisible}
+                />
+              </div>
+              <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
+                <MedsamArtifactBacklogPanel
+                  locale={locale}
+                  pick={pick}
+                  medsamArtifactStatus={medsamArtifactStatus}
+                  medsamArtifactStatusBusy={medsamArtifactStatusBusy}
+                  medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
+                  medsamArtifactActiveStatus={medsamArtifactActiveStatus}
+                  canBackfillMedsamArtifacts={canRunValidation}
+                  onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
+                  onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
+                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
+                  onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
+                />
+              </aside>
+            </>
           ) : selectedCase ? (
           <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
             <SavedCaseOverview

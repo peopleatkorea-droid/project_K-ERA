@@ -12,6 +12,9 @@ from kera_research.storage import ensure_dir, read_json, write_json
 class FaissCaseIndexManager:
     def __init__(self) -> None:
         self._faiss: Any | None = None
+        # Maps index_path → (loaded_index, mtime, cases) for in-memory reuse.
+        # Invalidated automatically when rebuild_index() rewrites the file.
+        self._index_cache: dict[str, tuple[Any, float, list]] = {}
 
     def _ensure_faiss(self) -> Any:
         if self._faiss is not None:
@@ -103,6 +106,7 @@ class FaissCaseIndexManager:
         index = faiss.IndexFlatIP(dimension)
         index.add(matrix)
         faiss.write_index(index, str(index_path))
+        self._index_cache.pop(str(index_path), None)
         write_json(
             metadata_path,
             {
@@ -134,11 +138,19 @@ class FaissCaseIndexManager:
         index_path, metadata_path = self._index_paths(site_store, model_version_id, backend)
         if not (index_path.exists() and metadata_path.exists()):
             raise FileNotFoundError("FAISS index is not available.")
-        metadata = read_json(metadata_path, {})
-        cases = list(metadata.get("cases") or [])
-        if not cases:
+        cache_key = str(index_path)
+        mtime = index_path.stat().st_mtime
+        cache_entry = self._index_cache.get(cache_key)
+        if cache_entry is None or cache_entry[1] != mtime:
+            metadata = read_json(metadata_path, {})
+            cases = list(metadata.get("cases") or [])
+            loaded_index = faiss.read_index(cache_key) if cases else None
+            self._index_cache[cache_key] = (loaded_index, mtime, cases)
+        else:
+            loaded_index, _, cases = cache_entry
+        if not cases or loaded_index is None:
             return []
-        index = faiss.read_index(str(index_path))
+        index = loaded_index
         query = np.asarray(query_embedding, dtype=np.float32).reshape(1, -1)
         faiss.normalize_L2(query)
         limit = max(1, min(int(top_k or 1), len(cases)))

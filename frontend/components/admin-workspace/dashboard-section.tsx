@@ -7,6 +7,7 @@ import { pick, type Locale } from "../../lib/i18n";
 import {
   type AiClinicEmbeddingStatusResponse,
   type SiteComparisonRecord,
+  type SiteActivityResponse,
   type SiteValidationRunRecord,
   type ValidationCasePredictionRecord,
 } from "../../lib/api";
@@ -49,6 +50,8 @@ type DashboardSectionProps = {
   notAvailableLabel: string;
   selectedSiteId: string | null;
   selectedSiteLabel: string | null;
+  siteActivity: SiteActivityResponse | null;
+  siteActivityBusy: boolean;
   selectedValidationRun: SiteValidationRunRecord | null;
   validationExportBusy: boolean;
   siteValidationBusy: boolean;
@@ -190,6 +193,8 @@ export function DashboardSection({
   notAvailableLabel,
   selectedSiteId,
   selectedSiteLabel,
+  siteActivity,
+  siteActivityBusy,
   selectedValidationRun,
   validationExportBusy,
   siteValidationBusy,
@@ -344,6 +349,72 @@ export function DashboardSection({
               )}
             </Panel>
           </div>
+          <Panel
+            title={pick(locale, "Hospital activity", "병원 활동")}
+            subtitle={
+              siteActivityBusy
+                ? loadingLabel
+                : `${siteActivity?.pending_updates ?? 0} ${pick(locale, "pending", "대기")}`
+            }
+          >
+            {siteActivity ? (
+              <div className="grid gap-4">
+                <Metrics
+                  columns={3}
+                  items={[
+                    { value: siteActivity.pending_updates, label: pick(locale, "pending updates", "대기 업데이트") },
+                    { value: siteActivity.recent_validations.length, label: pick(locale, "recent validations", "최근 검증") },
+                    { value: siteActivity.recent_contributions.length, label: pick(locale, "recent contributions", "최근 기여") },
+                  ]}
+                />
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <div className="grid gap-3">
+                    {siteActivity.recent_validations.length ? (
+                      siteActivity.recent_validations.slice(0, 3).map((item) => (
+                        <Card key={item.validation_id} as="article" variant="panel" className="grid gap-2.5 p-4">
+                          <strong className="text-sm font-semibold text-ink">{item.model_version}</strong>
+                          <DetailRow
+                            items={[
+                              formatDateTime(item.run_date),
+                              typeof item.accuracy === "number"
+                                ? `${pick(locale, "Acc", "정확도")} ${formatMetric(item.accuracy, notAvailableLabel)}`
+                                : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`,
+                            ]}
+                          />
+                        </Card>
+                      ))
+                    ) : (
+                      <EmptyState>{pick(locale, "No recent validation activity yet.", "최근 검증 기록이 아직 없습니다.")}</EmptyState>
+                    )}
+                  </div>
+                  <div className="grid gap-3">
+                    {siteActivity.recent_contributions.length ? (
+                      siteActivity.recent_contributions.slice(0, 3).map((item) => (
+                        <Card key={item.contribution_id} as="article" variant="panel" className="grid gap-2.5 p-4">
+                          <strong className="text-sm font-semibold text-ink">{item.public_alias || notAvailableLabel}</strong>
+                          <DetailRow
+                            items={[
+                              formatDateTime(item.created_at),
+                              item.update_status ?? pick(locale, "queued", "대기"),
+                              item.case_reference_id ? `ID ${item.case_reference_id}` : null,
+                            ]}
+                          />
+                        </Card>
+                      ))
+                    ) : (
+                      <EmptyState>{pick(locale, "No recent contribution activity yet.", "최근 기여 기록이 아직 없습니다.")}</EmptyState>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <EmptyState>
+                {siteActivityBusy
+                  ? loadingLabel
+                  : pick(locale, "No hospital activity is available yet.", "병원 활동 데이터가 아직 없습니다.")}
+              </EmptyState>
+            )}
+          </Panel>
           <Panel
             title={pick(locale, "AI Clinic embedding status", "AI Clinic 임베딩 상태")}
             subtitle={embeddingStatus?.model_version.version_name ?? currentModelVersionName ?? notAvailableLabel}

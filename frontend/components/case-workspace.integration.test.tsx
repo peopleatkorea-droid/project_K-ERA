@@ -6,6 +6,19 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { LocaleProvider } from "../lib/i18n";
 import { CaseWorkspace } from "./case-workspace";
 
+class MockIntersectionObserver {
+  readonly root = null;
+  readonly rootMargin = "";
+  readonly thresholds = [];
+
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+
 const apiMocks = vi.hoisted(() => ({
   createPatient: vi.fn(),
   updatePatient: vi.fn(),
@@ -75,6 +88,7 @@ describe("CaseWorkspace integration", () => {
     window.history.replaceState(null, "", "/");
     vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("scrollTo", vi.fn());
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
     URL.createObjectURL = vi.fn(() => "blob:preview-url");
     URL.revokeObjectURL = vi.fn();
 
@@ -550,11 +564,15 @@ describe("CaseWorkspace integration", () => {
 
   async function openSavedCase(patientId = "KERA-2026-001") {
     await screen.findByText("Patient list");
-    const caseButton = (await screen.findAllByRole("button")).find(
-      (button) =>
-        button.textContent?.includes(patientId) &&
-        button.textContent?.includes("Staphylococcus aureus"),
-    );
+    await waitFor(() => {
+      const matchingButton = screen
+        .getAllByRole("button")
+        .find((button) => button.textContent?.includes(patientId) && button.textContent?.includes("Staphylococcus aureus"));
+      expect(matchingButton).toBeDefined();
+    });
+    const caseButton = screen
+      .getAllByRole("button")
+      .find((button) => button.textContent?.includes(patientId) && button.textContent?.includes("Staphylococcus aureus"));
 
     if (!caseButton) {
       throw new Error(`Unable to find a saved case button for ${patientId}.`);
@@ -798,14 +816,6 @@ describe("CaseWorkspace integration", () => {
     seedDraft();
     const { container } = renderWorkspace(onSiteDataChanged);
 
-    await waitFor(() => {
-        expect(apiMocks.fetchCases).toHaveBeenCalledWith(
-          "SITE_A",
-          "test-token",
-          expect.objectContaining({ mine: false, signal: expect.any(AbortSignal) }),
-        );
-      });
-
     await openNewCaseCanvas();
     completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
@@ -971,6 +981,21 @@ describe("CaseWorkspace integration", () => {
         button.textContent?.includes("Staphylococcus aureus"),
     );
     expect(newCaseButton).toBeTruthy();
+  });
+
+  it("hides the case review sidebar when returning to list view", async () => {
+    renderWorkspace();
+
+    await openSavedCase();
+    expect(await screen.findByText("Control automatic dataset inclusion")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /List view/i }));
+
+    expect(await screen.findByText("Patient list")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText("Control automatic dataset inclusion")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Artifact backlog")).toBeInTheDocument();
   });
 
   it("warns when the patient ID already exists and saves without recreating the patient", async () => {
@@ -1382,6 +1407,8 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
 
     expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => {
       expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
         "SITE_A",
@@ -1429,6 +1456,42 @@ describe("CaseWorkspace integration", () => {
         expect.objectContaining({ mine: false, refresh: true }),
       );
     });
+  });
+
+  it("collapses the backlog panel into a summary when all artifact counts are zero", async () => {
+    renderWorkspace();
+
+    expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ mine: false, refresh: true }),
+      );
+    });
+    expect(screen.getByText("No artifact backlog")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Lesion box missing/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cornea ROI missing/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Lesion crop missing/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /MedSAM backlog/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Backfill" })).not.toBeInTheDocument();
+  });
+
+  it("does not auto-load site activity in the workspace list view", async () => {
+    renderWorkspace();
+
+    expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    });
+
+    expect(apiMocks.fetchSiteActivity).not.toHaveBeenCalled();
+    expect(apiMocks.fetchCases).not.toHaveBeenCalled();
+    expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
+    expect(screen.queryByText("Recent validation and contribution flow")).not.toBeInTheDocument();
   });
 
   it("auto-runs five-model analysis after AI validation", async () => {

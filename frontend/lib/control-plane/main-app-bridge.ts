@@ -18,6 +18,7 @@ export {
   createMainAdminSite,
   createMainProject,
   fetchMainAdminOverview,
+  fetchMainAdminWorkspaceBootstrap,
   fetchMainInstitutionDirectoryStatus,
   listMainAdminAccessRequests,
   listMainAdminSites,

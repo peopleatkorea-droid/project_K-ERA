@@ -129,6 +129,33 @@ class ModelArtifactStoreTests(unittest.TestCase):
         self.assertEqual(local_path.read_bytes(), payload)
         self.assertEqual(get_mock.call_args.args[0], "https://example.invalid/direct-model.pt")
 
+    def test_resolve_model_path_follows_moved_kera_bundle(self) -> None:
+        old_bundle = Path(self.tempdir.name) / "bundle_old" / "KERA_DATA"
+        old_model_dir = old_bundle / "models"
+        old_model_dir.mkdir(parents=True, exist_ok=True)
+        old_model_path = old_model_dir / "portable_model.pt"
+        old_model_path.write_bytes(b"portable-model")
+
+        new_bundle = Path(self.tempdir.name) / "bundle_new" / "KERA_DATA"
+        new_bundle.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_bundle), str(new_bundle))
+
+        self.module = reload_model_artifact_module(new_bundle / "models")
+        self.store = self.module.ModelArtifactStore()
+
+        resolved = self.store.resolve_model_path(
+            {
+                "version_id": "model_portable_v1",
+                "version_name": "portable-v1",
+                "model_name": "keratitis_cls",
+                "model_path": str(old_model_path),
+            },
+            allow_download=False,
+        )
+
+        self.assertEqual(resolved.resolve(), (new_bundle / "models" / "portable_model.pt").resolve())
+        self.assertEqual(resolved.read_bytes(), b"portable-model")
+
     def _write_temp_payload(self, payload: bytes) -> Path:
         path = Path(self.tempdir.name) / "payload.bin"
         path.write_bytes(payload)

@@ -171,6 +171,10 @@ function serializeMainAggregationRow(row: Record<string, unknown>): AggregationR
 
 export async function listMainModelVersions(request: NextRequest): Promise<ModelVersionRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainModelVersionsForUser(user);
+}
+
+export async function listMainModelVersionsForUser(user: AuthUser): Promise<ModelVersionRecord[]> {
   assertAdminWorkspacePermission(user);
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -202,43 +206,65 @@ export async function listMainModelUpdates(
   } = {},
 ): Promise<ModelUpdateRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainModelUpdatesForUser(user, options);
+}
+
+export async function listMainModelUpdatesForUser(
+  user: AuthUser,
+  options: {
+    siteId?: string | null;
+    statusFilter?: string | null;
+  } = {},
+): Promise<ModelUpdateRecord[]> {
   assertAdminWorkspacePermission(user);
   const normalizedSiteId = trimText(options.siteId);
   const normalizedStatus = trimText(options.statusFilter);
   const sql = await controlPlaneSql();
-  const rows = await sql`
-    select
-      update_id,
-      site_id,
-      base_model_version_id,
-      status,
-      payload_json,
-      reviewer_user_id,
-      reviewer_notes,
-      created_at,
-      reviewed_at
-    from model_updates
-    order by created_at desc
-  `;
   const permittedSiteIds = new Set(normalizeStringArray(user.site_ids));
+  const queryValues: Array<string | string[]> = [];
+  const conditions: string[] = [];
+  if (normalizedSiteId) {
+    queryValues.push(normalizedSiteId);
+    conditions.push(`site_id = $${queryValues.length}`);
+  }
+  if (normalizedStatus) {
+    queryValues.push(normalizedStatus);
+    conditions.push(`status = $${queryValues.length}`);
+  }
+  if (user.role !== "admin") {
+    queryValues.push(Array.from(permittedSiteIds));
+    conditions.push(`site_id = any($${queryValues.length})`);
+  }
+  const whereClause = conditions.length ? `where ${conditions.join(" and ")}` : "";
+  const rows = await sql.unsafe(
+    `
+      select
+        update_id,
+        site_id,
+        base_model_version_id,
+        status,
+        payload_json,
+        reviewer_user_id,
+        reviewer_notes,
+        created_at,
+        reviewed_at
+      from model_updates
+      ${whereClause}
+      order by created_at desc
+    `,
+    queryValues,
+  );
   return rows
     .map((row) => serializeMainModelUpdateRow(row as Record<string, unknown>))
-    .filter((record) => {
-      if (normalizedSiteId && record.site_id !== normalizedSiteId) {
-        return false;
-      }
-      if (normalizedStatus && record.status !== normalizedStatus) {
-        return false;
-      }
-      if (user.role === "admin") {
-        return true;
-      }
-      return record.site_id ? permittedSiteIds.has(record.site_id) : false;
-    });
+    .filter((record) => (user.role === "admin" ? true : Boolean(record.site_id && permittedSiteIds.has(record.site_id))));
 }
 
 export async function listMainAggregations(request: NextRequest): Promise<AggregationRecord[]> {
   const { user } = await requireMainAppBridgeUser(request);
+  return listMainAggregationsForUser(user);
+}
+
+export async function listMainAggregationsForUser(user: AuthUser): Promise<AggregationRecord[]> {
   assertPlatformAdmin(user);
   const sql = await controlPlaneSql();
   const rows = await sql`

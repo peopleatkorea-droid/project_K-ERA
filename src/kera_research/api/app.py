@@ -12,7 +12,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import google.auth.transport.requests
 import jwt
@@ -42,7 +42,12 @@ from kera_research.services.node_credentials import (
 )
 from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
-from kera_research.services.data_plane import InvalidImageUploadError, SiteStore, control_plane_split_enabled
+from kera_research.services.data_plane import (
+    InvalidImageUploadError,
+    SiteStore,
+    control_plane_split_enabled,
+    invalidate_site_storage_root_cache,
+)
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
@@ -932,18 +937,13 @@ def _embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | N
 
 
 def _attach_image_quality_scores(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    scored_images: list[dict[str, Any]] = []
-    for image in images:
-        payload = dict(image)
-        try:
-            payload["quality_scores"] = score_slit_lamp_image(
-                str(image.get("image_path") or ""),
-                view=str(image.get("view") or "white"),
-            )
-        except Exception:
-            payload["quality_scores"] = None
-        scored_images.append(payload)
-    return scored_images
+    return [
+        {
+            **image,
+            "quality_scores": image.get("quality_scores"),
+        }
+        for image in images
+    ]
 
 
 class LoginRequest(BaseModel):
@@ -1168,6 +1168,12 @@ class SiteStorageRootUpdateRequest(BaseModel):
     storage_root: str
 
 
+class SiteMetadataRecoveryRequest(BaseModel):
+    source: Literal["auto", "backup", "manifest"] = "auto"
+    force_replace: bool = True
+    backup_path: str | None = None
+
+
 class UserUpsertRequest(BaseModel):
     user_id: str | None = None
     username: str
@@ -1239,38 +1245,48 @@ def _normalize_storage_root(value: str) -> Path:
     return candidate.resolve()
 
 
+def _normalize_default_storage_root(value: str) -> Path:
+    candidate = _normalize_storage_root(value)
+    looks_like_storage_bundle = candidate.name.strip().lower() == "kera_data" or any(
+        (candidate / child_name).exists() for child_name in ("sites", "control_plane", "models")
+    )
+    if not looks_like_storage_bundle:
+        return candidate
+
+    site_root = candidate / "sites"
+    try:
+        site_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Unable to create or access the site storage directory: {exc}") from exc
+    if not site_root.is_dir():
+        raise ValueError("Site storage directory must be a directory.")
+    return site_root.resolve()
+
+
 def _site_comparison_rows(cp: ControlPlaneStore, user: dict[str, Any]) -> list[dict[str, Any]]:
     visible_sites = cp.list_sites() if user.get("role") == "admin" else cp.accessible_sites_for_user(user)
     site_index = {site["site_id"]: site for site in visible_sites}
-    runs_by_site: dict[str, list[dict[str, Any]]] = {}
-    for run in _site_level_validation_runs(cp.list_validation_runs()):
-        site_id = run.get("site_id")
-        if site_id in site_index:
-            runs_by_site.setdefault(site_id, []).append(run)
-
-    def mean_metric(records: list[dict[str, Any]], key: str) -> float | None:
-        values = [float(item[key]) for item in records if item.get(key) is not None]
-        if not values:
-            return None
-        return round(sum(values) / len(values), 4)
-
+    summaries_by_site = {
+        item.get("site_id"): item
+        for item in cp.site_validation_site_summaries(list(site_index))
+        if item.get("site_id")
+    }
     rows: list[dict[str, Any]] = []
     for site_id, site in site_index.items():
-        site_runs = runs_by_site.get(site_id, [])
-        latest_run = sorted(site_runs, key=lambda item: item.get("run_date", ""), reverse=True)[0] if site_runs else None
+        summary = summaries_by_site.get(site_id, {})
         rows.append(
             {
                 "site_id": site_id,
                 "display_name": site.get("display_name"),
                 "hospital_name": site.get("hospital_name"),
-                "run_count": len(site_runs),
-                "accuracy": mean_metric(site_runs, "accuracy"),
-                "sensitivity": mean_metric(site_runs, "sensitivity"),
-                "specificity": mean_metric(site_runs, "specificity"),
-                "F1": mean_metric(site_runs, "F1"),
-                "AUROC": mean_metric(site_runs, "AUROC"),
-                "latest_validation_id": latest_run.get("validation_id") if latest_run else None,
-                "latest_run_date": latest_run.get("run_date") if latest_run else None,
+                "run_count": int(summary.get("run_count") or 0),
+                "accuracy": summary.get("accuracy"),
+                "sensitivity": summary.get("sensitivity"),
+                "specificity": summary.get("specificity"),
+                "F1": summary.get("F1"),
+                "AUROC": summary.get("AUROC"),
+                "latest_validation_id": summary.get("latest_validation_id"),
+                "latest_run_date": summary.get("latest_run_date"),
             }
         )
     rows.sort(key=lambda item: (item.get("accuracy") is not None, item.get("accuracy") or -1), reverse=True)
@@ -1574,6 +1590,8 @@ def create_app() -> FastAPI:
         load_cross_validation_reports=_load_cross_validation_reports,
         queue_case_embedding_refresh=_queue_case_embedding_refresh,
         normalize_storage_root=_normalize_storage_root,
+        normalize_default_storage_root=_normalize_default_storage_root,
+        invalidate_site_storage_root_cache=invalidate_site_storage_root_cache,
         embedded_review_artifact_response=_embedded_review_artifact_response,
         load_approval_report=_load_approval_report,
         site_comparison_rows=_site_comparison_rows,
@@ -1619,6 +1637,7 @@ def create_app() -> FastAPI:
         SiteUpdateRequest=SiteUpdateRequest,
         UserUpsertRequest=UserUpsertRequest,
         SiteStorageRootUpdateRequest=SiteStorageRootUpdateRequest,
+        SiteMetadataRecoveryRequest=SiteMetadataRecoveryRequest,
     )
 
     app.include_router(build_auth_router(route_supports.auth))

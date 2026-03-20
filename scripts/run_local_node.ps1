@@ -14,6 +14,7 @@ $workerScript = Join-Path $repoRoot "scripts\run_job_worker.ps1"
 . (Join-Path $PSScriptRoot "load_dev_env.ps1")
 . (Join-Path $PSScriptRoot "dev_process_helpers.ps1")
 Import-LocalEnv -Path (Join-Path $repoRoot ".env.local")
+[void](Initialize-KeraStorageDir -RepoRoot $repoRoot)
 
 $powershellExe = $null
 foreach ($candidate in @("powershell", "pwsh")) {

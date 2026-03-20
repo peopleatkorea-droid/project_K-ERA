@@ -28,6 +28,7 @@ type Props = {
   canManageStorageRoot: boolean;
   storageSettings: StorageSettingsRecord | null;
   storageSettingsBusy: boolean;
+  metadataRecoveryBusy: boolean;
   instanceStorageRootForm: string;
   siteStorageRootForm: string;
   selectedSiteLabel: string | null;
@@ -49,6 +50,7 @@ type Props = {
   onSaveStorageRoot: () => void;
   onSaveSelectedSiteStorageRoot: () => void;
   onMigrateSelectedSiteStorageRoot: () => void;
+  onRecoverSelectedSiteMetadata: () => void;
   onCreateProject: () => void;
   onEditSite: (site: ManagedSiteRecord) => void;
   onResetSiteForm: () => void;
@@ -226,6 +228,7 @@ export function ManagementSection({
   canManageStorageRoot,
   storageSettings,
   storageSettingsBusy,
+  metadataRecoveryBusy,
   instanceStorageRootForm,
   siteStorageRootForm,
   selectedSiteLabel,
@@ -247,6 +250,7 @@ export function ManagementSection({
   onSaveStorageRoot,
   onSaveSelectedSiteStorageRoot,
   onMigrateSelectedSiteStorageRoot,
+  onRecoverSelectedSiteMetadata,
   onCreateProject,
   onEditSite,
   onResetSiteForm,
@@ -358,7 +362,7 @@ export function ManagementSection({
       />
 
       {canManageStorageRoot ? (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="grid gap-4">
           <Card as="section" variant="nested" className="grid gap-4 p-5">
             <SectionHeader
               title={pick(locale, "Default storage root", "기본 저장 경로")}
@@ -374,13 +378,13 @@ export function ManagementSection({
               }
             />
             <Field label={pick(locale, "Folder path", "폴더 경로")}>
-              <input value={instanceStorageRootForm} onChange={(event) => setInstanceStorageRootForm(event.target.value)} placeholder="D:\KERA_DATA\sites" />
+              <input value={instanceStorageRootForm} onChange={(event) => setInstanceStorageRootForm(event.target.value)} placeholder="D:\KERA_DATA" />
             </Field>
             <div className="text-sm leading-6 text-muted">
               {pick(
                 locale,
-                "Enter the parent folder that will contain per-site subfolders.",
-                "병원별 하위 폴더를 담는 부모 경로를 입력하세요."
+                "Enter either the KERA_DATA folder or the direct site-root folder. If you provide KERA_DATA, the app will use its sites subfolder automatically.",
+                "KERA_DATA 폴더 또는 사이트 폴더들의 상위 경로를 입력하세요. KERA_DATA를 입력하면 앱이 자동으로 그 안의 sites 하위 폴더를 사용합니다."
               )}
             </div>
             <MetricGrid columns={hasEnvironmentDefaultOverride ? 3 : 2}>
@@ -425,6 +429,51 @@ export function ManagementSection({
           </Card>
 
           <Card as="section" variant="nested" className="grid gap-4 p-5">
+            <SectionHeader
+              title={pick(locale, "Selected hospital metadata", "선택 병원 메타데이터")}
+              titleAs="h4"
+              aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? notAvailableLabel}</span>}
+            />
+            {selectedManagedSite ? (
+              <>
+                <div className="text-sm leading-6 text-muted">
+                  {pick(
+                    locale,
+                    "If files still exist under this hospital root but the patient, visit, or image rows are missing, rebuild them from metadata_backup.json first and fall back to dataset_manifest.csv when needed.",
+                    "이 병원 폴더 아래 파일은 남아 있는데 patient, visit, image row가 비어 있으면 metadata_backup.json을 우선 사용하고 필요하면 dataset_manifest.csv로 내려가며 다시 구성합니다.",
+                  )}
+                </div>
+                <MetricGrid columns={3}>
+                  <MetricItem value={summary?.n_patients ?? 0} label={pick(locale, "Patients", "환자")} />
+                  <MetricItem value={summary?.n_visits ?? 0} label={pick(locale, "Visits", "방문")} />
+                  <MetricItem value={summary?.n_images ?? 0} label={pick(locale, "Images", "이미지")} />
+                </MetricGrid>
+                <div className="rounded-[16px] border border-amber-300/70 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                  {pick(
+                    locale,
+                    "Recovery replaces the existing metadata rows for this hospital, then rewrites the manifest and metadata backup using the current storage path.",
+                    "복구를 실행하면 현재 병원의 메타데이터 row를 교체한 뒤, 현재 저장 경로 기준으로 manifest와 metadata backup을 다시 씁니다.",
+                  )}
+                </div>
+                <div className="flex flex-wrap justify-end gap-3">
+                  <Button type="button" variant="danger" loading={metadataRecoveryBusy} onClick={onRecoverSelectedSiteMetadata}>
+                    {pick(locale, "Recover metadata", "메타데이터 복구")}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className={emptySurfaceClass}>
+                {pick(
+                  locale,
+                  "Choose a hospital from the rail before running metadata recovery.",
+                  "메타데이터 복구를 실행하려면 먼저 좌측에서 병원을 선택하세요.",
+                )}
+              </div>
+            )}
+          </Card>
+
+          {false ? (
+            <Card as="section" variant="nested" className="grid gap-4 p-5">
             <SectionHeader
               title={pick(locale, "Selected hospital storage root", "선택 병원 저장 경로")}
               titleAs="h4"
@@ -493,7 +542,8 @@ export function ManagementSection({
                 {pick(locale, "Select a hospital to review or change its storage path.", "병원을 선택하면 저장 경로를 검토하거나 변경할 수 있습니다.")}
               </div>
             )}
-          </Card>
+            </Card>
+          ) : null}
         </div>
       ) : null}
 

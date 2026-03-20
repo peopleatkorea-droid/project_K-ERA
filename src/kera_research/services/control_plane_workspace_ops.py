@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from kera_research.config import CONTROL_PLANE_CASE_DIR
 from kera_research.db import CONTROL_PLANE_ENGINE, DATA_PLANE_ENGINE, images as db_images, model_updates, projects, sites
 from kera_research.domain import make_id, utc_now
+from kera_research.services.data_plane import invalidate_site_storage_root_cache
 from kera_research.storage import read_json, write_json
 
 
@@ -168,6 +169,33 @@ class ControlPlaneWorkspaceOps:
             "research_registry_enabled": bool(research_registry_enabled) if research_registry_enabled is not None else True,
         }
 
+    def _ensure_local_site_record(self, site_id: str) -> dict[str, Any]:
+        normalized_site_id = site_id.strip()
+        existing_site = self.get_site(normalized_site_id)
+        if existing_site is not None:
+            return existing_site
+
+        merged_site = self.store.get_site(normalized_site_id)
+        if merged_site is None:
+            raise ValueError(f"Unknown site_id: {normalized_site_id}")
+
+        record = {
+            "site_id": normalized_site_id,
+            "project_id": str(merged_site.get("project_id") or "project_default").strip() or "project_default",
+            "display_name": str(merged_site.get("display_name") or normalized_site_id).strip() or normalized_site_id,
+            "hospital_name": str(
+                merged_site.get("hospital_name") or merged_site.get("display_name") or normalized_site_id
+            ).strip()
+            or normalized_site_id,
+            "source_institution_id": str(merged_site.get("source_institution_id") or "").strip() or None,
+            "local_storage_root": str(merged_site.get("local_storage_root") or "").strip(),
+            "research_registry_enabled": bool(merged_site.get("research_registry_enabled", True)),
+            "created_at": str(merged_site.get("created_at") or utc_now()),
+        }
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(sites.insert().values(**record))
+        return self.get_site(normalized_site_id) or record
+
     def update_site_storage_root(self, site_id: str, storage_root: str) -> dict[str, Any]:
         normalized_site_id = site_id.strip()
         normalized_storage_root = storage_root.strip()
@@ -176,6 +204,7 @@ class ControlPlaneWorkspaceOps:
         if not normalized_storage_root:
             raise ValueError("Storage root is required.")
 
+        self._ensure_local_site_record(normalized_site_id)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             existing_site = conn.execute(
                 select(sites).where(sites.c.site_id == normalized_site_id)
@@ -187,6 +216,7 @@ class ControlPlaneWorkspaceOps:
                 .where(sites.c.site_id == normalized_site_id)
                 .values(local_storage_root=normalized_storage_root)
             )
+        invalidate_site_storage_root_cache(normalized_site_id)
         return self.get_site(normalized_site_id) or {
             "site_id": normalized_site_id,
             "local_storage_root": normalized_storage_root,
@@ -200,6 +230,7 @@ class ControlPlaneWorkspaceOps:
         if not normalized_storage_root:
             raise ValueError("Storage root is required.")
 
+        self._ensure_local_site_record(normalized_site_id)
         site = self.get_site(normalized_site_id)
         if site is None:
             raise ValueError(f"Unknown site_id: {normalized_site_id}")
@@ -269,6 +300,7 @@ class ControlPlaneWorkspaceOps:
                 .where(sites.c.site_id == normalized_site_id)
                 .values(local_storage_root=str(new_root))
             )
+        invalidate_site_storage_root_cache(normalized_site_id)
 
         validation_dir = new_root / "validation"
         if validation_dir.exists():
@@ -286,8 +318,9 @@ class ControlPlaneWorkspaceOps:
         self,
         project_id: str | None = None,
         site_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        return self.store.list_validation_runs(project_id, site_id)
+        return self.store.list_validation_runs(project_id, site_id, limit=limit)
 
     def save_validation_run(
         self,

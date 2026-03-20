@@ -177,6 +177,8 @@ export function AdminWorkspace({
     institutionSyncStatus,
     siteComparison,
     setSiteComparison,
+    siteActivity,
+    siteActivityBusy,
     siteValidationRuns,
     setSiteValidationRuns,
     selectedValidationId,
@@ -255,6 +257,7 @@ export function AdminWorkspace({
     setAggregationBusy,
     storageSettingsBusy,
     setStorageSettingsBusy,
+    metadataRecoveryBusy,
     newVersionName,
     setNewVersionName,
     initialForm,
@@ -323,6 +326,7 @@ export function AdminWorkspace({
     handleSaveStorageRoot,
     handleSaveSelectedSiteStorageRoot,
     handleMigrateSelectedSiteStorageRoot,
+    handleRecoverSelectedSiteMetadata,
     handleResetUserForm,
     handleSaveUser,
   } = useAdminWorkspaceController({
@@ -667,6 +671,8 @@ export function AdminWorkspace({
               notAvailableLabel={common.notAvailable}
               selectedSiteId={selectedSiteId}
               selectedSiteLabel={selectedSiteLabel}
+              siteActivity={siteActivity}
+              siteActivityBusy={siteActivityBusy}
               selectedValidationRun={selectedValidationRun}
               validationExportBusy={validationExportBusy}
               siteValidationBusy={siteValidationBusy}
@@ -674,7 +680,7 @@ export function AdminWorkspace({
               embeddingStatus={embeddingStatus}
               embeddingStatusBusy={embeddingStatusBusy}
               embeddingBackfillBusy={embeddingBackfillBusy}
-              currentModelVersionName={currentModel?.version_name ?? null}
+              currentModelVersionName={currentModel?.version_name ?? overview?.current_model_version ?? null}
               modelComparisonRows={modelComparisonRows}
               rocEligibleRuns={rocEligibleRuns}
               rocValidationIds={rocValidationIds}
@@ -825,6 +831,7 @@ export function AdminWorkspace({
               canManageStorageRoot={canManageStorageRoot}
               storageSettings={storageSettings}
               storageSettingsBusy={storageSettingsBusy}
+              metadataRecoveryBusy={metadataRecoveryBusy}
               instanceStorageRootForm={instanceStorageRootForm}
               siteStorageRootForm={siteStorageRootForm}
               selectedSiteLabel={selectedSiteLabel}
@@ -846,6 +853,7 @@ export function AdminWorkspace({
               onSaveStorageRoot={() => void handleSaveStorageRoot()}
               onSaveSelectedSiteStorageRoot={() => void handleSaveSelectedSiteStorageRoot()}
               onMigrateSelectedSiteStorageRoot={() => void handleMigrateSelectedSiteStorageRoot()}
+              onRecoverSelectedSiteMetadata={() => void handleRecoverSelectedSiteMetadata()}
               onCreateProject={() => void handleCreateProject()}
               onEditSite={handleEditSite}
               onResetSiteForm={() => handleResetSiteForm()}
