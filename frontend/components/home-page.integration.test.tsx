@@ -7,6 +7,7 @@ const apiMocks = vi.hoisted(() => ({
   createPatient: vi.fn(),
   downloadManifest: vi.fn(),
   fetchAccessRequests: vi.fn(),
+  fetchMainBootstrap: vi.fn(),
   fetchMe: vi.fn(),
   fetchMyAccessRequests: vi.fn(),
   fetchPatients: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock("../lib/api", async () => {
     createPatient: apiMocks.createPatient,
     downloadManifest: apiMocks.downloadManifest,
     fetchAccessRequests: apiMocks.fetchAccessRequests,
+    fetchMainBootstrap: apiMocks.fetchMainBootstrap,
     fetchMe: apiMocks.fetchMe,
     fetchMyAccessRequests: apiMocks.fetchMyAccessRequests,
     fetchPatients: apiMocks.fetchPatients,
@@ -102,6 +104,39 @@ vi.mock("../lib/api", async () => {
 
 import HomePage from "../app/page";
 
+function makeStoredToken(
+  payload: Partial<{
+    sub: string;
+    username: string;
+    full_name: string;
+    public_alias: string | null;
+    role: string;
+    site_ids: string[];
+    approval_status: string;
+    exp: number;
+  }> = {},
+) {
+  const header = { alg: "HS256", typ: "JWT" };
+  const claims = {
+    sub: "user_researcher",
+    username: "researcher",
+    full_name: "Researcher",
+    public_alias: null,
+    role: "researcher",
+    site_ids: ["SITE_A"],
+    approval_status: "approved",
+    exp: 4102444800,
+    ...payload,
+  };
+  const encode = (value: unknown) =>
+    window
+      .btoa(JSON.stringify(value))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+  return `${encode(header)}.${encode(claims)}.signature`;
+}
+
 describe("HomePage history guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -109,7 +144,29 @@ describe("HomePage history guard", () => {
     window.history.replaceState(null, "", "/");
     vi.stubGlobal("scrollTo", vi.fn());
 
-    window.localStorage.setItem("kera_web_token", "test-token");
+    const approvedToken = makeStoredToken();
+    window.localStorage.setItem("kera_web_token", approvedToken);
+    apiMocks.fetchMainBootstrap.mockResolvedValue({
+      auth_state: "approved",
+      access_token: approvedToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_researcher",
+        username: "researcher",
+        full_name: "Researcher",
+        role: "researcher",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+      },
+      sites: [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ],
+      my_access_requests: [],
+    });
     apiMocks.fetchMe.mockResolvedValue({
       user_id: "user_researcher",
       username: "researcher",
@@ -156,16 +213,30 @@ describe("HomePage history guard", () => {
   });
 
   it("does not restart bootstrap when fetchMe rotates the stored token", async () => {
-    apiMocks.fetchMe.mockReset();
-    apiMocks.fetchMe.mockImplementation(async () => {
-      window.localStorage.setItem("kera_web_token", "rotated-token");
+    const rotatedToken = makeStoredToken({ username: "researcher-rotated" });
+    apiMocks.fetchMainBootstrap.mockReset();
+    apiMocks.fetchMainBootstrap.mockImplementation(async () => {
+      window.localStorage.setItem("kera_web_token", rotatedToken);
       return {
-        user_id: "user_researcher",
-        username: "researcher",
-        full_name: "Researcher",
-        role: "researcher",
-        site_ids: ["SITE_A"],
-        approval_status: "approved",
+        auth_state: "approved",
+        access_token: rotatedToken,
+        token_type: "bearer",
+        user: {
+          user_id: "user_researcher",
+          username: "researcher",
+          full_name: "Researcher",
+          role: "researcher",
+          site_ids: ["SITE_A"],
+          approval_status: "approved",
+        },
+        sites: [
+          {
+            site_id: "SITE_A",
+            display_name: "Site A",
+            hospital_name: "Hospital A",
+          },
+        ],
+        my_access_requests: [],
       };
     });
 
@@ -177,18 +248,34 @@ describe("HomePage history guard", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 20));
     });
 
-    expect(apiMocks.fetchMe).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchSites).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchMainBootstrap).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchSites).toHaveBeenCalledTimes(0);
   });
 
   it("filters existing fallback institutions with Korean region aliases", async () => {
-    apiMocks.fetchMe.mockResolvedValueOnce({
-      user_id: "user_pending",
+    const pendingToken = makeStoredToken({
+      sub: "user_pending",
       username: "pending",
       full_name: "Pending User",
       role: "viewer",
       site_ids: [],
       approval_status: "application_required",
+    });
+    window.localStorage.setItem("kera_web_token", pendingToken);
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "application_required",
+      access_token: pendingToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_researcher",
+        username: "pending",
+        full_name: "Pending User",
+        role: "viewer",
+        site_ids: [],
+        approval_status: "application_required",
+      },
+      sites: [],
+      my_access_requests: [],
     });
     apiMocks.fetchPublicSites.mockResolvedValueOnce([
       {
@@ -219,6 +306,15 @@ describe("HomePage history guard", () => {
   });
 
   it("opens the workspace immediately after an auto-approved institution request", async () => {
+    const pendingToken = makeStoredToken({
+      sub: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    });
+    window.localStorage.setItem("kera_web_token", pendingToken);
     const approvedRequest = {
       request_id: "access_auto_1",
       user_id: "user_pending",
@@ -236,6 +332,21 @@ describe("HomePage history guard", () => {
       created_at: "2026-03-17T00:00:00Z",
       reviewed_at: "2026-03-17T00:01:00Z",
     };
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "application_required",
+      access_token: pendingToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_pending",
+        username: "pending",
+        full_name: "Pending User",
+        role: "viewer",
+        site_ids: [],
+        approval_status: "application_required",
+      },
+      sites: [],
+      my_access_requests: [],
+    });
     apiMocks.fetchMe.mockResolvedValueOnce({
       user_id: "user_pending",
       username: "pending",
@@ -280,23 +391,45 @@ describe("HomePage history guard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit institution request" }));
 
     await waitFor(() => {
-      expect(apiMocks.submitAccessRequest).toHaveBeenCalledWith("test-token", expect.objectContaining({ requested_site_id: "SITE_A" }));
+      expect(apiMocks.submitAccessRequest).toHaveBeenCalledWith(pendingToken, expect.objectContaining({ requested_site_id: "SITE_A" }));
     });
     await waitFor(() => {
-      expect(apiMocks.fetchSites).toHaveBeenCalledWith("test-token");
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith(pendingToken);
     });
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
   });
 
   it("opens the admin workspace when an approved admin lands on the operations route", async () => {
-    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
-    apiMocks.fetchMe.mockResolvedValueOnce({
-      user_id: "user_admin",
+    const adminToken = makeStoredToken({
+      sub: "user_admin",
       username: "admin",
       full_name: "Admin",
       role: "admin",
       site_ids: ["SITE_A"],
       approval_status: "approved",
+    });
+    window.localStorage.setItem("kera_web_token", adminToken);
+    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "approved",
+      access_token: adminToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_admin",
+        username: "admin",
+        full_name: "Admin",
+        role: "admin",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+      },
+      sites: [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ],
+      my_access_requests: [],
     });
 
     render(<HomePage />);
@@ -306,19 +439,29 @@ describe("HomePage history guard", () => {
   });
 
   it("shows the case workspace before the site list bootstrap finishes for approved users", async () => {
-    let releaseSites: ((value: Array<{ site_id: string; display_name: string; hospital_name: string }>) => void) | null = null;
-    apiMocks.fetchMe.mockResolvedValueOnce({
-      user_id: "user_researcher",
-      username: "researcher",
-      full_name: "Researcher",
-      role: "researcher",
-      site_ids: ["SITE_A"],
-      approval_status: "approved",
-    });
-    apiMocks.fetchSites.mockImplementationOnce(
+    const approvedToken = makeStoredToken();
+    window.localStorage.setItem("kera_web_token", approvedToken);
+    let releaseBootstrap:
+      | ((value: {
+          auth_state: "approved";
+          access_token: string;
+          token_type: "bearer";
+          user: {
+            user_id: string;
+            username: string;
+            full_name: string;
+            role: string;
+            site_ids: string[];
+            approval_status: "approved";
+          };
+          sites: Array<{ site_id: string; display_name: string; hospital_name: string }>;
+          my_access_requests: [];
+        }) => void)
+      | null = null;
+    apiMocks.fetchMainBootstrap.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          releaseSites = resolve;
+          releaseBootstrap = resolve;
         }),
     );
 
@@ -328,32 +471,63 @@ describe("HomePage history guard", () => {
     expect(screen.queryByText("Opening your workspace")).not.toBeInTheDocument();
 
     await act(async () => {
-      releaseSites?.([
-        {
-          site_id: "SITE_A",
-          display_name: "Site A",
-          hospital_name: "Hospital A",
+      releaseBootstrap?.({
+        auth_state: "approved",
+        access_token: approvedToken,
+        token_type: "bearer",
+        user: {
+          user_id: "user_researcher",
+          username: "researcher",
+          full_name: "Researcher",
+          role: "researcher",
+          site_ids: ["SITE_A"],
+          approval_status: "approved",
         },
-      ]);
+        sites: [
+          {
+            site_id: "SITE_A",
+            display_name: "Site A",
+            hospital_name: "Hospital A",
+          },
+        ],
+        my_access_requests: [],
+      });
       await Promise.resolve();
     });
   });
 
   it("shows admin operations before the site list bootstrap finishes", async () => {
-    let releaseSites: ((value: Array<{ site_id: string; display_name: string; hospital_name: string }>) => void) | null = null;
-    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
-    apiMocks.fetchMe.mockResolvedValueOnce({
-      user_id: "user_admin",
+    const adminToken = makeStoredToken({
+      sub: "user_admin",
       username: "admin",
       full_name: "Admin",
       role: "admin",
       site_ids: ["SITE_A"],
       approval_status: "approved",
     });
-    apiMocks.fetchSites.mockImplementationOnce(
+    window.localStorage.setItem("kera_web_token", adminToken);
+    let releaseBootstrap:
+      | ((value: {
+          auth_state: "approved";
+          access_token: string;
+          token_type: "bearer";
+          user: {
+            user_id: string;
+            username: string;
+            full_name: string;
+            role: string;
+            site_ids: string[];
+            approval_status: "approved";
+          };
+          sites: Array<{ site_id: string; display_name: string; hospital_name: string }>;
+          my_access_requests: [];
+        }) => void)
+      | null = null;
+    window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
+    apiMocks.fetchMainBootstrap.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          releaseSites = resolve;
+          releaseBootstrap = resolve;
         }),
     );
 
@@ -362,13 +536,27 @@ describe("HomePage history guard", () => {
     expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
 
     await act(async () => {
-      releaseSites?.([
-        {
-          site_id: "SITE_A",
-          display_name: "Site A",
-          hospital_name: "Hospital A",
+      releaseBootstrap?.({
+        auth_state: "approved",
+        access_token: adminToken,
+        token_type: "bearer",
+        user: {
+          user_id: "user_admin",
+          username: "admin",
+          full_name: "Admin",
+          role: "admin",
+          site_ids: ["SITE_A"],
+          approval_status: "approved",
         },
-      ]);
+        sites: [
+          {
+            site_id: "SITE_A",
+            display_name: "Site A",
+            hospital_name: "Hospital A",
+          },
+        ],
+        my_access_requests: [],
+      });
       await Promise.resolve();
     });
   });

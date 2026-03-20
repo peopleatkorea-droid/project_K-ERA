@@ -96,13 +96,14 @@ type Args = {
   setCaseHistory: Dispatch<SetStateAction<CaseHistoryResponse | null>>;
   setContributionResult: Dispatch<SetStateAction<CaseContributionResponse | null>>;
   loadCaseHistory: (siteId: string, patientId: string, visitDate: string) => Promise<void>;
-  loadSiteActivity: (siteId: string) => Promise<void>;
+  loadSiteActivity: (siteId: string) => Promise<unknown>;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onValidationCompleted?: (args: {
     siteId: string;
     selectedCase: CaseSummaryRecord;
     result: CaseValidationResponse;
   }) => Promise<void> | void;
+  onArtifactsChanged?: () => void;
 };
 
 function revokeUrls(urls: string[]) {
@@ -138,6 +139,7 @@ export function useCaseWorkspaceAnalysis({
   loadSiteActivity,
   onSiteDataChanged,
   onValidationCompleted,
+  onArtifactsChanged,
 }: Args) {
   const [validationBusy, setValidationBusy] = useState(false);
   const [validationResult, setValidationResult] = useState<CaseValidationResponse | null>(null);
@@ -929,6 +931,7 @@ export function useCaseWorkspaceAnalysis({
         })
       );
       setLesionPreviewItems(nextItems);
+      onArtifactsChanged?.();
       setToast({
         tone: "success",
         message: pick(
@@ -1108,6 +1111,7 @@ export function useCaseWorkspaceAnalysis({
         })
       );
       setRoiPreviewItems(nextItems);
+      onArtifactsChanged?.();
       setToast({
         tone: "success",
         message: copy.roiPreviewGenerated(selectedCase.patient_id, selectedCase.visit_date),
@@ -1217,6 +1221,7 @@ export function useCaseWorkspaceAnalysis({
         selectedCase,
         result,
       });
+      onArtifactsChanged?.();
       setToast({
         tone: "success",
         message:

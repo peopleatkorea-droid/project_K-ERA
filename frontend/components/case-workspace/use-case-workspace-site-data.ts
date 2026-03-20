@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type CaseHistoryResponse,
@@ -81,6 +81,9 @@ export function useCaseWorkspaceSiteData({
   const caseImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
   const caseImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
+  const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
+  const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
+  const siteModelVersionsLoadedSiteIdRef = useRef<string | null>(null);
 
   function revokeObjectUrls(urls: string[]) {
     for (const url of urls) {
@@ -99,7 +102,10 @@ export function useCaseWorkspaceSiteData({
   }
 
   function isAbortError(error: unknown): boolean {
-    return error instanceof DOMException && error.name === "AbortError";
+    return (
+      (error instanceof DOMException && error.name === "AbortError") ||
+      (error instanceof Error && error.name === "AbortError")
+    );
   }
 
   async function loadImagePreviewUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
@@ -145,10 +151,20 @@ export function useCaseWorkspaceSiteData({
   }, [selectedSiteId]);
 
   useEffect(() => {
+    siteActivityLoadedSiteIdRef.current = null;
+    siteValidationLoadedSiteIdRef.current = null;
+    siteModelVersionsLoadedSiteIdRef.current = null;
+    setActivityBusy(false);
+    setSiteActivity(null);
+    setSiteValidationBusy(false);
+    setSiteValidationRuns([]);
+    setSiteModelVersions([]);
+    setSelectedCompareModelVersionIds([]);
+  }, [selectedSiteId]);
+
+  useEffect(() => {
     if (!selectedSiteId) {
       setCases([]);
-      setSiteActivity(null);
-      setSiteValidationRuns([]);
       setSelectedCase(null);
       setSelectedCaseImages([]);
       return;
@@ -188,85 +204,12 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    async function loadActivity() {
-      setActivityBusy(true);
-      try {
-        const nextActivity = await fetchSiteActivity(currentSiteId, token, controller.signal);
-        if (!cancelled) {
-          setSiteActivity(nextActivity);
-        }
-      } catch (nextError) {
-        if (isAbortError(nextError)) {
-          return;
-        }
-        if (!cancelled) {
-          setSiteActivity(null);
-          setToast({
-            tone: "error",
-            message: describeError(nextError, unableLoadSiteActivity),
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          setActivityBusy(false);
-        }
-      }
-    }
-
-    async function loadSiteValidations() {
-      setSiteValidationBusy(true);
-      try {
-        const nextRuns = await fetchSiteValidations(currentSiteId, token, controller.signal);
-        if (!cancelled) {
-          setSiteValidationRuns(nextRuns);
-        }
-      } catch (nextError) {
-        if (isAbortError(nextError)) {
-          return;
-        }
-        if (!cancelled) {
-          setSiteValidationRuns([]);
-          setToast({
-            tone: "error",
-            message: describeError(nextError, unableLoadSiteValidationHistory),
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          setSiteValidationBusy(false);
-        }
-      }
-    }
-
-    async function loadSiteModels() {
-      try {
-        const nextVersions = await fetchSiteModelVersions(currentSiteId, token, controller.signal);
-        if (!cancelled) {
-          setSiteModelVersions(nextVersions);
-          setSelectedCompareModelVersionIds((current) =>
-            current.length > 0 ? current : defaultModelCompareSelection(nextVersions)
-          );
-        }
-      } catch (nextError) {
-        if (isAbortError(nextError)) {
-          return;
-        }
-        if (!cancelled) {
-          setSiteModelVersions([]);
-          setSelectedCompareModelVersionIds([]);
-        }
-      }
-    }
-
     void loadRecords();
-    void loadActivity();
-    void loadSiteValidations();
-    void loadSiteModels();
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [selectedSiteId, showOnlyMine, token, unableLoadRecentCases, unableLoadSiteActivity, unableLoadSiteValidationHistory]);
+  }, [selectedSiteId, showOnlyMine, token, unableLoadRecentCases]);
 
   useEffect(() => {
     setCaseHistory(null);
@@ -618,37 +561,91 @@ export function useCaseWorkspaceSiteData({
     }
   }
 
-  async function loadSiteActivity(siteId: string) {
+  const loadSiteActivity = useCallback(async (siteId: string, signal?: AbortSignal) => {
     setActivityBusy(true);
     try {
-      const nextActivity = await fetchSiteActivity(siteId, token);
+      const nextActivity = await fetchSiteActivity(siteId, token, signal);
       setSiteActivity(nextActivity);
+      siteActivityLoadedSiteIdRef.current = siteId;
+      return nextActivity;
     } catch (nextError) {
+      if (isAbortError(nextError)) {
+        return null;
+      }
       setSiteActivity(null);
       setToast({
         tone: "error",
         message: describeError(nextError, unableLoadSiteActivity),
       });
+      return null;
     } finally {
       setActivityBusy(false);
     }
-  }
+  }, [describeError, setToast, token, unableLoadSiteActivity]);
 
-  async function loadSiteValidationRuns(siteId: string) {
+  const ensureSiteActivityLoaded = useCallback(async (siteId: string, signal?: AbortSignal) => {
+    if (siteActivityLoadedSiteIdRef.current === siteId) {
+      return siteActivity;
+    }
+    return loadSiteActivity(siteId, signal);
+  }, [loadSiteActivity, siteActivity]);
+
+  const loadSiteValidationRuns = useCallback(async (siteId: string, signal?: AbortSignal) => {
     setSiteValidationBusy(true);
     try {
-      const nextRuns = await fetchSiteValidations(siteId, token);
+      const nextRuns = await fetchSiteValidations(siteId, token, signal);
       setSiteValidationRuns(nextRuns);
+      siteValidationLoadedSiteIdRef.current = siteId;
+      return nextRuns;
     } catch (nextError) {
+      if (isAbortError(nextError)) {
+        return [];
+      }
       setSiteValidationRuns([]);
       setToast({
         tone: "error",
         message: describeError(nextError, unableLoadSiteValidationHistory),
       });
+      return [];
     } finally {
       setSiteValidationBusy(false);
     }
-  }
+  }, [describeError, setToast, token, unableLoadSiteValidationHistory]);
+
+  const ensureSiteValidationRunsLoaded = useCallback(async (siteId: string, signal?: AbortSignal) => {
+    if (siteValidationLoadedSiteIdRef.current === siteId) {
+      return siteValidationRuns;
+    }
+    return loadSiteValidationRuns(siteId, signal);
+  }, [loadSiteValidationRuns, siteValidationRuns]);
+
+  const loadSiteModelVersions = useCallback(async (siteId: string, signal?: AbortSignal) => {
+    try {
+      const nextVersions = await fetchSiteModelVersions(siteId, token, signal);
+      setSiteModelVersions(nextVersions);
+      siteModelVersionsLoadedSiteIdRef.current = siteId;
+      setSelectedCompareModelVersionIds((current) => {
+        const availableVersionIds = new Set(nextVersions.map((item) => item.version_id));
+        const retained = current.filter((versionId) => availableVersionIds.has(versionId));
+        return retained.length > 0 ? retained : defaultModelCompareSelection(nextVersions);
+      });
+      return nextVersions;
+    } catch (nextError) {
+      if (isAbortError(nextError)) {
+        return [];
+      }
+      setSiteModelVersions([]);
+      setSelectedCompareModelVersionIds([]);
+      return [];
+    }
+  }, [defaultModelCompareSelection, token]);
+
+  const ensureSiteModelVersionsLoaded = useCallback(async (siteId: string, signal?: AbortSignal) => {
+    if (siteModelVersionsLoadedSiteIdRef.current === siteId) {
+      return siteModelVersions;
+    }
+    return loadSiteModelVersions(siteId, signal);
+  }, [loadSiteModelVersions, siteModelVersions]);
 
   return {
     cases,
@@ -679,5 +676,9 @@ export function useCaseWorkspaceSiteData({
     loadCaseHistory,
     loadSiteActivity,
     loadSiteValidationRuns,
+    loadSiteModelVersions,
+    ensureSiteActivityLoaded,
+    ensureSiteValidationRunsLoaded,
+    ensureSiteModelVersionsLoaded,
   };
 }

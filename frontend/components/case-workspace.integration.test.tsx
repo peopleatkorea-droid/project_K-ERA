@@ -8,13 +8,18 @@ import { CaseWorkspace } from "./case-workspace";
 
 const apiMocks = vi.hoisted(() => ({
   createPatient: vi.fn(),
+  updatePatient: vi.fn(),
   createVisit: vi.fn(),
   updateVisit: vi.fn(),
   deleteVisitImages: vi.fn(),
   uploadImage: vi.fn(),
   updateImageLesionBox: vi.fn(),
   fetchCases: vi.fn(),
+  fetchPatientIdLookup: vi.fn(),
   fetchPatientListPage: vi.fn(),
+  fetchMedsamArtifactStatus: vi.fn(),
+  fetchMedsamArtifactItems: vi.fn(),
+  backfillMedsamArtifacts: vi.fn(),
   fetchSiteActivity: vi.fn(),
   fetchSiteValidations: vi.fn(),
   fetchSiteModelVersions: vi.fn(),
@@ -35,13 +40,18 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     createPatient: apiMocks.createPatient,
+    updatePatient: apiMocks.updatePatient,
     createVisit: apiMocks.createVisit,
     updateVisit: apiMocks.updateVisit,
     deleteVisitImages: apiMocks.deleteVisitImages,
     uploadImage: apiMocks.uploadImage,
     updateImageLesionBox: apiMocks.updateImageLesionBox,
     fetchCases: apiMocks.fetchCases,
+    fetchPatientIdLookup: apiMocks.fetchPatientIdLookup,
     fetchPatientListPage: apiMocks.fetchPatientListPage,
+    fetchMedsamArtifactStatus: apiMocks.fetchMedsamArtifactStatus,
+    fetchMedsamArtifactItems: apiMocks.fetchMedsamArtifactItems,
+    backfillMedsamArtifacts: apiMocks.backfillMedsamArtifacts,
     fetchSiteActivity: apiMocks.fetchSiteActivity,
     fetchSiteValidations: apiMocks.fetchSiteValidations,
     fetchSiteModelVersions: apiMocks.fetchSiteModelVersions,
@@ -70,6 +80,13 @@ describe("CaseWorkspace integration", () => {
 
     apiMocks.createPatient.mockResolvedValue({
       patient_id: "KERA-2026-001",
+    });
+    apiMocks.updatePatient.mockResolvedValue({
+      patient_id: "KERA-2026-001",
+      sex: "female",
+      age: 65,
+      chart_alias: "",
+      local_case_code: "",
     });
     apiMocks.createVisit.mockResolvedValue({
       patient_id: "KERA-2026-001",
@@ -107,6 +124,15 @@ describe("CaseWorkspace integration", () => {
         visit_status: "active",
       },
     ]);
+    apiMocks.fetchPatientIdLookup.mockImplementation(async (_siteId, _token, patientId: string) => ({
+      requested_patient_id: patientId,
+      normalized_patient_id: patientId.trim(),
+      exists: false,
+      patient: null,
+      visit_count: 0,
+      image_count: 0,
+      latest_visit_date: null,
+    }));
     apiMocks.fetchPatientListPage.mockResolvedValue({
       items: [
         {
@@ -150,6 +176,35 @@ describe("CaseWorkspace integration", () => {
       page_size: 25,
       total_count: 1,
       total_pages: 1,
+    });
+    apiMocks.fetchMedsamArtifactStatus.mockResolvedValue({
+      site_id: "SITE_A",
+      total: { patients: 1, visits: 1, images: 1 },
+      statuses: {
+        missing_lesion_box: { patients: 0, visits: 0, images: 0 },
+        missing_roi: { patients: 0, visits: 0, images: 0 },
+        missing_lesion_crop: { patients: 0, visits: 0, images: 0 },
+        medsam_backfill_ready: { patients: 0, visits: 0, images: 0 },
+      },
+      active_job: null,
+      last_synced_at: "2026-03-15T00:00:00Z",
+    });
+    apiMocks.fetchMedsamArtifactItems.mockResolvedValue({
+      scope: "visit",
+      status: "medsam_backfill_ready",
+      items: [],
+      page: 1,
+      page_size: 25,
+      total_count: 0,
+      total_pages: 1,
+    });
+    apiMocks.backfillMedsamArtifacts.mockResolvedValue({
+      site_id: "SITE_A",
+      job: {
+        job_id: "job_1",
+        status: "running",
+        result: { progress: { percent: 0 } },
+      },
     });
     apiMocks.fetchSiteActivity.mockResolvedValue({
       totals: {
@@ -556,6 +611,7 @@ describe("CaseWorkspace integration", () => {
 
     expect(await screen.findByText("Build the image board before submission")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save to hospital" })).toBeInTheDocument();
+    expect(screen.queryByText("Lesion boxes")).not.toBeInTheDocument();
   });
 
   it("shows hospital summary metrics in the rail and removes duplicate list-view panels", async () => {
@@ -756,6 +812,8 @@ describe("CaseWorkspace integration", () => {
 
     const file = await addDraftImage(container);
 
+    expect(screen.queryByText("Draw a lesion box directly on the image when ready.")).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
 
     await waitFor(() => {
@@ -779,6 +837,186 @@ describe("CaseWorkspace integration", () => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
     expect((await screen.findAllByText("Case KERA-2026-001 / Initial saved to Hospital A.")).length).toBeGreaterThan(0);
+  });
+
+  it("shows a newly saved case in list view without a full page refresh", async () => {
+    const nextCase = {
+      case_id: "case_new",
+      patient_id: "KERA-2026-009",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "Initial",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-15T00:00:00Z",
+      latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+      image_count: 1,
+      representative_image_id: "image_new",
+      representative_view: "white",
+      age: 65,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: true,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    const nextPatientRow = {
+      patient_id: "KERA-2026-009",
+      latest_case: nextCase,
+      case_count: 1,
+      organism_summary: "Staphylococcus aureus",
+      representative_thumbnails: [
+        {
+          case_id: "case_new",
+          image_id: "image_new",
+          view: "white",
+          preview_url: null,
+        },
+      ],
+    };
+    let currentCases = [
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        representative_view: "white",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: true,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+    ];
+    let currentPatientList = {
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: currentCases[0],
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: null,
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    };
+
+    apiMocks.fetchCases.mockImplementation(async () => currentCases);
+    apiMocks.fetchPatientListPage.mockImplementation(async () => currentPatientList);
+    apiMocks.createVisit.mockImplementation(async () => {
+      currentCases = [nextCase, ...currentCases];
+      currentPatientList = {
+        items: [nextPatientRow, ...currentPatientList.items],
+        page: 1,
+        page_size: 25,
+        total_count: 2,
+        total_pages: 1,
+      };
+      return {
+        patient_id: "KERA-2026-009",
+        visit_date: "Initial",
+      };
+    });
+
+    const { container } = renderWorkspace();
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields("KERA-2026-009");
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    await addDraftImage(container);
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+
+    await waitFor(() => {
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          mine: false,
+          page: 1,
+          page_size: 25,
+          search: "",
+        }),
+      );
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
+
+    const newCaseButton = (await screen.findAllByRole("button")).find(
+      (button) =>
+        button.textContent?.includes("KERA-2026-009") &&
+        button.textContent?.includes("Staphylococcus aureus"),
+    );
+    expect(newCaseButton).toBeTruthy();
+  });
+
+  it("warns when the patient ID already exists and saves without recreating the patient", async () => {
+    apiMocks.fetchPatientIdLookup.mockImplementation(async (_siteId, _token, patientId: string) => ({
+      requested_patient_id: patientId,
+      normalized_patient_id: patientId.trim(),
+      exists: patientId.trim() === "KERA-2026-001",
+      patient:
+        patientId.trim() === "KERA-2026-001"
+          ? {
+              patient_id: "KERA-2026-001",
+              created_by_user_id: "user_researcher",
+              sex: "female",
+              age: 65,
+              chart_alias: "",
+              local_case_code: "",
+              created_at: "2026-03-15T00:00:00Z",
+            }
+          : null,
+      visit_count: patientId.trim() === "KERA-2026-001" ? 2 : 0,
+      image_count: patientId.trim() === "KERA-2026-001" ? 5 : 0,
+      latest_visit_date: patientId.trim() === "KERA-2026-001" ? "FU #1" : null,
+    }));
+
+    const { container } = renderWorkspace();
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields("KERA-2026-001");
+
+    expect(await screen.findByText(/Existing patient record found\./)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    await addDraftImage(container);
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+
+    await waitFor(() => {
+      expect(apiMocks.createPatient).not.toHaveBeenCalled();
+      expect(apiMocks.createVisit).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+        }),
+      );
+    });
   });
 
   it("removes the duplicate header summary after the intake is locked", async () => {
@@ -894,6 +1132,49 @@ describe("CaseWorkspace integration", () => {
         "SITE_A",
         "test-token",
         expect.objectContaining({ visit_date: "FU #3" })
+      );
+    });
+  });
+
+  it("moves an edited case to the updated patient id when saving", async () => {
+    renderWorkspace();
+
+    await openSavedCase();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    await screen.findByRole("button", { name: "Lock intake" });
+    fireEvent.change(screen.getByLabelText("Patient ID"), {
+      target: { value: "17452298" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+
+    await waitFor(() => {
+      expect(apiMocks.createPatient).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          patient_id: "17452298",
+        })
+      );
+      expect(apiMocks.updateVisit).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        "KERA-2026-001",
+        "Initial",
+        expect.objectContaining({
+          patient_id: "17452298",
+          visit_date: "Initial",
+        })
+      );
+      expect(apiMocks.deleteVisitImages).toHaveBeenCalledWith("SITE_A", "test-token", "17452298", "Initial");
+      expect(apiMocks.uploadImage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          patient_id: "17452298",
+          visit_date: "Initial",
+        })
       );
     });
   });
@@ -1040,6 +1321,116 @@ describe("CaseWorkspace integration", () => {
     });
   });
 
+  it("shows the MedSAM backlog cards and starts background backfill from list view", async () => {
+    apiMocks.fetchMedsamArtifactStatus.mockResolvedValue({
+      site_id: "SITE_A",
+      total: { patients: 1, visits: 1, images: 1 },
+      statuses: {
+        missing_lesion_box: { patients: 0, visits: 0, images: 0 },
+        missing_roi: { patients: 1, visits: 1, images: 1 },
+        missing_lesion_crop: { patients: 1, visits: 1, images: 1 },
+        medsam_backfill_ready: { patients: 1, visits: 1, images: 1 },
+      },
+      active_job: null,
+      last_synced_at: "2026-03-15T00:00:00Z",
+    });
+    apiMocks.fetchMedsamArtifactItems.mockResolvedValue({
+      scope: "visit",
+      status: "missing_roi",
+      items: [
+        {
+          scope: "visit",
+          patient_id: "HTTP-001",
+          visit_date: "Initial",
+          image_count: 1,
+          visit_count: 1,
+          missing_lesion_box_count: 0,
+          missing_roi_count: 1,
+          missing_lesion_crop_count: 1,
+          medsam_backfill_ready_count: 1,
+          case_summary: {
+            case_id: "case_1",
+            patient_id: "HTTP-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-15T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_1",
+            representative_view: "white",
+            age: 60,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
+
+    renderWorkspace();
+
+    expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ mine: false, refresh: true }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Cornea ROI missing/i }));
+
+    expect(await screen.findByText("Review cases where corneal ROI artifacts are still missing.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear filter" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchMedsamArtifactItems).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          scope: "visit",
+          status_key: "missing_roi",
+          page: 1,
+          page_size: 25,
+          mine: false,
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Cornea ROI missing/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Review cases where corneal ROI artifacts are still missing.")).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Backfill" }));
+
+    await waitFor(() => {
+      expect(apiMocks.backfillMedsamArtifacts).toHaveBeenCalledWith("SITE_A", "test-token", {
+        mine: false,
+        refresh_cache: true,
+      });
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ mine: false, refresh: true }),
+      );
+    });
+  });
+
   it("auto-runs five-model analysis after AI validation", async () => {
     apiMocks.fetchCases.mockReset();
     apiMocks.fetchCases.mockResolvedValue([
@@ -1145,10 +1536,13 @@ describe("CaseWorkspace integration", () => {
 
     renderWorkspace();
 
+    expect(apiMocks.fetchSiteModelVersions).not.toHaveBeenCalled();
+    await openSavedCase();
+
     await waitFor(() => {
       expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
     });
-    await openSavedCase();
+    expect(await screen.findByText("vit")).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
 
@@ -1284,10 +1678,13 @@ describe("CaseWorkspace integration", () => {
 
     renderWorkspace();
 
+    expect(apiMocks.fetchSiteModelVersions).not.toHaveBeenCalled();
+    await openSavedCase();
+
     await waitFor(() => {
       expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
     });
-    await openSavedCase();
+    expect(await screen.findByText("vit")).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("button", { name: "Contribute case update" }));
 

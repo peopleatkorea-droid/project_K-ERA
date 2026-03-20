@@ -3,6 +3,7 @@ import type {
   AccessRequestRecord,
   AuthResponse,
   AuthState,
+  MainBootstrapResponse,
   AuthUser,
   PublicInstitutionRecord,
   PublicStatistics,
@@ -34,6 +35,15 @@ export async function fetchMe(token: string) {
   const auth = await requestMainControlPlane<AuthResponse>("/auth/me", {}, token);
   persistMainAppToken(auth.access_token);
   return auth.user;
+}
+
+export async function fetchMainBootstrap(token: string) {
+  const bootstrap = await requestMainControlPlane<MainBootstrapResponse>("/bootstrap", {}, token);
+  persistMainAppToken(bootstrap.access_token);
+  return {
+    ...bootstrap,
+    sites: filterVisibleSites(bootstrap.sites),
+  };
 }
 
 export async function fetchSites(token: string) {

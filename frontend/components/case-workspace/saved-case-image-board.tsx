@@ -1,6 +1,6 @@
 "use client";
 
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import type { SemanticPromptInputMode, SemanticPromptReviewResponse } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
@@ -17,7 +17,6 @@ import {
   savedCaseActionButtonClass,
   savedImageActionBarClass,
   semanticPromptCopyClass,
-  semanticPromptGridClass,
   semanticPromptLayerClass,
   semanticPromptLayerHeadClass,
   semanticPromptMatchClass,
@@ -68,6 +67,46 @@ type SavedCaseImageBoardProps = {
   onFinishLesionPointer: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
 };
 
+function ScoreBar({ score }: { score: number | null | undefined }) {
+  if (score == null) return null;
+  const pct = Math.min(100, Math.max(0, score * 100));
+  return (
+    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border/60">
+      <div className="h-full rounded-full bg-brand/50 transition-all duration-300" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function MatchList({
+  imageId,
+  layerId,
+  matches,
+  commonNotAvailable,
+  formatSemanticScore,
+}: {
+  imageId: string;
+  layerId: string;
+  matches: SemanticPromptReviewResponse["overall_top_matches"];
+  commonNotAvailable: string;
+  formatSemanticScore: (value: number | null | undefined, emptyLabel: string) => string;
+}) {
+  return (
+    <div className={semanticPromptMatchListClass}>
+      {matches.map((match, index) => (
+        <div key={`${imageId}-${layerId}-${match.prompt_id}`} className={semanticPromptMatchClass}>
+          <div className={semanticPromptRankClass}>{index + 1}</div>
+          <div className={semanticPromptCopyClass}>
+            <strong>{match.label}</strong>
+            <span className="text-[0.78rem] leading-4 text-muted">{match.prompt}</span>
+            <ScoreBar score={match.score} />
+          </div>
+          <div className={semanticPromptScoreClass}>{formatSemanticScore(match.score, commonNotAvailable)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SemanticPromptReviewPanel({
   locale,
   commonNotAvailable,
@@ -85,6 +124,8 @@ function SemanticPromptReviewPanel({
   pick: LocalePick;
   formatSemanticScore: (value: number | null | undefined, emptyLabel: string) => string;
 }) {
+  const [activeLayerIndex, setActiveLayerIndex] = useState(0);
+
   return (
     <Card as="div" variant="nested" className={semanticPromptReviewClass}>
       {error ? (
@@ -101,40 +142,43 @@ function SemanticPromptReviewPanel({
             <div className={semanticPromptLayerHeadClass}>
               <strong>{pick(locale, "Overall top 3", "Overall top 3")}</strong>
             </div>
-            <div className={semanticPromptMatchListClass}>
-              {review.overall_top_matches.map((match, index) => (
-                <div key={`${imageId}-overall-${match.prompt_id}`} className={semanticPromptMatchClass}>
-                  <div className={semanticPromptRankClass}>{index + 1}</div>
-                  <div className={semanticPromptCopyClass}>
-                    <strong>{match.label}</strong>
-                    <span>{match.prompt}</span>
-                  </div>
-                  <div className={semanticPromptScoreClass}>{formatSemanticScore(match.score, commonNotAvailable)}</div>
-                </div>
-              ))}
-            </div>
+            <MatchList
+              imageId={imageId}
+              layerId="overall"
+              matches={review.overall_top_matches}
+              commonNotAvailable={commonNotAvailable}
+              formatSemanticScore={formatSemanticScore}
+            />
           </Card>
-          <div className={semanticPromptGridClass}>
-            {review.layers.map((layer) => (
-              <Card as="div" variant="nested" key={`${imageId}-${layer.layer_id}`} className={semanticPromptLayerClass}>
-                <div className={semanticPromptLayerHeadClass}>
-                  <strong>{layer.layer_label}</strong>
-                </div>
-                <div className={semanticPromptMatchListClass}>
-                  {layer.matches.map((match, index) => (
-                    <div key={`${imageId}-${layer.layer_id}-${match.prompt_id}`} className={semanticPromptMatchClass}>
-                      <div className={semanticPromptRankClass}>{index + 1}</div>
-                      <div className={semanticPromptCopyClass}>
-                        <strong>{match.label}</strong>
-                        <span>{match.prompt}</span>
-                      </div>
-                      <div className={semanticPromptScoreClass}>{formatSemanticScore(match.score, commonNotAvailable)}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            ))}
-          </div>
+          {review.layers.length > 0 ? (
+            <Card as="div" variant="nested" className={semanticPromptLayerClass}>
+              <div className="flex flex-wrap gap-1.5">
+                {review.layers.map((layer, index) => (
+                  <button
+                    key={layer.layer_id}
+                    type="button"
+                    onClick={() => setActiveLayerIndex(index)}
+                    className={`min-h-7 rounded-[8px] border px-3 text-[0.82rem] font-semibold transition duration-150 ease-out ${
+                      activeLayerIndex === index
+                        ? "border-brand/30 bg-brand/10 text-brand"
+                        : "border-border bg-surface text-muted hover:border-brand/20 hover:text-ink"
+                    }`}
+                  >
+                    {layer.layer_label}
+                  </button>
+                ))}
+              </div>
+              {review.layers[activeLayerIndex] ? (
+                <MatchList
+                  imageId={imageId}
+                  layerId={review.layers[activeLayerIndex].layer_id}
+                  matches={review.layers[activeLayerIndex].matches}
+                  commonNotAvailable={commonNotAvailable}
+                  formatSemanticScore={formatSemanticScore}
+                />
+              ) : null}
+            </Card>
+          ) : null}
         </>
       ) : (
         <div className={emptySurfaceClass}>{pick(locale, "Run BiomedCLIP analysis once to inspect the top-ranked matches.", "Top-ranked 결과를 보려면 BiomedCLIP 분석을 실행해 주세요.")}</div>

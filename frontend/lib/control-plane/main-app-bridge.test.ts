@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const requireMainAppBridgeUser = vi.hoisted(() => vi.fn());
 const controlPlaneSql = vi.hoisted(() => vi.fn());
+const buildLocalAuthResponse = vi.hoisted(() => vi.fn());
+const listAccessRequestsForCanonicalUser = vi.hoisted(() => vi.fn());
 
 vi.mock("server-only", () => ({}));
 
@@ -58,7 +60,7 @@ vi.mock("./main-app-bridge-records", () => ({
   ensureDefaultProject: vi.fn(),
   institutionRowById: vi.fn(),
   latestAccessRequestForCanonicalUser: vi.fn(),
-  listAccessRequestsForCanonicalUser: vi.fn(),
+  listAccessRequestsForCanonicalUser,
   serializeSiteRecord: (row: Record<string, unknown>) => ({
     site_id: row.site_id,
     display_name: row.display_name,
@@ -78,6 +80,7 @@ vi.mock("./main-app-bridge-users", () => ({
 }));
 
 vi.mock("./main-app-bridge-shared", () => ({
+  buildLocalAuthResponse,
   fetchLegacyLocalNodeApi: vi.fn(),
   legacyEmailForLocalUser: vi.fn(),
   normalizeRegistryConsents: (value: unknown) => value ?? {},
@@ -92,7 +95,7 @@ vi.mock("./store", () => ({
   ensureControlPlaneIdentity: vi.fn(),
 }));
 
-import { fetchSitesForMainUser } from "./main-app-bridge";
+import { fetchMainBootstrap, fetchSitesForMainUser } from "./main-app-bridge";
 
 describe("fetchSitesForMainUser", () => {
   beforeEach(() => {
@@ -150,5 +153,107 @@ describe("fetchSitesForMainUser", () => {
 
     expect(controlPlaneSql).not.toHaveBeenCalled();
     expect(result).toEqual([]);
+  });
+
+  it("returns user and sites from a single bootstrap call for approved users", async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        site_id: "SITE_A",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+      },
+    ]);
+    const approvedUser = {
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    };
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_researcher",
+      user: approvedUser,
+    });
+    controlPlaneSql.mockResolvedValue(sql);
+    buildLocalAuthResponse.mockResolvedValue({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: approvedUser,
+    });
+
+    const result = await fetchMainBootstrap({} as never);
+
+    expect(requireMainAppBridgeUser).toHaveBeenCalledTimes(1);
+    expect(buildLocalAuthResponse).toHaveBeenCalledWith(approvedUser);
+    expect(controlPlaneSql).toHaveBeenCalledTimes(1);
+    expect(listAccessRequestsForCanonicalUser).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: approvedUser,
+      sites: [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ],
+      my_access_requests: [],
+    });
+  });
+
+  it("returns user and pending access requests from bootstrap for non-approved users", async () => {
+    const pendingUser = {
+      user_id: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    };
+    const requests = [
+      {
+        request_id: "access_1",
+        user_id: "user_pending",
+        email: "pending@example.com",
+        requested_site_id: "SITE_A",
+        requested_role: "researcher",
+        message: "",
+        status: "pending",
+        reviewed_by: null,
+        reviewer_notes: "",
+        created_at: "2026-03-20T00:00:00Z",
+        reviewed_at: null,
+      },
+    ];
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_pending",
+      user: pendingUser,
+    });
+    buildLocalAuthResponse.mockResolvedValue({
+      auth_state: "application_required",
+      access_token: "token-pending",
+      token_type: "bearer",
+      user: pendingUser,
+    });
+    listAccessRequestsForCanonicalUser.mockResolvedValue(requests);
+
+    const result = await fetchMainBootstrap({} as never);
+
+    expect(requireMainAppBridgeUser).toHaveBeenCalledTimes(1);
+    expect(buildLocalAuthResponse).toHaveBeenCalledWith(pendingUser);
+    expect(controlPlaneSql).not.toHaveBeenCalled();
+    expect(listAccessRequestsForCanonicalUser).toHaveBeenCalledWith("user_pending");
+    expect(result).toEqual({
+      auth_state: "application_required",
+      access_token: "token-pending",
+      token_type: "bearer",
+      user: pendingUser,
+      sites: [],
+      my_access_requests: requests,
+    });
   });
 });

@@ -9,7 +9,11 @@ import type {
   ImageRecord,
   LesionPreviewRecord,
   LiveLesionPreviewJobResponse,
+  MedsamArtifactItemsResponse,
+  MedsamArtifactStatusKey,
+  MedsamArtifactStatusSummary,
   OrganismRecord,
+  PatientIdLookupResponse,
   PatientListPageResponse,
   PatientRecord,
   ResearchRegistrySettingsResponse,
@@ -59,6 +63,50 @@ export async function createPatient(
   );
 }
 
+export async function updatePatient(
+  siteId: string,
+  token: string,
+  patientId: string,
+  payload: {
+    sex: string;
+    age: number;
+    chart_alias?: string;
+    local_case_code?: string;
+  },
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+  });
+  return request<PatientRecord>(
+    `/api/sites/${siteId}/patients?${params.toString()}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        chart_alias: "",
+        local_case_code: "",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function fetchPatientIdLookup(
+  siteId: string,
+  token: string,
+  patientId: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  const params = new URLSearchParams({
+    patient_id: patientId,
+  });
+  return request<PatientIdLookupResponse>(
+    `/api/sites/${siteId}/patients/lookup?${params.toString()}`,
+    { signal: options.signal },
+    token,
+  );
+}
+
 export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean; signal?: AbortSignal }) {
   const params = new URLSearchParams();
   if (options?.mine) {
@@ -94,6 +142,87 @@ export async function fetchPatientListPage(
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return request<PatientListPageResponse>(`/api/sites/${siteId}/patients/list-board${suffix}`, { signal: options.signal }, token);
+}
+
+export async function fetchMedsamArtifactStatus(
+  siteId: string,
+  token: string,
+  options: {
+    mine?: boolean;
+    refresh?: boolean;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.mine) {
+    params.set("mine", "true");
+  }
+  if (options.refresh) {
+    params.set("refresh", "true");
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<MedsamArtifactStatusSummary>(`/api/sites/${siteId}/medsam-artifacts/status${suffix}`, { signal: options.signal }, token);
+}
+
+export async function fetchMedsamArtifactItems(
+  siteId: string,
+  token: string,
+  options: {
+    scope: "patient" | "visit" | "image";
+    status_key: MedsamArtifactStatusKey;
+    mine?: boolean;
+    refresh?: boolean;
+    page?: number;
+    page_size?: number;
+    signal?: AbortSignal;
+  },
+) {
+  const params = new URLSearchParams({
+    scope: options.scope,
+    status_key: options.status_key,
+  });
+  if (options.mine) {
+    params.set("mine", "true");
+  }
+  if (options.refresh) {
+    params.set("refresh", "true");
+  }
+  if (typeof options.page === "number") {
+    params.set("page", String(options.page));
+  }
+  if (typeof options.page_size === "number") {
+    params.set("page_size", String(options.page_size));
+  }
+  return request<MedsamArtifactItemsResponse>(
+    `/api/sites/${siteId}/medsam-artifacts/items?${params.toString()}`,
+    { signal: options.signal },
+    token,
+  );
+}
+
+export async function backfillMedsamArtifacts(
+  siteId: string,
+  token: string,
+  options: {
+    mine?: boolean;
+    refresh_cache?: boolean;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (options.mine) {
+    params.set("mine", "true");
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<{ site_id: string; job: Record<string, unknown> }>(
+    `/api/sites/${siteId}/medsam-artifacts/backfill${suffix}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        refresh_cache: options.refresh_cache ?? true,
+      }),
+    },
+    token,
+  );
 }
 
 export async function fetchVisits(siteId: string, token: string, patientId?: string) {

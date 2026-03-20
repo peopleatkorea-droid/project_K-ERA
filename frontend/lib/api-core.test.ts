@@ -4,6 +4,7 @@ describe("buildApiUrl", () => {
   afterEach(() => {
     delete process.env.NEXT_PUBLIC_API_BASE_URL;
     delete process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL;
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -21,5 +22,15 @@ describe("buildApiUrl", () => {
     const { buildApiUrl } = await import("./api-core");
 
     expect(buildApiUrl("/api/health")).toBe("http://127.0.0.1:8100/api/health");
+  });
+
+  it("preserves AbortError instead of reporting the local API as unavailable", async () => {
+    const abortError = new DOMException("The operation was aborted.", "AbortError");
+    const fetchMock = vi.fn().mockRejectedValue(abortError);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { request } = await import("./api-core");
+
+    await expect(request("/api/health", { signal: new AbortController().signal })).rejects.toBe(abortError);
   });
 });

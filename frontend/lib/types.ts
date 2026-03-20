@@ -105,6 +105,16 @@ export type PatientRecord = {
   created_at?: string;
 };
 
+export type PatientIdLookupResponse = {
+  requested_patient_id: string;
+  normalized_patient_id: string;
+  exists: boolean;
+  patient: PatientRecord | null;
+  visit_count: number;
+  image_count: number;
+  latest_visit_date: string | null;
+};
+
 export type OrganismRecord = {
   culture_category: string;
   culture_species: string;
@@ -248,6 +258,58 @@ export type PatientListRowRecord = {
 
 export type PatientListPageResponse = {
   items: PatientListRowRecord[];
+  page: number;
+  page_size: number;
+  total_count: number;
+  total_pages: number;
+};
+
+export type MedsamArtifactStatusKey =
+  | "missing_lesion_box"
+  | "missing_roi"
+  | "missing_lesion_crop"
+  | "medsam_backfill_ready";
+
+export type ArtifactScopeCounts = {
+  patients: number;
+  visits: number;
+  images: number;
+};
+
+export type MedsamArtifactStatusSummary = {
+  site_id: string;
+  total: ArtifactScopeCounts;
+  statuses: Record<MedsamArtifactStatusKey, ArtifactScopeCounts>;
+  active_job: Record<string, unknown> | null;
+  last_synced_at: string | null;
+};
+
+export type MedsamArtifactListItem = {
+  scope: "patient" | "visit" | "image";
+  patient_id: string;
+  visit_date?: string | null;
+  image_id?: string | null;
+  view?: string | null;
+  uploaded_at?: string | null;
+  is_representative?: boolean;
+  has_lesion_box?: boolean;
+  has_roi_crop?: boolean;
+  has_medsam_mask?: boolean;
+  has_lesion_crop?: boolean;
+  has_lesion_mask?: boolean;
+  image_count?: number;
+  visit_count?: number;
+  missing_lesion_box_count?: number;
+  missing_roi_count?: number;
+  missing_lesion_crop_count?: number;
+  medsam_backfill_ready_count?: number;
+  case_summary?: CaseSummaryRecord | null;
+};
+
+export type MedsamArtifactItemsResponse = {
+  scope: "patient" | "visit" | "image";
+  status: MedsamArtifactStatusKey;
+  items: MedsamArtifactListItem[];
   page: number;
   page_size: number;
   total_count: number;
@@ -1386,6 +1448,11 @@ export type AuthResponse = {
   access_token: string;
   token_type: "bearer";
   user: AuthUser;
+};
+
+export type MainBootstrapResponse = AuthResponse & {
+  sites: SiteRecord[];
+  my_access_requests: AccessRequestRecord[];
 };
 
 export type PublicStatistics = {

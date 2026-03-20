@@ -16,10 +16,8 @@ import {
   canvasPropertyLabelClass,
   canvasPropertyValueClass,
   canvasSidebarItemClass,
-  draftLesionSurfaceClass,
   imageGridClass,
   imagePreviewCoverClass,
-  lesionBoxOverlayClass,
   togglePillClass,
 } from "../ui/workspace-patterns";
 
@@ -102,16 +100,9 @@ function ImageGrid({
   return (
     <div className={imageGridClass(images.length === 1)}>
       {images.map((image) => {
-        const lesionBox = draftLesionPromptBoxes[image.draft_id];
         return (
           <Card key={image.draft_id} as="article" variant="interactive" className="grid gap-4 overflow-hidden rounded-[20px] p-4">
-            <div
-              className={draftLesionSurfaceClass}
-              onPointerDown={(event) => onPointerDown(image.draft_id, event)}
-              onPointerMove={(event) => onPointerMove(image.draft_id, event)}
-              onPointerUp={(event) => onPointerUp(image.draft_id, event)}
-              onPointerCancel={(event) => onPointerUp(image.draft_id, event)}
-            >
+            <div className="relative overflow-hidden rounded-[18px] border border-border/70 bg-surface-muted/55">
               <img
                 src={image.preview_url}
                 alt={image.file.name}
@@ -119,17 +110,6 @@ function ImageGrid({
                 draggable={false}
                 onDragStart={(event) => event.preventDefault()}
               />
-              {lesionBox ? (
-                <div
-                  className={lesionBoxOverlayClass}
-                  style={{
-                    left: `${lesionBox.x0 * 100}%`,
-                    top: `${lesionBox.y0 * 100}%`,
-                    width: `${(lesionBox.x1 - lesionBox.x0) * 100}%`,
-                    height: `${(lesionBox.y1 - lesionBox.y0) * 100}%`,
-                  }}
-                />
-              ) : null}
             </div>
 
             <div className="grid gap-3">
@@ -161,9 +141,7 @@ function ImageGrid({
               </div>
 
               <div className={canvasSidebarItemClass}>
-                {lesionBox
-                  ? pick(locale, "Lesion box ready on this image.", "이 이미지의 lesion box가 준비되었습니다.")
-                  : pick(locale, "Draw a lesion box directly on the image when ready.", "준비되면 이미지 위에 바로 lesion box를 그리세요.")}
+                {pick(locale, "This image will upload with the case.", "이 이미지는 케이스와 함께 업로드됩니다.")}
               </div>
             </div>
           </Card>
@@ -215,7 +193,7 @@ function ImageBucket({
   setRepresentativeImage,
 }: ImageBucketProps) {
   return (
-    <Card as="section" variant="nested" className="grid gap-4 rounded-[22px] border border-border/70 p-5">
+    <Card as="section" variant="nested" className="grid content-start gap-4 rounded-[22px] border border-border/70 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid gap-1">
           <h4 className="m-0 text-[1.08rem] font-semibold tracking-[-0.03em] text-ink">{title}</h4>
@@ -292,8 +270,6 @@ export function ImageManagerPanel({
 }: Props) {
   const allDraftImages = [...whiteDraftImages, ...fluoresceinDraftImages];
   const representativeCount = allDraftImages.filter((image) => image.is_representative).length;
-  const lesionBoxCount = allDraftImages.filter((image) => Boolean(draftLesionPromptBoxes[image.draft_id])).length;
-  const missingLesionBoxes = Math.max(0, allDraftImages.length - lesionBoxCount);
   const readyToSubmit = intakeCompleted && Boolean(selectedSiteId) && allDraftImages.length > 0;
   const imageSummary = allDraftImages.length
     ? pick(locale, `${allDraftImages.length} draft images are lined up for ${resolvedVisitReferenceLabel}.`, `${resolvedVisitReferenceLabel}에 연결된 초안 이미지 ${allDraftImages.length}장을 정리해 두었습니다.`)
@@ -320,7 +296,6 @@ export function ImageManagerPanel({
       <div className={canvasPropertyGridClass}>
         <SummaryProperty label={pick(locale, "Visit", "방문")} value={resolvedVisitReferenceLabel} />
         <SummaryProperty label={pick(locale, "Representative", "대표 이미지")} value={`${representativeCount} / ${Math.max(1, allDraftImages.length)}`} />
-        <SummaryProperty label={pick(locale, "Lesion boxes", "Lesion box")} value={`${lesionBoxCount} / ${allDraftImages.length}`} />
       </div>
 
       <div className={canvasSidebarItemClass}>{imageSummary}</div>
@@ -381,9 +356,7 @@ export function ImageManagerPanel({
                 ? pick(locale, "Complete the intake first. Image uploads can continue, but submission stays disabled until the case structure is locked.", "먼저 intake를 완료하세요. 이미지 업로드는 계속할 수 있지만, 케이스 구조를 고정하기 전까지 제출은 비활성화됩니다.")
                 : allDraftImages.length === 0
                   ? pick(locale, "Add at least one image before saving this case to the hospital workspace.", "병원 워크스페이스에 저장하려면 이미지가 최소 한 장 필요합니다.")
-                  : missingLesionBoxes > 0
-                    ? pick(locale, `${missingLesionBoxes} image(s) still have no lesion box. You can still save, but the board reads better when the key images are annotated.`, `아직 lesion box가 없는 이미지가 ${missingLesionBoxes}장 있습니다. 저장은 가능하지만, 중요한 이미지는 표시를 마치는 편이 더 좋습니다.`)
-                    : pick(locale, "Patient, visit, and image records are aligned. You can save this case to the selected hospital now.", "환자, 방문, 이미지 기록이 정렬되었습니다. 이제 선택한 병원에 케이스를 저장할 수 있습니다.")}
+                  : pick(locale, "Patient, visit, and image records are aligned. You can save this case to the selected hospital now.", "환자, 방문, 이미지 기록이 정렬되었습니다. 이제 선택한 병원에 케이스를 저장할 수 있습니다.")}
           </p>
         </div>
         <Button type="button" variant="primary" onClick={onSaveCase} disabled={saveBusy || !readyToSubmit}>

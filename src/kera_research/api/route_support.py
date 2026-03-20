@@ -110,6 +110,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             score_slit_lamp_image=deps["score_slit_lamp_image"],
             InvalidImageUploadError=deps["InvalidImageUploadError"],
             PatientCreateRequest=deps["PatientCreateRequest"],
+            PatientUpdateRequest=deps["PatientUpdateRequest"],
             VisitCreateRequest=deps["VisitCreateRequest"],
             RepresentativeImageRequest=deps["RepresentativeImageRequest"],
             LesionBoxRequest=deps["LesionBoxRequest"],

@@ -7,6 +7,8 @@ export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
 const SYSTEM_PROJECT_OWNER_ID = "system";
+const DEFAULT_PROJECT_ID = "project_default";
+const DEFAULT_PROJECT_NAME = "K-ERA Default Project";
 
 function sqlClient(): ControlPlaneSql {
   if (cachedSql) {
@@ -362,6 +364,28 @@ export async function ensureControlPlaneSchema(): Promise<void> {
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       )
+    `;
+    await sql`
+      insert into projects (
+        project_id,
+        name,
+        description,
+        owner_user_id,
+        site_ids,
+        created_at,
+        updated_at
+      ) values (
+        ${DEFAULT_PROJECT_ID},
+        ${DEFAULT_PROJECT_NAME},
+        ${""},
+        ${SYSTEM_PROJECT_OWNER_ID},
+        ${JSON.stringify([])}::jsonb,
+        now(),
+        now()
+      )
+      on conflict (project_id) do update set
+        name = excluded.name,
+        updated_at = now()
     `;
 
     await sql`

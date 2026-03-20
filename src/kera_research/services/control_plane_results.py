@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from kera_research.config import BASE_DIR, CONTROL_PLANE_CASE_DIR, CONTROL_PLANE_EXPERIMENT_DIR, CONTROL_PLANE_REPORT_DIR
 from kera_research.db import CONTROL_PLANE_ENGINE, experiments, validation_cases, validation_runs
@@ -34,6 +34,34 @@ class ControlPlaneResultsFacade:
             payload["case_predictions_path"] = row["case_predictions_path"]
             runs.append(payload)
         return runs
+
+    def validation_run_summary(
+        self,
+        project_id: str | None = None,
+        site_id: str | None = None,
+    ) -> dict[str, Any]:
+        count_query = select(func.count()).select_from(validation_runs)
+        latest_query = select(validation_runs)
+        if project_id:
+            count_query = count_query.where(validation_runs.c.project_id == project_id)
+            latest_query = latest_query.where(validation_runs.c.project_id == project_id)
+        if site_id:
+            count_query = count_query.where(validation_runs.c.site_id == site_id)
+            latest_query = latest_query.where(validation_runs.c.site_id == site_id)
+        latest_query = latest_query.order_by(validation_runs.c.run_date.desc()).limit(1)
+
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            total_count = int(conn.execute(count_query).scalar() or 0)
+            latest_row = conn.execute(latest_query).mappings().first()
+
+        latest_run = None
+        if latest_row is not None:
+            latest_run = dict(latest_row["summary_json"] or {})
+            latest_run["case_predictions_path"] = latest_row["case_predictions_path"]
+        return {
+            "count": total_count,
+            "latest_run": latest_run,
+        }
 
     def list_validation_cases(
         self,

@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, delete, desc, func, or_, select, update
+from sqlalchemy import and_, case, delete, desc, func, or_, select, update
 
 from kera_research.config import (
     BASE_DIR,
@@ -254,6 +254,7 @@ class SiteStore:
         self.lesion_mask_dir = self.artifact_dir / "lesion_masks"
         self.lesion_crop_dir = self.artifact_dir / "lesion_crops"
         self.embedding_dir = self.artifact_dir / "embeddings"
+        self.image_preview_dir = self.artifact_dir / "image_previews"
         self.validation_dir = self.site_dir / "validation"
         self.update_dir = self.site_dir / "model_updates"
         self.case_history_dir = self.site_dir / "case_history"
@@ -269,6 +270,7 @@ class SiteStore:
             self.lesion_mask_dir,
             self.lesion_crop_dir,
             self.embedding_dir,
+            self.image_preview_dir,
             self.validation_dir,
             self.update_dir,
             self.case_history_dir,
@@ -381,6 +383,60 @@ class SiteStore:
             "created_at": row["created_at"],
         }
 
+    def lookup_patient_id(self, patient_id: str) -> dict[str, Any]:
+        requested_patient_id = str(patient_id or "").strip()
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        if not normalized_patient_id:
+            raise ValueError("Patient id is required.")
+
+        patient_query = select(db_patients).where(
+            and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == normalized_patient_id)
+        )
+        visit_count_query = (
+            select(func.count())
+            .select_from(db_visits)
+            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
+        )
+        image_count_query = (
+            select(func.count())
+            .select_from(db_images)
+            .where(and_(db_images.c.site_id == self.site_id, db_images.c.patient_id == normalized_patient_id))
+        )
+        latest_visit_query = (
+            select(db_visits.c.visit_date)
+            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
+            .order_by(desc(db_visits.c.visit_index), desc(db_visits.c.visit_date))
+            .limit(1)
+        )
+
+        with DATA_PLANE_ENGINE.begin() as conn:
+            patient_row = conn.execute(patient_query).mappings().first()
+            visit_count = conn.execute(visit_count_query).scalar() or 0
+            image_count = conn.execute(image_count_query).scalar() or 0
+            latest_visit_date = conn.execute(latest_visit_query).scalar()
+
+        patient_record = None
+        if patient_row is not None:
+            patient_record = {
+                "patient_id": patient_row["patient_id"],
+                "created_by_user_id": patient_row.get("created_by_user_id"),
+                "sex": patient_row["sex"],
+                "age": patient_row["age"],
+                "chart_alias": patient_row["chart_alias"],
+                "local_case_code": patient_row["local_case_code"],
+                "created_at": patient_row["created_at"],
+            }
+
+        return {
+            "requested_patient_id": requested_patient_id,
+            "normalized_patient_id": normalized_patient_id,
+            "exists": patient_record is not None,
+            "patient": patient_record,
+            "visit_count": int(visit_count or 0),
+            "image_count": int(image_count or 0),
+            "latest_visit_date": str(latest_visit_date or "") or None,
+        }
+
     def create_patient(
         self,
         patient_id: str,
@@ -417,6 +473,40 @@ class SiteStore:
                 "created_at",
             ]
         }
+
+    def update_patient(
+        self,
+        patient_id: str,
+        sex: str,
+        age: int,
+        chart_alias: str = "",
+        local_case_code: str = "",
+    ) -> dict[str, Any]:
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        existing = self.get_patient(normalized_patient_id)
+        if existing is None:
+            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
+        values = {
+            "sex": sex,
+            "age": int(age),
+            "chart_alias": chart_alias.strip(),
+            "local_case_code": local_case_code.strip(),
+        }
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_patients)
+                .where(
+                    and_(
+                        db_patients.c.site_id == self.site_id,
+                        db_patients.c.patient_id == normalized_patient_id,
+                    )
+                )
+                .values(**values)
+            )
+        refreshed = self.get_patient(normalized_patient_id)
+        if refreshed is None:
+            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
+        return refreshed
 
     def list_visits(self) -> list[dict[str, Any]]:
         query = (
@@ -517,6 +607,8 @@ class SiteStore:
         self,
         patient_id: str,
         visit_date: str,
+        target_patient_id: str | None,
+        target_visit_date: str | None,
         actual_visit_date: str | None,
         culture_confirmed: bool,
         culture_category: str,
@@ -533,12 +625,24 @@ class SiteStore:
     ) -> dict[str, Any]:
         normalized_patient_id = normalize_patient_pseudonym(patient_id)
         normalized_visit_date = normalize_visit_label(visit_date)
+        normalized_target_patient_id = normalize_patient_pseudonym(target_patient_id or patient_id)
+        normalized_target_visit_date = normalize_visit_label(target_visit_date or visit_date)
         normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
         existing = self.get_visit(normalized_patient_id, normalized_visit_date)
         if existing is None:
             raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
         if not culture_confirmed:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
+        if self.get_patient(normalized_target_patient_id) is None:
+            raise ValueError(f"Patient {normalized_target_patient_id} does not exist.")
+        target_changed = (
+            normalized_target_patient_id != normalized_patient_id
+            or normalized_target_visit_date != normalized_visit_date
+        )
+        if target_changed and self.get_visit(normalized_target_patient_id, normalized_target_visit_date):
+            raise ValueError(
+                f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} already exists."
+            )
         normalized_category = culture_category.strip().lower()
         normalized_species = culture_species.strip()
         normalized_additional_organisms = _normalize_additional_organisms(
@@ -550,13 +654,15 @@ class SiteStore:
         if normalized_status not in VISIT_STATUS_OPTIONS:
             normalized_status = "active" if active_stage else "scar"
         values = {
+            "patient_id": normalized_target_patient_id,
             "patient_reference_id": make_patient_reference_id(
                 self.site_id,
-                normalized_patient_id,
+                normalized_target_patient_id,
                 PATIENT_REFERENCE_SALT,
             ),
             "actual_visit_date": normalized_actual_visit_date,
-            "visit_index": visit_index_from_label(normalized_visit_date),
+            "visit_date": normalized_target_visit_date,
+            "visit_index": visit_index_from_label(normalized_target_visit_date),
             "culture_confirmed": bool(culture_confirmed),
             "culture_category": normalized_category,
             "culture_species": normalized_species,
@@ -582,9 +688,37 @@ class SiteStore:
                 )
                 .values(**values)
             )
-        refreshed = self.get_visit(patient_id, visit_date)
+            conn.execute(
+                update(db_images)
+                .where(
+                    and_(
+                        db_images.c.site_id == self.site_id,
+                        db_images.c.patient_id == normalized_patient_id,
+                        db_images.c.visit_date == normalized_visit_date,
+                    )
+                )
+                .values(
+                    patient_id=normalized_target_patient_id,
+                    visit_date=normalized_target_visit_date,
+                )
+            )
+        if target_changed:
+            source_history_path = self._case_history_path(normalized_patient_id, normalized_visit_date)
+            target_history_path = self._case_history_path(normalized_target_patient_id, normalized_target_visit_date)
+            if source_history_path.exists():
+                ensure_dir(target_history_path.parent)
+                if target_history_path.exists():
+                    target_history_path.unlink(missing_ok=True)
+                source_history_path.replace(target_history_path)
+            elif target_history_path.exists():
+                target_history_path.unlink(missing_ok=True)
+            if normalized_target_patient_id != normalized_patient_id:
+                self._delete_patient_if_empty(normalized_patient_id)
+        refreshed = self.get_visit(normalized_target_patient_id, normalized_target_visit_date)
         if refreshed is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+            raise ValueError(
+                f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} does not exist."
+            )
         return refreshed
 
     def list_images(self) -> list[dict[str, Any]]:
@@ -635,6 +769,12 @@ class SiteStore:
             "image_path": str(destination),
             "is_representative": bool(is_representative),
             "lesion_prompt_box": None,
+            "has_lesion_box": False,
+            "has_roi_crop": False,
+            "has_medsam_mask": False,
+            "has_lesion_crop": False,
+            "has_lesion_mask": False,
+            "artifact_status_updated_at": utc_now(),
             "uploaded_at": utc_now(),
         }
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -665,6 +805,8 @@ class SiteStore:
             raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
 
         deleted_images = self.delete_images_for_visit(patient_id, visit_date)
+        history_path = self._case_history_path(patient_id, visit_date)
+        history_path.unlink(missing_ok=True)
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 delete(db_visits).where(
@@ -677,18 +819,7 @@ class SiteStore:
             )
 
         remaining_visits = self.list_visits_for_patient(patient_id)
-        deleted_patient = False
-        if not remaining_visits:
-            with DATA_PLANE_ENGINE.begin() as conn:
-                conn.execute(
-                    delete(db_patients).where(
-                        and_(
-                            db_patients.c.site_id == self.site_id,
-                            db_patients.c.patient_id == patient_id,
-                        )
-                    )
-                )
-            deleted_patient = True
+        deleted_patient = self._delete_patient_if_empty(patient_id)
 
         return {
             "patient_id": patient_id,
@@ -697,6 +828,24 @@ class SiteStore:
             "deleted_patient": deleted_patient,
             "remaining_visit_count": len(remaining_visits),
         }
+
+    def _delete_patient_if_empty(self, patient_id: str) -> bool:
+        remaining_visits = self.list_visits_for_patient(patient_id)
+        if remaining_visits:
+            return False
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                delete(db_patients).where(
+                    and_(
+                        db_patients.c.site_id == self.site_id,
+                        db_patients.c.patient_id == patient_id,
+                    )
+                )
+            )
+        patient_history_dir = self.case_history_dir / _safe_path_component(patient_id)
+        if patient_history_dir.exists() and not any(patient_history_dir.iterdir()):
+            patient_history_dir.rmdir()
+        return True
 
     def update_representative_flags(self, updates: dict[str, bool]) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -710,11 +859,54 @@ class SiteStore:
     def update_lesion_prompt_box(self, image_id: str, lesion_prompt_box: dict[str, Any] | None) -> dict[str, Any]:
         if self.get_image(image_id) is None:
             raise ValueError("Image not found.")
+        has_lesion_box = isinstance(lesion_prompt_box, dict)
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 update(db_images)
                 .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-                .values(lesion_prompt_box=lesion_prompt_box)
+                .values(
+                    lesion_prompt_box=lesion_prompt_box,
+                    has_lesion_box=has_lesion_box,
+                    has_lesion_crop=False,
+                    has_lesion_mask=False,
+                    artifact_status_updated_at=utc_now(),
+                )
+            )
+        refreshed = self.get_image(image_id)
+        if refreshed is None:
+            raise ValueError("Image not found.")
+        return refreshed
+
+    def update_image_artifact_cache(
+        self,
+        image_id: str,
+        *,
+        has_lesion_box: bool | None = None,
+        has_roi_crop: bool | None = None,
+        has_medsam_mask: bool | None = None,
+        has_lesion_crop: bool | None = None,
+        has_lesion_mask: bool | None = None,
+    ) -> dict[str, Any]:
+        if self.get_image(image_id) is None:
+            raise ValueError("Image not found.")
+        values: dict[str, Any] = {
+            "artifact_status_updated_at": utc_now(),
+        }
+        if has_lesion_box is not None:
+            values["has_lesion_box"] = bool(has_lesion_box)
+        if has_roi_crop is not None:
+            values["has_roi_crop"] = bool(has_roi_crop)
+        if has_medsam_mask is not None:
+            values["has_medsam_mask"] = bool(has_medsam_mask)
+        if has_lesion_crop is not None:
+            values["has_lesion_crop"] = bool(has_lesion_crop)
+        if has_lesion_mask is not None:
+            values["has_lesion_mask"] = bool(has_lesion_mask)
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_images)
+                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
+                .values(**values)
             )
         refreshed = self.get_image(image_id)
         if refreshed is None:
@@ -824,6 +1016,103 @@ class SiteStore:
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [dict(row) for row in rows]
+
+    def site_summary_stats(self) -> dict[str, int]:
+        patient_count_query = (
+            select(func.count())
+            .select_from(db_patients)
+            .where(db_patients.c.site_id == self.site_id)
+        )
+        image_count_query = (
+            select(func.count())
+            .select_from(db_images)
+            .where(db_images.c.site_id == self.site_id)
+        )
+        visit_summary_query = (
+            select(
+                func.count(db_visits.c.visit_id).label("n_visits"),
+                func.sum(
+                    case(
+                        (
+                            or_(
+                                db_visits.c.visit_status == "active",
+                                and_(
+                                    db_visits.c.visit_status.is_(None),
+                                    db_visits.c.active_stage == True,
+                                ),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("n_active_visits"),
+                func.sum(
+                    case(
+                        (db_visits.c.research_registry_status == "included", 1),
+                        else_=0,
+                    )
+                ).label("n_included_visits"),
+                func.sum(
+                    case(
+                        (db_visits.c.research_registry_status == "excluded", 1),
+                        else_=0,
+                    )
+                ).label("n_excluded_visits"),
+            )
+            .where(db_visits.c.site_id == self.site_id)
+        )
+
+        with DATA_PLANE_ENGINE.begin() as conn:
+            patient_count = conn.execute(patient_count_query).scalar() or 0
+            image_count = conn.execute(image_count_query).scalar() or 0
+            visit_summary = conn.execute(visit_summary_query).mappings().first() or {}
+
+        return {
+            "n_patients": int(patient_count or 0),
+            "n_visits": int(visit_summary.get("n_visits") or 0),
+            "n_images": int(image_count or 0),
+            "n_active_visits": int(visit_summary.get("n_active_visits") or 0),
+            "n_included_visits": int(visit_summary.get("n_included_visits") or 0),
+            "n_excluded_visits": int(visit_summary.get("n_excluded_visits") or 0),
+        }
+
+    def image_preview_cache_path(self, image_id: str, max_side: int) -> Path:
+        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
+        preview_dir = ensure_dir(self.image_preview_dir / str(normalized_max_side))
+        return preview_dir / f"{image_id}.jpg"
+
+    def ensure_image_preview(self, image: dict[str, Any], max_side: int) -> Path:
+        image_id = str(image.get("image_id") or "").strip()
+        if not image_id:
+            raise ValueError("Image id is required.")
+        image_path = Path(str(image.get("image_path") or "")).resolve()
+        if not image_path.exists():
+            raise ValueError("Image file not found on disk.")
+
+        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
+        preview_path = self.image_preview_cache_path(image_id, normalized_max_side)
+        if preview_path.exists() and preview_path.stat().st_mtime >= image_path.stat().st_mtime:
+            return preview_path
+
+        temp_path = preview_path.with_suffix(
+            f".{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        resampling = getattr(Image, "Resampling", Image)
+
+        try:
+            with Image.open(image_path) as handle:
+                normalized = ImageOps.exif_transpose(handle)
+                preview = normalized.copy()
+                preview.thumbnail((normalized_max_side, normalized_max_side), resampling.LANCZOS)
+                if preview.mode not in {"RGB", "L"}:
+                    preview = preview.convert("RGB")
+                preview.save(temp_path, format="JPEG", quality=82, optimize=True)
+            temp_path.replace(preview_path)
+        except (OSError, UnidentifiedImageError, ValueError):
+            temp_path.unlink(missing_ok=True)
+            raise
+
+        return preview_path
 
     def list_case_summaries(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
         """Optimized case summaries using a single JOIN query."""

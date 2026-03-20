@@ -46,4 +46,14 @@ describe("ImageManagerPanel", () => {
     expect(laneGrid).toContainElement(whiteLane);
     expect(laneGrid).toContainElement(fluoresceinLane);
   });
+
+  it("keeps each lane dropzone anchored to the top when the paired lane grows taller", () => {
+    render(<ImageManagerPanel {...buildProps()} />);
+
+    const whiteLane = screen.getByText("White (Slit) 레인").closest("section");
+    const fluoresceinLane = screen.getByText("Fluorescein 레인").closest("section");
+
+    expect(whiteLane?.className).toContain("content-start");
+    expect(fluoresceinLane?.className).toContain("content-start");
+  });
 });

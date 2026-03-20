@@ -7,7 +7,6 @@ import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, ManagedUse
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
-  ensureDefaultProject,
   latestAccessRequestForCanonicalUser,
   upsertAccessRequestRecord,
   upsertSiteRecord,
@@ -495,7 +494,6 @@ export async function buildMainAuthUser(
 
 export async function requireMainAppBridgeUser(request: NextRequest): Promise<CanonicalUserContext> {
   const claims = await readMainAppTokenClaims(request);
-  await ensureDefaultProject();
   const canonicalRow = await canonicalUserRowForTokenClaims(claims);
   if (!canonicalRow) {
     throw new Error("Authentication required.");

@@ -1,4 +1,7 @@
 import io
+import logging
+import os
+import time
 from types import SimpleNamespace
 import zipfile
 from pathlib import Path
@@ -20,6 +23,9 @@ from kera_research.api.site_jobs import (
 )
 from kera_research.domain import normalize_actual_visit_date, normalize_patient_pseudonym, normalize_visit_label
 from kera_research.services.data_plane import SiteStore
+
+logger = logging.getLogger(__name__)
+TIMING_LOGS_ENABLED = str(os.getenv("KERA_BOOTSTRAP_TIMING_LOGS") or "").strip() == "1"
 
 
 def build_sites_router(support: Any) -> APIRouter:
@@ -71,28 +77,21 @@ def build_sites_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
 
     def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
-        patients = site_store.list_patients()
-        visits = site_store.list_visits()
-        images = site_store.list_images()
-        active_visits = [
-            visit for visit in visits if visit.get("visit_status", "active" if visit.get("active_stage") else "scar") == "active"
-        ]
-        included_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "included"]
-        excluded_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "excluded"]
+        stats = site_store.site_summary_stats()
         return {
             "site_id": site_id,
-            "n_patients": len(patients),
-            "n_visits": len(visits),
-            "n_images": len(images),
-            "n_active_visits": len(active_visits),
+            "n_patients": stats["n_patients"],
+            "n_visits": stats["n_visits"],
+            "n_images": stats["n_images"],
+            "n_active_visits": stats["n_active_visits"],
             "n_validation_runs": 0,
             "latest_validation": None,
             "research_registry": {
                 "site_enabled": False,
                 "user_enrolled": False,
                 "user_enrolled_at": None,
-                "included_cases": len(included_visits),
-                "excluded_cases": len(excluded_visits),
+                "included_cases": stats["n_included_visits"],
+                "excluded_cases": stats["n_excluded_visits"],
             },
         }
 
@@ -131,43 +130,57 @@ def build_sites_router(support: Any) -> APIRouter:
         authorization: str | None = Header(default=None),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
+        started_at = time.perf_counter()
         site_store = require_site_access(cp, user, site_id)
-        patients = site_store.list_patients()
-        visits = site_store.list_visits()
-        images = site_store.list_images()
-        validation_runs = cp.list_validation_runs(site_id=site_id)
-        active_visits = [
-            visit for visit in visits if visit.get("visit_status", "active" if visit.get("active_stage") else "scar") == "active"
-        ]
-        included_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "included"]
-        excluded_visits = [visit for visit in visits if visit.get("research_registry_status", "analysis_only") == "excluded"]
-        latest_run = validation_runs[0] if validation_runs else None
+        stats_started_at = time.perf_counter()
+        stats = site_store.site_summary_stats()
+        stats_elapsed_ms = (time.perf_counter() - stats_started_at) * 1000.0
+        validation_started_at = time.perf_counter()
+        validation_summary = cp.validation_run_summary(site_id=site_id)
+        validation_elapsed_ms = (time.perf_counter() - validation_started_at) * 1000.0
+        latest_run = validation_summary.get("latest_run")
+        validation_run_count = int(validation_summary.get("count") or 0)
+        site_record_started_at = time.perf_counter()
         site_record = site_record_for_request(
             cp,
             site_id=site_id,
             authorization=authorization,
             control_plane_owner=control_plane_owner,
         ) or {}
+        site_record_elapsed_ms = (time.perf_counter() - site_record_started_at) * 1000.0
+        consent_started_at = time.perf_counter()
         consent = cp.get_registry_consent(user["user_id"], site_id)
+        consent_elapsed_ms = (time.perf_counter() - consent_started_at) * 1000.0
+        total_elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        if TIMING_LOGS_ENABLED:
+            logger.info(
+                "site_summary_timing site_id=%s stats_ms=%.1f validation_ms=%.1f site_record_ms=%.1f consent_ms=%.1f total_ms=%.1f",
+                site_id,
+                stats_elapsed_ms,
+                validation_elapsed_ms,
+                site_record_elapsed_ms,
+                consent_elapsed_ms,
+                total_elapsed_ms,
+            )
         if not site_record and control_plane_split_enabled():
             summary = build_local_summary(site_store, site_id)
-            summary["n_validation_runs"] = len(validation_runs)
+            summary["n_validation_runs"] = validation_run_count
             summary["latest_validation"] = latest_run
             return summary
         return {
             "site_id": site_id,
-            "n_patients": len(patients),
-            "n_visits": len(visits),
-            "n_images": len(images),
-            "n_active_visits": len(active_visits),
-            "n_validation_runs": len(validation_runs),
+            "n_patients": stats["n_patients"],
+            "n_visits": stats["n_visits"],
+            "n_images": stats["n_images"],
+            "n_active_visits": stats["n_active_visits"],
+            "n_validation_runs": validation_run_count,
             "latest_validation": latest_run,
             "research_registry": {
                 "site_enabled": bool(site_record.get("research_registry_enabled", True)),
                 "user_enrolled": consent is not None,
                 "user_enrolled_at": consent.get("enrolled_at") if consent else None,
-                "included_cases": len(included_visits),
-                "excluded_cases": len(excluded_visits),
+                "included_cases": stats["n_included_visits"],
+                "excluded_cases": stats["n_excluded_visits"],
             },
         }
 

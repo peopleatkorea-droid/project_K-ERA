@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 
 import type {
   AccessRequestRecord,
+  MainBootstrapResponse,
   AuthResponse,
   AuthUser,
   ResearchRegistrySettingsResponse,
@@ -44,7 +45,6 @@ export {
   searchPublicInstitutions,
 } from "./main-app-bridge-public";
 import {
-  ensureDefaultProject,
   institutionRowById,
   latestAccessRequestForCanonicalUser,
   listAccessRequestsForCanonicalUser,
@@ -61,6 +61,7 @@ import {
   requireMainAppBridgeUser,
 } from "./main-app-bridge-users";
 import {
+  buildLocalAuthResponse,
   fetchLegacyLocalNodeApi,
   legacyEmailForLocalUser,
   normalizeRegistryConsents,
@@ -72,9 +73,16 @@ import {
 import { ensureControlPlaneIdentity } from "./store";
 
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
+const BOOTSTRAP_TIMING_LOGS_ENABLED = trimText(process.env.KERA_BOOTSTRAP_TIMING_LOGS) === "1";
 
-export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteRecord[]> {
-  const { user } = await requireMainAppBridgeUser(request);
+function logBootstrapTiming(message: string, payload: Record<string, unknown>): void {
+  if (!BOOTSTRAP_TIMING_LOGS_ENABLED) {
+    return;
+  }
+  console.info(`[kera-main-bootstrap] ${message}`, payload);
+}
+
+async function listSitesForMainUserRecord(user: AuthUser): Promise<SiteRecord[]> {
   const siteIds = normalizeStringArray(user.site_ids);
   if (user.role !== "admin" && !siteIds.length) {
     return [];
@@ -96,9 +104,56 @@ export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteR
   return rows.map((row) => serializeSiteRecord(row));
 }
 
+export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteRecord[]> {
+  const { user } = await requireMainAppBridgeUser(request);
+  return listSitesForMainUserRecord(user);
+}
+
 export async function fetchMainUserAuth(request: NextRequest): Promise<AuthResponse> {
+  const { user } = await requireMainAppBridgeUser(request);
+  return buildLocalAuthResponse(user);
+}
+
+export async function fetchMainBootstrap(request: NextRequest): Promise<MainBootstrapResponse> {
+  const totalStartedAt = performance.now();
+  const authStartedAt = performance.now();
   const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
-  return buildMainAuthResponse(canonicalUserId, user);
+  const auth = await buildLocalAuthResponse(user);
+  const authCompletedAt = performance.now();
+
+  let sites: SiteRecord[] = [];
+  let myAccessRequests: AccessRequestRecord[] = [];
+  let sitesMs = 0;
+  let requestsMs = 0;
+
+  if (user.approval_status === "approved") {
+    const sitesStartedAt = performance.now();
+    sites = await listSitesForMainUserRecord(user);
+    sitesMs = performance.now() - sitesStartedAt;
+  } else {
+    const requestsStartedAt = performance.now();
+    myAccessRequests = await listAccessRequestsForCanonicalUser(canonicalUserId);
+    requestsMs = performance.now() - requestsStartedAt;
+  }
+
+  const totalMs = performance.now() - totalStartedAt;
+  logBootstrapTiming("completed", {
+    user_id: user.user_id,
+    role: user.role,
+    approval_status: user.approval_status,
+    auth_ms: Math.round(authCompletedAt - authStartedAt),
+    sites_ms: Math.round(sitesMs),
+    requests_ms: Math.round(requestsMs),
+    total_ms: Math.round(totalMs),
+    site_count: sites.length,
+    request_count: myAccessRequests.length,
+  });
+
+  return {
+    ...auth,
+    sites,
+    my_access_requests: myAccessRequests,
+  };
 }
 
 export async function loginMainWithGoogle(request: NextRequest, idToken: string): Promise<AuthResponse> {

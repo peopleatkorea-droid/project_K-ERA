@@ -22,7 +22,7 @@ const savedCaseGhostActionClass =
 const savedCaseFollowUpActionClass =
   "min-h-10 rounded-[11px] border border-brand-strong/35 bg-brand px-4 text-[0.86rem] font-semibold text-[var(--accent-contrast)] shadow-[0_12px_24px_rgba(48,88,255,0.24)] ring-1 ring-brand/15 transition duration-150 ease-out hover:-translate-y-[1px] hover:border-brand-strong hover:bg-brand-strong hover:shadow-[0_16px_28px_rgba(48,88,255,0.28)] dark:border-brand/40 dark:bg-brand dark:text-[var(--accent-contrast)] dark:ring-brand/20";
 const savedCaseCurrentVisitActionClass =
-  "min-h-9 rounded-[10px] border border-brand/22 bg-brand-soft/85 px-4 text-[0.86rem] font-semibold text-brand hover:border-brand/30 hover:bg-brand-soft dark:border-brand/24 dark:bg-brand-soft/80 dark:text-brand dark:hover:border-brand/34 dark:hover:bg-brand-soft";
+  "min-h-9 rounded-[10px] border border-brand-strong/45 bg-brand px-4 text-[0.86rem] font-semibold text-[var(--accent-contrast)] shadow-[0_10px_22px_rgba(48,88,255,0.22)] ring-1 ring-brand/20 transition duration-150 ease-out hover:border-brand-strong hover:bg-brand-strong hover:shadow-[0_14px_28px_rgba(48,88,255,0.26)] dark:border-brand/50 dark:bg-brand dark:text-[var(--accent-contrast)] dark:ring-brand/24";
 const savedCaseSummaryBarClass =
   "overflow-hidden rounded-[14px] border border-border bg-surface-muted/70 dark:border-white/8 dark:bg-surface-muted/70";
 

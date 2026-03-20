@@ -2,7 +2,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 
-import type { OrganismRecord } from "../../lib/api";
+import type { OrganismRecord, PatientIdLookupResponse } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { CanvasBlock } from "../ui/canvas-block";
@@ -64,6 +64,9 @@ type Props = {
   pendingSpeciesOptions: string[];
   showAdditionalOrganismForm: boolean;
   intakeOrganisms: OrganismRecord[];
+  patientIdLookup: PatientIdLookupResponse | null;
+  patientIdLookupBusy: boolean;
+  patientIdLookupError: string | null;
   primaryOrganismSummary: string;
   resolvedVisitReferenceLabel: string;
   actualVisitDateLabel: string;
@@ -111,6 +114,9 @@ export function PatientVisitForm({
   pendingSpeciesOptions,
   showAdditionalOrganismForm,
   intakeOrganisms,
+  patientIdLookup,
+  patientIdLookupBusy,
+  patientIdLookupError,
   primaryOrganismSummary,
   resolvedVisitReferenceLabel,
   actualVisitDateLabel,
@@ -148,6 +154,34 @@ export function PatientVisitForm({
     .join(" · ");
   const organismSummary = [organismCategorySummary, primaryOrganismLabel].join(" / ");
   const lockedOrganismSummary = primaryOrganismLabel;
+  const patientIdLookupSummary = [
+    patientIdLookup && patientIdLookup.normalized_patient_id !== draft.patient_id.trim()
+      ? pick(locale, `normalized as ${patientIdLookup.normalized_patient_id}`, `${patientIdLookup.normalized_patient_id}로 정규화`)
+      : null,
+    patientIdLookup?.visit_count ? pick(locale, `${patientIdLookup.visit_count} visit(s)`, `${patientIdLookup.visit_count}회 방문`) : null,
+    patientIdLookup?.image_count ? pick(locale, `${patientIdLookup.image_count} image(s)`, `이미지 ${patientIdLookup.image_count}장`) : null,
+    patientIdLookup?.latest_visit_date
+      ? pick(locale, `latest visit ${patientIdLookup.latest_visit_date}`, `최근 방문 ${patientIdLookup.latest_visit_date}`)
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const patientIdFeedback = patientIdLookupBusy
+    ? pick(locale, "Checking for an existing patient record in this hospital...", "이 병원에 같은 환자 ID가 있는지 확인하는 중입니다...")
+    : patientIdLookupError
+      ? patientIdLookupError
+      : patientIdLookup?.exists
+        ? pick(
+            locale,
+            `Existing patient record found. Saving will continue under the same patient.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`,
+            `기존 환자 기록이 있습니다. 저장하면 같은 환자 아래에 이어집니다.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`
+          )
+        : "";
+  const patientIdFeedbackClassName = patientIdLookupError
+    ? "text-danger"
+    : patientIdLookup?.exists
+      ? "text-amber-700 dark:text-amber-300"
+      : "text-muted";
 
   if (draft.intake_completed) {
     return (
@@ -207,16 +241,24 @@ export function PatientVisitForm({
         statusTone={identityComplete ? "complete" : "active"}
       >
         <div className="grid gap-3 md:grid-cols-3">
-          <label className={compactPatientFieldClassName}>
-            <span className={compactPatientLabelClassName}>{pick(locale, "Patient ID", "환자 ID")}</span>
-            <input
-              className={compactPatientControlClassName}
-              value={draft.patient_id}
-              onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
-              placeholder="17635992"
-              spellCheck={false}
-            />
-          </label>
+          <div className="grid gap-2">
+            <label className={compactPatientFieldClassName}>
+              <span className={compactPatientLabelClassName}>{pick(locale, "Patient ID", "환자 ID")}</span>
+              <input
+                aria-describedby={patientIdFeedback ? "patient-id-lookup-status" : undefined}
+                className={compactPatientControlClassName}
+                value={draft.patient_id}
+                onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
+                placeholder="17635992"
+                spellCheck={false}
+              />
+            </label>
+            {patientIdFeedback ? (
+              <p id="patient-id-lookup-status" role="status" className={`${supportHintClass} ${patientIdFeedbackClassName}`}>
+                {patientIdFeedback}
+              </p>
+            ) : null}
+          </div>
           <label className={compactPatientFieldClassName}>
             <span className={compactPatientLabelClassName}>{pick(locale, "Sex", "성별")}</span>
             <select

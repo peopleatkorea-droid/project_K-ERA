@@ -1,13 +1,11 @@
 import mimetypes
 import threading
-from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel
 from kera_research.api.case_model_versions import (
     resolve_requested_contribution_models as select_requested_contribution_models,
@@ -16,6 +14,15 @@ from kera_research.api.case_model_versions import (
     serialize_case_model_version,
 )
 from kera_research.api.control_plane_proxy import site_record_for_request
+from kera_research.services.image_artifact_status import (
+    artifact_status_labels,
+    build_artifact_status_items,
+    build_artifact_status_summary,
+    latest_medsam_backfill_job,
+    queue_medsam_artifact_backfill,
+    sync_image_artifact_cache,
+    sync_site_artifact_cache,
+)
 from kera_research.services.pipeline_case_support import lesion_prompt_box_signature, load_stored_lesion_crop
 
 
@@ -27,6 +34,9 @@ def build_cases_router(support: Any) -> APIRouter:
         visit_date: str
         action: str
         source: str = "manual"
+
+    class MedsamArtifactBackfillRequest(BaseModel):
+        refresh_cache: bool = True
 
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
@@ -56,6 +66,7 @@ def build_cases_router(support: Any) -> APIRouter:
     InvalidImageUploadError = support.InvalidImageUploadError
 
     PatientCreateRequest = support.PatientCreateRequest
+    PatientUpdateRequest = support.PatientUpdateRequest
     VisitCreateRequest = support.VisitCreateRequest
     RepresentativeImageRequest = support.RepresentativeImageRequest
     LesionBoxRequest = support.LesionBoxRequest
@@ -63,6 +74,31 @@ def build_cases_router(support: Any) -> APIRouter:
     CaseAiClinicRequest = support.CaseAiClinicRequest
     CaseContributionRequest = support.CaseContributionRequest
     CaseValidationCompareRequest = support.CaseValidationCompareRequest
+
+    def sync_case_artifact_cache_best_effort(
+        workflow: Any,
+        site_store: Any,
+        *,
+        patient_id: str,
+        visit_date: str,
+    ) -> None:
+        try:
+            for image_record in site_store.list_images_for_visit(patient_id, visit_date):
+                sync_image_artifact_cache(workflow, site_store, image_record)
+        except Exception:
+            return
+
+    def sync_image_artifact_cache_best_effort(
+        workflow: Any,
+        site_store: Any,
+        image_record: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(image_record, dict):
+            return
+        try:
+            sync_image_artifact_cache(workflow, site_store, image_record)
+        except Exception:
+            return
 
     @router.get("/api/sites/{site_id}/cases")
     def list_cases(
@@ -100,6 +136,19 @@ def build_cases_router(support: Any) -> APIRouter:
         created_by_user_id = user["user_id"] if mine else None
         return site_store.list_patients(created_by_user_id=created_by_user_id)
 
+    @router.get("/api/sites/{site_id}/patients/lookup")
+    def lookup_patient_id(
+        site_id: str,
+        patient_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = require_site_access(cp, user, site_id)
+        try:
+            return site_store.lookup_patient_id(patient_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     @router.get("/api/sites/{site_id}/patients/list-board")
     def list_patient_rows(
         site_id: str,
@@ -123,6 +172,102 @@ def build_cases_router(support: Any) -> APIRouter:
             page_size=page_size,
         )
 
+    @router.get("/api/sites/{site_id}/medsam-artifacts/status")
+    def get_medsam_artifact_status(
+        site_id: str,
+        mine: bool = False,
+        refresh: bool = False,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = require_site_access(cp, user, site_id)
+        created_by_user_id = user["user_id"] if mine else None
+        case_summaries = site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+        allowed_case_keys = {
+            (str(item.get("patient_id") or ""), str(item.get("visit_date") or ""))
+            for item in case_summaries
+        }
+        if refresh:
+            workflow = get_workflow(cp)
+            images = sync_site_artifact_cache(workflow, site_store, allowed_case_keys=allowed_case_keys)
+        else:
+            images = [item for item in site_store.list_images() if (str(item.get("patient_id") or ""), str(item.get("visit_date") or "")) in allowed_case_keys]
+        return build_artifact_status_summary(
+            site_store,
+            case_summaries=case_summaries,
+            images=images,
+            active_job=latest_medsam_backfill_job(site_store),
+        )
+
+    @router.get("/api/sites/{site_id}/medsam-artifacts/items")
+    def list_medsam_artifact_items(
+        site_id: str,
+        scope: str = "visit",
+        status_key: str = "medsam_backfill_ready",
+        mine: bool = False,
+        refresh: bool = False,
+        page: int = 1,
+        page_size: int = 25,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        normalized_scope = str(scope or "visit").strip().lower()
+        if normalized_scope not in {"patient", "visit", "image"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="scope must be patient, visit, or image.")
+        normalized_status = str(status_key or "medsam_backfill_ready").strip().lower()
+        if normalized_status not in set(artifact_status_labels()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"status_key must be one of: {', '.join(artifact_status_labels())}.",
+            )
+        if page < 1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page must be at least 1.")
+        if page_size < 1 or page_size > 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="page_size must be between 1 and 100.")
+        site_store = require_site_access(cp, user, site_id)
+        created_by_user_id = user["user_id"] if mine else None
+        case_summaries = site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+        allowed_case_keys = {
+            (str(item.get("patient_id") or ""), str(item.get("visit_date") or ""))
+            for item in case_summaries
+        }
+        if refresh:
+            workflow = get_workflow(cp)
+            images = sync_site_artifact_cache(workflow, site_store, allowed_case_keys=allowed_case_keys)
+        else:
+            images = [item for item in site_store.list_images() if (str(item.get("patient_id") or ""), str(item.get("visit_date") or "")) in allowed_case_keys]
+        return build_artifact_status_items(
+            case_summaries=case_summaries,
+            images=images,
+            scope=normalized_scope,
+            status=normalized_status,
+            page=page,
+            page_size=page_size,
+        )
+
+    @router.post("/api/sites/{site_id}/medsam-artifacts/backfill")
+    def backfill_medsam_artifacts(
+        site_id: str,
+        payload: MedsamArtifactBackfillRequest,
+        mine: bool = False,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_validation_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        created_by_user_id = user["user_id"] if mine else None
+        job = queue_medsam_artifact_backfill(
+            cp,
+            site_store,
+            created_by_user_id=created_by_user_id,
+            refresh_cache=bool(payload.refresh_cache),
+            trigger="manual",
+        )
+        return {
+            "site_id": site_id,
+            "job": job,
+        }
+
     @router.post("/api/sites/{site_id}/patients")
     def create_patient(
         site_id: str,
@@ -139,6 +284,38 @@ def build_cases_router(support: Any) -> APIRouter:
                 chart_alias=payload.chart_alias,
                 local_case_code=payload.local_case_code,
                 created_by_user_id=user["user_id"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @router.patch("/api/sites/{site_id}/patients")
+    def update_patient(
+        site_id: str,
+        patient_id: str,
+        payload: PatientUpdateRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = require_site_access(cp, user, site_id)
+        try:
+            lookup = site_store.lookup_patient_id(patient_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        patient = lookup.get("patient") if isinstance(lookup, dict) else None
+        if patient is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found.")
+        require_record_owner(
+            user,
+            str(patient.get("created_by_user_id") or "").strip() or None,
+            detail="Only the creator or a site admin can modify this patient.",
+        )
+        try:
+            return site_store.update_patient(
+                patient_id=str(patient.get("patient_id") or patient_id),
+                sex=payload.sex,
+                age=payload.age,
+                chart_alias=payload.chart_alias,
+                local_case_code=payload.local_case_code,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -197,9 +374,22 @@ def build_cases_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         require_visit_write_access(site_store, user, patient_id, visit_date)
         try:
+            target_lookup = site_store.lookup_patient_id(payload.patient_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        target_patient = target_lookup.get("patient") if isinstance(target_lookup, dict) else None
+        if target_patient is not None and str(target_patient.get("patient_id") or "").strip() != str(patient_id).strip():
+            require_record_owner(
+                user,
+                str(target_patient.get("created_by_user_id") or "").strip() or None,
+                detail="Only the creator or a site admin can move a visit into this patient.",
+            )
+        try:
             return site_store.update_visit(
                 patient_id=patient_id,
                 visit_date=visit_date,
+                target_patient_id=payload.patient_id,
+                target_visit_date=payload.visit_date,
                 actual_visit_date=payload.actual_visit_date,
                 culture_confirmed=payload.culture_confirmed,
                 culture_category=payload.culture_category,
@@ -427,26 +617,18 @@ def build_cases_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
 
         normalized_max_side = min(max(int(max_side or 512), 96), 1024)
-        resampling = getattr(Image, "Resampling", Image)
-
         try:
-            with Image.open(image_path) as handle:
-                normalized = ImageOps.exif_transpose(handle)
-                preview = normalized.copy()
-                preview.thumbnail((normalized_max_side, normalized_max_side), resampling.LANCZOS)
-                if preview.mode not in {"RGB", "L"}:
-                    preview = preview.convert("RGB")
-                output = BytesIO()
-                preview.save(output, format="JPEG", quality=82, optimize=True)
-        except (OSError, UnidentifiedImageError) as exc:
+            preview_path = site_store.ensure_image_preview(image, normalized_max_side)
+        except (OSError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Image preview could not be generated.",
             ) from exc
 
-        return Response(
-            content=output.getvalue(),
+        return FileResponse(
+            path=preview_path,
             media_type="image/jpeg",
+            filename=preview_path.name,
             headers={"Cache-Control": "private, max-age=86400"},
         )
 
@@ -498,6 +680,8 @@ def build_cases_router(support: Any) -> APIRouter:
         def _run() -> None:
             try:
                 result = workflow.preview_image_lesion(site_store, image_id, lesion_prompt_box=dict(lesion_prompt_box))
+                refreshed_image = site_store.get_image(image_id) or image
+                sync_image_artifact_cache_best_effort(workflow, site_store, refreshed_image)
                 with lesion_preview_jobs_lock:
                     lesion_preview_jobs[job_id].update(
                         {
@@ -582,6 +766,12 @@ def build_cases_router(support: Any) -> APIRouter:
                     if preview is None or not preview.get("lesion_crop_path"):
                         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lesion crop is not available for this image.")
                     analysis_path = str(preview["lesion_crop_path"])
+                sync_case_artifact_cache_best_effort(
+                    workflow,
+                    site_store,
+                    patient_id=str(image.get("patient_id") or ""),
+                    visit_date=str(image.get("visit_date") or ""),
+                )
             scorer = get_semantic_prompt_scorer()
             result = scorer.score_image(analysis_path, view=str(image.get("view") or "white"), top_k=top_k)
             return {
@@ -639,6 +829,12 @@ def build_cases_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Case validation is unavailable: {exc}",
             ) from exc
+        sync_case_artifact_cache_best_effort(
+            workflow,
+            site_store,
+            patient_id=payload.patient_id,
+            visit_date=payload.visit_date,
+        )
 
         case_prediction = case_predictions[0] if case_predictions else None
         post_mortem = None
@@ -770,6 +966,13 @@ def build_cases_router(support: Any) -> APIRouter:
                         "error": str(exc),
                     }
                 )
+        if any(item.get("summary") for item in comparisons):
+            sync_case_artifact_cache_best_effort(
+                workflow,
+                site_store,
+                patient_id=payload.patient_id,
+                visit_date=payload.visit_date,
+            )
 
         return {
             "patient_id": payload.patient_id,
@@ -805,7 +1008,7 @@ def build_cases_router(support: Any) -> APIRouter:
 
         try:
             execution_device = resolve_execution_device(payload.execution_mode)
-            return workflow.run_ai_clinic_report(
+            result = workflow.run_ai_clinic_report(
                 site_store,
                 patient_id=payload.patient_id,
                 visit_date=payload.visit_date,
@@ -814,6 +1017,13 @@ def build_cases_router(support: Any) -> APIRouter:
                 top_k=payload.top_k,
                 retrieval_backend=payload.retrieval_backend,
             )
+            sync_case_artifact_cache_best_effort(
+                workflow,
+                site_store,
+                patient_id=payload.patient_id,
+                visit_date=payload.visit_date,
+            )
+            return result
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -913,6 +1123,12 @@ def build_cases_router(support: Any) -> APIRouter:
             ),
             contribution_models[0],
         )
+        sync_case_artifact_cache_best_effort(
+            workflow,
+            site_store,
+            patient_id=payload.patient_id,
+            visit_date=payload.visit_date,
+        )
 
         return {
             "update": primary_update,
@@ -962,6 +1178,12 @@ def build_cases_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"ROI preview is unavailable: {exc}",
             ) from exc
+        sync_case_artifact_cache_best_effort(
+            workflow,
+            site_store,
+            patient_id=patient_id,
+            visit_date=visit_date,
+        )
 
         return [
             {
@@ -1053,6 +1275,12 @@ def build_cases_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Lesion preview is unavailable: {exc}",
             ) from exc
+        sync_case_artifact_cache_best_effort(
+            workflow,
+            site_store,
+            patient_id=patient_id,
+            visit_date=visit_date,
+        )
 
         return [
             {

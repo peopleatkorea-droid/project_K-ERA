@@ -468,6 +468,29 @@ export async function listAccessRequestsForCanonicalUser(canonicalUserId: string
 export async function latestAccessRequestForCanonicalUser(
   canonicalUserId: string,
 ): Promise<AccessRequestRecord | null> {
-  const records = await listAccessRequestsForCanonicalUser(canonicalUserId);
-  return records[0] ?? null;
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      request_id,
+      user_id,
+      email,
+      requested_site_id,
+      requested_site_label,
+      requested_site_source,
+      requested_role,
+      message,
+      status,
+      reviewed_by,
+      reviewer_notes,
+      created_at,
+      reviewed_at
+    from access_requests
+    where user_id = ${canonicalUserId}
+    order by created_at desc
+    limit 1
+  `;
+  if (!rows[0]) {
+    return null;
+  }
+  return serializeAccessRequestRecord(rows[0]);
 }

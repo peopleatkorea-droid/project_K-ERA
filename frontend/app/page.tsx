@@ -17,7 +17,7 @@ import {
   createPatient,
   downloadManifest,
   fetchAccessRequests,
-  fetchMe,
+  fetchMainBootstrap,
   fetchMyAccessRequests,
   fetchPublicSites,
   searchPublicInstitutions,
@@ -55,6 +55,7 @@ type ReviewDraft = {
 
 const TOKEN_KEY = "kera_web_token";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+const CLIENT_BOOTSTRAP_TIMING_LOGS = process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
 type OperationsSection = "dashboard" | "training" | "cross_validation";
 type WorkspaceMode = "canvas" | "operations";
 
@@ -210,7 +211,19 @@ function writeHomeHistoryEntry(entry: HomeHistoryEntry, mode: "push" | "replace"
   window.history.replaceState(nextState, "");
 }
 
-function readJwtExpiration(token: string): number | null {
+type MainAppTokenPayload = {
+  sub?: unknown;
+  username?: unknown;
+  full_name?: unknown;
+  public_alias?: unknown;
+  role?: unknown;
+  site_ids?: unknown;
+  approval_status?: unknown;
+  registry_consents?: unknown;
+  exp?: unknown;
+};
+
+function readJwtPayload(token: string): MainAppTokenPayload | null {
   const parts = token.split(".");
   if (parts.length < 2) {
     return null;
@@ -218,11 +231,60 @@ function readJwtExpiration(token: string): number | null {
   try {
     const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    const payload = JSON.parse(window.atob(padded)) as { exp?: unknown };
-    return typeof payload.exp === "number" ? payload.exp : null;
+    return JSON.parse(window.atob(padded)) as MainAppTokenPayload;
   } catch {
     return null;
   }
+}
+
+function readJwtExpiration(token: string): number | null {
+  const payload = readJwtPayload(token);
+  return typeof payload?.exp === "number" ? payload.exp : null;
+}
+
+function readOptimisticUserFromToken(token: string): AuthUser | null {
+  const payload = readJwtPayload(token);
+  if (!payload) {
+    return null;
+  }
+  const userId = typeof payload.sub === "string" ? payload.sub.trim() : "";
+  const username = typeof payload.username === "string" ? payload.username.trim() : "";
+  const fullName = typeof payload.full_name === "string" ? payload.full_name.trim() : "";
+  const role = typeof payload.role === "string" ? payload.role.trim() : "";
+  const approvalStatus = typeof payload.approval_status === "string" ? payload.approval_status.trim() : "";
+  if (!userId || !username || !role) {
+    return null;
+  }
+  if (!["approved", "pending", "rejected", "application_required"].includes(approvalStatus)) {
+    return null;
+  }
+  const siteIds =
+    Array.isArray(payload.site_ids)
+      ? payload.site_ids.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+  const registryConsents =
+    payload.registry_consents && typeof payload.registry_consents === "object"
+      ? (payload.registry_consents as AuthUser["registry_consents"])
+      : {};
+  return {
+    user_id: userId,
+    username,
+    full_name: fullName || username,
+    public_alias: typeof payload.public_alias === "string" && payload.public_alias.trim() ? payload.public_alias.trim() : null,
+    role,
+    site_ids: siteIds,
+    approval_status: approvalStatus as AuthState,
+    latest_access_request: null,
+    registry_consents: registryConsents,
+  };
+}
+
+function optimisticSitesForUser(user: AuthUser): SiteRecord[] {
+  return (user.site_ids ?? []).map((siteId) => ({
+    site_id: siteId,
+    display_name: siteId,
+    hospital_name: siteId,
+  }));
 }
 
 function isTokenExpired(token: string): boolean {
@@ -785,6 +847,15 @@ export default function HomePage() {
         window.localStorage.removeItem(TOKEN_KEY);
       } else {
         setToken(stored);
+        const optimisticUser = readOptimisticUserFromToken(stored);
+        if (optimisticUser?.approval_status === "approved") {
+          setUser(optimisticUser);
+          const optimisticSites = optimisticSitesForUser(optimisticUser);
+          setSites(optimisticSites);
+          setSelectedSiteId((current) =>
+            current && optimisticSites.some((site) => site.site_id === current) ? current : optimisticSites[0]?.site_id ?? null,
+          );
+        }
       }
     }
     setLaunchTarget(parseOperationsLaunchFromSearch());
@@ -950,20 +1021,15 @@ export default function HomePage() {
     }
     const currentToken = token;
     async function bootstrap() {
+      const startedAt = performance.now();
       setBootstrapBusy(true);
       setError(null);
-      const siteListResultPromise = fetchSites(currentToken)
-        .then((items) => ({ ok: true as const, items }))
-        .catch((nextError) => ({ ok: false as const, error: nextError }));
       try {
-        const me = await fetchMe(currentToken);
-        setUser(me);
-        if (me.approval_status === "approved") {
-          const nextSiteResult = await siteListResultPromise;
-          if (!nextSiteResult.ok) {
-            throw nextSiteResult.error;
-          }
-          const nextSites = nextSiteResult.items;
+        const bootstrapResult = await fetchMainBootstrap(currentToken);
+        setUser(bootstrapResult.user);
+        if (bootstrapResult.user.approval_status === "approved") {
+          const nextSites = bootstrapResult.sites;
+          setMyRequests([]);
           setSites(nextSites);
           setSelectedSiteId((current) =>
             current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
@@ -971,7 +1037,17 @@ export default function HomePage() {
         } else {
           setSites([]);
           setSelectedSiteId(null);
-          setMyRequests(await fetchMyAccessRequests(currentToken));
+          setSummary(null);
+          setMyRequests(bootstrapResult.my_access_requests);
+        }
+        if (CLIENT_BOOTSTRAP_TIMING_LOGS) {
+          console.info("[kera-home-bootstrap]", {
+            approval_status: bootstrapResult.user.approval_status,
+            role: bootstrapResult.user.role,
+            site_count: bootstrapResult.sites.length,
+            my_request_count: bootstrapResult.my_access_requests.length,
+            total_ms: Math.round(performance.now() - startedAt),
+          });
         }
       } catch (nextError) {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -988,7 +1064,7 @@ export default function HomePage() {
   }, [token, copy.failedConnect]);
 
   useEffect(() => {
-    if (!token || !selectedSiteId || !approved) {
+    if (!token || !selectedSiteId || !approved || bootstrapBusy) {
       return;
     }
     const currentToken = token;
@@ -1005,7 +1081,7 @@ export default function HomePage() {
       }
     }
     void loadSite();
-  }, [token, selectedSiteId, approved, copy.failedLoadSiteData]);
+  }, [token, selectedSiteId, approved, bootstrapBusy, copy.failedLoadSiteData]);
 
   useEffect(() => {
     if (!token || !canReview) {

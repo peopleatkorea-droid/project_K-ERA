@@ -94,9 +94,90 @@ class FakeWorkflow:
         self.app_module = app_module
         self.control_plane = control_plane
         self.model_manager = FakeModelManager()
+        self.medsam_service = type("FakeMedSAMService", (), {"backend": "fake_medsam"})()
 
     def _lesion_prompt_box_signature(self, lesion_prompt_box):
-        return "fakeprompt001"
+        normalized = {
+            key: round(float(lesion_prompt_box[key]), 6)
+            for key in ("x0", "y0", "x1", "y1")
+            if key in (lesion_prompt_box or {})
+        }
+        if len(normalized) != 4:
+            return None
+        payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+    def _write_roi_preview_artifacts(self, site_store, image):
+        artifact_name = Path(str(image["image_path"])).stem
+        mask_path = site_store.medsam_mask_dir / f"{artifact_name}_mask.png"
+        crop_path = site_store.roi_crop_dir / f"{artifact_name}_crop.png"
+        metadata_dir = site_store.artifact_dir / "roi_preview_meta"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = metadata_dir / f"{artifact_name}.json"
+        mask_path.write_bytes(b"roi-mask")
+        crop_path.write_bytes(b"roi-crop")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "backend": self.medsam_service.backend,
+                    "crop_style": "bbox_rgb_v1",
+                    "medsam_error": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "medsam_mask_path": str(mask_path),
+            "roi_crop_path": str(crop_path),
+            "backend": self.medsam_service.backend,
+        }
+
+    def _write_lesion_preview_artifacts(self, site_store, image, *, lesion_prompt_box=None):
+        effective_box = lesion_prompt_box if lesion_prompt_box is not None else image.get("lesion_prompt_box")
+        artifact_name = Path(str(image["image_path"])).stem
+        mask_path = site_store.lesion_mask_dir / f"{artifact_name}_mask.png"
+        crop_path = site_store.lesion_crop_dir / f"{artifact_name}_crop.png"
+        metadata_dir = site_store.artifact_dir / "lesion_preview_meta"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = metadata_dir / f"{artifact_name}.json"
+        prompt_signature = self._lesion_prompt_box_signature(effective_box)
+        mask_path.write_bytes(b"mask")
+        crop_path.write_bytes(b"crop")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "backend": self.medsam_service.backend,
+                    "crop_style": "soft_masked_bbox_v1",
+                    "medsam_error": None,
+                    "prompt_signature": prompt_signature,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "lesion_mask_path": str(mask_path),
+            "lesion_crop_path": str(crop_path),
+            "backend": self.medsam_service.backend,
+            "medsam_error": None,
+            "lesion_prompt_box": effective_box,
+            "prompt_signature": prompt_signature,
+        }
+
+    def _ensure_roi_crop(self, site_store, image_path):
+        image = next(
+            (item for item in site_store.list_images() if str(item.get("image_path") or "") == str(image_path)),
+            None,
+        )
+        if image is None:
+            raise ValueError("Image not found.")
+        return self._write_roi_preview_artifacts(site_store, image)
+
+    def _ensure_lesion_crop(self, site_store, record, lesion_prompt_box=None):
+        return self._write_lesion_preview_artifacts(
+            site_store,
+            record,
+            lesion_prompt_box=lesion_prompt_box,
+        )
 
     def run_case_validation(
         self,
@@ -115,6 +196,9 @@ class FakeWorkflow:
         gradcam_path = artifact_dir / f"{patient_id}_{visit_date}_gradcam.png"
         roi_path.write_bytes(b"roi")
         gradcam_path.write_bytes(b"gradcam")
+        image_records = site_store.list_images_for_visit(patient_id, visit_date)
+        representative_image = next((item for item in image_records if item.get("is_representative")), None) or image_records[0]
+        roi_preview = self._write_roi_preview_artifacts(site_store, representative_image)
         summary = {
             "validation_id": self.app_module.make_id("validation"),
             "project_id": project_id,
@@ -143,9 +227,9 @@ class FakeWorkflow:
             "predicted_label": "bacterial",
             "prediction_probability": 0.91,
             "is_correct": True,
-            "roi_crop_path": str(roi_path),
+            "roi_crop_path": roi_preview["roi_crop_path"],
             "gradcam_path": str(gradcam_path),
-            "medsam_mask_path": None,
+            "medsam_mask_path": roi_preview["medsam_mask_path"],
         }
         saved_summary = self.control_plane.save_validation_run(summary, [case_prediction])
         site_store.record_case_validation_history(
@@ -476,29 +560,73 @@ class FakeWorkflow:
         )
         return report
 
+    def preview_case_roi(self, site_store, patient_id, visit_date):
+        previews = []
+        for image in site_store.list_images_for_visit(patient_id, visit_date):
+            roi = self._write_roi_preview_artifacts(site_store, image)
+            previews.append(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "view": image.get("view", "slit"),
+                    "is_representative": bool(image.get("is_representative")),
+                    "source_image_path": image["image_path"],
+                    "medsam_mask_path": roi["medsam_mask_path"],
+                    "roi_crop_path": roi["roi_crop_path"],
+                    "backend": self.medsam_service.backend,
+                }
+            )
+        return previews
+
+    def preview_case_lesion(self, site_store, patient_id, visit_date):
+        previews = []
+        for image in site_store.list_images_for_visit(patient_id, visit_date):
+            lesion_prompt_box = image.get("lesion_prompt_box")
+            if not isinstance(lesion_prompt_box, dict):
+                continue
+            lesion = self._write_lesion_preview_artifacts(
+                site_store,
+                image,
+                lesion_prompt_box=lesion_prompt_box,
+            )
+            previews.append(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "view": image.get("view", "slit"),
+                    "is_representative": bool(image.get("is_representative")),
+                    "source_image_path": image["image_path"],
+                    "lesion_mask_path": lesion["lesion_mask_path"],
+                    "lesion_crop_path": lesion["lesion_crop_path"],
+                    "backend": self.medsam_service.backend,
+                    "medsam_error": None,
+                    "lesion_prompt_box": lesion_prompt_box,
+                    "prompt_signature": lesion["prompt_signature"],
+                }
+            )
+        return previews
+
     def preview_image_lesion(self, site_store, image_id, *, lesion_prompt_box=None):
         image = site_store.get_image(image_id)
         if image is None:
             raise ValueError("Image not found.")
-        artifact_name = Path(str(image["image_path"])).stem
-        mask_path = site_store.lesion_mask_dir / f"{artifact_name}_mask.png"
-        crop_path = site_store.lesion_crop_dir / f"{artifact_name}_crop.png"
-        mask_path.parent.mkdir(parents=True, exist_ok=True)
-        crop_path.parent.mkdir(parents=True, exist_ok=True)
-        mask_path.write_bytes(b"mask")
-        crop_path.write_bytes(b"crop")
+        lesion = self._write_lesion_preview_artifacts(
+            site_store,
+            image,
+            lesion_prompt_box=lesion_prompt_box,
+        )
         return {
             "patient_id": image["patient_id"],
             "visit_date": image["visit_date"],
             "view": image.get("view", "slit"),
             "is_representative": bool(image.get("is_representative")),
             "source_image_path": image["image_path"],
-            "lesion_mask_path": str(mask_path),
-            "lesion_crop_path": str(crop_path),
-            "backend": "fake_medsam",
-            "medsam_error": None,
-            "lesion_prompt_box": lesion_prompt_box if lesion_prompt_box is not None else image.get("lesion_prompt_box"),
-            "prompt_signature": "fakeprompt001",
+            "lesion_mask_path": lesion["lesion_mask_path"],
+            "lesion_crop_path": lesion["lesion_crop_path"],
+            "backend": lesion["backend"],
+            "medsam_error": lesion["medsam_error"],
+            "lesion_prompt_box": lesion["lesion_prompt_box"],
+            "prompt_signature": lesion["prompt_signature"],
         }
 
     def run_external_validation(
@@ -1274,6 +1402,36 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(len(search_payload["items"]), 1)
         self.assertEqual(search_payload["items"][0]["patient_id"], "HTTP-003")
 
+    def test_patient_id_lookup_endpoint_reports_duplicates_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001")
+
+        response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/lookup?patient_id=%20HTTP-001%20",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["requested_patient_id"], "HTTP-001")
+        self.assertEqual(payload["normalized_patient_id"], "HTTP-001")
+        self.assertTrue(payload["exists"])
+        self.assertEqual(payload["visit_count"], 1)
+        self.assertEqual(payload["image_count"], 1)
+        self.assertEqual(payload["latest_visit_date"], "Initial")
+        self.assertEqual(payload["patient"]["patient_id"], "HTTP-001")
+
+        missing_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/lookup?patient_id=HTTP-NEW",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(missing_response.status_code, 200, missing_response.text)
+        missing_payload = missing_response.json()
+        self.assertFalse(missing_payload["exists"])
+        self.assertEqual(missing_payload["visit_count"], 0)
+        self.assertEqual(missing_payload["image_count"], 0)
+        self.assertIsNone(missing_payload["latest_visit_date"])
+        self.assertIsNone(missing_payload["patient"])
+
     def test_site_summary_reports_case_counts_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
@@ -1306,6 +1464,55 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["n_active_visits"], 1)
         self.assertEqual(payload["n_validation_runs"], 0)
         self.assertIsNone(payload["latest_validation"])
+
+    def test_site_summary_uses_aggregate_stats_without_loading_full_row_sets_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+
+        with patch.object(self.app_module.SiteStore, "list_patients", side_effect=AssertionError("summary should use aggregate stats")), patch.object(
+            self.app_module.SiteStore,
+            "list_visits",
+            side_effect=AssertionError("summary should use aggregate stats"),
+        ), patch.object(
+            self.app_module.SiteStore,
+            "list_images",
+            side_effect=AssertionError("summary should use aggregate stats"),
+        ):
+            summary_response = self.client.get(
+                f"/api/sites/{self.site_id}/summary",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(summary_response.status_code, 200, summary_response.text)
+        payload = summary_response.json()
+        self.assertEqual(payload["n_patients"], 1)
+        self.assertEqual(payload["n_visits"], 1)
+        self.assertEqual(payload["n_images"], 1)
+        self.assertEqual(payload["n_active_visits"], 1)
+
+    def test_image_preview_endpoint_reuses_cached_thumbnail_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=256"
+
+        response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+
+        preview_path = self.site_store.image_preview_cache_path(image_id, 256)
+        self.assertTrue(preview_path.exists())
+
+        with patch("kera_research.services.data_plane.Image.open", side_effect=AssertionError("preview should be served from cache")):
+            cached_response = self.client.get(
+                preview_url,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(cached_response.status_code, 200, cached_response.text)
+        self.assertEqual(cached_response.content, response.content)
 
     def test_embedding_backfill_reuses_running_job_http(self):
         admin_token = self._login("admin", "admin123")
@@ -1411,6 +1618,27 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["patient_id"], "12345678")
+
+    def test_update_patient_persists_metadata_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-001")
+
+        response = self.client.patch(
+            f"/api/sites/{self.site_id}/patients?patient_id=HTTP-001",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "sex": "female",
+                "age": 87,
+                "chart_alias": "chart-001",
+                "local_case_code": "17452298",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["patient_id"], "HTTP-001")
+        self.assertEqual(payload["age"], 87)
+        self.assertEqual(payload["chart_alias"], "chart-001")
+        self.assertEqual(payload["local_case_code"], "17452298")
 
     def test_visit_reference_rejects_calendar_date_http(self):
         token = self._token_for_username("http_researcher")
@@ -1543,6 +1771,127 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(artifact_response.status_code, 200, artifact_response.text)
         self.assertEqual(artifact_response.content, b"mask")
+
+    def test_case_preview_routes_update_artifact_cache_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.7},
+        )
+        self.assertEqual(lesion_box_response.status_code, 200, lesion_box_response.text)
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            roi_response = self.client.get(
+                f"/api/sites/{self.site_id}/cases/roi-preview?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(roi_response.status_code, 200, roi_response.text)
+            self.assertEqual(len(roi_response.json()), 1)
+
+            lesion_response = self.client.get(
+                f"/api/sites/{self.site_id}/cases/lesion-preview?patient_id=HTTP-001&visit_date=Initial",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(lesion_response.status_code, 200, lesion_response.text)
+            self.assertEqual(len(lesion_response.json()), 1)
+
+        image = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image)
+        self.assertTrue(image["has_lesion_box"])
+        self.assertTrue(image["has_roi_crop"])
+        self.assertTrue(image["has_medsam_mask"])
+        self.assertTrue(image["has_lesion_crop"])
+        self.assertTrue(image["has_lesion_mask"])
+        self.assertIsNotNone(image["artifact_status_updated_at"])
+
+    def test_medsam_artifact_status_and_backfill_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_without_box = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        image_with_box = self._seed_case(admin_token, patient_id="HTTP-002", visit_date="Initial")
+        lesion_box_response = self.client.patch(
+            f"/api/sites/{self.site_id}/images/{image_with_box}/lesion-box",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.7},
+        )
+        self.assertEqual(lesion_box_response.status_code, 200, lesion_box_response.text)
+
+        status_response = self.client.get(
+            f"/api/sites/{self.site_id}/medsam-artifacts/status?refresh=true",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        status_payload = status_response.json()
+        self.assertEqual(status_payload["statuses"]["missing_lesion_box"]["images"], 1)
+        self.assertEqual(status_payload["statuses"]["missing_roi"]["images"], 2)
+        self.assertEqual(status_payload["statuses"]["missing_lesion_crop"]["images"], 1)
+        self.assertEqual(status_payload["statuses"]["medsam_backfill_ready"]["images"], 2)
+
+        items_response = self.client.get(
+            f"/api/sites/{self.site_id}/medsam-artifacts/items?scope=image&status_key=missing_lesion_crop&page=1&page_size=25",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(items_response.status_code, 200, items_response.text)
+        items_payload = items_response.json()
+        self.assertEqual(items_payload["total_count"], 1)
+        self.assertEqual(items_payload["items"][0]["image_id"], image_with_box)
+        self.assertTrue(items_payload["items"][0]["has_lesion_box"])
+        self.assertFalse(items_payload["items"][0]["has_lesion_crop"])
+
+        app_module = self.app_module
+        control_plane = self.cp
+
+        class FakeBackfillWorkflow(FakeWorkflow):
+            def __init__(self, _cp):
+                super().__init__(app_module, control_plane)
+
+        with patch("kera_research.services.image_artifact_status.ResearchWorkflowService", FakeBackfillWorkflow):
+            backfill_response = self.client.post(
+                f"/api/sites/{self.site_id}/medsam-artifacts/backfill",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"refresh_cache": True},
+            )
+        self.assertEqual(backfill_response.status_code, 200, backfill_response.text)
+        job_id = backfill_response.json()["job"]["job_id"]
+        for _ in range(30):
+            job = self.site_store.get_job(job_id)
+            if job is not None and job.get("status") == "completed":
+                break
+            time.sleep(0.1)
+
+        job = self.site_store.get_job(job_id)
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["result"]["response"]["total_images"], 2)
+        self.assertEqual(job["result"]["response"]["failed_images"], 0)
+
+        image_without_box_record = self.site_store.get_image(image_without_box)
+        image_with_box_record = self.site_store.get_image(image_with_box)
+        self.assertIsNotNone(image_without_box_record)
+        self.assertIsNotNone(image_with_box_record)
+        self.assertFalse(image_without_box_record["has_lesion_box"])
+        self.assertTrue(image_without_box_record["has_roi_crop"])
+        self.assertTrue(image_without_box_record["has_medsam_mask"])
+        self.assertFalse(image_without_box_record["has_lesion_crop"])
+        self.assertFalse(image_without_box_record["has_lesion_mask"])
+        self.assertTrue(image_with_box_record["has_lesion_box"])
+        self.assertTrue(image_with_box_record["has_roi_crop"])
+        self.assertTrue(image_with_box_record["has_medsam_mask"])
+        self.assertTrue(image_with_box_record["has_lesion_crop"])
+        self.assertTrue(image_with_box_record["has_lesion_mask"])
+
+        status_after_response = self.client.get(
+            f"/api/sites/{self.site_id}/medsam-artifacts/status?refresh=false",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_after_response.status_code, 200, status_after_response.text)
+        status_after_payload = status_after_response.json()
+        self.assertEqual(status_after_payload["statuses"]["missing_lesion_box"]["images"], 1)
+        self.assertEqual(status_after_payload["statuses"]["missing_roi"]["images"], 0)
+        self.assertEqual(status_after_payload["statuses"]["missing_lesion_crop"]["images"], 0)
+        self.assertEqual(status_after_payload["statuses"]["medsam_backfill_ready"]["images"], 0)
 
     def test_case_history_http_reads_local_site_history(self):
         token = self._token_for_username("http_researcher")
@@ -1730,6 +2079,27 @@ class ApiHttpTests(unittest.TestCase):
             )
             self.assertNotIn("patient_id", activity_payload["recent_contributions"][0])
             self.assertNotIn("visit_date", activity_payload["recent_contributions"][0])
+
+    def test_case_validation_updates_artifact_cache_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+        self.assertEqual(validation_response.status_code, 200, validation_response.text)
+
+        image = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image)
+        self.assertFalse(image["has_lesion_box"])
+        self.assertTrue(image["has_roi_crop"])
+        self.assertTrue(image["has_medsam_mask"])
+        self.assertFalse(image["has_lesion_crop"])
+        self.assertFalse(image["has_lesion_mask"])
+        self.assertIsNotNone(image["artifact_status_updated_at"])
 
     def test_patient_reference_trajectory_http(self):
         token = self._token_for_username("http_researcher")
@@ -1970,6 +2340,84 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(visits_response.status_code, 200, visits_response.text)
         self.assertEqual(visits_response.json(), [])
+
+    def test_update_visit_can_move_case_to_new_patient_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-001", visit_date="Initial")
+        create_target_patient = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": "17452298", "sex": "female", "age": 87, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(create_target_patient.status_code, 200, create_target_patient.text)
+        self.site_store.record_case_validation_history(
+            "HTTP-001",
+            "Initial",
+            {
+                "validation_id": "validation_move_001",
+                "run_date": "2026-03-15T00:00:00Z",
+                "model_version": "global-http-seed",
+            },
+        )
+
+        response = self.client.patch(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001&visit_date=Initial",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "17452298",
+                "visit_date": "Initial",
+                "culture_category": "bacterial",
+                "culture_species": "Serratia marcescens",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["patient_id"], "17452298")
+        self.assertEqual(payload["culture_species"], "Serratia marcescens")
+
+        source_visits_response = self.client.get(
+            f"/api/sites/{self.site_id}/visits?patient_id=HTTP-001",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(source_visits_response.status_code, 200, source_visits_response.text)
+        self.assertEqual(source_visits_response.json(), [])
+
+        target_visits_response = self.client.get(
+            f"/api/sites/{self.site_id}/visits?patient_id=17452298",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(target_visits_response.status_code, 200, target_visits_response.text)
+        self.assertEqual(len(target_visits_response.json()), 1)
+        self.assertEqual(target_visits_response.json()[0]["patient_id"], "17452298")
+
+        source_patients_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(source_patients_response.status_code, 200, source_patients_response.text)
+        self.assertNotIn(
+            "HTTP-001",
+            [item["patient_id"] for item in source_patients_response.json()],
+        )
+
+        target_images_response = self.client.get(
+            f"/api/sites/{self.site_id}/images?patient_id=17452298&visit_date=Initial",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(target_images_response.status_code, 200, target_images_response.text)
+        self.assertEqual(len(target_images_response.json()), 1)
+        self.assertEqual(target_images_response.json()[0]["patient_id"], "17452298")
+
+        history_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases/history?patient_id=17452298&visit_date=Initial",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(history_response.status_code, 200, history_response.text)
+        self.assertEqual(len(history_response.json()["validations"]), 1)
+        self.assertEqual(history_response.json()["validations"][0]["validation_id"], "validation_move_001")
 
     def test_admin_model_update_artifact_can_be_served_from_embedded_thumbnail(self):
         admin_token = self._login("admin", "admin123")

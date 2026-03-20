@@ -389,6 +389,12 @@ images = Table(
     Column("image_path", Text, nullable=False),
     Column("is_representative", Boolean, nullable=False, default=False),
     Column("lesion_prompt_box", JSON, nullable=True),
+    Column("has_lesion_box", Boolean, nullable=False, default=False),
+    Column("has_roi_crop", Boolean, nullable=False, default=False),
+    Column("has_medsam_mask", Boolean, nullable=False, default=False),
+    Column("has_lesion_crop", Boolean, nullable=False, default=False),
+    Column("has_lesion_mask", Boolean, nullable=False, default=False),
+    Column("artifact_status_updated_at", String(64), nullable=True),
     Column("uploaded_at", String(64), nullable=False),
 )
 
@@ -608,6 +614,41 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE images ADD COLUMN created_by_user_id VARCHAR(64)"))
             if "lesion_prompt_box" not in image_columns:
                 conn.execute(text("ALTER TABLE images ADD COLUMN lesion_prompt_box JSON"))
+            if "has_lesion_box" not in image_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_box BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_box BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "has_roi_crop" not in image_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_roi_crop BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_roi_crop BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "has_medsam_mask" not in image_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_medsam_mask BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_medsam_mask BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "has_lesion_crop" not in image_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_crop BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_crop BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "has_lesion_mask" not in image_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_mask BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE images ADD COLUMN has_lesion_mask BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "artifact_status_updated_at" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN artifact_status_updated_at VARCHAR(64)"))
+            conn.execute(
+                text(
+                    "UPDATE images "
+                    "SET has_lesion_box = CASE WHEN lesion_prompt_box IS NOT NULL THEN TRUE ELSE FALSE END "
+                    "WHERE has_lesion_box IS NULL "
+                    "OR has_lesion_box != CASE WHEN lesion_prompt_box IS NOT NULL THEN TRUE ELSE FALSE END"
+                )
+            )
 
         if "site_jobs" in table_names:
             job_columns = {column["name"] for column in inspector.get_columns("site_jobs")}

@@ -39,6 +39,13 @@ function stringifyApiDetail(detail: unknown): string {
   return String(detail);
 }
 
+function isAbortFailure(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
 async function readErrorDetail(response: Response, fallbackLabel: string): Promise<string> {
   const contentType = response.headers.get("Content-Type") ?? "";
   if (contentType.includes("application/json")) {
@@ -68,7 +75,10 @@ async function requestFromUrl<T>(
       ...init,
       headers,
     });
-  } catch {
+  } catch (error) {
+    if (isAbortFailure(error)) {
+      throw error;
+    }
     throw new Error(unavailableMessage);
   }
   if (!response.ok) {
@@ -99,7 +109,10 @@ export async function requestBlob(
       ...init,
       headers,
     });
-  } catch {
+  } catch (error) {
+    if (isAbortFailure(error)) {
+      throw error;
+    }
     throw new Error("Local API server is unavailable.");
   }
   if (!response.ok) {

@@ -983,6 +983,13 @@ class PatientCreateRequest(BaseModel):
     local_case_code: str = ""
 
 
+class PatientUpdateRequest(BaseModel):
+    sex: str
+    age: int
+    chart_alias: str = ""
+    local_case_code: str = ""
+
+
 class OrganismSelection(BaseModel):
     culture_category: str
     culture_species: str
@@ -1584,6 +1591,7 @@ def create_app() -> FastAPI:
         InvalidImageUploadError=InvalidImageUploadError,
         case_reference_salt_fingerprint=CASE_REFERENCE_SALT_FINGERPRINT,
         PatientCreateRequest=PatientCreateRequest,
+        PatientUpdateRequest=PatientUpdateRequest,
         VisitCreateRequest=VisitCreateRequest,
         RepresentativeImageRequest=RepresentativeImageRequest,
         LesionBoxRequest=LesionBoxRequest,
