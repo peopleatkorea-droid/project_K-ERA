@@ -153,6 +153,7 @@ import {
   enrollResearchRegistry,
   fetchCases,
   fetchImageBlob,
+  fetchImagePreviewBatch,
   fetchImagePreviewBlob,
   fetchPatientListPage,
   fetchLiveLesionPreviewJob,
@@ -847,6 +848,8 @@ export function CaseWorkspace({
   const patientListThumbCacheSiteIdRef = useRef<string | null>(null);
   const patientListThumbUrlCacheRef = useRef<Map<string, string>>(new Map());
   const patientListThumbPromiseCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const patientListPreviewReadyRef = useRef<Set<string>>(new Set());
+  const patientListPreviewReadyPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
   const railListSectionRef = useRef<HTMLElement | null>(null);
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
@@ -893,7 +896,77 @@ export function CaseWorkspace({
     }
     patientListThumbUrlCacheRef.current.clear();
     patientListThumbPromiseCacheRef.current.clear();
+    patientListPreviewReadyRef.current.clear();
+    patientListPreviewReadyPromiseCacheRef.current.clear();
   }, []);
+  function buildPatientListPreviewReadyKey(imageId: string, maxSide: number): string {
+    return `${maxSide}::${imageId}`;
+  }
+
+  async function ensurePatientListPreviews(siteId: string, imageIds: string[], maxSide: number, signal?: AbortSignal) {
+    const normalizedMaxSide = Math.min(Math.max(Math.round(maxSide || 256), 96), 1024);
+    const uniqueImageIds = Array.from(new Set(imageIds.map((imageId) => String(imageId ?? "").trim()).filter(Boolean)));
+    if (uniqueImageIds.length === 0) {
+      return;
+    }
+
+    const pendingRequests: Promise<void>[] = [];
+    const imageIdsToRequest: string[] = [];
+    for (const imageId of uniqueImageIds) {
+      const cacheKey = buildPatientListPreviewReadyKey(imageId, normalizedMaxSide);
+      if (patientListThumbUrlCacheRef.current.has(imageId)) {
+        patientListPreviewReadyRef.current.add(cacheKey);
+        continue;
+      }
+      if (patientListPreviewReadyRef.current.has(cacheKey)) {
+        continue;
+      }
+      const pending = patientListPreviewReadyPromiseCacheRef.current.get(cacheKey);
+      if (pending) {
+        pendingRequests.push(pending);
+        continue;
+      }
+      imageIdsToRequest.push(imageId);
+    }
+
+    if (imageIdsToRequest.length > 0) {
+      const requestPromise = fetchImagePreviewBatch(siteId, token, {
+        imageIds: imageIdsToRequest,
+        maxSide: normalizedMaxSide,
+        signal,
+      })
+        .then((response) => {
+          for (const item of response.items) {
+            if (!item.ready) {
+              continue;
+            }
+            patientListPreviewReadyRef.current.add(
+              buildPatientListPreviewReadyKey(item.image_id, normalizedMaxSide),
+            );
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          for (const imageId of imageIdsToRequest) {
+            patientListPreviewReadyPromiseCacheRef.current.delete(
+              buildPatientListPreviewReadyKey(imageId, normalizedMaxSide),
+            );
+          }
+        });
+      for (const imageId of imageIdsToRequest) {
+        patientListPreviewReadyPromiseCacheRef.current.set(
+          buildPatientListPreviewReadyKey(imageId, normalizedMaxSide),
+          requestPromise,
+        );
+      }
+      pendingRequests.push(requestPromise);
+    }
+
+    if (pendingRequests.length > 0) {
+      await Promise.allSettled(pendingRequests);
+    }
+  }
+
   async function loadPatientListThumbUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
     const cachedUrl = patientListThumbUrlCacheRef.current.get(imageId);
     if (cachedUrl) {
@@ -920,6 +993,72 @@ export function CaseWorkspace({
     })();
     patientListThumbPromiseCacheRef.current.set(imageId, nextRequest);
     return nextRequest;
+  }
+
+  function buildPatientRowThumbnails(row: PatientListRow): PatientListThumbnail[] {
+    return row.representative_thumbnails.map((item) => ({
+      ...item,
+      preview_url: patientListThumbUrlCacheRef.current.get(item.image_id) ?? null,
+    }));
+  }
+
+  function syncPatientListThumbsForRows(rows: PatientListRow[]) {
+    if (rows.length === 0) {
+      return;
+    }
+    setPatientListThumbs((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const row of rows) {
+        const nextRowThumbs = buildPatientRowThumbnails(row);
+        const currentRowThumbs = current[row.patient_id] ?? [];
+        const sameRow =
+          currentRowThumbs.length === nextRowThumbs.length &&
+          currentRowThumbs.every(
+            (item, index) =>
+              item.case_id === nextRowThumbs[index]?.case_id &&
+              item.image_id === nextRowThumbs[index]?.image_id &&
+              item.preview_url === nextRowThumbs[index]?.preview_url,
+          );
+        if (sameRow) {
+          continue;
+        }
+        next[row.patient_id] = nextRowThumbs;
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }
+
+  async function hydratePatientRowThumbnails(siteId: string, row: PatientListRow, signal?: AbortSignal) {
+    syncPatientListThumbsForRows([row]);
+    const pendingThumbs = row.representative_thumbnails.filter(
+      (item) => !patientListThumbUrlCacheRef.current.has(item.image_id),
+    );
+    if (pendingThumbs.length === 0) {
+      return;
+    }
+
+    await ensurePatientListPreviews(
+      siteId,
+      pendingThumbs.map((item) => item.image_id),
+      256,
+      signal,
+    );
+
+    const [primaryThumb, ...secondaryThumbs] = pendingThumbs;
+    if (primaryThumb) {
+      await loadPatientListThumbUrl(siteId, primaryThumb.image_id, signal);
+      syncPatientListThumbsForRows([row]);
+    }
+    if (secondaryThumbs.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(
+      secondaryThumbs.map((item) => loadPatientListThumbUrl(siteId, item.image_id, signal)),
+    );
+    syncPatientListThumbsForRows([row]);
   }
   useEffect(() => {
     if (!alertsPanelOpen) {
@@ -2679,6 +2818,36 @@ export function CaseWorkspace({
     }
   }, [railView, selectedSiteId]);
 
+  useEffect(() => {
+    if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
+      return;
+    }
+
+    syncPatientListThumbsForRows(patientListRows);
+    const rowsNeedingThumbs = patientListRows.filter((row) =>
+      row.representative_thumbnails.some((item) => !patientListThumbUrlCacheRef.current.has(item.image_id)),
+    );
+    if (rowsNeedingThumbs.length === 0) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      await ensurePatientListPreviews(
+        selectedSiteId,
+        rowsNeedingThumbs.flatMap((row) => row.representative_thumbnails.map((item) => item.image_id)),
+        256,
+        controller.signal,
+      );
+      await Promise.allSettled(
+        rowsNeedingThumbs.map((row) => hydratePatientRowThumbnails(selectedSiteId, row, controller.signal)),
+      );
+    })();
+    return () => {
+      controller.abort();
+    };
+  }, [selectedSiteId, railView, patientListRows]);
+
   const handlePatientRowVisible = useCallback(
     (patientId: string) => {
       if (!selectedSiteId || railView !== "patients") {
@@ -2689,53 +2858,15 @@ export function CaseWorkspace({
       if (!row) {
         return;
       }
-      const buildRowThumbnails = (): PatientListThumbnail[] =>
-        row.representative_thumbnails.map((item) => ({
-          ...item,
-          preview_url: patientListThumbUrlCacheRef.current.get(item.image_id) ?? null,
-        }));
-
       const allAlreadyCached = row.representative_thumbnails.every((item) =>
         patientListThumbUrlCacheRef.current.has(item.image_id),
       );
       if (allAlreadyCached) {
+        syncPatientListThumbsForRows([row]);
         return;
       }
 
-      // Initialise placeholders for this row if not already present
-      setPatientListThumbs((prev) => {
-        if (prev[patientId]) {
-          return prev;
-        }
-        return { ...prev, [patientId]: buildRowThumbnails() };
-      });
-
-      void (async () => {
-        const [primaryThumb, ...secondaryThumbs] = row.representative_thumbnails;
-        if (primaryThumb && !patientListThumbUrlCacheRef.current.has(primaryThumb.image_id)) {
-          await loadPatientListThumbUrl(currentSiteId, primaryThumb.image_id);
-          setPatientListThumbs((prev) => ({
-            ...prev,
-            [patientId]: buildRowThumbnails(),
-          }));
-        }
-
-        const missingSecondaryThumbs = secondaryThumbs.filter(
-          (item) => !patientListThumbUrlCacheRef.current.has(item.image_id),
-        );
-        if (missingSecondaryThumbs.length === 0) {
-          return;
-        }
-        await Promise.allSettled(
-          missingSecondaryThumbs.map((item) =>
-            loadPatientListThumbUrl(currentSiteId, item.image_id),
-          ),
-        );
-        setPatientListThumbs((prev) => ({
-          ...prev,
-          [patientId]: buildRowThumbnails(),
-        }));
-      })();
+      void hydratePatientRowThumbnails(currentSiteId, row);
     },
     [selectedSiteId, railView, patientListRows],
   );
@@ -3289,6 +3420,7 @@ export function CaseWorkspace({
               commonLoading={common.loading}
               commonNotAvailable={common.notAvailable}
               panelBusy={panelBusy}
+              selectedCaseImageCountHint={selectedCase.image_count}
               selectedCaseImages={selectedCaseImages}
               semanticPromptInputMode={semanticPromptInputMode}
               semanticPromptInputOptions={semanticPromptInputOptions}

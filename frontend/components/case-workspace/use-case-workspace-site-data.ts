@@ -10,8 +10,9 @@ import {
   type SiteActivityResponse,
   type SiteValidationRunRecord,
   fetchCaseHistory,
-  fetchCases,
   fetchImagePreviewBlob,
+  fetchImagePreviewBatch,
+  fetchCases,
   fetchImages,
   fetchSiteActivity,
   fetchSiteModelVersions,
@@ -23,6 +24,21 @@ type SavedImagePreview = ImageRecord & {
 };
 
 const CASE_IMAGE_PREVIEW_MAX_SIDE = 640;
+
+function normalizeVisitMatchKey(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (/^(initial|초진)$/i.test(normalized)) {
+    return "initial";
+  }
+  const followUpMatch = normalized.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  if (followUpMatch) {
+    return `fu:${String(Number(followUpMatch[1]) || 0)}`;
+  }
+  return normalized.toLowerCase().replace(/\s+/g, " ");
+}
 
 type ToastState = {
   tone: "success" | "error";
@@ -80,26 +96,34 @@ export function useCaseWorkspaceSiteData({
   const selectedCaseImageCaseIdRef = useRef<string | null>(null);
   const imagePreviewCacheRef = useRef<Map<string, string>>(new Map());
   const imagePreviewPromiseCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const imagePreviewReadyRef = useRef<Set<string>>(new Set());
+  const imagePreviewReadyPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
   const patientImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
   const patientImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
+  const visitImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
+  const visitImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
   const caseHistoryCacheRef = useRef<Map<string, CaseHistoryResponse>>(new Map());
   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
   const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
   const siteModelVersionsLoadedSiteIdRef = useRef<string | null>(null);
 
-  function revokeObjectUrls(urls: string[]) {
+  function revokeObjectUrls(urls: Iterable<string>) {
     for (const url of urls) {
       URL.revokeObjectURL(url);
     }
   }
 
   function clearImagePreviewCache() {
-    revokeObjectUrls(Array.from(imagePreviewCacheRef.current.values()));
+    revokeObjectUrls(imagePreviewCacheRef.current.values());
     imagePreviewCacheRef.current.clear();
     imagePreviewPromiseCacheRef.current.clear();
+    imagePreviewReadyRef.current.clear();
+    imagePreviewReadyPromiseCacheRef.current.clear();
     patientImageRecordCacheRef.current.clear();
     patientImageRecordPromiseCacheRef.current.clear();
+    visitImageRecordCacheRef.current.clear();
+    visitImageRecordPromiseCacheRef.current.clear();
     caseImageCacheRef.current.clear();
     selectedCaseImageCaseIdRef.current = null;
   }
@@ -113,6 +137,79 @@ export function useCaseWorkspaceSiteData({
 
   function buildCaseHistoryCacheKey(patientId: string, visitDate: string): string {
     return `${patientId}::${visitDate}`;
+  }
+
+  function buildVisitImageCacheKey(patientId: string, visitDate: string): string {
+    return `${patientId}::${normalizeVisitMatchKey(visitDate)}`;
+  }
+
+  function buildImagePreviewReadyKey(imageId: string, maxSide: number): string {
+    return `${maxSide}::${imageId}`;
+  }
+
+  async function ensureImagePreviewsReady(
+    siteId: string,
+    imageIds: string[],
+    maxSide: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const normalizedMaxSide = Math.min(Math.max(Math.round(maxSide || CASE_IMAGE_PREVIEW_MAX_SIDE), 96), 1024);
+    const uniqueImageIds = Array.from(new Set(imageIds.map((imageId) => String(imageId ?? "").trim()).filter(Boolean)));
+    if (uniqueImageIds.length === 0) {
+      return;
+    }
+
+    const pendingRequests: Promise<void>[] = [];
+    const imageIdsToRequest: string[] = [];
+    for (const imageId of uniqueImageIds) {
+      const cacheKey = buildImagePreviewReadyKey(imageId, normalizedMaxSide);
+      if (imagePreviewCacheRef.current.has(imageId)) {
+        imagePreviewReadyRef.current.add(cacheKey);
+        continue;
+      }
+      if (imagePreviewReadyRef.current.has(cacheKey)) {
+        continue;
+      }
+      const pending = imagePreviewReadyPromiseCacheRef.current.get(cacheKey);
+      if (pending) {
+        pendingRequests.push(pending);
+        continue;
+      }
+      imageIdsToRequest.push(imageId);
+    }
+
+    if (imageIdsToRequest.length > 0) {
+      const requestPromise = fetchImagePreviewBatch(siteId, token, {
+        imageIds: imageIdsToRequest,
+        maxSide: normalizedMaxSide,
+        signal,
+      })
+        .then((response) => {
+          for (const item of response.items) {
+            if (!item.ready) {
+              continue;
+            }
+            imagePreviewReadyRef.current.add(buildImagePreviewReadyKey(item.image_id, normalizedMaxSide));
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          for (const imageId of imageIdsToRequest) {
+            imagePreviewReadyPromiseCacheRef.current.delete(buildImagePreviewReadyKey(imageId, normalizedMaxSide));
+          }
+        });
+      for (const imageId of imageIdsToRequest) {
+        imagePreviewReadyPromiseCacheRef.current.set(
+          buildImagePreviewReadyKey(imageId, normalizedMaxSide),
+          requestPromise,
+        );
+      }
+      pendingRequests.push(requestPromise);
+    }
+
+    if (pendingRequests.length > 0) {
+      await Promise.allSettled(pendingRequests);
+    }
   }
 
   async function loadImagePreviewUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
@@ -363,6 +460,34 @@ export function useCaseWorkspaceSiteData({
       return nextRequest;
     }
 
+    async function loadVisitImageRecords(patientId: string, visitDate: string): Promise<ImageRecord[]> {
+      const cacheKey = buildVisitImageCacheKey(patientId, visitDate);
+      const cachedRecords = visitImageRecordCacheRef.current.get(cacheKey);
+      if (cachedRecords) {
+        return cachedRecords;
+      }
+      const pendingRequest = visitImageRecordPromiseCacheRef.current.get(cacheKey);
+      if (pendingRequest) {
+        return pendingRequest;
+      }
+      const nextRequest = fetchImages(
+        currentSiteId,
+        token,
+        patientId,
+        visitDate,
+        controller.signal,
+      )
+        .then((imageRecords) => {
+          visitImageRecordCacheRef.current.set(cacheKey, imageRecords);
+          return imageRecords;
+        })
+        .finally(() => {
+          visitImageRecordPromiseCacheRef.current.delete(cacheKey);
+        });
+      visitImageRecordPromiseCacheRef.current.set(cacheKey, nextRequest);
+      return nextRequest;
+    }
+
     async function loadCasePreviewUrls(
       caseId: string,
       images: SavedImagePreview[],
@@ -377,6 +502,16 @@ export function useCaseWorkspaceSiteData({
           return left.is_representative ? -1 : 1;
         });
       if (pendingImages.length === 0) {
+        return;
+      }
+
+      await ensureImagePreviewsReady(
+        currentSiteId,
+        pendingImages.map((image) => image.image_id),
+        CASE_IMAGE_PREVIEW_MAX_SIDE,
+        controller.signal,
+      );
+      if (cancelled) {
         return;
       }
 
@@ -413,55 +548,29 @@ export function useCaseWorkspaceSiteData({
       applyPreviewUpdates(caseId, resolvedPreviewUrls);
     }
 
-    async function loadPatientCaseImages(): Promise<void> {
-      if (patientCases.length === 0) {
-        setPanelBusy(false);
-        setPatientVisitGalleryBusy(false);
+    async function loadSelectedCaseImages(): Promise<void> {
+      const selectedCaseNeedsLoading =
+        !cachedSelectedCaseImages || cachedSelectedCaseImages.some((image) => !image.preview_url);
+      setPanelBusy(selectedCaseNeedsLoading);
+      if (!selectedCaseNeedsLoading) {
         return;
       }
-
-      const hasUncachedVisit = patientCases.some((caseItem) => !caseImageCacheRef.current.has(caseItem.case_id));
-      setPanelBusy(!cachedSelectedCaseImages);
-      setPatientVisitGalleryBusy(hasUncachedVisit);
       try {
-        const allImages = await loadPatientImageRecords(currentCase.patient_id);
+        const visitImages =
+          cachedSelectedCaseImages?.length
+            ? cachedSelectedCaseImages
+            : preserveCachedPreviewUrls(
+                currentCase.case_id,
+                buildCaseImagePlaceholders(
+                  await loadVisitImageRecords(currentCase.patient_id, currentCase.visit_date),
+                ),
+              );
         if (cancelled) {
           return;
         }
-
-        const imagesByVisitId = new Map<string, ImageRecord[]>();
-        for (const image of allImages) {
-          const list = imagesByVisitId.get(image.visit_id) ?? [];
-          list.push(image);
-          imagesByVisitId.set(image.visit_id, list);
-        }
-
-        const nextGallery: Record<string, SavedImagePreview[]> = {};
-        for (const caseItem of patientCases) {
-          const imageRecords = imagesByVisitId.get(caseItem.visit_id) ?? [];
-          const placeholders = preserveCachedPreviewUrls(caseItem.case_id, buildCaseImagePlaceholders(imageRecords));
-          caseImageCacheRef.current.set(caseItem.case_id, placeholders);
-          nextGallery[caseItem.case_id] = placeholders;
-        }
-
-        if (cancelled) {
-          return;
-        }
-
-        const selectedImages = nextGallery[currentCase.case_id] ?? [];
         selectedCaseImageCaseIdRef.current = currentCase.case_id;
-        setSelectedCaseImages(selectedImages);
-        setPatientVisitGallery(nextGallery);
-
-        const galleryCases = patientCases.filter((caseItem) => caseItem.case_id !== currentCase.case_id);
-        const galleryPreviewTask = Promise.allSettled(
-          galleryCases.map((caseItem) => loadCasePreviewUrls(caseItem.case_id, nextGallery[caseItem.case_id] ?? [])),
-        );
-        await loadCasePreviewUrls(currentCase.case_id, selectedImages, { prioritizeRepresentative: true });
-        if (!cancelled) {
-          setPanelBusy(false);
-        }
-        await galleryPreviewTask;
+        commitCaseImages(currentCase.case_id, visitImages);
+        await loadCasePreviewUrls(currentCase.case_id, visitImages, { prioritizeRepresentative: true });
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -477,6 +586,117 @@ export function useCaseWorkspaceSiteData({
       } finally {
         if (!cancelled) {
           setPanelBusy(false);
+        }
+      }
+    }
+
+    async function loadPatientCaseGallery(): Promise<void> {
+      if (patientCases.length === 0) {
+        setPatientVisitGalleryBusy(false);
+        return;
+      }
+
+      const hasUncachedVisit = patientCases.some((caseItem) => !caseImageCacheRef.current.has(caseItem.case_id));
+      setPatientVisitGalleryBusy(hasUncachedVisit);
+      if (patientCases.length === 1) {
+        if (!cachedSelectedCaseImages) {
+          setPatientVisitGallery((current) => ({
+            ...current,
+            [currentCase.case_id]: current[currentCase.case_id] ?? [],
+          }));
+        }
+        setPatientVisitGalleryBusy(false);
+        return;
+      }
+
+      try {
+        const allImages = await loadPatientImageRecords(currentCase.patient_id);
+        if (cancelled) {
+          return;
+        }
+
+        const imagesByVisitId = new Map<string, ImageRecord[]>();
+        const imagesByVisitLabel = new Map<string, ImageRecord[]>();
+        for (const image of allImages) {
+          const visitIdKey = String(image.visit_id ?? "").trim();
+          if (visitIdKey) {
+            const list = imagesByVisitId.get(visitIdKey) ?? [];
+            list.push(image);
+            imagesByVisitId.set(visitIdKey, list);
+          }
+          const visitLabelKey = normalizeVisitMatchKey(image.visit_date);
+          if (visitLabelKey) {
+            const list = imagesByVisitLabel.get(visitLabelKey) ?? [];
+            list.push(image);
+            imagesByVisitLabel.set(visitLabelKey, list);
+          }
+        }
+
+        const nextGallery: Record<string, SavedImagePreview[]> = {};
+        for (const caseItem of patientCases) {
+          const imageRecords =
+            imagesByVisitId.get(String(caseItem.visit_id ?? "").trim()) ??
+            imagesByVisitLabel.get(normalizeVisitMatchKey(caseItem.visit_date)) ??
+            [];
+          const placeholders = preserveCachedPreviewUrls(caseItem.case_id, buildCaseImagePlaceholders(imageRecords));
+          caseImageCacheRef.current.set(caseItem.case_id, placeholders);
+          nextGallery[caseItem.case_id] = placeholders;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const selectedImages = nextGallery[currentCase.case_id] ?? caseImageCacheRef.current.get(currentCase.case_id) ?? [];
+        selectedCaseImageCaseIdRef.current = currentCase.case_id;
+        setSelectedCaseImages(selectedImages);
+        setPatientVisitGallery((current) => ({
+          ...current,
+          ...nextGallery,
+        }));
+
+        const galleryCases = patientCases.filter((caseItem) => caseItem.case_id !== currentCase.case_id);
+        // Batch all gallery image IDs into a single PIL warmup request instead of N separate calls.
+        const allGalleryImageIds = galleryCases.flatMap(
+          (caseItem) => (nextGallery[caseItem.case_id] ?? []).map((img) => img.image_id),
+        );
+        if (allGalleryImageIds.length > 0) {
+          await ensureImagePreviewsReady(currentSiteId, allGalleryImageIds, CASE_IMAGE_PREVIEW_MAX_SIDE, controller.signal);
+        }
+        if (cancelled) {
+          return;
+        }
+        const galleryPreviewUpdates: Array<[string, Map<string, string>]> = [];
+        for (const caseItem of galleryCases) {
+          const images = nextGallery[caseItem.case_id] ?? [];
+          const urlMap = new Map<string, string>();
+          for (const img of images) {
+            if (!img.preview_url) {
+              const previewUrl = await loadImagePreviewUrl(currentSiteId, img.image_id, controller.signal);
+              if (previewUrl) {
+                urlMap.set(img.image_id, previewUrl);
+              }
+            }
+          }
+          if (urlMap.size > 0) {
+            galleryPreviewUpdates.push([caseItem.case_id, urlMap]);
+          }
+        }
+        for (const [caseId, urlMap] of galleryPreviewUpdates) {
+          applyPreviewUpdates(caseId, urlMap);
+        }
+      } catch (nextError) {
+        if (isAbortError(nextError)) {
+          return;
+        }
+        if (!cancelled) {
+          setToast({
+            tone: "error",
+            message: describeError(nextError, pick(locale, "Unable to load case images.", "耳?댁뒪 ?대?吏瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??")),
+          });
+        }
+      } finally {
+        if (!cancelled) {
           setPatientVisitGalleryBusy(false);
         }
       }
@@ -520,7 +740,8 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    void loadPatientCaseImages();
+    void loadSelectedCaseImages();
+    void loadPatientCaseGallery();
     void loadSelectedCaseHistory();
     return () => {
       cancelled = true;
@@ -683,6 +904,5 @@ export function useCaseWorkspaceSiteData({
     ensureSiteModelVersionsLoaded,
   };
 }
-
 
 

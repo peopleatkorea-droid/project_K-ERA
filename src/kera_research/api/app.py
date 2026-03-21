@@ -17,7 +17,7 @@ from typing import Any, Literal
 import google.auth.transport.requests
 import jwt
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
@@ -206,11 +206,16 @@ def get_control_plane() -> ControlPlaneStore:
 
 def get_current_user(
     authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None, alias="token"),
 ) -> dict[str, Any]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    raw_token: str | None = None
+    if authorization and authorization.lower().startswith("bearer "):
+        raw_token = authorization.split(" ", 1)[1].strip()
+    elif token:
+        raw_token = token.strip()
+    if not raw_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
-    token = authorization.split(" ", 1)[1].strip()
-    token_payload = _decode_access_token(token)
+    token_payload = _decode_access_token(raw_token)
     # Build the user dict directly from the signed JWT — no DB round trip needed.
     # The JWT already contains role, site_ids, and approval_status.
     # Token TTL is 2 hours, so stale permission windows are short.

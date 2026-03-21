@@ -72,13 +72,27 @@ export async function syncInstitutionDirectory(
   );
 }
 
-export async function fetchStorageSettings(token: string) {
-  return request<StorageSettingsRecord>("/api/admin/storage-settings", {}, token);
+export async function fetchStorageSettings(token: string, siteId?: string | null) {
+  const params = new URLSearchParams();
+  if (siteId) {
+    params.set("site_id", siteId);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<StorageSettingsRecord>(`/api/admin/storage-settings${suffix}`, {}, token);
 }
 
-export async function updateStorageSettings(token: string, payload: { storage_root: string }) {
+export async function updateStorageSettings(
+  token: string,
+  payload: { storage_root: string },
+  siteId?: string | null,
+) {
+  const params = new URLSearchParams();
+  if (siteId) {
+    params.set("site_id", siteId);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
   return request<StorageSettingsRecord>(
-    "/api/admin/storage-settings",
+    `/api/admin/storage-settings${suffix}`,
     {
       method: "PATCH",
       body: JSON.stringify(payload),

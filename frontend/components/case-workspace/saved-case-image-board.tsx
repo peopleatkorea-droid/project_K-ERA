@@ -44,6 +44,7 @@ type SavedCaseImageBoardProps = {
   commonLoading: string;
   commonNotAvailable: string;
   panelBusy: boolean;
+  selectedCaseImageCountHint: number;
   selectedCaseImages: SavedImagePreview[];
   semanticPromptInputMode: SemanticPromptInputMode;
   semanticPromptInputOptions: SemanticPromptInputOption[];
@@ -192,6 +193,7 @@ export function SavedCaseImageBoard({
   commonLoading,
   commonNotAvailable,
   panelBusy,
+  selectedCaseImageCountHint,
   selectedCaseImages,
   semanticPromptInputMode,
   semanticPromptInputOptions,
@@ -214,6 +216,8 @@ export function SavedCaseImageBoard({
   onLesionPointerMove,
   onFinishLesionPointer,
 }: SavedCaseImageBoardProps) {
+  const loadingCardCount = Math.max(1, Math.min(selectedCaseImageCountHint || selectedCaseImages.length || 1, 3));
+
   return (
     <section className={docSectionClass}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -320,6 +324,12 @@ export function SavedCaseImageBoard({
                       ) : null}
                     </div>
                   </div>
+                ) : panelBusy ? (
+                  <div className="grid place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2">
+                    <div className="grid h-[220px] w-full max-w-[320px] place-items-center rounded-[12px] border border-border/60 bg-white/75 text-sm text-muted dark:bg-white/4">
+                      {pick(locale, "Loading preview...", "미리보기를 불러오는 중...")}
+                    </div>
+                  </div>
                 ) : (
                   <div className={panelImageFallbackClass}>{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
                 )}
@@ -387,6 +397,24 @@ export function SavedCaseImageBoard({
               </Card>
             );
           })}
+        </div>
+      ) : panelBusy ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: loadingCardCount }, (_, index) => (
+            <Card as="section" variant="panel" key={`loading-card-${index}`} className="grid content-start gap-2.5 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="h-5 w-32 animate-pulse rounded-full bg-border/80" />
+                <div className="h-5 w-24 animate-pulse rounded-full bg-border/70" />
+              </div>
+              <div className="grid place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2">
+                <div className="h-[220px] w-full max-w-[320px] animate-pulse rounded-[12px] border border-border/60 bg-white/75 dark:bg-white/4" />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <div className="h-8 w-16 animate-pulse rounded-[8px] bg-border/70" />
+                <div className="h-8 w-20 animate-pulse rounded-[8px] bg-border/70" />
+              </div>
+            </Card>
+          ))}
         </div>
       ) : null}
 

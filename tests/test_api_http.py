@@ -1520,6 +1520,58 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(cached_response.status_code, 200, cached_response.text)
         self.assertEqual(cached_response.content, response.content)
 
+    def test_image_preview_endpoint_serves_cached_thumbnail_without_touching_source_file_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=256"
+
+        initial_response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(initial_response.status_code, 200, initial_response.text)
+
+        image_record = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image_record)
+        source_path = Path(str(image_record["image_path"]))
+        self.assertTrue(source_path.exists())
+        source_path.unlink()
+
+        cached_response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+        self.assertEqual(cached_response.status_code, 200, cached_response.text)
+        self.assertEqual(cached_response.content, initial_response.content)
+
+    def test_image_preview_batch_endpoint_prewarms_and_reports_preview_status_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        preview_path = self.site_store.image_preview_cache_path(image_id, 256)
+        preview_path.unlink(missing_ok=True)
+
+        response = self.client.post(
+            f"/api/sites/{self.site_id}/images/previews",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"image_ids": [image_id, "missing-image"], "max_side": 256},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["max_side"], 256)
+        self.assertEqual(payload["requested_count"], 2)
+        self.assertEqual(payload["ready_count"], 1)
+
+        items_by_id = {item["image_id"]: item for item in payload["items"]}
+        self.assertTrue(items_by_id[image_id]["ready"])
+        self.assertEqual(items_by_id[image_id]["cache_status"], "generated")
+        self.assertTrue(items_by_id[image_id]["preview_url"].endswith(f"/images/{image_id}/preview?max_side=256"))
+        self.assertTrue(preview_path.exists())
+
+        self.assertFalse(items_by_id["missing-image"]["ready"])
+        self.assertEqual(items_by_id["missing-image"]["cache_status"], "missing")
+        self.assertEqual(items_by_id["missing-image"]["error"], "Image not found.")
+
     def test_image_upload_persists_quality_scores_and_prewarms_previews_http(self):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
@@ -3374,6 +3426,19 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(update_settings_payload["storage_root_source"], "custom")
         self.assertTrue(update_settings_payload["uses_custom_root"])
 
+        site_scoped_settings_response = self.client.get(
+            "/api/admin/storage-settings",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            params={"site_id": self.site_id},
+        )
+        self.assertEqual(site_scoped_settings_response.status_code, 200, site_scoped_settings_response.text)
+        site_scoped_settings_payload = site_scoped_settings_response.json()
+        self.assertEqual(site_scoped_settings_payload["selected_site_id"], self.site_id)
+        self.assertEqual(
+            site_scoped_settings_payload["selected_site_storage_root"],
+            str((ROOT_DIR.parent / "KERA_DATA" / "sites" / self.site_id).resolve()),
+        )
+
         update_site_root_response = self.client.patch(
             f"/api/admin/sites/{self.site_id}/storage-root",
             headers={"Authorization": f"Bearer {site_admin_token}"},
@@ -3381,6 +3446,17 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(update_site_root_response.status_code, 200, update_site_root_response.text)
         self.assertEqual(update_site_root_response.json()["local_storage_root"], str(site_storage_root.resolve()))
+
+        updated_site_scoped_settings_response = self.client.get(
+            "/api/admin/storage-settings",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+            params={"site_id": self.site_id},
+        )
+        self.assertEqual(updated_site_scoped_settings_response.status_code, 200, updated_site_scoped_settings_response.text)
+        self.assertEqual(
+            updated_site_scoped_settings_response.json()["selected_site_storage_root"],
+            str(site_storage_root.resolve()),
+        )
 
         self._seed_case(site_admin_token)
         blocked_response = self.client.patch(

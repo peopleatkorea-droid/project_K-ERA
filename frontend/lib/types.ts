@@ -59,6 +59,8 @@ export type StorageSettingsRecord = {
   effective_default_storage_root: string;
   storage_root_source: "built_in_default" | "environment_default" | "custom";
   uses_custom_root: boolean;
+  selected_site_id?: string | null;
+  selected_site_storage_root?: string | null;
 };
 
 export type SiteMetadataRecoveryResponse = {
@@ -200,6 +202,22 @@ export type ImageRecord = {
       saturation_mean?: number | null;
     } | null;
   } | null;
+};
+
+export type ImagePreviewBatchItemRecord = {
+  image_id: string;
+  max_side: number;
+  ready: boolean;
+  cache_status: "hit" | "generated" | "missing" | "error";
+  preview_url: string;
+  error?: string | null;
+};
+
+export type ImagePreviewBatchResponse = {
+  max_side: number;
+  requested_count: number;
+  ready_count: number;
+  items: ImagePreviewBatchItemRecord[];
 };
 
 export type SemanticPromptMatch = {

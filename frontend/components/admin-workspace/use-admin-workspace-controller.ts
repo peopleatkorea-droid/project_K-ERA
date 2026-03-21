@@ -54,6 +54,7 @@ import {
   type ModelVersionRecord,
 } from "../../lib/api";
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
+import { toStorageRootDisplayPath } from "../../lib/storage-paths";
 
 const BENCHMARK_ARCHITECTURES = [
   "densenet121",
@@ -587,12 +588,12 @@ export function useAdminWorkspaceController({
     setStorageSettingsBusy(true);
     try {
       const [nextStorageSettings, nextManagedUsers] = await Promise.all([
-        fetchStorageSettings(token),
+        fetchStorageSettings(token, selectedSiteId),
         canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
       ]);
       setStorageSettings(nextStorageSettings);
       setManagedUsers(nextManagedUsers);
-      setInstanceStorageRootForm(nextStorageSettings.storage_root);
+      setInstanceStorageRootForm(toStorageRootDisplayPath(nextStorageSettings.storage_root));
     } finally {
       setStorageSettingsBusy(false);
     }
@@ -770,9 +771,6 @@ export function useAdminWorkspaceController({
   }, [canAggregate, overview, section, selectedSiteId, setAggregations, setModelUpdateReviewNotes, setModelUpdates, setToast, token]);
 
   useEffect(() => {
-    if (!overview) {
-      return;
-    }
     if (section !== "management") {
       return;
     }
@@ -789,7 +787,7 @@ export function useAdminWorkspaceController({
         }
         setStorageSettings(nextStorageSettings);
         setManagedUsers(nextManagedUsers);
-        setInstanceStorageRootForm(nextStorageSettings.storage_root);
+        setInstanceStorageRootForm(toStorageRootDisplayPath(nextStorageSettings.storage_root));
       } catch (nextError) {
         if (!cancelled) {
           setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
@@ -804,7 +802,7 @@ export function useAdminWorkspaceController({
     return () => {
       cancelled = true;
     };
-  }, [canManagePlatform, overview, section, setManagedUsers, setStorageSettings, setStorageSettingsBusy, setToast, token]);
+  }, [canManagePlatform, section, selectedSiteId, setManagedUsers, setStorageSettings, setStorageSettingsBusy, setToast, token]);
 
   useEffect(() => {
     if (!overview) {
@@ -1183,7 +1181,7 @@ export function useAdminWorkspaceController({
 
   useEffect(() => {
     if (storageSettings) {
-      setInstanceStorageRootForm(storageSettings.storage_root);
+      setInstanceStorageRootForm(toStorageRootDisplayPath(storageSettings.storage_root));
     }
   }, [setInstanceStorageRootForm, storageSettings]);
 
@@ -1942,7 +1940,7 @@ export function useAdminWorkspaceController({
     }
     setStorageSettingsBusy(true);
     try {
-      const nextSettings = await updateStorageSettings(token, { storage_root: instanceStorageRootForm });
+      const nextSettings = await updateStorageSettings(token, { storage_root: instanceStorageRootForm }, selectedSiteId);
       setStorageSettings(nextSettings);
       await refreshWorkspace();
       setToast({ tone: "success", message: copy.storageRootSaved });

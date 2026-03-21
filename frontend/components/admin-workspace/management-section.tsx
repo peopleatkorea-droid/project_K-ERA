@@ -11,6 +11,7 @@ import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../u
 import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecord, type ProjectRecord, type PublicInstitutionRecord, type SiteSummary, type StorageSettingsRecord } from "../../lib/api";
 import { pick, translateApiError, translateRole, type Locale } from "../../lib/i18n";
 import { filterVisibleSiteIds, filterVisibleSites, getSiteAlias, getSiteDisplayName } from "../../lib/site-labels";
+import { toStorageRootDisplayPath } from "../../lib/storage-paths";
 import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
@@ -60,6 +61,15 @@ type Props = {
 };
 
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
+
+function LoadingMetricValue({ locale }: { locale: Locale }) {
+  return (
+    <span className="inline-flex items-center gap-2 text-sm font-medium text-muted">
+      <span aria-hidden="true" className="h-3.5 w-14 animate-pulse rounded-full bg-border/80" />
+      <span>{pick(locale, "Loading...", "불러오는 중...")}</span>
+    </span>
+  );
+}
 
 function SiteRecordCard({
   title,
@@ -260,8 +270,17 @@ export function ManagementSection({
 }: Props) {
   const hospitalHasData = Boolean(summary && (summary.n_patients > 0 || summary.n_visits > 0 || summary.n_images > 0));
   const visibleManagedSites = filterVisibleSites(managedSites);
+  const storageSettingsLoading = storageSettingsBusy && !storageSettings;
+  const storageLoadingLabel = pick(locale, "Loading...", "불러오는 중...");
   const storageRootSource = storageSettings?.storage_root_source ?? (storageSettings?.uses_custom_root ? "custom" : "built_in_default");
   const effectiveDefaultStorageRoot = storageSettings?.effective_default_storage_root ?? storageSettings?.default_storage_root ?? null;
+  const defaultStorageRootDisplay = toStorageRootDisplayPath(storageSettings?.default_storage_root);
+  const effectiveDefaultStorageRootDisplay = toStorageRootDisplayPath(effectiveDefaultStorageRoot);
+  const activeStorageRootDisplay = toStorageRootDisplayPath(storageSettings?.storage_root);
+  const instanceStorageRootPlaceholder =
+    activeStorageRootDisplay ||
+    effectiveDefaultStorageRootDisplay ||
+    (storageSettingsLoading ? pick(locale, "Loading active root...", "활성 경로를 불러오는 중...") : "");
   const hasEnvironmentDefaultOverride = Boolean(
     storageSettings?.default_storage_root &&
       effectiveDefaultStorageRoot &&
@@ -288,6 +307,9 @@ export function ManagementSection({
     : null;
   const selectedSiteCurrentStorageRoot = selectedManagedSite
     ? String(selectedManagedSite.local_storage_root ?? "").trim() || inheritedSelectedSiteStorageRoot
+    : null;
+  const selectedSiteResolvedStorageRoot = selectedManagedSite
+    ? String(storageSettings?.selected_site_storage_root ?? "").trim() || selectedSiteCurrentStorageRoot
     : null;
   const selectedSiteUsesPinnedStorageRoot = Boolean(
     selectedManagedSite &&
@@ -369,7 +391,9 @@ export function ManagementSection({
               titleAs="h4"
               aside={
                 <span className={docSiteBadgeClass}>
-                  {storageRootSource === "custom"
+                  {storageSettingsLoading
+                    ? storageLoadingLabel
+                    : storageRootSource === "custom"
                     ? pick(locale, "Custom", "사용자 지정")
                     : storageRootSource === "environment_default"
                       ? pick(locale, "Environment", "환경설정")
@@ -378,7 +402,13 @@ export function ManagementSection({
               }
             />
             <Field label={pick(locale, "Folder path", "폴더 경로")}>
-              <input value={instanceStorageRootForm} onChange={(event) => setInstanceStorageRootForm(event.target.value)} placeholder="D:\KERA_DATA" />
+              <input
+                value={instanceStorageRootForm}
+                onChange={(event) => setInstanceStorageRootForm(event.target.value)}
+                placeholder={instanceStorageRootPlaceholder}
+                disabled={storageSettingsLoading}
+                aria-busy={storageSettingsLoading}
+              />
             </Field>
             <div className="text-sm leading-6 text-muted">
               {pick(
@@ -388,15 +418,28 @@ export function ManagementSection({
               )}
             </div>
             <MetricGrid columns={hasEnvironmentDefaultOverride ? 3 : 2}>
-              <MetricItem value={storageSettings?.default_storage_root ?? notAvailableLabel} label={pick(locale, "Built-in default", "내장 기본 경로")} />
+              <MetricItem
+                value={storageSettingsLoading ? <LoadingMetricValue locale={locale} /> : defaultStorageRootDisplay || notAvailableLabel}
+                label={pick(locale, "Built-in default", "내장 기본 경로")}
+              />
               {hasEnvironmentDefaultOverride ? (
                 <MetricItem
-                  value={effectiveDefaultStorageRoot ?? notAvailableLabel}
+                  value={storageSettingsLoading ? <LoadingMetricValue locale={locale} /> : effectiveDefaultStorageRootDisplay || notAvailableLabel}
                   label={pick(locale, "Environment default", "환경설정 기본 경로")}
                 />
               ) : null}
-              <MetricItem value={storageSettings?.storage_root ?? notAvailableLabel} label={pick(locale, "Active root", "활성 경로")} />
+              <MetricItem
+                value={storageSettingsLoading ? <LoadingMetricValue locale={locale} /> : activeStorageRootDisplay || notAvailableLabel}
+                label={pick(locale, "Active root", "활성 경로")}
+              />
             </MetricGrid>
+            <div className="text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "The active root above is the configured storage path. If you enter KERA_DATA, the app resolves its sites subfolder internally. The selected hospital's actual folder is shown in the metadata card below.",
+                "위의 활성 경로는 앱에 표시하는 기본 저장 경로입니다. KERA_DATA를 입력한 경우 앱은 내부적으로 그 안의 sites 하위 폴더를 사용합니다. 현재 선택한 병원의 실제 폴더는 아래 메타데이터 카드에 표시합니다."
+              )}
+            </div>
             {storageRootSource === "custom" ? (
               <div className="text-sm leading-6 text-muted">
                 {pick(
@@ -419,10 +462,15 @@ export function ManagementSection({
               </div>
             ) : null}
             <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={() => setInstanceStorageRootForm(storageSettings?.default_storage_root ?? "")}>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={storageSettingsLoading || !storageSettings?.default_storage_root}
+                onClick={() => setInstanceStorageRootForm(toStorageRootDisplayPath(storageSettings?.default_storage_root))}
+              >
                 {pick(locale, "Use built-in default", "기본 경로 사용")}
               </Button>
-              <Button type="button" variant="primary" loading={storageSettingsBusy} onClick={onSaveStorageRoot}>
+              <Button type="button" variant="primary" loading={storageSettingsBusy} disabled={storageSettingsLoading} onClick={onSaveStorageRoot}>
                 {pick(locale, "Save default root", "기본 경로 저장")}
               </Button>
             </div>
@@ -448,6 +496,14 @@ export function ManagementSection({
                   <MetricItem value={summary?.n_visits ?? 0} label={pick(locale, "Visits", "방문")} />
                   <MetricItem value={summary?.n_images ?? 0} label={pick(locale, "Images", "이미지")} />
                 </MetricGrid>
+                <div className="grid gap-2">
+                  <div className="text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-muted">
+                    {pick(locale, "Active data folder", "실제 데이터 폴더")}
+                  </div>
+                  <div className="rounded-[16px] border border-border/80 bg-white/65 px-4 py-3 font-mono text-sm leading-6 text-ink break-all dark:bg-white/4">
+                    {storageSettingsLoading ? pick(locale, "Loading active root...", "활성 경로를 불러오는 중...") : selectedSiteResolvedStorageRoot ?? notAvailableLabel}
+                  </div>
+                </div>
                 <div className="rounded-[16px] border border-amber-300/70 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
                   {pick(
                     locale,

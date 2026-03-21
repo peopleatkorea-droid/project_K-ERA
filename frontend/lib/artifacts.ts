@@ -1,4 +1,5 @@
-import { buildApiUrl, requestBlob } from "./api-core";
+import { buildApiUrl, request, requestBlob } from "./api-core";
+import type { ImagePreviewBatchResponse } from "./types";
 
 export async function downloadManifest(siteId: string, token: string) {
   const response = await fetch(buildApiUrl(`/api/sites/${siteId}/manifest.csv`), {
@@ -33,6 +34,32 @@ export async function fetchImagePreviewBlob(
     ? `/api/sites/${siteId}/images/${imageId}/preview?${params.toString()}`
     : `/api/sites/${siteId}/images/${imageId}/preview`;
   return requestBlob(path, token, "Image preview fetch failed", { signal: options.signal });
+}
+
+export async function fetchImagePreviewBatch(
+  siteId: string,
+  token: string,
+  options: {
+    imageIds: string[];
+    maxSide?: number;
+    signal?: AbortSignal;
+  },
+) {
+  const imageIds = Array.from(
+    new Set(options.imageIds.map((imageId) => String(imageId ?? "").trim()).filter(Boolean)),
+  );
+  return request<ImagePreviewBatchResponse>(
+    `/api/sites/${siteId}/images/previews`,
+    {
+      method: "POST",
+      signal: options.signal,
+      body: JSON.stringify({
+        image_ids: imageIds,
+        max_side: options.maxSide,
+      }),
+    },
+    token,
+  );
 }
 
 export async function downloadImportTemplate(siteId: string, token: string) {

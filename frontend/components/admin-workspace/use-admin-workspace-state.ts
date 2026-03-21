@@ -338,7 +338,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [publishingModelVersionId, setPublishingModelVersionId] = useState<string | null>(null);
   const [publishingModelUpdateId, setPublishingModelUpdateId] = useState<string | null>(null);
   const [aggregationBusy, setAggregationBusy] = useState(false);
-  const [storageSettingsBusy, setStorageSettingsBusy] = useState(false);
+  const [storageSettingsBusy, setStorageSettingsBusy] = useState(initialSection === "management");
   const [metadataRecoveryBusy, setMetadataRecoveryBusy] = useState(false);
   const [newVersionName, setNewVersionName] = useState("");
   const [initialForm, setInitialForm] = useState({

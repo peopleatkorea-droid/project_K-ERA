@@ -905,6 +905,180 @@ describe("AdminWorkspace integration", () => {
     expect(screen.queryByText("Save hospital root")).not.toBeInTheDocument();
   });
 
+  it("shows the bundle root in the management input when the active root resolves under KERA_DATA", async () => {
+    apiMocks.fetchStorageSettings.mockResolvedValue({
+      storage_root: "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
+      default_storage_root: "C:\\InstallParent\\KERA_DATA\\sites",
+      effective_default_storage_root: "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
+      storage_root_source: "environment_default",
+      uses_custom_root: false,
+    });
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    const input = await screen.findByLabelText("Folder path");
+    expect(input).toHaveValue("C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
+    expect(input).toHaveAttribute("placeholder", "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
+  });
+
+  it("shows a loading placeholder instead of an empty storage root before settings resolve", async () => {
+    apiMocks.fetchStorageSettings.mockImplementation(
+      () =>
+        new Promise(() => {
+          // keep pending to verify the initial loading state
+        }),
+    );
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    const input = await screen.findByLabelText("Folder path");
+    expect(input).toBeDisabled();
+    expect(input).toHaveAttribute("placeholder", "Loading active root...");
+  });
+
+  it("shows the selected hospital's resolved active data folder in management", async () => {
+    apiMocks.fetchStorageSettings.mockResolvedValue({
+      storage_root: "C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites",
+      default_storage_root: "C:\\InstallParent\\KERA_DATA\\sites",
+      effective_default_storage_root: "C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites",
+      storage_root_source: "environment_default",
+      uses_custom_root: false,
+      selected_site_id: "SITE_A",
+      selected_site_storage_root: "C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites\\SITE_A",
+    });
+    apiMocks.fetchAdminSites.mockResolvedValue([
+      {
+        site_id: "SITE_A",
+        project_id: "project_default",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+        local_storage_root: "",
+      },
+    ]);
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 3,
+            n_visits: 4,
+            n_images: 5,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(await screen.findByText("Active data folder")).toBeInTheDocument();
+    expect(screen.getByText("C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites\\SITE_A")).toBeInTheDocument();
+  });
+
   it("runs metadata recovery for the selected hospital from management", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const onSiteDataChanged = vi.fn(async () => undefined);
@@ -1015,10 +1189,17 @@ describe("AdminWorkspace integration", () => {
     );
 
     expect(await screen.findByText("Environment")).toBeInTheDocument();
-    expect(screen.getByText("C:\\InstallParent\\KERA_DATA\\sites")).toBeInTheDocument();
+    expect(screen.getByText("C:\\InstallParent\\KERA_DATA")).toBeInTheDocument();
     expect(screen.getAllByText("D:\\EnvDefault").length).toBeGreaterThan(0);
     expect(
-      screen.getByText("This node is using an environment-provided default root. The built-in fallback is the install-relative location shown separately above.")
+      screen.getByText(
+        "The active root above is the configured storage path. If you enter KERA_DATA, the app resolves its sites subfolder internally. The selected hospital's actual folder is shown in the metadata card below.",
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This node is using an environment-provided default root. The built-in fallback is the install-relative location shown separately above.",
+      )
     ).toBeInTheDocument();
   });
 
@@ -1066,7 +1247,7 @@ describe("AdminWorkspace integration", () => {
 
     await screen.findByRole("button", { name: "Register hospital" });
     const folderInputs = await screen.findAllByLabelText("Folder path");
-    expect(folderInputs[0]).toHaveAttribute("placeholder", "D:\\KERA_DATA");
+    expect(folderInputs[0]).toHaveAttribute("placeholder", "C:\\KERA");
     expect(
       screen.getByText(
         "Enter either the KERA_DATA folder or the direct site-root folder. If you provide KERA_DATA, the app will use its sites subfolder automatically.",

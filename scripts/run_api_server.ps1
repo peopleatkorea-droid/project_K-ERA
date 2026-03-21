@@ -61,7 +61,8 @@ Write-Host "[K-ERA] Starting API server on port $Port ..." -ForegroundColor Cyan
 
 try {
     # Avoid uvicorn reload worker re-spawning under a different interpreter.
-    & $venvPython -m uvicorn kera_research.api.app:app --host $HostAddress --port $Port
+    # 2 workers: concurrent image serving without SQLite WAL contention.
+    & $venvPython -m uvicorn kera_research.api.app:app --host $HostAddress --port $Port --workers 2
 } catch {
     Write-Host ""
     Write-Host "[ERROR] API server failed: $_" -ForegroundColor Red

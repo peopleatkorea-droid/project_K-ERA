@@ -877,6 +877,24 @@ class SiteStore:
             row = conn.execute(query).mappings().first()
         return self._resolve_image_record_path(dict(row)) if row else None
 
+    def get_images(self, image_ids: list[str]) -> list[dict[str, Any]]:
+        requested_ids = [str(image_id or "").strip() for image_id in image_ids if str(image_id or "").strip()]
+        if not requested_ids:
+            return []
+        query = select(db_images).where(
+            and_(
+                db_images.c.site_id == self.site_id,
+                db_images.c.image_id.in_(requested_ids),
+            )
+        )
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        records_by_id = {
+            str(record.get("image_id") or ""): self._resolve_image_record_path(dict(record))
+            for record in rows
+        }
+        return [records_by_id[image_id] for image_id in requested_ids if image_id in records_by_id]
+
     def add_image(
         self,
         patient_id: str,
@@ -1313,14 +1331,16 @@ class SiteStore:
         image_id = str(image.get("image_id") or "").strip()
         if not image_id:
             raise ValueError("Image id is required.")
+        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
+        preview_path = self.image_preview_cache_path(image_id, normalized_max_side)
+        # Uploaded source images are immutable in this workspace, so a cached preview
+        # can be served immediately without re-touching the original OneDrive file.
+        if preview_path.exists():
+            return preview_path
+
         image_path = Path(str(image.get("image_path") or "")).resolve()
         if not image_path.exists():
             raise ValueError("Image file not found on disk.")
-
-        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
-        preview_path = self.image_preview_cache_path(image_id, normalized_max_side)
-        if preview_path.exists() and preview_path.stat().st_mtime >= image_path.stat().st_mtime:
-            return preview_path
 
         temp_path = preview_path.with_suffix(
             f".{os.getpid()}.{threading.get_ident()}.tmp"

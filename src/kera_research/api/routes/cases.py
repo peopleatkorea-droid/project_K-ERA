@@ -38,6 +38,10 @@ def build_cases_router(support: Any) -> APIRouter:
     class MedsamArtifactBackfillRequest(BaseModel):
         refresh_cache: bool = True
 
+    class ImagePreviewBatchRequest(BaseModel):
+        image_ids: list[str]
+        max_side: int = 512
+
     def private_json_response(payload: Any, *, max_age: int = 15) -> JSONResponse:
         return JSONResponse(
             content=payload,
@@ -563,6 +567,108 @@ def build_cases_router(support: Any) -> APIRouter:
             "images": site_store.list_images_for_visit(payload.patient_id, payload.visit_date),
         }
 
+    @router.post("/api/sites/{site_id}/images/previews")
+    def ensure_image_previews(
+        site_id: str,
+        payload: ImagePreviewBatchRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> Response:
+        site_store = require_site_access(cp, user, site_id)
+        normalized_max_side = min(max(int(payload.max_side or 512), 96), 1024)
+        requested_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for raw_image_id in payload.image_ids:
+            image_id = str(raw_image_id or "").strip()
+            if not image_id or image_id in seen_ids:
+                continue
+            requested_ids.append(image_id)
+            seen_ids.add(image_id)
+
+        if not requested_ids:
+            return private_json_response(
+                {
+                    "max_side": normalized_max_side,
+                    "requested_count": 0,
+                    "ready_count": 0,
+                    "items": [],
+                },
+                max_age=60,
+            )
+
+        images_by_id = {
+            str(item.get("image_id") or "").strip(): item
+            for item in site_store.get_images(requested_ids)
+        }
+        ready_count = 0
+        items: list[dict[str, Any]] = []
+        for image_id in requested_ids:
+            preview_url = f"/api/sites/{site_id}/images/{image_id}/preview?max_side={normalized_max_side}"
+            image = images_by_id.get(image_id)
+            if image is None:
+                items.append(
+                    {
+                        "image_id": image_id,
+                        "max_side": normalized_max_side,
+                        "ready": False,
+                        "cache_status": "missing",
+                        "preview_url": preview_url,
+                        "error": "Image not found.",
+                    }
+                )
+                continue
+
+            preview_path = site_store.image_preview_cache_path(image_id, normalized_max_side)
+            cache_status = "hit"
+            try:
+                if not preview_path.exists():
+                    site_store.ensure_image_preview(image, normalized_max_side)
+                    cache_status = "generated"
+                ready_count += 1
+                items.append(
+                    {
+                        "image_id": image_id,
+                        "max_side": normalized_max_side,
+                        "ready": True,
+                        "cache_status": cache_status,
+                        "preview_url": preview_url,
+                        "error": None,
+                    }
+                )
+            except ValueError as exc:
+                detail = "Image file not found on disk." if str(exc) == "Image file not found on disk." else str(exc)
+                items.append(
+                    {
+                        "image_id": image_id,
+                        "max_side": normalized_max_side,
+                        "ready": False,
+                        "cache_status": "missing",
+                        "preview_url": preview_url,
+                        "error": detail,
+                    }
+                )
+            except OSError:
+                items.append(
+                    {
+                        "image_id": image_id,
+                        "max_side": normalized_max_side,
+                        "ready": False,
+                        "cache_status": "error",
+                        "preview_url": preview_url,
+                        "error": "Image preview could not be generated.",
+                    }
+                )
+
+        return private_json_response(
+            {
+                "max_side": normalized_max_side,
+                "requested_count": len(requested_ids),
+                "ready_count": ready_count,
+                "items": items,
+            },
+            max_age=60,
+        )
+
     @router.patch("/api/sites/{site_id}/images/{image_id}/lesion-box")
     def update_lesion_box(
         site_id: str,
@@ -646,14 +752,25 @@ def build_cases_router(support: Any) -> APIRouter:
         image = site_store.get_image(image_id)
         if image is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
-        image_path = Path(image["image_path"])
-        if not image_path.exists():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
-
         normalized_max_side = min(max(int(max_side or 512), 96), 1024)
+        preview_path = site_store.image_preview_cache_path(image_id, normalized_max_side)
+        if preview_path.exists():
+            return FileResponse(
+                path=preview_path,
+                media_type="image/jpeg",
+                filename=preview_path.name,
+                headers={"Cache-Control": "private, max-age=86400"},
+            )
         try:
             preview_path = site_store.ensure_image_preview(image, normalized_max_side)
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
+            if str(exc) == "Image file not found on disk.":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.") from exc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Image preview could not be generated.",
+            ) from exc
+        except OSError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Image preview could not be generated.",

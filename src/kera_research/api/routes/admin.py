@@ -272,6 +272,7 @@ def build_admin_router(support: Any) -> APIRouter:
 
     @router.get("/api/admin/storage-settings")
     def get_storage_settings(
+        site_id: str | None = None,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
@@ -280,17 +281,22 @@ def build_admin_router(support: Any) -> APIRouter:
         effective_default_root = str(cp.configured_default_instance_storage_root())
         current_root = cp.instance_storage_root()
         source = cp.instance_storage_root_source()
+        normalized_site_id = str(site_id or "").strip()
+        selected_site_storage_root = cp.site_storage_root(normalized_site_id) if normalized_site_id else None
         return {
             "storage_root": current_root,
             "default_storage_root": default_root,
             "effective_default_storage_root": effective_default_root,
             "storage_root_source": source,
             "uses_custom_root": source == "custom",
+            "selected_site_id": normalized_site_id or None,
+            "selected_site_storage_root": selected_site_storage_root,
         }
 
     @router.patch("/api/admin/storage-settings")
     def update_storage_settings(
         payload: StorageSettingsUpdateRequest,
+        site_id: str | None = None,
         user: dict[str, Any] = Depends(get_approved_user),
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
@@ -304,12 +310,16 @@ def build_admin_router(support: Any) -> APIRouter:
         default_root = str(cp.default_instance_storage_root())
         effective_default_root = str(cp.configured_default_instance_storage_root())
         source = cp.instance_storage_root_source()
+        normalized_site_id = str(site_id or "").strip()
+        selected_site_storage_root = cp.site_storage_root(normalized_site_id) if normalized_site_id else None
         return {
             "storage_root": cp.instance_storage_root(),
             "default_storage_root": default_root,
             "effective_default_storage_root": effective_default_root,
             "storage_root_source": source,
             "uses_custom_root": source == "custom",
+            "selected_site_id": normalized_site_id or None,
+            "selected_site_storage_root": selected_site_storage_root,
         }
 
     @router.get("/api/admin/system/salt-fingerprint")

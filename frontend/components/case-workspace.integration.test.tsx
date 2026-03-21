@@ -39,6 +39,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchVisits: vi.fn(),
   fetchImages: vi.fn(),
   fetchImageBlob: vi.fn(),
+  fetchImagePreviewBatch: vi.fn(),
   fetchImagePreviewBlob: vi.fn(),
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
@@ -71,6 +72,7 @@ vi.mock("../lib/api", async () => {
     fetchVisits: apiMocks.fetchVisits,
     fetchImages: apiMocks.fetchImages,
     fetchImageBlob: apiMocks.fetchImageBlob,
+    fetchImagePreviewBatch: apiMocks.fetchImagePreviewBatch,
     fetchImagePreviewBlob: apiMocks.fetchImagePreviewBlob,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
@@ -261,6 +263,19 @@ describe("CaseWorkspace integration", () => {
       },
     ]);
     apiMocks.fetchImageBlob.mockResolvedValue(new Blob(["image"], { type: "image/png" }));
+    apiMocks.fetchImagePreviewBatch.mockImplementation(async (_siteId, _token, options: { imageIds: string[]; maxSide?: number }) => ({
+      max_side: options.maxSide ?? 512,
+      requested_count: options.imageIds.length,
+      ready_count: options.imageIds.length,
+      items: options.imageIds.map((imageId) => ({
+        image_id: imageId,
+        max_side: options.maxSide ?? 512,
+        ready: true,
+        cache_status: "generated" as const,
+        preview_url: `/api/sites/SITE_A/images/${imageId}/preview`,
+        error: null,
+      })),
+    }));
     apiMocks.fetchImagePreviewBlob.mockResolvedValue(new Blob(["image"], { type: "image/jpeg" }));
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
@@ -1344,6 +1359,55 @@ describe("CaseWorkspace integration", () => {
         expect.objectContaining({ page: 2, page_size: 25, search: "", mine: false }),
       );
     });
+  });
+
+  it("prefetches representative thumbnails for the current patient list page without waiting for observer callbacks", async () => {
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
+
+    expect(await screen.findByText("Patient list")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchImagePreviewBatch).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ imageIds: ["image_1"], maxSide: 256, signal: expect.any(AbortSignal) }),
+      );
+      expect(apiMocks.fetchImagePreviewBlob).toHaveBeenCalledWith(
+        "SITE_A",
+        "image_1",
+        "test-token",
+        expect.objectContaining({ maxSide: 256 }),
+      );
+    });
+    expect(await screen.findByAltText("KERA-2026-001-case_1")).toHaveAttribute("src", "blob:preview-url");
+  });
+
+  it("shows patient timeline images even when image records only match by visit date", async () => {
+    renderWorkspace();
+    await openSavedCase();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchImages).toHaveBeenCalledWith("SITE_A", "test-token", "KERA-2026-001", "Initial", expect.any(AbortSignal));
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchImagePreviewBatch).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ imageIds: ["image_1"], maxSide: 640, signal: expect.any(AbortSignal) }),
+      );
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchImagePreviewBlob).toHaveBeenCalledWith(
+        "SITE_A",
+        "image_1",
+        "test-token",
+        expect.objectContaining({ maxSide: 640 }),
+      );
+    });
+    const previewImages = await screen.findAllByAltText("image_1");
+    expect(previewImages.some((image) => image.getAttribute("src") === "blob:preview-url")).toBe(true);
+    expect(screen.queryByText("No saved images for this visit yet.")).not.toBeInTheDocument();
   });
 
   it("shows the MedSAM backlog cards and starts background backfill from list view", async () => {
