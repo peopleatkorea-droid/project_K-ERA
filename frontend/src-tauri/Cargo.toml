@@ -1,0 +1,21 @@
+[package]
+name = "kera-desktop-shell"
+version = "0.1.0"
+description = "K-ERA desktop shell"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["clock"] }
+dotenvy = "0.15"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tauri = { version = "2.0", features = ["protocol-asset"] }
+uuid = { version = "1.11", features = ["v4"] }

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { type PointerEvent as ReactPointerEvent, type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 
@@ -12,7 +12,6 @@ import {
   fetchCases,
   fetchImageBlob,
   fetchImageSemanticPromptScores,
-  fetchLiveLesionPreviewJob,
   fetchValidationArtifactBlob,
   runCaseAiClinic,
   runCaseValidation,
@@ -29,6 +28,10 @@ import {
   type SemanticPromptInputMode,
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
+import {
+  LiveLesionPreviewTimeoutError,
+  waitForLiveLesionPreviewSettlement,
+} from "../../lib/live-lesion-preview-runtime";
 import type {
   AiClinicPreviewResponse,
   LesionBoxMap,
@@ -98,6 +101,7 @@ type Args = {
   loadCaseHistory: (siteId: string, patientId: string, visitDate: string) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
   onSiteDataChanged: (siteId: string) => Promise<void>;
+  onSavedImageDataChanged?: () => void;
   onValidationCompleted?: (args: {
     siteId: string;
     selectedCase: CaseSummaryRecord;
@@ -138,6 +142,7 @@ export function useCaseWorkspaceAnalysis({
   loadCaseHistory,
   loadSiteActivity,
   onSiteDataChanged,
+  onSavedImageDataChanged,
   onValidationCompleted,
   onArtifactsChanged,
 }: Args) {
@@ -515,17 +520,16 @@ export function useCaseWorkspaceAnalysis({
     if (!selectedSiteId) {
       return;
     }
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 700));
-      if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
-        return;
-      }
-      try {
-        const job = await fetchLiveLesionPreviewJob(selectedSiteId, imageId, jobId, token);
-        if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
-          return;
-        }
-        if (job.status === "running") {
+    try {
+      const job = await waitForLiveLesionPreviewSettlement({
+        siteId: selectedSiteId,
+        imageId,
+        jobId,
+        token,
+        shouldContinue() {
+          return liveLesionPreviewRequestRef.current[imageId] === requestVersion;
+        },
+        onRunning(job) {
           setLiveLesionPreviews((current) => ({
             ...current,
             [imageId]: {
@@ -543,9 +547,12 @@ export function useCaseWorkspaceAnalysis({
               lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
             },
           }));
-          continue;
-        }
-        if (job.status === "failed") {
+        },
+      });
+      if (!job || liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+        return;
+      }
+      if (job.status === "failed") {
           setLiveLesionPreviews((current) => ({
             ...current,
             [imageId]: {
@@ -555,7 +562,7 @@ export function useCaseWorkspaceAnalysis({
               }),
               job_id: job.job_id,
               status: "failed",
-              error: job.error ?? pick(locale, "Live MedSAM preview failed.", "실시간 MedSAM 미리보기에 실패했습니다."),
+              error: job.error ?? pick(locale, "Live MedSAM preview failed.", "?ㅼ떆媛?MedSAM 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎."),
               backend: job.backend ?? null,
               prompt_signature: job.prompt_signature ?? null,
               lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
@@ -581,7 +588,7 @@ export function useCaseWorkspaceAnalysis({
             status: "failed",
             error: describeError(
               nextError,
-              pick(locale, "Unable to check live MedSAM preview status.", "실시간 MedSAM 상태를 확인하지 못했습니다.")
+              pick(locale, "Unable to check live MedSAM preview status.", "?ㅼ떆媛?MedSAM ?곹깭瑜??뺤씤?섏? 紐삵뻽?듬땲??")
             ),
             backend: current[imageId]?.backend ?? null,
             prompt_signature: current[imageId]?.prompt_signature ?? null,
@@ -592,27 +599,6 @@ export function useCaseWorkspaceAnalysis({
         return;
       }
     }
-
-    if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
-      return;
-    }
-    setLiveLesionPreviews((current) => ({
-      ...current,
-      [imageId]: {
-        ...(current[imageId] ?? {
-          lesion_mask_url: null,
-          lesion_crop_url: null,
-        }),
-        job_id: jobId,
-        status: "failed",
-        error: pick(locale, "Live MedSAM preview timed out.", "실시간 MedSAM 미리보기가 시간 초과되었습니다."),
-        backend: current[imageId]?.backend ?? null,
-        prompt_signature: current[imageId]?.prompt_signature ?? null,
-        lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
-        lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
-      },
-    }));
-  }
 
   async function triggerLiveLesionPreview(imageId: string, options: { quiet?: boolean } = {}) {
     if (!liveLesionCropEnabled || !selectedSiteId) {
@@ -667,7 +653,7 @@ export function useCaseWorkspaceAnalysis({
       }
       const message = describeError(
         nextError,
-        pick(locale, "Unable to start live MedSAM preview.", "실시간 MedSAM 미리보기를 시작하지 못했습니다.")
+        pick(locale, "Unable to start live MedSAM preview.", "?ㅼ떆媛?MedSAM 誘몃━蹂닿린瑜??쒖옉?섏? 紐삵뻽?듬땲??")
       );
       setLiveLesionPreviews((current) => ({
         ...current,
@@ -693,13 +679,13 @@ export function useCaseWorkspaceAnalysis({
 
   async function persistLesionPromptBox(imageId: string, nextBox: NormalizedBox) {
     if (!selectedSiteId) {
-      throw new Error(pick(locale, "Select a hospital first.", "먼저 병원을 선택해 주세요."));
+      throw new Error(pick(locale, "Select a hospital first.", "癒쇱? 蹂묒썝???좏깮??二쇱꽭??"));
     }
     setLesionBoxBusyImageId(imageId);
     try {
       const normalized = normalizeBox(nextBox);
       if (normalized.x1 - normalized.x0 < 0.01 || normalized.y1 - normalized.y0 < 0.01) {
-        throw new Error(pick(locale, "Lesion box is too small.", "병변 박스가 너무 작습니다."));
+        throw new Error(pick(locale, "Lesion box is too small.", "蹂묐? 諛뺤뒪媛 ?덈Т ?묒뒿?덈떎."));
       }
       const updatedImage = await updateImageLesionBox(selectedSiteId, imageId, token, normalized);
       setSelectedCaseImages((current) =>
@@ -722,7 +708,7 @@ export function useCaseWorkspaceAnalysis({
 
   async function clearSavedLesionPromptBox(imageId: string) {
     if (!selectedSiteId) {
-      throw new Error(pick(locale, "Select a hospital first.", "먼저 병원을 선택해 주세요."));
+      throw new Error(pick(locale, "Select a hospital first.", "癒쇱? 蹂묒썝???좏깮??二쇱꽭??"));
     }
     setLesionBoxBusyImageId(imageId);
     try {
@@ -820,7 +806,7 @@ export function useCaseWorkspaceAnalysis({
         setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
         setToast({
           tone: "error",
-          message: describeError(nextError, pick(locale, "Unable to clear lesion box.", "병변 박스를 지우지 못했습니다.")),
+          message: describeError(nextError, pick(locale, "Unable to clear lesion box.", "蹂묐? 諛뺤뒪瑜?吏?곗? 紐삵뻽?듬땲??")),
         });
       }
       return;
@@ -831,7 +817,7 @@ export function useCaseWorkspaceAnalysis({
       setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to auto-save lesion box.", "병변 박스를 자동 저장하지 못했습니다.")),
+        message: describeError(nextError, pick(locale, "Unable to auto-save lesion box.", "蹂묐? 諛뺤뒪瑜??먮룞 ??ν븯吏 紐삵뻽?듬땲??")),
       });
     }
   }
@@ -849,7 +835,7 @@ export function useCaseWorkspaceAnalysis({
     if (!selectedSiteId || !selectedCase) {
       setToast({
         tone: "error",
-        message: pick(locale, "Select a saved case before running lesion preview.", "병변 crop 미리보기를 실행하려면 저장 케이스를 선택해 주세요."),
+        message: pick(locale, "Select a saved case before running lesion preview.", "蹂묐? crop 誘몃━蹂닿린瑜??ㅽ뻾?섎젮硫????耳?댁뒪瑜??좏깮??二쇱꽭??"),
       });
       return;
     }
@@ -857,7 +843,7 @@ export function useCaseWorkspaceAnalysis({
     if (!hasAnyDraftBox && !hasAnySavedLesionBox) {
       setToast({
         tone: "error",
-        message: pick(locale, "Draw and save at least one lesion box first.", "병변 박스를 하나 이상 그린 뒤 저장해 주세요."),
+        message: pick(locale, "Draw and save at least one lesion box first.", "蹂묐? 諛뺤뒪瑜??섎굹 ?댁긽 洹몃┛ ????ν빐 二쇱꽭??"),
       });
       return;
     }
@@ -937,13 +923,13 @@ export function useCaseWorkspaceAnalysis({
         message: pick(
           locale,
           `Lesion preview generated for ${selectedCase.patient_id} / ${selectedCase.visit_date}.`,
-          `${selectedCase.patient_id} / ${selectedCase.visit_date} 병변 crop 미리보기를 생성했습니다.`
+          `${selectedCase.patient_id} / ${selectedCase.visit_date} 蹂묐? crop 誘몃━蹂닿린瑜??앹꽦?덉뒿?덈떎.`
         ),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Lesion preview failed.", "병변 crop 미리보기에 실패했습니다.")),
+        message: describeError(nextError, pick(locale, "Lesion preview failed.", "蹂묐? crop 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎.")),
       });
     } finally {
       setLesionPreviewBusy(false);
@@ -967,6 +953,13 @@ export function useCaseWorkspaceAnalysis({
         visit_date: selectedCase.visit_date,
         representative_image_id: imageId,
       });
+      onSavedImageDataChanged?.();
+      setSelectedCaseImages((current) =>
+        current.map((image) => ({
+          ...image,
+          is_representative: image.image_id === imageId,
+        }))
+      );
       const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
       setCases(nextCases);
       const refreshedCase =
@@ -1026,7 +1019,7 @@ export function useCaseWorkspaceAnalysis({
       }));
       setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
     } catch (nextError) {
-      const fallback = pick(locale, "BiomedCLIP analysis failed.", "BiomedCLIP 분석 실행에 실패했습니다.");
+      const fallback = pick(locale, "BiomedCLIP analysis failed.", "BiomedCLIP 遺꾩꽍 ?ㅽ뻾???ㅽ뙣?덉뒿?덈떎.");
       const message = describeError(nextError, fallback);
       setSemanticPromptErrors((current) => ({
         ...current,
@@ -1229,7 +1222,7 @@ export function useCaseWorkspaceAnalysis({
             ? pick(
                 locale,
                 `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}-model analysis refreshed.`,
-                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}개 모델 분석도 함께 갱신했습니다.`
+                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}媛?紐⑤뜽 遺꾩꽍???④퍡 媛깆떊?덉뒿?덈떎.`
               )
             : copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date),
       });
@@ -1252,7 +1245,7 @@ export function useCaseWorkspaceAnalysis({
     if (selectedCompareModelVersionIds.length === 0) {
       setToast({
         tone: "error",
-        message: pick(locale, "Select at least one model version for comparison.", "비교할 모델 버전을 하나 이상 선택해 주세요."),
+        message: pick(locale, "Select at least one model version for comparison.", "鍮꾧탳??紐⑤뜽 踰꾩쟾???섎굹 ?댁긽 ?좏깮??二쇱꽭??"),
       });
       return;
     }
@@ -1270,12 +1263,12 @@ export function useCaseWorkspaceAnalysis({
       setModelCompareResult(result);
       setToast({
         tone: "success",
-        message: pick(locale, `Compared ${result.comparisons.length} model(s).`, `${result.comparisons.length}개 모델 비교를 완료했습니다.`),
+        message: pick(locale, `Compared ${result.comparisons.length} model(s).`, `${result.comparisons.length}媛?紐⑤뜽 鍮꾧탳瑜??꾨즺?덉뒿?덈떎.`),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to compare models for this case.", "이 케이스의 모델 비교를 실행할 수 없습니다.")),
+        message: describeError(nextError, pick(locale, "Unable to compare models for this case.", "??耳?댁뒪??紐⑤뜽 鍮꾧탳瑜??ㅽ뻾?????놁뒿?덈떎.")),
       });
     } finally {
       setModelCompareBusy(false);

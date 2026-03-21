@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { FormEvent, useDeferredValue, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 
 import { AdminWorkspace } from "../components/admin-workspace";
 import { CaseWorkspace } from "../components/case-workspace";
@@ -9,6 +9,15 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Field } from "../components/ui/field";
 import { SectionHeader } from "../components/ui/section-header";
+import {
+  GOOGLE_CLIENT_ID,
+  type OperationsSection,
+  parseOperationsLaunchFromSearch,
+  type RequestFormState,
+  type WorkspaceMode,
+} from "./home-page-auth-shared";
+import { useApprovedWorkspaceState } from "./use-approved-workspace-state";
+import { useHomeAuthBootstrap } from "./use-home-auth-bootstrap";
 import { cn } from "../lib/cn";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
@@ -16,22 +25,10 @@ import { useTheme } from "../lib/theme";
 import {
   createPatient,
   downloadManifest,
-  fetchAccessRequests,
-  fetchMainBootstrap,
-  fetchMyAccessRequests,
-  fetchPublicSites,
-  searchPublicInstitutions,
   type PublicInstitutionRecord,
   type SiteSummary,
-  fetchSiteSummary,
-  fetchSites,
-  googleLogin,
-  reviewAccessRequest,
-  submitAccessRequest,
   type AccessRequestRecord,
   type AuthState,
-  type AuthUser,
-  type SiteRecord,
 } from "../lib/api";
 
 declare global {
@@ -45,33 +42,6 @@ declare global {
       };
     };
   }
-}
-
-type ReviewDraft = {
-  assigned_role: string;
-  assigned_site_id: string;
-  reviewer_notes: string;
-};
-
-const TOKEN_KEY = "kera_web_token";
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-const CLIENT_BOOTSTRAP_TIMING_LOGS = process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
-type OperationsSection = "dashboard" | "training" | "cross_validation";
-type WorkspaceMode = "canvas" | "operations";
-
-function parseOperationsLaunchFromSearch(): { mode: "canvas" | "operations"; section: OperationsSection } | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("workspace") !== "operations") {
-    return null;
-  }
-  const section = params.get("section");
-  if (section === "training" || section === "cross_validation" || section === "dashboard") {
-    return { mode: "operations", section };
-  }
-  return { mode: "operations", section: "dashboard" };
 }
 
 type HomeHistoryEntry = {
@@ -211,93 +181,6 @@ function writeHomeHistoryEntry(entry: HomeHistoryEntry, mode: "push" | "replace"
   window.history.replaceState(nextState, "");
 }
 
-type MainAppTokenPayload = {
-  sub?: unknown;
-  username?: unknown;
-  full_name?: unknown;
-  public_alias?: unknown;
-  role?: unknown;
-  site_ids?: unknown;
-  approval_status?: unknown;
-  registry_consents?: unknown;
-  exp?: unknown;
-};
-
-function readJwtPayload(token: string): MainAppTokenPayload | null {
-  const parts = token.split(".");
-  if (parts.length < 2) {
-    return null;
-  }
-  try {
-    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    return JSON.parse(window.atob(padded)) as MainAppTokenPayload;
-  } catch {
-    return null;
-  }
-}
-
-function readJwtExpiration(token: string): number | null {
-  const payload = readJwtPayload(token);
-  return typeof payload?.exp === "number" ? payload.exp : null;
-}
-
-function readOptimisticUserFromToken(token: string): AuthUser | null {
-  const payload = readJwtPayload(token);
-  if (!payload) {
-    return null;
-  }
-  const userId = typeof payload.sub === "string" ? payload.sub.trim() : "";
-  const username = typeof payload.username === "string" ? payload.username.trim() : "";
-  const fullName = typeof payload.full_name === "string" ? payload.full_name.trim() : "";
-  const role = typeof payload.role === "string" ? payload.role.trim() : "";
-  const approvalStatus = typeof payload.approval_status === "string" ? payload.approval_status.trim() : "";
-  if (!userId || !username || !role) {
-    return null;
-  }
-  if (!["approved", "pending", "rejected", "application_required"].includes(approvalStatus)) {
-    return null;
-  }
-  const siteIds =
-    Array.isArray(payload.site_ids)
-      ? payload.site_ids.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : [];
-  const registryConsents =
-    payload.registry_consents && typeof payload.registry_consents === "object"
-      ? (payload.registry_consents as AuthUser["registry_consents"])
-      : {};
-  return {
-    user_id: userId,
-    username,
-    full_name: fullName || username,
-    public_alias: typeof payload.public_alias === "string" && payload.public_alias.trim() ? payload.public_alias.trim() : null,
-    role,
-    site_ids: siteIds,
-    approval_status: approvalStatus as AuthState,
-    latest_access_request: null,
-    registry_consents: registryConsents,
-  };
-}
-
-function optimisticSitesForUser(user: AuthUser): SiteRecord[] {
-  return (user.site_ids ?? []).map((siteId) => ({
-    site_id: siteId,
-    display_name: siteId,
-    hospital_name: siteId,
-  }));
-}
-
-function isTokenExpired(token: string): boolean {
-  const exp = readJwtExpiration(token);
-  if (exp === null) {
-    return false;
-  }
-  return exp <= Math.floor(Date.now() / 1000);
-}
-
-function isAuthBootstrapError(message: string): boolean {
-  return ["Invalid token.", "Missing bearer token.", "User no longer exists."].includes(message);
-}
 function statusCopy(locale: "en" | "ko", status: AuthState): string {
   if (status === "pending") {
     return pick(locale, "Your institution request is pending review.", "기관 접근 요청이 검토 대기 중입니다.");
@@ -318,38 +201,12 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
 export default function HomePage() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
-  const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [sites, setSites] = useState<SiteRecord[]>([]);
-  const [publicSites, setPublicSites] = useState<SiteRecord[]>([]);
-  const [publicInstitutions, setPublicInstitutions] = useState<PublicInstitutionRecord[]>([]);
-  const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
-  const [summary, setSummary] = useState<SiteSummary | null>(null);
-  const [myRequests, setMyRequests] = useState<AccessRequestRecord[]>([]);
-  const [adminRequests, setAdminRequests] = useState<AccessRequestRecord[]>([]);
-  const [reviewDrafts, setReviewDrafts] = useState<Record<string, ReviewDraft>>({});
   const [googleReady, setGoogleReady] = useState(false);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [bootstrapBusy, setBootstrapBusy] = useState(false);
-  const [siteBusy, setSiteBusy] = useState(false);
-  const [patientBusy, setPatientBusy] = useState(false);
-  const [requestBusy, setRequestBusy] = useState(false);
-  const [institutionSearchBusy, setInstitutionSearchBusy] = useState(false);
-  const [reviewBusyById, setReviewBusyById] = useState<Record<string, boolean>>({});
-  const [googleLaunchPulse, setGoogleLaunchPulse] = useState(false);
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
-  const [error, setError] = useState<string | null>(null);
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const workspaceHistoryReadyRef = useRef(false);
   const workspaceModeRef = useRef<WorkspaceMode>("canvas");
-  const [patientForm, setPatientForm] = useState({
-    patient_id: "",
-    sex: "female",
-    age: "65",
-    chart_alias: "",
-    local_case_code: "",
-  });
-  const [requestForm, setRequestForm] = useState({
+  const [requestForm, setRequestForm] = useState<RequestFormState>({
     requested_site_id: "",
     requested_site_label: "",
     requested_role: "researcher",
@@ -358,21 +215,7 @@ export default function HomePage() {
   const [institutionQuery, setInstitutionQuery] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
-  const [launchTarget, setLaunchTarget] = useState<{ mode: "canvas" | "operations"; section: OperationsSection } | null>(null);
   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
-  const filteredExistingSites = publicSites.filter((site) =>
-    matchesInstitutionSearch(institutionQuery, site.site_id, site.display_name, site.hospital_name),
-  );
-  const selectedExistingSite =
-    publicSites.find((site) => site.site_id === requestForm.requested_site_id) ?? null;
-  const visibleExistingSites =
-    selectedExistingSite && !filteredExistingSites.some((site) => site.site_id === selectedExistingSite.site_id)
-      ? [selectedExistingSite, ...filteredExistingSites]
-      : filteredExistingSites;
-
-  const approved = user?.approval_status === "approved";
-  const canReview = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
-  const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
   const copy = {
     unableLoadInstitutions: pick(locale, "Unable to load institutions.", "湲곌? 紐⑸줉??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
     failedConnect: pick(locale, "Failed to connect.", "?곌껐???ㅽ뙣?덉뒿?덈떎."),
@@ -837,29 +680,65 @@ export default function HomePage() {
       href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard",
     },
   ];
-  const describeError = (nextError: unknown, fallback: string) =>
-    nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem(TOKEN_KEY);
-    if (stored) {
-      if (isTokenExpired(stored)) {
-        window.localStorage.removeItem(TOKEN_KEY);
-      } else {
-        setToken(stored);
-        const optimisticUser = readOptimisticUserFromToken(stored);
-        if (optimisticUser?.approval_status === "approved") {
-          setUser(optimisticUser);
-          const optimisticSites = optimisticSitesForUser(optimisticUser);
-          setSites(optimisticSites);
-          setSelectedSiteId((current) =>
-            current && optimisticSites.some((site) => site.site_id === current) ? current : optimisticSites[0]?.site_id ?? null,
-          );
-        }
-      }
-    }
-    setLaunchTarget(parseOperationsLaunchFromSearch());
-  }, []);
+  const describeError = useCallback(
+    (nextError: unknown, fallback: string) =>
+      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+    [locale],
+  );
+  const {
+    approved,
+    authBusy,
+    bootstrapBusy,
+    error,
+    googleLaunchPulse,
+    handleGoogleLaunch,
+    handleLogout,
+    handleRequestAccess,
+    institutionSearchBusy,
+    launchTarget,
+    myRequests,
+    publicInstitutions,
+    publicSites,
+    requestBusy,
+    refreshApprovedSites,
+    refreshSiteData,
+    selectedSiteId,
+    setSelectedSiteId,
+    siteError,
+    sites,
+    summary,
+    token,
+    user,
+  } = useHomeAuthBootstrap({
+    copy: {
+      failedConnect: copy.failedConnect,
+      failedLoadSiteData: copy.failedLoadSiteData,
+      googleDisabled: copy.googleDisabled,
+      googleLoginFailed: copy.googleLoginFailed,
+      googleNoCredential: copy.googleNoCredential,
+      googlePreparing: copy.googlePreparing,
+      requestSubmissionFailed: copy.requestSubmissionFailed,
+      unableLoadInstitutions: copy.unableLoadInstitutions,
+    },
+    deferredInstitutionQuery,
+    describeError,
+    googleButtonRef,
+    googleButtonWidth,
+    googleReady,
+    requestForm,
+    setRequestForm,
+  });
+  const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
+  const errorMessage = siteError ?? error;
+  const filteredExistingSites = publicSites.filter((site) =>
+    matchesInstitutionSearch(institutionQuery, site.site_id, site.display_name, site.hospital_name),
+  );
+  const selectedExistingSite =
+    publicSites.find((site) => site.site_id === requestForm.requested_site_id) ?? null;
+  const visibleExistingSites =
+    selectedExistingSite && !filteredExistingSites.some((site) => site.site_id === selectedExistingSite.site_id)
+      ? [selectedExistingSite, ...filteredExistingSites]
+      : filteredExistingSites;
 
   useEffect(() => {
     function syncGoogleButtonWidth() {
@@ -963,280 +842,6 @@ export default function HomePage() {
     }
   }, [approved, token, user, workspaceMode]);
 
-  useEffect(() => {
-    if (!token || !user || approved) {
-      return;
-    }
-    void fetchPublicSites()
-      .then((items) => {
-        setPublicSites(items);
-        setRequestForm((current) => ({
-          ...current,
-          requested_site_id: current.requested_site_id || items[0]?.site_id || "",
-        }));
-      })
-      .catch((nextError) => {
-        setError(describeError(nextError, copy.unableLoadInstitutions));
-      });
-  }, [token, user, approved, copy.unableLoadInstitutions]);
-
-  useEffect(() => {
-    if (!token || !user || approved) {
-      setPublicInstitutions([]);
-      setInstitutionSearchBusy(false);
-      return;
-    }
-    const query = deferredInstitutionQuery.trim();
-    if (query.length < 2) {
-      setPublicInstitutions([]);
-      setInstitutionSearchBusy(false);
-      return;
-    }
-    let cancelled = false;
-    setInstitutionSearchBusy(true);
-    void searchPublicInstitutions(query, { limit: 8 })
-      .then((items) => {
-        if (!cancelled) {
-          setPublicInstitutions(items);
-        }
-      })
-      .catch((nextError) => {
-        if (!cancelled) {
-          setError(describeError(nextError, copy.unableLoadInstitutions));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setInstitutionSearchBusy(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token, user, approved, deferredInstitutionQuery, copy.unableLoadInstitutions]);
-
-  useEffect(() => {
-    if (!token) {
-      return;
-    }
-    const currentToken = token;
-    async function bootstrap() {
-      const startedAt = performance.now();
-      setBootstrapBusy(true);
-      setError(null);
-      try {
-        const bootstrapResult = await fetchMainBootstrap(currentToken);
-        setUser(bootstrapResult.user);
-        if (bootstrapResult.user.approval_status === "approved") {
-          const nextSites = bootstrapResult.sites;
-          setMyRequests([]);
-          setSites(nextSites);
-          setSelectedSiteId((current) =>
-            current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
-          );
-        } else {
-          setSites([]);
-          setSelectedSiteId(null);
-          setSummary(null);
-          setMyRequests(bootstrapResult.my_access_requests);
-        }
-        if (CLIENT_BOOTSTRAP_TIMING_LOGS) {
-          console.info("[kera-home-bootstrap]", {
-            approval_status: bootstrapResult.user.approval_status,
-            role: bootstrapResult.user.role,
-            site_count: bootstrapResult.sites.length,
-            my_request_count: bootstrapResult.my_access_requests.length,
-            total_ms: Math.round(performance.now() - startedAt),
-          });
-        }
-      } catch (nextError) {
-        window.localStorage.removeItem(TOKEN_KEY);
-        setToken(null);
-        setUser(null);
-        if (!(nextError instanceof Error && isAuthBootstrapError(nextError.message))) {
-          setError(describeError(nextError, copy.failedConnect));
-        }
-      } finally {
-        setBootstrapBusy(false);
-      }
-    }
-    void bootstrap();
-  }, [token, copy.failedConnect]);
-
-  useEffect(() => {
-    if (!token || !selectedSiteId || !approved || bootstrapBusy) {
-      return;
-    }
-    const currentToken = token;
-    const currentSiteId = selectedSiteId;
-    async function loadSite() {
-      setSiteBusy(true);
-      setError(null);
-      try {
-        setSummary(await fetchSiteSummary(currentSiteId, currentToken));
-      } catch (nextError) {
-        setError(describeError(nextError, copy.failedLoadSiteData));
-      } finally {
-        setSiteBusy(false);
-      }
-    }
-    void loadSite();
-  }, [token, selectedSiteId, approved, bootstrapBusy, copy.failedLoadSiteData]);
-
-  useEffect(() => {
-    if (!token || !canReview) {
-      setAdminRequests([]);
-      return;
-    }
-    const currentToken = token;
-    void fetchAccessRequests(currentToken, "pending")
-      .then((items) => {
-        setAdminRequests(items);
-        setReviewDrafts((current) => {
-          const next = { ...current };
-          for (const item of items) {
-            next[item.request_id] = next[item.request_id] ?? {
-              assigned_role: "researcher",
-              assigned_site_id: item.requested_site_id,
-              reviewer_notes: "",
-            };
-          }
-          return next;
-        });
-      })
-      .catch((nextError) => {
-        setError(describeError(nextError, copy.failedLoadApprovalQueue));
-      });
-  }, [token, canReview, copy.failedLoadApprovalQueue]);
-
-  useEffect(() => {
-    if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleButtonRef.current || !window.google?.accounts?.id) {
-      return;
-    }
-    googleButtonRef.current.innerHTML = "";
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CLIENT_ID,
-      callback: async (response: { credential?: string }) => {
-        if (!response.credential) {
-          setError(copy.googleNoCredential);
-          return;
-        }
-        setAuthBusy(true);
-        setError(null);
-        try {
-          const auth = await googleLogin(response.credential);
-          window.localStorage.setItem(TOKEN_KEY, auth.access_token);
-          setToken(auth.access_token);
-          setUser(auth.user);
-        } catch (nextError) {
-          setError(describeError(nextError, copy.googleLoginFailed));
-        } finally {
-          setAuthBusy(false);
-        }
-      },
-    });
-    window.google.accounts.id.renderButton(googleButtonRef.current, {
-      theme: "outline",
-      size: "large",
-      width: googleButtonWidth,
-      text: "signin_with",
-      shape: "pill",
-    });
-  }, [googleReady, token, googleButtonWidth, copy.googleLoginFailed, copy.googleNoCredential]);
-
-  async function refreshSiteData(siteId: string, currentToken: string) {
-    setSummary(await fetchSiteSummary(siteId, currentToken));
-  }
-
-  async function refreshApprovedSites(currentToken: string) {
-    const nextSites = await fetchSites(currentToken);
-    setSites(nextSites);
-    setSelectedSiteId((current) =>
-      current && nextSites.some((site) => site.site_id === current) ? current : nextSites[0]?.site_id ?? null,
-    );
-  }
-
-  async function handleCreatePatient(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token || !selectedSiteId) {
-      return;
-    }
-    setPatientBusy(true);
-    setError(null);
-    try {
-      await createPatient(selectedSiteId, token, {
-        patient_id: patientForm.patient_id,
-        sex: patientForm.sex,
-        age: Number(patientForm.age),
-        chart_alias: patientForm.chart_alias,
-        local_case_code: patientForm.local_case_code,
-      });
-      setPatientForm((current) => ({ ...current, patient_id: "", chart_alias: "", local_case_code: "" }));
-      await refreshSiteData(selectedSiteId, token);
-    } catch (nextError) {
-      setError(describeError(nextError, pick(locale, "Patient creation failed.", "?섏옄 ?앹꽦???ㅽ뙣?덉뒿?덈떎.")));
-    } finally {
-      setPatientBusy(false);
-    }
-  }
-
-  async function handleRequestAccess(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token) {
-      return;
-    }
-    setRequestBusy(true);
-    setError(null);
-    try {
-      const response = await submitAccessRequest(token, requestForm);
-      const refreshedToken = window.localStorage.getItem(TOKEN_KEY) || token;
-      if (refreshedToken !== token) {
-        setToken(refreshedToken);
-      }
-      setUser(response.user);
-      const nextRequests = await fetchMyAccessRequests(refreshedToken);
-      setMyRequests(nextRequests);
-      if (response.user.approval_status === "approved") {
-        const nextSites = await fetchSites(refreshedToken);
-        setSites(nextSites);
-        const preferredSiteId =
-          response.request.resolved_site_id ||
-          response.request.requested_site_id;
-        setSelectedSiteId((current) =>
-          current && nextSites.some((site) => site.site_id === current)
-            ? current
-            : nextSites.find((site) => site.site_id === preferredSiteId)?.site_id || nextSites[0]?.site_id || null,
-        );
-      }
-    } catch (nextError) {
-      setError(describeError(nextError, copy.requestSubmissionFailed));
-    } finally {
-      setRequestBusy(false);
-    }
-  }
-
-  async function handleReview(requestId: string, decision: "approved" | "rejected") {
-    if (!token) {
-      return;
-    }
-    const draft = reviewDrafts[requestId];
-    setReviewBusyById((current) => ({ ...current, [requestId]: true }));
-    setError(null);
-    try {
-      await reviewAccessRequest(requestId, token, {
-        decision,
-        assigned_role: "researcher",
-        assigned_site_id: draft?.assigned_site_id,
-        reviewer_notes: draft?.reviewer_notes,
-      });
-      setAdminRequests(await fetchAccessRequests(token, "pending"));
-    } catch (nextError) {
-      setError(describeError(nextError, pick(locale, "Review failed.", "寃?좎뿉 ?ㅽ뙣?덉뒿?덈떎.")));
-    } finally {
-      setReviewBusyById((current) => ({ ...current, [requestId]: false }));
-    }
-  }
-
   async function handleManifestDownload() {
     if (!token || !selectedSiteId) {
       return;
@@ -1250,42 +855,10 @@ export default function HomePage() {
     window.URL.revokeObjectURL(url);
   }
 
-  function handleLogout() {
-    window.localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    setUser(null);
+  function handleWorkspaceLogout() {
+    handleLogout();
     setWorkspaceMode("canvas");
     setOperationsSection("dashboard");
-    setSites([]);
-    setSelectedSiteId(null);
-    setSummary(null);
-    setMyRequests([]);
-    setAdminRequests([]);
-  }
-
-  function handleGoogleLaunch() {
-    if (!GOOGLE_CLIENT_ID) {
-      setError(copy.googleDisabled);
-      return;
-    }
-    if (!googleReady) {
-      setError(copy.googlePreparing);
-      return;
-    }
-    const host = googleButtonRef.current;
-    const interactive =
-      host?.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]') ??
-      host?.querySelector<HTMLElement>("iframe");
-    if (!interactive) {
-      setError(copy.googlePreparing);
-      return;
-    }
-    setError(null);
-    setGoogleLaunchPulse(true);
-    interactive.click();
-    window.setTimeout(() => {
-      setGoogleLaunchPulse(false);
-    }, 400);
   }
 
   const landingHospitalChips = [
@@ -1317,9 +890,9 @@ export default function HomePage() {
                 "세션 토큰을 확인했습니다. 워크스페이스 프로필과 권한 정보를 불러오는 중입니다."
               )}
             />
-            {error ? (
+            {errorMessage ? (
               <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">
-                {error}
+                {errorMessage}
               </div>
             ) : null}
             <div className="rounded-[20px] border border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
@@ -1338,7 +911,7 @@ export default function HomePage() {
       <LandingV4
         locale={locale}
         authBusy={authBusy}
-        error={error}
+        error={errorMessage}
         googleClientId={GOOGLE_CLIENT_ID}
         googleButtonRef={googleButtonRef}
         googleLaunchPulse={googleLaunchPulse}
@@ -1372,15 +945,15 @@ export default function HomePage() {
               title={copy.institutionAccessRequest}
               description={copy.signedInAs(user.full_name, user.username)}
               aside={
-                <Button type="button" variant="ghost" size="sm" onClick={handleLogout}>
+                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
                   {copy.logOut}
                 </Button>
               }
             />
 
-            {error ? (
+            {errorMessage ? (
               <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">
-                {error}
+                {errorMessage}
               </div>
             ) : null}
 
@@ -1565,12 +1138,14 @@ export default function HomePage() {
         canOpenOperations={canOpenOperations}
         onSelectSite={setSelectedSiteId}
         onExportManifest={handleManifestDownload}
-        onLogout={handleLogout}
+        onLogout={handleWorkspaceLogout}
         onOpenOperations={(section) => {
           setOperationsSection(section ?? "dashboard");
           setWorkspaceMode("operations");
         }}
-        onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+        onSiteDataChanged={async (siteId) => {
+          await refreshSiteData(siteId, token);
+        }}
         theme={resolvedTheme}
         onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
       />
@@ -1589,9 +1164,13 @@ export default function HomePage() {
         initialSection={operationsSection}
         onSelectSite={setSelectedSiteId}
         onOpenCanvas={() => setWorkspaceMode("canvas")}
-        onLogout={handleLogout}
-        onRefreshSites={() => refreshApprovedSites(token)}
-        onSiteDataChanged={(siteId) => refreshSiteData(siteId, token)}
+        onLogout={handleWorkspaceLogout}
+        onRefreshSites={async () => {
+          await refreshApprovedSites(token);
+        }}
+        onSiteDataChanged={async (siteId) => {
+          await refreshSiteData(siteId, token);
+        }}
         theme={resolvedTheme}
         onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
       />

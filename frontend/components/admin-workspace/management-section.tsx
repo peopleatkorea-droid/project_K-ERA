@@ -12,6 +12,7 @@ import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecor
 import { pick, translateApiError, translateRole, type Locale } from "../../lib/i18n";
 import { filterVisibleSiteIds, filterVisibleSites, getSiteAlias, getSiteDisplayName } from "../../lib/site-labels";
 import { toStorageRootDisplayPath } from "../../lib/storage-paths";
+import { DesktopDiagnosticsPanel } from "./desktop-diagnostics-panel";
 import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
@@ -383,6 +384,8 @@ export function ManagementSection({
         aside={<span className={docSiteBadgeClass}>{translateRole(locale, canManagePlatform ? "admin" : "site_admin")}</span>}
       />
 
+      <DesktopDiagnosticsPanel locale={locale} formatDateTime={formatDateTime} />
+
       {canManageStorageRoot ? (
         <div className="grid gap-4">
           <Card as="section" variant="nested" className="grid gap-4 p-5">
@@ -549,7 +552,7 @@ export function ManagementSection({
                     />
                   ) : null}
                   <MetricItem
-                    value={summary ? `${summary.n_patients}/${summary.n_visits}/${summary.n_images}` : notAvailableLabel}
+                    value={`${summary?.n_patients ?? notAvailableLabel}/${summary?.n_visits ?? notAvailableLabel}/${summary?.n_images ?? notAvailableLabel}`}
                     label={pick(locale, "Patients / visits / images", "환자 / 방문 / 이미지")}
                   />
                 </MetricGrid>
@@ -570,7 +573,7 @@ export function ManagementSection({
                   )}
                 </div>
                 <div className="flex flex-wrap justify-end gap-3">
-                  <Button type="button" variant="ghost" onClick={() => setSiteStorageRootForm(selectedManagedSite.local_storage_root ?? "")}>
+                  <Button type="button" variant="ghost" onClick={() => setSiteStorageRootForm(selectedManagedSite?.local_storage_root ?? "")}>
                     {pick(locale, "Reset", "초기화")}
                   </Button>
                   <Button

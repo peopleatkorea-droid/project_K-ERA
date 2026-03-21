@@ -175,6 +175,7 @@ export type ImageRecord = {
   view: string;
   image_path: string;
   is_representative: boolean;
+  content_url?: string | null;
   lesion_prompt_box?: {
     x0: number;
     y0: number;
@@ -288,6 +289,7 @@ export type PatientListThumbnailRecord = {
   image_id: string;
   view: string | null;
   preview_url: string | null;
+  fallback_url?: string | null;
 };
 
 export type PatientListRowRecord = {

@@ -952,6 +952,9 @@ class SiteStore:
     def delete_images_for_visit(self, patient_id: str, visit_date: str) -> int:
         existing_images = self.list_images_for_visit(patient_id, visit_date)
         for image in existing_images:
+            image_id = str(image.get("image_id") or "").strip()
+            if image_id:
+                self.delete_image_preview_cache(image_id)
             image_path = Path(str(image.get("image_path") or ""))
             if image_path.exists():
                 image_path.unlink(missing_ok=True)
@@ -1326,6 +1329,16 @@ class SiteStore:
         normalized_max_side = min(max(int(max_side or 512), 96), 1024)
         preview_dir = ensure_dir(self.image_preview_dir / str(normalized_max_side))
         return preview_dir / f"{image_id}.jpg"
+
+    def delete_image_preview_cache(self, image_id: str) -> int:
+        normalized_image_id = str(image_id or "").strip()
+        if not normalized_image_id:
+            return 0
+        deleted_count = 0
+        for preview_path in self.image_preview_dir.glob(f"*/{normalized_image_id}.jpg"):
+            preview_path.unlink(missing_ok=True)
+            deleted_count += 1
+        return deleted_count
 
     def ensure_image_preview(self, image: dict[str, Any], max_side: int) -> Path:
         image_id = str(image.get("image_id") or "").strip()

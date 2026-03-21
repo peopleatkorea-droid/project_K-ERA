@@ -1,4 +1,39 @@
 import { request } from "./api-core";
+import {
+  fetchAnalysisCaseLesionPreview as fetchCaseLesionPreviewRuntime,
+  fetchAnalysisCaseRoiPreview as fetchCaseRoiPreviewRuntime,
+  fetchAnalysisLiveLesionPreviewJob as fetchLiveLesionPreviewJobRuntime,
+  fetchAnalysisSemanticPromptScores as fetchImageSemanticPromptScoresRuntime,
+  fetchAnalysisStoredCaseLesionPreview as fetchStoredCaseLesionPreviewRuntime,
+  runAnalysisCaseContribution as runCaseContributionRuntime,
+  startAnalysisLiveLesionPreview as startLiveLesionPreviewRuntime,
+} from "./analysis-runtime";
+import {
+  createWorkspacePatient as createPatientRuntime,
+  createWorkspaceVisit as createVisitRuntime,
+  deleteWorkspaceVisit as deleteVisitRuntime,
+  deleteWorkspaceVisitImages as deleteVisitImagesRuntime,
+  fetchWorkspaceCaseHistory as fetchCaseHistoryRuntime,
+  fetchWorkspaceCases as fetchCasesRuntime,
+  fetchWorkspaceImages as fetchImagesRuntime,
+  fetchWorkspacePatientIdLookup as fetchPatientIdLookupRuntime,
+  fetchWorkspacePatientListPage as fetchPatientListPageRuntime,
+  fetchWorkspacePatients as fetchPatientsRuntime,
+  fetchWorkspaceSiteActivity as fetchSiteActivityRuntime,
+  fetchWorkspaceVisitImagesWithPreviews as fetchVisitImagesWithPreviewsRuntime,
+  fetchWorkspaceVisits as fetchVisitsRuntime,
+  invalidateWorkspaceDesktopCaches as invalidateDesktopCaseWorkspaceCachesRuntime,
+  prewarmWorkspacePatientListPage as prewarmPatientListPageRuntime,
+  setWorkspaceRepresentativeImage as setRepresentativeImageRuntime,
+  updateWorkspacePatient as updatePatientRuntime,
+  updateWorkspaceVisit as updateVisitRuntime,
+  uploadWorkspaceImage as uploadImageRuntime,
+} from "./local-workspace-runtime";
+import {
+  canUseDesktopLocalApiTransport,
+  requestDesktopLocalApiJson,
+  requestDesktopLocalApiMultipart,
+} from "./desktop-local-api";
 import { persistMainAppToken, requestMainControlPlane } from "./main-control-plane-client";
 import type {
   BulkImportResponse,
@@ -25,21 +60,27 @@ import type {
   VisitRecord,
 } from "./types";
 
+type FetchPatientListPageOptions = {
+  mine?: boolean;
+  page?: number;
+  page_size?: number;
+  search?: string;
+  signal?: AbortSignal;
+};
+
 export async function fetchSiteSummary(siteId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<SiteSummary>(`/api/sites/${siteId}/summary`, token);
+  }
   return request<SiteSummary>(`/api/sites/${siteId}/summary`, {}, token);
 }
 
 export async function fetchSiteActivity(siteId: string, token: string, signal?: AbortSignal) {
-  return request<SiteActivityResponse>(`/api/sites/${siteId}/activity`, { signal }, token);
+  return fetchSiteActivityRuntime(siteId, token, signal);
 }
 
 export async function fetchPatients(siteId: string, token: string, options?: { mine?: boolean }) {
-  const params = new URLSearchParams();
-  if (options?.mine) {
-    params.set("mine", "true");
-  }
-  const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<PatientRecord[]>(`/api/sites/${siteId}/patients${suffix}`, {}, token);
+  return fetchPatientsRuntime(siteId, token, options);
 }
 
 export async function createPatient(
@@ -53,14 +94,7 @@ export async function createPatient(
     local_case_code?: string;
   },
 ) {
-  return request<PatientRecord>(
-    `/api/sites/${siteId}/patients`,
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-    token,
-  );
+  return createPatientRuntime(siteId, token, payload);
 }
 
 export async function updatePatient(
@@ -74,21 +108,7 @@ export async function updatePatient(
     local_case_code?: string;
   },
 ) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-  });
-  return request<PatientRecord>(
-    `/api/sites/${siteId}/patients?${params.toString()}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        chart_alias: "",
-        local_case_code: "",
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return updatePatientRuntime(siteId, token, patientId, payload);
 }
 
 export async function fetchPatientIdLookup(
@@ -97,51 +117,31 @@ export async function fetchPatientIdLookup(
   patientId: string,
   options: { signal?: AbortSignal } = {},
 ) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-  });
-  return request<PatientIdLookupResponse>(
-    `/api/sites/${siteId}/patients/lookup?${params.toString()}`,
-    { signal: options.signal },
-    token,
-  );
+  return fetchPatientIdLookupRuntime(siteId, token, patientId, options);
 }
 
 export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean; signal?: AbortSignal }) {
-  const params = new URLSearchParams();
-  if (options?.mine) {
-    params.set("mine", "true");
-  }
-  const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases${suffix}`, { signal: options?.signal }, token);
+  return fetchCasesRuntime(siteId, token, options);
 }
 
 export async function fetchPatientListPage(
   siteId: string,
   token: string,
-  options: {
-    mine?: boolean;
-    page?: number;
-    page_size?: number;
-    search?: string;
-    signal?: AbortSignal;
-  } = {},
+  options: FetchPatientListPageOptions = {},
 ) {
-  const params = new URLSearchParams();
-  if (options.mine) {
-    params.set("mine", "true");
-  }
-  if (typeof options.page === "number") {
-    params.set("page", String(options.page));
-  }
-  if (typeof options.page_size === "number") {
-    params.set("page_size", String(options.page_size));
-  }
-  if (options.search?.trim()) {
-    params.set("q", options.search.trim());
-  }
-  const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<PatientListPageResponse>(`/api/sites/${siteId}/patients/list-board${suffix}`, { signal: options.signal }, token);
+  return fetchPatientListPageRuntime(siteId, token, options);
+}
+
+export function prewarmPatientListPage(
+  siteId: string,
+  token: string,
+  options: FetchPatientListPageOptions = {},
+) {
+  prewarmPatientListPageRuntime(siteId, token, options);
+}
+
+export function invalidateDesktopCaseWorkspaceCaches() {
+  invalidateDesktopCaseWorkspaceCachesRuntime();
 }
 
 export async function fetchMedsamArtifactStatus(
@@ -159,6 +159,13 @@ export async function fetchMedsamArtifactStatus(
   }
   if (options.refresh) {
     params.set("refresh", "true");
+  }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<MedsamArtifactStatusSummary>(
+      `/api/sites/${siteId}/medsam-artifacts/status`,
+      token,
+      { query: params, signal: options.signal },
+    );
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return request<MedsamArtifactStatusSummary>(`/api/sites/${siteId}/medsam-artifacts/status${suffix}`, { signal: options.signal }, token);
@@ -193,6 +200,13 @@ export async function fetchMedsamArtifactItems(
   if (typeof options.page_size === "number") {
     params.set("page_size", String(options.page_size));
   }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<MedsamArtifactItemsResponse>(
+      `/api/sites/${siteId}/medsam-artifacts/items`,
+      token,
+      { query: params, signal: options.signal },
+    );
+  }
   return request<MedsamArtifactItemsResponse>(
     `/api/sites/${siteId}/medsam-artifacts/items?${params.toString()}`,
     { signal: options.signal },
@@ -212,6 +226,19 @@ export async function backfillMedsamArtifacts(
   if (options.mine) {
     params.set("mine", "true");
   }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<{ site_id: string; job: Record<string, unknown> }>(
+      `/api/sites/${siteId}/medsam-artifacts/backfill`,
+      token,
+      {
+        method: "POST",
+        query: params,
+        body: {
+          refresh_cache: options.refresh_cache ?? true,
+        },
+      },
+    );
+  }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return request<{ site_id: string; job: Record<string, unknown> }>(
     `/api/sites/${siteId}/medsam-artifacts/backfill${suffix}`,
@@ -226,8 +253,7 @@ export async function backfillMedsamArtifacts(
 }
 
 export async function fetchVisits(siteId: string, token: string, patientId?: string) {
-  const suffix = patientId ? `?patient_id=${encodeURIComponent(patientId)}` : "";
-  return request<VisitRecord[]>(`/api/sites/${siteId}/visits${suffix}`, {}, token);
+  return fetchVisitsRuntime(siteId, token, patientId);
 }
 
 export async function createVisit(
@@ -250,25 +276,7 @@ export async function createVisit(
     polymicrobial?: boolean;
   },
 ) {
-  return request<VisitRecord>(
-    `/api/sites/${siteId}/visits`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        culture_confirmed: true,
-        actual_visit_date: null,
-        predisposing_factor: [],
-        other_history: "",
-        visit_status: "active",
-        is_initial_visit: false,
-        smear_result: "not done",
-        additional_organisms: [],
-        polymicrobial: false,
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return createVisitRuntime(siteId, token, payload);
 }
 
 export async function updateVisit(
@@ -293,43 +301,11 @@ export async function updateVisit(
     polymicrobial?: boolean;
   },
 ) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<VisitRecord>(
-    `/api/sites/${siteId}/visits?${params.toString()}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({
-        culture_confirmed: true,
-        actual_visit_date: null,
-        predisposing_factor: [],
-        other_history: "",
-        visit_status: "active",
-        is_initial_visit: false,
-        smear_result: "not done",
-        additional_organisms: [],
-        polymicrobial: false,
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return updateVisitRuntime(siteId, token, patientId, visitDate, payload);
 }
 
 export async function deleteVisit(siteId: string, token: string, patientId: string, visitDate: string) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<{
-    patient_id: string;
-    visit_date: string;
-    deleted_images: number;
-    deleted_patient: boolean;
-    remaining_visit_count: number;
-  }>(`/api/sites/${siteId}/visits?${params.toString()}`, { method: "DELETE" }, token);
+  return deleteVisitRuntime(siteId, token, patientId, visitDate);
 }
 
 export async function fetchImages(
@@ -339,15 +315,17 @@ export async function fetchImages(
   visitDate?: string,
   signal?: AbortSignal,
 ) {
-  const params = new URLSearchParams();
-  if (patientId) {
-    params.set("patient_id", patientId);
-  }
-  if (visitDate) {
-    params.set("visit_date", visitDate);
-  }
-  const suffix = params.size ? `?${params.toString()}` : "";
-  return request<ImageRecord[]>(`/api/sites/${siteId}/images${suffix}`, { signal }, token);
+  return fetchImagesRuntime(siteId, token, patientId, visitDate, signal);
+}
+
+export async function fetchVisitImagesWithPreviews(
+  siteId: string,
+  token: string,
+  patientId: string,
+  visitDate: string,
+  options: { signal?: AbortSignal } = {},
+) {
+  return fetchVisitImagesWithPreviewsRuntime(siteId, token, patientId, visitDate, options);
 }
 
 export async function uploadImage(
@@ -361,28 +339,11 @@ export async function uploadImage(
     file: File;
   },
 ) {
-  const form = new FormData();
-  form.set("patient_id", payload.patient_id);
-  form.set("visit_date", payload.visit_date);
-  form.set("view", payload.view);
-  form.set("is_representative", String(Boolean(payload.is_representative)));
-  form.set("file", payload.file);
-  return request<ImageRecord>(
-    `/api/sites/${siteId}/images`,
-    {
-      method: "POST",
-      body: form,
-    },
-    token,
-  );
+  return uploadImageRuntime(siteId, token, payload);
 }
 
 export async function deleteVisitImages(siteId: string, token: string, patientId: string, visitDate: string) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<{ deleted_count: number }>(`/api/sites/${siteId}/images?${params.toString()}`, { method: "DELETE" }, token);
+  return deleteVisitImagesRuntime(siteId, token, patientId, visitDate);
 }
 
 export async function setRepresentativeImage(
@@ -394,14 +355,7 @@ export async function setRepresentativeImage(
     representative_image_id: string;
   },
 ) {
-  return request<{ images: ImageRecord[] }>(
-    `/api/sites/${siteId}/images/representative`,
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-    token,
-  );
+  return setRepresentativeImageRuntime(siteId, token, payload);
 }
 
 export async function runBulkImport(
@@ -412,6 +366,28 @@ export async function runBulkImport(
     files: File[];
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiMultipart<BulkImportResponse>(
+      `/api/sites/${siteId}/import/bulk`,
+      token,
+      {
+        files: [
+          {
+            fieldName: "csv_file",
+            file: payload.csvFile,
+            fileName: payload.csvFile.name,
+            contentType: payload.csvFile.type || "text/csv",
+          },
+          ...payload.files.map((file) => ({
+            fieldName: "files",
+            file,
+            fileName: file.name,
+            contentType: file.type || null,
+          })),
+        ],
+      },
+    );
+  }
   const form = new FormData();
   form.set("csv_file", payload.csvFile);
   for (const file of payload.files) {
@@ -436,14 +412,7 @@ export async function fetchImageSemanticPromptScores(
     input_mode?: SemanticPromptInputMode;
   } = {},
 ) {
-  const params = new URLSearchParams();
-  params.set("top_k", String(options.top_k ?? 3));
-  params.set("input_mode", options.input_mode ?? "source");
-  return request<SemanticPromptReviewResponse>(
-    `/api/sites/${siteId}/images/${imageId}/semantic-prompts?${params.toString()}`,
-    {},
-    token,
-  );
+  return fetchImageSemanticPromptScoresRuntime(siteId, imageId, token, options);
 }
 
 export async function runCaseContribution(
@@ -457,17 +426,7 @@ export async function runCaseContribution(
     model_version_ids?: string[];
   },
 ) {
-  return request<CaseContributionResponse>(
-    `/api/sites/${siteId}/cases/contribute`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return runCaseContributionRuntime(siteId, token, payload);
 }
 
 export async function enrollResearchRegistry(siteId: string, token: string, payload?: { version?: string }) {
@@ -500,6 +459,19 @@ export async function updateCaseResearchRegistry(
     source?: string;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<CaseResearchRegistryResponse>(
+      `/api/sites/${siteId}/cases/research-registry`,
+      token,
+      {
+        method: "POST",
+        body: {
+          source: "manual",
+          ...payload,
+        },
+      },
+    );
+  }
   return request<CaseResearchRegistryResponse>(
     `/api/sites/${siteId}/cases/research-registry`,
     {
@@ -514,45 +486,23 @@ export async function updateCaseResearchRegistry(
 }
 
 export async function fetchCaseRoiPreview(siteId: string, patientId: string, visitDate: string, token: string) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<RoiPreviewRecord[]>(`/api/sites/${siteId}/cases/roi-preview?${params.toString()}`, {}, token);
+  return fetchCaseRoiPreviewRuntime(siteId, patientId, visitDate, token);
 }
 
 export async function fetchCaseLesionPreview(siteId: string, patientId: string, visitDate: string, token: string) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview?${params.toString()}`, {}, token);
+  return fetchCaseLesionPreviewRuntime(siteId, patientId, visitDate, token);
 }
 
 export async function fetchStoredCaseLesionPreview(siteId: string, patientId: string, visitDate: string, token: string) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<LesionPreviewRecord[]>(`/api/sites/${siteId}/cases/lesion-preview/stored?${params.toString()}`, {}, token);
+  return fetchStoredCaseLesionPreviewRuntime(siteId, patientId, visitDate, token);
 }
 
 export async function startLiveLesionPreview(siteId: string, imageId: string, token: string) {
-  return request<LiveLesionPreviewJobResponse>(
-    `/api/sites/${siteId}/images/${imageId}/lesion-live-preview`,
-    {
-      method: "POST",
-    },
-    token,
-  );
+  return startLiveLesionPreviewRuntime(siteId, imageId, token);
 }
 
 export async function fetchLiveLesionPreviewJob(siteId: string, imageId: string, jobId: string, token: string) {
-  return request<LiveLesionPreviewJobResponse>(
-    `/api/sites/${siteId}/images/${imageId}/lesion-live-preview/jobs/${jobId}`,
-    {},
-    token,
-  );
+  return fetchLiveLesionPreviewJobRuntime(siteId, imageId, jobId, token);
 }
 
 export async function updateImageLesionBox(
@@ -566,6 +516,16 @@ export async function updateImageLesionBox(
     y1: number;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<ImageRecord>(
+      `/api/sites/${siteId}/images/${imageId}/lesion-box`,
+      token,
+      {
+        method: "PATCH",
+        body: payload,
+      },
+    );
+  }
   return request<ImageRecord>(
     `/api/sites/${siteId}/images/${imageId}/lesion-box`,
     {
@@ -577,6 +537,15 @@ export async function updateImageLesionBox(
 }
 
 export async function clearImageLesionBox(siteId: string, imageId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<ImageRecord>(
+      `/api/sites/${siteId}/images/${imageId}/lesion-box`,
+      token,
+      {
+        method: "DELETE",
+      },
+    );
+  }
   return request<ImageRecord>(
     `/api/sites/${siteId}/images/${imageId}/lesion-box`,
     {
@@ -593,9 +562,5 @@ export async function fetchCaseHistory(
   token: string,
   signal?: AbortSignal,
 ) {
-  const params = new URLSearchParams({
-    patient_id: patientId,
-    visit_date: visitDate,
-  });
-  return request<CaseHistoryResponse>(`/api/sites/${siteId}/cases/history?${params.toString()}`, { signal }, token);
+  return fetchCaseHistoryRuntime(siteId, patientId, visitDate, token, signal);
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { pick, translateApiError } from "../../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
@@ -25,7 +25,6 @@ import {
   fetchImageBlob,
   fetchModelUpdateArtifactBlob,
   fetchSiteComparison,
-  fetchSiteJob,
   fetchSiteValidations,
   fetchStorageSettings,
   fetchUsers,
@@ -54,7 +53,12 @@ import {
   type ModelVersionRecord,
 } from "../../lib/api";
 import { createSiteForm, createUserForm, getDefaultRocSelection, type WorkspaceSection, useAdminWorkspaceState } from "./use-admin-workspace-state";
+import { isSiteJobActiveStatus, waitForSiteJobSettlement } from "../../lib/site-job-runtime";
 import { toStorageRootDisplayPath } from "../../lib/storage-paths";
+import { useAdminWorkspaceDashboardController } from "./use-admin-workspace-dashboard-controller";
+import { useAdminWorkspaceManagementController } from "./use-admin-workspace-management-controller";
+import { useAdminWorkspaceRegistryController } from "./use-admin-workspace-registry-controller";
+import { useAdminWorkspaceTrainingController } from "./use-admin-workspace-training-controller";
 
 const BENCHMARK_ARCHITECTURES = [
   "densenet121",
@@ -83,10 +87,6 @@ type UseAdminWorkspaceControllerOptions = {
   onSelectSite: (siteId: string) => void;
 };
 
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function isAbortError(error: unknown) {
   return (
     (error instanceof DOMException && error.name === "AbortError") ||
@@ -95,7 +95,7 @@ function isAbortError(error: unknown) {
 }
 
 function isActiveJobStatus(status: string | null | undefined) {
-  return ["queued", "running", "cancelling"].includes(String(status || "").trim().toLowerCase());
+  return isSiteJobActiveStatus(status);
 }
 
 function isBenchmarkResponse(
@@ -375,8 +375,11 @@ export function useAdminWorkspaceController({
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
   const modelUpdatePreviewUrlsRef = useRef<string[]>([]);
   const autoPublishEnabled = Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled);
-  const describeError = (nextError: unknown, fallback: string) =>
-    nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+  const describeError = useCallback(
+    (nextError: unknown, fallback: string) =>
+      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+    [locale],
+  );
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedManagedSite, selectedSiteId) : "";
   const copy = {
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
@@ -499,6 +502,139 @@ export function useAdminWorkspaceController({
     embeddingBackfillFailed: pick(locale, "Embedding backfill failed.", "임베딩 백필에 실패했습니다."),
   };
 
+  const trainingController = useAdminWorkspaceTrainingController({
+    state,
+    token,
+    selectedSiteId,
+    locale,
+    benchmarkArchitectures: BENCHMARK_ARCHITECTURES,
+    copy: {
+      selectSiteForInitial: copy.selectSiteForInitial,
+      registeredVersion: copy.registeredVersion,
+      initialTrainingFailed: copy.initialTrainingFailed,
+      initialTrainingCancelled: copy.initialTrainingCancelled,
+      cancellationRequested: copy.cancellationRequested,
+      benchmarkResumeCompleted: copy.benchmarkResumeCompleted,
+      benchmarkCancelled: copy.benchmarkCancelled,
+      benchmarkResumeFailed: copy.benchmarkResumeFailed,
+      selectSiteForCrossValidation: copy.selectSiteForCrossValidation,
+      savedReport: copy.savedReport,
+      crossValidationFailed: copy.crossValidationFailed,
+      initialTrainingMissingResult: copy.initialTrainingMissingResult,
+      crossValidationMissingResult: copy.crossValidationMissingResult,
+    },
+    describeError,
+    refreshWorkspace,
+    isActiveJobStatus,
+    effectiveCaseAggregation,
+    isBenchmarkResponse,
+  });
+
+  const registryController = useAdminWorkspaceRegistryController({
+    state,
+    token,
+    selectedSiteId,
+    locale,
+    canAggregate,
+    autoPublishEnabled,
+    copy: {
+      updateReviewFailed: copy.updateReviewFailed,
+      aggregationFailed: copy.aggregationFailed,
+      createdVersion: copy.createdVersion,
+      noReadyAggregationLanes: copy.noReadyAggregationLanes,
+      createdBatchVersions: copy.createdBatchVersions,
+      batchAggregationPartialFailed: copy.batchAggregationPartialFailed,
+      modelDeleted: copy.modelDeleted,
+      modelDeleteFailed: copy.modelDeleteFailed,
+      modelPublishPrompt: copy.modelPublishPrompt,
+      modelPublishConfirmCurrent: copy.modelPublishConfirmCurrent,
+      modelPublished: copy.modelPublished,
+      modelPublishFailed: copy.modelPublishFailed,
+      updateReviewed: copy.updateReviewed,
+      updatePublishPrompt: copy.updatePublishPrompt,
+      updatePublished: copy.updatePublished,
+      updatePublishFailed: copy.updatePublishFailed,
+    },
+    describeError,
+    refreshWorkspace,
+    buildReadyAggregationLanes,
+    applyModelUpdateData,
+  });
+
+  const dashboardController = useAdminWorkspaceDashboardController({
+    state,
+    token,
+    selectedSiteId,
+    selectedSiteLabel,
+    locale,
+    dashboardValidationRunLimit: DASHBOARD_VALIDATION_RUN_LIMIT,
+    copy: {
+      unableLoadSiteActivity: copy.unableLoadSiteActivity,
+      unableLoadMisclassified: copy.unableLoadMisclassified,
+      unableLoadEmbeddingStatus: copy.unableLoadEmbeddingStatus,
+      selectSiteForEmbedding: copy.selectSiteForEmbedding,
+      embeddingBackfillQueued: copy.embeddingBackfillQueued,
+      embeddingBackfillFailed: copy.embeddingBackfillFailed,
+      selectSiteForTemplate: copy.selectSiteForTemplate,
+      templateDownloadFailed: copy.templateDownloadFailed,
+      selectSiteForImport: copy.selectSiteForImport,
+      chooseCsvFirst: copy.chooseCsvFirst,
+      importedImages: copy.importedImages,
+      bulkImportFailed: copy.bulkImportFailed,
+    },
+    describeError,
+    refreshWorkspace,
+    isActiveJobStatus,
+    isAbortError,
+    getValidationRunRocPoints,
+  });
+
+  const managementController = useAdminWorkspaceManagementController({
+    state,
+    token,
+    selectedSiteId,
+    selectedSiteLabel,
+    canManagePlatform,
+    defaultWorkspaceProjectId: DEFAULT_WORKSPACE_PROJECT_ID,
+    copy: {
+      unableReview: copy.unableReview,
+      requestReviewed: copy.requestReviewed,
+      requestReviewedAndSiteCreated: copy.requestReviewedAndSiteCreated,
+      institutionSyncSucceeded: copy.institutionSyncSucceeded,
+      institutionSyncFailed: copy.institutionSyncFailed,
+      projectNameRequired: copy.projectNameRequired,
+      projectRegistered: copy.projectRegistered,
+      unableCreateProject: copy.unableCreateProject,
+      siteFieldsRequired: copy.siteFieldsRequired,
+      siteNameRequired: copy.siteNameRequired,
+      siteRegistered: copy.siteRegistered,
+      unableCreateSite: copy.unableCreateSite,
+      siteUpdated: copy.siteUpdated,
+      unableUpdateSite: copy.unableUpdateSite,
+      storageRootSaved: copy.storageRootSaved,
+      unableSaveStorageRoot: copy.unableSaveStorageRoot,
+      selectedSiteStorageRootSaved: copy.selectedSiteStorageRootSaved,
+      unableSaveSelectedSiteStorageRoot: copy.unableSaveSelectedSiteStorageRoot,
+      selectedSiteStorageMigrated: copy.selectedSiteStorageMigrated,
+      unableMigrateSelectedSiteStorageRoot: copy.unableMigrateSelectedSiteStorageRoot,
+      selectSiteForMetadataRecovery: copy.selectSiteForMetadataRecovery,
+      recoverSelectedSiteMetadataConfirm: copy.recoverSelectedSiteMetadataConfirm,
+      selectedSiteMetadataRecovered: copy.selectedSiteMetadataRecovered,
+      unableRecoverSelectedSiteMetadata: copy.unableRecoverSelectedSiteMetadata,
+      selectSiteForStorageRoot: copy.selectSiteForStorageRoot,
+      usernameRequired: copy.usernameRequired,
+      assignSiteRequired: copy.assignSiteRequired,
+      userSaved: copy.userSaved,
+      unableSaveUser: copy.unableSaveUser,
+      unableLoadStorageSettings: copy.unableLoadStorageSettings,
+    },
+    describeError,
+    refreshWorkspace,
+    onRefreshSites,
+    onSelectSite,
+    applyRequestData,
+  });
+
   function applyBaseWorkspaceData(nextWorkspaceBootstrap: {
     overview: AdminWorkspaceState["overview"];
     projects: typeof projects;
@@ -526,7 +662,7 @@ export function useAdminWorkspaceController({
   function applyRequestData(
     nextPendingRequests: AdminWorkspaceState["pendingRequests"],
     nextApprovedRequests: AdminWorkspaceState["autoApprovedRequests"],
-    projectIdHint: string,
+    projectIdHint = DEFAULT_WORKSPACE_PROJECT_ID,
   ) {
     setPendingRequests(nextPendingRequests);
     setAutoApprovedRequests(
@@ -676,534 +812,24 @@ export function useAdminWorkspaceController({
     };
   }, [token, setManagedSites, setOverview, setProjects, setSiteForm, setSiteStorageRootForm, setToast]);
 
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "requests") {
-      return;
-    }
-    let cancelled = false;
-    async function loadRequests() {
-      try {
-        const [nextPendingRequests, nextApprovedRequests, nextInstitutionSyncStatus] = await Promise.all([
-          fetchAccessRequests(token, "pending"),
-          fetchAccessRequests(token, "approved"),
-          fetchInstitutionDirectoryStatus(token),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        applyRequestData(nextPendingRequests, nextApprovedRequests, projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID);
-        setInstitutionSyncStatus(nextInstitutionSyncStatus);
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableReview) });
-        }
-      }
-    }
-    void loadRequests();
-    return () => {
-      cancelled = true;
-    };
-  }, [overview, projects, section, setInstitutionSyncStatus, setPendingRequests, setAutoApprovedRequests, setReviewDrafts, setToast, token]);
-
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "registry") {
-      return;
-    }
-    let cancelled = false;
-    async function loadRegistry() {
-      try {
-        const [nextVersions, nextUpdates] = await Promise.all([
-          fetchModelVersions(token),
-          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        setModelVersions(nextVersions);
-        applyModelUpdateData(nextUpdates);
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.updateReviewFailed) });
-        }
-      }
-    }
-    void loadRegistry();
-    return () => {
-      cancelled = true;
-    };
-  }, [overview, section, selectedSiteId, setModelUpdateReviewNotes, setModelUpdates, setModelVersions, setToast, token]);
-
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "federation" || !canAggregate) {
-      return;
-    }
-    let cancelled = false;
-    async function loadFederation() {
-      try {
-        const [nextUpdates, nextAggregations] = await Promise.all([
-          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
-          fetchAggregations(token),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        applyModelUpdateData(nextUpdates);
-        setAggregations(nextAggregations);
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
-        }
-      }
-    }
-    void loadFederation();
-    return () => {
-      cancelled = true;
-    };
-  }, [canAggregate, overview, section, selectedSiteId, setAggregations, setModelUpdateReviewNotes, setModelUpdates, setToast, token]);
-
-  useEffect(() => {
-    if (section !== "management") {
-      return;
-    }
-    let cancelled = false;
-    async function loadManagement() {
-      try {
-        setStorageSettingsBusy(true);
-        const [nextStorageSettings, nextManagedUsers] = await Promise.all([
-          fetchStorageSettings(token),
-          canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
-        ]);
-        if (cancelled) {
-          return;
-        }
-        setStorageSettings(nextStorageSettings);
-        setManagedUsers(nextManagedUsers);
-        setInstanceStorageRootForm(toStorageRootDisplayPath(nextStorageSettings.storage_root));
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
-        }
-      } finally {
-        if (!cancelled) {
-          setStorageSettingsBusy(false);
-        }
-      }
-    }
-    void loadManagement();
-    return () => {
-      cancelled = true;
-    };
-  }, [canManagePlatform, section, selectedSiteId, setManagedUsers, setStorageSettings, setStorageSettingsBusy, setToast, token]);
-
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "dashboard") {
-      return;
-    }
-    let cancelled = false;
-    async function loadDashboardComparison() {
-      try {
-        const nextSiteComparison = await fetchSiteComparison(token);
-        if (!cancelled) {
-          setSiteComparison(nextSiteComparison);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteActivity) });
-        }
-      }
-    }
-    void loadDashboardComparison();
-    return () => {
-      cancelled = true;
-    };
-  }, [overview, section, setSiteComparison, setToast, token]);
-
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "dashboard") {
-      return;
-    }
-    let cancelled = false;
-    async function loadDashboardRuns() {
-      try {
-        if (!selectedSiteId) {
-          setSiteValidationRuns([]);
-          return;
-        }
-        setSiteValidationBusy(true);
-        setSiteValidationRuns([]);
-        const nextSiteValidationRuns = await fetchSiteValidations(selectedSiteId, token, {
-          limit: DASHBOARD_VALIDATION_RUN_LIMIT,
-        });
-        if (!cancelled) {
-          setSiteValidationRuns(nextSiteValidationRuns);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadMisclassified) });
-        }
-      } finally {
-        if (!cancelled) {
-          setSiteValidationBusy(false);
-        }
-      }
-    }
-    void loadDashboardRuns();
-    return () => {
-      cancelled = true;
-    };
-  }, [overview, section, selectedSiteId, setSiteValidationBusy, setSiteValidationRuns, setToast, token]);
-
-  useEffect(() => {
-    if (!overview) {
-      return;
-    }
-    if (section !== "cross_validation") {
-      return;
-    }
-    let cancelled = false;
-    async function loadCrossValidation() {
-      try {
-        if (!selectedSiteId) {
-          setCrossValidationReports([]);
-          setSelectedReportId(null);
-          return;
-        }
-        const nextCrossValidationReports = await fetchCrossValidationReports(selectedSiteId, token);
-        if (!cancelled) {
-          setCrossValidationReports(nextCrossValidationReports);
-          setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.crossValidationFailed) });
-        }
-      }
-    }
-    void loadCrossValidation();
-    return () => {
-      cancelled = true;
-    };
-  }, [overview, section, selectedSiteId, setCrossValidationReports, setSelectedReportId, setToast, token]);
-
-  useEffect(() => {
-    if (!siteValidationRuns.length) {
-      setSelectedValidationId(null);
-      setBaselineValidationId(null);
-      setCompareValidationId(null);
-      setRocValidationIds([]);
-      setMisclassifiedCases([]);
-      return;
-    }
-    setSelectedValidationId((current) => current ?? siteValidationRuns[0]?.validation_id ?? null);
-    setCompareValidationId((current) => current ?? siteValidationRuns[0]?.validation_id ?? null);
-    setBaselineValidationId((current) => current ?? siteValidationRuns[1]?.validation_id ?? siteValidationRuns[0]?.validation_id ?? null);
-    setRocValidationIds((current) => {
-      const validIds = current.filter((validationId) =>
-        siteValidationRuns.some((run) => run.validation_id === validationId && getValidationRunRocPoints(run).length > 0),
-      );
-      return validIds.length ? validIds : getDefaultRocSelection(siteValidationRuns);
-    });
-  }, [
-    setBaselineValidationId,
-    setCompareValidationId,
-    setMisclassifiedCases,
-    setRocValidationIds,
-    setSelectedValidationId,
-    siteValidationRuns,
-  ]);
-
-  useEffect(() => {
-    if (section !== "dashboard" || !selectedSiteId) {
-      if (!selectedSiteId) {
-        setSiteActivity(null);
-      }
-      setSiteActivityBusy(false);
-      return;
-    }
-
-    let cancelled = false;
-    const controller = new AbortController();
-
-    async function loadSiteActivity() {
-      setSiteActivity(null);
-      setSiteActivityBusy(true);
-      try {
-        const nextActivity = await fetchSiteActivity(selectedSiteId, token, controller.signal);
-        if (cancelled) {
-          return;
-        }
-        setSiteActivity(nextActivity);
-      } catch (nextError) {
-        if (cancelled || isAbortError(nextError)) {
-          return;
-        }
-        setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteActivity) });
-      } finally {
-        if (!cancelled) {
-          setSiteActivityBusy(false);
-        }
-      }
-    }
-
-    void loadSiteActivity();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [
-    copy.unableLoadSiteActivity,
-    section,
-    selectedSiteId,
-    setSiteActivity,
-    setSiteActivityBusy,
-    setToast,
-    token,
-  ]);
-
-  useEffect(() => {
-    if (!modelUpdates.length) {
-      setSelectedModelUpdateId(null);
-      return;
-    }
-    setSelectedModelUpdateId((current) =>
-      current && modelUpdates.some((item) => item.update_id === current) ? current : modelUpdates[0]?.update_id ?? null,
-    );
-  }, [modelUpdates, setSelectedModelUpdateId]);
-
-  useEffect(() => {
-    if (section !== "dashboard" || !selectedSiteId) {
-      setEmbeddingStatus(null);
-      return;
-    }
-    const currentSiteId = selectedSiteId;
-    let cancelled = false;
-    async function loadEmbeddingStatus() {
-      setEmbeddingStatusBusy(true);
-      try {
-        const nextStatus = await fetchAiClinicEmbeddingStatus(currentSiteId, token);
-        if (!cancelled) {
-          setEmbeddingStatus(nextStatus);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadEmbeddingStatus) });
-        }
-      } finally {
-        if (!cancelled) {
-          setEmbeddingStatusBusy(false);
-        }
-      }
-    }
-    void loadEmbeddingStatus();
-    return () => {
-      cancelled = true;
-    };
-  }, [section, selectedSiteId, token, setEmbeddingStatus, setEmbeddingStatusBusy, setToast]);
-
-  useEffect(() => {
-    if (
-      section !== "dashboard" ||
-      !selectedSiteId ||
-      !embeddingStatus?.active_job ||
-      !["queued", "running"].includes(embeddingStatus.active_job.status)
-    ) {
-      return;
-    }
-    const currentSiteId = selectedSiteId;
-    let cancelled = false;
-    const intervalId = window.setInterval(() => {
-      void fetchAiClinicEmbeddingStatus(currentSiteId, token)
-        .then((nextStatus) => {
-          if (!cancelled) {
-            setEmbeddingStatus(nextStatus);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setToast({ tone: "error", message: copy.unableLoadEmbeddingStatus });
-          }
-        });
-    }, 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [section, selectedSiteId, token, embeddingStatus?.active_job?.job_id, embeddingStatus?.active_job?.status, setEmbeddingStatus, setToast]);
-
-  useEffect(() => {
-    for (const url of dashboardPreviewUrlsRef.current) {
-      URL.revokeObjectURL(url);
-    }
-    dashboardPreviewUrlsRef.current = [];
-    if (section !== "dashboard" || !selectedSiteId || !selectedValidationId) {
-      setMisclassifiedCases([]);
-      return;
-    }
-    const currentSiteId = selectedSiteId;
-    const currentValidationId = selectedValidationId;
-
-    let cancelled = false;
-    async function loadMisclassifiedCases() {
-      setDashboardBusy(true);
-      try {
-        const cases = await fetchValidationCases(currentSiteId, currentValidationId, token, {
-          misclassified_only: true,
-          limit: 4,
-        });
-        const nextCases = await Promise.all(
-          cases.map(async (item) => {
-            let originalPreviewUrl: string | null = null;
-            let roiPreviewUrl: string | null = null;
-            let gradcamPreviewUrl: string | null = null;
-
-            if (item.representative_image_id) {
-              try {
-                const blob = await fetchImageBlob(currentSiteId, item.representative_image_id, token);
-                originalPreviewUrl = URL.createObjectURL(blob);
-                dashboardPreviewUrlsRef.current.push(originalPreviewUrl);
-              } catch {
-                originalPreviewUrl = null;
-              }
-            }
-            if (item.roi_crop_available) {
-              try {
-                const blob = await fetchValidationArtifactBlob(
-                  currentSiteId,
-                  currentValidationId,
-                  item.patient_id,
-                  item.visit_date,
-                  "roi_crop",
-                  token,
-                );
-                roiPreviewUrl = URL.createObjectURL(blob);
-                dashboardPreviewUrlsRef.current.push(roiPreviewUrl);
-              } catch {
-                roiPreviewUrl = null;
-              }
-            }
-            if (item.gradcam_available) {
-              try {
-                const blob = await fetchValidationArtifactBlob(
-                  currentSiteId,
-                  currentValidationId,
-                  item.patient_id,
-                  item.visit_date,
-                  "gradcam",
-                  token,
-                );
-                gradcamPreviewUrl = URL.createObjectURL(blob);
-                dashboardPreviewUrlsRef.current.push(gradcamPreviewUrl);
-              } catch {
-                gradcamPreviewUrl = null;
-              }
-            }
-
-            return {
-              ...item,
-              original_preview_url: originalPreviewUrl,
-              roi_preview_url: roiPreviewUrl,
-              gradcam_preview_url: gradcamPreviewUrl,
-            };
-          }),
-        );
-        if (!cancelled) {
-          setMisclassifiedCases(nextCases);
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadMisclassified) });
-        }
-      } finally {
-        if (!cancelled) {
-          setDashboardBusy(false);
-        }
-      }
-    }
-    void loadMisclassifiedCases();
-    return () => {
-      cancelled = true;
-    };
-  }, [section, selectedSiteId, selectedValidationId, token, setDashboardBusy, setMisclassifiedCases, setToast]);
-
-  useEffect(() => {
-    for (const url of modelUpdatePreviewUrlsRef.current) {
-      URL.revokeObjectURL(url);
-    }
-    modelUpdatePreviewUrlsRef.current = [];
-    setSelectedUpdatePreviewUrls({ source: null, roi: null, mask: null });
-    if (!selectedModelUpdate) {
-      return;
-    }
-
-    let cancelled = false;
-    async function loadModelUpdatePreviews() {
-      const nextUrls = { source: null as string | null, roi: null as string | null, mask: null as string | null };
-      const artifactKinds: Array<["source" | "roi" | "mask", "source_thumbnail" | "roi_thumbnail" | "mask_thumbnail"]> = [
-        ["source", "source_thumbnail"],
-        ["roi", "roi_thumbnail"],
-        ["mask", "mask_thumbnail"],
-      ];
-      for (const [key, artifactKind] of artifactKinds) {
-        try {
-          const blob = await fetchModelUpdateArtifactBlob(selectedModelUpdate.update_id, artifactKind, token);
-          const url = URL.createObjectURL(blob);
-          modelUpdatePreviewUrlsRef.current.push(url);
-          nextUrls[key] = url;
-        } catch {
-          nextUrls[key] = null;
-        }
-      }
-      if (!cancelled) {
-        setSelectedUpdatePreviewUrls(nextUrls);
-      }
-    }
-
-    void loadModelUpdatePreviews();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedModelUpdate, token, setSelectedUpdatePreviewUrls]);
-
-  useEffect(() => {
-    if (storageSettings) {
-      setInstanceStorageRootForm(toStorageRootDisplayPath(storageSettings.storage_root));
-    }
-  }, [setInstanceStorageRootForm, storageSettings]);
-
-  useEffect(() => {
-    setSiteStorageRootForm(selectedManagedSite?.local_storage_root ?? "");
-  }, [selectedManagedSite?.local_storage_root, selectedManagedSite?.site_id, setSiteStorageRootForm]);
-
   async function refreshWorkspace(siteScoped = false) {
     const nextWorkspaceBootstrap = await fetchAdminWorkspaceBootstrap(token, { scope: "initial" });
     applyBaseWorkspaceData(nextWorkspaceBootstrap);
     if (section === "requests") {
-      await loadRequestSectionData(nextWorkspaceBootstrap.projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID);
+      await managementController.loadRequestSectionData(nextWorkspaceBootstrap.projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID);
     } else if (section === "registry") {
-      await loadRegistrySectionData();
+      await registryController.loadRegistrySectionData();
     } else if (section === "federation" && canAggregate) {
-      await loadFederationSectionData();
+      await registryController.loadFederationSectionData();
     } else if (section === "management") {
-      await loadManagementSectionData();
+      await managementController.loadManagementSectionData();
     } else if (section === "dashboard") {
-      await Promise.all([loadDashboardComparisonData(), loadDashboardValidationRuns()]);
+      await Promise.all([
+        dashboardController.loadDashboardComparisonData(),
+        dashboardController.loadDashboardValidationRuns(),
+      ]);
     } else if (section === "cross_validation") {
-      await loadCrossValidationSectionData();
+      await trainingController.loadCrossValidationSectionData();
     }
     if (siteScoped && selectedSiteId) {
       await onSiteDataChanged(selectedSiteId);
@@ -1294,12 +920,13 @@ export function useAdminWorkspaceController({
         case_aggregation: effectiveCaseAggregation(initialForm.architecture, initialForm.case_aggregation),
       });
       setInitialJob(started.job);
-      let latestJob = started.job;
-      while (isActiveJobStatus(latestJob.status)) {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-        setInitialJob(latestJob);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setInitialJob,
+      });
       if (latestJob.status === "cancelled") {
         setToast({ tone: "success", message: copy.initialTrainingCancelled });
         return;
@@ -1344,12 +971,13 @@ export function useAdminWorkspaceController({
         regenerate_split: initialForm.regenerate_split,
       });
       setBenchmarkJob(started.job);
-      let latestJob = started.job;
-      while (isActiveJobStatus(latestJob.status)) {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-        setBenchmarkJob(latestJob);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setBenchmarkJob,
+      });
       const result = latestJob.result?.response;
       if (isBenchmarkResponse(result)) {
         setBenchmarkResult(result);
@@ -1450,12 +1078,13 @@ export function useAdminWorkspaceController({
       });
       setBenchmarkResult(null);
       setBenchmarkJob(started.job);
-      let latestJob = started.job;
-      while (isActiveJobStatus(latestJob.status)) {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-        setBenchmarkJob(latestJob);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setBenchmarkJob,
+      });
       const result = latestJob.result?.response;
       if (isBenchmarkResponse(result)) {
         setBenchmarkResult(result);
@@ -1497,12 +1126,13 @@ export function useAdminWorkspaceController({
         case_aggregation: effectiveCaseAggregation(crossValidationForm.architecture, crossValidationForm.case_aggregation),
       });
       setCrossValidationJob(started.job);
-      let latestJob = started.job;
-      while (isActiveJobStatus(latestJob.status)) {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-        setCrossValidationJob(latestJob);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setCrossValidationJob,
+      });
       if (latestJob.status === "failed") {
         throw new Error(latestJob.result?.error || copy.crossValidationFailed);
       }
@@ -1531,11 +1161,12 @@ export function useAdminWorkspaceController({
     setSiteValidationBusy(true);
     try {
       const started = await runSiteValidation(selectedSiteId, token);
-      let latestJob = started.job;
-      while (isActiveJobStatus(latestJob.status)) {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+      });
       if (latestJob.status === "failed") {
         throw new Error(latestJob.result?.error || pick(locale, "Hospital validation failed.", "병원 검증에 실패했습니다."));
       }
@@ -2058,36 +1689,36 @@ export function useAdminWorkspaceController({
   }
 
   return {
-    handleInstitutionSync,
-    handleReview,
-    handleInitialTraining,
-    handleCancelInitialTraining,
-    handleBenchmarkTraining,
-    handleCancelBenchmarkTraining,
-    handleResumeBenchmarkTraining,
-    handleCrossValidation,
-    handleSiteValidation,
-    handleRefreshEmbeddingStatus,
-    handleEmbeddingBackfill,
-    handleExportValidationReport,
-    handleExportCrossValidationReport,
-    handleAggregation,
-    handleAggregationAllReady,
-    handleDeleteModelVersion,
-    handlePublishModelVersion,
-    handleModelUpdateReview,
-    handlePublishModelUpdate,
-    handleDownloadImportTemplate,
-    handleBulkImport,
-    handleCreateProject,
-    handleEditSite,
-    handleResetSiteForm,
-    handleSaveSite,
-    handleSaveStorageRoot,
-    handleSaveSelectedSiteStorageRoot,
-    handleMigrateSelectedSiteStorageRoot,
-    handleRecoverSelectedSiteMetadata,
-    handleResetUserForm,
-    handleSaveUser,
+    handleInstitutionSync: managementController.handleInstitutionSync,
+    handleReview: managementController.handleReview,
+    handleInitialTraining: trainingController.handleInitialTraining,
+    handleCancelInitialTraining: trainingController.handleCancelInitialTraining,
+    handleBenchmarkTraining: trainingController.handleBenchmarkTraining,
+    handleCancelBenchmarkTraining: trainingController.handleCancelBenchmarkTraining,
+    handleResumeBenchmarkTraining: trainingController.handleResumeBenchmarkTraining,
+    handleCrossValidation: trainingController.handleCrossValidation,
+    handleSiteValidation: dashboardController.handleSiteValidation,
+    handleRefreshEmbeddingStatus: dashboardController.handleRefreshEmbeddingStatus,
+    handleEmbeddingBackfill: dashboardController.handleEmbeddingBackfill,
+    handleExportValidationReport: dashboardController.handleExportValidationReport,
+    handleExportCrossValidationReport: trainingController.handleExportCrossValidationReport,
+    handleAggregation: registryController.handleAggregation,
+    handleAggregationAllReady: registryController.handleAggregationAllReady,
+    handleDeleteModelVersion: registryController.handleDeleteModelVersion,
+    handlePublishModelVersion: registryController.handlePublishModelVersion,
+    handleModelUpdateReview: registryController.handleModelUpdateReview,
+    handlePublishModelUpdate: registryController.handlePublishModelUpdate,
+    handleDownloadImportTemplate: dashboardController.handleDownloadImportTemplate,
+    handleBulkImport: dashboardController.handleBulkImport,
+    handleCreateProject: managementController.handleCreateProject,
+    handleEditSite: managementController.handleEditSite,
+    handleResetSiteForm: managementController.handleResetSiteForm,
+    handleSaveSite: managementController.handleSaveSite,
+    handleSaveStorageRoot: managementController.handleSaveStorageRoot,
+    handleSaveSelectedSiteStorageRoot: managementController.handleSaveSelectedSiteStorageRoot,
+    handleMigrateSelectedSiteStorageRoot: managementController.handleMigrateSelectedSiteStorageRoot,
+    handleRecoverSelectedSiteMetadata: managementController.handleRecoverSelectedSiteMetadata,
+    handleResetUserForm: managementController.handleResetUserForm,
+    handleSaveUser: managementController.handleSaveUser,
   };
 }

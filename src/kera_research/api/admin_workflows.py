@@ -8,19 +8,10 @@ from kera_research.config import (
     MODEL_DISTRIBUTION_MODE,
     STORAGE_DIR,
 )
-from kera_research.db import CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL
+from kera_research.db import CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL, database_backend_label
 from kera_research.services.onedrive_publisher import OneDrivePublisher
 
 AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request."
-
-
-def database_backend_label(database_url: str) -> str:
-    normalized = str(database_url or "").strip().lower()
-    if normalized.startswith("postgresql"):
-        return "postgresql"
-    if normalized.startswith("sqlite"):
-        return "sqlite"
-    return "other"
 
 
 def build_admin_overview(

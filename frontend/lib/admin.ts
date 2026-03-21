@@ -1,4 +1,5 @@
 import { request } from "./api-core";
+import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "./desktop-local-api";
 import { requestMainControlPlane } from "./main-control-plane-client";
 import type {
   AccessRequestRecord,
@@ -64,6 +65,16 @@ export async function syncInstitutionDirectory(
   if (typeof payload.max_pages === "number") {
     params.set("max_pages", String(payload.max_pages));
   }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<InstitutionDirectorySyncResponse>(
+      "/api/admin/institutions/sync",
+      token,
+      {
+        method: "POST",
+        query: params,
+      },
+    );
+  }
   const suffix = params.size ? `?${params.toString()}` : "";
   return request<InstitutionDirectorySyncResponse>(
     `/api/admin/institutions/sync${suffix}`,
@@ -77,6 +88,11 @@ export async function fetchStorageSettings(token: string, siteId?: string | null
   if (siteId) {
     params.set("site_id", siteId);
   }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<StorageSettingsRecord>("/api/admin/storage-settings", token, {
+      query: params,
+    });
+  }
   const suffix = params.size ? `?${params.toString()}` : "";
   return request<StorageSettingsRecord>(`/api/admin/storage-settings${suffix}`, {}, token);
 }
@@ -89,6 +105,13 @@ export async function updateStorageSettings(
   const params = new URLSearchParams();
   if (siteId) {
     params.set("site_id", siteId);
+  }
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<StorageSettingsRecord>("/api/admin/storage-settings", token, {
+      method: "PATCH",
+      query: params,
+      body: payload,
+    });
   }
   const suffix = params.size ? `?${params.toString()}` : "";
   return request<StorageSettingsRecord>(
@@ -174,6 +197,12 @@ export async function updateAdminSite(
 }
 
 export async function updateAdminSiteStorageRoot(siteId: string, token: string, payload: { storage_root: string }) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<ManagedSiteRecord>(`/api/admin/sites/${siteId}/storage-root`, token, {
+      method: "PATCH",
+      body: payload,
+    });
+  }
   return request<ManagedSiteRecord>(
     `/api/admin/sites/${siteId}/storage-root`,
     {
@@ -185,6 +214,12 @@ export async function updateAdminSiteStorageRoot(siteId: string, token: string, 
 }
 
 export async function migrateAdminSiteStorageRoot(siteId: string, token: string, payload: { storage_root: string }) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<ManagedSiteRecord>(`/api/admin/sites/${siteId}/storage-root/migrate`, token, {
+      method: "POST",
+      body: payload,
+    });
+  }
   return request<ManagedSiteRecord>(
     `/api/admin/sites/${siteId}/storage-root/migrate`,
     {
@@ -204,6 +239,16 @@ export async function recoverAdminSiteMetadata(
     backup_path?: string | null;
   } = {},
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<SiteMetadataRecoveryResponse>(`/api/admin/sites/${siteId}/metadata/recover`, token, {
+      method: "POST",
+      body: {
+        source: "auto",
+        force_replace: true,
+        ...payload,
+      },
+    });
+  }
   return request<SiteMetadataRecoveryResponse>(
     `/api/admin/sites/${siteId}/metadata/recover`,
     {
@@ -415,6 +460,9 @@ export async function fetchAggregations(token: string) {
 }
 
 export async function fetchSiteComparison(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<SiteComparisonRecord[]>("/api/admin/site-comparison", token);
+  }
   return request<SiteComparisonRecord[]>("/api/admin/site-comparison", {}, token);
 }
 

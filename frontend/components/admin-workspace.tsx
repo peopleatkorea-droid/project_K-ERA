@@ -35,9 +35,9 @@ import { TrainingSection } from "./admin-workspace/training-section";
 import { getFoldConfusionMatrix, useAdminWorkspaceState } from "./admin-workspace/use-admin-workspace-state";
 import { useAdminWorkspaceController } from "./admin-workspace/use-admin-workspace-controller";
 import { LocaleToggle, pick, translateRole } from "../lib/i18n";
-import { type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
+import { type AuthUser, type SiteSummary } from "../lib/api";
 import { cn } from "../lib/cn";
-import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
+import { filterVisibleSites, getSiteDisplayName, type SiteDisplayRecord } from "../lib/site-labels";
 
 export type WorkspaceSection =
   | "dashboard"
@@ -52,7 +52,7 @@ export type WorkspaceSection =
 type AdminWorkspaceProps = {
   token: string;
   user: AuthUser;
-  sites: SiteRecord[];
+  sites: SiteDisplayRecord[];
   sitesBusy?: boolean;
   selectedSiteId: string | null;
   summary: SiteSummary | null;
@@ -425,7 +425,12 @@ export function AdminWorkspace({
             <div className="grid gap-2">
             {visibleRailSites.length > 0 ? (
               visibleRailSites.map((site) => (
-                <button key={site.site_id} className={railSiteButtonClass(selectedSiteId === site.site_id)} type="button" onClick={() => onSelectSite(site.site_id)}>
+                <button
+                  key={String(site.site_id ?? "")}
+                  className={railSiteButtonClass(selectedSiteId === site.site_id)}
+                  type="button"
+                  onClick={() => onSelectSite(String(site.site_id ?? ""))}
+                >
                   <strong className="min-w-0 break-words [overflow-wrap:anywhere]">{getSiteDisplayName(site)}</strong>
                 </button>
               ))

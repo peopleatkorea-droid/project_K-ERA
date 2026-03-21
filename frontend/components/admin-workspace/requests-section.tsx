@@ -8,9 +8,9 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
-import type { AccessRequestRecord, InstitutionDirectorySyncResponse, ProjectRecord, SiteRecord } from "../../lib/api";
+import type { AccessRequestRecord, InstitutionDirectorySyncResponse, ProjectRecord } from "../../lib/api";
 import { pick, translateRole, translateStatus, type Locale } from "../../lib/i18n";
-import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
+import { getRequestedSiteLabel, getSiteDisplayName, type SiteDisplayRecord } from "../../lib/site-labels";
 import type { ReviewDraft } from "./use-admin-workspace-state";
 
 type Props = {
@@ -23,7 +23,7 @@ type Props = {
   institutionSyncBusy: boolean;
   institutionSyncStatus: InstitutionDirectorySyncResponse | null;
   projects: ProjectRecord[];
-  sites: SiteRecord[];
+  sites: SiteDisplayRecord[];
   setReviewDrafts: Dispatch<SetStateAction<Record<string, ReviewDraft>>>;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
   onInstitutionSync: () => void;
@@ -245,7 +245,7 @@ export function RequestsSection({
                     >
                       <option value="">{pick(locale, "Select site", "site 선택")}</option>
                       {sites.map((site) => (
-                        <option key={site.site_id} value={site.site_id}>
+                        <option key={String(site.site_id ?? "")} value={String(site.site_id ?? "")}>
                           {getSiteDisplayName(site)}
                         </option>
                       ))}

@@ -30,6 +30,7 @@ from kera_research.config import (
     MODEL_DIR,
     SITE_ROOT_DIR,
 )
+from kera_research.db import DATABASE_TOPOLOGY
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
@@ -1341,6 +1342,7 @@ def create_app() -> FastAPI:
             },
             "credentials": credential_status,
             "stored_credentials_present": load_node_credentials() is not None,
+            "database_topology": DATABASE_TOPOLOGY,
             "bootstrap": bootstrap,
             "current_release": current_release,
         }

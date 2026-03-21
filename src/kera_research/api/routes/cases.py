@@ -749,9 +749,6 @@ def build_cases_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> Response:
         site_store = require_site_access(cp, user, site_id)
-        image = site_store.get_image(image_id)
-        if image is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
         normalized_max_side = min(max(int(max_side or 512), 96), 1024)
         preview_path = site_store.image_preview_cache_path(image_id, normalized_max_side)
         if preview_path.exists():
@@ -761,6 +758,9 @@ def build_cases_router(support: Any) -> APIRouter:
                 filename=preview_path.name,
                 headers={"Cache-Control": "private, max-age=86400"},
             )
+        image = site_store.get_image(image_id)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
         try:
             preview_path = site_store.ensure_image_preview(image, normalized_max_side)
         except ValueError as exc:

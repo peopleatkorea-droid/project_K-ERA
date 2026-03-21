@@ -14,6 +14,8 @@ function buildProps(
     notAvailableLabel: "n/a",
     selectedSiteId: "HTTP_SITE",
     selectedSiteLabel: "HTTP Hospital",
+    siteActivity: null,
+    siteActivityBusy: false,
     selectedValidationRun: null,
     validationExportBusy: false,
     siteValidationBusy: false,

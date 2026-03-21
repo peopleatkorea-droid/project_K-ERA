@@ -496,6 +496,69 @@ describe("HomePage history guard", () => {
     });
   });
 
+  it("prefetches the selected hospital summary before bootstrap finishes", async () => {
+    const approvedToken = makeStoredToken();
+    window.localStorage.setItem("kera_web_token", approvedToken);
+    let releaseBootstrap:
+      | ((value: {
+          auth_state: "approved";
+          access_token: string;
+          token_type: "bearer";
+          user: {
+            user_id: string;
+            username: string;
+            full_name: string;
+            role: string;
+            site_ids: string[];
+            approval_status: "approved";
+          };
+          sites: Array<{ site_id: string; display_name: string; hospital_name: string }>;
+          my_access_requests: [];
+        }) => void)
+      | null = null;
+    apiMocks.fetchMainBootstrap.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseBootstrap = resolve;
+        }),
+    );
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteSummary).toHaveBeenCalledWith("SITE_A", approvedToken);
+    });
+    await act(async () => {
+      await apiMocks.fetchSiteSummary.mock.results[0]?.value;
+    });
+    await act(async () => {
+      releaseBootstrap?.({
+        auth_state: "approved",
+        access_token: approvedToken,
+        token_type: "bearer",
+        user: {
+          user_id: "user_researcher",
+          username: "researcher",
+          full_name: "Researcher",
+          role: "researcher",
+          site_ids: ["SITE_A"],
+          approval_status: "approved",
+        },
+        sites: [
+          {
+            site_id: "SITE_A",
+            display_name: "Site A",
+            hospital_name: "Hospital A",
+          },
+        ],
+        my_access_requests: [],
+      });
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  });
+
   it("shows admin operations before the site list bootstrap finishes", async () => {
     const adminToken = makeStoredToken({
       sub: "user_admin",

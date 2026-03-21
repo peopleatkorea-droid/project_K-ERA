@@ -15,6 +15,10 @@ import {
 import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n, type Locale } from "../lib/i18n";
 import { AiClinicPanel } from "./case-workspace/ai-clinic-panel";
 import { AiClinicResult } from "./case-workspace/ai-clinic-result";
+import { CaseWorkspaceAuthoringCanvas } from "./case-workspace/case-workspace-authoring-canvas";
+import { CaseWorkspaceLeftRail } from "./case-workspace/case-workspace-left-rail";
+import { CaseWorkspaceReviewPanel } from "./case-workspace/case-workspace-review-panel";
+import { CaseWorkspaceShell } from "./case-workspace/case-workspace-shell";
 import { CompletionCard } from "./case-workspace/completion-card";
 import { ContributionHistoryPanel } from "./case-workspace/contribution-history-panel";
 import { ImageManagerPanel } from "./case-workspace/image-manager-panel";
@@ -45,7 +49,6 @@ import { ValidationArtifactStack } from "./case-workspace/validation-artifact-st
 import { ValidationPanel } from "./case-workspace/validation-panel";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
-import { MetricGrid, MetricItem } from "./ui/metric-grid";
 import { SectionHeader } from "./ui/section-header";
 import {
   canvasDocumentClass,
@@ -153,18 +156,17 @@ import {
   enrollResearchRegistry,
   fetchCases,
   fetchImageBlob,
-  fetchImagePreviewBatch,
-  fetchImagePreviewBlob,
+  invalidateDesktopCaseWorkspaceCaches,
   fetchPatientListPage,
   fetchLiveLesionPreviewJob,
   fetchImageSemanticPromptScores,
   fetchVisits,
   fetchValidationArtifactBlob,
   fetchImages,
-  fetchSiteJob,
   fetchSiteActivity,
   fetchSiteModelVersions,
   fetchSiteValidations,
+  prewarmPatientListPage,
   type AuthUser,
   type CaseSummaryRecord,
   type CaseValidationResponse,
@@ -192,6 +194,7 @@ import {
   updateImageLesionBox,
   uploadImage,
 } from "../lib/api";
+import { waitForSiteJobSettlement } from "../lib/site-job-runtime";
 
 const SEX_OPTIONS = ["male", "female", "unknown"];
 const CONTACT_LENS_OPTIONS = [
@@ -254,10 +257,6 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Other",
   ],
 };
-
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 function isAbortError(error: unknown): boolean {
   return (
@@ -842,14 +841,10 @@ export function CaseWorkspace({
   const [toast, setToastState] = useState<ToastState>(null);
   const [toastHistory, setToastHistory] = useState<ToastLogEntry[]>([]);
   const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
+  const [caseImageCacheVersion, setCaseImageCacheVersion] = useState(0);
   const whiteFileInputRef = useRef<HTMLInputElement | null>(null);
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const alertsPanelRef = useRef<HTMLDivElement | null>(null);
-  const patientListThumbCacheSiteIdRef = useRef<string | null>(null);
-  const patientListThumbUrlCacheRef = useRef<Map<string, string>>(new Map());
-  const patientListThumbPromiseCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
-  const patientListPreviewReadyRef = useRef<Set<string>>(new Set());
-  const patientListPreviewReadyPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
   const railListSectionRef = useRef<HTMLElement | null>(null);
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
@@ -875,6 +870,10 @@ export function CaseWorkspace({
       return resolved;
     });
   }, []);
+  const invalidateCaseWorkspaceImageCaches = useCallback(() => {
+    invalidateDesktopCaseWorkspaceCaches();
+    setCaseImageCacheVersion((current) => current + 1);
+  }, []);
   const closeResearchRegistryModal = useCallback(() => {
     setPendingResearchRegistryAutoInclude(false);
     setResearchRegistryModalOpen(false);
@@ -890,176 +889,6 @@ export function CaseWorkspace({
   const clearToastHistory = useCallback(() => {
     setToastHistory([]);
   }, []);
-  const revokePatientListThumbCache = useCallback(() => {
-    for (const url of patientListThumbUrlCacheRef.current.values()) {
-      URL.revokeObjectURL(url);
-    }
-    patientListThumbUrlCacheRef.current.clear();
-    patientListThumbPromiseCacheRef.current.clear();
-    patientListPreviewReadyRef.current.clear();
-    patientListPreviewReadyPromiseCacheRef.current.clear();
-  }, []);
-  function buildPatientListPreviewReadyKey(imageId: string, maxSide: number): string {
-    return `${maxSide}::${imageId}`;
-  }
-
-  async function ensurePatientListPreviews(siteId: string, imageIds: string[], maxSide: number, signal?: AbortSignal) {
-    const normalizedMaxSide = Math.min(Math.max(Math.round(maxSide || 256), 96), 1024);
-    const uniqueImageIds = Array.from(new Set(imageIds.map((imageId) => String(imageId ?? "").trim()).filter(Boolean)));
-    if (uniqueImageIds.length === 0) {
-      return;
-    }
-
-    const pendingRequests: Promise<void>[] = [];
-    const imageIdsToRequest: string[] = [];
-    for (const imageId of uniqueImageIds) {
-      const cacheKey = buildPatientListPreviewReadyKey(imageId, normalizedMaxSide);
-      if (patientListThumbUrlCacheRef.current.has(imageId)) {
-        patientListPreviewReadyRef.current.add(cacheKey);
-        continue;
-      }
-      if (patientListPreviewReadyRef.current.has(cacheKey)) {
-        continue;
-      }
-      const pending = patientListPreviewReadyPromiseCacheRef.current.get(cacheKey);
-      if (pending) {
-        pendingRequests.push(pending);
-        continue;
-      }
-      imageIdsToRequest.push(imageId);
-    }
-
-    if (imageIdsToRequest.length > 0) {
-      const requestPromise = fetchImagePreviewBatch(siteId, token, {
-        imageIds: imageIdsToRequest,
-        maxSide: normalizedMaxSide,
-        signal,
-      })
-        .then((response) => {
-          for (const item of response.items) {
-            if (!item.ready) {
-              continue;
-            }
-            patientListPreviewReadyRef.current.add(
-              buildPatientListPreviewReadyKey(item.image_id, normalizedMaxSide),
-            );
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          for (const imageId of imageIdsToRequest) {
-            patientListPreviewReadyPromiseCacheRef.current.delete(
-              buildPatientListPreviewReadyKey(imageId, normalizedMaxSide),
-            );
-          }
-        });
-      for (const imageId of imageIdsToRequest) {
-        patientListPreviewReadyPromiseCacheRef.current.set(
-          buildPatientListPreviewReadyKey(imageId, normalizedMaxSide),
-          requestPromise,
-        );
-      }
-      pendingRequests.push(requestPromise);
-    }
-
-    if (pendingRequests.length > 0) {
-      await Promise.allSettled(pendingRequests);
-    }
-  }
-
-  async function loadPatientListThumbUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
-    const cachedUrl = patientListThumbUrlCacheRef.current.get(imageId);
-    if (cachedUrl) {
-      return cachedUrl;
-    }
-    const pending = patientListThumbPromiseCacheRef.current.get(imageId);
-    if (pending) {
-      return pending;
-    }
-    const nextRequest = (async () => {
-      try {
-        const blob = await fetchImagePreviewBlob(siteId, imageId, token, {
-          maxSide: 256,
-          signal,
-        });
-        const previewUrl = URL.createObjectURL(blob);
-        patientListThumbUrlCacheRef.current.set(imageId, previewUrl);
-        return previewUrl;
-      } catch {
-        return null;
-      } finally {
-        patientListThumbPromiseCacheRef.current.delete(imageId);
-      }
-    })();
-    patientListThumbPromiseCacheRef.current.set(imageId, nextRequest);
-    return nextRequest;
-  }
-
-  function buildPatientRowThumbnails(row: PatientListRow): PatientListThumbnail[] {
-    return row.representative_thumbnails.map((item) => ({
-      ...item,
-      preview_url: patientListThumbUrlCacheRef.current.get(item.image_id) ?? null,
-    }));
-  }
-
-  function syncPatientListThumbsForRows(rows: PatientListRow[]) {
-    if (rows.length === 0) {
-      return;
-    }
-    setPatientListThumbs((current) => {
-      let changed = false;
-      const next = { ...current };
-      for (const row of rows) {
-        const nextRowThumbs = buildPatientRowThumbnails(row);
-        const currentRowThumbs = current[row.patient_id] ?? [];
-        const sameRow =
-          currentRowThumbs.length === nextRowThumbs.length &&
-          currentRowThumbs.every(
-            (item, index) =>
-              item.case_id === nextRowThumbs[index]?.case_id &&
-              item.image_id === nextRowThumbs[index]?.image_id &&
-              item.preview_url === nextRowThumbs[index]?.preview_url,
-          );
-        if (sameRow) {
-          continue;
-        }
-        next[row.patient_id] = nextRowThumbs;
-        changed = true;
-      }
-      return changed ? next : current;
-    });
-  }
-
-  async function hydratePatientRowThumbnails(siteId: string, row: PatientListRow, signal?: AbortSignal) {
-    syncPatientListThumbsForRows([row]);
-    const pendingThumbs = row.representative_thumbnails.filter(
-      (item) => !patientListThumbUrlCacheRef.current.has(item.image_id),
-    );
-    if (pendingThumbs.length === 0) {
-      return;
-    }
-
-    await ensurePatientListPreviews(
-      siteId,
-      pendingThumbs.map((item) => item.image_id),
-      256,
-      signal,
-    );
-
-    const [primaryThumb, ...secondaryThumbs] = pendingThumbs;
-    if (primaryThumb) {
-      await loadPatientListThumbUrl(siteId, primaryThumb.image_id, signal);
-      syncPatientListThumbsForRows([row]);
-    }
-    if (secondaryThumbs.length === 0) {
-      return;
-    }
-
-    await Promise.allSettled(
-      secondaryThumbs.map((item) => loadPatientListThumbUrl(siteId, item.image_id, signal)),
-    );
-    syncPatientListThumbsForRows([row]);
-  }
   useEffect(() => {
     if (!alertsPanelOpen) {
       return;
@@ -1230,6 +1059,7 @@ export function CaseWorkspace({
     ensureSiteValidationRunsLoaded,
     ensureSiteModelVersionsLoaded,
   } = useCaseWorkspaceSiteData({
+    caseImageCacheVersion,
     selectedSiteId,
     railView,
     token,
@@ -1312,6 +1142,7 @@ export function CaseWorkspace({
     loadCaseHistory,
     loadSiteActivity,
     onSiteDataChanged,
+    onSavedImageDataChanged: invalidateCaseWorkspaceImageCaches,
     onArtifactsChanged,
     onValidationCompleted: async ({ siteId, selectedCase: validatedCase }) => {
       const registry = summary?.research_registry;
@@ -1340,19 +1171,9 @@ export function CaseWorkspace({
   const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
 
   useEffect(() => {
-    return () => {
-      revokePatientListThumbCache();
-    };
-  }, [revokePatientListThumbCache]);
-
-  useEffect(() => {
-    if (patientListThumbCacheSiteIdRef.current === selectedSiteId) {
-      return;
-    }
-    revokePatientListThumbCache();
-    patientListThumbCacheSiteIdRef.current = selectedSiteId;
+    invalidateCaseWorkspaceImageCaches();
     setPatientListThumbs({});
-  }, [selectedSiteId, revokePatientListThumbCache]);
+  }, [invalidateCaseWorkspaceImageCaches, selectedSiteId]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -1961,6 +1782,7 @@ export function CaseWorkspace({
 
     try {
       const deleted = await deleteVisit(selectedSiteId, token, caseRecord.patient_id, caseRecord.visit_date);
+      invalidateCaseWorkspaceImageCaches();
       const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
       setCases(nextCases);
 
@@ -2208,11 +2030,14 @@ export function CaseWorkspace({
     setSiteValidationBusy(true);
     try {
       const started = await runSiteValidation(selectedSiteId, token);
-      let latestJob = started.job;
-      while (latestJob.status === "queued" || latestJob.status === "running") {
-        await sleep(1000);
-        latestJob = await fetchSiteJob(selectedSiteId, latestJob.job_id, token);
-      }
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive(status) {
+          return ["queued", "running"].includes(String(status || "").trim().toLowerCase());
+        },
+      });
       if (latestJob.status === "failed") {
         throw new Error(latestJob.result?.error || copy.siteValidationFailed);
       }
@@ -2450,6 +2275,7 @@ export function CaseWorkspace({
     };
     const finalizeSavedCase = async (visitReference: string) => {
       await onSiteDataChanged(selectedSiteId!);
+      invalidateCaseWorkspaceImageCaches();
       const [nextCases, nextPatientList] = await Promise.all([
         fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
         fetchPatientListPage(selectedSiteId!, token, {
@@ -2461,6 +2287,7 @@ export function CaseWorkspace({
       ]);
       setCases(nextCases);
       setPatientListRows(nextPatientList.items);
+      setPatientListThumbs(buildPatientListThumbMap(nextPatientList.items));
       setPatientListTotalCount(nextPatientList.total_count);
       setPatientListTotalPages(Math.max(1, nextPatientList.total_pages || 1));
       setPatientListPage(nextPatientList.page);
@@ -2652,6 +2479,7 @@ export function CaseWorkspace({
   useEffect(() => {
     if (!selectedSiteId) {
       setPatientListRows([]);
+      setPatientListThumbs({});
       setPatientListTotalCount(0);
       setPatientListTotalPages(1);
       setPatientListLoading(false);
@@ -2684,6 +2512,7 @@ export function CaseWorkspace({
           return;
         }
         setPatientListRows(response.items);
+        setPatientListThumbs(buildPatientListThumbMap(response.items));
         setPatientListTotalCount(response.total_count);
         setPatientListTotalPages(Math.max(1, response.total_pages || 1));
         setPatientListPage((current) => (current === response.page ? current : response.page));
@@ -2693,6 +2522,7 @@ export function CaseWorkspace({
         }
         if (!cancelled) {
           setPatientListRows([]);
+          setPatientListThumbs({});
           setPatientListTotalCount(0);
           setPatientListTotalPages(1);
           setToast({
@@ -2815,60 +2645,29 @@ export function CaseWorkspace({
   useEffect(() => {
     if (!selectedSiteId || railView !== "patients") {
       setPatientListThumbs({});
+      return;
     }
-  }, [railView, selectedSiteId]);
+    setPatientListThumbs(buildPatientListThumbMap(patientListRows));
+  }, [patientListRows, railView, selectedSiteId]);
 
   useEffect(() => {
     if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
       return;
     }
-
-    syncPatientListThumbsForRows(patientListRows);
-    const rowsNeedingThumbs = patientListRows.filter((row) =>
-      row.representative_thumbnails.some((item) => !patientListThumbUrlCacheRef.current.has(item.image_id)),
-    );
-    if (rowsNeedingThumbs.length === 0) {
+    if (patientListPage >= patientListTotalPages) {
       return;
     }
-
-    const controller = new AbortController();
-    void (async () => {
-      await ensurePatientListPreviews(
-        selectedSiteId,
-        rowsNeedingThumbs.flatMap((row) => row.representative_thumbnails.map((item) => item.image_id)),
-        256,
-        controller.signal,
-      );
-      await Promise.allSettled(
-        rowsNeedingThumbs.map((row) => hydratePatientRowThumbnails(selectedSiteId, row, controller.signal)),
-      );
-    })();
-    return () => {
-      controller.abort();
-    };
-  }, [selectedSiteId, railView, patientListRows]);
+    prewarmPatientListPage(selectedSiteId, token, {
+      mine: showOnlyMine,
+      page: patientListPage + 1,
+      page_size: PATIENT_LIST_PAGE_SIZE,
+      search: normalizedPatientListSearch,
+    });
+  }, [normalizedPatientListSearch, patientListPage, patientListRows, patientListTotalPages, railView, selectedSiteId, showOnlyMine, token]);
 
   const handlePatientRowVisible = useCallback(
-    (patientId: string) => {
-      if (!selectedSiteId || railView !== "patients") {
-        return;
-      }
-      const currentSiteId = selectedSiteId;
-      const row = patientListRows.find((r) => r.patient_id === patientId);
-      if (!row) {
-        return;
-      }
-      const allAlreadyCached = row.representative_thumbnails.every((item) =>
-        patientListThumbUrlCacheRef.current.has(item.image_id),
-      );
-      if (allAlreadyCached) {
-        syncPatientListThumbsForRows([row]);
-        return;
-      }
-
-      void hydratePatientRowThumbnails(currentSiteId, row);
-    },
-    [selectedSiteId, railView, patientListRows],
+    (_patientId: string) => {},
+    [],
   );
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
@@ -3060,171 +2859,36 @@ export function CaseWorkspace({
   const mainLayoutClass = showSecondaryPanel || showPatientListSidebar ? workspaceCenterClass : "grid gap-6";
 
   return (
-    <main className={workspaceShellClass} data-workspace-theme={theme}>
-      <div className={workspaceNoiseClass} />
-      <aside className={workspaceRailClass}>
-        <div className={workspaceBrandClass}>
-          <div className={workspaceBrandCopyClass}>
-            <h1 className={workspaceBrandTitleClass}>{pick(locale, "K-ERA", "K-ERA")}</h1>
-            <div className={workspaceKickerClass}>{pick(locale, "Case Studio", "케이스 스튜디오")}</div>
-          </div>
-          <div className={workspaceBrandActionsClass} role="group" aria-label={pick(locale, "Workspace mode", "작업 모드")}>
-            <Button
-              className={workspaceBrandActionButtonClass(newCaseModeActive)}
-              type="button"
-              variant={newCaseModeActive ? "primary" : "ghost"}
-              aria-pressed={newCaseModeActive}
-              data-state={newCaseModeActive ? "active" : "inactive"}
-              onClick={startNewCaseDraft}
-            >
-              {pick(locale, "New case", "?좉퇋 耳?댁뒪")}
-            </Button>
-            <Button
-              className={workspaceBrandActionButtonClass(listModeActive)}
-              type="button"
-              variant={listModeActive ? "primary" : "ghost"}
-              aria-pressed={listModeActive}
-              data-state={listModeActive ? "active" : "inactive"}
-              onClick={() => setRailView("patients")}
-            >
-              {pick(locale, "List view", "리스트")}
-            </Button>
-          </div>
-        </div>
-
-        <Card as="section" variant="nested" className={railSectionClass}>
-          <div className={railSectionHeadClass}>
-            <span className={railLabelClass}>{pick(locale, "Hospital", "蹂묒썝")}</span>
-            {visibleSites.length > 1 ? (
-              <span className={docSiteBadgeClass}>{`${visibleSites.length} ${pick(locale, "linked", "연결됨")}`}</span>
-            ) : null}
-          </div>
-          <div className={railSiteListClass}>
-            {visibleSites.map((site) => (
-              <button
-                key={site.site_id}
-                className={railSiteButtonClass(selectedSiteId === site.site_id)}
-                type="button"
-                onClick={() => onSelectSite(site.site_id)}
-              >
-                <strong>{getSiteDisplayName(site)}</strong>
-              </button>
-            ))}
-          </div>
-          {selectedSiteId && summary ? (
-            <MetricGrid className={railMetricGridClass} columns={2}>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "patients", "환자")}</span>
-              </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{summary.n_visits ?? 0}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "visits", "방문")}</span>
-              </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{summary.n_images ?? 0}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
-              </div>
-              <div className={railMetricCardClass}>
-                <strong className={railMetricValueClass}>{summary.n_validation_runs ?? 0}</strong>
-                <span className={railMetricLabelClass}>{pick(locale, "validations", "검증")}</span>
-              </div>
-            </MetricGrid>
-          ) : null}
-        </Card>
-
-        {isAuthoringCanvas ? (
-          <Card as="section" variant="nested" className={railSectionClass}>
-            <div className={railSectionHeadClass}>
-              <span className={railLabelClass}>{pick(locale, "Canvas", "캔버스")}</span>
-              <div className={railSummaryClass}>
-                <strong className={railSummaryValueClass}>{`${draftCompletionPercent}%`}</strong>
-                <span className={railSummaryMetaClass}>{pick(locale, "structured", "구조화됨")}</span>
-              </div>
-            </div>
-            <div className={momentumTrackClass}>
-              <div className={momentumFillClass} style={{ width: `${draftCompletionPercent}%` }} />
-            </div>
-            <p className={railCopyClass}>
-              {pick(
-                locale,
-                "The writing view stays focused on one clinical case. The dashboard metrics return once you switch back to list or review mode.",
-                "작성 화면은 한 건의 임상 케이스에만 집중합니다. 리스트나 리뷰 모드로 돌아가면 운영 지표가 다시 보입니다."
-              )}
-            </p>
-            <div className={railActivityListClass}>
-              <div className={railActivityItemClass}>
-                <strong>{pick(locale, "Draft images", "초안 이미지")}</strong>
-                <span>{`${draftImages.length} ${pick(locale, "files", "파일")}`}</span>
-                <span>{`${draftRepresentativeCount} ${pick(locale, "representative", "대표")}`}</span>
-              </div>
-              <div className={railActivityItemClass}>
-                <strong>{pick(locale, "Visit reference", "방문 기준")}</strong>
-                <span>{resolvedVisitReferenceLabel}</span>
-                <span>{draftStatusLabel}</span>
-              </div>
-            </div>
-          </Card>
-        ) : (
-            <Card as="section" variant="nested" className={railSectionClass}>
-              <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
-                <div className="grid gap-1">
-                  <span className={railLabelClass}>{pick(locale, "Validation", "검증")}</span>
-                  <p className="m-0 text-sm leading-6 text-muted">
-                    {pick(locale, "Run the latest site-level check from here", "여기에서 최신 병원 단위 검증을 실행합니다")}
-                  </p>
-                </div>
-                <Button
-                  className={railRunButtonClass}
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void handleRunSiteValidation()}
-                  disabled={siteValidationBusy || !selectedSiteId || !canRunValidation}
-                >
-                  {siteValidationBusy ? pick(locale, "Running...", "?ㅽ뻾 以?..") : pick(locale, "Run hospital validation", "蹂묒썝 寃利??ㅽ뻾")}
-                </Button>
-              </div>
-              {latestSiteValidation ? (
-                <div className={railMetricGridClass}>
-                  <div className={railMetricCardClass}>
-                    <strong className={railMetricValueClass}>
-                      {typeof latestSiteValidation.AUROC === "number" ? latestSiteValidation.AUROC.toFixed(3) : common.notAvailable}
-                    </strong>
-                    <span className={railMetricLabelClass}>AUROC</span>
-                  </div>
-                  <div className={railMetricCardClass}>
-                    <strong className={railMetricValueClass}>
-                      {typeof latestSiteValidation.accuracy === "number" ? latestSiteValidation.accuracy.toFixed(3) : common.notAvailable}
-                    </strong>
-                    <span className={railMetricLabelClass}>{pick(locale, "accuracy", "정확도")}</span>
-                  </div>
-                  <div className={railMetricCardClass}>
-                    <strong className={railMetricValueClass}>{latestSiteValidation.n_cases ?? 0}</strong>
-                    <span className={railMetricLabelClass}>{pick(locale, "cases", "耳?댁뒪")}</span>
-                  </div>
-                  <div className={railMetricCardClass}>
-                    <strong className={railMetricValueClass}>{latestSiteValidation.model_version}</strong>
-                    <span className={railMetricLabelClass}>{pick(locale, "latest model", "理쒖떊 紐⑤뜽")}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "?꾩쭅 蹂묒썝 ?⑥쐞 寃利앹씠 ?ㅽ뻾?섏? ?딆븯?듬땲??")}</div>
-              )}
-              <div className={railActivityListClass}>
-                {siteValidationRuns.slice(0, 3).map((item) => (
-                  <div key={item.validation_id} className={railActivityItemClass}>
-                    <strong>{item.model_version}</strong>
-                    <span>{formatDateTime(item.run_date, localeTag, common.notAvailable)}</span>
-                    <span>{typeof item.accuracy === "number" ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}` : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}</span>
-                  </div>
-                ))}
-              </div>
-              {!canRunValidation ? <p className={railCopyClass}>{pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "酉곗뼱 怨꾩젙? 吏?쒕쭔 ?뺤씤?????덇퀬 蹂묒썝 寃利앹? ?ㅽ뻾?????놁뒿?덈떎.")}</p> : null}
-            </Card>
-        )}
-
-      </aside>
+    <CaseWorkspaceShell
+      theme={theme}
+      toast={toast}
+      savedLabel={common.saved}
+      actionNeededLabel={common.actionNeeded}
+    >
+      <CaseWorkspaceLeftRail
+        locale={locale}
+        visibleSites={visibleSites}
+        selectedSiteId={selectedSiteId}
+        summary={summary}
+        newCaseModeActive={newCaseModeActive}
+        listModeActive={listModeActive}
+        isAuthoringCanvas={isAuthoringCanvas}
+        draftCompletionPercent={draftCompletionPercent}
+        draftImagesCount={draftImages.length}
+        draftRepresentativeCount={draftRepresentativeCount}
+        resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
+        draftStatusLabel={draftStatusLabel}
+        latestSiteValidation={latestSiteValidation}
+        siteValidationRuns={siteValidationRuns}
+        siteValidationBusy={siteValidationBusy}
+        canRunValidation={canRunValidation}
+        commonNotAvailable={common.notAvailable}
+        formatDateTime={(value) => formatDateTime(value, localeTag, common.notAvailable)}
+        onStartNewCase={startNewCaseDraft}
+        onOpenPatientList={() => setRailView("patients")}
+        onSelectSite={onSelectSite}
+        onRunSiteValidation={() => void handleRunSiteValidation()}
+      />
 
       <section className={workspaceMainClass}>
         <header className={workspaceHeaderClass}>
@@ -3236,6 +2900,7 @@ export function CaseWorkspace({
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
+            {selectedSiteLabel ? <span className={docSiteBadgeClass}>{selectedSiteLabel}</span> : null}
             <span className={workspaceUserBadgeClass}>{translateRole(locale, user.role)}</span>
             <div className="relative" ref={alertsPanelRef}>
               <Button
@@ -3480,187 +3145,115 @@ export function CaseWorkspace({
             </section>
           </section>
           ) : (
-          <article className={canvasDocumentClass}>
-            <section className={canvasHeaderClass}>
-              <div className={canvasHeaderGlowClass} />
-              <div className={canvasHeaderContentClass}>
-                <div className="grid gap-3">
-                  <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
-                    <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>
-                    <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
-                    <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
-                  </div>
-                </div>
-
-                {!draft.intake_completed ? (
-                  <div className={canvasSummaryGridClass}>
-                    <div className={canvasSummaryCardClass}>
-                      <span className={canvasSummaryLabelClass}>{pick(locale, "Patient", "환자")}</span>
-                      <strong className={canvasSummaryValueClass}>
-                        {draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
-                      </strong>
-                    </div>
-                    <div className={canvasSummaryCardClass}>
-                      <span className={canvasSummaryLabelClass}>{pick(locale, "Visit", "방문")}</span>
-                      <strong className={canvasSummaryValueClass}>
-                        {`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
-                      </strong>
-                    </div>
-                    <div className={canvasSummaryCardClass}>
-                      <span className={canvasSummaryLabelClass}>{pick(locale, "Organism", "원인균")}</span>
-                      <strong className={canvasSummaryValueClass}>
-                        {organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
-                          pick(locale, "Choose primary organism", "기본 원인균 선택")}
-                      </strong>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </section>
-
-            <PatientVisitForm
+            <CaseWorkspaceAuthoringCanvas
               locale={locale}
-              draft={draft}
-              notAvailableLabel={common.notAvailable}
-              sexOptions={SEX_OPTIONS}
-              contactLensOptions={CONTACT_LENS_OPTIONS}
-              predisposingFactorOptions={PREDISPOSING_FACTOR_OPTIONS}
-              visitStatusOptions={VISIT_STATUS_OPTIONS}
-              cultureSpecies={CULTURE_SPECIES}
-              speciesOptions={speciesOptions}
-              pendingOrganism={pendingOrganism}
-              pendingSpeciesOptions={pendingSpeciesOptions}
-              showAdditionalOrganismForm={showAdditionalOrganismForm}
-              intakeOrganisms={intakeOrganisms}
-              patientIdLookup={patientIdLookup}
-              patientIdLookupBusy={patientIdLookupBusy}
-              patientIdLookupError={patientIdLookupError}
-              primaryOrganismSummary={organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 2)}
+              selectedSiteLabel={selectedSiteLabel}
+              draftStatusLabel={draftStatusLabel}
               resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
-              actualVisitDateLabel={actualVisitDateLabel}
-              setDraft={setDraft}
-              setPendingOrganism={setPendingOrganism}
-              setShowAdditionalOrganismForm={setShowAdditionalOrganismForm}
-              togglePredisposingFactor={togglePredisposingFactor}
-              updatePrimaryOrganism={updatePrimaryOrganism}
-              addAdditionalOrganism={addAdditionalOrganism}
-              removeAdditionalOrganism={removeAdditionalOrganism}
-              onCompleteIntake={handleCompleteIntake}
+              intakeCompleted={draft.intake_completed}
+              patientSummaryLabel={draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
+              visitSummaryLabel={`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
+              organismSummary={
+                organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
+                pick(locale, "Choose primary organism", "기본 원인균 선택")
+              }
+              patientVisitForm={
+                <PatientVisitForm
+                  locale={locale}
+                  draft={draft}
+                  notAvailableLabel={common.notAvailable}
+                  sexOptions={SEX_OPTIONS}
+                  contactLensOptions={CONTACT_LENS_OPTIONS}
+                  predisposingFactorOptions={PREDISPOSING_FACTOR_OPTIONS}
+                  visitStatusOptions={VISIT_STATUS_OPTIONS}
+                  cultureSpecies={CULTURE_SPECIES}
+                  speciesOptions={speciesOptions}
+                  pendingOrganism={pendingOrganism}
+                  pendingSpeciesOptions={pendingSpeciesOptions}
+                  showAdditionalOrganismForm={showAdditionalOrganismForm}
+                  intakeOrganisms={intakeOrganisms}
+                  patientIdLookup={patientIdLookup}
+                  patientIdLookupBusy={patientIdLookupBusy}
+                  patientIdLookupError={patientIdLookupError}
+                  primaryOrganismSummary={organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 2)}
+                  resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
+                  actualVisitDateLabel={actualVisitDateLabel}
+                  setDraft={setDraft}
+                  setPendingOrganism={setPendingOrganism}
+                  setShowAdditionalOrganismForm={setShowAdditionalOrganismForm}
+                  togglePredisposingFactor={togglePredisposingFactor}
+                  updatePrimaryOrganism={updatePrimaryOrganism}
+                  addAdditionalOrganism={addAdditionalOrganism}
+                  removeAdditionalOrganism={removeAdditionalOrganism}
+                  onCompleteIntake={handleCompleteIntake}
+                />
+              }
+              imageManagerPanel={
+                draft.intake_completed ? (
+                  <ImageManagerPanel
+                    locale={locale}
+                    intakeCompleted={draft.intake_completed}
+                    resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
+                    whiteDraftImages={whiteDraftImages}
+                    fluoresceinDraftImages={fluoresceinDraftImages}
+                    draftLesionPromptBoxes={draftLesionPromptBoxes}
+                    whiteFileInputRef={whiteFileInputRef}
+                    fluoresceinFileInputRef={fluoresceinFileInputRef}
+                    openFilePicker={openFilePicker}
+                    appendFiles={appendFiles}
+                    handleDraftLesionPointerDown={handleDraftLesionPointerDown}
+                    handleDraftLesionPointerMove={handleDraftLesionPointerMove}
+                    finishDraftLesionPointer={finishDraftLesionPointer}
+                    removeDraftImage={removeDraftImage}
+                    setRepresentativeImage={setRepresentativeImage}
+                    onSaveCase={() => void handleSaveCase()}
+                    saveBusy={saveBusy}
+                    selectedSiteId={selectedSiteId}
+                  />
+                ) : null
+              }
             />
-
-            {draft.intake_completed ? (
-              <ImageManagerPanel
-                locale={locale}
-                intakeCompleted={draft.intake_completed}
-                resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
-                whiteDraftImages={whiteDraftImages}
-                fluoresceinDraftImages={fluoresceinDraftImages}
-                draftLesionPromptBoxes={draftLesionPromptBoxes}
-                whiteFileInputRef={whiteFileInputRef}
-                fluoresceinFileInputRef={fluoresceinFileInputRef}
-                openFilePicker={openFilePicker}
-                appendFiles={appendFiles}
-                handleDraftLesionPointerDown={handleDraftLesionPointerDown}
-                handleDraftLesionPointerMove={handleDraftLesionPointerMove}
-                finishDraftLesionPointer={finishDraftLesionPointer}
-                removeDraftImage={removeDraftImage}
-                setRepresentativeImage={setRepresentativeImage}
-                onSaveCase={() => void handleSaveCase()}
-                saveBusy={saveBusy}
-                selectedSiteId={selectedSiteId}
-              />
-            ) : null}
-          </article>
           )}
 
           {showSecondaryPanel ? (
-          <aside className={workspacePanelClass}>
-            {selectedCase ? (
-              <div className={panelStackClass}>
-                <ContributionHistoryPanel
-                  locale={locale}
-                  selectedCase={selectedCase}
-                  canRunValidation={canRunValidation}
-                  canContributeSelectedCase={canContributeSelectedCase}
-                  hasValidationResult={Boolean(validationResult)}
-                  researchRegistryEnabled={researchRegistryEnabled}
-                  researchRegistryUserEnrolled={researchRegistryUserEnrolled}
-                  researchRegistryBusy={researchRegistryBusy}
-                  contributionBusy={contributionBusy}
-                  contributionResult={contributionResult}
-                  currentUserPublicAlias={user.public_alias ?? contributionResult?.stats.user_public_alias ?? null}
-                  contributionLeaderboard={siteActivity?.contribution_leaderboard ?? contributionResult?.stats.leaderboard ?? null}
-                  historyBusy={historyBusy}
-                  caseHistory={caseHistory}
-                  onJoinResearchRegistry={() => openResearchRegistryModal(false)}
-                  onIncludeResearchCase={() => void handleIncludeResearchCase()}
-                  onExcludeResearchCase={() => void handleExcludeResearchCase()}
-                  onContributeCase={() => void handleContributeCase()}
-                  completionContent={completionContent}
-                  formatProbability={formatProbability}
-                  notAvailableLabel={common.notAvailable}
-                />
-              </div>
-            ) : (
-              isAuthoringCanvas ? (
-                <div className={canvasSidebarClass}>
-                  <section className={canvasSidebarCardClass}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="grid gap-1">
-                        <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Draft state", "초안 상태")}</span>
-                        <strong className="text-[1.1rem] font-semibold tracking-[-0.03em] text-ink">{draftStatusLabel}</strong>
-                      </div>
-                      <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "No hospital", "병원 없음")}</span>
-                    </div>
-                    <div className={canvasSidebarMetricGridClass}>
-                      <div className={canvasSidebarMetricCardClass}>
-                        <strong className={canvasSidebarMetricValueClass}>{`${draftCompletionCount}/4`}</strong>
-                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "sections", "섹션")}</span>
-                      </div>
-                      <div className={canvasSidebarMetricCardClass}>
-                        <strong className={canvasSidebarMetricValueClass}>{draftImages.length}</strong>
-                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
-                      </div>
-                      <div className={canvasSidebarMetricCardClass}>
-                        <strong className={canvasSidebarMetricValueClass}>{draftRepresentativeCount}</strong>
-                        <span className={canvasSidebarMetricLabelClass}>{pick(locale, "representative", "대표")}</span>
-                      </div>
-                    </div>
-                    <div className={momentumTrackClass}>
-                      <div className={momentumFillClass} style={{ width: `${draftCompletionPercent}%` }} />
-                    </div>
-                  </section>
-
-                  <section className={canvasSidebarCardClass}>
-                    <div className="grid gap-1">
-                      <span className={canvasSidebarSectionLabelClass}>{pick(locale, "Next up", "다음 작업")}</span>
-                      <p className="m-0 text-sm leading-6 text-muted">
-                        {pick(
-                          locale,
-                          "Keep the right rail focused on what blocks submission instead of on hospital analytics.",
-                          "우측 레일은 병원 분석보다 제출을 막는 항목에 집중합니다."
-                        )}
-                      </p>
-                    </div>
-                    <div className={canvasSidebarListClass}>
-                      {draftPendingItems.length > 0 ? (
-                        draftPendingItems.slice(0, 5).map((item) => (
-                          <div key={item} className={canvasSidebarItemClass}>
-                            {item}
-                          </div>
-                        ))
-                      ) : (
-                        <div className={canvasSidebarItemClass}>
-                          {pick(locale, "All core draft checks are in place. Review the image board and submit when ready.", "핵심 초안 체크가 모두 완료되었습니다. 이미지 보드를 검토한 뒤 준비되면 제출하세요.")}
-                        </div>
-                      )}
-                    </div>
-                  </section>
-
-                </div>
-              ) : null
-            )}
-          </aside>
+            <CaseWorkspaceReviewPanel
+              locale={locale}
+              selectedCasePanelContent={
+                selectedCase ? (
+                  <ContributionHistoryPanel
+                    locale={locale}
+                    selectedCase={selectedCase}
+                    canRunValidation={canRunValidation}
+                    canContributeSelectedCase={canContributeSelectedCase}
+                    hasValidationResult={Boolean(validationResult)}
+                    researchRegistryEnabled={researchRegistryEnabled}
+                    researchRegistryUserEnrolled={researchRegistryUserEnrolled}
+                    researchRegistryBusy={researchRegistryBusy}
+                    contributionBusy={contributionBusy}
+                    contributionResult={contributionResult}
+                    currentUserPublicAlias={user.public_alias ?? contributionResult?.stats.user_public_alias ?? null}
+                    contributionLeaderboard={siteActivity?.contribution_leaderboard ?? contributionResult?.stats.leaderboard ?? null}
+                    historyBusy={historyBusy}
+                    caseHistory={caseHistory}
+                    onJoinResearchRegistry={() => openResearchRegistryModal(false)}
+                    onIncludeResearchCase={() => void handleIncludeResearchCase()}
+                    onExcludeResearchCase={() => void handleExcludeResearchCase()}
+                    onContributeCase={() => void handleContributeCase()}
+                    completionContent={completionContent}
+                    formatProbability={formatProbability}
+                    notAvailableLabel={common.notAvailable}
+                  />
+                ) : null
+              }
+              isAuthoringCanvas={isAuthoringCanvas}
+              draftStatusLabel={draftStatusLabel}
+              selectedSiteLabel={selectedSiteLabel}
+              draftCompletionCount={draftCompletionCount}
+              draftImagesCount={draftImages.length}
+              draftRepresentativeCount={draftRepresentativeCount}
+              draftCompletionPercent={draftCompletionPercent}
+              draftPendingItems={draftPendingItems}
+            />
           ) : null}
         </div>
       </section>
@@ -3768,13 +3361,7 @@ export function CaseWorkspace({
         </div>
       ) : null}
 
-      {toast ? (
-        <div className={workspaceToastClass(toast.tone)}>
-          <strong>{toast.tone === "success" ? common.saved : common.actionNeeded}</strong>
-          <span>{toast.message}</span>
-        </div>
-      ) : null}
-    </main>
+    </CaseWorkspaceShell>
   );
 }
 
@@ -3785,6 +3372,10 @@ function caseTimestamp(caseRecord: CaseSummaryRecord): number {
     return 0;
   }
   return parsed.getTime();
+}
+
+function buildPatientListThumbMap(rows: PatientListRow[]): Record<string, PatientListThumbnail[]> {
+  return Object.fromEntries(rows.map((row) => [row.patient_id, row.representative_thumbnails]));
 }
 
 function visitTimestamp(visitRecord: VisitRecord): number {

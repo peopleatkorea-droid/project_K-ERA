@@ -1545,6 +1545,52 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(cached_response.status_code, 200, cached_response.text)
         self.assertEqual(cached_response.content, initial_response.content)
 
+    def test_image_preview_endpoint_serves_cached_thumbnail_without_db_lookup_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
+
+        initial_response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(initial_response.status_code, 200, initial_response.text)
+
+        with patch("kera_research.services.data_plane.SiteStore.get_image", side_effect=AssertionError("cached preview should skip DB lookup")):
+            cached_response = self.client.get(
+                preview_url,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(cached_response.status_code, 200, cached_response.text)
+        self.assertEqual(cached_response.content, initial_response.content)
+
+    def test_delete_images_removes_cached_previews_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token, patient_id="HTTP-001", visit_date="Initial")
+        preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
+        preview_path = self.site_store.image_preview_cache_path(image_id, 384)
+
+        preview_response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(preview_response.status_code, 200, preview_response.text)
+        self.assertTrue(preview_path.exists())
+
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+        self.assertFalse(preview_path.exists())
+
+        missing_response = self.client.get(
+            preview_url,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(missing_response.status_code, 404, missing_response.text)
+
     def test_image_preview_batch_endpoint_prewarms_and_reports_preview_status_http(self):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")

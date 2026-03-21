@@ -372,15 +372,24 @@ export function PatientListBoard({
                       <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
                     ) : (
                       row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
-                        const previewUrl =
-                          patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id)?.preview_url ??
-                          thumbnail.preview_url;
+                        const resolvedThumbnail =
+                          patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
+                          thumbnail;
+                        const previewUrl = resolvedThumbnail.preview_url;
                         return previewUrl ? (
                           <img
                             key={`board-${thumbnail.case_id}`}
                             src={previewUrl}
                             alt={`${row.patient_id}-${thumbnail.case_id}`}
                             className={patientListThumbClass}
+                            onError={(event) => {
+                              const fallbackUrl = resolvedThumbnail.fallback_url;
+                              if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
+                                return;
+                              }
+                              event.currentTarget.dataset.fallbackApplied = "true";
+                              event.currentTarget.src = fallbackUrl;
+                            }}
                           />
                         ) : (
                           <div key={`board-${thumbnail.case_id}`} className={`${patientListThumbClass} grid place-items-center`}>

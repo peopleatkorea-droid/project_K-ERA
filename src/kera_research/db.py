@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import warnings
 from pathlib import Path
 
 from sqlalchemy import (
@@ -75,11 +76,11 @@ def _resolve_control_plane_database_url() -> str:
 
 
 def _resolve_data_plane_database_url() -> str:
-    legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
+    # The data plane (images, patients, visits) is always local — never inherit
+    # KERA_DATABASE_URL / DATABASE_URL which may point to a remote Neon instance.
     return (
         os.getenv("KERA_DATA_PLANE_DATABASE_URL")
         or os.getenv("KERA_LOCAL_DATABASE_URL")
-        or legacy_url
         or _default_database_url()
     )
 
@@ -106,9 +107,80 @@ def _engine_kwargs_for(database_url: str) -> dict[str, object]:
     return {}
 
 
+def database_backend_label(database_url: str) -> str:
+    normalized = str(database_url or "").strip().lower()
+    if normalized.startswith("postgresql") or normalized.startswith("postgres"):
+        return "postgresql"
+    if normalized.startswith("sqlite"):
+        return "sqlite"
+    return "other"
+
+
+def _configured_database_env_names() -> dict[str, tuple[str, ...]]:
+    legacy_names = tuple(
+        env_name
+        for env_name in ("KERA_DATABASE_URL", "DATABASE_URL")
+        if str(os.getenv(env_name) or "").strip()
+    )
+    split_names = tuple(
+        env_name
+        for env_name in (
+            "KERA_CONTROL_PLANE_DATABASE_URL",
+            "KERA_AUTH_DATABASE_URL",
+            "KERA_DATA_PLANE_DATABASE_URL",
+            "KERA_LOCAL_DATABASE_URL",
+            "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL",
+            "KERA_CONTROL_PLANE_LOCAL_DATABASE_URL",
+        )
+        if str(os.getenv(env_name) or "").strip()
+    )
+    return {
+        "legacy": legacy_names,
+        "split": split_names,
+    }
+
+
+def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> dict[str, object]:
+    configured_env_names = _configured_database_env_names()
+    control_plane_remote_api_enabled = _control_plane_remote_api_enabled()
+    return {
+        "control_plane_split_enabled": control_plane_url != data_plane_url,
+        "control_plane_connection_mode": "remote_api_cache" if control_plane_remote_api_enabled else "direct_db",
+        "control_plane_backend": database_backend_label(control_plane_url),
+        "data_plane_backend": database_backend_label(data_plane_url),
+        "data_plane_local_sqlite": database_backend_label(data_plane_url) == "sqlite",
+        "legacy_database_env_present": bool(configured_env_names["legacy"]),
+        "legacy_database_env_names": configured_env_names["legacy"],
+        "split_database_env_names": configured_env_names["split"],
+    }
+
+
+def _validate_database_configuration(topology: dict[str, object]) -> None:
+    if topology["control_plane_connection_mode"] == "remote_api_cache":
+        if topology["control_plane_backend"] != "sqlite":
+            raise RuntimeError(
+                "KERA_CONTROL_PLANE_API_BASE_URL requires a local SQLite control-plane cache. "
+                "Configure KERA_LOCAL_CONTROL_PLANE_DATABASE_URL or leave it unset to use the default local cache path."
+            )
+        if topology["data_plane_backend"] != "sqlite":
+            raise RuntimeError(
+                "KERA_CONTROL_PLANE_API_BASE_URL local-node mode requires KERA_DATA_PLANE_DATABASE_URL "
+                "to point to a local SQLite data plane."
+            )
+    if topology["legacy_database_env_present"] and topology["split_database_env_names"]:
+        warnings.warn(
+            "Legacy KERA_DATABASE_URL/DATABASE_URL is set alongside split control/data plane database settings. "
+            "The split variables take precedence, but the legacy env can still mask deployment mistakes.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 CONTROL_PLANE_DATABASE_URL = _resolve_control_plane_database_url()
 DATA_PLANE_DATABASE_URL = _resolve_data_plane_database_url()
 DATABASE_URL = CONTROL_PLANE_DATABASE_URL
+DATABASE_TOPOLOGY = _database_topology_summary(CONTROL_PLANE_DATABASE_URL, DATA_PLANE_DATABASE_URL)
+_validate_database_configuration(DATABASE_TOPOLOGY)
 
 CONTROL_PLANE_ENGINE: Engine = create_engine(
     CONTROL_PLANE_DATABASE_URL,

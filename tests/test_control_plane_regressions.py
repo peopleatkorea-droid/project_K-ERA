@@ -25,6 +25,7 @@ def reload_app_module(
     model_distribution_mode: str = "local_path",
     control_plane_api_base_url: str | None = None,
     local_control_plane_db_path: Path | None = None,
+    data_plane_database_url: str | None = None,
     storage_dir: Path | None = None,
     storage_state_value: Path | None = None,
 ) -> object:
@@ -45,10 +46,13 @@ def reload_app_module(
         "KERA_PATIENT_REFERENCE_SALT",
         "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
         "KERA_MODEL_DISTRIBUTION_MODE",
+        "KERA_SKIP_LOCAL_ENV_FILE",
     ):
         os.environ.pop(env_name, None)
 
     os.environ["KERA_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    if data_plane_database_url is not None:
+        os.environ["KERA_DATA_PLANE_DATABASE_URL"] = data_plane_database_url
     os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
     if control_plane_api_base_url is not None:
         os.environ["KERA_CONTROL_PLANE_API_BASE_URL"] = control_plane_api_base_url
@@ -64,6 +68,7 @@ def reload_app_module(
     else:
         storage_state_file.unlink(missing_ok=True)
     os.environ["KERA_API_SECRET"] = "test-secret-with-32-bytes-minimum!!"
+    os.environ["KERA_SKIP_LOCAL_ENV_FILE"] = "1"
     os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
     os.environ["KERA_PATIENT_REFERENCE_SALT"] = "test-patient-reference-salt"
     os.environ["KERA_DISABLE_CASE_EMBEDDING_REFRESH"] = "true"
@@ -255,6 +260,22 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         data_plane_module.invalidate_site_storage_root_cache("REMOTE_DEFAULT")
 
         self.assertEqual(site_store.site_dir.resolve(), (storage_bundle_root / "sites" / "REMOTE_DEFAULT").resolve())
+
+    def test_remote_control_plane_mode_requires_local_sqlite_data_plane(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            reload_app_module(
+                Path(self.tempdir.name) / "misconfigured.db",
+                control_plane_artifact_dir=Path(self.tempdir.name) / "control_artifacts",
+                control_plane_api_base_url="https://control-plane.example.test",
+                local_control_plane_db_path=Path(self.tempdir.name) / "control_plane_cache.db",
+                data_plane_database_url="postgresql://example.invalid/remote_data_plane",
+                storage_dir=Path(self.tempdir.name) / "remote_storage",
+            )
+
+        self.assertIn("requires KERA_DATA_PLANE_DATABASE_URL", str(ctx.exception))
 
     def test_site_store_keeps_local_storage_override_even_when_remote_control_plane_is_present(self) -> None:
         self._reload_remote_control_plane_app()

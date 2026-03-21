@@ -10,20 +10,16 @@ import {
   type SiteActivityResponse,
   type SiteValidationRunRecord,
   fetchCaseHistory,
-  fetchImagePreviewBlob,
-  fetchImagePreviewBatch,
   fetchCases,
-  fetchImages,
   fetchSiteActivity,
   fetchSiteModelVersions,
   fetchSiteValidations,
+  fetchVisitImagesWithPreviews,
 } from "../../lib/api";
 
 type SavedImagePreview = ImageRecord & {
   preview_url: string | null;
 };
-
-const CASE_IMAGE_PREVIEW_MAX_SIDE = 640;
 
 function normalizeVisitMatchKey(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
@@ -46,6 +42,7 @@ type ToastState = {
 } | null;
 
 type Args = {
+  caseImageCacheVersion: number;
   selectedSiteId: string | null;
   railView: "cases" | "patients";
   token: string;
@@ -62,6 +59,7 @@ type Args = {
 };
 
 export function useCaseWorkspaceSiteData({
+  caseImageCacheVersion,
   selectedSiteId,
   railView,
   token,
@@ -92,36 +90,16 @@ export function useCaseWorkspaceSiteData({
   const [historyBusy, setHistoryBusy] = useState(false);
   const [caseHistory, setCaseHistory] = useState<CaseHistoryResponse | null>(null);
 
-  const previewCacheSiteIdRef = useRef<string | null>(null);
   const selectedCaseImageCaseIdRef = useRef<string | null>(null);
-  const imagePreviewCacheRef = useRef<Map<string, string>>(new Map());
-  const imagePreviewPromiseCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
-  const imagePreviewReadyRef = useRef<Set<string>>(new Set());
-  const imagePreviewReadyPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
-  const patientImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
-  const patientImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
-  const visitImageRecordCacheRef = useRef<Map<string, ImageRecord[]>>(new Map());
-  const visitImageRecordPromiseCacheRef = useRef<Map<string, Promise<ImageRecord[]>>>(new Map());
+  const visitImageRecordCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
+  const visitImageRecordPromiseCacheRef = useRef<Map<string, Promise<SavedImagePreview[]>>>(new Map());
   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
   const caseHistoryCacheRef = useRef<Map<string, CaseHistoryResponse>>(new Map());
   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
   const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
   const siteModelVersionsLoadedSiteIdRef = useRef<string | null>(null);
 
-  function revokeObjectUrls(urls: Iterable<string>) {
-    for (const url of urls) {
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  function clearImagePreviewCache() {
-    revokeObjectUrls(imagePreviewCacheRef.current.values());
-    imagePreviewCacheRef.current.clear();
-    imagePreviewPromiseCacheRef.current.clear();
-    imagePreviewReadyRef.current.clear();
-    imagePreviewReadyPromiseCacheRef.current.clear();
-    patientImageRecordCacheRef.current.clear();
-    patientImageRecordPromiseCacheRef.current.clear();
+  function clearCaseImageCache() {
     visitImageRecordCacheRef.current.clear();
     visitImageRecordPromiseCacheRef.current.clear();
     caseImageCacheRef.current.clear();
@@ -143,121 +121,24 @@ export function useCaseWorkspaceSiteData({
     return `${patientId}::${normalizeVisitMatchKey(visitDate)}`;
   }
 
-  function buildImagePreviewReadyKey(imageId: string, maxSide: number): string {
-    return `${maxSide}::${imageId}`;
+  function hasSettledCaseImageCache(
+    caseRecord: CaseSummaryRecord,
+    cachedImages: SavedImagePreview[] | undefined,
+  ): cachedImages is SavedImagePreview[] {
+    if (!cachedImages) {
+      return false;
+    }
+    if (cachedImages.length > 0) {
+      return true;
+    }
+    return Number(caseRecord.image_count || 0) <= 0;
   }
-
-  async function ensureImagePreviewsReady(
-    siteId: string,
-    imageIds: string[],
-    maxSide: number,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const normalizedMaxSide = Math.min(Math.max(Math.round(maxSide || CASE_IMAGE_PREVIEW_MAX_SIDE), 96), 1024);
-    const uniqueImageIds = Array.from(new Set(imageIds.map((imageId) => String(imageId ?? "").trim()).filter(Boolean)));
-    if (uniqueImageIds.length === 0) {
-      return;
-    }
-
-    const pendingRequests: Promise<void>[] = [];
-    const imageIdsToRequest: string[] = [];
-    for (const imageId of uniqueImageIds) {
-      const cacheKey = buildImagePreviewReadyKey(imageId, normalizedMaxSide);
-      if (imagePreviewCacheRef.current.has(imageId)) {
-        imagePreviewReadyRef.current.add(cacheKey);
-        continue;
-      }
-      if (imagePreviewReadyRef.current.has(cacheKey)) {
-        continue;
-      }
-      const pending = imagePreviewReadyPromiseCacheRef.current.get(cacheKey);
-      if (pending) {
-        pendingRequests.push(pending);
-        continue;
-      }
-      imageIdsToRequest.push(imageId);
-    }
-
-    if (imageIdsToRequest.length > 0) {
-      const requestPromise = fetchImagePreviewBatch(siteId, token, {
-        imageIds: imageIdsToRequest,
-        maxSide: normalizedMaxSide,
-        signal,
-      })
-        .then((response) => {
-          for (const item of response.items) {
-            if (!item.ready) {
-              continue;
-            }
-            imagePreviewReadyRef.current.add(buildImagePreviewReadyKey(item.image_id, normalizedMaxSide));
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          for (const imageId of imageIdsToRequest) {
-            imagePreviewReadyPromiseCacheRef.current.delete(buildImagePreviewReadyKey(imageId, normalizedMaxSide));
-          }
-        });
-      for (const imageId of imageIdsToRequest) {
-        imagePreviewReadyPromiseCacheRef.current.set(
-          buildImagePreviewReadyKey(imageId, normalizedMaxSide),
-          requestPromise,
-        );
-      }
-      pendingRequests.push(requestPromise);
-    }
-
-    if (pendingRequests.length > 0) {
-      await Promise.allSettled(pendingRequests);
-    }
-  }
-
-  async function loadImagePreviewUrl(siteId: string, imageId: string, signal?: AbortSignal): Promise<string | null> {
-    const cachedUrl = imagePreviewCacheRef.current.get(imageId);
-    if (cachedUrl) {
-      return cachedUrl;
-    }
-    const pending = imagePreviewPromiseCacheRef.current.get(imageId);
-    if (pending) {
-      return pending;
-    }
-    const nextRequest = (async () => {
-      try {
-        const blob = await fetchImagePreviewBlob(siteId, imageId, token, {
-          maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
-          signal,
-        });
-        const previewUrl = URL.createObjectURL(blob);
-        imagePreviewCacheRef.current.set(imageId, previewUrl);
-        return previewUrl;
-      } catch {
-        return null;
-      } finally {
-        imagePreviewPromiseCacheRef.current.delete(imageId);
-      }
-    })();
-    imagePreviewPromiseCacheRef.current.set(imageId, nextRequest);
-    return nextRequest;
-  }
-
-  useEffect(() => {
-    return () => {
-      clearImagePreviewCache();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (previewCacheSiteIdRef.current === selectedSiteId) {
-      return;
-    }
-    clearImagePreviewCache();
-    previewCacheSiteIdRef.current = selectedSiteId;
-  }, [selectedSiteId]);
 
   useEffect(() => {
     siteActivityLoadedSiteIdRef.current = null;
     siteValidationLoadedSiteIdRef.current = null;
     siteModelVersionsLoadedSiteIdRef.current = null;
+    clearCaseImageCache();
     setCases([]);
     setCasesLoading(false);
     setSelectedCase(null);
@@ -275,6 +156,12 @@ export function useCaseWorkspaceSiteData({
     setHistoryBusy(false);
     setCaseHistory(null);
   }, [selectedSiteId]);
+
+  useEffect(() => {
+    clearCaseImageCache();
+    setSelectedCaseImages([]);
+    setPatientVisitGallery({});
+  }, [caseImageCacheVersion]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -347,13 +234,14 @@ export function useCaseWorkspaceSiteData({
     const controller = new AbortController();
 
     const cachedSelectedCaseImages = caseImageCacheRef.current.get(currentCase.case_id);
+    const hasCachedSelectedCaseImages = hasSettledCaseImageCache(currentCase, cachedSelectedCaseImages);
     const cachedPatientVisitGallery = Object.fromEntries(
       patientCases.flatMap((caseItem) => {
         const cachedImages = caseImageCacheRef.current.get(caseItem.case_id);
-        return cachedImages ? [[caseItem.case_id, cachedImages]] : [];
+        return hasSettledCaseImageCache(caseItem, cachedImages) ? [[caseItem.case_id, cachedImages]] : [];
       }),
     ) as Record<string, SavedImagePreview[]>;
-    if (cachedSelectedCaseImages) {
+    if (hasCachedSelectedCaseImages) {
       selectedCaseImageCaseIdRef.current = currentCase.case_id;
       setSelectedCaseImages(cachedSelectedCaseImages);
       setPatientVisitGallery(
@@ -367,100 +255,18 @@ export function useCaseWorkspaceSiteData({
       setPatientVisitGallery(Object.keys(cachedPatientVisitGallery).length > 0 ? cachedPatientVisitGallery : { [currentCase.case_id]: [] });
     }
 
-    function buildCaseImagePlaceholders(imageRecords: ImageRecord[]): SavedImagePreview[] {
-      return imageRecords.map((record) => ({
-        ...record,
-        preview_url: imagePreviewCacheRef.current.get(record.image_id) ?? null,
-      }));
-    }
-
-    function mergePreviewUrlsIntoImages(
-      images: SavedImagePreview[],
-      previewUrls: Map<string, string>,
-    ): SavedImagePreview[] {
-      if (previewUrls.size === 0) {
-        return images;
-      }
-      return images.map((item) => {
-        const previewUrl = previewUrls.get(item.image_id);
-        return previewUrl ? { ...item, preview_url: previewUrl } : item;
-      });
-    }
-
-    function preserveCachedPreviewUrls(caseId: string, images: SavedImagePreview[]): SavedImagePreview[] {
-      const cachedImages = caseImageCacheRef.current.get(caseId) ?? [];
-      const cachedPreviewUrls = new Map<string, string>();
-      for (const item of cachedImages) {
-        if (item.preview_url) {
-          cachedPreviewUrls.set(item.image_id, item.preview_url);
-        }
-      }
-      return mergePreviewUrlsIntoImages(images, cachedPreviewUrls);
-    }
-
     function commitCaseImages(caseId: string, images: SavedImagePreview[]) {
-      const nextImages = preserveCachedPreviewUrls(caseId, images);
-      caseImageCacheRef.current.set(caseId, nextImages);
+      caseImageCacheRef.current.set(caseId, images);
       setPatientVisitGallery((current) => ({
         ...current,
-        [caseId]: nextImages,
+        [caseId]: images,
       }));
       if (selectedCaseImageCaseIdRef.current === caseId) {
-        setSelectedCaseImages(nextImages);
+        setSelectedCaseImages(images);
       }
     }
 
-    function applyPreviewUpdates(caseId: string, previewUrls: Map<string, string>) {
-      if (previewUrls.size === 0) {
-        return;
-      }
-      setPatientVisitGallery((current) => {
-        const baseImages = current[caseId] ?? caseImageCacheRef.current.get(caseId) ?? [];
-        const nextImages = mergePreviewUrlsIntoImages(baseImages, previewUrls);
-        caseImageCacheRef.current.set(caseId, nextImages);
-        return {
-          ...current,
-          [caseId]: nextImages,
-        };
-      });
-      if (selectedCaseImageCaseIdRef.current === caseId) {
-        setSelectedCaseImages((current) => {
-          const baseImages = current.length > 0 ? current : caseImageCacheRef.current.get(caseId) ?? [];
-          const nextImages = mergePreviewUrlsIntoImages(baseImages, previewUrls);
-          caseImageCacheRef.current.set(caseId, nextImages);
-          return nextImages;
-        });
-      }
-    }
-
-    async function loadPatientImageRecords(patientId: string): Promise<ImageRecord[]> {
-      const cachedRecords = patientImageRecordCacheRef.current.get(patientId);
-      if (cachedRecords) {
-        return cachedRecords;
-      }
-      const pendingRequest = patientImageRecordPromiseCacheRef.current.get(patientId);
-      if (pendingRequest) {
-        return pendingRequest;
-      }
-      const nextRequest = fetchImages(
-        currentSiteId,
-        token,
-        patientId,
-        undefined,
-        controller.signal,
-      )
-        .then((imageRecords) => {
-          patientImageRecordCacheRef.current.set(patientId, imageRecords);
-          return imageRecords;
-        })
-        .finally(() => {
-          patientImageRecordPromiseCacheRef.current.delete(patientId);
-        });
-      patientImageRecordPromiseCacheRef.current.set(patientId, nextRequest);
-      return nextRequest;
-    }
-
-    async function loadVisitImageRecords(patientId: string, visitDate: string): Promise<ImageRecord[]> {
+    async function loadVisitImageRecords(patientId: string, visitDate: string): Promise<SavedImagePreview[]> {
       const cacheKey = buildVisitImageCacheKey(patientId, visitDate);
       const cachedRecords = visitImageRecordCacheRef.current.get(cacheKey);
       if (cachedRecords) {
@@ -470,12 +276,12 @@ export function useCaseWorkspaceSiteData({
       if (pendingRequest) {
         return pendingRequest;
       }
-      const nextRequest = fetchImages(
+      const nextRequest = fetchVisitImagesWithPreviews(
         currentSiteId,
         token,
         patientId,
         visitDate,
-        controller.signal,
+        { signal: controller.signal },
       )
         .then((imageRecords) => {
           visitImageRecordCacheRef.current.set(cacheKey, imageRecords);
@@ -488,89 +294,19 @@ export function useCaseWorkspaceSiteData({
       return nextRequest;
     }
 
-    async function loadCasePreviewUrls(
-      caseId: string,
-      images: SavedImagePreview[],
-      options?: { prioritizeRepresentative?: boolean },
-    ) {
-      const pendingImages = [...images]
-        .filter((image) => !image.preview_url)
-        .sort((left, right) => {
-          if (left.is_representative === right.is_representative) {
-            return 0;
-          }
-          return left.is_representative ? -1 : 1;
-        });
-      if (pendingImages.length === 0) {
-        return;
-      }
-
-      await ensureImagePreviewsReady(
-        currentSiteId,
-        pendingImages.map((image) => image.image_id),
-        CASE_IMAGE_PREVIEW_MAX_SIDE,
-        controller.signal,
-      );
-      if (cancelled) {
-        return;
-      }
-
-      const previewRequests = pendingImages.map((image) => ({
-        imageId: image.image_id,
-        request: loadImagePreviewUrl(currentSiteId, image.image_id, controller.signal),
-      }));
-      const priorityRequest = options?.prioritizeRepresentative ? previewRequests[0] ?? null : null;
-      if (priorityRequest) {
-        void priorityRequest.request.then((previewUrl) => {
-          if (cancelled || !previewUrl) {
-            return;
-          }
-          applyPreviewUpdates(caseId, new Map([[priorityRequest.imageId, previewUrl]]));
-        });
-      }
-
-      const resolvedEntries = await Promise.allSettled(
-        previewRequests.map(async ({ imageId, request }) => {
-          const previewUrl = await request;
-          return previewUrl ? ([imageId, previewUrl] as const) : null;
-        }),
-      );
-      if (cancelled) {
-        return;
-      }
-
-      const resolvedPreviewUrls = new Map<string, string>();
-      for (const entry of resolvedEntries) {
-        if (entry.status === "fulfilled" && entry.value) {
-          resolvedPreviewUrls.set(entry.value[0], entry.value[1]);
-        }
-      }
-      applyPreviewUpdates(caseId, resolvedPreviewUrls);
-    }
-
     async function loadSelectedCaseImages(): Promise<void> {
-      const selectedCaseNeedsLoading =
-        !cachedSelectedCaseImages || cachedSelectedCaseImages.some((image) => !image.preview_url);
+      const selectedCaseNeedsLoading = !hasCachedSelectedCaseImages;
       setPanelBusy(selectedCaseNeedsLoading);
       if (!selectedCaseNeedsLoading) {
         return;
       }
       try {
-        const visitImages =
-          cachedSelectedCaseImages?.length
-            ? cachedSelectedCaseImages
-            : preserveCachedPreviewUrls(
-                currentCase.case_id,
-                buildCaseImagePlaceholders(
-                  await loadVisitImageRecords(currentCase.patient_id, currentCase.visit_date),
-                ),
-              );
+        const visitImages = await loadVisitImageRecords(currentCase.patient_id, currentCase.visit_date);
         if (cancelled) {
           return;
         }
         selectedCaseImageCaseIdRef.current = currentCase.case_id;
         commitCaseImages(currentCase.case_id, visitImages);
-        await loadCasePreviewUrls(currentCase.case_id, visitImages, { prioritizeRepresentative: true });
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -596,10 +332,12 @@ export function useCaseWorkspaceSiteData({
         return;
       }
 
-      const hasUncachedVisit = patientCases.some((caseItem) => !caseImageCacheRef.current.has(caseItem.case_id));
+      const hasUncachedVisit = patientCases.some(
+        (caseItem) => !hasSettledCaseImageCache(caseItem, caseImageCacheRef.current.get(caseItem.case_id)),
+      );
       setPatientVisitGalleryBusy(hasUncachedVisit);
       if (patientCases.length === 1) {
-        if (!cachedSelectedCaseImages) {
+        if (!hasCachedSelectedCaseImages) {
           setPatientVisitGallery((current) => ({
             ...current,
             [currentCase.case_id]: current[currentCase.case_id] ?? [],
@@ -610,37 +348,20 @@ export function useCaseWorkspaceSiteData({
       }
 
       try {
-        const allImages = await loadPatientImageRecords(currentCase.patient_id);
-        if (cancelled) {
-          return;
-        }
-
-        const imagesByVisitId = new Map<string, ImageRecord[]>();
-        const imagesByVisitLabel = new Map<string, ImageRecord[]>();
-        for (const image of allImages) {
-          const visitIdKey = String(image.visit_id ?? "").trim();
-          if (visitIdKey) {
-            const list = imagesByVisitId.get(visitIdKey) ?? [];
-            list.push(image);
-            imagesByVisitId.set(visitIdKey, list);
-          }
-          const visitLabelKey = normalizeVisitMatchKey(image.visit_date);
-          if (visitLabelKey) {
-            const list = imagesByVisitLabel.get(visitLabelKey) ?? [];
-            list.push(image);
-            imagesByVisitLabel.set(visitLabelKey, list);
-          }
-        }
-
         const nextGallery: Record<string, SavedImagePreview[]> = {};
-        for (const caseItem of patientCases) {
-          const imageRecords =
-            imagesByVisitId.get(String(caseItem.visit_id ?? "").trim()) ??
-            imagesByVisitLabel.get(normalizeVisitMatchKey(caseItem.visit_date)) ??
-            [];
-          const placeholders = preserveCachedPreviewUrls(caseItem.case_id, buildCaseImagePlaceholders(imageRecords));
-          caseImageCacheRef.current.set(caseItem.case_id, placeholders);
-          nextGallery[caseItem.case_id] = placeholders;
+        const galleryEntries = await Promise.all(
+          patientCases.map(async (caseItem) => {
+            const cachedImages = caseImageCacheRef.current.get(caseItem.case_id);
+            if (hasSettledCaseImageCache(caseItem, cachedImages)) {
+              return [caseItem.case_id, cachedImages] as const;
+            }
+            const visitImages = await loadVisitImageRecords(caseItem.patient_id, caseItem.visit_date);
+            return [caseItem.case_id, visitImages] as const;
+          }),
+        );
+        for (const [caseId, images] of galleryEntries) {
+          caseImageCacheRef.current.set(caseId, images);
+          nextGallery[caseId] = images;
         }
 
         if (cancelled) {
@@ -654,37 +375,6 @@ export function useCaseWorkspaceSiteData({
           ...current,
           ...nextGallery,
         }));
-
-        const galleryCases = patientCases.filter((caseItem) => caseItem.case_id !== currentCase.case_id);
-        // Batch all gallery image IDs into a single PIL warmup request instead of N separate calls.
-        const allGalleryImageIds = galleryCases.flatMap(
-          (caseItem) => (nextGallery[caseItem.case_id] ?? []).map((img) => img.image_id),
-        );
-        if (allGalleryImageIds.length > 0) {
-          await ensureImagePreviewsReady(currentSiteId, allGalleryImageIds, CASE_IMAGE_PREVIEW_MAX_SIDE, controller.signal);
-        }
-        if (cancelled) {
-          return;
-        }
-        const galleryPreviewUpdates: Array<[string, Map<string, string>]> = [];
-        for (const caseItem of galleryCases) {
-          const images = nextGallery[caseItem.case_id] ?? [];
-          const urlMap = new Map<string, string>();
-          for (const img of images) {
-            if (!img.preview_url) {
-              const previewUrl = await loadImagePreviewUrl(currentSiteId, img.image_id, controller.signal);
-              if (previewUrl) {
-                urlMap.set(img.image_id, previewUrl);
-              }
-            }
-          }
-          if (urlMap.size > 0) {
-            galleryPreviewUpdates.push([caseItem.case_id, urlMap]);
-          }
-        }
-        for (const [caseId, urlMap] of galleryPreviewUpdates) {
-          applyPreviewUpdates(caseId, urlMap);
-        }
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -747,7 +437,7 @@ export function useCaseWorkspaceSiteData({
       cancelled = true;
       controller.abort();
     };
-  }, [cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
+  }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
 
   useEffect(() => {
     if (!selectedCase || selectedCaseImageCaseIdRef.current !== selectedCase.case_id) {
@@ -904,5 +594,3 @@ export function useCaseWorkspaceSiteData({
     ensureSiteModelVersionsLoaded,
   };
 }
-
-

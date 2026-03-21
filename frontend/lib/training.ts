@@ -1,4 +1,11 @@
 import { request } from "./api-core";
+import {
+  fetchAnalysisSiteJob as fetchSiteJobRuntime,
+  runAnalysisCaseAiClinic as runCaseAiClinicRuntime,
+  runAnalysisCaseValidation as runCaseValidationRuntime,
+  runAnalysisCaseValidationCompare as runCaseValidationCompareRuntime,
+} from "./analysis-runtime";
+import { hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
 import type {
   AiClinicEmbeddingStatusResponse,
   AiClinicResponse,
@@ -16,6 +23,10 @@ import type {
   ValidationCasePredictionRecord,
 } from "./types";
 
+function canUseDesktopTrainingTransport() {
+  return hasDesktopRuntime();
+}
+
 export async function fetchSiteValidations(
   siteId: string,
   token: string,
@@ -31,6 +42,15 @@ export async function fetchSiteValidations(
     optionsOrSignal instanceof AbortSignal
       ? { signal: optionsOrSignal }
       : optionsOrSignal ?? {};
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<SiteValidationRunRecord[]>("fetch_site_validations", {
+      payload: {
+        site_id: siteId,
+        token,
+        limit: options.limit,
+      },
+    }, options.signal);
+  }
   const params = new URLSearchParams();
   if (typeof options.limit === "number") {
     params.set("limit", String(options.limit));
@@ -48,6 +68,17 @@ export async function fetchValidationCases(
     limit?: number;
   } = {},
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<ValidationCasePredictionRecord[]>("fetch_validation_cases", {
+      payload: {
+        site_id: siteId,
+        token,
+        validation_id: validationId,
+        misclassified_only: options.misclassified_only ?? false,
+        limit: options.limit,
+      },
+    });
+  }
   const params = new URLSearchParams();
   if (options.misclassified_only) {
     params.set("misclassified_only", "true");
@@ -72,19 +103,7 @@ export async function runCaseValidation(
     generate_medsam?: boolean;
   },
 ) {
-  return request<CaseValidationResponse>(
-    `/api/sites/${siteId}/cases/validate`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        generate_gradcam: true,
-        generate_medsam: true,
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return runCaseValidationRuntime(siteId, token, payload);
 }
 
 export async function runCaseValidationCompare(
@@ -99,19 +118,7 @@ export async function runCaseValidationCompare(
     generate_medsam?: boolean;
   },
 ) {
-  return request<CaseValidationCompareResponse>(
-    `/api/sites/${siteId}/cases/validate/compare`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        generate_gradcam: false,
-        generate_medsam: false,
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return runCaseValidationCompareRuntime(siteId, token, payload);
 }
 
 export async function runCaseAiClinic(
@@ -127,19 +134,7 @@ export async function runCaseAiClinic(
     retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
   },
 ) {
-  return request<AiClinicResponse>(
-    `/api/sites/${siteId}/cases/ai-clinic`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        top_k: 3,
-        retrieval_backend: "standard",
-        ...payload,
-      }),
-    },
-    token,
-  );
+  return runCaseAiClinicRuntime(siteId, token, payload);
 }
 
 export async function backfillAiClinicEmbeddings(
@@ -151,6 +146,15 @@ export async function backfillAiClinicEmbeddings(
     force_refresh?: boolean;
   },
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<EmbeddingBackfillJobResponse>("backfill_ai_clinic_embeddings", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<EmbeddingBackfillJobResponse>(
     `/api/sites/${siteId}/ai-clinic/embeddings/backfill`,
     {
@@ -172,6 +176,15 @@ export async function fetchAiClinicEmbeddingStatus(
     model_version_id?: string;
   },
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<AiClinicEmbeddingStatusResponse>("fetch_ai_clinic_embedding_status", {
+      payload: {
+        site_id: siteId,
+        token,
+        model_version_id: options?.model_version_id,
+      },
+    });
+  }
   const params = new URLSearchParams();
   if (options?.model_version_id) {
     params.set("model_version_id", options.model_version_id);
@@ -181,6 +194,14 @@ export async function fetchAiClinicEmbeddingStatus(
 }
 
 export async function fetchSiteModelVersions(siteId: string, token: string, signal?: AbortSignal) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<ModelVersionRecord[]>("fetch_site_model_versions", {
+      payload: {
+        site_id: siteId,
+        token,
+      },
+    }, signal);
+  }
   return request<ModelVersionRecord[]>(`/api/sites/${siteId}/model-versions`, { signal }, token);
 }
 
@@ -194,6 +215,15 @@ export async function runSiteValidation(
     model_version_id?: string;
   } = {},
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<SiteValidationJobResponse>("run_site_validation", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<SiteValidationJobResponse>(
     `/api/sites/${siteId}/validations/run`,
     {
@@ -226,6 +256,15 @@ export async function runInitialTraining(
     regenerate_split?: boolean;
   } = {},
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<InitialTrainingJobResponse>("run_initial_training", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<InitialTrainingJobResponse>(
     `/api/sites/${siteId}/training/initial`,
     {
@@ -266,6 +305,15 @@ export async function runInitialTrainingBenchmark(
     regenerate_split?: boolean;
   },
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<InitialTrainingBenchmarkJobResponse>("run_initial_training_benchmark", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<InitialTrainingBenchmarkJobResponse>(
     `/api/sites/${siteId}/training/initial/benchmark`,
     {
@@ -296,6 +344,15 @@ export async function resumeInitialTrainingBenchmark(
     execution_mode?: "auto" | "cpu" | "gpu";
   },
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<InitialTrainingBenchmarkJobResponse>("resume_initial_training_benchmark", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<InitialTrainingBenchmarkJobResponse>(
     `/api/sites/${siteId}/training/initial/benchmark/resume`,
     {
@@ -307,10 +364,19 @@ export async function resumeInitialTrainingBenchmark(
 }
 
 export async function fetchSiteJob(siteId: string, jobId: string, token: string) {
-  return request<SiteJobRecord>(`/api/sites/${siteId}/jobs/${jobId}`, {}, token);
+  return fetchSiteJobRuntime(siteId, jobId, token);
 }
 
 export async function cancelSiteJob(siteId: string, jobId: string, token: string) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<SiteJobRecord>("cancel_site_job", {
+      payload: {
+        site_id: siteId,
+        token,
+        job_id: jobId,
+      },
+    });
+  }
   return request<SiteJobRecord>(
     `/api/sites/${siteId}/jobs/${jobId}/cancel`,
     {
@@ -321,6 +387,14 @@ export async function cancelSiteJob(siteId: string, jobId: string, token: string
 }
 
 export async function fetchCrossValidationReports(siteId: string, token: string) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<CrossValidationReport[]>("fetch_cross_validation_reports", {
+      payload: {
+        site_id: siteId,
+        token,
+      },
+    });
+  }
   return request<CrossValidationReport[]>(`/api/sites/${siteId}/training/cross-validation`, {}, token);
 }
 
@@ -340,6 +414,15 @@ export async function runCrossValidation(
     use_pretrained?: boolean;
   } = {},
 ) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<CrossValidationJobResponse>("run_cross_validation", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
   return request<CrossValidationJobResponse>(
     `/api/sites/${siteId}/training/cross-validation`,
     {

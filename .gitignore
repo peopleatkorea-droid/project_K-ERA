@@ -6,7 +6,9 @@ frontend/node_modules/
 frontend/.next/
 frontend/.next_broken/
 frontend/out/
+frontend/src-tauri/target/
 frontend/tsconfig.tsbuildinfo
+.desktop-runtime/
 storage/
 models/
 artifacts/

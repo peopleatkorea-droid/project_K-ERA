@@ -38,9 +38,9 @@ const apiMocks = vi.hoisted(() => ({
   fetchSiteModelVersions: vi.fn(),
   fetchVisits: vi.fn(),
   fetchImages: vi.fn(),
+  fetchVisitImagesWithPreviews: vi.fn(),
   fetchImageBlob: vi.fn(),
-  fetchImagePreviewBatch: vi.fn(),
-  fetchImagePreviewBlob: vi.fn(),
+  prewarmPatientListPage: vi.fn(),
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
   enrollResearchRegistry: vi.fn(),
@@ -71,9 +71,9 @@ vi.mock("../lib/api", async () => {
     fetchSiteModelVersions: apiMocks.fetchSiteModelVersions,
     fetchVisits: apiMocks.fetchVisits,
     fetchImages: apiMocks.fetchImages,
+    fetchVisitImagesWithPreviews: apiMocks.fetchVisitImagesWithPreviews,
     fetchImageBlob: apiMocks.fetchImageBlob,
-    fetchImagePreviewBatch: apiMocks.fetchImagePreviewBatch,
-    fetchImagePreviewBlob: apiMocks.fetchImagePreviewBlob,
+    prewarmPatientListPage: apiMocks.prewarmPatientListPage,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
     enrollResearchRegistry: apiMocks.enrollResearchRegistry,
@@ -183,7 +183,8 @@ describe("CaseWorkspace integration", () => {
               case_id: "case_1",
               image_id: "image_1",
               view: "white",
-              preview_url: null,
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
             },
           ],
         },
@@ -262,21 +263,24 @@ describe("CaseWorkspace integration", () => {
         lesion_prompt_box: null,
       },
     ]);
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
     apiMocks.fetchImageBlob.mockResolvedValue(new Blob(["image"], { type: "image/png" }));
-    apiMocks.fetchImagePreviewBatch.mockImplementation(async (_siteId, _token, options: { imageIds: string[]; maxSide?: number }) => ({
-      max_side: options.maxSide ?? 512,
-      requested_count: options.imageIds.length,
-      ready_count: options.imageIds.length,
-      items: options.imageIds.map((imageId) => ({
-        image_id: imageId,
-        max_side: options.maxSide ?? 512,
-        ready: true,
-        cache_status: "generated" as const,
-        preview_url: `/api/sites/SITE_A/images/${imageId}/preview`,
-        error: null,
-      })),
-    }));
-    apiMocks.fetchImagePreviewBlob.mockResolvedValue(new Blob(["image"], { type: "image/jpeg" }));
+    apiMocks.prewarmPatientListPage.mockImplementation(() => undefined);
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
       contributions: [],
@@ -495,9 +499,10 @@ describe("CaseWorkspace integration", () => {
       site_id: string;
       display_name: string;
       hospital_name: string;
-    }>
+    }>,
+    options: { strictMode?: boolean } = {}
   ) {
-    return render(
+    const workspace = (
       <LocaleProvider>
         <CaseWorkspace
           token="test-token"
@@ -540,6 +545,7 @@ describe("CaseWorkspace integration", () => {
         />
       </LocaleProvider>
     );
+    return render(options.strictMode ? <React.StrictMode>{workspace}</React.StrictMode> : workspace);
   }
 
   async function addDraftImage(container: HTMLElement) {
@@ -898,7 +904,8 @@ describe("CaseWorkspace integration", () => {
           case_id: "case_new",
           image_id: "image_new",
           view: "white",
-          preview_url: null,
+          preview_url: "/preview/image_new",
+          fallback_url: "/content/image_new",
         },
       ],
     };
@@ -939,7 +946,8 @@ describe("CaseWorkspace integration", () => {
               case_id: "case_1",
               image_id: "image_1",
               view: "white",
-              preview_url: null,
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
             },
           ],
         },
@@ -1322,7 +1330,8 @@ describe("CaseWorkspace integration", () => {
               case_id: `case_${caseNumber}`,
               image_id: `image_${caseNumber}`,
               view: "white",
-              preview_url: null,
+              preview_url: `/preview/image_${caseNumber}`,
+              fallback_url: `/content/image_${caseNumber}`,
             },
           ],
         };
@@ -1361,26 +1370,69 @@ describe("CaseWorkspace integration", () => {
     });
   });
 
-  it("prefetches representative thumbnails for the current patient list page without waiting for observer callbacks", async () => {
+  it("prewarms the next patient list page and renders representative thumbnails from the current response", async () => {
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-15T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_1",
+            representative_view: "white",
+            age: 0,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 30,
+      total_pages: 2,
+    });
+
     renderWorkspace();
 
     fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
 
     expect(await screen.findByText("Patient list")).toBeInTheDocument();
     await waitFor(() => {
-      expect(apiMocks.fetchImagePreviewBatch).toHaveBeenCalledWith(
+      expect(apiMocks.prewarmPatientListPage).toHaveBeenCalledWith(
         "SITE_A",
         "test-token",
-        expect.objectContaining({ imageIds: ["image_1"], maxSide: 256, signal: expect.any(AbortSignal) }),
-      );
-      expect(apiMocks.fetchImagePreviewBlob).toHaveBeenCalledWith(
-        "SITE_A",
-        "image_1",
-        "test-token",
-        expect.objectContaining({ maxSide: 256 }),
+        expect.objectContaining({ mine: false, page: 2, page_size: 25, search: "" }),
       );
     });
-    expect(await screen.findByAltText("KERA-2026-001-case_1")).toHaveAttribute("src", "blob:preview-url");
+    expect(await screen.findByAltText("KERA-2026-001-case_1")).toHaveAttribute(
+      "src",
+      expect.stringContaining("/preview/image_1"),
+    );
   });
 
   it("shows patient timeline images even when image records only match by visit date", async () => {
@@ -1388,26 +1440,61 @@ describe("CaseWorkspace integration", () => {
     await openSavedCase();
 
     await waitFor(() => {
-      expect(apiMocks.fetchImages).toHaveBeenCalledWith("SITE_A", "test-token", "KERA-2026-001", "Initial", expect.any(AbortSignal));
-    });
-    await waitFor(() => {
-      expect(apiMocks.fetchImagePreviewBatch).toHaveBeenCalledWith(
+      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
         "SITE_A",
         "test-token",
-        expect.objectContaining({ imageIds: ["image_1"], maxSide: 640, signal: expect.any(AbortSignal) }),
-      );
-    });
-    await waitFor(() => {
-      expect(apiMocks.fetchImagePreviewBlob).toHaveBeenCalledWith(
-        "SITE_A",
-        "image_1",
-        "test-token",
-        expect.objectContaining({ maxSide: 640 }),
+        "KERA-2026-001",
+        "Initial",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
     });
     const previewImages = await screen.findAllByAltText("image_1");
-    expect(previewImages.some((image) => image.getAttribute("src") === "blob:preview-url")).toBe(true);
+    expect(previewImages.some((image) => image.getAttribute("src")?.includes("/preview/image_1"))).toBe(true);
     expect(screen.queryByText("No saved images for this visit yet.")).not.toBeInTheDocument();
+  });
+
+  it("loads saved images correctly in React Strict Mode", async () => {
+    renderWorkspace(undefined, {}, undefined, { strictMode: true });
+    await openSavedCase();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        "KERA-2026-001",
+        "Initial",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+    });
+    expect(screen.getAllByText("1 images").length).toBeGreaterThan(0);
+    expect(screen.queryByText("No saved images are attached to this case yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No saved images for this visit yet.")).not.toBeInTheDocument();
+  });
+
+  it("keeps saved images visible when the visit-image response already carries preview URLs", async () => {
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/content/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
+
+    renderWorkspace();
+    await openSavedCase();
+
+    const previewImages = await screen.findAllByAltText("image_1");
+    expect(previewImages.some((image) => image.getAttribute("src")?.includes("/content/image_1"))).toBe(true);
+    expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
   });
 
   it("shows the MedSAM backlog cards and starts background backfill from list view", async () => {

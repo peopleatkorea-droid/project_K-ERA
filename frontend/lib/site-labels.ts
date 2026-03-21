@@ -1,6 +1,13 @@
 import type { SiteRecord } from "./types";
 
-type SiteLike = Partial<Pick<SiteRecord, "site_id" | "display_name" | "hospital_name">> | null | undefined;
+export type SiteDisplayRecord = {
+  site_id: string | null | undefined;
+  display_name?: string | null | undefined;
+  hospital_name?: string | null | undefined;
+  [key: string]: unknown;
+};
+
+type SiteLike = SiteDisplayRecord | null | undefined;
 
 export function isVisibleSiteId(siteId: string | null | undefined): boolean {
   const normalizedSiteId = String(siteId ?? "").trim().toLowerCase();

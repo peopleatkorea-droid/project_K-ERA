@@ -8,6 +8,38 @@ from urllib.parse import urlsplit
 from kera_research.passwords import hash_password
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+def _load_local_env_file() -> None:
+    if os.getenv("KERA_SKIP_LOCAL_ENV_FILE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    env_path = BASE_DIR / ".env.local"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        name, value = line.split("=", 1)
+        normalized_name = name.strip()
+        if not normalized_name or normalized_name in os.environ:
+            continue
+
+        normalized_value = value.strip()
+        if (
+            len(normalized_value) >= 2
+            and normalized_value[0] == normalized_value[-1]
+            and normalized_value[0] in {"'", '"'}
+        ):
+            normalized_value = normalized_value[1:-1]
+
+        os.environ[normalized_name] = normalized_value
+
+
+_load_local_env_file()
+
 BUILT_IN_STORAGE_DIR = (BASE_DIR.parent / "KERA_DATA").resolve()
 BUILT_IN_SITE_ROOT_DIR = BUILT_IN_STORAGE_DIR / "sites"
 

@@ -14,9 +14,9 @@ const apiMocks = vi.hoisted(() => ({
   fetchSiteModelVersions: vi.fn(),
   fetchVisits: vi.fn(),
   fetchImages: vi.fn(),
+  fetchVisitImagesWithPreviews: vi.fn(),
   fetchImageBlob: vi.fn(),
-  fetchImagePreviewBatch: vi.fn(),
-  fetchImagePreviewBlob: vi.fn(),
+  prewarmPatientListPage: vi.fn(),
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
 }));
@@ -32,9 +32,9 @@ vi.mock("../lib/api", async () => {
     fetchSiteModelVersions: apiMocks.fetchSiteModelVersions,
     fetchVisits: apiMocks.fetchVisits,
     fetchImages: apiMocks.fetchImages,
+    fetchVisitImagesWithPreviews: apiMocks.fetchVisitImagesWithPreviews,
     fetchImageBlob: apiMocks.fetchImageBlob,
-    fetchImagePreviewBatch: apiMocks.fetchImagePreviewBatch,
-    fetchImagePreviewBlob: apiMocks.fetchImagePreviewBlob,
+    prewarmPatientListPage: apiMocks.prewarmPatientListPage,
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
   };
@@ -115,7 +115,8 @@ describe("CaseWorkspace stability", () => {
               case_id: "case_1",
               image_id: "image_1",
               view: "white",
-              preview_url: null,
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
             },
           ],
         },
@@ -150,21 +151,24 @@ describe("CaseWorkspace stability", () => {
         lesion_prompt_box: null,
       },
     ]);
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
     apiMocks.fetchImageBlob.mockResolvedValue(new Blob(["image"], { type: "image/png" }));
-    apiMocks.fetchImagePreviewBatch.mockImplementation(async (_siteId, _token, options: { imageIds: string[]; maxSide?: number }) => ({
-      max_side: options.maxSide ?? 512,
-      requested_count: options.imageIds.length,
-      ready_count: options.imageIds.length,
-      items: options.imageIds.map((imageId) => ({
-        image_id: imageId,
-        max_side: options.maxSide ?? 512,
-        ready: true,
-        cache_status: "generated" as const,
-        preview_url: `/api/sites/SITE_A/images/${imageId}/preview`,
-        error: null,
-      })),
-    }));
-    apiMocks.fetchImagePreviewBlob.mockResolvedValue(new Blob(["image"], { type: "image/jpeg" }));
+    apiMocks.prewarmPatientListPage.mockImplementation(() => undefined);
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
       contributions: [],
@@ -281,27 +285,14 @@ describe("CaseWorkspace stability", () => {
     fireEvent.click(await screen.findByRole("button", { name: /KERA-2026-001/i }));
 
     await waitFor(() => {
-      expect(apiMocks.fetchImages).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
     });
-    expect(apiMocks.fetchImages).toHaveBeenCalledWith(
+    expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
       "SITE_A",
       "test-token",
       "KERA-2026-001",
       "Initial",
-      expect.any(AbortSignal),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    await waitFor(() => {
-      expect(apiMocks.fetchImagePreviewBatch).toHaveBeenCalledWith(
-        "SITE_A",
-        "test-token",
-        expect.objectContaining({ imageIds: ["image_1"], maxSide: 640, signal: expect.any(AbortSignal) }),
-      );
-      expect(apiMocks.fetchImagePreviewBlob).toHaveBeenCalledWith(
-        "SITE_A",
-        "image_1",
-        "test-token",
-        expect.objectContaining({ maxSide: 640 }),
-      );
-    });
   });
 });
