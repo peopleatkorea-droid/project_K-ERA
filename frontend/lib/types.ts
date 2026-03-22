@@ -4,6 +4,7 @@ export type SiteRecord = {
   site_id: string;
   display_name: string;
   hospital_name: string;
+  site_alias?: string | null;
   source_institution_name?: string | null;
 };
 

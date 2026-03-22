@@ -6,6 +6,8 @@ export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
+const CONTROL_PLANE_SCHEMA_NAME = "control_plane";
+const CONTROL_PLANE_SCHEMA_VERSION = 1;
 const SYSTEM_PROJECT_OWNER_ID = "system";
 const DEFAULT_PROJECT_ID = "project_default";
 const DEFAULT_PROJECT_NAME = "K-ERA Default Project";
@@ -16,7 +18,9 @@ function sqlClient(): ControlPlaneSql {
   }
   const databaseUrl = controlPlaneDatabaseUrl();
   if (!databaseUrl) {
-    throw new Error("KERA_CONTROL_PLANE_DATABASE_URL is not configured.");
+    throw new Error(
+      "No control-plane database is configured. Set KERA_CONTROL_PLANE_DATABASE_URL for a shared database, or KERA_LOCAL_CONTROL_PLANE_DATABASE_URL for a local cache.",
+    );
   }
   cachedSql = postgres(databaseUrl, {
     max: 5,
@@ -159,8 +163,8 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
     update sites
     set
       project_id = coalesce(nullif(trim(project_id), ''), 'project_default'),
-      display_name = coalesce(nullif(trim(display_name), ''), site_id),
-      hospital_name = coalesce(nullif(trim(hospital_name), ''), coalesce(nullif(trim(display_name), ''), site_id)),
+      display_name = coalesce(display_name, ''),
+      hospital_name = coalesce(nullif(trim(hospital_name), ''), site_id),
       local_storage_root = coalesce(local_storage_root, ''),
       research_registry_enabled = coalesce(research_registry_enabled, true),
       status = coalesce(nullif(trim(status), ''), 'active'),
@@ -321,12 +325,59 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
   await sql`alter table if exists audit_events add column if not exists created_at timestamptz default now()`;
 }
 
+async function readControlPlaneSchemaVersion(sql: ControlPlaneSql): Promise<number | null> {
+  await sql.unsafe(`
+    create table if not exists kera_schema_meta (
+      schema_name text primary key,
+      schema_version integer not null,
+      updated_at timestamptz not null default now()
+    )
+  `);
+  const rows = await sql`
+    select schema_version
+    from kera_schema_meta
+    where schema_name = ${CONTROL_PLANE_SCHEMA_NAME}
+    limit 1
+  `;
+  const value = rows[0]?.schema_version;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+async function writeControlPlaneSchemaVersion(sql: ControlPlaneSql): Promise<void> {
+  await sql`
+    insert into kera_schema_meta (
+      schema_name,
+      schema_version,
+      updated_at
+    ) values (
+      ${CONTROL_PLANE_SCHEMA_NAME},
+      ${CONTROL_PLANE_SCHEMA_VERSION},
+      now()
+    )
+    on conflict (schema_name) do update set
+      schema_version = excluded.schema_version,
+      updated_at = now()
+  `;
+}
+
 export async function ensureControlPlaneSchema(): Promise<void> {
   if (schemaPromise) {
     return schemaPromise;
   }
   const sql = sqlClient();
   schemaPromise = (async () => {
+    const currentVersion = await readControlPlaneSchemaVersion(sql);
+    if (currentVersion !== null && currentVersion >= CONTROL_PLANE_SCHEMA_VERSION) {
+      return;
+    }
+
     await reconcileLegacySchema(sql);
 
     await sql`
@@ -392,7 +443,7 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       create table if not exists sites (
         site_id text primary key,
         project_id text not null default 'project_default',
-        display_name text not null,
+        display_name text not null default '',
         hospital_name text not null default '',
         source_institution_id text,
         local_storage_root text not null default '',
@@ -576,6 +627,7 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createIndex(sql, "audit_events", "created_at", "(created_at desc)");
+    await writeControlPlaneSchemaVersion(sql);
   })().catch((error) => {
     schemaPromise = null;
     throw error;

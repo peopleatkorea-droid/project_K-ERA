@@ -74,7 +74,15 @@ async function renderMaskOverlay(
     const overlayData = finalContext.createImageData(width, height);
     overlayData.data.set(sourceData.data);
 
+    // Yield to the main thread periodically to prevent the UI from freezing
+    const yieldToMain = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const CHUNK_SIZE = width * 50; // Process 50 rows of pixels before yielding
+
     for (let index = 0; index < maskData.data.length; index += 4) {
+      if (index > 0 && index % (CHUNK_SIZE * 4) === 0) {
+        await yieldToMain();
+      }
+
       const intensity = maskData.data[index];
       if (intensity <= 24) {
         continue;
@@ -87,6 +95,10 @@ async function renderMaskOverlay(
     }
 
     for (let y = 1; y < height - 1; y += 1) {
+      if (y % 50 === 0) {
+        await yieldToMain();
+      }
+
       for (let x = 1; x < width - 1; x += 1) {
         const pixelIndex = (y * width + x) * 4;
         if (maskData.data[pixelIndex] <= 24) {

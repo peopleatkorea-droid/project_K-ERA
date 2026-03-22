@@ -837,6 +837,7 @@ export function AdminWorkspace({
               storageSettings={storageSettings}
               storageSettingsBusy={storageSettingsBusy}
               metadataRecoveryBusy={metadataRecoveryBusy}
+              institutionSyncBusy={institutionSyncBusy}
               instanceStorageRootForm={instanceStorageRootForm}
               siteStorageRootForm={siteStorageRootForm}
               selectedSiteLabel={selectedSiteLabel}
@@ -859,6 +860,7 @@ export function AdminWorkspace({
               onSaveSelectedSiteStorageRoot={() => void handleSaveSelectedSiteStorageRoot()}
               onMigrateSelectedSiteStorageRoot={() => void handleMigrateSelectedSiteStorageRoot()}
               onRecoverSelectedSiteMetadata={() => void handleRecoverSelectedSiteMetadata()}
+              onInstitutionSync={() => void handleInstitutionSync()}
               onCreateProject={() => void handleCreateProject()}
               onEditSite={handleEditSite}
               onResetSiteForm={() => handleResetSiteForm()}

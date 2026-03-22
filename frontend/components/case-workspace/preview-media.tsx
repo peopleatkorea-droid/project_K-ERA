@@ -14,6 +14,8 @@ import {
 } from "../ui/workspace-patterns";
 import type { NormalizedBox } from "./shared";
 
+const DEFAULT_MASK_TINT = [125, 211, 195] as const;
+
 export function LiveCropPreview({
   sourceUrl,
   box,
@@ -99,14 +101,14 @@ export function MaskOverlayPreview({
   sourceUrl,
   maskUrl,
   alt,
-  tint = [125, 211, 195],
+  tint = DEFAULT_MASK_TINT,
   className,
   fallbackClassName,
 }: {
   sourceUrl: string | null | undefined;
   maskUrl: string | null | undefined;
   alt: string;
-  tint?: [number, number, number];
+  tint?: readonly [number, number, number];
   className?: string;
   fallbackClassName?: string;
 }) {
@@ -146,7 +148,7 @@ export function MaskOverlayPreview({
     return () => {
       cancelled = true;
     };
-  }, [maskUrl, sourceUrl, tint]);
+  }, [maskUrl, sourceUrl, tint[0], tint[1], tint[2]]);
 
   if (!sourceUrl || !maskUrl) {
     return <div className={panelImageFallbackClass}>{alt}</div>;

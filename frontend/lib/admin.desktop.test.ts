@@ -34,9 +34,10 @@ describe("admin desktop wiring", () => {
     desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(false);
   });
 
-  it("uses the desktop local API bridge for local admin settings and sync routes", async () => {
+  it("uses main control plane sync while keeping desktop local API bridges for local admin settings", async () => {
     desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(true);
     desktopLocalApiMocks.requestDesktopLocalApiJson.mockResolvedValue({});
+    mainControlPlaneMocks.requestMainControlPlane.mockResolvedValue({});
 
     const mod = await import("./admin");
     await mod.syncInstitutionDirectory("desktop-token", { page_size: 100 });
@@ -44,17 +45,14 @@ describe("admin desktop wiring", () => {
     await mod.updateStorageSettings("desktop-token", { storage_root: "C:/KERA" }, "SITE_A");
     await mod.fetchSiteComparison("desktop-token");
 
-    expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
+    expect(mainControlPlaneMocks.requestMainControlPlane).toHaveBeenNthCalledWith(
       1,
-      "/api/admin/institutions/sync",
+      "/admin/institutions/sync?page_size=100",
+      { method: "POST" },
       "desktop-token",
-      {
-        method: "POST",
-        query: expect.any(URLSearchParams),
-      },
     );
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
-      2,
+      1,
       "/api/admin/storage-settings",
       "desktop-token",
       {
@@ -62,7 +60,7 @@ describe("admin desktop wiring", () => {
       },
     );
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
-      3,
+      2,
       "/api/admin/storage-settings",
       "desktop-token",
       {
@@ -72,7 +70,7 @@ describe("admin desktop wiring", () => {
       },
     );
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
-      4,
+      3,
       "/api/admin/site-comparison",
       "desktop-token",
     );

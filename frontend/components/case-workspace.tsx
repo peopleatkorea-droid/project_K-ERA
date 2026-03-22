@@ -132,7 +132,7 @@ import {
   workspaceToastClass,
 } from "./ui/workspace-patterns";
 import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
-import { prefetchDesktopVisitImages } from "../lib/desktop-transport";
+import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
 import { formatPublicAlias } from "../lib/public-alias";
 import {
   type CaseHistoryResponse,
@@ -217,6 +217,9 @@ const PREDISPOSING_FACTOR_OPTIONS = [
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
 const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "dinov2", "dinov2_mil", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
 const PATIENT_LIST_PAGE_SIZE = 25;
+const WORKSPACE_TIMING_LOGS =
+  process.env.NEXT_PUBLIC_KERA_WORKSPACE_TIMING_LOGS === "1" ||
+  process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
 const CULTURE_SPECIES: Record<string, string[]> = {
   bacterial: [
     "Staphylococcus aureus",
@@ -670,6 +673,8 @@ function buildVisitReference(draft: DraftState): string {
   return `FU #${String(Number(draft.follow_up_number) || 1)}`;
 }
 
+const FOLLOW_UP_VISIT_PATTERN = /^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i;
+
 function displayVisitReference(locale: "en" | "ko", visitReference: string): string {
   const normalized = String(visitReference ?? "").trim();
   if (!normalized) {
@@ -678,7 +683,7 @@ function displayVisitReference(locale: "en" | "ko", visitReference: string): str
   if (/^(initial|초진|珥덉쭊)$/i.test(normalized)) {
     return pick(locale, "Initial", "초진");
   }
-  const followUpMatch = normalized.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  const followUpMatch = normalized.match(FOLLOW_UP_VISIT_PATTERN);
   if (followUpMatch) {
     return `FU #${String(Number(followUpMatch[1]))}`;
   }
@@ -693,7 +698,7 @@ function normalizeRecoveredDraft(draft: DraftState): DraftState {
     draft.additional_organisms
   );
   const visitReference = String(recoveredDraft.visit_date ?? "").trim();
-  const followUpMatch = visitReference.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  const followUpMatch = visitReference.match(FOLLOW_UP_VISIT_PATTERN);
   if (followUpMatch) {
     return {
       ...draft,
@@ -760,7 +765,7 @@ function visitPhaseCopy(locale: "en" | "ko", isInitialVisit: boolean): string {
 function computeNextFollowUpNumber(visits: VisitRecord[]): number {
   let maxFollowUp = 0;
   for (const visit of visits) {
-    const match = String(visit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+    const match = String(visit.visit_date ?? "").match(FOLLOW_UP_VISIT_PATTERN);
     if (!match) {
       continue;
     }
@@ -850,7 +855,14 @@ export function CaseWorkspace({
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
   const workspacePopNavigationRef = useRef(false);
+  const workspaceOpenedAtRef = useRef<number | null>(null);
+  const siteLabelLoggedRef = useRef<string | null>(null);
+  const patientListLoggedSiteIdRef = useRef<string | null>(null);
+  const caseOpenStartedAtRef = useRef<number | null>(null);
+  const caseOpenCaseIdRef = useRef<string | null>(null);
+  const caseImagesLoggedCaseIdRef = useRef<string | null>(null);
   const patientListThumbs = useMemo(() => buildPatientListThumbMap(patientListRows), [patientListRows]);
+  const desktopFastMode = canUseDesktopTransport();
   const researchRegistryJoinReady = researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
   const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
     setToastState((current) => {
@@ -1076,11 +1088,13 @@ export function CaseWorkspace({
     setToast,
   });
   const onArtifactsChanged = useCallback(() => {
-    if (!selectedSiteId) return;
+    if (desktopFastMode || !selectedSiteId) {
+      return;
+    }
     void fetchMedsamArtifactStatus(selectedSiteId, token, { mine: showOnlyMine })
       .then((nextStatus) => setMedsamArtifactStatus(nextStatus))
       .catch(() => {});
-  }, [selectedSiteId, token, showOnlyMine]);
+  }, [desktopFastMode, selectedSiteId, token, showOnlyMine]);
   const {
     validationBusy,
     validationResult,
@@ -1174,6 +1188,40 @@ export function CaseWorkspace({
   useEffect(() => {
     invalidateCaseWorkspaceImageCaches();
   }, [invalidateCaseWorkspaceImageCaches, selectedSiteId]);
+
+  useEffect(() => {
+    siteLabelLoggedRef.current = null;
+    patientListLoggedSiteIdRef.current = null;
+    caseOpenStartedAtRef.current = null;
+    caseOpenCaseIdRef.current = null;
+    caseImagesLoggedCaseIdRef.current = null;
+    if (!desktopFastMode || !selectedSiteId) {
+      workspaceOpenedAtRef.current = null;
+      return;
+    }
+    workspaceOpenedAtRef.current = performance.now();
+    if (WORKSPACE_TIMING_LOGS) {
+      console.info("[kera-fast-path] workspace-open", {
+        site_id: selectedSiteId,
+      });
+    }
+  }, [desktopFastMode, selectedSiteId]);
+
+  useEffect(() => {
+    if (!desktopFastMode || !WORKSPACE_TIMING_LOGS || !selectedSiteId || !selectedSiteLabel) {
+      return;
+    }
+    if (siteLabelLoggedRef.current === selectedSiteId) {
+      return;
+    }
+    siteLabelLoggedRef.current = selectedSiteId;
+    const startedAt = workspaceOpenedAtRef.current ?? performance.now();
+    console.info("[kera-fast-path] site-label-ready", {
+      site_id: selectedSiteId,
+      label: selectedSiteLabel,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+    });
+  }, [desktopFastMode, selectedSiteId, selectedSiteLabel]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -1344,7 +1392,7 @@ export function CaseWorkspace({
     setSelectedCaseImages([]);
     setPanelOpen(true);
     setRailView("cases");
-    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(FOLLOW_UP_VISIT_PATTERN);
     const fallbackFollowUpNumber = String((selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1);
 
     const applyFallbackDraft = (followUpNumber: string) => {
@@ -1517,7 +1565,7 @@ export function CaseWorkspace({
         visit_status: selectedVisit?.visit_status || caseToEdit.visit_status || current.visit_status,
         is_initial_visit: /^initial$/i.test(caseToEdit.visit_date),
         follow_up_number: (() => {
-          const followUpMatch = String(caseToEdit.visit_date ?? "").match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+          const followUpMatch = String(caseToEdit.visit_date ?? "").match(FOLLOW_UP_VISIT_PATTERN);
           return followUpMatch ? String(Number(followUpMatch[1]) || 1) : current.follow_up_number;
         })(),
         predisposing_factor: selectedVisit?.predisposing_factor ?? current.predisposing_factor,
@@ -1680,6 +1728,18 @@ export function CaseWorkspace({
   }
 
   function openSavedCase(caseRecord: CaseSummaryRecord, nextView: "cases" | "patients" = "cases") {
+    if (desktopFastMode) {
+      caseOpenStartedAtRef.current = performance.now();
+      caseOpenCaseIdRef.current = caseRecord.case_id;
+      caseImagesLoggedCaseIdRef.current = null;
+      if (WORKSPACE_TIMING_LOGS) {
+        console.info("[kera-fast-path] case-open", {
+          case_id: caseRecord.case_id,
+          patient_id: caseRecord.patient_id,
+          visit_date: caseRecord.visit_date,
+        });
+      }
+    }
     setCases((current) => {
       if (current.some((item) => item.case_id === caseRecord.case_id)) {
         return current;
@@ -1689,8 +1749,31 @@ export function CaseWorkspace({
     setSelectedCase(caseRecord);
     setPanelOpen(true);
     setRailView(nextView);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
+
+  useEffect(() => {
+    if (!desktopFastMode || !WORKSPACE_TIMING_LOGS || !selectedCase || panelBusy) {
+      return;
+    }
+    if (caseOpenCaseIdRef.current !== selectedCase.case_id) {
+      return;
+    }
+    if (caseImagesLoggedCaseIdRef.current === selectedCase.case_id) {
+      return;
+    }
+    caseImagesLoggedCaseIdRef.current = selectedCase.case_id;
+    const caseStartedAt = caseOpenStartedAtRef.current ?? performance.now();
+    const workspaceStartedAt = workspaceOpenedAtRef.current ?? caseStartedAt;
+    console.info("[kera-fast-path] case-images-ready", {
+      case_id: selectedCase.case_id,
+      patient_id: selectedCase.patient_id,
+      visit_date: selectedCase.visit_date,
+      image_count: selectedCaseImages.length,
+      case_elapsed_ms: Math.round(performance.now() - caseStartedAt),
+      total_elapsed_ms: Math.round(performance.now() - workspaceStartedAt),
+    });
+  }, [desktopFastMode, panelBusy, selectedCase, selectedCaseImages]);
 
   function applyResearchRegistryStatusToLocalCase(
     patientId: string,
@@ -2316,7 +2399,7 @@ export function CaseWorkspace({
       const usedVisitReferences = visits.map((item) => item.visit_date);
       let maxFollowUp = 0;
       for (const item of usedVisitReferences) {
-        const match = String(item).match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+        const match = String(item).match(FOLLOW_UP_VISIT_PATTERN);
         if (match) {
           maxFollowUp = Math.max(maxFollowUp, Number(match[1]));
         }
@@ -2498,6 +2581,7 @@ export function CaseWorkspace({
 
     const currentSiteId = selectedSiteId;
     let cancelled = false;
+    let prefetchTimerId: number | null = null;
     const controller = new AbortController();
 
     async function loadPatientListPage() {
@@ -2519,6 +2603,23 @@ export function CaseWorkspace({
           setPatientListTotalPages(Math.max(1, response.total_pages || 1));
           setPatientListPage((current) => (current === response.page ? current : response.page));
         });
+        if (desktopFastMode && WORKSPACE_TIMING_LOGS && patientListLoggedSiteIdRef.current !== currentSiteId) {
+          patientListLoggedSiteIdRef.current = currentSiteId;
+          const startedAt = workspaceOpenedAtRef.current ?? performance.now();
+          console.info("[kera-fast-path] patient-list-ready", {
+            site_id: currentSiteId,
+            rows: response.items.length,
+            total_count: response.total_count,
+            elapsed_ms: Math.round(performance.now() - startedAt),
+          });
+        }
+        if (typeof window !== "undefined") {
+          prefetchTimerId = window.setTimeout(() => {
+            response.items.slice(0, 6).forEach((row) => {
+              prefetchDesktopVisitImages(currentSiteId, row.latest_case.patient_id, row.latest_case.visit_date);
+            });
+          }, 0);
+        }
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -2544,6 +2645,9 @@ export function CaseWorkspace({
     void loadPatientListPage();
     return () => {
       cancelled = true;
+      if (prefetchTimerId !== null) {
+        window.clearTimeout(prefetchTimerId);
+      }
       controller.abort();
     };
   }, [selectedSiteId, token, showOnlyMine, patientListPage, normalizedPatientListSearch, railView, describeError, copy.unableLoadPatientList, setToast]);
@@ -2648,6 +2752,9 @@ export function CaseWorkspace({
     : [];
 
   useEffect(() => {
+    if (canUseDesktopTransport()) {
+      return;
+    }
     if (!selectedSiteId || railView === "patients") {
       return;
     }
@@ -2660,6 +2767,9 @@ export function CaseWorkspace({
   }, [normalizedPatientListSearch, railView, selectedSiteId, showOnlyMine, token]);
 
   useEffect(() => {
+    if (canUseDesktopTransport()) {
+      return;
+    }
     if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
       return;
     }
@@ -2684,7 +2794,10 @@ export function CaseWorkspace({
   const canRunAiClinic = canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
 
   useEffect(() => {
-    if (!selectedSiteId || isAuthoringCanvas || patientListLoading) {
+    if (canUseDesktopTransport()) {
+      return;
+    }
+    if (!selectedSiteId || railView === "patients" || !selectedCase) {
       return;
     }
     const controller = new AbortController();
@@ -2695,14 +2808,12 @@ export function CaseWorkspace({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [
-    ensureSiteValidationRunsLoaded,
-    isAuthoringCanvas,
-    patientListLoading,
-    selectedSiteId,
-  ]);
+  }, [ensureSiteValidationRunsLoaded, railView, selectedCase, selectedSiteId]);
 
   useEffect(() => {
+    if (canUseDesktopTransport()) {
+      return;
+    }
     if (!selectedSiteId || railView === "patients" || !selectedCase || !canRunValidation) {
       return;
     }
@@ -2849,7 +2960,13 @@ export function CaseWorkspace({
     railView === "patients"
       ? copy.listViewHeaderCopy
       : selectedCase
-        ? pick(
+        ? desktopFastMode
+          ? pick(
+              locale,
+              "Open the saved case images immediately.",
+              "저장된 케이스 이미지를 바로 엽니다."
+            )
+          : pick(
             locale,
             "Review the saved visit, validation context, and contribution history in one place.",
             "저장된 방문, 검증 맥락, 기여 이력을 한 곳에서 검토합니다."
@@ -2859,8 +2976,8 @@ export function CaseWorkspace({
             "Capture intake, images, and submission for one case.",
             "한 케이스의 intake, 이미지, 제출 상태를 정리합니다."
           );
-  const showSecondaryPanel = railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
-  const showPatientListSidebar = railView === "patients";
+  const showSecondaryPanel = !desktopFastMode && railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
+  const showPatientListSidebar = railView === "patients" && !desktopFastMode;
   const mainLayoutClass = showSecondaryPanel || showPatientListSidebar ? workspaceCenterClass : "grid gap-6";
 
   return (
@@ -2875,6 +2992,7 @@ export function CaseWorkspace({
         visibleSites={visibleSites}
         selectedSiteId={selectedSiteId}
         summary={summary}
+        fastMode={desktopFastMode}
         newCaseModeActive={newCaseModeActive}
         listModeActive={listModeActive}
         isAuthoringCanvas={isAuthoringCanvas}
@@ -2885,6 +3003,7 @@ export function CaseWorkspace({
         draftStatusLabel={draftStatusLabel}
         latestSiteValidation={latestSiteValidation}
         siteValidationRuns={siteValidationRuns}
+        deferValidationHistory={railView === "patients"}
         siteValidationBusy={siteValidationBusy}
         canRunValidation={canRunValidation}
         commonNotAvailable={common.notAvailable}
@@ -3046,21 +3165,23 @@ export function CaseWorkspace({
                   onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
                 />
               </div>
-              <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
-                <MedsamArtifactBacklogPanel
-                  locale={locale}
-                  pick={pick}
-                  medsamArtifactStatus={medsamArtifactStatus}
-                  medsamArtifactStatusBusy={medsamArtifactStatusBusy}
-                  medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
-                  medsamArtifactActiveStatus={medsamArtifactActiveStatus}
-                  canBackfillMedsamArtifacts={canRunValidation}
-                  onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
-                  onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
-                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
-                  onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
-                />
-              </aside>
+              {!desktopFastMode ? (
+                <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
+                  <MedsamArtifactBacklogPanel
+                    locale={locale}
+                    pick={pick}
+                    medsamArtifactStatus={medsamArtifactStatus}
+                    medsamArtifactStatusBusy={medsamArtifactStatusBusy}
+                    medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
+                    medsamArtifactActiveStatus={medsamArtifactActiveStatus}
+                    canBackfillMedsamArtifacts={canRunValidation}
+                    onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
+                    onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
+                    onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
+                    onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
+                  />
+                </aside>
+              ) : null}
             </>
           ) : selectedCase ? (
           <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
@@ -3118,40 +3239,44 @@ export function CaseWorkspace({
               onFinishLesionPointer={finishLesionPointer}
             />
 
-            <SavedCasePreviewPanels
-              locale={locale}
-              commonLoading={common.loading}
-              canRunRoiPreview={canRunRoiPreview}
-              selectedCaseImageCount={selectedCaseImages.length}
-              hasAnySavedLesionBox={hasAnySavedLesionBox}
-              roiPreviewBusy={roiPreviewBusy}
-              lesionPreviewBusy={lesionPreviewBusy}
-              roiPreviewItems={roiPreviewItems}
-              lesionPreviewItems={lesionPreviewItems}
-              pick={pick}
-              translateOption={translateOption}
-              onRunRoiPreview={handleRunRoiPreview}
-              onRunLesionPreview={handleRunLesionPreview}
-            />
+            {!desktopFastMode ? (
+              <>
+                <SavedCasePreviewPanels
+                  locale={locale}
+                  commonLoading={common.loading}
+                  canRunRoiPreview={canRunRoiPreview}
+                  selectedCaseImageCount={selectedCaseImages.length}
+                  hasAnySavedLesionBox={hasAnySavedLesionBox}
+                  roiPreviewBusy={roiPreviewBusy}
+                  lesionPreviewBusy={lesionPreviewBusy}
+                  roiPreviewItems={roiPreviewItems}
+                  lesionPreviewItems={lesionPreviewItems}
+                  pick={pick}
+                  translateOption={translateOption}
+                  onRunRoiPreview={handleRunRoiPreview}
+                  onRunLesionPreview={handleRunLesionPreview}
+                />
 
-            <section className={docSectionClass}>
-              <SectionHeader
-                className={docSectionHeadClass}
-                eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Validation and AI Clinic", "寃利?諛?AI Clinic")}</div>}
-                title={pick(locale, "Validation, artifacts, and retrieval support", "검증, 아티팩트, 검색 지원")}
-                titleAs="h4"
-                description={pick(
-                  locale,
-                  "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
-                  "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??"
-                )}
-                aside={<span className={docSiteBadgeClass}>{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>}
-              />
-              <div className={panelStackClass}>
-                {validationPanelContent}
-                {aiClinicPanelContent}
-              </div>
-            </section>
+                <section className={docSectionClass}>
+                  <SectionHeader
+                    className={docSectionHeadClass}
+                    eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Validation and AI Clinic", "寃利?諛?AI Clinic")}</div>}
+                    title={pick(locale, "Validation, artifacts, and retrieval support", "검증, 아티팩트, 검색 지원")}
+                    titleAs="h4"
+                    description={pick(
+                      locale,
+                      "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
+                      "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??"
+                    )}
+                    aside={<span className={docSiteBadgeClass}>{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>}
+                  />
+                  <div className={panelStackClass}>
+                    {validationPanelContent}
+                    {aiClinicPanelContent}
+                  </div>
+                </section>
+              </>
+            ) : null}
           </section>
           ) : (
             <CaseWorkspaceAuthoringCanvas

@@ -56,6 +56,8 @@ _MAX_IMAGE_PIXELS = 40_000_000
 _PREWARMED_IMAGE_PREVIEW_SIDES = (256, 640)
 _SITE_STORAGE_ROOT_CACHE: dict[str, Path] = {}
 _SITE_STORAGE_ROOT_CACHE_LOCK = threading.Lock()
+_SITE_LEGACY_VISIT_LABEL_REPAIRED: set[str] = set()
+_SITE_LEGACY_VISIT_LABEL_REPAIRED_LOCK = threading.Lock()
 _INSTANCE_STORAGE_ROOT_SETTING_KEY = "instance_storage_root"
 
 
@@ -372,6 +374,7 @@ class SiteStore:
         self.update_dir = self.site_dir / "model_updates"
         self.case_history_dir = self.site_dir / "case_history"
         self._seed_defaults()
+        self._repair_legacy_visit_labels_once()
 
     def _seed_defaults(self) -> None:
         for path in (
@@ -398,27 +401,151 @@ class SiteStore:
         )
         return resolved, remapped
 
+    def _persist_image_record_path(self, image_id: str, image_path: Path) -> None:
+        normalized_image_id = _coerce_optional_text(image_id)
+        if not normalized_image_id:
+            return
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_images)
+                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == normalized_image_id))
+                .values(image_path=str(image_path))
+            )
+
+    def _canonical_image_storage_path(self, patient_id: str, visit_date: str, image_name: str) -> Path:
+        return (self.raw_dir / patient_id / visit_date / image_name).resolve()
+
+    def _prune_empty_raw_dirs(self, start_dir: Path, *, patient_dir: Path) -> int:
+        removed_count = 0
+        current = start_dir.resolve()
+        stop_dir = patient_dir.resolve()
+        while current != stop_dir and current.exists() and current.is_dir():
+            try:
+                next(current.iterdir())
+                break
+            except StopIteration:
+                try:
+                    current.rmdir()
+                except OSError:
+                    break
+                removed_count += 1
+                current = current.parent
+        return removed_count
+
     def _resolve_image_record_path(self, record: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
         raw_path = _coerce_optional_text(record.get("image_path"))
         if not raw_path:
             return record
-        resolved_path, remapped = self._resolve_site_runtime_path(raw_path, require_exists=True)
+        image_id = _coerce_optional_text(record.get("image_id"))
+        patient_id = _coerce_optional_text(record.get("patient_id"))
+        visit_date = _coerce_optional_text(record.get("visit_date"))
+        image_name = Path(raw_path).name
+        should_persist = False
+        try:
+            resolved_path, remapped = self._resolve_site_runtime_path(raw_path, require_exists=True)
+            if not resolved_path.exists():
+                raise ValueError("Image file not found on disk.")
+            should_persist = remapped and Path(raw_path).is_absolute()
+        except Exception:
+            resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
+            should_persist = str(resolved_path) != raw_path
         record["image_path"] = str(resolved_path)
-        if persist and remapped and Path(raw_path).is_absolute():
-            with DATA_PLANE_ENGINE.begin() as conn:
-                conn.execute(
-                    update(db_images)
-                    .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == record["image_id"]))
-                    .values(image_path=str(resolved_path))
-                )
+        if persist and should_persist:
+            self._persist_image_record_path(image_id, resolved_path)
         return record
 
     def _case_history_path(self, patient_id: str, visit_date: str) -> Path:
         patient_dir = ensure_dir(self.case_history_dir / _safe_path_component(patient_id))
         return patient_dir / f"{_safe_path_component(visit_date)}.json"
 
+    def _repair_legacy_visit_labels_once(self) -> None:
+        with _SITE_LEGACY_VISIT_LABEL_REPAIRED_LOCK:
+            if self.site_id in _SITE_LEGACY_VISIT_LABEL_REPAIRED:
+                return
+
+            history_moves: list[tuple[Path, Path]] = []
+            with DATA_PLANE_ENGINE.begin() as conn:
+                visit_rows = conn.execute(
+                    select(
+                        db_visits.c.visit_id,
+                        db_visits.c.patient_id,
+                        db_visits.c.visit_date,
+                    ).where(db_visits.c.site_id == self.site_id)
+                ).mappings().all()
+                for row in visit_rows:
+                    visit_id = _coerce_optional_text(row.get("visit_id"))
+                    patient_id = _coerce_optional_text(row.get("patient_id"))
+                    raw_visit_date = _coerce_optional_text(row.get("visit_date"))
+                    if not visit_id or not patient_id or not raw_visit_date:
+                        continue
+                    try:
+                        normalized_visit_date = normalize_visit_label(raw_visit_date)
+                    except ValueError:
+                        continue
+                    if normalized_visit_date == raw_visit_date:
+                        continue
+                    collision_visit_id = conn.execute(
+                        select(db_visits.c.visit_id).where(
+                            and_(
+                                db_visits.c.site_id == self.site_id,
+                                db_visits.c.patient_id == patient_id,
+                                db_visits.c.visit_date == normalized_visit_date,
+                                db_visits.c.visit_id != visit_id,
+                            )
+                        )
+                    ).scalar()
+                    if collision_visit_id:
+                        continue
+                    conn.execute(
+                        update(db_visits)
+                        .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == visit_id))
+                        .values(
+                            visit_date=normalized_visit_date,
+                            visit_index=visit_index_from_label(normalized_visit_date),
+                            is_initial_visit=normalized_visit_date == "Initial",
+                        )
+                    )
+                    conn.execute(
+                        update(db_images)
+                        .where(and_(db_images.c.site_id == self.site_id, db_images.c.visit_id == visit_id))
+                        .values(visit_date=normalized_visit_date)
+                    )
+                    source_history_path = self._case_history_path(patient_id, raw_visit_date)
+                    target_history_path = self._case_history_path(patient_id, normalized_visit_date)
+                    if source_history_path != target_history_path and source_history_path.exists():
+                        history_moves.append((source_history_path, target_history_path))
+
+            for source_history_path, target_history_path in history_moves:
+                if not source_history_path.exists():
+                    continue
+                ensure_dir(target_history_path.parent)
+                if target_history_path.exists():
+                    continue
+                source_history_path.replace(target_history_path)
+
+            _SITE_LEGACY_VISIT_LABEL_REPAIRED.add(self.site_id)
+
+    def _get_visit_by_id(self, visit_id: str) -> dict[str, Any] | None:
+        query = select(db_visits).where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == visit_id))
+        with DATA_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(query).mappings().first()
+        return dict(row) if row else None
+
+    def _resolve_visit_reference(self, patient_id: str, visit_date: str) -> tuple[str, str]:
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        requested_visit_date = _coerce_optional_text(visit_date)
+        if requested_visit_date:
+            existing_visit = self.get_visit(normalized_patient_id, requested_visit_date)
+            if existing_visit is not None:
+                return (
+                    _coerce_optional_text(existing_visit.get("patient_id")) or normalized_patient_id,
+                    _coerce_optional_text(existing_visit.get("visit_date")) or requested_visit_date,
+                )
+        return normalized_patient_id, requested_visit_date
+
     def load_case_history(self, patient_id: str, visit_date: str) -> dict[str, list[dict[str, Any]]]:
-        history_path = self._case_history_path(patient_id, visit_date)
+        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
+        history_path = self._case_history_path(resolved_patient_id, resolved_visit_date)
         payload = read_json(history_path, {"validations": [], "contributions": []})
         validations = [
             dict(remap_bundle_paths_in_value(dict(item))) for item in payload.get("validations", []) if isinstance(item, dict)
@@ -446,7 +573,8 @@ class SiteStore:
         }
 
     def record_case_validation_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        history = self.load_case_history(patient_id, visit_date)
+        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
+        history = self.load_case_history(resolved_patient_id, resolved_visit_date)
         validation_id = str(entry.get("validation_id") or "").strip()
         if validation_id:
             history["validations"] = [
@@ -462,11 +590,12 @@ class SiteStore:
             ),
             reverse=True,
         )
-        write_json(self._case_history_path(patient_id, visit_date), history)
+        write_json(self._case_history_path(resolved_patient_id, resolved_visit_date), history)
         return history
 
     def record_case_contribution_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        history = self.load_case_history(patient_id, visit_date)
+        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
+        history = self.load_case_history(resolved_patient_id, resolved_visit_date)
         contribution_id = str(entry.get("contribution_id") or "").strip()
         if contribution_id:
             history["contributions"] = [
@@ -482,7 +611,7 @@ class SiteStore:
             ),
             reverse=True,
         )
-        write_json(self._case_history_path(patient_id, visit_date), history)
+        write_json(self._case_history_path(resolved_patient_id, resolved_visit_date), history)
         return history
 
     def list_patients(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
@@ -659,16 +788,41 @@ class SiteStore:
         return [dict(row) for row in rows]
 
     def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
-        query = select(db_visits).where(
+        normalized_patient_id = normalize_patient_pseudonym(patient_id)
+        requested_visit_date = _coerce_optional_text(visit_date)
+        if not requested_visit_date:
+            return None
+        try:
+            normalized_visit_date = normalize_visit_label(requested_visit_date)
+            normalized_visit_index = visit_index_from_label(normalized_visit_date)
+        except ValueError:
+            normalized_visit_date = None
+            normalized_visit_index = None
+
+        base_query = select(db_visits).where(
             and_(
                 db_visits.c.site_id == self.site_id,
-                db_visits.c.patient_id == patient_id,
-                db_visits.c.visit_date == visit_date,
+                db_visits.c.patient_id == normalized_patient_id,
             )
         )
         with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        return dict(row) if row else None
+            row = conn.execute(base_query.where(db_visits.c.visit_date == requested_visit_date)).mappings().first()
+            if row is not None:
+                return dict(row)
+            if normalized_visit_date and normalized_visit_date != requested_visit_date:
+                row = conn.execute(base_query.where(db_visits.c.visit_date == normalized_visit_date)).mappings().first()
+                if row is not None:
+                    return dict(row)
+            if normalized_visit_index is not None:
+                row = conn.execute(
+                    base_query.where(db_visits.c.visit_index == normalized_visit_index).order_by(
+                        case((db_visits.c.visit_date == normalized_visit_date, 0), else_=1),
+                        db_visits.c.created_at.desc(),
+                    )
+                ).mappings().first()
+                if row is not None:
+                    return dict(row)
+        return None
 
     def create_visit(
         self,
@@ -775,14 +929,29 @@ class SiteStore:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_patient(normalized_target_patient_id) is None:
             raise ValueError(f"Patient {normalized_target_patient_id} does not exist.")
+        existing_visit_id = _coerce_optional_text(existing.get("visit_id"))
+        existing_patient_id = _coerce_optional_text(existing.get("patient_id")) or normalized_patient_id
+        existing_visit_date = _coerce_optional_text(existing.get("visit_date")) or normalized_visit_date
         target_changed = (
-            normalized_target_patient_id != normalized_patient_id
-            or normalized_target_visit_date != normalized_visit_date
+            normalized_target_patient_id != existing_patient_id
+            or normalized_target_visit_date != existing_visit_date
         )
-        if target_changed and self.get_visit(normalized_target_patient_id, normalized_target_visit_date):
-            raise ValueError(
-                f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} already exists."
-            )
+        if target_changed:
+            with DATA_PLANE_ENGINE.begin() as conn:
+                duplicate_visit = conn.execute(
+                    select(db_visits.c.visit_id).where(
+                        and_(
+                            db_visits.c.site_id == self.site_id,
+                            db_visits.c.patient_id == normalized_target_patient_id,
+                            db_visits.c.visit_date == normalized_target_visit_date,
+                            db_visits.c.visit_id != existing_visit_id,
+                        )
+                    )
+                ).scalar()
+            if duplicate_visit:
+                raise ValueError(
+                    f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} already exists."
+                )
         normalized_category = culture_category.strip().lower()
         normalized_species = culture_species.strip()
         normalized_additional_organisms = _normalize_additional_organisms(
@@ -819,31 +988,19 @@ class SiteStore:
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 update(db_visits)
-                .where(
-                    and_(
-                        db_visits.c.site_id == self.site_id,
-                        db_visits.c.patient_id == patient_id,
-                        db_visits.c.visit_date == visit_date,
-                    )
-                )
+                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing_visit_id))
                 .values(**values)
             )
             conn.execute(
                 update(db_images)
-                .where(
-                    and_(
-                        db_images.c.site_id == self.site_id,
-                        db_images.c.patient_id == normalized_patient_id,
-                        db_images.c.visit_date == normalized_visit_date,
-                    )
-                )
+                .where(and_(db_images.c.site_id == self.site_id, db_images.c.visit_id == existing_visit_id))
                 .values(
                     patient_id=normalized_target_patient_id,
                     visit_date=normalized_target_visit_date,
                 )
             )
         if target_changed:
-            source_history_path = self._case_history_path(normalized_patient_id, normalized_visit_date)
+            source_history_path = self._case_history_path(existing_patient_id, existing_visit_date)
             target_history_path = self._case_history_path(normalized_target_patient_id, normalized_target_visit_date)
             if source_history_path.exists():
                 ensure_dir(target_history_path.parent)
@@ -852,9 +1009,9 @@ class SiteStore:
                 source_history_path.replace(target_history_path)
             elif target_history_path.exists():
                 target_history_path.unlink(missing_ok=True)
-            if normalized_target_patient_id != normalized_patient_id:
-                self._delete_patient_if_empty(normalized_patient_id)
-        refreshed = self.get_visit(normalized_target_patient_id, normalized_target_visit_date)
+            if normalized_target_patient_id != existing_patient_id:
+                self._delete_patient_if_empty(existing_patient_id)
+        refreshed = self._get_visit_by_id(existing_visit_id)
         if refreshed is None:
             raise ValueError(
                 f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} does not exist."
@@ -950,7 +1107,13 @@ class SiteStore:
         return image_record
 
     def delete_images_for_visit(self, patient_id: str, visit_date: str) -> int:
-        existing_images = self.list_images_for_visit(patient_id, visit_date)
+        existing_visit = self.get_visit(patient_id, visit_date)
+        if existing_visit is None:
+            return 0
+        existing_images = self.list_images_for_visit(
+            _coerce_optional_text(existing_visit.get("patient_id")),
+            _coerce_optional_text(existing_visit.get("visit_date")),
+        )
         for image in existing_images:
             image_id = str(image.get("image_id") or "").strip()
             if image_id:
@@ -963,8 +1126,7 @@ class SiteStore:
                 delete(db_images).where(
                     and_(
                         db_images.c.site_id == self.site_id,
-                        db_images.c.patient_id == patient_id,
-                        db_images.c.visit_date == visit_date,
+                        db_images.c.visit_id == existing_visit["visit_id"],
                     )
                 )
             )
@@ -975,26 +1137,27 @@ class SiteStore:
         if existing_visit is None:
             raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
 
-        deleted_images = self.delete_images_for_visit(patient_id, visit_date)
-        history_path = self._case_history_path(patient_id, visit_date)
+        existing_patient_id = _coerce_optional_text(existing_visit.get("patient_id")) or normalize_patient_pseudonym(patient_id)
+        existing_visit_date = _coerce_optional_text(existing_visit.get("visit_date")) or _coerce_optional_text(visit_date)
+        deleted_images = self.delete_images_for_visit(existing_patient_id, existing_visit_date)
+        history_path = self._case_history_path(existing_patient_id, existing_visit_date)
         history_path.unlink(missing_ok=True)
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 delete(db_visits).where(
                     and_(
                         db_visits.c.site_id == self.site_id,
-                        db_visits.c.patient_id == patient_id,
-                        db_visits.c.visit_date == visit_date,
+                        db_visits.c.visit_id == existing_visit["visit_id"],
                     )
                 )
             )
 
-        remaining_visits = self.list_visits_for_patient(patient_id)
-        deleted_patient = self._delete_patient_if_empty(patient_id)
+        remaining_visits = self.list_visits_for_patient(existing_patient_id)
+        deleted_patient = self._delete_patient_if_empty(existing_patient_id)
 
         return {
-            "patient_id": patient_id,
-            "visit_date": visit_date,
+            "patient_id": existing_patient_id,
+            "visit_date": existing_visit_date,
             "deleted_images": deleted_images,
             "deleted_patient": deleted_patient,
             "remaining_visit_count": len(remaining_visits),
@@ -1189,14 +1352,14 @@ class SiteStore:
             rows = conn.execute(query).mappings().all()
         records: list[dict[str, Any]] = []
         for row in rows:
-            resolved_image_path, remapped = self._resolve_site_runtime_path(row["image_path"], require_exists=True)
-            if remapped:
-                with DATA_PLANE_ENGINE.begin() as conn:
-                    conn.execute(
-                        update(db_images)
-                        .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == row["image_id"]))
-                        .values(image_path=str(resolved_image_path))
-                    )
+            resolved_image_record = self._resolve_image_record_path(
+                {
+                    "image_id": row["image_id"],
+                    "patient_id": row["patient_id"],
+                    "image_path": row["image_path"],
+                }
+            )
+            resolved_image_path = Path(str(resolved_image_record["image_path"]))
             records.append(
                 {
                     "site_id": self.site_id,
@@ -1236,13 +1399,15 @@ class SiteStore:
         return [dict(row) for row in rows]
 
     def list_images_for_visit(self, patient_id: str, visit_date: str) -> list[dict[str, Any]]:
+        existing_visit = self.get_visit(patient_id, visit_date)
+        if existing_visit is None:
+            return []
         query = (
             select(db_images)
             .where(
                 and_(
                     db_images.c.site_id == self.site_id,
-                    db_images.c.patient_id == patient_id,
-                    db_images.c.visit_date == visit_date,
+                    db_images.c.visit_id == existing_visit["visit_id"],
                 )
             )
             .order_by(db_images.c.uploaded_at)
@@ -1821,16 +1986,10 @@ class SiteStore:
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 update(db_visits)
-                .where(
-                    and_(
-                        db_visits.c.site_id == self.site_id,
-                        db_visits.c.patient_id == normalized_patient_id,
-                        db_visits.c.visit_date == normalized_visit_date,
-                    )
-                )
+                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing["visit_id"]))
                 .values(**values)
             )
-        refreshed = self.get_visit(normalized_patient_id, normalized_visit_date)
+        refreshed = self._get_visit_by_id(_coerce_optional_text(existing.get("visit_id")))
         if refreshed is None:
             raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
         return refreshed
@@ -1870,9 +2029,20 @@ class SiteStore:
             conn.execute(delete(db_visits).where(db_visits.c.site_id == self.site_id))
             conn.execute(delete(db_patients).where(db_patients.c.site_id == self.site_id))
 
-    def _resolve_recovery_image_path(self, image_path: Any, patient_id: str, image_name: str) -> Path:
+    def _resolve_recovery_image_path(
+        self,
+        image_path: Any,
+        patient_id: str,
+        image_name: str,
+        *,
+        visit_date: str | None = None,
+    ) -> Path:
         raw_value = _coerce_optional_text(image_path)
         candidates: list[Path] = []
+        normalized_patient_id = _coerce_optional_text(patient_id)
+        normalized_image_name = _coerce_optional_text(image_name)
+        if normalized_patient_id and normalized_image_name and visit_date:
+            candidates.append(self._canonical_image_storage_path(normalized_patient_id, visit_date, normalized_image_name))
         if raw_value:
             original = Path(raw_value).expanduser()
             if original.is_absolute():
@@ -1907,6 +2077,75 @@ class SiteStore:
         if candidates:
             raise ValueError(f"Image file not found on disk: {candidates[0]}")
         raise ValueError("Image file path is required for metadata recovery.")
+
+    def standardize_visit_storage_layout(self, *, refresh_manifest: bool = True) -> dict[str, int]:
+        query = (
+            select(
+                db_images.c.image_id,
+                db_images.c.patient_id,
+                db_images.c.visit_date,
+                db_images.c.image_path,
+            )
+            .where(db_images.c.site_id == self.site_id)
+            .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
+        )
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+
+        moved_files = 0
+        updated_paths = 0
+        removed_dirs = 0
+        skipped_images = 0
+        conflict_paths = 0
+        patient_dirs: set[Path] = set()
+        for row in rows:
+            image_id = _coerce_optional_text(row.get("image_id"))
+            patient_id = _coerce_optional_text(row.get("patient_id"))
+            visit_date = _coerce_optional_text(row.get("visit_date"))
+            raw_path = _coerce_optional_text(row.get("image_path"))
+            image_name = Path(raw_path).name
+            if not image_id or not patient_id or not visit_date or not image_name:
+                skipped_images += 1
+                continue
+
+            patient_dir = (self.raw_dir / patient_id).resolve()
+            patient_dirs.add(patient_dir)
+            canonical_path = self._canonical_image_storage_path(patient_id, visit_date, image_name)
+            try:
+                resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
+            except ValueError:
+                skipped_images += 1
+                continue
+
+            runtime_path = canonical_path
+            if resolved_path != canonical_path:
+                ensure_dir(canonical_path.parent)
+                if canonical_path.exists():
+                    runtime_path = canonical_path
+                    conflict_paths += 1
+                else:
+                    resolved_path.replace(canonical_path)
+                    moved_files += 1
+                    removed_dirs += self._prune_empty_raw_dirs(resolved_path.parent, patient_dir=patient_dir)
+                    runtime_path = canonical_path
+            if str(raw_path) != str(runtime_path):
+                self._persist_image_record_path(image_id, runtime_path)
+                updated_paths += 1
+
+        manifest_rows = 0
+        if refresh_manifest:
+            manifest_rows = len(self.generate_manifest())
+
+        return {
+            "site_id": self.site_id,
+            "scanned_images": len(rows),
+            "moved_files": moved_files,
+            "updated_paths": updated_paths,
+            "removed_dirs": removed_dirs,
+            "conflict_paths": conflict_paths,
+            "skipped_images": skipped_images,
+            "manifest_rows": manifest_rows,
+        }
 
     def _patient_id_from_recovery_image_path(self, image_path: Path) -> str | None:
         try:

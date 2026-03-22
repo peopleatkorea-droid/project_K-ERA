@@ -15,10 +15,26 @@ export async function listPublicSites(_request: NextRequest): Promise<SiteRecord
   await ensureDefaultProject();
   const sql = await controlPlaneSql();
   const rows = await sql`
-    select site_id, display_name, hospital_name
+    select
+      sites.site_id,
+      sites.display_name,
+      sites.hospital_name,
+      coalesce(site_directory.name, source_directory.name) as source_institution_name
     from sites
+    left join institution_directory as site_directory
+      on site_directory.institution_id = sites.site_id
+    left join institution_directory as source_directory
+      on source_directory.institution_id = nullif(sites.source_institution_id, '')
     where status = 'active'
-    order by display_name asc, site_id asc
+    order by
+      coalesce(
+        nullif(trim(site_directory.name), ''),
+        nullif(trim(source_directory.name), ''),
+        nullif(trim(sites.hospital_name), ''),
+        nullif(trim(sites.display_name), ''),
+        sites.site_id
+      ) asc,
+      sites.site_id asc
   `;
   return rows.map((row) => serializeSiteRecord(row));
 }

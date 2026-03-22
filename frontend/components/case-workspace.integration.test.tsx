@@ -507,9 +507,19 @@ describe("CaseWorkspace integration", () => {
       site_id: string;
       display_name: string;
       hospital_name: string;
+      source_institution_name?: string;
     }>,
     options: { strictMode?: boolean } = {}
   ) {
+    const resolvedSites =
+      sitesOverride ?? [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ];
+    const selectedSiteId = resolvedSites[0]?.site_id ?? "SITE_A";
     const workspace = (
       <LocaleProvider>
         <CaseWorkspace
@@ -519,21 +529,13 @@ describe("CaseWorkspace integration", () => {
             username: "researcher",
             full_name: "Researcher",
             role: "researcher",
-            site_ids: ["SITE_A"],
+            site_ids: resolvedSites.map((site) => site.site_id),
             approval_status: "approved",
           }}
-          sites={
-            sitesOverride ?? [
-              {
-                site_id: "SITE_A",
-                display_name: "Site A",
-                hospital_name: "Hospital A",
-              },
-            ]
-          }
-          selectedSiteId="SITE_A"
+          sites={resolvedSites}
+          selectedSiteId={selectedSiteId}
           summary={{
-            site_id: "SITE_A",
+            site_id: selectedSiteId,
             n_patients: 0,
             n_visits: 0,
             n_images: 0,
@@ -685,6 +687,29 @@ describe("CaseWorkspace integration", () => {
     expect(within(hospitalSection).queryByText("linked")).not.toBeInTheDocument();
     expect(screen.queryByText("Selected hospital")).not.toBeInTheDocument();
     expect(screen.queryByText("Momentum")).not.toBeInTheDocument();
+  });
+
+  it("shows the real hospital name in the rail when raw HIRA codes are stored", async () => {
+    renderWorkspace(
+      undefined,
+      {},
+      [
+        {
+          site_id: "39100103",
+          display_name: "39100103",
+          hospital_name: "39100103",
+          source_institution_name: "제주대학교병원",
+        },
+      ],
+    );
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    expect(within(hospitalSection).getByText("제주대학교병원")).toBeInTheDocument();
+    expect(within(hospitalSection).queryByText("39100103")).not.toBeInTheDocument();
   });
 
   it("shows the multi-hospital count on one line in the rail header", async () => {
@@ -1458,6 +1483,64 @@ describe("CaseWorkspace integration", () => {
     });
     const previewImages = await screen.findAllByAltText("image_1");
     expect(previewImages.some((image) => image.getAttribute("src")?.includes("/preview/image_1"))).toBe(true);
+    expect(screen.queryByText("No saved images for this visit yet.")).not.toBeInTheDocument();
+  });
+
+  it("shows deferred visit copy instead of an empty-state message when other visit images have not loaded yet", async () => {
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        representative_view: "white",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: true,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+      {
+        case_id: "case_2",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "fungal",
+        culture_species: "Candida",
+        additional_organisms: [],
+        visit_date: "FU #1",
+        actual_visit_date: "2026-03-13",
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-16T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-16T00:00:00Z",
+        image_count: 3,
+        representative_image_id: "image_2",
+        representative_view: "white",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: false,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+    ]);
+
+    renderWorkspace();
+    await openSavedCase();
+
+    expect(await screen.findByText("FU #1")).toBeInTheDocument();
+    expect(screen.getByText("Open this visit to load saved images.")).toBeInTheDocument();
     expect(screen.queryByText("No saved images for this visit yet.")).not.toBeInTheDocument();
   });
 

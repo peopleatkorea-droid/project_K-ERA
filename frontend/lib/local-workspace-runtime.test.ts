@@ -33,6 +33,7 @@ vi.mock("./desktop-workspace", () => ({
 vi.mock("./artifacts", () => ({
   buildImageContentUrl: vi.fn(() => "/content"),
   buildImagePreviewUrl: vi.fn(() => "/preview"),
+  ensureImagePreviews: vi.fn(async () => null),
 }));
 
 describe("local-workspace-runtime desktop routing", () => {

@@ -8,11 +8,12 @@ import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import { Field } from "../../components/ui/field";
 import { SectionHeader } from "../../components/ui/section-header";
-import { devLogin, login } from "../../lib/api";
+import { devLogin, fetchSites, login } from "../../lib/api";
 import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
+import { cacheSiteRecords } from "../home-page-auth-shared";
 
 const TOKEN_KEY = "kera_web_token";
-const DEFAULT_ADMIN_NEXT_PATH = "/?workspace=operations&section=dashboard";
+const DEFAULT_POST_LOGIN_PATH = "/";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -20,7 +21,6 @@ export default function AdminLoginPage() {
   const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
-  const [nextPath, setNextPath] = useState(DEFAULT_ADMIN_NEXT_PATH);
   const allowDevRecovery = Boolean(process.env.NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL) || process.env.NODE_ENV !== "production";
 
   const copy = {
@@ -60,20 +60,25 @@ export default function AdminLoginPage() {
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const candidate = params.get("next");
-    if (candidate && candidate.startsWith("/") && !candidate.startsWith("//")) {
-      setNextPath(candidate);
+  async function warmApprovedSiteCache(token: string) {
+    try {
+      const sites = await fetchSites(token);
+      if (sites.length > 0) {
+        cacheSiteRecords(sites);
+      }
+    } catch {
+      // Keep the login flow moving even if the site-label cache warmup fails.
     }
-  }, []);
+  }
 
   useEffect(() => {
     const stored = window.localStorage.getItem(TOKEN_KEY);
     if (stored) {
-      router.replace(nextPath);
+      void warmApprovedSiteCache(stored).finally(() => {
+        router.replace(DEFAULT_POST_LOGIN_PATH);
+      });
     }
-  }, [nextPath, router]);
+  }, [router]);
 
   async function handleLocalLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -82,7 +87,8 @@ export default function AdminLoginPage() {
     try {
       const auth = await login(loginForm.username, loginForm.password);
       window.localStorage.setItem(TOKEN_KEY, auth.access_token);
-      router.replace(nextPath);
+      await warmApprovedSiteCache(auth.access_token);
+      router.replace(DEFAULT_POST_LOGIN_PATH);
     } catch (nextError) {
       setError(describeError(nextError, copy.loginFailed));
     } finally {
@@ -96,7 +102,8 @@ export default function AdminLoginPage() {
     try {
       const auth = await devLogin();
       window.localStorage.setItem(TOKEN_KEY, auth.access_token);
-      router.replace(nextPath);
+      await warmApprovedSiteCache(auth.access_token);
+      router.replace(DEFAULT_POST_LOGIN_PATH);
     } catch (nextError) {
       setError(describeError(nextError, copy.loginFailed));
     } finally {

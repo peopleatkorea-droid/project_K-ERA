@@ -28,7 +28,7 @@ import {
   trimText,
 } from "./main-app-bridge-shared";
 import { verifyControlPlanePassword } from "./passwords";
-import { isPlaceholderSiteLabel } from "../site-labels";
+import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 import { getControlPlaneUser } from "./store";
 
 export type LocalMainAppUser = AuthUser;
@@ -36,6 +36,7 @@ export type LocalMainAppUser = AuthUser;
 export type CanonicalUserContext = {
   canonicalUserId: string;
   localUser: LocalMainAppUser;
+  canonicalUser: ControlPlaneUser;
   user: AuthUser;
 };
 
@@ -45,21 +46,36 @@ type ManagedUserSerializationLookups = {
 };
 
 function serializeBulkMembership(row: Row): ControlPlaneMembership {
+  const siteId = rowValue<string>(row, "site_id");
+  const sourceInstitutionName = rowValue<string | null>(row, "source_institution_name");
+  const rawSite =
+    siteId
+      ? {
+          site_id: siteId,
+          display_name: rowValue<string>(row, "display_name"),
+          hospital_name: rowValue<string>(row, "hospital_name"),
+          source_institution_name: sourceInstitutionName,
+        }
+      : null;
+  const officialName = rawSite ? getSiteOfficialName(rawSite, siteId) : "";
+  const siteAlias = rawSite ? getSiteAlias(rawSite) : null;
   return {
     membership_id: rowValue<string>(row, "membership_id"),
-    site_id: rowValue<string>(row, "site_id"),
+    site_id: siteId,
     role: rowValue<ControlPlaneMembership["role"]>(row, "role"),
     status: rowValue<ControlPlaneMembership["status"]>(row, "status"),
     approved_at: rowValue<string | Date | null>(row, "approved_at")
       ? new Date(rowValue<string | Date>(row, "approved_at")).toISOString()
       : null,
     created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
-    site: rowValue<string | null>(row, "site_id")
+    site: rawSite
       ? {
-          site_id: rowValue<string>(row, "site_id"),
-          display_name: rowValue<string>(row, "display_name"),
-          hospital_name: rowValue<string>(row, "hospital_name"),
+          site_id: siteId,
+          display_name: officialName,
+          hospital_name: officialName,
+          ...(siteAlias ? { site_alias: siteAlias } : {}),
           source_institution_id: rowValue<string | null>(row, "source_institution_id"),
+          source_institution_name: sourceInstitutionName,
           status: rowValue<string>(row, "status_1") || rowValue<string>(row, "status"),
           created_at: new Date(rowValue<string | Date>(row, "created_at_1") || rowValue<string | Date>(row, "created_at")).toISOString(),
         }
@@ -108,10 +124,15 @@ export async function preloadManagedUserLookups(rows: Row[]): Promise<ManagedUse
         s.display_name,
         s.hospital_name,
         s.source_institution_id,
+        coalesce(site_directory.name, source_directory.name) as source_institution_name,
         s.status as status_1,
         s.created_at as created_at_1
       from site_memberships as m
       left join sites as s on s.site_id = m.site_id
+      left join institution_directory as site_directory
+        on site_directory.institution_id = s.site_id
+      left join institution_directory as source_directory
+        on source_directory.institution_id = nullif(s.source_institution_id, '')
       where m.user_id = any(${userIds})
       order by m.created_at asc
     `,
@@ -430,17 +451,6 @@ export async function syncCanonicalMemberships(
     }
   }
 
-  function pickBestSiteLabel(siteId: string, ...candidates: Array<string | null | undefined>): string {
-    for (const candidate of candidates) {
-      const normalizedCandidate = trimText(candidate);
-      if (!normalizedCandidate || isPlaceholderSiteLabel(normalizedCandidate, siteId)) {
-        continue;
-      }
-      return normalizedCandidate;
-    }
-    return trimText(candidates[0]) || siteId;
-  }
-
   async function resolveSiteMetadata(siteId: string): Promise<{
     displayName: string;
     hospitalName: string;
@@ -466,8 +476,14 @@ export async function syncCanonicalMemberships(
     const institution = institutionRows[0] ?? null;
     const institutionId = trimText(institution ? rowValue<string>(institution, "institution_id") : "") || null;
     const institutionName = trimText(institution ? rowValue<string>(institution, "name") : "");
-    const displayName = pickBestSiteLabel(siteId, existingDisplayName, institutionName);
-    const hospitalName = pickBestSiteLabel(siteId, existingHospitalName, institutionName, displayName);
+    const rawSite = {
+      site_id: siteId,
+      display_name: existingDisplayName,
+      hospital_name: existingHospitalName,
+      source_institution_name: institutionName || undefined,
+    };
+    const hospitalName = getSiteOfficialName(rawSite, siteId);
+    const displayName = getSiteAlias(rawSite) ?? "";
     return {
       displayName,
       hospitalName,
@@ -655,35 +671,51 @@ export async function buildMainAuthUser(
   canonicalUserId: string,
   fallback?: Partial<AuthUser>,
 ): Promise<AuthUser> {
+  const canonicalState = await loadMainAuthState(canonicalUserId, fallback);
+  return canonicalState.user;
+}
+
+async function loadMainAuthState(
+  canonicalUserId: string,
+  fallback?: Partial<AuthUser>,
+  canonicalRow?: Row | null,
+): Promise<{ canonicalUser: ControlPlaneUser; user: AuthUser }> {
+  const resolvedCanonicalRow = canonicalRow ?? (await canonicalUserRowById(canonicalUserId));
   const canonicalUser = await getControlPlaneUser(canonicalUserId);
-  const canonicalRow = await canonicalUserRowById(canonicalUserId);
-  if (!canonicalUser || !canonicalRow) {
+  if (!canonicalUser || !resolvedCanonicalRow) {
     throw new Error("Authentication required.");
   }
-  const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
+  const hasApprovedMembership =
+    canonicalUser.global_role === "admin" ||
+    canonicalUser.memberships.some((membership) => membership.status === "approved");
+  const latestRequest = hasApprovedMembership ? null : await latestAccessRequestForCanonicalUser(canonicalUserId);
   const approvedSiteIds = canonicalUser.memberships
     .filter((membership) => membership.status === "approved")
     .map((membership) => membership.site_id);
+
   return {
-    user_id: canonicalUserId,
-    username:
-      trimText(rowValue<string>(canonicalRow, "username")) ||
-      trimText(canonicalUser.email) ||
-      trimText(fallback?.username) ||
-      canonicalUserId,
-    full_name: trimText(canonicalUser.full_name) || trimText(fallback?.full_name) || canonicalUserId,
-    public_alias:
-      trimText(rowValue<string | null>(canonicalRow, "public_alias")) ||
-      trimText(fallback?.public_alias) ||
-      null,
-    role: deriveLegacyRoleFromCanonical(
-      canonicalUser,
-      ((trimText(fallback?.role) || trimText(rowValue<string>(canonicalRow, "role")) || "viewer") as AuthUser["role"]),
-    ),
-    site_ids: approvedSiteIds,
-    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
-    latest_access_request: latestRequest,
-    registry_consents: normalizeRegistryConsents(rowValue<unknown>(canonicalRow, "registry_consents")),
+    canonicalUser,
+    user: {
+      user_id: canonicalUserId,
+      username:
+        trimText(rowValue<string>(resolvedCanonicalRow, "username")) ||
+        trimText(canonicalUser.email) ||
+        trimText(fallback?.username) ||
+        canonicalUserId,
+      full_name: trimText(canonicalUser.full_name) || trimText(fallback?.full_name) || canonicalUserId,
+      public_alias:
+        trimText(rowValue<string | null>(resolvedCanonicalRow, "public_alias")) ||
+        trimText(fallback?.public_alias) ||
+        null,
+      role: deriveLegacyRoleFromCanonical(
+        canonicalUser,
+        ((trimText(fallback?.role) || trimText(rowValue<string>(resolvedCanonicalRow, "role")) || "viewer") as AuthUser["role"]),
+      ),
+      site_ids: approvedSiteIds,
+      approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
+      latest_access_request: latestRequest,
+      registry_consents: normalizeRegistryConsents(rowValue<unknown>(resolvedCanonicalRow, "registry_consents")),
+    },
   };
 }
 
@@ -695,10 +727,11 @@ export async function requireMainAppBridgeUser(request: NextRequest): Promise<Ca
   }
   const canonicalUserId = rowValue<string>(canonicalRow, "user_id");
   const localUser = fallbackUserFromClaims(claims);
-  const user = await buildMainAuthUser(canonicalUserId, localUser);
+  const { canonicalUser, user } = await loadMainAuthState(canonicalUserId, localUser, canonicalRow);
   return {
     canonicalUserId,
     localUser,
+    canonicalUser,
     user,
   };
 }
@@ -724,20 +757,22 @@ export async function authenticateMainAppUser(
     throw new Error("Invalid credentials.");
   }
   const canonicalUserId = rowValue<string>(row, "user_id");
-  const user = await buildMainAuthUser(canonicalUserId, {
+  const fallback = {
     username: trimText(rowValue<string>(row, "username")) || normalizedLogin,
     full_name: trimText(rowValue<string>(row, "full_name")) || normalizedLogin,
     public_alias: trimText(rowValue<string | null>(row, "public_alias")) || null,
     role: (trimText(rowValue<string>(row, "role")) || "viewer") as AuthUser["role"],
     site_ids: normalizeStringArray(rowValue<unknown>(row, "site_ids")),
-    approval_status: "application_required",
+    approval_status: "application_required" as AuthUser["approval_status"],
     registry_consents: normalizeRegistryConsents(rowValue<unknown>(row, "registry_consents")),
-  });
+  };
+  const { canonicalUser, user } = await loadMainAuthState(canonicalUserId, fallback, row);
   if (user.role !== "admin" && user.role !== "site_admin") {
     throw new Error("Local username/password login is restricted to admin and site admin accounts. Researchers use Google sign-in.");
   }
   return {
     canonicalUserId,
+    canonicalUser,
     localUser: user,
     user,
   };

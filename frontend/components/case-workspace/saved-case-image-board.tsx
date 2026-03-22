@@ -39,6 +39,8 @@ import type {
   TranslateOption,
 } from "./shared";
 
+const LIVE_LESION_MASK_TINT = [242, 164, 154] as const;
+
 type SavedCaseImageBoardProps = {
   locale: Locale;
   commonLoading: string;
@@ -241,11 +243,12 @@ export function SavedCaseImageBoard({
 
       {selectedCaseImages.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {selectedCaseImages.map((image) => {
+          {selectedCaseImages.map((image, index) => {
             const promptReviewOpen = semanticPromptOpenImageIds.includes(image.image_id);
             const livePreview = liveLesionPreviews[image.image_id];
             const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
             const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
+            const prioritizeImage = index < 2;
             const statusCopy =
               lesionBoxBusyImageId === image.image_id
                 ? pick(locale, "Saving...", "저장 중...")
@@ -291,7 +294,7 @@ export function SavedCaseImageBoard({
                           sourceUrl={image.preview_url}
                           maskUrl={livePreview?.lesion_mask_url}
                           alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
-                          tint={[242, 164, 154]}
+                          tint={LIVE_LESION_MASK_TINT}
                           className="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
                           fallbackClassName="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
                         />
@@ -301,6 +304,8 @@ export function SavedCaseImageBoard({
                           alt={image.image_id}
                           className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
                           decoding="async"
+                          loading={prioritizeImage ? "eager" : "lazy"}
+                          fetchPriority={prioritizeImage ? "high" : "low"}
                           draggable={false}
                           onDragStart={(event) => event.preventDefault()}
                         />

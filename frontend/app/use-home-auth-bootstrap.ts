@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, type Dispatch, type FormEvent, type RefObject, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type FormEvent, type MutableRefObject, type SetStateAction } from "react";
 
 import {
   fetchMainBootstrap,
+  fetchPatientListPage,
   fetchMyAccessRequests,
   fetchPublicSites,
   searchPublicInstitutions,
@@ -14,13 +15,16 @@ import {
   type SiteRecord,
 } from "../lib/api";
 import { googleLogin } from "../lib/auth";
+import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
 import {
   CLIENT_BOOTSTRAP_TIMING_LOGS,
   GOOGLE_CLIENT_ID,
   isAuthBootstrapError,
   isTokenExpired,
+  optimisticSitesForUser,
   parseOperationsLaunchFromSearch,
   readOptimisticUserFromToken,
+  sitesNeedLabelHydration,
   TOKEN_KEY,
   type LaunchTarget,
   type RequestFormState,
@@ -42,18 +46,32 @@ type UseHomeAuthBootstrapOptions = {
   copy: CopyBundle;
   deferredInstitutionQuery: string;
   describeError: (nextError: unknown, fallback: string) => string;
-  googleButtonRef: RefObject<HTMLDivElement | null>;
+  googleButtonRefs: MutableRefObject<HTMLDivElement[]>;
+  googleButtonSlotVersion: number;
   googleButtonWidth: number;
   googleReady: boolean;
   requestForm: RequestFormState;
   setRequestForm: Dispatch<SetStateAction<RequestFormState>>;
 };
 
+type GooglePromptMomentNotification = {
+  isDismissedMoment?: () => boolean;
+  isNotDisplayed?: () => boolean;
+  isSkippedMoment?: () => boolean;
+};
+
+type GoogleAccountsIdApi = {
+  initialize: (config: Record<string, unknown>) => void;
+  prompt?: (listener?: (notification: GooglePromptMomentNotification) => void) => void;
+  renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
+};
+
 export function useHomeAuthBootstrap({
   copy,
   deferredInstitutionQuery,
   describeError,
-  googleButtonRef,
+  googleButtonRefs,
+  googleButtonSlotVersion,
   googleButtonWidth,
   googleReady,
   requestForm,
@@ -92,18 +110,59 @@ export function useHomeAuthBootstrap({
     failedLoadSiteData: copy.failedLoadSiteData,
   });
 
+  function scheduleDeferredBootstrap(task: () => void, timeoutMs = 0) {
+    if (typeof window === "undefined") {
+      return () => undefined;
+    }
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(() => task(), { timeout: timeoutMs });
+      return () => window.cancelIdleCallback(idleId);
+    }
+    const timerId = window.setTimeout(task, timeoutMs);
+    return () => window.clearTimeout(timerId);
+  }
+
+  function getGoogleButtonHosts() {
+    return googleButtonRefs.current.filter((host) => host?.isConnected);
+  }
+
+  function resetGoogleButtonHost(host: HTMLDivElement) {
+    host.dataset.googleReady = "false";
+    host.replaceChildren();
+  }
+
+  function findGoogleInteractive(host?: HTMLDivElement) {
+    if (!host) {
+      return null;
+    }
+    return host.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]');
+  }
+
+  function focusGoogleButtonHost(host?: HTMLDivElement) {
+    if (!host) {
+      return;
+    }
+    host.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    findGoogleInteractive(host)?.focus?.();
+  }
+
   useEffect(() => {
     const stored = window.localStorage.getItem(TOKEN_KEY);
     if (stored) {
       if (isTokenExpired(stored)) {
         window.localStorage.removeItem(TOKEN_KEY);
       } else {
+        setBootstrapBusy(true);
         setToken(stored);
         const optimisticUser = readOptimisticUserFromToken(stored);
         if (optimisticUser?.approval_status === "approved") {
+          const optimisticSites = optimisticSitesForUser(optimisticUser);
           setUser(optimisticUser);
           setMyRequests([]);
-          applyApprovedWorkspaceState(optimisticUser);
+          applyApprovedWorkspaceState(optimisticUser, { sites: optimisticSites });
         }
       }
     }
@@ -167,6 +226,12 @@ export function useHomeAuthBootstrap({
       return;
     }
     const currentToken = token;
+    const optimisticBootstrapUser = readOptimisticUserFromToken(currentToken);
+    const optimisticSites =
+      optimisticBootstrapUser?.approval_status === "approved" ? optimisticSitesForUser(optimisticBootstrapUser) : [];
+    const canDeferApprovedBootstrap = optimisticSites.length > 0;
+    const deferredBootstrapDelayMs =
+      canUseDesktopTransport() && !sitesNeedLabelHydration(optimisticSites) ? 4000 : 0;
 
     async function bootstrap() {
       const startedAt = performance.now();
@@ -204,15 +269,63 @@ export function useHomeAuthBootstrap({
       }
     }
 
+    if (canDeferApprovedBootstrap) {
+      setBootstrapBusy(true);
+      const cancelDeferredBootstrap = scheduleDeferredBootstrap(() => {
+        void bootstrap();
+      }, deferredBootstrapDelayMs);
+      return () => {
+        cancelDeferredBootstrap();
+      };
+    }
+
     void bootstrap();
   }, [applyApprovedWorkspaceState, clearApprovedWorkspaceState, copy.failedConnect, describeError, token]);
 
   useEffect(() => {
-    if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleButtonRef.current || !window.google?.accounts?.id) {
+    if (!token || !approved || !selectedSiteId) {
       return;
     }
-    googleButtonRef.current.innerHTML = "";
-    window.google.accounts.id.initialize({
+    const currentToken = token;
+    const currentSiteId = selectedSiteId;
+    let cancelled = false;
+    const cancelDeferredWarm = scheduleDeferredBootstrap(() => {
+      void fetchPatientListPage(currentSiteId, currentToken, {
+        page: 1,
+        page_size: 25,
+      })
+        .then((response) => {
+          if (cancelled) {
+            return;
+          }
+          response.items.slice(0, 6).forEach((row) => {
+            prefetchDesktopVisitImages(currentSiteId, row.latest_case.patient_id, row.latest_case.visit_date);
+          });
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      cancelDeferredWarm();
+    };
+  }, [approved, selectedSiteId, token]);
+
+  useEffect(() => {
+    const hosts = getGoogleButtonHosts();
+    if (hosts.length === 0) {
+      return;
+    }
+    const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
+    if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleId) {
+      hosts.forEach((host) => {
+        resetGoogleButtonHost(host);
+      });
+      return;
+    }
+    hosts.forEach((host) => {
+      resetGoogleButtonHost(host);
+    });
+    googleId.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback: async (response: { credential?: string }) => {
         if (!response.credential) {
@@ -237,19 +350,23 @@ export function useHomeAuthBootstrap({
         }
       },
     });
-    window.google.accounts.id.renderButton(googleButtonRef.current, {
-      theme: "outline",
-      size: "large",
-      width: googleButtonWidth,
-      text: "signin_with",
-      shape: "pill",
+    hosts.forEach((host) => {
+      googleId.renderButton(host, {
+        theme: "outline",
+        size: "large",
+        width: host.clientWidth || googleButtonWidth,
+        text: "signin_with",
+        shape: "pill",
+      });
+      host.dataset.googleReady = "true";
     });
   }, [
     applyApprovedWorkspaceState,
     copy.googleLoginFailed,
     copy.googleNoCredential,
     describeError,
-    googleButtonRef,
+    googleButtonRefs,
+    googleButtonSlotVersion,
     googleButtonWidth,
     googleReady,
     token,
@@ -308,17 +425,33 @@ export function useHomeAuthBootstrap({
       setError(copy.googlePreparing);
       return;
     }
-    const host = googleButtonRef.current;
-    const interactive =
-      host?.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]') ??
-      host?.querySelector<HTMLElement>("iframe");
-    if (!interactive) {
-      setError(copy.googlePreparing);
-      return;
-    }
+    const [host] = getGoogleButtonHosts();
+    const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
     setError(null);
     setGoogleLaunchPulse(true);
-    interactive.click();
+    const interactive = findGoogleInteractive(host);
+    if (host?.dataset.googleReady === "true" && interactive) {
+      focusGoogleButtonHost(host);
+      interactive.click();
+    } else if (typeof googleId?.prompt === "function") {
+      googleId.prompt((notification) => {
+        if (
+          notification.isNotDisplayed?.() ||
+          notification.isSkippedMoment?.() ||
+          notification.isDismissedMoment?.()
+        ) {
+          focusGoogleButtonHost(host);
+        }
+      });
+    } else {
+      focusGoogleButtonHost(host);
+      if (!interactive) {
+        setError(copy.googlePreparing);
+        setGoogleLaunchPulse(false);
+        return;
+      }
+      interactive.click();
+    }
     window.setTimeout(() => {
       setGoogleLaunchPulse(false);
     }, 400);

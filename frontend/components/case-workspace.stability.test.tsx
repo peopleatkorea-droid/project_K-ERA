@@ -230,15 +230,13 @@ describe("CaseWorkspace stability", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /KERA-2026-001/i }));
 
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+    });
+
     await waitFor(() => {
       expect(apiMocks.fetchCaseHistory).toHaveBeenCalledTimes(1);
     });
-
-    await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 50));
-    });
-
-    expect(apiMocks.fetchCaseHistory).toHaveBeenCalledTimes(1);
     expect(
       consoleErrorSpy.mock.calls.some((call) =>
         call.some((arg) => String(arg).includes("Maximum update depth exceeded")),

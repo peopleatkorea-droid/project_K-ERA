@@ -8,7 +8,8 @@ import { Field } from "../components/ui/field";
 import { SectionHeader } from "../components/ui/section-header";
 import { DesktopLandingScreen } from "./desktop-landing";
 import { downloadManifest, fetchSiteSummary, type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
-import { clearDesktopSession, DESKTOP_TOKEN_KEY, desktopFetchApprovedSites, desktopFetchCurrentUser, desktopLocalDevLogin, desktopLocalLogin, persistDesktopSession } from "../lib/desktop-auth";
+import { prewarmPatientListPage } from "../lib/cases";
+import { clearDesktopSession, clearDesktopSessionCache, DESKTOP_TOKEN_KEY, desktopFetchApprovedSites, desktopFetchCurrentUser, desktopLocalDevLogin, desktopLocalLogin, loadDesktopSessionCache, persistDesktopSession, saveDesktopSessionCache } from "../lib/desktop-auth";
 import {
   clearDesktopAppConfig,
   fetchDesktopAppConfig,
@@ -364,6 +365,12 @@ function DesktopShellApp() {
       setSites(nextSites);
       const preferredSiteId = nextSites[0]?.site_id ?? null;
       setSelectedSiteId((current) => (current && nextSites.some((item) => item.site_id === current) ? current : preferredSiteId));
+      // 사용자+병원 정보를 로컬 파일에 저장 → 다음 실행부터 Python 없이 즉시 표시
+      void saveDesktopSessionCache({ token: currentToken, user: nextUser, sites: nextSites });
+      // Pre-warm patient list immediately — result is cached and ready when CaseWorkspace renders
+      if (preferredSiteId) {
+        prewarmPatientListPage(preferredSiteId, currentToken, { page_size: 25 });
+      }
     } catch (nextError) {
       clearDesktopSession();
       setToken(null);
@@ -378,15 +385,45 @@ function DesktopShellApp() {
   }
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(DESKTOP_TOKEN_KEY);
-    if (stored) {
-      setToken(stored);
-    }
-    void loadConfigAndRuntime({ autoStart: true, diagnosticsMode: "runtime" });
+    // 1. 로컬 캐시에서 즉시 로드 (Python 대기 없음)
+    void loadDesktopSessionCache().then((cached) => {
+      if (cached?.token && cached.user && cached.sites.length > 0) {
+        const preferredSiteId = cached.sites[0]?.site_id ?? null;
+        setToken(cached.token);
+        setUser(cached.user);
+        setSites(cached.sites);
+        setSelectedSiteId(preferredSiteId);
+        // 캐시에서 복원했으면 bootstrapSession 대신 pre-warm만 실행
+        if (preferredSiteId) {
+          prewarmPatientListPage(preferredSiteId, cached.token, { page_size: 25 });
+        }
+        // 백그라운드에서 Python 시작 + 조용히 세션 갱신 (실패해도 화면 유지)
+        void loadConfigAndRuntime({ autoStart: true, diagnosticsMode: "runtime" }).then(() => {
+          void Promise.all([
+            desktopFetchCurrentUser(cached.token),
+            desktopFetchApprovedSites(cached.token),
+          ]).then(([nextUser, nextSites]) => {
+            setUser(nextUser);
+            setSites(nextSites);
+            void saveDesktopSessionCache({ token: cached.token, user: nextUser, sites: nextSites });
+          }).catch(() => {
+            // 토큰 만료 등 → 다음번 명시적 액션 시 재로그인 유도
+          });
+        });
+        return;
+      }
+      // 캐시 없으면 기존 localStorage 토큰으로 시도
+      const stored = window.localStorage.getItem(DESKTOP_TOKEN_KEY);
+      if (stored) {
+        setToken(stored);
+      }
+      void loadConfigAndRuntime({ autoStart: true, diagnosticsMode: "runtime" });
+    });
   }, []);
 
   useEffect(() => {
-    if (!token) {
+    if (!token || user) {
+      // user가 이미 있으면 (캐시에서 복원) bootstrapSession 재실행 불필요
       return;
     }
     void bootstrapSession(token);
@@ -405,20 +442,7 @@ function DesktopShellApp() {
     return () => controller.abort();
   }, [settingsOpen]);
 
-  useEffect(() => {
-    if (!config?.setup_ready && !settingsOpen) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      const loader = settingsOpen ? fetchDesktopDiagnosticsSnapshot : fetchDesktopRuntimeSnapshot;
-      void loader()
-        .then((nextSnapshot) => {
-          setDiagnostics(nextSnapshot);
-        })
-        .catch(() => undefined);
-    }, settingsOpen ? 15000 : 30000);
-    return () => window.clearInterval(intervalId);
-  }, [config?.setup_ready, settingsOpen]);
+  // Polling removed — background status checks caused unnecessary CPU/IPC overhead for a 1-2 user desktop app.
 
   useEffect(() => {
     if (!token || !selectedSiteId || !user || user.approval_status !== "approved") {
@@ -557,6 +581,7 @@ function DesktopShellApp() {
 
   function handleLogout() {
     clearDesktopSession();
+    void clearDesktopSessionCache();
     setToken(null);
     setUser(null);
     setSites([]);

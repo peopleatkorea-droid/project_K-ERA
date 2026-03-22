@@ -22,6 +22,8 @@ type SavedImagePreview = ImageRecord & {
   preview_url: string | null;
 };
 
+const FOLLOW_UP_VISIT_PATTERN = /^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i;
+
 function normalizeVisitMatchKey(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
@@ -30,7 +32,7 @@ function normalizeVisitMatchKey(value: string | null | undefined): string {
   if (/^(initial|초진)$/i.test(normalized)) {
     return "initial";
   }
-  const followUpMatch = normalized.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
+  const followUpMatch = normalized.match(FOLLOW_UP_VISIT_PATTERN);
   if (followUpMatch) {
     return `fu:${String(Number(followUpMatch[1]) || 0)}`;
   }
@@ -521,13 +523,32 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    // Fire all three in parallel — no artificial delays
-    void loadSelectedCaseImages();
-    void loadPatientCaseGallery();
-    void loadSelectedCaseHistory();
+    let cancelDeferredGallery: () => void = () => {};
+    let cancelDeferredHistory: () => void = () => {};
+    const shouldLoadPatientTimelineImmediately = canUseDesktopTransport();
+    const deferredGalleryDelayMs = 900;
+    const deferredHistoryDelayMs = canUseDesktopTransport() ? 12000 : 1600;
+    if (shouldLoadPatientTimelineImmediately) {
+      void loadPatientCaseGallery();
+    }
+    void loadSelectedCaseImages().finally(() => {
+      if (cancelled) {
+        return;
+      }
+      if (!shouldLoadPatientTimelineImmediately) {
+        cancelDeferredGallery = scheduleDeferredBrowserTask(() => {
+          void loadPatientCaseGallery();
+        }, deferredGalleryDelayMs);
+      }
+      cancelDeferredHistory = scheduleDeferredBrowserTask(() => {
+        void loadSelectedCaseHistory();
+      }, deferredHistoryDelayMs);
+    });
     return () => {
       cancelled = true;
       controller.abort();
+      cancelDeferredGallery();
+      cancelDeferredHistory();
     };
   }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
 

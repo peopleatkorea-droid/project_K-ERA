@@ -496,7 +496,7 @@ describe("HomePage history guard", () => {
     });
   });
 
-  it("prefetches the selected hospital summary before bootstrap finishes", async () => {
+  it("waits until bootstrap finishes before loading the selected hospital summary", async () => {
     const approvedToken = makeStoredToken();
     window.localStorage.setItem("kera_web_token", approvedToken);
     let releaseBootstrap:
@@ -526,12 +526,10 @@ describe("HomePage history guard", () => {
     render(<HomePage />);
 
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(apiMocks.fetchSiteSummary).toHaveBeenCalledWith("SITE_A", approvedToken);
-    });
     await act(async () => {
-      await apiMocks.fetchSiteSummary.mock.results[0]?.value;
+      await new Promise((resolve) => window.setTimeout(resolve, 320));
     });
+    expect(apiMocks.fetchSiteSummary).not.toHaveBeenCalled();
     await act(async () => {
       releaseBootstrap?.({
         auth_state: "approved",
@@ -555,7 +553,9 @@ describe("HomePage history guard", () => {
         my_access_requests: [],
       });
       await Promise.resolve();
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteSummary).toHaveBeenCalledWith("SITE_A", approvedToken);
     });
   });
 

@@ -159,7 +159,7 @@ function createReviewDraft(
     create_site_if_missing: shouldCreateSite,
     project_id: projectId,
     site_code: suggestedSiteCodeFromRequest(request),
-    display_name: label,
+    display_name: "",
     hospital_name: label,
     research_registry_enabled: false,
     reviewer_notes: "",
@@ -846,7 +846,7 @@ export function useAdminWorkspaceController({
         assigned_site_id: draft?.assigned_site_id,
         create_site_if_missing: draft?.create_site_if_missing,
         site_code: draft?.site_code,
-        display_name: draft?.display_name?.trim() || draft?.hospital_name?.trim(),
+        display_name: draft?.display_name?.trim(),
         hospital_name: draft?.hospital_name,
         research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
@@ -896,6 +896,7 @@ export function useAdminWorkspaceController({
     try {
       const result = await syncInstitutionDirectory(token, { page_size: 100 });
       await refreshWorkspace();
+      await onRefreshSites();
       setToast({
         tone: "success",
         message: copy.institutionSyncSucceeded(result.institutions_synced, result.pages_synced),
@@ -1506,7 +1507,7 @@ export function useAdminWorkspaceController({
     setSiteForm({
       project_id: site.project_id,
       site_code: site.site_id,
-      display_name: site.display_name,
+      display_name: site.site_alias ?? "",
       hospital_name: site.hospital_name ?? "",
       research_registry_enabled: site.research_registry_enabled ?? true,
       source_institution_id: site.source_institution_id ?? undefined,
@@ -1517,7 +1518,7 @@ export function useAdminWorkspaceController({
 
   async function handleCreateSite() {
     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID;
-    const normalizedDisplayName = siteForm.display_name.trim() || siteForm.hospital_name.trim();
+    const normalizedDisplayName = siteForm.display_name.trim();
     if (!siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
@@ -1542,7 +1543,7 @@ export function useAdminWorkspaceController({
   }
 
   async function handleUpdateSite() {
-    const normalizedDisplayName = siteForm.display_name.trim() || siteForm.hospital_name.trim();
+    const normalizedDisplayName = siteForm.display_name.trim();
     if (!editingSiteId || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteNameRequired });
       return;

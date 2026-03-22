@@ -22,6 +22,8 @@ export function controlPlaneSessionSecret(): string {
 
 export function controlPlaneDatabaseUrl(): string {
   return (
+    process.env.KERA_LOCAL_CONTROL_PLANE_DATABASE_URL?.trim() ||
+    process.env.KERA_CONTROL_PLANE_LOCAL_DATABASE_URL?.trim() ||
     process.env.KERA_CONTROL_PLANE_DATABASE_URL?.trim() ||
     process.env.KERA_AUTH_DATABASE_URL?.trim() ||
     process.env.KERA_DATABASE_URL?.trim() ||
@@ -62,5 +64,25 @@ export function controlPlaneLlmBaseUrl(): string {
 
 export function controlPlaneLlmTimeoutMs(): number {
   const seconds = Number(process.env.KERA_AI_CLINIC_LLM_TIMEOUT_SECONDS?.trim() || "45");
+  return Math.max(5_000, Math.floor(seconds * 1000));
+}
+
+export function controlPlaneHiraApiKey(): string {
+  return (
+    process.env.KERA_HIRA_API_KEY?.trim() ||
+    process.env.HIRA_API_KEY?.trim() ||
+    ""
+  );
+}
+
+export function controlPlaneHiraHospitalInfoUrl(): string {
+  return (
+    process.env.KERA_HIRA_HOSPITAL_INFO_URL?.trim() ||
+    "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
+  );
+}
+
+export function controlPlaneHiraApiTimeoutMs(): number {
+  const seconds = Number(process.env.KERA_HIRA_API_TIMEOUT_SECONDS?.trim() || "30");
   return Math.max(5_000, Math.floor(seconds * 1000));
 }

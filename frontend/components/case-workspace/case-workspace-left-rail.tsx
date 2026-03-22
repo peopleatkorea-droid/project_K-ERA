@@ -42,6 +42,7 @@ type CaseWorkspaceLeftRailProps = {
   visibleSites: SiteRecord[];
   selectedSiteId: string | null;
   summary: SiteSummary | null;
+  fastMode?: boolean;
   newCaseModeActive: boolean;
   listModeActive: boolean;
   isAuthoringCanvas: boolean;
@@ -52,6 +53,7 @@ type CaseWorkspaceLeftRailProps = {
   draftStatusLabel: string;
   latestSiteValidation: SiteValidationRunRecord | null;
   siteValidationRuns: SiteValidationRunRecord[];
+  deferValidationHistory: boolean;
   siteValidationBusy: boolean;
   canRunValidation: boolean;
   commonNotAvailable: string;
@@ -67,6 +69,7 @@ export function CaseWorkspaceLeftRail({
   visibleSites,
   selectedSiteId,
   summary,
+  fastMode = false,
   newCaseModeActive,
   listModeActive,
   isAuthoringCanvas,
@@ -77,6 +80,7 @@ export function CaseWorkspaceLeftRail({
   draftStatusLabel,
   latestSiteValidation,
   siteValidationRuns,
+  deferValidationHistory,
   siteValidationBusy,
   canRunValidation,
   commonNotAvailable,
@@ -86,6 +90,10 @@ export function CaseWorkspaceLeftRail({
   onSelectSite,
   onRunSiteValidation,
 }: CaseWorkspaceLeftRailProps) {
+  const validationHistoryDeferred = deferValidationHistory && siteValidationRuns.length === 0;
+  const hasStoredSiteValidations = (summary?.n_validation_runs ?? 0) > 0;
+  const shouldShowDeferredValidationMessage = validationHistoryDeferred && (!summary || hasStoredSiteValidations);
+
   return (
     <aside className={workspaceRailClass}>
       <div className={workspaceBrandClass}>
@@ -136,7 +144,7 @@ export function CaseWorkspaceLeftRail({
             </button>
           ))}
         </div>
-        {selectedSiteId && summary ? (
+        {!fastMode && selectedSiteId && summary ? (
           <MetricGrid className={railMetricGridClass} columns={2}>
             <div className={railMetricCardClass}>
               <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
@@ -190,7 +198,7 @@ export function CaseWorkspaceLeftRail({
             </div>
           </div>
         </Card>
-      ) : (
+      ) : fastMode ? null : (
         <Card as="section" variant="nested" className={railSectionClass}>
           <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
             <div className="grid gap-1">
@@ -233,22 +241,32 @@ export function CaseWorkspaceLeftRail({
                 <span className={railMetricLabelClass}>{pick(locale, "latest model", "최신 모델")}</span>
               </div>
             </div>
+          ) : shouldShowDeferredValidationMessage ? (
+            <div className={emptySurfaceClass}>
+              {pick(
+                locale,
+                "Recent hospital validation history loads only when you open a case.",
+                "최근 병원 검증 히스토리는 케이스를 열 때만 불러옵니다."
+              )}
+            </div>
           ) : (
             <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "아직 병원 단위 검증이 실행되지 않았습니다.")}</div>
           )}
-          <div className={railActivityListClass}>
-            {siteValidationRuns.slice(0, 3).map((item) => (
-              <div key={item.validation_id} className={railActivityItemClass}>
-                <strong>{item.model_version}</strong>
-                <span>{formatDateTime(item.run_date)}</span>
-                <span>
-                  {typeof item.accuracy === "number"
-                    ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}`
-                    : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}
-                </span>
-              </div>
-            ))}
-          </div>
+          {!validationHistoryDeferred ? (
+            <div className={railActivityListClass}>
+              {siteValidationRuns.slice(0, 3).map((item) => (
+                <div key={item.validation_id} className={railActivityItemClass}>
+                  <strong>{item.model_version}</strong>
+                  <span>{formatDateTime(item.run_date)}</span>
+                  <span>
+                    {typeof item.accuracy === "number"
+                      ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}`
+                      : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {!canRunValidation ? (
             <p className={railCopyClass}>
               {pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "뷰어 계정은 지표만 확인할 수 있고 병원 검증은 실행할 수 없습니다.")}

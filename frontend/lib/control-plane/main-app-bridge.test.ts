@@ -62,11 +62,29 @@ vi.mock("./main-app-bridge-records", () => ({
   institutionRowById: vi.fn(),
   latestAccessRequestForCanonicalUser: vi.fn(),
   listAccessRequestsForCanonicalUser,
-  serializeSiteRecord: (row: Record<string, unknown>) => ({
-    site_id: row.site_id,
-    display_name: row.display_name,
-    hospital_name: row.hospital_name,
-  }),
+  serializeSiteRecord: (row: Record<string, unknown>) => {
+    const siteId = typeof row.site_id === "string" ? row.site_id : "";
+    const sourceInstitutionName =
+      typeof row.source_institution_name === "string" ? row.source_institution_name.trim() : "";
+    let displayName = typeof row.display_name === "string" ? row.display_name : "";
+    let hospitalName = typeof row.hospital_name === "string" ? row.hospital_name : "";
+
+    if (sourceInstitutionName) {
+      if (!displayName || displayName === siteId) {
+        displayName = sourceInstitutionName;
+      }
+      if (!hospitalName || hospitalName === siteId) {
+        hospitalName = sourceInstitutionName;
+      }
+    }
+
+    return {
+      site_id: siteId,
+      display_name: displayName || hospitalName || sourceInstitutionName || siteId,
+      hospital_name: hospitalName || displayName || sourceInstitutionName || siteId,
+      ...(sourceInstitutionName ? { source_institution_name: sourceInstitutionName } : {}),
+    };
+  },
   siteRowById: vi.fn(),
   siteRowBySourceInstitutionId: vi.fn(),
   upsertAccessRequestRecord: vi.fn(),
@@ -108,7 +126,7 @@ describe("fetchSitesForMainUser", () => {
       {
         site_id: "39100103",
         display_name: "JNUH",
-        hospital_name: "Jeju University Hospital",
+        hospital_name: "제주대학교병원",
       },
       {
         site_id: "smoke-site",
@@ -132,7 +150,7 @@ describe("fetchSitesForMainUser", () => {
       {
         site_id: "39100103",
         display_name: "JNUH",
-        hospital_name: "Jeju University Hospital",
+        hospital_name: "제주대학교병원",
       },
       {
         site_id: "smoke-site",
@@ -154,6 +172,77 @@ describe("fetchSitesForMainUser", () => {
 
     expect(controlPlaneSql).not.toHaveBeenCalled();
     expect(result).toEqual([]);
+  });
+
+  it("hydrates admin site labels from the source institution name when raw HIRA codes are stored", async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        site_id: "39100103",
+        display_name: "39100103",
+        hospital_name: "39100103",
+        source_institution_name: "제주대학교병원",
+      },
+    ]);
+    requireMainAppBridgeUser.mockResolvedValue({
+      user: {
+        role: "admin",
+        site_ids: [],
+      },
+    });
+    controlPlaneSql.mockResolvedValue(sql);
+
+    const result = await fetchSitesForMainUser({} as never);
+
+    expect(result).toEqual([
+      {
+        site_id: "39100103",
+        display_name: "제주대학교병원",
+        hospital_name: "제주대학교병원",
+        source_institution_name: "제주대학교병원",
+      },
+    ]);
+  });
+
+  it("hydrates membership-backed site labels from the source institution name", async () => {
+    requireMainAppBridgeUser.mockResolvedValue({
+      user: {
+        role: "site_admin",
+        site_ids: ["39100103"],
+      },
+      canonicalUser: {
+        memberships: [
+          {
+            membership_id: "membership_1",
+            site_id: "39100103",
+            role: "site_admin",
+            status: "approved",
+            approved_at: "2026-03-22T00:00:00Z",
+            created_at: "2026-03-22T00:00:00Z",
+            site: {
+              site_id: "39100103",
+              display_name: "39100103",
+              hospital_name: "39100103",
+              source_institution_id: "39100103",
+              source_institution_name: "제주대학교병원",
+              status: "active",
+              created_at: "2026-03-22T00:00:00Z",
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await fetchSitesForMainUser({} as never);
+
+    expect(controlPlaneSql).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        site_id: "39100103",
+        display_name: "제주대학교병원",
+        hospital_name: "제주대학교병원",
+        source_institution_name: "제주대학교병원",
+      },
+    ]);
   });
 
   it("returns user and sites from a single bootstrap call for approved users", async () => {

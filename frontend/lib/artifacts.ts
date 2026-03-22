@@ -10,6 +10,7 @@ import {
 import { canUseDesktopLocalApiTransport, requestDesktopLocalApiBinary } from "./desktop-local-api";
 import { canUseDesktopTransport, ensureDesktopImagePreviews } from "./desktop-transport";
 import { canUseDesktopWorkspaceTransport, readDesktopImageBlob } from "./desktop-workspace";
+import type { ImagePreviewBatchResponse } from "./types";
 
 export async function downloadManifest(siteId: string, token: string) {
   if (canUseDesktopLocalApiTransport()) {
@@ -50,6 +51,46 @@ export async function fetchImagePreviewUrl(
     return previewUrls.get(imageId) ?? null;
   }
   return buildImagePreviewUrl(siteId, imageId, token, { maxSide: options.maxSide });
+}
+
+export async function ensureImagePreviews(
+  siteId: string,
+  imageIds: string[],
+  token: string,
+  options: {
+    maxSide?: number;
+    signal?: AbortSignal;
+  } = {},
+) {
+  if (canUseDesktopTransport()) {
+    await ensureDesktopImagePreviews(siteId, imageIds, {
+      maxSide: options.maxSide,
+      signal: options.signal,
+    });
+    return null;
+  }
+  const normalizedIds = Array.from(
+    new Set(
+      imageIds
+        .map((imageId) => String(imageId ?? "").trim())
+        .filter((imageId) => imageId.length > 0),
+    ),
+  );
+  if (normalizedIds.length === 0) {
+    return null;
+  }
+  return request<ImagePreviewBatchResponse>(
+    `/api/sites/${siteId}/images/previews`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        image_ids: normalizedIds,
+        max_side: options.maxSide,
+      }),
+      signal: options.signal,
+    },
+    token,
+  );
 }
 
 export function buildImageContentUrl(siteId: string, imageId: string, token: string) {

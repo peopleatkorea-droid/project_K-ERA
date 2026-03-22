@@ -1,5 +1,6 @@
 import type { SiteRecord } from "../../lib/api";
 import { getSiteDisplayName } from "../../lib/site-labels";
+import { LandingGoogleCta } from "./landing-google-cta";
 
 type EnglishLandingViewProps = {
   authBusy: boolean;
@@ -142,13 +143,15 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             Network
           </a>
         </div>
-        <button
-          className={`rounded-[4px] bg-[#1a5fa8] px-5 py-2 text-[0.78rem] tracking-[0.03em] text-white transition hover:bg-[#144e94] ${props.googleLaunchPulse ? "ring-4 ring-[rgba(26,95,168,0.18)]" : ""}`}
-          type="button"
-          onClick={props.onGoogleLaunch}
+        <LandingGoogleCta
+          buttonClassName="rounded-[4px] bg-[#1a5fa8] px-5 py-2 text-[0.78rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+          googleLaunchPulse={props.googleLaunchPulse}
+          onGoogleLaunch={props.onGoogleLaunch}
+          pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
+          slotClassName="rounded-[4px]"
         >
           {props.authBusy ? props.connectingLabel : "Join the network"}
-        </button>
+        </LandingGoogleCta>
       </nav>
 
       <section className="border-b border-[#d6d9e4] px-6 pb-16 pt-[72px] md:px-8">
@@ -166,9 +169,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               <p className="mt-2.5">What if clinicians across hospitals could contribute cases from routine practice, and build one shared intelligence?</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
-              <button className="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]" type="button" onClick={props.onGoogleLaunch}>
+              <LandingGoogleCta
+                buttonClassName="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+                onGoogleLaunch={props.onGoogleLaunch}
+                slotClassName="rounded-[4px]"
+              >
                 {props.authBusy ? props.connectingLabel : props.googleLoginLabel}
-              </button>
+              </LandingGoogleCta>
               <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
                 Read more ↓
               </a>
@@ -445,17 +452,18 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             Research begins with one case.
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
-            <button className="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]" type="button" onClick={props.onGoogleLaunch}>
+            <LandingGoogleCta
+              buttonClassName="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+              onGoogleLaunch={props.onGoogleLaunch}
+              slotClassName="rounded-[4px]"
+            >
               {props.authBusy ? props.connectingLabel : "Join the K-ERA research network"}
-            </button>
+            </LandingGoogleCta>
             <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
               Read from the beginning
             </a>
           </div>
           <div className="mt-4 text-[0.74rem] text-[#7c8095]">Open to ophthalmology departments · Contact: kera-research@jnuh.ac.kr</div>
-          <div className="absolute left-[-9999px] h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
-            <div data-google-slot />
-          </div>
         </div>
       </section>
 

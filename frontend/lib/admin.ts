@@ -65,22 +65,8 @@ export async function syncInstitutionDirectory(
   if (typeof payload.max_pages === "number") {
     params.set("max_pages", String(payload.max_pages));
   }
-  if (canUseDesktopLocalApiTransport()) {
-    return requestDesktopLocalApiJson<InstitutionDirectorySyncResponse>(
-      "/api/admin/institutions/sync",
-      token,
-      {
-        method: "POST",
-        query: params,
-      },
-    );
-  }
   const suffix = params.size ? `?${params.toString()}` : "";
-  return request<InstitutionDirectorySyncResponse>(
-    `/api/admin/institutions/sync${suffix}`,
-    { method: "POST" },
-    token,
-  );
+  return requestMainControlPlane<InstitutionDirectorySyncResponse>(`/admin/institutions/sync${suffix}`, { method: "POST" }, token);
 }
 
 export async function fetchStorageSettings(token: string, siteId?: string | null) {

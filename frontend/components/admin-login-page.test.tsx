@@ -7,6 +7,7 @@ const routerReplace = vi.hoisted(() => vi.fn());
 const apiMocks = vi.hoisted(() => ({
   login: vi.fn(),
   devLogin: vi.fn(),
+  fetchSites: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -18,6 +19,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("../lib/api", () => ({
   login: apiMocks.login,
   devLogin: apiMocks.devLogin,
+  fetchSites: apiMocks.fetchSites,
 }));
 
 vi.mock("../lib/i18n", () => ({
@@ -64,6 +66,14 @@ describe("AdminLoginPage", () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     window.history.replaceState(null, "", "/admin-login");
+    apiMocks.fetchSites.mockResolvedValue([
+      {
+        site_id: "39100103",
+        display_name: "제주대학교병원",
+        hospital_name: "제주대학교병원",
+        source_institution_name: "제주대학교병원",
+      },
+    ]);
     apiMocks.login.mockResolvedValue({
       access_token: "admin-token",
       token_type: "bearer",
@@ -78,7 +88,7 @@ describe("AdminLoginPage", () => {
     });
   });
 
-  it("redirects direct admin login to the operations dashboard by default", async () => {
+  it("redirects direct admin login to the patient list workspace by default", async () => {
     const { container } = render(<AdminLoginPage />);
 
     fireEvent.change(container.querySelector("#username") as HTMLInputElement, { target: { value: "admin" } });
@@ -89,8 +99,32 @@ describe("AdminLoginPage", () => {
       expect(apiMocks.login).toHaveBeenCalledWith("admin", "admin123");
     });
     await waitFor(() => {
-      expect(routerReplace).toHaveBeenCalledWith("/?workspace=operations&section=dashboard");
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("admin-token");
+    });
+    await waitFor(() => {
+      expect(routerReplace).toHaveBeenCalledWith("/");
     });
     expect(window.localStorage.getItem("kera_web_token")).toBe("admin-token");
+    expect(window.localStorage.getItem("kera_cached_site_records_v1")).toContain("제주대학교병원");
+  });
+
+  it("ignores operations next targets and still opens the patient list workspace", async () => {
+    window.history.replaceState(null, "", "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining");
+
+    const { container } = render(<AdminLoginPage />);
+
+    fireEvent.change(container.querySelector("#username") as HTMLInputElement, { target: { value: "admin" } });
+    fireEvent.change(container.querySelector("#password") as HTMLInputElement, { target: { value: "admin123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter operator workspace" }));
+
+    await waitFor(() => {
+      expect(apiMocks.login).toHaveBeenCalledWith("admin", "admin123");
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("admin-token");
+    });
+    await waitFor(() => {
+      expect(routerReplace).toHaveBeenCalledWith("/");
+    });
   });
 });

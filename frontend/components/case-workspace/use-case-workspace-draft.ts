@@ -55,6 +55,8 @@ type ToastState = {
   message: string;
 } | null;
 
+const EMPTY_DRAFT_ASSET_SIGNATURE = "draft-assets:empty";
+
 type Args = {
   selectedSiteId: string | null;
   userId: string;
@@ -68,6 +70,41 @@ type Args = {
   draftStorageKey: (userId: string, siteId: string) => string;
   favoriteStorageKey: (userId: string, siteId: string) => string;
 };
+
+function serializeDraftBox(box: NormalizedBox | null | undefined): string {
+  if (!box) {
+    return "null";
+  }
+  return [box.x0, box.y0, box.x1, box.y1].map((value) => Number(value).toFixed(6)).join(",");
+}
+
+export function buildDraftAssetSignature(draftImages: DraftImage[], lesionBoxes: LesionBoxMap): string {
+  if (draftImages.length === 0 && Object.keys(lesionBoxes).length === 0) {
+    return EMPTY_DRAFT_ASSET_SIGNATURE;
+  }
+
+  const imageTokens = draftImages
+    .map((image) =>
+      [
+        image.draft_id,
+        image.file.name,
+        image.file.size,
+        image.file.lastModified,
+        image.view,
+        image.is_representative ? "1" : "0",
+      ].join(":"),
+    )
+    .sort();
+
+  const boxTokens = Object.entries(lesionBoxes)
+    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
+    .map(([draftId, box]) => `${draftId}:${serializeDraftBox(box)}`);
+
+  return JSON.stringify({
+    images: imageTokens,
+    boxes: boxTokens,
+  });
+}
 
 export function useCaseWorkspaceDraftState({
   selectedSiteId,
@@ -93,6 +130,18 @@ export function useCaseWorkspaceDraftState({
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>([]);
   const draftImagesRef = useRef<DraftImage[]>([]);
+  const lastPersistedAssetSignatureRef = useRef<string>(EMPTY_DRAFT_ASSET_SIGNATURE);
+  const lastPersistedAssetStorageKeyRef = useRef<string | null>(null);
+
+  function rememberPersistedAssets(storageKey: string, draftImagesForSignature: DraftImage[], lesionBoxes: LesionBoxMap) {
+    lastPersistedAssetSignatureRef.current = buildDraftAssetSignature(draftImagesForSignature, lesionBoxes);
+    lastPersistedAssetStorageKeyRef.current = storageKey;
+  }
+
+  function resetPersistedAssetSnapshot() {
+    lastPersistedAssetSignatureRef.current = EMPTY_DRAFT_ASSET_SIGNATURE;
+    lastPersistedAssetStorageKeyRef.current = null;
+  }
 
   function defaultPendingOrganism(category = "bacterial"): OrganismRecord {
     const nextCategory = String(category || "bacterial");
@@ -151,6 +200,7 @@ export function useCaseWorkspaceDraftState({
 
     async function loadPersistedDraftState() {
       if (!selectedSiteId) {
+        resetPersistedAssetSnapshot();
         setDraft(createDraft());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
@@ -189,6 +239,7 @@ export function useCaseWorkspaceDraftState({
       }
 
       if (!rawDraft) {
+        rememberPersistedAssets(storageKey, [], {});
         setDraft(createDraft());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
@@ -208,12 +259,14 @@ export function useCaseWorkspaceDraftState({
           ...parsed.draft,
         });
         const recoveredImages = persistedAssets ? recoverDraftImages(persistedAssets.images) : [];
+        const recoveredLesionBoxes = pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {});
+        rememberPersistedAssets(storageKey, recoveredImages, recoveredLesionBoxes);
         setDraft(recoveredDraft);
         setPendingOrganism(defaultPendingOrganism(recoveredDraft.culture_category));
         setShowAdditionalOrganismForm(false);
         setDraftSavedAt(parsed.updated_at);
         replaceDraftImages(recoveredImages);
-        setDraftLesionPromptBoxes(pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {}));
+        setDraftLesionPromptBoxes(recoveredLesionBoxes);
         setToast({
           tone: "success",
           message: recoveredImages.length > 0 ? recoveredDraftWithAssetsMessage : recoveredDraftMessage,
@@ -221,6 +274,7 @@ export function useCaseWorkspaceDraftState({
       } catch {
         window.localStorage.removeItem(storageKey);
         void deletePersistedDraftAssets(storageKey);
+        resetPersistedAssetSnapshot();
         setDraft(createDraft());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
@@ -252,10 +306,15 @@ export function useCaseWorkspaceDraftState({
     const storageKey = draftStorageKey(userId, selectedSiteId);
     const persistedLesionBoxes = pruneLesionBoxes(draftImages, draftLesionPromptBoxes);
     const shouldKeepDraft = hasDraftContent(draft) || draftImages.length > 0 || Object.keys(persistedLesionBoxes).length > 0;
+    const assetSignature = buildDraftAssetSignature(draftImages, persistedLesionBoxes);
+    const shouldPersistAssets = assetSignature !== EMPTY_DRAFT_ASSET_SIGNATURE;
+    const assetsChanged =
+      lastPersistedAssetStorageKeyRef.current !== storageKey || lastPersistedAssetSignatureRef.current !== assetSignature;
 
     if (!shouldKeepDraft) {
       window.localStorage.removeItem(storageKey);
       void deletePersistedDraftAssets(storageKey);
+      rememberPersistedAssets(storageKey, [], {});
       setDraftSavedAt(null);
       return;
     }
@@ -268,10 +327,16 @@ export function useCaseWorkspaceDraftState({
       };
 
       window.localStorage.setItem(storageKey, JSON.stringify(payload));
+      if (!cancelled) {
+        setDraftSavedAt(payload.updated_at);
+      }
 
       const persistAssets = async () => {
         try {
-          if (draftImages.length > 0 || Object.keys(persistedLesionBoxes).length > 0) {
+          if (shouldPersistAssets) {
+            if (!assetsChanged) {
+              return;
+            }
             await writePersistedDraftAssets({
               storage_key: storageKey,
               updated_at: payload.updated_at,
@@ -286,15 +351,16 @@ export function useCaseWorkspaceDraftState({
                 blob: image.file,
               })),
             });
+            rememberPersistedAssets(storageKey, draftImages, persistedLesionBoxes);
           } else {
+            if (!assetsChanged) {
+              return;
+            }
             await deletePersistedDraftAssets(storageKey);
+            rememberPersistedAssets(storageKey, [], {});
           }
         } catch {
           // Local field persistence still succeeds even if the browser blocks IndexedDB.
-        }
-
-        if (!cancelled) {
-          setDraftSavedAt(payload.updated_at);
         }
       };
 
@@ -320,6 +386,7 @@ export function useCaseWorkspaceDraftState({
 
   function clearDraftStorage(siteId: string | null = selectedSiteId) {
     if (!siteId) {
+      resetPersistedAssetSnapshot();
       setDraftSavedAt(null);
       return;
     }
@@ -327,6 +394,7 @@ export function useCaseWorkspaceDraftState({
     const storageKey = draftStorageKey(userId, siteId);
     window.localStorage.removeItem(storageKey);
     void deletePersistedDraftAssets(storageKey);
+    rememberPersistedAssets(storageKey, [], {});
     setDraftSavedAt(null);
   }
 

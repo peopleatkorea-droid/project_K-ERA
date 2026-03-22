@@ -6596,6 +6596,68 @@ fn score_slit_lamp_image(image_path: &Path, view: &str) -> Result<JsonValue, Str
     }))
 }
 
+// ─── Session cache: store user+sites locally so app opens instantly without Python ───
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedSessionUser {
+    user_id: String,
+    username: String,
+    full_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_alias: Option<String>,
+    role: String,
+    site_ids: Option<Vec<String>>,
+    approval_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedSessionSite {
+    site_id: String,
+    display_name: String,
+    hospital_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_institution_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionCachePayload {
+    token: String,
+    user: CachedSessionUser,
+    sites: Vec<CachedSessionSite>,
+}
+
+fn session_cache_path() -> PathBuf {
+    desktop_app_local_data_dir().join("session_cache.json")
+}
+
+#[tauri::command]
+fn load_session_cache() -> Option<SessionCachePayload> {
+    let path = session_cache_path();
+    let bytes = fs::read(&path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+#[tauri::command]
+fn save_session_cache(payload: SessionCachePayload) -> Result<(), String> {
+    let path = session_cache_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_session_cache() -> Result<(), String> {
+    let path = session_cache_path();
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[tauri::command]
 fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPageResponse, String> {
     let site_id = payload.site_id.trim().to_string();
@@ -6614,48 +6676,25 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
 
-    let mut count_params = vec![Value::Text(site_id.clone()), Value::Text(site_id.clone())];
-    let mine_clause = if let Some(created_by_user_id) = mine_user_id.as_ref() {
-        count_params.push(Value::Text(created_by_user_id.clone()));
-        " and p.created_by_user_id = ? ".to_string()
-    } else {
-        String::new()
-    };
-    let search_clause = build_search_clause(&payload.search, &mut count_params);
-    let count_sql = format!(
-        "
-        select count(distinct v.patient_id)
-        from visits v
-        join patients p on v.site_id = p.site_id and v.patient_id = p.patient_id
-        where v.site_id = ? and p.site_id = ?
-        {mine_clause}
-        {search_clause}
-        "
-    );
-
-    let total_count = conn
-        .query_row(&count_sql, params_from_iter(count_params), |row| {
-            row.get::<_, i64>(0)
-        })
-        .map_err(|error| error.to_string())?
-        .max(0) as u32;
-    let total_pages = total_count.max(1).div_ceil(page_size);
-    let safe_page = page.min(total_pages.max(1));
-    let offset = (safe_page.saturating_sub(1) * page_size) as i64;
-
-    // params: p.site_id, v.site_id, [user_id?], [search×7?], images.site_id, page_size, offset
+    // Build the mine/search clauses using ids_params directly (one query instead of two)
     let mut ids_params = vec![
         Value::Text(site_id.clone()),
         Value::Text(site_id.clone()),
     ];
-    if let Some(created_by_user_id) = mine_user_id.as_ref() {
+    let mine_clause = if let Some(created_by_user_id) = mine_user_id.as_ref() {
         ids_params.push(Value::Text(created_by_user_id.clone()));
-    }
+        " and p.created_by_user_id = ? ".to_string()
+    } else {
+        String::new()
+    };
     let search_clause = build_search_clause(&payload.search, &mut ids_params);
-    ids_params.push(Value::Text(site_id.clone())); // image_stats: site_id (after search params)
+    ids_params.push(Value::Text(site_id.clone())); // image_stats: site_id
+    let raw_offset = (page.saturating_sub(1) * page_size) as i64;
     ids_params.push(Value::Integer(page_size as i64));
-    ids_params.push(Value::Integer(offset));
+    ids_params.push(Value::Integer(raw_offset));
 
+    // Single query: paged patient rows + total count via scalar subquery.
+    // Eliminates the separate COUNT round-trip to SQLite.
     let ids_sql = format!(
         "
         with filtered_visits as (
@@ -6671,16 +6710,26 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
           from images
           where site_id = ? and visit_id in (select visit_id from filtered_visits)
           group by visit_id
+        ),
+        all_patients as (
+          select
+            fv.patient_id,
+            count(fv.visit_id) as case_count,
+            max(coalesce(image_stats.latest_image_uploaded_at, '')) as max_upload,
+            max(coalesce(fv.created_at, '')) as max_created,
+            max(coalesce(fv.visit_index, 0)) as max_visit_index
+          from filtered_visits fv
+          left join image_stats on fv.visit_id = image_stats.visit_id
+          group by fv.patient_id
         )
         select
-          fv.patient_id,
-          count(fv.visit_id) as case_count,
-          max(coalesce(image_stats.latest_image_uploaded_at, '')) as max_upload,
-          max(coalesce(fv.created_at, '')) as max_created,
-          max(coalesce(fv.visit_index, 0)) as max_visit_index
-        from filtered_visits fv
-        left join image_stats on fv.visit_id = image_stats.visit_id
-        group by fv.patient_id
+          patient_id,
+          case_count,
+          max_upload,
+          max_created,
+          max_visit_index,
+          (select count(*) from all_patients) as total_count
+        from all_patients
         order by max_upload desc, max_created desc, max_visit_index desc
         limit ? offset ?
         "
@@ -6688,19 +6737,29 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
 
     let mut patient_ids = Vec::new();
     let mut case_counts = HashMap::new();
+    let mut total_count: u32 = 0;
     {
         let mut stmt = conn.prepare(&ids_sql).map_err(|error| error.to_string())?;
         let rows = stmt
             .query_map(params_from_iter(ids_params), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(5)?,
+                ))
             })
             .map_err(|error| error.to_string())?;
         for row in rows {
-            let (patient_id, case_count) = row.map_err(|error| error.to_string())?;
+            let (patient_id, case_count, row_total) = row.map_err(|error| error.to_string())?;
+            if total_count == 0 {
+                total_count = row_total.max(0) as u32;
+            }
             case_counts.insert(patient_id.clone(), case_count);
             patient_ids.push(patient_id);
         }
     }
+    let total_pages = total_count.max(1).div_ceil(page_size);
+    let safe_page = page.min(total_pages.max(1));
 
     if patient_ids.is_empty() {
         return Ok(PatientListPageResponse {
@@ -7759,7 +7818,10 @@ fn main() {
             resolve_case_roi_preview_artifact_path,
             read_case_lesion_preview_artifact,
             resolve_case_lesion_preview_artifact_path,
-            read_image_blob
+            read_image_blob,
+            load_session_cache,
+            save_session_cache,
+            clear_session_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running K-ERA desktop shell");

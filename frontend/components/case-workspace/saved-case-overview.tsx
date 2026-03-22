@@ -168,6 +168,7 @@ export function SavedCaseOverview({
               const hasLoadedVisitImages = Array.isArray(visitImages);
               const visibleVisitImages = visitImages ?? [];
               const isCurrentVisit = selectedCase.case_id === caseItem.case_id;
+              const visitImagesPending = !hasLoadedVisitImages && Number(caseItem.image_count ?? 0) > 0;
               const visitLabel = resolveVisitLabel(locale, caseItem.visit_date, caseItem.is_initial_visit, pick, displayVisitReference);
               const imageCount = visibleVisitImages.length || caseItem.image_count;
               const visitMeta = [
@@ -256,7 +257,9 @@ export function SavedCaseOverview({
                     <div className={emptySurfaceClass}>
                       {(isCurrentVisit && panelBusy) || (patientVisitGalleryBusy && !hasLoadedVisitImages)
                         ? commonLoading
-                        : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
+                        : visitImagesPending
+                          ? pick(locale, "Open this visit to load saved images.", "이 방문을 열면 저장 이미지를 불러옵니다.")
+                          : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
                     </div>
                   )}
                 </Card>

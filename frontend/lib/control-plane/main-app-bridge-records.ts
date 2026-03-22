@@ -10,6 +10,7 @@ import type {
   PublicInstitutionRecord,
   SiteRecord,
 } from "../types";
+import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
@@ -140,7 +141,7 @@ export async function upsertSiteRecord(
     ) values (
       ${siteId},
       ${projectId},
-      ${trimText(record.display_name) || siteId},
+      ${trimText(record.display_name)},
       ${trimText(record.hospital_name) || trimText(record.display_name) || siteId},
       ${trimText(record.source_institution_id) || null},
       ${trimText(record.local_storage_root)},
@@ -227,6 +228,40 @@ export async function upsertInstitutionRecord(record: PublicInstitutionRecord): 
   `;
 }
 
+export async function hydrateSiteLabelsForInstitutionIds(institutionIds: string[]): Promise<void> {
+  const normalizedInstitutionIds = Array.from(
+    new Set(
+      institutionIds
+        .map((institutionId) => trimText(institutionId))
+        .filter(Boolean),
+    ),
+  );
+  if (normalizedInstitutionIds.length === 0) {
+    return;
+  }
+  const sql = await controlPlaneSql();
+  await sql`
+    update sites as s
+    set
+      display_name = case
+        when nullif(trim(s.display_name), '') is null
+          or trim(s.display_name) = s.site_id
+          or trim(s.display_name) = directory.name
+          then ''
+        else s.display_name
+      end,
+      hospital_name = case
+        when nullif(trim(s.hospital_name), '') is null or trim(s.hospital_name) = s.site_id
+          then directory.name
+        else s.hospital_name
+      end,
+      updated_at = now()
+    from institution_directory as directory
+    where directory.institution_id = any(${normalizedInstitutionIds})
+      and (s.site_id = directory.institution_id or nullif(s.source_institution_id, '') = directory.institution_id)
+  `;
+}
+
 export async function upsertAccessRequestRecord(
   canonicalUserId: string,
   email: string,
@@ -292,11 +327,13 @@ export async function siteRowById(siteId: string): Promise<Row | null> {
       sites.research_registry_enabled,
       sites.status,
       sites.created_at,
-      institution_directory.name as source_institution_name,
-      institution_directory.address as source_institution_address
+      coalesce(site_directory.name, source_directory.name) as source_institution_name,
+      coalesce(site_directory.address, source_directory.address) as source_institution_address
     from sites
-    left join institution_directory
-      on institution_directory.institution_id = sites.source_institution_id
+    left join institution_directory as site_directory
+      on site_directory.institution_id = sites.site_id
+    left join institution_directory as source_directory
+      on source_directory.institution_id = nullif(sites.source_institution_id, '')
     where sites.site_id = ${siteId}
     limit 1
   `;
@@ -316,11 +353,13 @@ export async function siteRowBySourceInstitutionId(sourceInstitutionId: string):
       sites.research_registry_enabled,
       sites.status,
       sites.created_at,
-      institution_directory.name as source_institution_name,
-      institution_directory.address as source_institution_address
+      coalesce(site_directory.name, source_directory.name) as source_institution_name,
+      coalesce(site_directory.address, source_directory.address) as source_institution_address
     from sites
-    left join institution_directory
-      on institution_directory.institution_id = sites.source_institution_id
+    left join institution_directory as site_directory
+      on site_directory.institution_id = sites.site_id
+    left join institution_directory as source_directory
+      on source_directory.institution_id = nullif(sites.source_institution_id, '')
     where sites.source_institution_id = ${sourceInstitutionId}
     limit 1
   `;
@@ -381,11 +420,13 @@ export async function preloadAccessRequestLookups(rows: Row[]): Promise<AccessRe
             sites.research_registry_enabled,
             sites.status,
             sites.created_at,
-            institution_directory.name as source_institution_name,
-            institution_directory.address as source_institution_address
+            coalesce(site_directory.name, source_directory.name) as source_institution_name,
+            coalesce(site_directory.address, source_directory.address) as source_institution_address
           from sites
-          left join institution_directory
-            on institution_directory.institution_id = sites.source_institution_id
+          left join institution_directory as site_directory
+            on site_directory.institution_id = sites.site_id
+          left join institution_directory as source_directory
+            on source_directory.institution_id = nullif(sites.source_institution_id, '')
           where sites.site_id = any(${requestedSiteIds})
              or sites.source_institution_id = any(${requestedSiteIds})
         `
@@ -442,26 +483,51 @@ export async function preloadAccessRequestLookups(rows: Row[]): Promise<AccessRe
 }
 
 export function serializeSiteRecord(row: Row): SiteRecord {
-  const baseRecord: SiteRecord = {
-    site_id: rowValue<string>(row, "site_id"),
+  const siteId = rowValue<string>(row, "site_id");
+  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
+  const trimmedSourceName = typeof sourceInstitutionName === "string" ? sourceInstitutionName.trim() : "";
+  const rawSite = {
+    site_id: siteId,
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
+    source_institution_name: trimmedSourceName || undefined,
   };
-  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
-  if (typeof sourceInstitutionName === "string" && sourceInstitutionName.trim()) {
-    baseRecord.source_institution_name = sourceInstitutionName;
+  const officialName = getSiteOfficialName(rawSite, siteId);
+  const siteAlias = getSiteAlias(rawSite);
+
+  const baseRecord: SiteRecord = {
+    site_id: siteId,
+    display_name: officialName,
+    hospital_name: officialName,
+  };
+  if (siteAlias) {
+    baseRecord.site_alias = siteAlias;
+  }
+  if (trimmedSourceName) {
+    baseRecord.source_institution_name = trimmedSourceName;
   }
   return baseRecord;
 }
 
 export function serializeManagedSiteRecord(row: Row): ManagedSiteRecord {
-  return {
-    site_id: rowValue<string>(row, "site_id"),
-    project_id: rowValue<string>(row, "project_id"),
+  const siteId = rowValue<string>(row, "site_id");
+  const sourceInstitutionName = rowValue<string | null>(row, "source_institution_name");
+  const rawSite = {
+    site_id: siteId,
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
+    source_institution_name: sourceInstitutionName,
+  };
+  const officialName = getSiteOfficialName(rawSite, siteId);
+  const siteAlias = getSiteAlias(rawSite);
+  return {
+    site_id: siteId,
+    project_id: rowValue<string>(row, "project_id"),
+    display_name: officialName,
+    hospital_name: officialName,
+    site_alias: siteAlias,
     source_institution_id: rowValue<string | null>(row, "source_institution_id"),
-    source_institution_name: rowValue<string | null>(row, "source_institution_name"),
+    source_institution_name: sourceInstitutionName,
     source_institution_address: rowValue<string | null>(row, "source_institution_address"),
     local_storage_root: rowValue<string>(row, "local_storage_root"),
     research_registry_enabled: Boolean(rowValue<boolean>(row, "research_registry_enabled")),
@@ -514,9 +580,10 @@ export function serializeAccessRequestRecordWithLookups(
     (requestedSiteSource === "institution_directory" ? lookups.mappedSitesBySourceInstitutionId.get(requestedSiteId) ?? null : null);
   const institution =
     requestedSiteSource === "institution_directory" && !directSite ? lookups.institutionsById.get(requestedSiteId) ?? null : null;
+  const serializedMappedSite = mappedSite ? serializeSiteRecord(mappedSite) : null;
   const requestedSiteLabel =
     trimText(rowValue<string>(row, "requested_site_label")) ||
-    (mappedSite ? rowValue<string>(mappedSite, "display_name") : "") ||
+    serializedMappedSite?.display_name ||
     (institution ? rowValue<string>(institution, "name") : "");
   return {
     request_id: rowValue<string>(row, "request_id"),
@@ -525,10 +592,8 @@ export function serializeAccessRequestRecordWithLookups(
     requested_site_id: requestedSiteId,
     requested_site_label: requestedSiteLabel,
     requested_site_source: directSite ? "site" : requestedSiteSource,
-    resolved_site_id: mappedSite ? rowValue<string>(mappedSite, "site_id") : null,
-    resolved_site_label: mappedSite
-      ? rowValue<string>(mappedSite, "display_name") || rowValue<string>(mappedSite, "hospital_name")
-      : null,
+    resolved_site_id: serializedMappedSite?.site_id ?? null,
+    resolved_site_label: serializedMappedSite?.display_name ?? null,
     requested_role: rowValue<string>(row, "requested_role"),
     message: rowValue<string>(row, "message"),
     status: rowValue<AuthState>(row, "status"),

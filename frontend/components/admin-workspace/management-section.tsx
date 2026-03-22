@@ -31,6 +31,7 @@ type Props = {
   storageSettings: StorageSettingsRecord | null;
   storageSettingsBusy: boolean;
   metadataRecoveryBusy: boolean;
+  institutionSyncBusy: boolean;
   instanceStorageRootForm: string;
   siteStorageRootForm: string;
   selectedSiteLabel: string | null;
@@ -53,6 +54,7 @@ type Props = {
   onSaveSelectedSiteStorageRoot: () => void;
   onMigrateSelectedSiteStorageRoot: () => void;
   onRecoverSelectedSiteMetadata: () => void;
+  onInstitutionSync: () => void;
   onCreateProject: () => void;
   onEditSite: (site: ManagedSiteRecord) => void;
   onResetSiteForm: () => void;
@@ -240,6 +242,7 @@ export function ManagementSection({
   storageSettings,
   storageSettingsBusy,
   metadataRecoveryBusy,
+  institutionSyncBusy,
   instanceStorageRootForm,
   siteStorageRootForm,
   selectedSiteLabel,
@@ -262,6 +265,7 @@ export function ManagementSection({
   onSaveSelectedSiteStorageRoot,
   onMigrateSelectedSiteStorageRoot,
   onRecoverSelectedSiteMetadata,
+  onInstitutionSync,
   onCreateProject,
   onEditSite,
   onResetSiteForm,
@@ -688,6 +692,19 @@ export function ManagementSection({
                     "Search the synced ophthalmology directory and prefill a new hospital registration from an official institution.",
                     "동기화된 안과 기관 디렉터리를 검색해서 공식 기관 정보로 새 병원 등록 폼을 채울 수 있습니다.",
                   )}
+                  aside={
+                    canManagePlatform ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        loading={institutionSyncBusy}
+                        onClick={onInstitutionSync}
+                      >
+                        {pick(locale, "Sync HIRA directory", "HIRA 디렉터리 동기화")}
+                      </Button>
+                    ) : null
+                  }
                 />
                 <Field
                   label={pick(locale, "Institution keyword", "기관 검색어")}

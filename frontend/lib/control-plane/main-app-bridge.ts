@@ -14,6 +14,8 @@ import { makeControlPlaneId } from "./crypto";
 import { controlPlaneDevAuthEnabled } from "./config";
 import { controlPlaneSql } from "./db";
 import { verifyGoogleIdentityToken } from "./google";
+import type { ControlPlaneUser } from "./types";
+import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 export {
   createMainAdminSite,
   createMainProject,
@@ -25,6 +27,7 @@ export {
   listMainProjects,
   listMainUsers,
   reviewMainAccessRequest,
+  syncMainInstitutionDirectory,
   updateMainAdminSite,
   upsertMainUser,
 } from "./main-app-bridge-admin";
@@ -83,10 +86,53 @@ function logBootstrapTiming(message: string, payload: Record<string, unknown>): 
   console.info(`[kera-main-bootstrap] ${message}`, payload);
 }
 
-async function listSitesForMainUserRecord(user: AuthUser): Promise<SiteRecord[]> {
+function hydrateMembershipSiteRecord(site: ControlPlaneUser["memberships"][number]["site"]): SiteRecord | null {
+  if (!site) {
+    return null;
+  }
+  const siteId = trimText(site.site_id);
+  if (!siteId) {
+    return null;
+  }
+  const officialName = getSiteOfficialName(site, siteId);
+  const siteAlias = getSiteAlias(site);
+
+  const hydratedSite: SiteRecord = {
+    site_id: siteId,
+    display_name: officialName,
+    hospital_name: officialName,
+    source_institution_name: trimText(site.source_institution_name) || undefined,
+  };
+  if (siteAlias) {
+    hydratedSite.site_alias = siteAlias;
+  }
+  return hydratedSite;
+}
+
+function siteRecordsFromMemberships(canonicalUser: ControlPlaneUser): SiteRecord[] {
+  const items = new Map<string, SiteRecord>();
+  for (const membership of canonicalUser.memberships) {
+    if (membership.status !== "approved") {
+      continue;
+    }
+    const hydratedSite = hydrateMembershipSiteRecord(membership.site);
+    if (!hydratedSite) {
+      continue;
+    }
+    items.set(hydratedSite.site_id, hydratedSite);
+  }
+  return Array.from(items.values()).sort(
+    (left, right) => left.hospital_name.localeCompare(right.hospital_name) || left.site_id.localeCompare(right.site_id),
+  );
+}
+
+async function listSitesForMainUserRecord(user: AuthUser, canonicalUser?: ControlPlaneUser): Promise<SiteRecord[]> {
   const siteIds = normalizeStringArray(user.site_ids);
   if (user.role !== "admin" && !siteIds.length) {
     return [];
+  }
+  if (user.role !== "admin" && canonicalUser) {
+    return siteRecordsFromMemberships(canonicalUser);
   }
   const sql = await controlPlaneSql();
   const rows =
@@ -96,30 +142,50 @@ async function listSitesForMainUserRecord(user: AuthUser): Promise<SiteRecord[]>
             sites.site_id,
             sites.display_name,
             sites.hospital_name,
-            institution_directory.name as source_institution_name
+            coalesce(site_directory.name, source_directory.name) as source_institution_name
           from sites
-          left join institution_directory
-            on institution_directory.institution_id = coalesce(nullif(sites.source_institution_id, ''), sites.site_id)
-          order by sites.display_name asc, sites.site_id asc
+          left join institution_directory as site_directory
+            on site_directory.institution_id = sites.site_id
+          left join institution_directory as source_directory
+            on source_directory.institution_id = nullif(sites.source_institution_id, '')
+          order by
+            coalesce(
+              nullif(trim(site_directory.name), ''),
+              nullif(trim(source_directory.name), ''),
+              nullif(trim(sites.hospital_name), ''),
+              nullif(trim(sites.display_name), ''),
+              sites.site_id
+            ) asc,
+            sites.site_id asc
         `
       : await sql`
           select
             sites.site_id,
             sites.display_name,
             sites.hospital_name,
-            institution_directory.name as source_institution_name
+            coalesce(site_directory.name, source_directory.name) as source_institution_name
           from sites
-          left join institution_directory
-            on institution_directory.institution_id = coalesce(nullif(sites.source_institution_id, ''), sites.site_id)
+          left join institution_directory as site_directory
+            on site_directory.institution_id = sites.site_id
+          left join institution_directory as source_directory
+            on source_directory.institution_id = nullif(sites.source_institution_id, '')
           where sites.site_id = any(${siteIds})
-          order by sites.display_name asc, sites.site_id asc
+          order by
+            coalesce(
+              nullif(trim(site_directory.name), ''),
+              nullif(trim(source_directory.name), ''),
+              nullif(trim(sites.hospital_name), ''),
+              nullif(trim(sites.display_name), ''),
+              sites.site_id
+            ) asc,
+            sites.site_id asc
         `;
   return rows.map((row) => serializeSiteRecord(row));
 }
 
 export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteRecord[]> {
-  const { user } = await requireMainAppBridgeUser(request);
-  return listSitesForMainUserRecord(user);
+  const { canonicalUser, user } = await requireMainAppBridgeUser(request);
+  return listSitesForMainUserRecord(user, canonicalUser);
 }
 
 export async function fetchMainUserAuth(request: NextRequest): Promise<AuthResponse> {
@@ -130,7 +196,7 @@ export async function fetchMainUserAuth(request: NextRequest): Promise<AuthRespo
 export async function fetchMainBootstrap(request: NextRequest): Promise<MainBootstrapResponse> {
   const totalStartedAt = performance.now();
   const authStartedAt = performance.now();
-  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  const { canonicalUser, canonicalUserId, user } = await requireMainAppBridgeUser(request);
   const auth = await buildLocalAuthResponse(user);
   const authCompletedAt = performance.now();
 
@@ -141,7 +207,7 @@ export async function fetchMainBootstrap(request: NextRequest): Promise<MainBoot
 
   if (user.approval_status === "approved") {
     const sitesStartedAt = performance.now();
-    sites = await listSitesForMainUserRecord(user);
+    sites = await listSitesForMainUserRecord(user, canonicalUser);
     sitesMs = performance.now() - sitesStartedAt;
   } else {
     const requestsStartedAt = performance.now();
@@ -190,11 +256,11 @@ export async function loginMainWithLocalCredentials(
   _request: NextRequest,
   payload: { username?: string; password?: string },
 ): Promise<AuthResponse> {
-  const { canonicalUserId, user } = await authenticateMainAppUser(
+  const { user } = await authenticateMainAppUser(
     trimText(payload.username),
     trimText(payload.password),
   );
-  return buildMainAuthResponse(canonicalUserId, user);
+  return buildLocalAuthResponse(user);
 }
 
 export async function devLoginMain(_request: NextRequest): Promise<AuthResponse> {
@@ -206,9 +272,16 @@ export async function devLoginMain(_request: NextRequest): Promise<AuthResponse>
     fullName: "Platform Administrator",
     googleSub: null,
   });
-  return buildMainAuthResponse(user.user_id, {
+  return buildLocalAuthResponse({
+    user_id: user.user_id,
     username: user.email,
     full_name: user.full_name,
+    public_alias: null,
+    role: "admin",
+    site_ids: user.memberships.filter((membership) => membership.status === "approved").map((membership) => membership.site_id),
+    approval_status: "approved",
+    latest_access_request: null,
+    registry_consents: {},
   });
 }
 

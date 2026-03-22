@@ -2,8 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { canUseDesktopLocalApiTransport } from "../lib/desktop-local-api";
 import { fetchSiteSummary, fetchSites, type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
-import { optimisticSitesForUser, resolveSelectedSiteId } from "./home-page-auth-shared";
+import {
+  cacheSiteRecords,
+  mergeSiteRecordMetadata,
+  mergeSitesWithCachedMetadata,
+  optimisticSitesForUser,
+  resolveSelectedSiteId,
+} from "./home-page-auth-shared";
 
 type UseApprovedWorkspaceStateOptions = {
   token: string | null;
@@ -12,6 +19,18 @@ type UseApprovedWorkspaceStateOptions = {
   describeError: (nextError: unknown, fallback: string) => string;
   failedLoadSiteData: string;
 };
+
+function scheduleDeferredBrowserTask(task: () => void, timeoutMs = 240) {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+  if (typeof window.requestIdleCallback === "function") {
+    const idleId = window.requestIdleCallback(() => task(), { timeout: timeoutMs });
+    return () => window.cancelIdleCallback(idleId);
+  }
+  const timerId = window.setTimeout(task, timeoutMs);
+  return () => window.clearTimeout(timerId);
+}
 
 export function useApprovedWorkspaceState({
   token,
@@ -43,13 +62,14 @@ export function useApprovedWorkspaceState({
 
   const applyApprovedWorkspaceState = useCallback(
     (nextUser: AuthUser, options?: { preferredSiteId?: string | null; sites?: SiteRecord[] }) => {
-      const nextSites = options?.sites ?? optimisticSitesForUser(nextUser);
+      const nextSites = mergeSitesWithCachedMetadata(options?.sites ?? optimisticSitesForUser(nextUser));
+      cacheSiteRecords(nextSites);
       setSites((currentSites) => {
         if (currentSites.length === 0) {
           return nextSites;
         }
         const existingSitesById = new Map(currentSites.map((site) => [site.site_id, site]));
-        return nextSites.map((site) => existingSitesById.get(site.site_id) ?? site);
+        return nextSites.map((site) => mergeSiteRecordMetadata(site, existingSitesById.get(site.site_id)));
       });
       setSelectedSiteId((current) => resolveSelectedSiteId(nextSites, current, options?.preferredSiteId));
     },
@@ -66,7 +86,8 @@ export function useApprovedWorkspaceState({
 
   const refreshApprovedSites = useCallback(
     async (currentToken: string, options?: { preferredSiteId?: string | null }) => {
-      const nextSites = await fetchSites(currentToken);
+      const nextSites = mergeSitesWithCachedMetadata(await fetchSites(currentToken));
+      cacheSiteRecords(nextSites);
       setSites(nextSites);
       setSelectedSiteId((current) => resolveSelectedSiteId(nextSites, current, options?.preferredSiteId));
       return nextSites;
@@ -83,9 +104,11 @@ export function useApprovedWorkspaceState({
 
   useEffect(() => {
     if (
+      canUseDesktopLocalApiTransport() ||
       !token ||
       !selectedSiteId ||
       !approved ||
+      bootstrapBusy ||
       summary?.site_id === selectedSiteId ||
       siteSummaryLoadedSiteIdRef.current === selectedSiteId ||
       siteSummaryRequestSiteIdRef.current === selectedSiteId
@@ -125,9 +148,15 @@ export function useApprovedWorkspaceState({
       }
     }
 
-    void loadSite();
+    const cancelDeferredLoad = scheduleDeferredBrowserTask(() => {
+      void loadSite();
+    }, canUseDesktopLocalApiTransport() ? 4000 : 0);
     return () => {
       cancelled = true;
+      cancelDeferredLoad();
+      if (siteSummaryRequestSiteIdRef.current === currentSiteId) {
+        siteSummaryRequestSiteIdRef.current = null;
+      }
     };
   }, [approved, bootstrapBusy, describeError, failedLoadSiteData, selectedSiteId, summary?.site_id, token]);
 

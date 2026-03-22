@@ -87,14 +87,12 @@ export function canUseDesktopTransport(): boolean {
 }
 
 async function normalizeDesktopThumbnailRecord(thumbnail: DesktopPathBackedThumbnailRecord): Promise<PatientListThumbnailRecord> {
-  const previewUrl =
-    thumbnail.preview_url ??
-    (await convertDesktopFilePath(thumbnail.preview_path ?? null)) ??
-    (await convertDesktopFilePath(thumbnail.fallback_path ?? null));
-  const fallbackUrl =
-    thumbnail.fallback_url ??
-    (await convertDesktopFilePath(thumbnail.fallback_path ?? null));
-
+  const [previewConverted, fallbackConverted] = await Promise.all([
+    convertDesktopFilePath(thumbnail.preview_path ?? null),
+    convertDesktopFilePath(thumbnail.fallback_path ?? null),
+  ]);
+  const previewUrl = thumbnail.preview_url ?? previewConverted ?? fallbackConverted;
+  const fallbackUrl = thumbnail.fallback_url ?? fallbackConverted;
   return {
     ...thumbnail,
     preview_url: previewUrl,
@@ -123,13 +121,12 @@ async function normalizeDesktopVisitImages(
 ): Promise<DesktopVisitImageRecord[]> {
   return Promise.all(
     response.map(async (image) => {
-      const contentUrl =
-        image.content_url ??
-        (await convertDesktopFilePath(image.content_path ?? image.image_path ?? null));
-      const previewUrl =
-        image.preview_url ??
-        (await convertDesktopFilePath(image.preview_path ?? null)) ??
-        contentUrl;
+      const [contentConverted, previewConverted] = await Promise.all([
+        convertDesktopFilePath(image.content_path ?? image.image_path ?? null),
+        convertDesktopFilePath(image.preview_path ?? null),
+      ]);
+      const contentUrl = image.content_url ?? contentConverted;
+      const previewUrl = image.preview_url ?? previewConverted ?? contentUrl;
       return {
         ...image,
         content_url: contentUrl,

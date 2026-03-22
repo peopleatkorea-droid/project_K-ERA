@@ -232,6 +232,7 @@ class RemoteControlPlaneClient:
         sido_code: str | None = None,
         sggu_code: str | None = None,
         limit: int = 12,
+        timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         payload = self._request_json(
             "GET",
@@ -242,6 +243,7 @@ class RemoteControlPlaneClient:
                 "sggu_code": sggu_code,
                 "limit": limit,
             },
+            timeout_seconds=timeout_seconds,
         )
         return [dict(item) for item in payload] if isinstance(payload, list) else []
 

@@ -3,6 +3,7 @@ import type { Row } from "postgres";
 import { controlPlaneAdminEmails, controlPlaneLlmApiKey } from "./config";
 import { controlPlaneSql } from "./db";
 import { hashNodeToken, makeControlPlaneId, makeNodeToken, normalizeEmail, normalizeSiteId } from "./crypto";
+import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 import type {
   ControlPlaneAggregation,
   ControlPlaneAggregationStatus,
@@ -32,15 +33,25 @@ function serializeSite(row: Row | null): ControlPlaneSite | null {
   if (!row) {
     return null;
   }
-  const site: ControlPlaneSite = {
-    site_id: rowValue<string>(row, "site_id"),
+  const siteId = rowValue<string>(row, "site_id");
+  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
+  const rawSite = {
+    site_id: siteId,
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
+    source_institution_name: sourceInstitutionName,
+  };
+  const officialName = getSiteOfficialName(rawSite, siteId);
+  const siteAlias = getSiteAlias(rawSite);
+  const site: ControlPlaneSite = {
+    site_id: siteId,
+    display_name: officialName,
+    hospital_name: officialName,
+    ...(siteAlias ? { site_alias: siteAlias } : {}),
     source_institution_id: rowValue<string | null>(row, "source_institution_id"),
     status: rowValue<string>(row, "status"),
     created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
   };
-  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
   if (typeof sourceInstitutionName === "string" && sourceInstitutionName.trim()) {
     site.source_institution_name = sourceInstitutionName.trim();
   }
@@ -170,11 +181,13 @@ async function membershipsForUser(userId: string): Promise<ControlPlaneMembershi
       s.source_institution_id,
       s.status,
       s.created_at,
-      institution_directory.name as source_institution_name
+      coalesce(site_directory.name, source_directory.name) as source_institution_name
     from site_memberships as m
     left join sites as s on s.site_id = m.site_id
-    left join institution_directory
-      on institution_directory.institution_id = coalesce(nullif(s.source_institution_id, ''), s.site_id)
+    left join institution_directory as site_directory
+      on site_directory.institution_id = s.site_id
+    left join institution_directory as source_directory
+      on source_directory.institution_id = nullif(s.source_institution_id, '')
     where m.user_id = ${userId}
     order by m.created_at asc
   `;
@@ -348,6 +361,15 @@ export async function createSiteForUser(options: {
 }): Promise<ControlPlaneSite> {
   const sql = await controlPlaneSql();
   const siteId = normalizeSiteId(options.siteId);
+  const siteAlias = (() => {
+    const trimmedDisplayName = options.displayName.trim();
+    const trimmedHospitalName = options.hospitalName.trim();
+    if (!trimmedDisplayName || trimmedDisplayName === trimmedHospitalName || trimmedDisplayName === siteId) {
+      return "";
+    }
+    return trimmedDisplayName;
+  })();
+  const hospitalName = options.hospitalName.trim() || siteAlias || siteId;
   const now = new Date().toISOString();
   await sql`
     insert into sites (
@@ -364,8 +386,8 @@ export async function createSiteForUser(options: {
     ) values (
       ${siteId},
       ${"project_default"},
-      ${options.displayName.trim() || siteId},
-      ${options.hospitalName.trim() || options.displayName.trim() || siteId},
+      ${siteAlias},
+      ${hospitalName},
       ${options.sourceInstitutionId || null},
       ${""},
       ${true},

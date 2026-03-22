@@ -122,6 +122,9 @@ def site_record_for_request(
     normalized_site_id = str(site_id or "").strip()
     if not normalized_site_id:
         return None
+    local_site = cp.get_site(normalized_site_id)
+    if isinstance(local_site, dict) and local_site:
+        return dict(local_site)
     remote_sites = call_remote_control_plane_method(
         cp,
         authorization=authorization,

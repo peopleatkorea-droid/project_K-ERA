@@ -26,7 +26,7 @@ import {
   updateDesktopVisit,
   uploadDesktopImage,
 } from "./desktop-workspace";
-import { buildImageContentUrl, buildImagePreviewUrl } from "./artifacts";
+import { buildImageContentUrl, buildImagePreviewUrl, ensureImagePreviews } from "./artifacts";
 import type {
   CaseHistoryResponse,
   CaseSummaryRecord,
@@ -47,6 +47,9 @@ export type FetchWorkspacePatientListPageOptions = {
   signal?: AbortSignal;
 };
 
+const PATIENT_LIST_THUMBNAIL_MAX_SIDE = 160;
+const CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
+
 function withPatientListPreviewUrls(
   siteId: string,
   token: string,
@@ -61,7 +64,7 @@ function withPatientListPreviewUrls(
         preview_url:
           thumbnail.preview_url ??
           buildImagePreviewUrl(siteId, thumbnail.image_id, token, {
-            maxSide: 256,
+            maxSide: PATIENT_LIST_THUMBNAIL_MAX_SIDE,
           }),
         fallback_url:
           thumbnail.fallback_url ??
@@ -207,7 +210,17 @@ export async function fetchWorkspacePatientListPage(
     { signal: options.signal },
     token,
   );
-  return withPatientListPreviewUrls(siteId, token, response);
+  const hydratedResponse = withPatientListPreviewUrls(siteId, token, response);
+  const thumbnailIds = hydratedResponse.items.flatMap((row) =>
+    row.representative_thumbnails
+      .map((thumbnail) => String(thumbnail.image_id ?? "").trim())
+      .filter((imageId) => imageId.length > 0),
+  );
+  void ensureImagePreviews(siteId, thumbnailIds, token, {
+    maxSide: PATIENT_LIST_THUMBNAIL_MAX_SIDE,
+    signal: options.signal,
+  }).catch(() => undefined);
+  return hydratedResponse;
 }
 
 export function prewarmWorkspacePatientListPage(
@@ -376,12 +389,22 @@ export async function fetchWorkspaceVisitImagesWithPreviews(
     return fetchDesktopVisitImages(siteId, patientId, visitDate, options);
   }
   const images = await fetchWorkspaceImages(siteId, token, patientId, visitDate, options.signal);
+  const previewableImageIds = images
+    .map((image) => String(image.image_id ?? "").trim())
+    .filter((imageId) => imageId.length > 0);
+  void ensureImagePreviews(siteId, previewableImageIds, token, {
+    maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
+    signal: options.signal,
+  }).catch(() => undefined);
   return images.map((image) => {
     const contentUrl = buildImageContentUrl(siteId, image.image_id, token);
+    const previewUrl = buildImagePreviewUrl(siteId, image.image_id, token, {
+      maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
+    });
     return {
       ...image,
       content_url: contentUrl,
-      preview_url: contentUrl,
+      preview_url: previewUrl,
     };
   });
 }

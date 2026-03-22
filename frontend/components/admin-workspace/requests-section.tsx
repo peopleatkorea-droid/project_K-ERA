@@ -170,7 +170,7 @@ export function RequestsSection({
               create_site_if_missing: needsSiteCreation,
               project_id: defaultProjectId,
               site_code: "",
-              display_name: requestedSiteLabel,
+              display_name: "",
               hospital_name: requestedSiteLabel,
               research_registry_enabled: false,
               reviewer_notes: "",

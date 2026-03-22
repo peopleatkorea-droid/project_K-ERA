@@ -61,6 +61,14 @@ export async function listenDesktopEvent<T>(
 }
 
 const desktopFileSrcCache = new Map<string, string>();
+// Pre-load convertFileSrc once so subsequent calls don't pay dynamic import cost
+let _convertFileSrcModule: Promise<(path: string) => string> | null = null;
+function getConvertFileSrc(): Promise<(path: string) => string> {
+  if (!_convertFileSrcModule) {
+    _convertFileSrcModule = import("@tauri-apps/api/core").then((m) => m.convertFileSrc);
+  }
+  return _convertFileSrcModule;
+}
 
 export async function convertDesktopFilePath(path: string | null | undefined): Promise<string | null> {
   const normalized = typeof path === "string" ? path.trim() : "";
@@ -74,7 +82,7 @@ export async function convertDesktopFilePath(path: string | null | undefined): P
   if (!hasDesktopRuntime()) {
     return normalized;
   }
-  const { convertFileSrc } = await import("@tauri-apps/api/core");
+  const convertFileSrc = await getConvertFileSrc();
   const assetUrl = convertFileSrc(normalized);
   desktopFileSrcCache.set(normalized, assetUrl);
   return assetUrl;

@@ -4,6 +4,7 @@ export type SiteDisplayRecord = {
   site_id: string | null | undefined;
   display_name?: string | null | undefined;
   hospital_name?: string | null | undefined;
+  site_alias?: string | null | undefined;
   source_institution_name?: string | null | undefined;
   [key: string]: unknown;
 };
@@ -62,15 +63,19 @@ export function filterVisibleSites<T extends { site_id: string | null | undefine
   });
 }
 
-export function getSiteDisplayName(site: SiteLike, fallback = ""): string {
+function trimSiteText(value: string | null | undefined): string {
+  return String(value ?? "").trim();
+}
+
+export function getSiteOfficialName(site: SiteLike, fallback = ""): string {
   const siteId = String(site?.site_id ?? "").trim();
+  const sourceInstitutionName = trimSiteText(site?.source_institution_name);
+  if (sourceInstitutionName) {
+    return sourceInstitutionName;
+  }
   const hospitalName = String(site?.hospital_name ?? "").trim();
   if (hospitalName && !isPlaceholderSiteLabel(hospitalName, siteId)) {
     return hospitalName;
-  }
-  const sourceInstitutionName = String(site?.source_institution_name ?? "").trim();
-  if (sourceInstitutionName) {
-    return sourceInstitutionName;
   }
   const displayName = String(site?.display_name ?? "").trim();
   if (displayName && !isPlaceholderSiteLabel(displayName, siteId)) {
@@ -85,13 +90,22 @@ export function getSiteDisplayName(site: SiteLike, fallback = ""): string {
   return siteId || fallback;
 }
 
+export function getSiteDisplayName(site: SiteLike, fallback = ""): string {
+  return getSiteOfficialName(site, fallback);
+}
+
 export function getSiteAlias(site: SiteLike): string | null {
-  const displayName = String(site?.display_name ?? "").trim();
-  const primaryLabel = getSiteDisplayName(site);
-  if (!displayName || displayName === primaryLabel) {
+  const siteId = trimSiteText(site?.site_id);
+  const officialName = getSiteOfficialName(site);
+  const aliasCandidate = trimSiteText(site?.site_alias) || trimSiteText(site?.display_name);
+  if (!aliasCandidate || isPlaceholderSiteLabel(aliasCandidate, siteId) || aliasCandidate === officialName) {
     return null;
   }
-  return displayName;
+  const hospitalName = trimSiteText(site?.hospital_name);
+  if (hospitalName && !isPlaceholderSiteLabel(hospitalName, siteId) && aliasCandidate === hospitalName) {
+    return null;
+  }
+  return aliasCandidate;
 }
 
 export function getRequestedSiteLabel(

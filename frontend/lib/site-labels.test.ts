@@ -17,11 +17,11 @@ describe("site visibility helpers", () => {
   it("filters hidden site records from site collections", () => {
     expect(
       filterVisibleSites([
-        { site_id: "39100103", hospital_name: "Jeju National University Hospital" },
+        { site_id: "39100103", hospital_name: "제주대학교병원" },
         { site_id: "smoke-site", hospital_name: "Smoke Hospital" },
         { site_id: "prod-http", hospital_name: "HTTP Hospital" },
       ]),
-    ).toEqual([{ site_id: "39100103", hospital_name: "Jeju National University Hospital" }]);
+    ).toEqual([{ site_id: "39100103", hospital_name: "제주대학교병원" }]);
   });
 
   it("prefers the source institution name over raw site codes", () => {
@@ -30,8 +30,8 @@ describe("site visibility helpers", () => {
         site_id: "39100103",
         display_name: "39100103",
         hospital_name: "39100103",
-        source_institution_name: "Jeju National University Hospital",
+        source_institution_name: "제주대학교병원",
       }),
-    ).toBe("Jeju National University Hospital");
+    ).toBe("제주대학교병원");
   });
 });

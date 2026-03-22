@@ -102,7 +102,7 @@ MANIFEST_COLUMNS = [
 
 _PATIENT_LOCAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _VISIT_INITIAL_PATTERN = re.compile(r"^(?:initial|initial visit|초진)$", re.IGNORECASE)
-_VISIT_FOLLOW_UP_PATTERN = re.compile(r"^(?:F\/?U|FU)[-\s_#]*0*(\d+)$", re.IGNORECASE)
+_VISIT_FOLLOW_UP_PATTERN = re.compile(r"^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$", re.IGNORECASE)
 _ACTUAL_VISIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -149,7 +149,7 @@ def visit_label_from_index(value: int) -> str:
     index = int(value)
     if index <= 0:
         return "Initial"
-    return f"FU{index}"
+    return f"FU #{index}"
 
 
 def normalize_patient_pseudonym(value: str) -> str:

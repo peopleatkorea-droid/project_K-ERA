@@ -66,6 +66,8 @@ type PatientListBoardProps = {
   onMedsamArtifactPageChange: (page: number) => void;
 };
 
+const VISIBLE_THUMBNAIL_COUNT = 2;
+
 export function PatientListBoard({
   locale,
   localeTag,
@@ -248,7 +250,8 @@ export function PatientListBoard({
     );
   }
 
-  function renderPatientRow(row: PatientListRow) {
+  function renderPatientRow(row: PatientListRow, rowIndex = 0) {
+    const prioritizeThumbnails = rowIndex < 4;
     return (
       <button
         key={`board-${row.patient_id}`}
@@ -279,7 +282,7 @@ export function PatientListBoard({
           {row.representative_thumbnails.length === 0 ? (
             <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
           ) : (
-            row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
+            row.representative_thumbnails.slice(0, VISIBLE_THUMBNAIL_COUNT).map((thumbnail) => {
               const resolvedThumbnail =
                 patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
                 thumbnail;
@@ -290,9 +293,9 @@ export function PatientListBoard({
                   src={previewUrl}
                   alt={`${row.patient_id}-${thumbnail.case_id}`}
                   className={patientListThumbClass}
-                  loading="lazy"
+                  loading={prioritizeThumbnails ? "eager" : "lazy"}
                   decoding="async"
-                  fetchPriority="low"
+                  fetchPriority={prioritizeThumbnails ? "high" : "low"}
                   onError={(event) => {
                     const fallbackUrl = resolvedThumbnail.fallback_url;
                     if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
@@ -309,8 +312,8 @@ export function PatientListBoard({
               );
             })
           )}
-          {row.representative_thumbnails.length > 4 ? (
-            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
+          {row.representative_thumbnails.length > VISIBLE_THUMBNAIL_COUNT ? (
+            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - VISIBLE_THUMBNAIL_COUNT}</span>
           ) : null}
         </div>
       </button>
@@ -427,7 +430,7 @@ export function PatientListBoard({
                           transform: `translateY(${virtualRow.start}px)`,
                         }}
                       >
-                        {renderPatientRow(row)}
+                        {renderPatientRow(row, virtualRow.index)}
                       </div>
                     );
                   })}
@@ -435,7 +438,7 @@ export function PatientListBoard({
               </div>
             ) : (
               <div className={listBoardStackClass}>
-                {patientListRows.map((row) => renderPatientRow(row))}
+                {patientListRows.map((row, rowIndex) => renderPatientRow(row, rowIndex))}
               </div>
             )}
           </>

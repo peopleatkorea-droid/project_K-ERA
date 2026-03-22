@@ -12,12 +12,20 @@ import type {
   InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
   ManagedUserRecord,
+  PublicInstitutionRecord,
   ProjectRecord,
 } from "../types";
+import {
+  controlPlaneHiraApiKey,
+  controlPlaneHiraApiTimeoutMs,
+  controlPlaneHiraHospitalInfoUrl,
+} from "./config";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
   ensureDefaultProject,
+  hydrateSiteLabelsForInstitutionIds,
+  institutionRowById,
   preloadAccessRequestLookups,
   serializeAccessRequestRecordWithLookups,
   serializeAccessRequestRecord,
@@ -26,6 +34,7 @@ import {
   siteRowById,
   siteRowBySourceInstitutionId,
   upsertAccessRequestRecord,
+  upsertInstitutionRecord,
   upsertSiteRecord,
 } from "./main-app-bridge-records";
 import {
@@ -54,6 +63,14 @@ import { hashControlPlanePassword } from "./passwords";
 
 const FIXED_RESEARCHER_ROLE = "researcher";
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
+const HIRA_OPHTHALMOLOGY_SPECIALTY_CODE = "12";
+
+type HiraInstitutionPage = {
+  pageNo: number;
+  numRows: number;
+  totalCount: number;
+  items: PublicInstitutionRecord[];
+};
 
 function assertAdminWorkspacePermission(user: AuthUser): void {
   if (user.role !== "admin" && user.role !== "site_admin") {
@@ -65,6 +82,146 @@ function assertPlatformAdmin(user: AuthUser): void {
   if (user.role !== "admin") {
     throw new Error("Platform admin access required.");
   }
+}
+
+function pickHiraField(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const directValue = record[key];
+    if (directValue !== undefined && directValue !== null && String(directValue).trim()) {
+      return String(directValue).trim();
+    }
+  }
+  const lowered = new Map<string, unknown>(Object.entries(record).map(([key, value]) => [key.toLowerCase(), value]));
+  for (const key of keys) {
+    const loweredValue = lowered.get(key.toLowerCase());
+    if (loweredValue !== undefined && loweredValue !== null && String(loweredValue).trim()) {
+      return String(loweredValue).trim();
+    }
+  }
+  return "";
+}
+
+function normalizeHiraInstitutionRecord(record: Record<string, unknown>, syncedAt: string): PublicInstitutionRecord {
+  const institutionId = pickHiraField(record, "ykiho");
+  if (!institutionId) {
+    throw new Error("HIRA response item is missing ykiho.");
+  }
+  return {
+    institution_id: institutionId,
+    source: "hira",
+    name: pickHiraField(record, "yadmNm") || institutionId,
+    institution_type_code: pickHiraField(record, "clCd"),
+    institution_type_name: pickHiraField(record, "clCdNm"),
+    address: pickHiraField(record, "addr"),
+    phone: pickHiraField(record, "telno"),
+    homepage: pickHiraField(record, "hospUrl"),
+    sido_code: pickHiraField(record, "sidoCd"),
+    sggu_code: pickHiraField(record, "sgguCd"),
+    emdong_name: pickHiraField(record, "emdongNm"),
+    postal_code: pickHiraField(record, "postNo"),
+    x_pos: pickHiraField(record, "XPos", "xPos"),
+    y_pos: pickHiraField(record, "YPos", "yPos"),
+    ophthalmology_available: true,
+    open_status: "active",
+    synced_at: syncedAt,
+  };
+}
+
+function coerceHiraItems(value: unknown): Record<string, unknown>[] {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+  }
+  if (typeof value === "object") {
+    return [value as Record<string, unknown>];
+  }
+  return [];
+}
+
+function normalizeSiteAlias(alias: string, officialName: string, siteId: string): string {
+  const trimmedAlias = trimText(alias);
+  if (!trimmedAlias) {
+    return "";
+  }
+  if (trimmedAlias === trimText(officialName) || trimmedAlias === trimText(siteId)) {
+    return "";
+  }
+  return trimmedAlias;
+}
+
+async function officialInstitutionNameForId(sourceInstitutionId: string | null): Promise<string> {
+  if (!sourceInstitutionId) {
+    return "";
+  }
+  const institution = await institutionRowById(sourceInstitutionId);
+  return institution ? trimText(rowValue<string>(institution, "name")) : "";
+}
+
+async function fetchHiraOphthalmologyPage(pageNo: number, numRows: number): Promise<HiraInstitutionPage> {
+  const serviceKey = controlPlaneHiraApiKey();
+  if (!serviceKey) {
+    throw new Error("KERA_HIRA_API_KEY is not configured.");
+  }
+  const url = new URL(controlPlaneHiraHospitalInfoUrl());
+  url.searchParams.set("serviceKey", serviceKey);
+  url.searchParams.set("pageNo", String(pageNo));
+  url.searchParams.set("numOfRows", String(numRows));
+  url.searchParams.set("dgsbjtCd", HIRA_OPHTHALMOLOGY_SPECIALTY_CODE);
+  url.searchParams.set("_type", "json");
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "application/json, text/plain, */*" },
+    signal: AbortSignal.timeout(controlPlaneHiraApiTimeoutMs()),
+  });
+  const rawText = await response.text();
+  if (response.status === 401) {
+    throw new Error(
+      "HIRA API returned 401 Unauthorized. In data.go.kr this usually means the application approval or service activation has not propagated yet.",
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`HIRA API request failed with HTTP ${response.status}: ${rawText.trim().replace(/\s+/g, " ").slice(0, 240)}`);
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawText) as Record<string, unknown>;
+  } catch {
+    throw new Error(`Unexpected HIRA response format: ${rawText.trim().replace(/\s+/g, " ").slice(0, 240)}`);
+  }
+
+  const responsePayload = payload.response;
+  if (!responsePayload || typeof responsePayload !== "object") {
+    throw new Error("HIRA JSON response is missing the top-level response object.");
+  }
+  const header = (responsePayload as { header?: unknown }).header;
+  const headerRecord = header && typeof header === "object" ? (header as Record<string, unknown>) : {};
+  const resultCode = pickHiraField(headerRecord, "resultCode");
+  const resultMessage = pickHiraField(headerRecord, "resultMsg");
+  if (resultCode && resultCode !== "00") {
+    throw new Error(`HIRA API returned resultCode=${resultCode}: ${resultMessage || "Unknown error"}`);
+  }
+
+  const body = (responsePayload as { body?: unknown }).body;
+  const bodyRecord = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const rawItems =
+    bodyRecord.items && typeof bodyRecord.items === "object"
+      ? ((bodyRecord.items as Record<string, unknown>).item ?? bodyRecord.items)
+      : bodyRecord.items;
+  const syncedAt = new Date().toISOString();
+  const items = coerceHiraItems(rawItems).map((item) => normalizeHiraInstitutionRecord(item, syncedAt));
+  const totalCountText = pickHiraField(bodyRecord, "totalCount");
+  const parsedTotalCount = Number(totalCountText);
+
+  return {
+    pageNo,
+    numRows,
+    totalCount: Number.isFinite(parsedTotalCount) && parsedTotalCount > 0 ? parsedTotalCount : items.length,
+    items,
+  };
 }
 
 async function managedUserRowForMutation(input: {
@@ -194,11 +351,12 @@ async function createAdminSiteRecord(
   if (!siteCode) {
     throw new Error("Site code is required.");
   }
-  const displayName = trimText(payload.display_name) || trimText(payload.hospital_name) || siteCode;
-  if (!displayName) {
-    throw new Error("Site display name is required.");
+  const officialInstitutionName = await officialInstitutionNameForId(sourceInstitutionId);
+  const hospitalName = trimText(payload.hospital_name) || officialInstitutionName || siteCode;
+  if (!hospitalName) {
+    throw new Error("Site hospital name is required.");
   }
-  const hospitalName = trimText(payload.hospital_name) || displayName;
+  const displayName = normalizeSiteAlias(trimText(payload.display_name), hospitalName, siteCode);
   const existingSite = await siteRowById(siteCode);
   if (existingSite) {
     throw new Error(`Site ${siteCode} already exists.`);
@@ -242,11 +400,17 @@ async function updateAdminSiteRecord(
   if (!existing) {
     throw new Error(`Unknown site_id: ${siteId}`);
   }
-  const displayName = trimText(payload.display_name) || rowValue<string>(existing, "display_name");
-  const hospitalName = trimText(payload.hospital_name) || rowValue<string>(existing, "hospital_name");
   const currentSourceInstitutionId = trimText(rowValue<string | null>(existing, "source_institution_id")) || null;
   const sourceInstitutionId =
     payload.source_institution_id === undefined ? currentSourceInstitutionId : trimText(payload.source_institution_id) || null;
+  const officialInstitutionName = await officialInstitutionNameForId(sourceInstitutionId);
+  const existingHospitalName = trimText(rowValue<string>(existing, "hospital_name"));
+  const hospitalName = trimText(payload.hospital_name) || officialInstitutionName || existingHospitalName || siteId;
+  const displayName = normalizeSiteAlias(
+    payload.display_name === undefined ? trimText(rowValue<string>(existing, "display_name")) : trimText(payload.display_name),
+    hospitalName,
+    siteId,
+  );
   if (sourceInstitutionId && sourceInstitutionId !== currentSourceInstitutionId) {
     const mapped = await siteRowBySourceInstitutionId(sourceInstitutionId);
     if (mapped && rowValue<string>(mapped, "site_id") !== siteId) {
@@ -741,13 +905,23 @@ async function listMainAdminSitesForUser(
         sites.research_registry_enabled,
         sites.status,
         sites.created_at,
-        institution_directory.name as source_institution_name,
-        institution_directory.address as source_institution_address
+        coalesce(site_directory.name, source_directory.name) as source_institution_name,
+        coalesce(site_directory.address, source_directory.address) as source_institution_address
       from sites
-      left join institution_directory
-        on institution_directory.institution_id = sites.source_institution_id
+      left join institution_directory as site_directory
+        on site_directory.institution_id = sites.site_id
+      left join institution_directory as source_directory
+        on source_directory.institution_id = nullif(sites.source_institution_id, '')
       ${whereClause}
-      order by sites.display_name asc, sites.site_id asc
+      order by
+        coalesce(
+          nullif(trim(site_directory.name), ''),
+          nullif(trim(source_directory.name), ''),
+          nullif(trim(sites.hospital_name), ''),
+          nullif(trim(sites.display_name), ''),
+          sites.site_id
+        ) asc,
+        sites.site_id asc
     `,
     queryValues,
   );
@@ -804,6 +978,67 @@ async function fetchMainInstitutionDirectoryStatusForUser(user: AuthUser): Promi
     institutions_synced: count,
     synced_at: rows[0]?.synced_at ? new Date(rows[0].synced_at as string | Date).toISOString() : null,
   };
+}
+
+async function syncMainInstitutionDirectoryForUser(
+  user: AuthUser,
+  payload: {
+    page_size?: number;
+    max_pages?: number;
+  } = {},
+): Promise<InstitutionDirectorySyncResponse> {
+  assertPlatformAdmin(user);
+  const pageSize = Math.max(1, Math.min(500, Math.floor(Number(payload.page_size) || 100)));
+  const maxPages =
+    payload.max_pages === undefined || payload.max_pages === null
+      ? null
+      : Math.max(1, Math.floor(Number(payload.max_pages) || 1));
+
+  let pageNo = 1;
+  let pagesSynced = 0;
+  let totalCount = 0;
+  let institutionsSynced = 0;
+
+  while (true) {
+    const page = await fetchHiraOphthalmologyPage(pageNo, pageSize);
+    totalCount = Math.max(totalCount, page.totalCount);
+    if (page.items.length === 0) {
+      break;
+    }
+    for (const item of page.items) {
+      await upsertInstitutionRecord(item);
+    }
+    await hydrateSiteLabelsForInstitutionIds(page.items.map((item) => item.institution_id));
+    institutionsSynced += page.items.length;
+    pagesSynced += 1;
+
+    if (maxPages !== null && pagesSynced >= maxPages) {
+      break;
+    }
+    if (page.totalCount && pageNo * pageSize >= page.totalCount) {
+      break;
+    }
+    pageNo += 1;
+  }
+
+  return {
+    source: "hira",
+    pages_synced: pagesSynced,
+    total_count: totalCount,
+    institutions_synced: institutionsSynced,
+    synced_at: new Date().toISOString(),
+  };
+}
+
+export async function syncMainInstitutionDirectory(
+  request: NextRequest,
+  payload: {
+    page_size?: number;
+    max_pages?: number;
+  } = {},
+): Promise<InstitutionDirectorySyncResponse> {
+  const { user } = await requireMainAppBridgeUser(request);
+  return syncMainInstitutionDirectoryForUser(user, payload);
 }
 
 export async function fetchMainAdminWorkspaceBootstrap(

@@ -118,6 +118,18 @@ function revokeUrls(urls: string[]) {
   }
 }
 
+function areNormalizedBoxesEqual(left: NormalizedBox | null | undefined, right: NormalizedBox | null | undefined): boolean {
+  if (!left || !right) {
+    return left == null && right == null;
+  }
+  return (
+    left.x0 === right.x0 &&
+    left.y0 === right.y0 &&
+    left.x1 === right.x1 &&
+    left.y1 === right.y1
+  );
+}
+
 export function useCaseWorkspaceAnalysis({
   locale,
   token,
@@ -186,7 +198,7 @@ export function useCaseWorkspaceAnalysis({
   const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
   const lesionBoxChangedImageIds = selectedCaseImages
     .map((image) => image.image_id)
-    .filter((imageId) => JSON.stringify(lesionPromptDrafts[imageId] ?? null) !== JSON.stringify(lesionPromptSaved[imageId] ?? null));
+    .filter((imageId) => !areNormalizedBoxesEqual(lesionPromptDrafts[imageId] ?? null, lesionPromptSaved[imageId] ?? null));
   const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some((value) => value);
 
   function clearValidationArtifacts() {
@@ -745,15 +757,21 @@ export function useCaseWorkspaceAnalysis({
     }
     const currentX = clamp01((clientX - rect.left) / rect.width);
     const currentY = clamp01((clientY - rect.top) / rect.height);
-    setLesionPromptDrafts((current) => ({
-      ...current,
-      [imageId]: normalizeBox({
-        x0: drawState.x,
-        y0: drawState.y,
-        x1: currentX,
-        y1: currentY,
-      }),
-    }));
+    const nextBox = normalizeBox({
+      x0: drawState.x,
+      y0: drawState.y,
+      x1: currentX,
+      y1: currentY,
+    });
+    setLesionPromptDrafts((current) => {
+      if (areNormalizedBoxesEqual(current[imageId] ?? null, nextBox)) {
+        return current;
+      }
+      return {
+        ...current,
+        [imageId]: nextBox,
+      };
+    });
   }
 
   function handleLesionPointerDown(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {

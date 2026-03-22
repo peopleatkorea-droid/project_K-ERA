@@ -93,7 +93,9 @@ def _backfill_institution_names(ykiho_codes: list[str]) -> None:
 
             # 1st priority: Neon remote institution directory (already synced there)
             try:
-                remote_results = cp.remote_control_plane.public_institutions(query=ykiho, limit=3)
+                remote_results = cp.remote_control_plane.public_institutions(
+                    query=ykiho, limit=3, timeout_seconds=5.0
+                )
                 for item in remote_results:
                     if str(item.get("institution_id") or "").strip() == ykiho:
                         name = str(item.get("name") or "").strip()
@@ -336,6 +338,7 @@ def _local_site_records_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
 
     ordered_site_ids = list(dict.fromkeys(site_ids))
     site_records_by_id: dict[str, dict[str, str]] = {}
+    institution_names: dict[str, str] = {}
     try:
         if ordered_site_ids:
             with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -397,28 +400,49 @@ def _local_site_records_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
             entry["source_institution_name"] = source_institution_name
         return entry
 
-    result = [_build_site_result(site_id) for site_id in ordered_site_ids]
+    # Synchronously resolve HIRA codes BEFORE building the result.
+    # Any site whose hospital_name is still a raw HIRA code (8 digits) gets looked up
+    # from the remote control-plane institution directory right now, then cached in
+    # institution_directory so future calls are instant.
+    hira_needs_lookup = [
+        site_id for site_id in ordered_site_ids
+        if _HIRA_CODE_RE.match(site_id)
+        and not institution_names.get(site_id)  # not already resolved
+        and str(site_records_by_id.get(site_id, {}).get("hospital_name") or site_id).strip() == site_id
+    ]
+    if hira_needs_lookup:
+        _backfill_institution_names(hira_needs_lookup)
+        # Re-read resolved names from DB so the result we return has real names
+        try:
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                refreshed_rows = conn.execute(
+                    select(institution_directory.c.institution_id, institution_directory.c.name).where(
+                        institution_directory.c.institution_id.in_(hira_needs_lookup)
+                    )
+                ).mappings().all()
+                for row in refreshed_rows:
+                    iid = str(row.get("institution_id") or "").strip()
+                    iname = str(row.get("name") or "").strip()
+                    if iid and iname:
+                        institution_names[iid] = iname
+                        # Also patch site_records_by_id so _build_site_result picks it up
+                        if iid in site_records_by_id:
+                            rec = site_records_by_id[iid]
+                            if not rec.get("hospital_name") or rec.get("hospital_name") == iid:
+                                rec["hospital_name"] = iname
+                            if not rec.get("display_name") or rec.get("display_name") == iid:
+                                rec["display_name"] = iname
+                            rec["source_institution_name"] = iname
+                        else:
+                            site_records_by_id[iid] = {
+                                "hospital_name": iname,
+                                "display_name": iname,
+                                "source_institution_name": iname,
+                            }
+        except Exception:
+            pass
 
-    # Trigger background HIRA lookup for any site still showing its HIRA code as the name.
-    missing_ykiho: list[str] = []
-    with _INSTITUTION_BACKFILL_LOCK:
-        for entry in result:
-            site_id = entry["site_id"]
-            if (
-                _HIRA_CODE_RE.match(site_id)
-                and entry["hospital_name"] == site_id
-                and site_id not in _INSTITUTION_BACKFILL_IN_PROGRESS
-            ):
-                missing_ykiho.append(site_id)
-                _INSTITUTION_BACKFILL_IN_PROGRESS.add(site_id)
-    if missing_ykiho:
-        threading.Thread(
-            target=_backfill_institution_names,
-            args=(missing_ykiho,),
-            daemon=True,
-        ).start()
-
-    return result
+    return [_build_site_result(site_id) for site_id in ordered_site_ids]
 
 
 def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: str) -> SiteStore:

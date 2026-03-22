@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import type { SiteRecord } from "../../lib/api";
 import { getSiteDisplayName } from "../../lib/site-labels";
+import { LandingGoogleCta } from "./landing-google-cta";
 
 type KoreanLandingViewProps = {
   authBusy: boolean;
@@ -221,9 +222,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               className="landing-hero-fade flex flex-wrap justify-center gap-3.5"
               style={{ animationDelay: "0.21s" }}
             >
-              <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
+              <LandingGoogleCta buttonClassName={koSecondaryCtaClass} onGoogleLaunch={props.onGoogleLaunch} slotClassName="rounded-[8px]">
                 연구 참여하기
-              </button>
+              </LandingGoogleCta>
               <a className="inline-block rounded-[8px] border border-[rgba(45,212,192,0.13)] px-7 py-3 text-[0.88rem] tracking-[0.04em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]" href="#features">
                 어떻게 작동하나요 →
               </a>
@@ -569,9 +570,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             ))}
           </div>
           <div className="text-center">
-            <button className={koSecondaryCtaClass} type="button" onClick={props.onGoogleLaunch}>
+            <LandingGoogleCta buttonClassName={koSecondaryCtaClass} onGoogleLaunch={props.onGoogleLaunch} slotClassName="rounded-[8px]">
               병원 참여 신청하기 →
-            </button>
+            </LandingGoogleCta>
             <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">임상 안과의사라면 누구나 · Google 계정 1개로 시작</p>
           </div>
         </div>
@@ -622,16 +623,15 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <br />
               한 번 더 확인하고 싶을 때.
             </p>
-            <button
-              className={`${koSecondaryCtaClass} ${props.googleLaunchPulse ? "ring-4 ring-[rgba(45,212,192,0.22)]" : ""}`}
-              type="button"
-              onClick={props.onGoogleLaunch}
+            <LandingGoogleCta
+              buttonClassName={koSecondaryCtaClass}
+              googleLaunchPulse={props.googleLaunchPulse}
+              onGoogleLaunch={props.onGoogleLaunch}
+              pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
+              slotClassName="rounded-[8px]"
             >
               {props.authBusy ? props.connectingLabel : "Google 로그인하여 연구 참여하기"}
-            </button>
-            <div className="absolute left-[-9999px] h-px w-px overflow-hidden opacity-0 pointer-events-none" aria-hidden="true">
-              <div data-google-slot />
-            </div>
+            </LandingGoogleCta>
             <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">Research begins with one case.</p>
           </div>
           <div className="justify-self-center grid w-full max-w-[500px] gap-5 lg:max-w-[360px]">
