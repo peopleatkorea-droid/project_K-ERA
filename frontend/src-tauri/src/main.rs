@@ -6812,7 +6812,6 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
     }
 
     let mut items = Vec::new();
-    let mut warm_preview_jobs = Vec::new();
     for patient_id in patient_ids {
         let mut cases = cases_by_patient.remove(&patient_id).unwrap_or_default();
         if cases.is_empty() {
@@ -6824,32 +6823,22 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
             .first()
             .map(|item| item.0.clone())
             .ok_or_else(|| "Latest case missing.".to_string())?;
+        // Return raw file paths only — no stat() calls, no preview generation.
+        // Frontend requests previews asynchronously after the list renders.
         let representative_thumbnails = cases
             .iter()
             .filter_map(|(case_record, representative_image_path)| {
                 let image_id = case_record.representative_image_id.clone()?;
                 let stored_path = representative_image_path.as_ref()?;
                 let source_path = resolve_site_runtime_path(&site_id, stored_path).ok()?;
-                let preview_path = match cached_preview_file_path(&site_id, &image_id, 256) {
-                    Ok(Some(path)) => Some(path),
-                    Ok(None) => {
-                        if let Some(job) =
-                            maybe_queue_preview_job(&site_id, &image_id, &source_path, 256)
-                        {
-                            warm_preview_jobs.push(job);
-                        }
-                        None
-                    }
-                    Err(_) => None,
-                };
-                let fallback_path = existing_file_path_string(&source_path);
+                let fallback_path = source_path.to_str().map(|s| s.to_string());
                 Some(PatientListThumbnailRecord {
                     case_id: case_record.case_id.clone(),
                     image_id,
                     view: case_record.representative_view.clone(),
                     preview_url: None,
                     fallback_url: None,
-                    preview_path,
+                    preview_path: None,
                     fallback_path,
                 })
             })
@@ -6871,8 +6860,6 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
             representative_thumbnails,
         });
     }
-    queue_preview_generation_batch(warm_preview_jobs);
-
     Ok(PatientListPageResponse {
         items,
         page: safe_page,

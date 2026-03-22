@@ -269,13 +269,16 @@ export function useCaseWorkspaceSiteData({
       setSelectedCaseImages([]);
       setPatientVisitGallery(Object.keys(cachedPatientVisitGallery).length > 0 ? cachedPatientVisitGallery : { [currentCase.case_id]: [] });
     }
+    // Preview warming is fire-and-forget, never blocks list rendering
     if (hasCachedSelectedCaseImages) {
-      void ensureVisitImagePreviews(
-        currentCase.case_id,
-        currentCase.patient_id,
-        currentCase.visit_date,
-        cachedSelectedCaseImages,
-      );
+      setTimeout(() => {
+        void ensureVisitImagePreviews(
+          currentCase.case_id,
+          currentCase.patient_id,
+          currentCase.visit_date,
+          cachedSelectedCaseImages,
+        );
+      }, 500);
     }
 
     function commitCaseImages(caseId: string, images: SavedImagePreview[]) {
@@ -518,24 +521,13 @@ export function useCaseWorkspaceSiteData({
       }
     }
 
-    let cancelDeferredGallery: () => void = () => {};
-    let cancelDeferredHistory: () => void = () => {};
-    void loadSelectedCaseImages().finally(() => {
-      if (cancelled) {
-        return;
-      }
-      cancelDeferredGallery = scheduleDeferredBrowserTask(() => {
-        void loadPatientCaseGallery();
-      }, 120);
-      cancelDeferredHistory = scheduleDeferredBrowserTask(() => {
-        void loadSelectedCaseHistory();
-      }, 220);
-    });
+    // Fire all three in parallel — no artificial delays
+    void loadSelectedCaseImages();
+    void loadPatientCaseGallery();
+    void loadSelectedCaseHistory();
     return () => {
       cancelled = true;
       controller.abort();
-      cancelDeferredGallery();
-      cancelDeferredHistory();
     };
   }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
 
