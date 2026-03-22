@@ -20,6 +20,15 @@ const apiMocks = vi.hoisted(() => ({
   submitAccessRequest: vi.fn(),
 }));
 
+const webDataPlaneMocks = vi.hoisted(() => ({
+  probeWebDataPlaneAvailability: vi.fn(),
+}));
+
+const desktopTransportMocks = vi.hoisted(() => ({
+  canUseDesktopTransport: vi.fn(() => false),
+  prefetchDesktopVisitImages: vi.fn(),
+}));
+
 vi.mock("./public/landing-v4", () => ({
   LandingV4: () => <div>Landing</div>,
 }));
@@ -118,6 +127,15 @@ vi.mock("../lib/api", async () => {
   };
 });
 
+vi.mock("../lib/web-data-plane", () => ({
+  probeWebDataPlaneAvailability: webDataPlaneMocks.probeWebDataPlaneAvailability,
+}));
+
+vi.mock("../lib/desktop-transport", () => ({
+  canUseDesktopTransport: desktopTransportMocks.canUseDesktopTransport,
+  prefetchDesktopVisitImages: desktopTransportMocks.prefetchDesktopVisitImages,
+}));
+
 import HomePage from "../app/page";
 
 function makeStoredToken(
@@ -212,6 +230,9 @@ describe("HomePage history guard", () => {
     apiMocks.fetchMyAccessRequests.mockResolvedValue([]);
     apiMocks.fetchAccessRequests.mockResolvedValue([]);
     apiMocks.searchPublicInstitutions.mockResolvedValue([]);
+    webDataPlaneMocks.probeWebDataPlaneAvailability.mockResolvedValue(true);
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(false);
+    desktopTransportMocks.prefetchDesktopVisitImages.mockImplementation(() => undefined);
   });
 
   it("keeps the workspace visible when browser back is pressed on the initial screen", async () => {
@@ -615,6 +636,18 @@ describe("HomePage history guard", () => {
     await waitFor(() => {
       expect(apiMocks.fetchSiteSummary).toHaveBeenCalledWith("SITE_A", approvedToken);
     });
+  });
+
+  it("shows a control-plane-only guard when the web data plane is unavailable", async () => {
+    webDataPlaneMocks.probeWebDataPlaneAvailability.mockResolvedValue(false);
+
+    render(<HomePage />);
+
+    expect(
+      await screen.findByText((content) => content.includes("Patient workspace is unavailable on this web deployment")),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Workspace$/)).not.toBeInTheDocument();
+    expect(apiMocks.fetchSiteSummary).not.toHaveBeenCalled();
   });
 
   it("shows admin operations before the site list bootstrap finishes", async () => {

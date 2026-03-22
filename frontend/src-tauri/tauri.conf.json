@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "K-ERA Desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.kera.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,6 +32,15 @@
         "resizable": true
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/peopleatkorea-droid/project_K-ERA/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUyMUJBMjQ4OTlENUEzNEQKUldSTm85V1pTS0liNGhhRFZoQjZTS09DUlNKa2pzMVY0Y1JGd041dzRkOHpxRTROMU9rQVZOWWQK"
+    }
   },
   "bundle": {
     "active": true,

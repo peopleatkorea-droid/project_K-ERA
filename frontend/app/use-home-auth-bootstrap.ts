@@ -38,6 +38,7 @@ import {
   type RequestFormState,
 } from "./home-page-auth-shared";
 import { useApprovedWorkspaceState } from "./use-approved-workspace-state";
+import { probeWebDataPlaneAvailability, type WorkspaceDataPlaneState } from "../lib/web-data-plane";
 
 type CopyBundle = {
   failedConnect: string;
@@ -85,6 +86,7 @@ export function useHomeAuthBootstrap({
   const [googleLaunchPulse, setGoogleLaunchPulse] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget | null>(null);
+  const [workspaceDataPlaneState, setWorkspaceDataPlaneState] = useState<WorkspaceDataPlaneState>("idle");
 
   const approved = user?.approval_status === "approved";
   const {
@@ -102,6 +104,7 @@ export function useHomeAuthBootstrap({
     token,
     approved,
     bootstrapBusy,
+    workspaceDataPlaneReady: canUseDesktopTransport() || workspaceDataPlaneState === "ready",
     describeError,
     failedLoadSiteData: copy.failedLoadSiteData,
   });
@@ -267,7 +270,33 @@ export function useHomeAuthBootstrap({
   }, [applyApprovedWorkspaceState, clearApprovedWorkspaceState, copy.failedConnect, describeError, token]);
 
   useEffect(() => {
+    if (!token || !user || !approved) {
+      setWorkspaceDataPlaneState("idle");
+      return;
+    }
+    if (canUseDesktopTransport()) {
+      setWorkspaceDataPlaneState("ready");
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceDataPlaneState("checking");
+    void probeWebDataPlaneAvailability().then((available) => {
+      if (!cancelled) {
+        setWorkspaceDataPlaneState(available ? "ready" : "unavailable");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [approved, token, user]);
+
+  useEffect(() => {
     if (!token || !approved || !selectedSiteId) {
+      return;
+    }
+    if (!canUseDesktopTransport() && workspaceDataPlaneState !== "ready") {
       return;
     }
     const currentToken = token;
@@ -292,7 +321,7 @@ export function useHomeAuthBootstrap({
       cancelled = true;
       cancelDeferredWarm();
     };
-  }, [approved, selectedSiteId, token]);
+  }, [approved, selectedSiteId, token, workspaceDataPlaneState]);
 
   useEffect(() => {
     const hosts = getGoogleButtonHosts();
@@ -490,5 +519,6 @@ export function useHomeAuthBootstrap({
     user,
     setError,
     approved,
+    workspaceDataPlaneState,
   };
 }

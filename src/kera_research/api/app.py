@@ -38,6 +38,11 @@ from kera_research.services.admin_registry_orchestrator import AdminRegistryOrch
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
 from kera_research.services.local_api_secret import load_or_create_local_api_secret
+from kera_research.services.local_api_jwt import (
+    load_control_plane_jwt_audience,
+    load_control_plane_jwt_issuer,
+    load_control_plane_jwt_public_key,
+)
 from kera_research.services.node_credentials import (
     clear_node_credentials,
     load_node_credentials,
@@ -165,6 +170,9 @@ API_SECRET = _load_or_create_api_secret()
 API_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = 2
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+CONTROL_PLANE_JWT_PUBLIC_KEY = load_control_plane_jwt_public_key()
+CONTROL_PLANE_JWT_ISSUER = load_control_plane_jwt_issuer()
+CONTROL_PLANE_JWT_AUDIENCE = load_control_plane_jwt_audience()
 
 _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
@@ -228,7 +236,39 @@ def _create_access_token(user: dict[str, Any]) -> str:
     return jwt.encode(payload, API_SECRET, algorithm=API_ALGORITHM)
 
 
+def _decode_control_plane_access_token(token: str) -> dict[str, Any]:
+    if not CONTROL_PLANE_JWT_PUBLIC_KEY:
+        raise RuntimeError("KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not configured.")
+    try:
+        return jwt.decode(
+            token,
+            CONTROL_PLANE_JWT_PUBLIC_KEY,
+            algorithms=["RS256"],
+            audience=CONTROL_PLANE_JWT_AUDIENCE,
+            issuer=CONTROL_PLANE_JWT_ISSUER,
+        )
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RS256 JWT verification requires the cryptography package on the local node.",
+        ) from exc
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.") from exc
+
+
 def _decode_access_token(token: str) -> dict[str, Any]:
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError:
+        header = {}
+    algorithm = str(header.get("alg") or "").strip().upper()
+
+    if CONTROL_PLANE_JWT_PUBLIC_KEY and algorithm == "RS256":
+        try:
+            return _decode_control_plane_access_token(token)
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_401_UNAUTHORIZED:
+                raise
     try:
         return jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
     except jwt.PyJWTError as exc:

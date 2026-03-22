@@ -36,7 +36,7 @@ type ConfigFormState = DesktopAppConfigValues;
 function createEmptyConfigForm(): ConfigFormState {
   return {
     storage_dir: "",
-    control_plane_api_base_url: "",
+    control_plane_api_base_url: process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL || "",
     control_plane_node_id: "",
     control_plane_node_token: "",
     control_plane_site_id: "",

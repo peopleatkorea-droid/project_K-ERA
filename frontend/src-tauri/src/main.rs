@@ -2429,7 +2429,8 @@ fn apply_runtime_env_to_command(command: &mut Command, python_path_entries: &[Pa
         .env("KERA_STORAGE_STATE_FILE", storage_state_file_path())
         .env("KERA_SEGMENTATION_BACKEND", "medsam")
         .env("SEGMENTATION_BACKEND", "medsam")
-        .env("PYTHONUNBUFFERED", "1");
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1");
     for key in [
         "OPENAI_API_KEY",
         "KERA_AI_CLINIC_OPENAI_API_KEY",
@@ -7919,6 +7920,7 @@ fn read_image_blob(payload: ImageBlobRequest) -> Result<ImageBinaryResponse, Str
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_oauth::init())
         .setup(|app| {
             if let Ok(path) = app.path().resource_dir() {

@@ -10,7 +10,10 @@ const port =
   portArgIndex >= 0 && process.argv[portArgIndex + 1]
     ? Number.parseInt(process.argv[portArgIndex + 1], 10)
     : defaultPort;
-const shouldClean = args.has("--clean") || args.has("--clean-only");
+const shouldClean =
+  args.has("--clean") ||
+  args.has("--clean-only") ||
+  ["1", "true", "yes", "on"].includes(String(process.env.KERA_NEXT_DEV_CLEAN ?? "").trim().toLowerCase());
 const cleanOnly = args.has("--clean-only");
 
 if (!Number.isInteger(port) || port <= 0) {

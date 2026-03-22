@@ -20,6 +20,7 @@ import { useApprovedWorkspaceState } from "./use-approved-workspace-state";
 import { useHomeAuthBootstrap } from "./use-home-auth-bootstrap";
 import { cn } from "../lib/cn";
 import { canUseDesktopGoogleAuth } from "../lib/desktop-google-auth";
+import { canUseDesktopTransport } from "../lib/desktop-transport";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
 import { useTheme } from "../lib/theme";
@@ -237,6 +238,26 @@ export default function HomePage() {
     googlePreparing: pick(locale, "Google login is still loading. Try again in a moment.", "Google 濡쒓렇?몄쓣 遺덈윭?ㅻ뒗 以묒엯?덈떎. ?좎떆 ???ㅼ떆 ?쒕룄??二쇱꽭??"),
     loginFailed: pick(locale, "Login failed.", "濡쒓렇?몄뿉 ?ㅽ뙣?덉뒿?덈떎."),
     requestSubmissionFailed: pick(locale, "Request submission failed.", "?붿껌 ?쒖텧???ㅽ뙣?덉뒿?덈떎."),
+    workspaceServicesChecking: pick(
+      locale,
+      "Checking whether this web deployment can open the patient workspace.",
+      "이 웹 배포본에서 환자 워크스페이스를 열 수 있는지 확인하는 중입니다."
+    ),
+    workspaceServicesUnavailableTitle: pick(
+      locale,
+      "Patient workspace is unavailable on this web deployment",
+      "이 웹 배포본에서는 환자 워크스페이스를 열 수 없습니다"
+    ),
+    workspaceServicesUnavailableBody: pick(
+      locale,
+      "Google sign-in succeeded, but this site is only connected to the central control plane. Patient uploads, image review, and case authoring require a reachable data-plane backend or the desktop app.",
+      "Google 로그인은 성공했지만, 현재 이 사이트는 중앙 control plane에만 연결되어 있습니다. 환자 업로드, 이미지 검토, 케이스 작성은 연결 가능한 data-plane backend 또는 데스크톱 앱이 필요합니다."
+    ),
+    workspaceServicesUnavailableHint: pick(
+      locale,
+      "If this deployment should host the full workspace, connect `/api/*` to a reachable backend before exposing the patient UI.",
+      "이 배포본에서 전체 워크스페이스를 제공해야 한다면, 환자 UI를 열기 전에 `/api/*`가 실제 backend에 연결되어 있어야 합니다."
+    ),
     connecting: pick(locale, "Connecting...", "?곌껐 以?.."),
     submitting: pick(locale, "Submitting...", "?쒖텧 以?.."),
     heroEyebrow: pick(locale, "Clinical Research Workspace", "?꾩긽 ?곌뎄 ?뚰겕?ㅽ럹?댁뒪"),
@@ -736,6 +757,7 @@ export default function HomePage() {
     summary,
     token,
     user,
+    workspaceDataPlaneState,
   } = useHomeAuthBootstrap({
     copy: {
       failedConnect: copy.failedConnect,
@@ -757,6 +779,7 @@ export default function HomePage() {
     setRequestForm,
   });
   const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
+  const desktopWorkspaceRuntime = canUseDesktopTransport();
   const errorMessage = siteError ?? error;
   const filteredExistingSites = publicSites.filter((site) =>
     matchesInstitutionSearch(institutionQuery, site.site_id, site.display_name, site.hospital_name),
@@ -1150,6 +1173,68 @@ export default function HomePage() {
                   </Button>
                 </form>
               </Card>
+            </div>
+          </Card>
+        </section>
+      </main>
+    );
+  }
+
+  if (!desktopWorkspaceRuntime && (workspaceDataPlaneState === "idle" || workspaceDataPlaneState === "checking")) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-6xl justify-end">
+          <LocaleToggle />
+        </div>
+        <section className="mx-auto mt-6 grid w-full max-w-3xl gap-5">
+          <Card as="section" variant="surface" className="grid gap-5 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {pick(locale, "Workspace Services", "워크스페이스 서비스")}
+                </span>
+              }
+              title={pick(locale, "Verifying the workspace connection", "워크스페이스 연결을 확인하는 중입니다")}
+              description={copy.workspaceServicesChecking}
+              aside={
+                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
+                  {copy.logOut}
+                </Button>
+              }
+            />
+            <div className="rounded-[20px] border border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
+              {copy.workspaceServicesChecking}
+            </div>
+          </Card>
+        </section>
+      </main>
+    );
+  }
+
+  if (!desktopWorkspaceRuntime && workspaceDataPlaneState === "unavailable") {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-6xl justify-end">
+          <LocaleToggle />
+        </div>
+        <section className="mx-auto mt-6 grid w-full max-w-3xl gap-5">
+          <Card as="section" variant="surface" className="grid gap-5 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {pick(locale, "Control Plane Only", "Control Plane 전용")}
+                </span>
+              }
+              title={copy.workspaceServicesUnavailableTitle}
+              description={copy.workspaceServicesUnavailableBody}
+              aside={
+                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
+                  {copy.logOut}
+                </Button>
+              }
+            />
+            <div className="rounded-[20px] border border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
+              {copy.workspaceServicesUnavailableHint}
             </div>
           </Card>
         </section>

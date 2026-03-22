@@ -189,7 +189,9 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 | `KERA_ADMIN_PASSWORD` | 초기 admin 계정 비밀번호 |
 | `KERA_RESEARCHER_USERNAME` | 초기 researcher 계정 사용자 이름 |
 | `KERA_RESEARCHER_PASSWORD` | 초기 researcher 계정 비밀번호 |
-| `KERA_API_SECRET` | JWT 서명 키 |
+| `KERA_API_SECRET` | 레거시 로컬 JWT fallback 키 |
+| `KERA_LOCAL_API_JWT_PRIVATE_KEY_B64` | 중앙 control plane이 발급하는 access token의 RS256 private key (서버 전용) |
+| `KERA_LOCAL_API_JWT_PUBLIC_KEY_B64` | local node / desktop 앱이 control plane token을 검증할 RS256 public key |
 | `KERA_GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (백엔드) |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (프론트엔드) |
 | `NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL` | control plane UI가 로컬 FastAPI node와 통신할 때 사용할 base URL |
@@ -228,6 +230,7 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 **참고:**
 - 로컬 계정(`KERA_ADMIN_USERNAME` 등)은 해당 환경변수가 있을 때만 앱 시작 시 시드됩니다.
 - `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 실행 스크립트가 서버/프론트엔드에서 서로 보완되도록 처리합니다.
+- 불특정 사용자 배포에서는 `KERA_LOCAL_API_JWT_PRIVATE_KEY_B64`를 중앙 control plane 서버에만 두고, `KERA_LOCAL_API_JWT_PUBLIC_KEY_B64`만 desktop/local node에 배포하세요.
 - 중앙 owner(Next.js control plane)는 `KERA_CONTROL_PLANE_DATABASE_URL`을 사용합니다. 병원 local node는 `KERA_CONTROL_PLANE_API_BASE_URL`과 `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL`을 사용하고, `KERA_DATA_PLANE_DATABASE_URL`은 병원 로컬 DB를 가리켜야 합니다.
 - 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\KERA_DATA\kera.db`입니다.
 - 집/병원 등 여러 관리자 PC에서 같은 validation metadata와 model registry artifact를 보려면 `KERA_CONTROL_PLANE_DIR`과 `KERA_MODEL_DIR`을 모든 관리자 PC에서 동일한 공유 경로로 맞추는 것을 권장합니다.

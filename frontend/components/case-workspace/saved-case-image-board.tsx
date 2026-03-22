@@ -40,8 +40,11 @@ import type {
 } from "./shared";
 
 const LIVE_LESION_MASK_TINT = [242, 164, 154] as const;
+const LOW_VIEW_SCORE_THRESHOLD = 60;
 const savedImageSupportChipClass =
   "inline-flex min-h-7 items-center rounded-full border border-border/80 bg-surface px-2.5 py-1 text-[0.72rem] font-medium tracking-[0.01em] text-muted";
+const savedImageWarningChipClass =
+  "inline-flex min-h-7 items-center rounded-full border border-amber-300/70 bg-amber-50/80 px-2.5 py-1 text-[0.72rem] font-medium tracking-[0.01em] text-[rgb(120,74,31)] dark:border-amber-200/20 dark:bg-[rgba(120,74,31,0.16)] dark:text-[rgba(255,232,204,0.92)]";
 
 type SavedCaseImageBoardProps = {
   locale: Locale;
@@ -384,7 +387,11 @@ export function SavedCaseImageBoard({
 
                 <div className="flex flex-wrap gap-2 text-[0.78rem] text-muted">
                   <SavedImageSupportChip label="Q" value={image.quality_scores?.quality_score} />
-                  <SavedImageSupportChip label="View" value={image.quality_scores?.view_score} />
+                  {image.quality_scores?.view_score != null && image.quality_scores.view_score < LOW_VIEW_SCORE_THRESHOLD ? (
+                    <span className={savedImageWarningChipClass}>
+                      {pick(locale, "Check view", "뷰 확인 필요")}
+                    </span>
+                  ) : null}
                   {livePreview?.status === "failed" && livePreview.error ? (
                     <span className="rounded-[8px] border border-danger/30 bg-danger/8 px-3 py-1.5 text-danger">
                       {livePreview.error}

@@ -46,6 +46,7 @@ function buildClientEnv() {
     NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID || "",
     NEXT_PUBLIC_KERA_DESKTOP_LOCAL_BACKEND_MODE: process.env.NEXT_PUBLIC_KERA_DESKTOP_LOCAL_BACKEND_MODE || "managed",
     NEXT_PUBLIC_KERA_DESKTOP_ML_TRANSPORT: process.env.NEXT_PUBLIC_KERA_DESKTOP_ML_TRANSPORT || "sidecar",
+    NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL: process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL || "https://kera-bay.vercel.app/control-plane/api",
   };
   return {
     "process.env": JSON.stringify(entries),

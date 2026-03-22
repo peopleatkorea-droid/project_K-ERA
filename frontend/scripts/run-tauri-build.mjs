@@ -26,8 +26,37 @@ const nsisWorkDir = path.join(releaseDir, "nsis");
 const runtimeCacheDir = path.join(frontendRoot, ".desktop-runtime", "python-runtime");
 const runtimeSnapshotRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
 const runtimeSnapshotDir = path.join(runtimeSnapshotRoot, "python-runtime");
+const repoPythonSourceDir = path.resolve(frontendRoot, "..", "src");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
 const generatedConfigPath = path.join(srcTauriDir, "tauri.build.generated.conf.json");
+
+function removePythonBytecodeCaches(rootDir) {
+  if (!fs.existsSync(rootDir)) {
+    return;
+  }
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    if (!currentDir) {
+      continue;
+    }
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__pycache__") {
+          fs.rmSync(entryPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
+          continue;
+        }
+        stack.push(entryPath);
+        continue;
+      }
+      if (entry.isFile() && (entry.name.endsWith(".pyc") || entry.name.endsWith(".pyo"))) {
+        fs.rmSync(entryPath, { force: true, maxRetries: 3, retryDelay: 250 });
+      }
+    }
+  }
+}
 
 function stopRunningReleaseArtifacts() {
   if (process.platform !== "win32") {
@@ -161,6 +190,7 @@ function quoteWindowsArg(value) {
 }
 
 stopRunningReleaseArtifacts();
+removePythonBytecodeCaches(repoPythonSourceDir);
 cleanupBuildArtifacts();
 runChecked(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "desktop:bundle"]);
 prepareBuildConfig();

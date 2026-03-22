@@ -16,6 +16,7 @@ type UseApprovedWorkspaceStateOptions = {
   token: string | null;
   approved: boolean;
   bootstrapBusy: boolean;
+  workspaceDataPlaneReady?: boolean;
   describeError: (nextError: unknown, fallback: string) => string;
   failedLoadSiteData: string;
 };
@@ -36,6 +37,7 @@ export function useApprovedWorkspaceState({
   token,
   approved,
   bootstrapBusy,
+  workspaceDataPlaneReady = true,
   describeError,
   failedLoadSiteData,
 }: UseApprovedWorkspaceStateOptions) {
@@ -103,8 +105,19 @@ export function useApprovedWorkspaceState({
   }, [approved, clearSiteSummaryTracking, token]);
 
   useEffect(() => {
+    if (workspaceDataPlaneReady || canUseDesktopLocalApiTransport()) {
+      return;
+    }
+    clearSiteSummaryTracking();
+    setSummary(null);
+    setSiteBusy(false);
+    setSiteError(null);
+  }, [clearSiteSummaryTracking, workspaceDataPlaneReady]);
+
+  useEffect(() => {
     if (
       canUseDesktopLocalApiTransport() ||
+      !workspaceDataPlaneReady ||
       !token ||
       !selectedSiteId ||
       !approved ||
@@ -158,7 +171,7 @@ export function useApprovedWorkspaceState({
         siteSummaryRequestSiteIdRef.current = null;
       }
     };
-  }, [approved, bootstrapBusy, describeError, failedLoadSiteData, selectedSiteId, summary?.site_id, token]);
+  }, [approved, bootstrapBusy, describeError, failedLoadSiteData, selectedSiteId, summary?.site_id, token, workspaceDataPlaneReady]);
 
   return {
     applyApprovedWorkspaceState,
