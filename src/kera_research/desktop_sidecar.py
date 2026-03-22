@@ -48,6 +48,97 @@ from kera_research.services.image_artifact_status import sync_image_artifact_cac
 
 _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
+_SHARED_WORKFLOW: Any | None = None
+_SHARED_WORKFLOW_CONDITION = threading.Condition()
+_SHARED_WORKFLOW_WARMING = False
+_SHARED_WORKFLOW_WARM_STARTED_AT: str | None = None
+_SHARED_WORKFLOW_WARM_COMPLETED_AT: str | None = None
+_SHARED_WORKFLOW_WARM_ERROR: str | None = None
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _workflow_warm_status() -> dict[str, Any]:
+    with _SHARED_WORKFLOW_CONDITION:
+        if _SHARED_WORKFLOW is not None:
+            status = "ready"
+        elif _SHARED_WORKFLOW_WARMING:
+            status = "warming"
+        elif _SHARED_WORKFLOW_WARM_ERROR:
+            status = "failed"
+        else:
+            status = "idle"
+        return {
+            "status": status,
+            "warmed": _SHARED_WORKFLOW is not None,
+            "started_at": _SHARED_WORKFLOW_WARM_STARTED_AT,
+            "completed_at": _SHARED_WORKFLOW_WARM_COMPLETED_AT,
+            "last_error": _SHARED_WORKFLOW_WARM_ERROR,
+        }
+
+
+def _build_shared_workflow(cp: Any) -> tuple[Any | None, str | None]:
+    try:
+        return _get_workflow(cp), None
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        return None, detail
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _finish_shared_workflow_build(workflow: Any | None, error: str | None) -> None:
+    global _SHARED_WORKFLOW, _SHARED_WORKFLOW_WARMING, _SHARED_WORKFLOW_WARM_COMPLETED_AT, _SHARED_WORKFLOW_WARM_ERROR
+    with _SHARED_WORKFLOW_CONDITION:
+        if workflow is not None:
+            _SHARED_WORKFLOW = workflow
+            _SHARED_WORKFLOW_WARM_COMPLETED_AT = _utc_now_iso()
+            _SHARED_WORKFLOW_WARM_ERROR = None
+        elif error:
+            _SHARED_WORKFLOW_WARM_ERROR = error
+        _SHARED_WORKFLOW_WARMING = False
+        _SHARED_WORKFLOW_CONDITION.notify_all()
+
+
+def _warm_shared_workflow_runner() -> None:
+    cp = get_control_plane()
+    workflow, error = _build_shared_workflow(cp)
+    _finish_shared_workflow_build(workflow, error)
+
+
+def _start_shared_workflow_warmup() -> dict[str, Any]:
+    global _SHARED_WORKFLOW_WARMING, _SHARED_WORKFLOW_WARM_STARTED_AT, _SHARED_WORKFLOW_WARM_COMPLETED_AT, _SHARED_WORKFLOW_WARM_ERROR
+    with _SHARED_WORKFLOW_CONDITION:
+        if _SHARED_WORKFLOW is not None or _SHARED_WORKFLOW_WARMING:
+            return _workflow_warm_status()
+        _SHARED_WORKFLOW_WARMING = True
+        _SHARED_WORKFLOW_WARM_STARTED_AT = _utc_now_iso()
+        _SHARED_WORKFLOW_WARM_COMPLETED_AT = None
+        _SHARED_WORKFLOW_WARM_ERROR = None
+    threading.Thread(target=_warm_shared_workflow_runner, daemon=True, name="kera-sidecar-workflow-warmup").start()
+    return _workflow_warm_status()
+
+
+def _ensure_shared_workflow(cp: Any) -> Any:
+    global _SHARED_WORKFLOW_WARMING, _SHARED_WORKFLOW_WARM_STARTED_AT, _SHARED_WORKFLOW_WARM_COMPLETED_AT, _SHARED_WORKFLOW_WARM_ERROR
+    with _SHARED_WORKFLOW_CONDITION:
+        if _SHARED_WORKFLOW is not None:
+            return _SHARED_WORKFLOW
+        while _SHARED_WORKFLOW_WARMING and _SHARED_WORKFLOW is None:
+            _SHARED_WORKFLOW_CONDITION.wait(timeout=0.1)
+        if _SHARED_WORKFLOW is not None:
+            return _SHARED_WORKFLOW
+        _SHARED_WORKFLOW_WARMING = True
+        _SHARED_WORKFLOW_WARM_STARTED_AT = _utc_now_iso()
+        _SHARED_WORKFLOW_WARM_COMPLETED_AT = None
+        _SHARED_WORKFLOW_WARM_ERROR = None
+    workflow, error = _build_shared_workflow(cp)
+    _finish_shared_workflow_build(workflow, error)
+    if workflow is None:
+        raise HTTPException(status_code=503, detail=error or "AI workflow is not available on this server.")
+    return workflow
 
 
 def _decode_user(token: str) -> dict[str, Any]:
@@ -140,7 +231,7 @@ def _run_case_validation(params: dict[str, Any]) -> dict[str, Any]:
     _require_validation_permission(user)
     site_id = str(params.get("site_id") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     model_version = _resolve_case_model_version(cp, params)
     execution_device = _resolve_execution_device(str(params.get("execution_mode") or "auto"))
     patient_id = str(params.get("patient_id") or "").strip()
@@ -231,7 +322,7 @@ def _run_case_validation_compare(params: dict[str, Any]) -> dict[str, Any]:
     _require_validation_permission(user)
     site_id = str(params.get("site_id") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     requested_ids = list(dict.fromkeys(str(item).strip() for item in params.get("model_version_ids") or [] if str(item).strip()))
     if not requested_ids:
         raise HTTPException(status_code=400, detail="At least one model version is required.")
@@ -282,7 +373,7 @@ def _run_case_ai_clinic(params: dict[str, Any]) -> dict[str, Any]:
     _require_validation_permission(user)
     site_id = str(params.get("site_id") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     model_version = _resolve_case_model_version(cp, params)
     execution_device = _resolve_execution_device(str(params.get("execution_mode") or "auto"))
     patient_id = str(params.get("patient_id") or "").strip()
@@ -306,7 +397,7 @@ def _run_case_contribution(params: dict[str, Any]) -> dict[str, Any]:
     _require_validation_permission(user)
     site_id = str(params.get("site_id") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     patient_id = str(params.get("patient_id") or "").strip()
     visit_date = str(params.get("visit_date") or "").strip()
     visit = site_store.get_visit(patient_id, visit_date)
@@ -407,7 +498,7 @@ def _fetch_case_roi_preview(params: dict[str, Any]) -> list[dict[str, Any]]:
     patient_id = str(params.get("patient_id") or "").strip()
     visit_date = str(params.get("visit_date") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     image_by_path = _image_records_by_path(site_store, patient_id, visit_date)
     previews = workflow.preview_case_roi(site_store, patient_id, visit_date)
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
@@ -435,7 +526,7 @@ def _fetch_case_lesion_preview(params: dict[str, Any]) -> list[dict[str, Any]]:
     patient_id = str(params.get("patient_id") or "").strip()
     visit_date = str(params.get("visit_date") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     image_by_path = _image_records_by_path(site_store, patient_id, visit_date)
     previews = workflow.preview_case_lesion(site_store, patient_id, visit_date)
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
@@ -469,7 +560,7 @@ def _start_live_lesion_preview(params: dict[str, Any]) -> dict[str, Any]:
     lesion_prompt_box = image.get("lesion_prompt_box")
     if not isinstance(lesion_prompt_box, dict):
         raise HTTPException(status_code=400, detail="This image requires a saved lesion box.")
-    workflow = _get_workflow(cp)
+    workflow = _ensure_shared_workflow(cp)
     prompt_signature = workflow._lesion_prompt_box_signature(lesion_prompt_box)
     with _LESION_PREVIEW_JOBS_LOCK:
         for existing in reversed(list(_LESION_PREVIEW_JOBS.values())):
@@ -565,7 +656,7 @@ def _fetch_image_semantic_prompt_scores(params: dict[str, Any]) -> dict[str, Any
     analysis_path = str(image["image_path"])
     if normalized_input_mode != "source":
         _require_validation_permission(user)
-        workflow = _get_workflow(cp)
+        workflow = _ensure_shared_workflow(cp)
         if normalized_input_mode == "roi_crop":
             previews = workflow.preview_case_roi(site_store, image["patient_id"], image["visit_date"])
             preview = next((item for item in previews if item.get("source_image_path") == image.get("image_path")), None)
@@ -932,6 +1023,8 @@ def _backfill_ai_clinic_embeddings(params: dict[str, Any]) -> dict[str, Any]:
 
 _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "ping": lambda _params: {"status": "ok"},
+    "warm_workflow": lambda _params: _start_shared_workflow_warmup(),
+    "workflow_status": lambda _params: _workflow_warm_status(),
     "run_case_validation": _run_case_validation,
     "run_case_validation_compare": _run_case_validation_compare,
     "run_case_ai_clinic": _run_case_ai_clinic,

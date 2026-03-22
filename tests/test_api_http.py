@@ -1377,6 +1377,61 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(sites_response.status_code, 200, sites_response.text)
         self.assertEqual([item["site_id"] for item in sites_response.json()], [self.site_id])
 
+    def test_split_mode_site_list_uses_institution_name_for_hira_code_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+        self.tempdir.cleanup()
+
+        split_tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = split_tempdir
+        control_db = Path(split_tempdir.name) / "control.db"
+        local_db = Path(split_tempdir.name) / "local.db"
+        self.app_module = reload_app_module(
+            control_plane_db_path=control_db,
+            data_plane_db_path=local_db,
+            control_plane_artifact_dir=Path(split_tempdir.name) / "control_artifacts",
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        from fastapi.testclient import TestClient
+
+        self.client = TestClient(self.app_module.create_app())
+        self.cp = self.app_module.ControlPlaneStore()
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "39100103",
+                    "name": "Jeju National University Hospital",
+                    "source": "hira",
+                    "synced_at": "2026-03-22T00:00:00+00:00",
+                }
+            ]
+        )
+        token = self.app_module._create_access_token(
+            {
+                "user_id": "local_user_hira_001",
+                "username": "local.hira",
+                "role": "researcher",
+                "site_ids": ["39100103"],
+                "approval_status": "approved",
+            }
+        )
+
+        sites_response = self.client.get(
+            "/api/sites",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "x-kera-control-plane-owner": "local",
+            },
+        )
+
+        self.assertEqual(sites_response.status_code, 200, sites_response.text)
+        payload = sites_response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["site_id"], "39100103")
+        self.assertEqual(payload[0]["display_name"], "Jeju National University Hospital")
+        self.assertEqual(payload[0]["hospital_name"], "Jeju National University Hospital")
+
     def test_patient_list_board_endpoint_returns_paginated_patient_rows_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token, patient_id="HTTP-001")

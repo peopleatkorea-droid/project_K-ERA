@@ -5,6 +5,7 @@
   "identifier": "com.kera.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run desktop:bundle",
     "devUrl": "http://127.0.0.1:3000",
     "frontendDist": "../desktop-dist"
   },
@@ -34,6 +35,18 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../.desktop-runtime/python-runtime": "python-runtime",
+      "../../app.py": "backend/app.py",
+      "../../src": "backend/src",
+      "../../MedSAM-main": "backend/MedSAM-main"
+    }
   }
 }

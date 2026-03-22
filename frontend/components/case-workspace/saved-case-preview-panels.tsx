@@ -98,7 +98,7 @@ export function SavedCasePreviewPanels({
                 <div className={panelPreviewGridClass}>
                   <div>
                     {item.source_preview_url ? (
-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} />
+                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
                     ) : (
                       <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
                     )}
@@ -123,7 +123,7 @@ export function SavedCasePreviewPanels({
                   </div>
                   <div>
                     {item.roi_crop_url ? (
-                      <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} />
+                      <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
                     ) : (
                       <div className={panelImageFallbackClass}>{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>
                     )}
@@ -186,7 +186,7 @@ export function SavedCasePreviewPanels({
                 <div className={panelPreviewGridClass}>
                   <div>
                     {item.source_preview_url ? (
-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} />
+                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
                     ) : (
                       <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
                     )}
@@ -211,7 +211,7 @@ export function SavedCasePreviewPanels({
                   </div>
                   <div>
                     {item.lesion_crop_url ? (
-                      <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} />
+                      <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
                     ) : (
                       <div className={panelImageFallbackClass}>{pick(locale, "Lesion crop unavailable", "병변 crop을 표시할 수 없습니다")}</div>
                     )}

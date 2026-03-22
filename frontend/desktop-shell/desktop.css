@@ -1,0 +1,13 @@
+:root {
+  --font-sans: "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --font-serif: "Georgia", "Noto Serif KR", serif;
+  --font-inter: "Segoe UI", sans-serif;
+  --font-eb-garamond: "Georgia", serif;
+  --font-dm-mono: "Consolas", "Courier New", monospace;
+  --font-dm-sans: "Segoe UI", sans-serif;
+  --font-dm-serif-display: "Georgia", serif;
+  --font-noto-sans-kr: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --font-noto-serif-kr: "Batang", "Noto Serif KR", serif;
+}
+
+@import "../app/globals.css";

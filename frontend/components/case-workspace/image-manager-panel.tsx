@@ -107,6 +107,8 @@ function ImageGrid({
                 src={image.preview_url}
                 alt={image.file.name}
                 className={imagePreviewCoverClass}
+                loading="lazy"
+                decoding="async"
                 draggable={false}
                 onDragStart={(event) => event.preventDefault()}
               />

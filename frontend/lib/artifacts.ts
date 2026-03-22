@@ -1,10 +1,14 @@
 import { buildApiUrl, request, requestBlob } from "./api-core";
 import {
   fetchAnalysisCaseLesionPreviewArtifactBlob as fetchCaseLesionPreviewArtifactBlobRuntime,
+  fetchAnalysisCaseLesionPreviewArtifactUrl as fetchCaseLesionPreviewArtifactUrlRuntime,
   fetchAnalysisCaseRoiPreviewArtifactBlob as fetchCaseRoiPreviewArtifactBlobRuntime,
+  fetchAnalysisCaseRoiPreviewArtifactUrl as fetchCaseRoiPreviewArtifactUrlRuntime,
   fetchAnalysisValidationArtifactBlob as fetchValidationArtifactBlobRuntime,
+  fetchAnalysisValidationArtifactUrl as fetchValidationArtifactUrlRuntime,
 } from "./analysis-runtime";
 import { canUseDesktopLocalApiTransport, requestDesktopLocalApiBinary } from "./desktop-local-api";
+import { canUseDesktopTransport, ensureDesktopImagePreviews } from "./desktop-transport";
 import { canUseDesktopWorkspaceTransport, readDesktopImageBlob } from "./desktop-workspace";
 
 export async function downloadManifest(siteId: string, token: string) {
@@ -27,6 +31,25 @@ export async function fetchImageBlob(siteId: string, imageId: string, token: str
     return readDesktopImageBlob(siteId, imageId, { signal });
   }
   return requestBlob(`/api/sites/${siteId}/images/${imageId}/content`, token, "Image fetch failed", { signal });
+}
+
+export async function fetchImagePreviewUrl(
+  siteId: string,
+  imageId: string,
+  token: string,
+  options: {
+    maxSide?: number;
+    signal?: AbortSignal;
+  } = {},
+) {
+  if (canUseDesktopTransport()) {
+    const previewUrls = await ensureDesktopImagePreviews(siteId, [imageId], {
+      maxSide: options.maxSide,
+      signal: options.signal,
+    });
+    return previewUrls.get(imageId) ?? null;
+  }
+  return buildImagePreviewUrl(siteId, imageId, token, { maxSide: options.maxSide });
 }
 
 export function buildImageContentUrl(siteId: string, imageId: string, token: string) {
@@ -90,6 +113,17 @@ export async function fetchValidationArtifactBlob(
   return fetchValidationArtifactBlobRuntime(siteId, validationId, patientId, visitDate, artifactKind, token);
 }
 
+export async function fetchValidationArtifactUrl(
+  siteId: string,
+  validationId: string,
+  patientId: string,
+  visitDate: string,
+  artifactKind: "gradcam" | "gradcam_cornea" | "gradcam_lesion" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
+  token: string,
+) {
+  return fetchValidationArtifactUrlRuntime(siteId, validationId, patientId, visitDate, artifactKind, token);
+}
+
 export async function fetchCaseRoiPreviewArtifactBlob(
   siteId: string,
   patientId: string,
@@ -101,6 +135,17 @@ export async function fetchCaseRoiPreviewArtifactBlob(
   return fetchCaseRoiPreviewArtifactBlobRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
 }
 
+export async function fetchCaseRoiPreviewArtifactUrl(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "roi_crop" | "medsam_mask",
+  token: string,
+) {
+  return fetchCaseRoiPreviewArtifactUrlRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
+}
+
 export async function fetchCaseLesionPreviewArtifactBlob(
   siteId: string,
   patientId: string,
@@ -110,4 +155,15 @@ export async function fetchCaseLesionPreviewArtifactBlob(
   token: string,
 ) {
   return fetchCaseLesionPreviewArtifactBlobRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
+}
+
+export async function fetchCaseLesionPreviewArtifactUrl(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "lesion_crop" | "lesion_mask",
+  token: string,
+) {
+  return fetchCaseLesionPreviewArtifactUrlRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
 }

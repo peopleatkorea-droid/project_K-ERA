@@ -442,11 +442,16 @@ export async function preloadAccessRequestLookups(rows: Row[]): Promise<AccessRe
 }
 
 export function serializeSiteRecord(row: Row): SiteRecord {
-  return {
+  const baseRecord: SiteRecord = {
     site_id: rowValue<string>(row, "site_id"),
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
   };
+  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
+  if (typeof sourceInstitutionName === "string" && sourceInstitutionName.trim()) {
+    baseRecord.source_institution_name = sourceInstitutionName;
+  }
+  return baseRecord;
 }
 
 export function serializeManagedSiteRecord(row: Row): ManagedSiteRecord {

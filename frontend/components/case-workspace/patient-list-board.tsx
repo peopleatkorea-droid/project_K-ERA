@@ -1,7 +1,7 @@
 "use client";
 
-import type { ChangeEvent } from "react";
-import { useEffect, useRef } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { CaseSummaryRecord, MedsamArtifactListItem, MedsamArtifactStatusKey } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
@@ -53,6 +53,7 @@ type PatientListBoardProps = {
   onShowOnlyMineChange: (nextValue: boolean) => void;
   onPageChange: (page: number) => void;
   onOpenSavedCase: (caseRecord: CaseSummaryRecord, nextView: "cases" | "patients") => void;
+  onPrefetchCase?: (caseRecord: CaseSummaryRecord) => void;
   medsamArtifactActiveStatus: MedsamArtifactStatusKey | null;
   medsamArtifactScope: "patient" | "visit" | "image";
   medsamArtifactItems: MedsamArtifactListItem[];
@@ -63,7 +64,6 @@ type PatientListBoardProps = {
   onCloseMedsamArtifactBacklog: () => void;
   onMedsamArtifactScopeChange: (scope: "patient" | "visit" | "image") => void;
   onMedsamArtifactPageChange: (page: number) => void;
-  onRowVisible: (patientId: string) => void;
 };
 
 export function PatientListBoard({
@@ -92,6 +92,7 @@ export function PatientListBoard({
   onShowOnlyMineChange,
   onPageChange,
   onOpenSavedCase,
+  onPrefetchCase,
   medsamArtifactActiveStatus,
   medsamArtifactScope,
   medsamArtifactItems,
@@ -102,35 +103,31 @@ export function PatientListBoard({
   onCloseMedsamArtifactBacklog,
   onMedsamArtifactScopeChange,
   onMedsamArtifactPageChange,
-  onRowVisible,
 }: PatientListBoardProps) {
-  const rowButtonRefsMap = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const [localSearch, setLocalSearch] = useState(caseSearch);
+  const deferredSearch = useDeferredValue(localSearch);
 
   useEffect(() => {
-    const refsMap = rowButtonRefsMap.current;
-    if (refsMap.size === 0) {
+    setLocalSearch((current) => (current === caseSearch ? current : caseSearch));
+  }, [caseSearch]);
+
+  useEffect(() => {
+    if (deferredSearch !== caseSearch) {
+      onSearchChange(deferredSearch);
+    }
+  }, [deferredSearch, caseSearch, onSearchChange]);
+
+  useEffect(() => {
+    const scrollElement = patientListScrollRef.current;
+    if (!scrollElement) {
       return;
     }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const patientId = (entry.target as HTMLElement).dataset.patientId;
-            if (patientId) {
-              onRowVisible(patientId);
-            }
-          }
-        }
-      },
-      { threshold: 0.1 },
-    );
-    for (const element of refsMap.values()) {
-      observer.observe(element);
+    if (typeof scrollElement.scrollTo === "function") {
+      scrollElement.scrollTo({ top: 0, behavior: "auto" });
+      return;
     }
-    return () => {
-      observer.disconnect();
-    };
-  }, [patientListRows, onRowVisible]);
+    scrollElement.scrollTop = 0;
+  }, [patientListPage, caseSearch, showOnlyMine, medsamArtifactActiveStatus]);
 
   const pageWindow = 5;
   const patientPageStart = Math.max(1, patientListPage - Math.floor(pageWindow / 2));
@@ -172,6 +169,14 @@ export function PatientListBoard({
       : medsamArtifactScope === "visit"
         ? pick(locale, "visits", "방문")
         : pick(locale, "images", "이미지");
+  const patientListScrollRef = useRef<HTMLDivElement | null>(null);
+  const shouldWindowPatients = !activeArtifactFilter && patientListRows.length > 8;
+  const patientRowVirtualizer = useVirtualizer({
+    count: activeArtifactFilter ? 0 : patientListRows.length,
+    getScrollElement: () => patientListScrollRef.current,
+    estimateSize: () => 156,
+    overscan: 6,
+  });
 
   function renderArtifactRow(item: MedsamArtifactListItem) {
     const caseSummary = item.case_summary ?? null;
@@ -243,6 +248,75 @@ export function PatientListBoard({
     );
   }
 
+  function renderPatientRow(row: PatientListRow) {
+    return (
+      <button
+        key={`board-${row.patient_id}`}
+        className={patientListRowClass(selectedPatientId === row.patient_id)}
+        type="button"
+        onPointerEnter={() => onPrefetchCase?.(row.latest_case)}
+        onClick={() => onOpenSavedCase(row.latest_case, "cases")}
+      >
+        <div className={patientListRowMainClass}>
+          <div className={patientListRowChipsClass}>
+            {row.latest_case.local_case_code && row.latest_case.local_case_code !== row.patient_id ? (
+              <span className={patientListChipClass(true)}>{row.latest_case.local_case_code}</span>
+            ) : null}
+            <span className={patientListChipClass(!row.latest_case.local_case_code || row.latest_case.local_case_code === row.patient_id)}>
+              {row.patient_id}
+            </span>
+            <span className={patientListChipClass()}>{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? commonNotAvailable}`}</span>
+            <span className={patientListChipClass()}>{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
+            <span className={patientListChipClass()}>{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>
+          </div>
+          <div className={patientListRowMetaClass}>
+            <span>{displayVisitReference(locale, row.latest_case.visit_date)}</span>
+            {row.latest_case.actual_visit_date ? <span>{row.latest_case.actual_visit_date}</span> : null}
+            <span>{formatDateTime(row.latest_case.latest_image_uploaded_at ?? row.latest_case.created_at, localeTag, commonNotAvailable)}</span>
+          </div>
+        </div>
+        <div className={patientListThumbnailsClass}>
+          {row.representative_thumbnails.length === 0 ? (
+            <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
+          ) : (
+            row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
+              const resolvedThumbnail =
+                patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
+                thumbnail;
+              const previewUrl = resolvedThumbnail.preview_url;
+              return previewUrl ? (
+                <img
+                  key={`board-${thumbnail.case_id}`}
+                  src={previewUrl}
+                  alt={`${row.patient_id}-${thumbnail.case_id}`}
+                  className={patientListThumbClass}
+                  loading="lazy"
+                  decoding="async"
+                  fetchPriority="low"
+                  onError={(event) => {
+                    const fallbackUrl = resolvedThumbnail.fallback_url;
+                    if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
+                      return;
+                    }
+                    event.currentTarget.dataset.fallbackApplied = "true";
+                    event.currentTarget.src = fallbackUrl;
+                  }}
+                />
+              ) : (
+                <div key={`board-${thumbnail.case_id}`} className={`${patientListThumbClass} grid place-items-center`}>
+                  {translateOption(locale, "view", thumbnail.view ?? "white")}
+                </div>
+              );
+            })
+          )}
+          {row.representative_thumbnails.length > 4 ? (
+            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
+          ) : null}
+        </div>
+      </button>
+    );
+  }
+
   return (
     <section className={docSurfaceClass}>
       <div className="flex min-w-0 flex-wrap items-center gap-2 pb-1">
@@ -307,8 +381,8 @@ export function PatientListBoard({
         ) : (
           <input
             className={`${listBoardSearchClass} min-h-10 min-w-[220px] flex-1 rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.84))] px-4 text-sm text-ink shadow-[0_8px_20px_rgba(15,23,42,0.04)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] md:ml-auto md:max-w-[320px] dark:bg-white/4`}
-            value={caseSearch}
-            onChange={(event: ChangeEvent<HTMLInputElement>) => onSearchChange(event.target.value)}
+            value={localSearch}
+            onChange={(event) => setLocalSearch(event.target.value)}
             placeholder={pick(locale, "Search patient or organism", "환자 / 균종 검색")}
           />
         )}
@@ -333,78 +407,37 @@ export function PatientListBoard({
             {!casesLoading && patientListRows.length === 0 ? (
               <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장된 환자가 아직 없습니다.")}</div>
             ) : null}
-            <div className={listBoardStackClass}>
-              {patientListRows.map((row) => (
-                <button
-                  key={`board-${row.patient_id}`}
-                  className={patientListRowClass(selectedPatientId === row.patient_id)}
-                  type="button"
-                  data-patient-id={row.patient_id}
-                  ref={(el) => {
-                    if (el) {
-                      rowButtonRefsMap.current.set(row.patient_id, el);
-                    } else {
-                      rowButtonRefsMap.current.delete(row.patient_id);
-                    }
+            {shouldWindowPatients ? (
+              <div ref={patientListScrollRef} className="max-h-[min(68vh,920px)] overflow-y-auto pr-1">
+                <div
+                  className="relative"
+                  style={{
+                    height: `${patientRowVirtualizer.getTotalSize()}px`,
                   }}
-                  onClick={() => onOpenSavedCase(row.latest_case, "cases")}
                 >
-                  <div className={patientListRowMainClass}>
-                    <div className={patientListRowChipsClass}>
-                      {row.latest_case.local_case_code && row.latest_case.local_case_code !== row.patient_id ? (
-                        <span className={patientListChipClass(true)}>{row.latest_case.local_case_code}</span>
-                      ) : null}
-                      <span className={patientListChipClass(!row.latest_case.local_case_code || row.latest_case.local_case_code === row.patient_id)}>
-                        {row.patient_id}
-                      </span>
-                      <span className={patientListChipClass()}>{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? commonNotAvailable}`}</span>
-                      <span className={patientListChipClass()}>{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
-                      <span className={patientListChipClass()}>{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>
-                    </div>
-                    <div className={patientListRowMetaClass}>
-                      <span>{displayVisitReference(locale, row.latest_case.visit_date)}</span>
-                      {row.latest_case.actual_visit_date ? <span>{row.latest_case.actual_visit_date}</span> : null}
-                      <span>{formatDateTime(row.latest_case.latest_image_uploaded_at ?? row.latest_case.created_at, localeTag, commonNotAvailable)}</span>
-                    </div>
-                  </div>
-                  <div className={patientListThumbnailsClass}>
-                    {row.representative_thumbnails.length === 0 ? (
-                      <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
-                    ) : (
-                      row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
-                        const resolvedThumbnail =
-                          patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
-                          thumbnail;
-                        const previewUrl = resolvedThumbnail.preview_url;
-                        return previewUrl ? (
-                          <img
-                            key={`board-${thumbnail.case_id}`}
-                            src={previewUrl}
-                            alt={`${row.patient_id}-${thumbnail.case_id}`}
-                            className={patientListThumbClass}
-                            onError={(event) => {
-                              const fallbackUrl = resolvedThumbnail.fallback_url;
-                              if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
-                                return;
-                              }
-                              event.currentTarget.dataset.fallbackApplied = "true";
-                              event.currentTarget.src = fallbackUrl;
-                            }}
-                          />
-                        ) : (
-                          <div key={`board-${thumbnail.case_id}`} className={`${patientListThumbClass} grid place-items-center`}>
-                            {translateOption(locale, "view", thumbnail.view ?? "white")}
-                          </div>
-                        );
-                      })
-                    )}
-                    {row.representative_thumbnails.length > 4 ? (
-                      <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
-                    ) : null}
-                  </div>
-                </button>
-              ))}
-            </div>
+                  {patientRowVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const row = patientListRows[virtualRow.index];
+                    return (
+                      <div
+                        key={`virtual-patient-${row.patient_id}`}
+                        data-index={virtualRow.index}
+                        ref={patientRowVirtualizer.measureElement}
+                        className="absolute left-0 top-0 w-full pb-3"
+                        style={{
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
+                      >
+                        {renderPatientRow(row)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className={listBoardStackClass}>
+                {patientListRows.map((row) => renderPatientRow(row))}
+              </div>
+            )}
           </>
         )}
         {activeArtifactFilter ? (

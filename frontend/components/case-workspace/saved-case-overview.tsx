@@ -223,6 +223,8 @@ export function SavedCaseOverview({
                                   src={image.preview_url}
                                   alt={image.image_id}
                                   className="block h-full w-full object-cover"
+                                  loading="lazy"
+                                  decoding="async"
                                   draggable={false}
                                   onDragStart={(event) => event.preventDefault()}
                                 />

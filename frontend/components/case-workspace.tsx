@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import {
+  startTransition,
   type Dispatch,
   type PointerEvent as ReactPointerEvent,
   type SetStateAction,
@@ -131,6 +132,7 @@ import {
   workspaceToastClass,
 } from "./ui/workspace-patterns";
 import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
+import { prefetchDesktopVisitImages } from "../lib/desktop-transport";
 import { formatPublicAlias } from "../lib/public-alias";
 import {
   type CaseHistoryResponse,
@@ -824,7 +826,6 @@ export function CaseWorkspace({
   const [patientListTotalCount, setPatientListTotalCount] = useState(0);
   const [patientListTotalPages, setPatientListTotalPages] = useState(1);
   const [patientListLoading, setPatientListLoading] = useState(false);
-  const [patientListThumbs, setPatientListThumbs] = useState<Record<string, PatientListThumbnail[]>>({});
   const [patientIdLookup, setPatientIdLookup] = useState<PatientIdLookupResponse | null>(null);
   const [patientIdLookupBusy, setPatientIdLookupBusy] = useState(false);
   const [patientIdLookupError, setPatientIdLookupError] = useState<string | null>(null);
@@ -849,7 +850,7 @@ export function CaseWorkspace({
   const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
   const workspacePopNavigationRef = useRef(false);
-  const deferredSearch = useDeferredValue(caseSearch);
+  const patientListThumbs = useMemo(() => buildPatientListThumbMap(patientListRows), [patientListRows]);
   const researchRegistryJoinReady = researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
   const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
     setToastState((current) => {
@@ -1172,7 +1173,6 @@ export function CaseWorkspace({
 
   useEffect(() => {
     invalidateCaseWorkspaceImageCaches();
-    setPatientListThumbs({});
   }, [invalidateCaseWorkspaceImageCaches, selectedSiteId]);
 
   useEffect(() => {
@@ -2285,12 +2285,13 @@ export function CaseWorkspace({
           search: normalizedPatientListSearch,
         }),
       ]);
-      setCases(nextCases);
-      setPatientListRows(nextPatientList.items);
-      setPatientListThumbs(buildPatientListThumbMap(nextPatientList.items));
-      setPatientListTotalCount(nextPatientList.total_count);
-      setPatientListTotalPages(Math.max(1, nextPatientList.total_pages || 1));
-      setPatientListPage(nextPatientList.page);
+      startTransition(() => {
+        setCases(nextCases);
+        setPatientListRows(nextPatientList.items);
+        setPatientListTotalCount(nextPatientList.total_count);
+        setPatientListTotalPages(Math.max(1, nextPatientList.total_pages || 1));
+        setPatientListPage(nextPatientList.page);
+      });
       const createdCase = nextCases.find(
         (item) => item.patient_id === patientId && item.visit_date === visitReference
       );
@@ -2475,18 +2476,19 @@ export function CaseWorkspace({
     setMedsamArtifactTotalPages(1);
   }, [selectedSiteId, showOnlyMine]);
 
-  const normalizedPatientListSearch = deferredSearch.trim();
+  const normalizedPatientListSearch = caseSearch.trim();
   useEffect(() => {
     if (!selectedSiteId) {
-      setPatientListRows([]);
-      setPatientListThumbs({});
-      setPatientListTotalCount(0);
-      setPatientListTotalPages(1);
-      setPatientListLoading(false);
-      setMedsamArtifactStatus(null);
-      setMedsamArtifactItems([]);
-      setMedsamArtifactActiveStatus(null);
-      setMedsamArtifactTotalPages(1);
+      startTransition(() => {
+        setPatientListRows([]);
+        setPatientListTotalCount(0);
+        setPatientListTotalPages(1);
+        setPatientListLoading(false);
+        setMedsamArtifactStatus(null);
+        setMedsamArtifactItems([]);
+        setMedsamArtifactActiveStatus(null);
+        setMedsamArtifactTotalPages(1);
+      });
       return;
     }
     if (railView !== "patients") {
@@ -2511,20 +2513,22 @@ export function CaseWorkspace({
         if (cancelled) {
           return;
         }
-        setPatientListRows(response.items);
-        setPatientListThumbs(buildPatientListThumbMap(response.items));
-        setPatientListTotalCount(response.total_count);
-        setPatientListTotalPages(Math.max(1, response.total_pages || 1));
-        setPatientListPage((current) => (current === response.page ? current : response.page));
+        startTransition(() => {
+          setPatientListRows(response.items);
+          setPatientListTotalCount(response.total_count);
+          setPatientListTotalPages(Math.max(1, response.total_pages || 1));
+          setPatientListPage((current) => (current === response.page ? current : response.page));
+        });
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
         }
         if (!cancelled) {
-          setPatientListRows([]);
-          setPatientListThumbs({});
-          setPatientListTotalCount(0);
-          setPatientListTotalPages(1);
+          startTransition(() => {
+            setPatientListRows([]);
+            setPatientListTotalCount(0);
+            setPatientListTotalPages(1);
+          });
           setToast({
             tone: "error",
             message: describeError(nextError, copy.unableLoadPatientList),
@@ -2642,13 +2646,18 @@ export function CaseWorkspace({
         .filter((item) => item.patient_id === selectedCase.patient_id)
         .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))
     : [];
+
   useEffect(() => {
-    if (!selectedSiteId || railView !== "patients") {
-      setPatientListThumbs({});
+    if (!selectedSiteId || railView === "patients") {
       return;
     }
-    setPatientListThumbs(buildPatientListThumbMap(patientListRows));
-  }, [patientListRows, railView, selectedSiteId]);
+    prewarmPatientListPage(selectedSiteId, token, {
+      mine: showOnlyMine,
+      page: 1,
+      page_size: PATIENT_LIST_PAGE_SIZE,
+      search: normalizedPatientListSearch,
+    });
+  }, [normalizedPatientListSearch, railView, selectedSiteId, showOnlyMine, token]);
 
   useEffect(() => {
     if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
@@ -2665,10 +2674,6 @@ export function CaseWorkspace({
     });
   }, [normalizedPatientListSearch, patientListPage, patientListRows, patientListTotalPages, railView, selectedSiteId, showOnlyMine, token]);
 
-  const handlePatientRowVisible = useCallback(
-    (_patientId: string) => {},
-    [],
-  );
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
   const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
   const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
@@ -3024,6 +3029,11 @@ export function CaseWorkspace({
                   onShowOnlyMineChange={handlePatientScopeChange}
                   onPageChange={handlePatientListPageChange}
                   onOpenSavedCase={openSavedCase}
+                  onPrefetchCase={(caseRecord) => {
+                    if (selectedSiteId) {
+                      prefetchDesktopVisitImages(selectedSiteId, caseRecord.patient_id, caseRecord.visit_date);
+                    }
+                  }}
                   medsamArtifactActiveStatus={medsamArtifactActiveStatus}
                   medsamArtifactScope={medsamArtifactScope}
                   medsamArtifactItems={medsamArtifactItems}
@@ -3034,7 +3044,6 @@ export function CaseWorkspace({
                   onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
                   onMedsamArtifactScopeChange={handleMedsamArtifactScopeChange}
                   onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
-                  onRowVisible={handlePatientRowVisible}
                 />
               </div>
               <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>

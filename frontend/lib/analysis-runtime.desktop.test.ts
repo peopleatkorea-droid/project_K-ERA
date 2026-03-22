@@ -8,6 +8,7 @@ const apiCoreMocks = vi.hoisted(() => ({
 const desktopIpcMocks = vi.hoisted(() => ({
   hasDesktopRuntime: vi.fn(() => false),
   invokeDesktop: vi.fn(),
+  convertDesktopFilePath: vi.fn(async (path: string) => path),
 }));
 
 const desktopSidecarMocks = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ vi.mock("./api-core", () => ({
 }));
 
 vi.mock("./desktop-ipc", () => ({
+  convertDesktopFilePath: desktopIpcMocks.convertDesktopFilePath,
   hasDesktopRuntime: desktopIpcMocks.hasDesktopRuntime,
   invokeDesktop: desktopIpcMocks.invokeDesktop,
 }));
@@ -66,6 +68,35 @@ describe("analysis-runtime desktop routing", () => {
     expect(blob.type).toBe("image/png");
   });
 
+  it("uses the desktop validation artifact path resolver when a preview URL is requested", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({
+      path: "C:/artifacts/roi_crop.png",
+    });
+
+    const mod = await import("./analysis-runtime");
+    const url = await mod.fetchAnalysisValidationArtifactUrl(
+      "39100103",
+      "validation_1",
+      "17452298",
+      "Initial",
+      "roi_crop",
+      "desktop-token",
+    );
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("resolve_validation_artifact_path", {
+      payload: {
+        site_id: "39100103",
+        validation_id: "validation_1",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        artifact_kind: "roi_crop",
+      },
+    });
+    expect(desktopIpcMocks.convertDesktopFilePath).toHaveBeenCalledWith("C:/artifacts/roi_crop.png");
+    expect(url).toBe("C:/artifacts/roi_crop.png");
+  });
+
   it("uses the desktop ROI artifact reader when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({
@@ -95,6 +126,34 @@ describe("analysis-runtime desktop routing", () => {
     expect(apiCoreMocks.requestBlob).not.toHaveBeenCalled();
   });
 
+  it("uses the desktop ROI artifact path resolver when a preview URL is requested", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({
+      path: "C:/artifacts/medsam_mask.png",
+    });
+
+    const mod = await import("./analysis-runtime");
+    const url = await mod.fetchAnalysisCaseRoiPreviewArtifactUrl(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "medsam_mask",
+      "desktop-token",
+    );
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("resolve_case_roi_preview_artifact_path", {
+      payload: {
+        site_id: "39100103",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        image_id: "image_1",
+        artifact_kind: "medsam_mask",
+      },
+    });
+    expect(url).toBe("C:/artifacts/medsam_mask.png");
+  });
+
   it("uses the desktop lesion artifact reader when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({
@@ -122,6 +181,34 @@ describe("analysis-runtime desktop routing", () => {
       },
     });
     expect(apiCoreMocks.requestBlob).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop lesion artifact path resolver when a preview URL is requested", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({
+      path: "C:/artifacts/lesion_mask.png",
+    });
+
+    const mod = await import("./analysis-runtime");
+    const url = await mod.fetchAnalysisCaseLesionPreviewArtifactUrl(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "lesion_mask",
+      "desktop-token",
+    );
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("resolve_case_lesion_preview_artifact_path", {
+      payload: {
+        site_id: "39100103",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        image_id: "image_1",
+        artifact_kind: "lesion_mask",
+      },
+    });
+    expect(url).toBe("C:/artifacts/lesion_mask.png");
   });
 
   it("uses the desktop stored lesion preview reader when the desktop runtime is available", async () => {

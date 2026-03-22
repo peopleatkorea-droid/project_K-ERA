@@ -1,7 +1,7 @@
 "use client";
 
 import { request, requestBlob } from "./api-core";
-import { hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
+import { convertDesktopFilePath, hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
 import { warnDesktopMlFallback } from "./desktop-sidecar-config";
 import type {
   AiClinicResponse,
@@ -17,22 +17,53 @@ import type {
 } from "./types";
 
 type DesktopBinaryResponse = {
-  bytes: number[];
+  data?: string | null;
+  bytes?: number[] | null;
   media_type?: string | null;
 };
+
+type DesktopPathResponse = {
+  path: string;
+};
+
+type ValidationArtifactKind =
+  | "gradcam"
+  | "gradcam_cornea"
+  | "gradcam_lesion"
+  | "roi_crop"
+  | "medsam_mask"
+  | "lesion_crop"
+  | "lesion_mask";
 
 function canUseDesktopAnalysisTransport() {
   return hasDesktopRuntime();
 }
 
 function desktopBinaryToBlob(response: DesktopBinaryResponse) {
-  return new Blob([new Uint8Array(response.bytes ?? [])], {
+  let bytes: Uint8Array;
+  if (typeof response.data === "string" && response.data.length > 0) {
+    const binary = atob(response.data);
+    bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+  } else {
+    bytes = new Uint8Array(response.bytes ?? []);
+  }
+  const normalizedBytes = new Uint8Array(bytes.byteLength);
+  normalizedBytes.set(bytes);
+  return new Blob([normalizedBytes], {
     type: response.media_type?.trim() || "application/octet-stream",
   });
 }
 
 function warnAnalysisFallback(operation: string) {
   warnDesktopMlFallback(operation);
+}
+
+async function resolveDesktopArtifactUrl(command: string, payload: Record<string, unknown>) {
+  const response = await invokeDesktop<DesktopPathResponse>(command, { payload });
+  return convertDesktopFilePath(response.path);
 }
 
 export async function runAnalysisCaseValidation(
@@ -267,7 +298,7 @@ export async function fetchAnalysisValidationArtifactBlob(
   validationId: string,
   patientId: string,
   visitDate: string,
-  artifactKind: "gradcam" | "gradcam_cornea" | "gradcam_lesion" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
+  artifactKind: ValidationArtifactKind,
   token: string,
 ) {
   if (canUseDesktopAnalysisTransport()) {
@@ -292,6 +323,34 @@ export async function fetchAnalysisValidationArtifactBlob(
     token,
     "Artifact fetch failed",
   );
+}
+
+export async function fetchAnalysisValidationArtifactUrl(
+  siteId: string,
+  validationId: string,
+  patientId: string,
+  visitDate: string,
+  artifactKind: ValidationArtifactKind,
+  token: string,
+) {
+  if (canUseDesktopAnalysisTransport()) {
+    return resolveDesktopArtifactUrl("resolve_validation_artifact_path", {
+      site_id: siteId,
+      validation_id: validationId,
+      patient_id: patientId,
+      visit_date: visitDate,
+      artifact_kind: artifactKind,
+    });
+  }
+  const blob = await fetchAnalysisValidationArtifactBlob(
+    siteId,
+    validationId,
+    patientId,
+    visitDate,
+    artifactKind,
+    token,
+  );
+  return URL.createObjectURL(blob);
 }
 
 export async function fetchAnalysisCaseRoiPreviewArtifactBlob(
@@ -327,6 +386,27 @@ export async function fetchAnalysisCaseRoiPreviewArtifactBlob(
   );
 }
 
+export async function fetchAnalysisCaseRoiPreviewArtifactUrl(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "roi_crop" | "medsam_mask",
+  token: string,
+) {
+  if (canUseDesktopAnalysisTransport()) {
+    return resolveDesktopArtifactUrl("resolve_case_roi_preview_artifact_path", {
+      site_id: siteId,
+      patient_id: patientId,
+      visit_date: visitDate,
+      image_id: imageId,
+      artifact_kind: artifactKind,
+    });
+  }
+  const blob = await fetchAnalysisCaseRoiPreviewArtifactBlob(siteId, patientId, visitDate, imageId, artifactKind, token);
+  return URL.createObjectURL(blob);
+}
+
 export async function fetchAnalysisCaseLesionPreviewArtifactBlob(
   siteId: string,
   patientId: string,
@@ -358,6 +438,27 @@ export async function fetchAnalysisCaseLesionPreviewArtifactBlob(
     token,
     "Lesion preview fetch failed",
   );
+}
+
+export async function fetchAnalysisCaseLesionPreviewArtifactUrl(
+  siteId: string,
+  patientId: string,
+  visitDate: string,
+  imageId: string,
+  artifactKind: "lesion_crop" | "lesion_mask",
+  token: string,
+) {
+  if (canUseDesktopAnalysisTransport()) {
+    return resolveDesktopArtifactUrl("resolve_case_lesion_preview_artifact_path", {
+      site_id: siteId,
+      patient_id: patientId,
+      visit_date: visitDate,
+      image_id: imageId,
+      artifact_kind: artifactKind,
+    });
+  }
+  const blob = await fetchAnalysisCaseLesionPreviewArtifactBlob(siteId, patientId, visitDate, imageId, artifactKind, token);
+  return URL.createObjectURL(blob);
 }
 
 export async function startAnalysisLiveLesionPreview(siteId: string, imageId: string, token: string) {

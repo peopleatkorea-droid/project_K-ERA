@@ -17,6 +17,8 @@ from typing import Any, Literal
 import google.auth.transport.requests
 import jwt
 import pandas as pd
+import re
+from sqlalchemy import select, update as sa_update
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -30,11 +32,12 @@ from kera_research.config import (
     MODEL_DIR,
     SITE_ROOT_DIR,
 )
-from kera_research.db import DATABASE_TOPOLOGY
+from kera_research.db import CONTROL_PLANE_ENGINE, DATABASE_TOPOLOGY, institution_directory, sites as control_plane_sites
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
+from kera_research.services.local_api_secret import load_or_create_local_api_secret
 from kera_research.services.node_credentials import (
     clear_node_credentials,
     load_node_credentials,
@@ -70,26 +73,91 @@ from kera_research.api.routes.sites import build_sites_router
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
 
+_HIRA_CODE_RE = re.compile(r"^\d{8}$")
+_INSTITUTION_BACKFILL_IN_PROGRESS: set[str] = set()
+_INSTITUTION_BACKFILL_LOCK = threading.Lock()
+
+
+def _backfill_institution_names(ykiho_codes: list[str]) -> None:
+    """Background: fetch hospital names from Neon (or HIRA) for sites still showing HIRA codes."""
+    from kera_research.config import HIRA_API_KEY
+    from kera_research.services.institution_directory import HiraInstitutionDirectoryClient
+    from kera_research.domain import utc_now
+
+    cp = get_control_plane()
+
+    for ykiho in ykiho_codes:
+        try:
+            name = ""
+            record: dict | None = None
+
+            # 1st priority: Neon remote institution directory (already synced there)
+            try:
+                remote_results = cp.remote_control_plane.public_institutions(query=ykiho, limit=3)
+                for item in remote_results:
+                    if str(item.get("institution_id") or "").strip() == ykiho:
+                        name = str(item.get("name") or "").strip()
+                        record = item
+                        break
+            except Exception:
+                pass
+
+            # 2nd priority: HIRA API direct lookup
+            if not name and HIRA_API_KEY:
+                hira_client = HiraInstitutionDirectoryClient()
+                record = hira_client.fetch_by_ykiho(ykiho)
+                if record:
+                    name = str(record.get("name") or "").strip()
+
+            if not name or name == ykiho:
+                continue
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                existing = conn.execute(
+                    select(institution_directory.c.institution_id).where(
+                        institution_directory.c.institution_id == ykiho
+                    )
+                ).first()
+                if existing:
+                    conn.execute(
+                        sa_update(institution_directory)
+                        .where(institution_directory.c.institution_id == ykiho)
+                        .values(name=name, synced_at=utc_now())
+                    )
+                else:
+                    row = {k: str(record.get(k) or "") for k in (
+                        "source", "institution_type_code", "institution_type_name",
+                        "address", "phone", "homepage", "sido_code", "sggu_code",
+                        "emdong_name", "postal_code", "x_pos", "y_pos",
+                    )}
+                    conn.execute(institution_directory.insert().values(
+                        institution_id=ykiho,
+                        name=name,
+                        ophthalmology_available=True,
+                        open_status="active",
+                        source_payload=record.get("source_payload") or {},
+                        synced_at=utc_now(),
+                        **{k: v for k, v in row.items()},
+                    ))
+                conn.execute(
+                    sa_update(control_plane_sites)
+                    .where(
+                        (control_plane_sites.c.site_id == ykiho)
+                        | (control_plane_sites.c.source_institution_id == ykiho)
+                    )
+                    .where(
+                        (control_plane_sites.c.hospital_name == ykiho)
+                        | (control_plane_sites.c.hospital_name == "")
+                    )
+                    .values(hospital_name=name)
+                )
+        except Exception:
+            pass
+        finally:
+            with _INSTITUTION_BACKFILL_LOCK:
+                _INSTITUTION_BACKFILL_IN_PROGRESS.discard(ykiho)
+
 def _load_or_create_api_secret() -> str:
-    env_secret = os.getenv("KERA_API_SECRET", "").strip()
-    if env_secret:
-        return env_secret
-    # Auto-generate and persist so the secret survives restarts
-    from kera_research.config import STORAGE_DIR
-    secret_file = STORAGE_DIR / "kera_secret.key"
-    if secret_file.exists():
-        saved = secret_file.read_text(encoding="utf-8").strip()
-        if saved:
-            return saved
-    import secrets
-    generated = secrets.token_hex(32)
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    secret_file.write_text(generated, encoding="utf-8")
-    try:
-        os.chmod(secret_file, 0o600)  # owner read-only on POSIX
-    except OSError:
-        pass
-    return generated
+    return load_or_create_local_api_secret()
 
 API_SECRET = _load_or_create_api_secret()
 API_ALGORITHM = "HS256"
@@ -267,14 +335,90 @@ def _local_site_records_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
         site_ids = [*disk_site_ids, *site_ids]
 
     ordered_site_ids = list(dict.fromkeys(site_ids))
-    return [
-        {
+    site_records_by_id: dict[str, dict[str, str]] = {}
+    try:
+        if ordered_site_ids:
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                site_rows = conn.execute(
+                    select(
+                        control_plane_sites.c.site_id,
+                        control_plane_sites.c.display_name,
+                        control_plane_sites.c.hospital_name,
+                        control_plane_sites.c.source_institution_id,
+                    ).where(control_plane_sites.c.site_id.in_(ordered_site_ids))
+                ).mappings().all()
+                site_rows_by_id = {str(row.get("site_id") or "").strip(): dict(row) for row in site_rows}
+                institution_ids = {
+                    str(site_rows_by_id.get(site_id, {}).get("source_institution_id") or site_id).strip()
+                    for site_id in ordered_site_ids
+                    if str(site_rows_by_id.get(site_id, {}).get("source_institution_id") or site_id).strip()
+                }
+                institution_rows = conn.execute(
+                    select(institution_directory.c.institution_id, institution_directory.c.name).where(
+                        institution_directory.c.institution_id.in_(institution_ids)
+                    )
+                ).mappings().all()
+                institution_names = {
+                    str(row.get("institution_id") or "").strip(): str(row.get("name") or "").strip()
+                    for row in institution_rows
+                    if str(row.get("institution_id") or "").strip()
+                }
+
+            for site_id in ordered_site_ids:
+                site_row = site_rows_by_id.get(site_id, {})
+                source_institution_id = str(site_row.get("source_institution_id") or site_id).strip()
+                institution_name = institution_names.get(source_institution_id, "")
+                display_name = str(site_row.get("display_name") or "").strip()
+                hospital_name = str(site_row.get("hospital_name") or "").strip()
+                if institution_name:
+                    if not display_name or display_name == site_id:
+                        display_name = institution_name
+                    if not hospital_name or hospital_name == site_id:
+                        hospital_name = institution_name
+                rec: dict[str, Any] = {
+                    "display_name": display_name or hospital_name or site_id,
+                    "hospital_name": hospital_name or display_name or site_id,
+                }
+                if institution_name:
+                    rec["source_institution_name"] = institution_name
+                site_records_by_id[site_id] = rec
+    except Exception:
+        site_records_by_id = {}
+
+    def _build_site_result(site_id: str) -> dict[str, Any]:
+        rec = site_records_by_id.get(site_id, {})
+        entry: dict[str, Any] = {
             "site_id": site_id,
-            "display_name": site_id,
-            "hospital_name": site_id,
+            "display_name": rec.get("display_name") or site_id,
+            "hospital_name": rec.get("hospital_name") or site_id,
         }
-        for site_id in ordered_site_ids
-    ]
+        source_institution_name = rec.get("source_institution_name") or ""
+        if source_institution_name:
+            entry["source_institution_name"] = source_institution_name
+        return entry
+
+    result = [_build_site_result(site_id) for site_id in ordered_site_ids]
+
+    # Trigger background HIRA lookup for any site still showing its HIRA code as the name.
+    missing_ykiho: list[str] = []
+    with _INSTITUTION_BACKFILL_LOCK:
+        for entry in result:
+            site_id = entry["site_id"]
+            if (
+                _HIRA_CODE_RE.match(site_id)
+                and entry["hospital_name"] == site_id
+                and site_id not in _INSTITUTION_BACKFILL_IN_PROGRESS
+            ):
+                missing_ykiho.append(site_id)
+                _INSTITUTION_BACKFILL_IN_PROGRESS.add(site_id)
+    if missing_ykiho:
+        threading.Thread(
+            target=_backfill_institution_names,
+            args=(missing_ykiho,),
+            daemon=True,
+        ).start()
+
+    return result
 
 
 def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: str) -> SiteStore:

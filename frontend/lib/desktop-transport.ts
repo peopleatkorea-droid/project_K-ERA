@@ -44,10 +44,18 @@ type DesktopPathBackedVisitImageRecord = DesktopVisitImageRecord & {
   content_path?: string | null;
 };
 
+type DesktopImagePreviewPathRecord = {
+  image_id: string;
+  preview_path: string | null;
+  fallback_path: string | null;
+  ready: boolean;
+};
+
 const patientListPageCache = new Map<string, PatientListPageResponse>();
 const patientListPagePromiseCache = new Map<string, Promise<PatientListPageResponse>>();
 const visitImagesCache = new Map<string, DesktopVisitImageRecord[]>();
 const visitImagesPromiseCache = new Map<string, Promise<DesktopVisitImageRecord[]>>();
+const imagePreviewPromiseCache = new Map<string, Promise<Map<string, string>>>();
 
 function buildPatientListPageCacheKey(siteId: string, token: string, options: FetchPatientListPageOptions): string {
   return JSON.stringify({
@@ -63,6 +71,15 @@ function buildPatientListPageCacheKey(siteId: string, token: string, options: Fe
 
 function buildVisitImagesCacheKey(siteId: string, patientId: string, visitDate: string): string {
   return JSON.stringify({ runtime: hasDesktopRuntime() ? "desktop" : "web", siteId, patientId, visitDate });
+}
+
+function buildImagePreviewCacheKey(siteId: string, imageIds: string[], maxSide: number): string {
+  return JSON.stringify({
+    runtime: hasDesktopRuntime() ? "desktop" : "web",
+    siteId,
+    maxSide,
+    imageIds: [...imageIds].sort(),
+  });
 }
 
 export function canUseDesktopTransport(): boolean {
@@ -208,10 +225,76 @@ export async function fetchDesktopVisitImages(
   return nextRequest;
 }
 
+export async function ensureDesktopImagePreviews(
+  siteId: string,
+  imageIds: string[],
+  options: { maxSide?: number; signal?: AbortSignal } = {},
+): Promise<Map<string, string>> {
+  const normalizedImageIds = Array.from(
+    new Set(
+      imageIds
+        .map((imageId) => String(imageId ?? "").trim())
+        .filter((imageId) => imageId.length > 0),
+    ),
+  );
+  if (!normalizedImageIds.length) {
+    return new Map();
+  }
+  const maxSide = Math.min(Math.max(options.maxSide ?? 640, 96), 1024);
+  const cacheKey = buildImagePreviewCacheKey(siteId, normalizedImageIds, maxSide);
+  const pending = imagePreviewPromiseCache.get(cacheKey);
+  if (pending) {
+    return pending;
+  }
+  throwIfAborted(options.signal);
+  const nextRequest = invokeDesktop<DesktopImagePreviewPathRecord[]>(
+    "ensure_image_previews",
+    {
+      payload: {
+        site_id: siteId,
+        image_ids: normalizedImageIds,
+        max_side: maxSide,
+      },
+    },
+    options.signal,
+  )
+    .then(async (records) => {
+      const entries = await Promise.all(
+        records.map(async (record) => {
+          const previewUrl =
+            (await convertDesktopFilePath(record.preview_path ?? null)) ??
+            (await convertDesktopFilePath(record.fallback_path ?? null));
+          return previewUrl ? ([record.image_id, previewUrl] as [string, string]) : null;
+        }),
+      );
+      return new Map(entries.filter((entry): entry is [string, string] => entry !== null));
+    })
+    .finally(() => {
+      imagePreviewPromiseCache.delete(cacheKey);
+    });
+  imagePreviewPromiseCache.set(cacheKey, nextRequest);
+  return nextRequest;
+}
+
+export function prefetchDesktopVisitImages(siteId: string, patientId: string, visitDate: string): void {
+  if (!canUseDesktopTransport()) return;
+  void fetchDesktopVisitImages(siteId, patientId, visitDate)
+    .then((images) => {
+      const imageIds = images
+        .map((img) => String(img.image_id ?? "").trim())
+        .filter((id) => id.length > 0);
+      if (imageIds.length > 0) {
+        void ensureDesktopImagePreviews(siteId, imageIds, { maxSide: 640 });
+      }
+    })
+    .catch(() => undefined);
+}
+
 export function clearDesktopTransportCaches() {
   clearDesktopFileSrcCache();
   patientListPageCache.clear();
   patientListPagePromiseCache.clear();
   visitImagesCache.clear();
   visitImagesPromiseCache.clear();
+  imagePreviewPromiseCache.clear();
 }

@@ -92,15 +92,27 @@ async function listSitesForMainUserRecord(user: AuthUser): Promise<SiteRecord[]>
   const rows =
     user.role === "admin"
       ? await sql`
-          select site_id, display_name, hospital_name
+          select
+            sites.site_id,
+            sites.display_name,
+            sites.hospital_name,
+            institution_directory.name as source_institution_name
           from sites
-          order by display_name asc, site_id asc
+          left join institution_directory
+            on institution_directory.institution_id = coalesce(nullif(sites.source_institution_id, ''), sites.site_id)
+          order by sites.display_name asc, sites.site_id asc
         `
       : await sql`
-          select site_id, display_name, hospital_name
+          select
+            sites.site_id,
+            sites.display_name,
+            sites.hospital_name,
+            institution_directory.name as source_institution_name
           from sites
-          where site_id = any(${siteIds})
-          order by display_name asc, site_id asc
+          left join institution_directory
+            on institution_directory.institution_id = coalesce(nullif(sites.source_institution_id, ''), sites.site_id)
+          where sites.site_id = any(${siteIds})
+          order by sites.display_name asc, sites.site_id asc
         `;
   return rows.map((row) => serializeSiteRecord(row));
 }

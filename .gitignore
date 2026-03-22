@@ -6,6 +6,8 @@ frontend/node_modules/
 frontend/.next/
 frontend/.next_broken/
 frontend/out/
+frontend/.desktop-runtime/
+frontend/desktop-dist/assets/
 frontend/src-tauri/target/
 frontend/tsconfig.tsbuildinfo
 .desktop-runtime/
@@ -17,3 +19,4 @@ artifacts/
 .env*.bak
 frontend/.env.local
 .claude/settings.local.json
+node_modules

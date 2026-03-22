@@ -2,9 +2,7 @@
 
 import { invokeDesktop, hasDesktopRuntime } from "./desktop-ipc";
 import {
-  ensureDesktopMlBackendReady,
   fetchDesktopMlBackendStatus,
-  stopDesktopMlBackend,
   type DesktopMlBackendStatus,
 } from "./desktop-sidecar-config";
 import { requestDesktopLocalApiJson } from "./desktop-local-api";
@@ -17,6 +15,20 @@ export type DesktopManagedProcessStatus = {
   managed: boolean;
   running: boolean;
   healthy: boolean;
+  launched_by_desktop: boolean;
+  pid?: number | null;
+  python_path?: string | null;
+  launch_command?: string[] | null;
+  stdout_log_path?: string | null;
+  stderr_log_path?: string | null;
+  last_started_at?: string | null;
+  last_error?: string | null;
+};
+
+export type DesktopWorkerStatus = {
+  mode: string;
+  managed: boolean;
+  running: boolean;
   launched_by_desktop: boolean;
   pid?: number | null;
   python_path?: string | null;
@@ -53,6 +65,7 @@ export type DesktopNodeStatus = {
 export type DesktopDiagnosticsSnapshot = {
   runtime: "desktop" | "web";
   localBackend: DesktopManagedProcessStatus | null;
+  localWorker: DesktopWorkerStatus | null;
   mlBackend: DesktopMlBackendStatus | null;
   nodeStatus: DesktopNodeStatus | null;
   nodeStatusError: string | null;
@@ -62,6 +75,7 @@ function webSnapshot(): DesktopDiagnosticsSnapshot {
   return {
     runtime: "web",
     localBackend: null,
+    localWorker: null,
     mlBackend: null,
     nodeStatus: null,
     nodeStatusError: null,
@@ -75,18 +89,47 @@ export async function fetchDesktopLocalBackendStatus(signal?: AbortSignal) {
   return invokeDesktop<DesktopManagedProcessStatus>("get_local_backend_status", {}, signal);
 }
 
-export async function ensureDesktopLocalBackendReady(signal?: AbortSignal) {
+export async function fetchDesktopLocalWorkerStatus(signal?: AbortSignal) {
   if (!hasDesktopRuntime()) {
     return null;
   }
-  return invokeDesktop<DesktopManagedProcessStatus>("ensure_local_backend", {}, signal);
+  return invokeDesktop<DesktopWorkerStatus>("get_local_worker_status", {}, signal);
+}
+
+export async function ensureDesktopLocalWorkerReady(signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopWorkerStatus>("ensure_local_worker", {}, signal);
+}
+
+export async function stopDesktopLocalWorker(signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopWorkerStatus>("stop_local_worker", {}, signal);
+}
+
+export async function ensureDesktopLocalRuntimeReady(signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopManagedProcessStatus>("ensure_local_runtime", {}, signal);
+}
+
+export async function ensureDesktopLocalBackendReady(signal?: AbortSignal) {
+  return ensureDesktopLocalRuntimeReady(signal);
+}
+
+export async function stopDesktopLocalRuntime(signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopManagedProcessStatus>("stop_local_runtime", {}, signal);
 }
 
 export async function stopDesktopLocalBackend(signal?: AbortSignal) {
-  if (!hasDesktopRuntime()) {
-    return null;
-  }
-  return invokeDesktop<DesktopManagedProcessStatus>("stop_local_backend", {}, signal);
+  return stopDesktopLocalRuntime(signal);
 }
 
 export async function fetchDesktopNodeStatus(signal?: AbortSignal) {
@@ -98,27 +141,50 @@ export async function fetchDesktopNodeStatus(signal?: AbortSignal) {
   });
 }
 
-export async function fetchDesktopDiagnosticsSnapshot(signal?: AbortSignal): Promise<DesktopDiagnosticsSnapshot> {
+async function fetchDesktopRuntimeSnapshotInternal(signal?: AbortSignal): Promise<DesktopDiagnosticsSnapshot> {
   if (!hasDesktopRuntime()) {
     return webSnapshot();
   }
 
-  const [localBackendResult, mlBackendResult, nodeStatusResult] = await Promise.allSettled([
+  const [localBackendResult, localWorkerResult, mlBackendResult] = await Promise.allSettled([
     fetchDesktopLocalBackendStatus(signal),
+    fetchDesktopLocalWorkerStatus(signal),
     fetchDesktopMlBackendStatus(signal),
-    fetchDesktopNodeStatus(signal),
   ]);
 
   return {
     runtime: "desktop",
     localBackend: localBackendResult.status === "fulfilled" ? localBackendResult.value : null,
+    localWorker: localWorkerResult.status === "fulfilled" ? localWorkerResult.value : null,
     mlBackend: mlBackendResult.status === "fulfilled" ? mlBackendResult.value : null,
-    nodeStatus: nodeStatusResult.status === "fulfilled" ? nodeStatusResult.value : null,
+    nodeStatus: null,
+    nodeStatusError: null,
+  };
+}
+
+export async function fetchDesktopRuntimeSnapshot(signal?: AbortSignal): Promise<DesktopDiagnosticsSnapshot> {
+  return fetchDesktopRuntimeSnapshotInternal(signal);
+}
+
+export async function fetchDesktopDiagnosticsSnapshot(signal?: AbortSignal): Promise<DesktopDiagnosticsSnapshot> {
+  if (!hasDesktopRuntime()) {
+    return webSnapshot();
+  }
+
+  const [runtimeSnapshot, nodeStatusResult] = await Promise.all([
+    fetchDesktopRuntimeSnapshotInternal(signal),
+    Promise.allSettled([fetchDesktopNodeStatus(signal)]),
+  ]);
+  const nodeStatus = nodeStatusResult[0];
+
+  return {
+    ...runtimeSnapshot,
+    nodeStatus: nodeStatus.status === "fulfilled" ? nodeStatus.value : null,
     nodeStatusError:
-      nodeStatusResult.status === "rejected"
-        ? nodeStatusResult.reason instanceof Error
-          ? nodeStatusResult.reason.message
-          : String(nodeStatusResult.reason)
+      nodeStatus.status === "rejected"
+        ? nodeStatus.reason instanceof Error
+          ? nodeStatus.reason.message
+          : String(nodeStatus.reason)
         : null,
   };
 }
@@ -127,10 +193,7 @@ export async function ensureDesktopDiagnosticsBackends(signal?: AbortSignal) {
   if (!hasDesktopRuntime()) {
     return webSnapshot();
   }
-  await Promise.allSettled([
-    ensureDesktopLocalBackendReady(signal),
-    ensureDesktopMlBackendReady(signal),
-  ]);
+  await ensureDesktopLocalRuntimeReady(signal);
   return fetchDesktopDiagnosticsSnapshot(signal);
 }
 
@@ -138,9 +201,6 @@ export async function stopDesktopDiagnosticsBackends(signal?: AbortSignal) {
   if (!hasDesktopRuntime()) {
     return webSnapshot();
   }
-  await Promise.allSettled([
-    stopDesktopLocalBackend(signal),
-    stopDesktopMlBackend(signal),
-  ]);
+  await stopDesktopLocalRuntime(signal);
   return fetchDesktopDiagnosticsSnapshot(signal);
 }

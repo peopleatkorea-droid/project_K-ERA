@@ -17,6 +17,7 @@ export type ControlPlaneSite = {
   display_name: string;
   hospital_name: string;
   source_institution_id: string | null;
+  source_institution_name?: string | null;
   status: string;
   created_at: string;
 };

@@ -28,6 +28,7 @@ import {
   trimText,
 } from "./main-app-bridge-shared";
 import { verifyControlPlanePassword } from "./passwords";
+import { isPlaceholderSiteLabel } from "../site-labels";
 import { getControlPlaneUser } from "./store";
 
 export type LocalMainAppUser = AuthUser;
@@ -428,12 +429,60 @@ export async function syncCanonicalMemberships(
       `;
     }
   }
+
+  function pickBestSiteLabel(siteId: string, ...candidates: Array<string | null | undefined>): string {
+    for (const candidate of candidates) {
+      const normalizedCandidate = trimText(candidate);
+      if (!normalizedCandidate || isPlaceholderSiteLabel(normalizedCandidate, siteId)) {
+        continue;
+      }
+      return normalizedCandidate;
+    }
+    return trimText(candidates[0]) || siteId;
+  }
+
+  async function resolveSiteMetadata(siteId: string): Promise<{
+    displayName: string;
+    hospitalName: string;
+    sourceInstitutionId: string | null;
+  }> {
+    const siteRows = await sql`
+      select display_name, hospital_name, source_institution_id
+      from sites
+      where site_id = ${siteId}
+      limit 1
+    `;
+    const existingSite = siteRows[0] ?? null;
+    const existingDisplayName = trimText(existingSite ? rowValue<string>(existingSite, "display_name") : "");
+    const existingHospitalName = trimText(existingSite ? rowValue<string>(existingSite, "hospital_name") : "");
+    const existingSourceInstitutionId =
+      trimText(existingSite ? rowValue<string | null>(existingSite, "source_institution_id") : "") || null;
+    const institutionRows = await sql`
+      select institution_id, name
+      from institution_directory
+      where institution_id = ${existingSourceInstitutionId || siteId}
+      limit 1
+    `;
+    const institution = institutionRows[0] ?? null;
+    const institutionId = trimText(institution ? rowValue<string>(institution, "institution_id") : "") || null;
+    const institutionName = trimText(institution ? rowValue<string>(institution, "name") : "");
+    const displayName = pickBestSiteLabel(siteId, existingDisplayName, institutionName);
+    const hospitalName = pickBestSiteLabel(siteId, existingHospitalName, institutionName, displayName);
+    return {
+      displayName,
+      hospitalName,
+      sourceInstitutionId: existingSourceInstitutionId || institutionId,
+    };
+  }
+
   for (const siteId of siteIds) {
+    const metadata = await resolveSiteMetadata(siteId);
     await upsertSiteRecord({
       site_id: siteId,
       project_id: DEFAULT_PROJECT_ID,
-      display_name: siteId,
-      hospital_name: siteId,
+      display_name: metadata.displayName,
+      hospital_name: metadata.hospitalName,
+      source_institution_id: metadata.sourceInstitutionId,
       research_registry_enabled: true,
     });
     await sql`

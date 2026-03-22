@@ -6,13 +6,13 @@ import {
   clearImageLesionBox,
   fetchCaseLesionPreview,
   fetchStoredCaseLesionPreview,
-  fetchCaseLesionPreviewArtifactBlob,
+  fetchCaseLesionPreviewArtifactUrl,
   fetchCaseRoiPreview,
-  fetchCaseRoiPreviewArtifactBlob,
+  fetchCaseRoiPreviewArtifactUrl,
   fetchCases,
-  fetchImageBlob,
+  fetchImagePreviewUrl,
   fetchImageSemanticPromptScores,
-  fetchValidationArtifactBlob,
+  fetchValidationArtifactUrl,
   runCaseAiClinic,
   runCaseValidation,
   runCaseValidationCompare,
@@ -112,7 +112,9 @@ type Args = {
 
 function revokeUrls(urls: string[]) {
   for (const url of urls) {
-    URL.revokeObjectURL(url);
+    if (String(url).startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 
@@ -358,7 +360,7 @@ export function useCaseWorkspaceAnalysis({
 
             const nextUrls: string[] = [];
             try {
-              const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+              const lesionMaskUrl = await fetchCaseLesionPreviewArtifactUrl(
                 selectedSiteId,
                 patientId,
                 visitDate,
@@ -366,13 +368,14 @@ export function useCaseWorkspaceAnalysis({
                 "lesion_mask",
                 token
               );
-              const lesionMaskUrl = URL.createObjectURL(maskBlob);
-              nextUrls.push(lesionMaskUrl);
+              if (lesionMaskUrl) {
+                nextUrls.push(lesionMaskUrl);
+              }
 
               let lesionCropUrl: string | null = null;
               if (preview.has_lesion_crop) {
                 try {
-                  const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+                  lesionCropUrl = await fetchCaseLesionPreviewArtifactUrl(
                     selectedSiteId,
                     patientId,
                     visitDate,
@@ -380,8 +383,9 @@ export function useCaseWorkspaceAnalysis({
                     "lesion_crop",
                     token
                   );
-                  lesionCropUrl = URL.createObjectURL(cropBlob);
-                  nextUrls.push(lesionCropUrl);
+                  if (lesionCropUrl) {
+                    nextUrls.push(lesionCropUrl);
+                  }
                 } catch {
                   lesionCropUrl = null;
                 }
@@ -463,7 +467,7 @@ export function useCaseWorkspaceAnalysis({
 
     if (job.has_lesion_mask) {
       try {
-        const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+        lesionMaskUrl = await fetchCaseLesionPreviewArtifactUrl(
           selectedSiteId,
           job.patient_id,
           job.visit_date,
@@ -471,8 +475,9 @@ export function useCaseWorkspaceAnalysis({
           "lesion_mask",
           token
         );
-        lesionMaskUrl = URL.createObjectURL(maskBlob);
-        nextUrls.push(lesionMaskUrl);
+        if (lesionMaskUrl) {
+          nextUrls.push(lesionMaskUrl);
+        }
       } catch {
         lesionMaskUrl = null;
       }
@@ -480,7 +485,7 @@ export function useCaseWorkspaceAnalysis({
 
     if (job.has_lesion_crop) {
       try {
-        const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+        lesionCropUrl = await fetchCaseLesionPreviewArtifactUrl(
           selectedSiteId,
           job.patient_id,
           job.visit_date,
@@ -488,8 +493,9 @@ export function useCaseWorkspaceAnalysis({
           "lesion_crop",
           token
         );
-        lesionCropUrl = URL.createObjectURL(cropBlob);
-        nextUrls.push(lesionCropUrl);
+        if (lesionCropUrl) {
+          nextUrls.push(lesionCropUrl);
+        }
       } catch {
         lesionCropUrl = null;
       }
@@ -871,16 +877,17 @@ export function useCaseWorkspaceAnalysis({
           };
           if (item.image_id) {
             try {
-              const sourceBlob = await fetchImageBlob(selectedSiteId, item.image_id, token);
-              const sourceUrl = URL.createObjectURL(sourceBlob);
-              lesionPreviewUrlsRef.current.push(sourceUrl);
+              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
+              if (sourceUrl) {
+                lesionPreviewUrlsRef.current.push(sourceUrl);
+              }
               nextCard.source_preview_url = sourceUrl;
             } catch {
               nextCard.source_preview_url = null;
             }
             if (item.has_lesion_crop) {
               try {
-                const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+                const cropUrl = await fetchCaseLesionPreviewArtifactUrl(
                   selectedSiteId,
                   selectedCase.patient_id,
                   selectedCase.visit_date,
@@ -888,8 +895,9 @@ export function useCaseWorkspaceAnalysis({
                   "lesion_crop",
                   token
                 );
-                const cropUrl = URL.createObjectURL(cropBlob);
-                lesionPreviewUrlsRef.current.push(cropUrl);
+                if (cropUrl) {
+                  lesionPreviewUrlsRef.current.push(cropUrl);
+                }
                 nextCard.lesion_crop_url = cropUrl;
               } catch {
                 nextCard.lesion_crop_url = null;
@@ -897,7 +905,7 @@ export function useCaseWorkspaceAnalysis({
             }
             if (item.has_lesion_mask) {
               try {
-                const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+                const maskUrl = await fetchCaseLesionPreviewArtifactUrl(
                   selectedSiteId,
                   selectedCase.patient_id,
                   selectedCase.visit_date,
@@ -905,8 +913,9 @@ export function useCaseWorkspaceAnalysis({
                   "lesion_mask",
                   token
                 );
-                const maskUrl = URL.createObjectURL(maskBlob);
-                lesionPreviewUrlsRef.current.push(maskUrl);
+                if (maskUrl) {
+                  lesionPreviewUrlsRef.current.push(maskUrl);
+                }
                 nextCard.lesion_mask_url = maskUrl;
               } catch {
                 nextCard.lesion_mask_url = null;
@@ -1058,16 +1067,17 @@ export function useCaseWorkspaceAnalysis({
           };
           if (item.image_id) {
             try {
-              const sourceBlob = await fetchImageBlob(selectedSiteId, item.image_id, token);
-              const sourceUrl = URL.createObjectURL(sourceBlob);
-              roiPreviewUrlsRef.current.push(sourceUrl);
+              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
+              if (sourceUrl) {
+                roiPreviewUrlsRef.current.push(sourceUrl);
+              }
               nextCard.source_preview_url = sourceUrl;
             } catch {
               nextCard.source_preview_url = null;
             }
             if (item.has_roi_crop) {
               try {
-                const roiBlob = await fetchCaseRoiPreviewArtifactBlob(
+                const roiUrl = await fetchCaseRoiPreviewArtifactUrl(
                   selectedSiteId,
                   selectedCase.patient_id,
                   selectedCase.visit_date,
@@ -1075,8 +1085,9 @@ export function useCaseWorkspaceAnalysis({
                   "roi_crop",
                   token
                 );
-                const roiUrl = URL.createObjectURL(roiBlob);
-                roiPreviewUrlsRef.current.push(roiUrl);
+                if (roiUrl) {
+                  roiPreviewUrlsRef.current.push(roiUrl);
+                }
                 nextCard.roi_crop_url = roiUrl;
               } catch {
                 nextCard.roi_crop_url = null;
@@ -1084,7 +1095,7 @@ export function useCaseWorkspaceAnalysis({
             }
             if (item.has_medsam_mask) {
               try {
-                const maskBlob = await fetchCaseRoiPreviewArtifactBlob(
+                const maskUrl = await fetchCaseRoiPreviewArtifactUrl(
                   selectedSiteId,
                   selectedCase.patient_id,
                   selectedCase.visit_date,
@@ -1092,8 +1103,9 @@ export function useCaseWorkspaceAnalysis({
                   "medsam_mask",
                   token
                 );
-                const maskUrl = URL.createObjectURL(maskBlob);
-                roiPreviewUrlsRef.current.push(maskUrl);
+                if (maskUrl) {
+                  roiPreviewUrlsRef.current.push(maskUrl);
+                }
                 nextCard.medsam_mask_url = maskUrl;
               } catch {
                 nextCard.medsam_mask_url = null;
@@ -1170,7 +1182,7 @@ export function useCaseWorkspaceAnalysis({
           continue;
         }
         try {
-          const blob = await fetchValidationArtifactBlob(
+          const url = await fetchValidationArtifactUrl(
             selectedSiteId,
             result.summary.validation_id,
             selectedCase.patient_id,
@@ -1178,8 +1190,9 @@ export function useCaseWorkspaceAnalysis({
             artifactKind,
             token
           );
-          const url = URL.createObjectURL(blob);
-          validationArtifactUrlsRef.current.push(url);
+          if (url) {
+            validationArtifactUrlsRef.current.push(url);
+          }
           nextArtifacts[artifactKind] = url;
         } catch {
           nextArtifacts[artifactKind] = null;
@@ -1303,9 +1316,10 @@ export function useCaseWorkspaceAnalysis({
           let previewUrl: string | null = null;
           if (item.representative_image_id) {
             try {
-              const blob = await fetchImageBlob(selectedSiteId, item.representative_image_id, token);
-              previewUrl = URL.createObjectURL(blob);
-              aiClinicPreviewUrlsRef.current.push(previewUrl);
+              previewUrl = await fetchImagePreviewUrl(selectedSiteId, item.representative_image_id, token, { maxSide: 384 });
+              if (previewUrl) {
+                aiClinicPreviewUrlsRef.current.push(previewUrl);
+              }
             } catch {
               previewUrl = null;
             }

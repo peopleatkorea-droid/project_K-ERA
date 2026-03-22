@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "../../lib/cn";
+import { loadCachedHtmlImage } from "./html-image-cache";
+import { drawCachedMaskOverlay } from "./mask-overlay-renderer";
 import {
   liveCropCanvasClass,
   liveCropFallbackClass,
@@ -11,15 +13,6 @@ import {
   panelImageOverlayFallbackClass,
 } from "../ui/workspace-patterns";
 import type { NormalizedBox } from "./shared";
-
-function loadHtmlImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
-    image.src = src;
-  });
-}
 
 export function LiveCropPreview({
   sourceUrl,
@@ -47,7 +40,7 @@ export function LiveCropPreview({
       }
 
       try {
-        const sourceImage = await loadHtmlImage(sourceUrl);
+        const sourceImage = await loadCachedHtmlImage(sourceUrl);
         if (cancelled || !canvasRef.current) {
           return;
         }
@@ -90,7 +83,14 @@ export function LiveCropPreview({
   return (
     <>
       <canvas ref={canvasRef} className={cn(liveCropCanvasClass(previewReady), className)} aria-label={alt} />
-      {!previewReady ? <img src={sourceUrl} alt={alt} className={cn(liveCropFallbackClass(previewReady), fallbackClassName)} /> : null}
+      {!previewReady ? (
+        <img
+          src={sourceUrl}
+          alt={alt}
+          decoding="async"
+          className={cn(liveCropFallbackClass(previewReady), fallbackClassName)}
+        />
+      ) : null}
     </>
   );
 }
@@ -122,71 +122,19 @@ export function MaskOverlayPreview({
         return;
       }
       try {
-        const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(sourceUrl), loadHtmlImage(maskUrl)]);
-        if (cancelled || !canvasRef.current) {
-          return;
-        }
         const canvas = canvasRef.current;
-        canvas.width = sourceImage.naturalWidth || sourceImage.width;
-        canvas.height = sourceImage.naturalHeight || sourceImage.height;
-        const context = canvas.getContext("2d");
-        if (!context) {
-          setOverlayReady(false);
+        if (cancelled || !canvas) {
           return;
         }
-
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
-
-        const maskCanvas = document.createElement("canvas");
-        maskCanvas.width = canvas.width;
-        maskCanvas.height = canvas.height;
-        const maskContext = maskCanvas.getContext("2d");
-        if (!maskContext) {
-          setOverlayReady(false);
-          return;
+        const pixelRatio = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
+        const maxDimension = Math.max(
+          320,
+          Math.round(Math.max(canvas.clientWidth || 0, canvas.clientHeight || 0, 320) * pixelRatio),
+        );
+        const rendered = await drawCachedMaskOverlay(canvas, sourceUrl, maskUrl, tint, { maxDimension });
+        if (!cancelled) {
+          setOverlayReady(rendered);
         }
-        maskContext.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
-        const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
-        const sourceData = context.getImageData(0, 0, canvas.width, canvas.height);
-        const finalData = context.createImageData(canvas.width, canvas.height);
-        finalData.data.set(sourceData.data);
-
-        for (let index = 0; index < maskData.data.length; index += 4) {
-          const intensity = maskData.data[index];
-          if (intensity > 24) {
-            const alpha = 0.34;
-            finalData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
-            finalData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
-            finalData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
-            finalData.data[index + 3] = 255;
-          }
-        }
-
-        for (let y = 1; y < canvas.height - 1; y += 1) {
-          for (let x = 1; x < canvas.width - 1; x += 1) {
-            const pixelIndex = (y * canvas.width + x) * 4;
-            const inside = maskData.data[pixelIndex] > 24;
-            if (!inside) {
-              continue;
-            }
-            const neighbors = [
-              ((y - 1) * canvas.width + x) * 4,
-              ((y + 1) * canvas.width + x) * 4,
-              (y * canvas.width + (x - 1)) * 4,
-              (y * canvas.width + (x + 1)) * 4,
-            ];
-            if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
-              finalData.data[pixelIndex] = Math.min(255, tint[0] + 20);
-              finalData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
-              finalData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
-              finalData.data[pixelIndex + 3] = 255;
-            }
-          }
-        }
-
-        context.putImageData(finalData, 0, 0);
-        setOverlayReady(true);
       } catch {
         if (!cancelled) {
           setOverlayReady(false);
@@ -207,7 +155,14 @@ export function MaskOverlayPreview({
   return (
     <>
       <canvas ref={canvasRef} className={cn(panelImageOverlayClass(overlayReady), className)} aria-label={alt} />
-      {!overlayReady ? <img src={sourceUrl} alt={alt} className={cn(panelImageOverlayFallbackClass(overlayReady), fallbackClassName)} /> : null}
+      {!overlayReady ? (
+        <img
+          src={sourceUrl}
+          alt={alt}
+          decoding="async"
+          className={cn(panelImageOverlayFallbackClass(overlayReady), fallbackClassName)}
+        />
+      ) : null}
     </>
   );
 }

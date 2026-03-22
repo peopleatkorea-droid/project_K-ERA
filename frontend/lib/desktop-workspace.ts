@@ -27,7 +27,7 @@ type DesktopImageRecord = ImageRecord & {
 };
 
 type DesktopImageBinaryResponse = {
-  bytes: number[];
+  data: string;
   media_type?: string | null;
 };
 
@@ -422,7 +422,11 @@ export async function readDesktopImageBlob(
     options.signal,
   );
   throwIfAborted(options.signal);
-  const bytes = Uint8Array.from(response.bytes ?? []);
+  const binary = atob(response.data ?? "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
   return new Blob([bytes], {
     type: response.media_type?.trim() || "application/octet-stream",
   });

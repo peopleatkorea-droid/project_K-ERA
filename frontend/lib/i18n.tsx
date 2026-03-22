@@ -510,8 +510,9 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocale] = useState<Locale>("en");
 
   useEffect(() => {
-    const stored = toLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY));
-    setLocale(stored || toLocale(window.navigator.language));
+    const storedValue = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    const nextLocale = storedValue ? toLocale(storedValue) : toLocale(window.navigator.language);
+    setLocale(nextLocale);
   }, []);
 
   useEffect(() => {

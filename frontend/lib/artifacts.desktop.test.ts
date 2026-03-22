@@ -8,13 +8,21 @@ const apiCoreMocks = vi.hoisted(() => ({
 
 const analysisRuntimeMocks = vi.hoisted(() => ({
   fetchAnalysisValidationArtifactBlob: vi.fn(),
+  fetchAnalysisValidationArtifactUrl: vi.fn(),
   fetchAnalysisCaseRoiPreviewArtifactBlob: vi.fn(),
+  fetchAnalysisCaseRoiPreviewArtifactUrl: vi.fn(),
   fetchAnalysisCaseLesionPreviewArtifactBlob: vi.fn(),
+  fetchAnalysisCaseLesionPreviewArtifactUrl: vi.fn(),
 }));
 
 const desktopWorkspaceMocks = vi.hoisted(() => ({
   canUseDesktopWorkspaceTransport: vi.fn(() => false),
   readDesktopImageBlob: vi.fn(),
+}));
+
+const desktopTransportMocks = vi.hoisted(() => ({
+  canUseDesktopTransport: vi.fn(() => false),
+  ensureDesktopImagePreviews: vi.fn(),
 }));
 
 const desktopLocalApiMocks = vi.hoisted(() => ({
@@ -30,13 +38,21 @@ vi.mock("./api-core", () => ({
 
 vi.mock("./analysis-runtime", () => ({
   fetchAnalysisValidationArtifactBlob: analysisRuntimeMocks.fetchAnalysisValidationArtifactBlob,
+  fetchAnalysisValidationArtifactUrl: analysisRuntimeMocks.fetchAnalysisValidationArtifactUrl,
   fetchAnalysisCaseRoiPreviewArtifactBlob: analysisRuntimeMocks.fetchAnalysisCaseRoiPreviewArtifactBlob,
+  fetchAnalysisCaseRoiPreviewArtifactUrl: analysisRuntimeMocks.fetchAnalysisCaseRoiPreviewArtifactUrl,
   fetchAnalysisCaseLesionPreviewArtifactBlob: analysisRuntimeMocks.fetchAnalysisCaseLesionPreviewArtifactBlob,
+  fetchAnalysisCaseLesionPreviewArtifactUrl: analysisRuntimeMocks.fetchAnalysisCaseLesionPreviewArtifactUrl,
 }));
 
 vi.mock("./desktop-workspace", () => ({
   canUseDesktopWorkspaceTransport: desktopWorkspaceMocks.canUseDesktopWorkspaceTransport,
   readDesktopImageBlob: desktopWorkspaceMocks.readDesktopImageBlob,
+}));
+
+vi.mock("./desktop-transport", () => ({
+  canUseDesktopTransport: desktopTransportMocks.canUseDesktopTransport,
+  ensureDesktopImagePreviews: desktopTransportMocks.ensureDesktopImagePreviews,
 }));
 
 vi.mock("./desktop-local-api", () => ({
@@ -49,6 +65,7 @@ describe("artifacts desktop routing", () => {
     vi.resetAllMocks();
     vi.resetModules();
     desktopWorkspaceMocks.canUseDesktopWorkspaceTransport.mockReturnValue(false);
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(false);
     desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(false);
   });
 
@@ -65,6 +82,20 @@ describe("artifacts desktop routing", () => {
     });
     expect(apiCoreMocks.requestBlob).not.toHaveBeenCalled();
     expect(result).toBe(desktopBlob);
+  });
+
+  it("uses the desktop preview cache for image preview URLs when available", async () => {
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(true);
+    desktopTransportMocks.ensureDesktopImagePreviews.mockResolvedValue(new Map([["image_1", "asset://preview"]]));
+
+    const mod = await import("./artifacts");
+    const result = await mod.fetchImagePreviewUrl("39100103", "image_1", "desktop-token", { maxSide: 512 });
+
+    expect(desktopTransportMocks.ensureDesktopImagePreviews).toHaveBeenCalledWith("39100103", ["image_1"], {
+      maxSide: 512,
+      signal: undefined,
+    });
+    expect(result).toBe("asset://preview");
   });
 
   it("uses the desktop local API binary bridge for manifest and template downloads", async () => {

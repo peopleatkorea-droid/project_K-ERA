@@ -300,6 +300,7 @@ export function SavedCaseImageBoard({
                           src={image.preview_url}
                           alt={image.image_id}
                           className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
+                          decoding="async"
                           draggable={false}
                           onDragStart={(event) => event.preventDefault()}
                         />

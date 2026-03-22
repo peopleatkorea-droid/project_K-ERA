@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { pick, type Locale } from "../../lib/i18n";
+import { drawCachedMaskOverlay } from "./mask-overlay-renderer";
 import {
   panelImageCardClass,
   panelImageCopyClass,
@@ -12,15 +13,6 @@ import {
   panelImagePreviewClass,
   panelImageStackClass,
 } from "../ui/workspace-patterns";
-
-function loadHtmlImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
-    image.src = src;
-  });
-}
 
 function MaskOverlayPreview({
   sourceUrl,
@@ -45,72 +37,19 @@ function MaskOverlayPreview({
         return;
       }
       try {
-        const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(sourceUrl), loadHtmlImage(maskUrl)]);
-        if (cancelled || !canvasRef.current) {
-          return;
-        }
-
         const canvas = canvasRef.current;
-        canvas.width = sourceImage.naturalWidth || sourceImage.width;
-        canvas.height = sourceImage.naturalHeight || sourceImage.height;
-        const context = canvas.getContext("2d");
-        if (!context) {
-          setOverlayReady(false);
+        if (cancelled || !canvas) {
           return;
         }
-
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
-
-        const maskCanvas = document.createElement("canvas");
-        maskCanvas.width = canvas.width;
-        maskCanvas.height = canvas.height;
-        const maskContext = maskCanvas.getContext("2d");
-        if (!maskContext) {
-          setOverlayReady(false);
-          return;
+        const pixelRatio = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
+        const maxDimension = Math.max(
+          320,
+          Math.round(Math.max(canvas.clientWidth || 0, canvas.clientHeight || 0, 320) * pixelRatio),
+        );
+        const rendered = await drawCachedMaskOverlay(canvas, sourceUrl, maskUrl, tint, { maxDimension });
+        if (!cancelled) {
+          setOverlayReady(rendered);
         }
-        maskContext.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
-        const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
-        const sourceData = context.getImageData(0, 0, canvas.width, canvas.height);
-        const finalData = context.createImageData(canvas.width, canvas.height);
-        finalData.data.set(sourceData.data);
-
-        for (let index = 0; index < maskData.data.length; index += 4) {
-          const intensity = maskData.data[index];
-          if (intensity > 24) {
-            const alpha = 0.34;
-            finalData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
-            finalData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
-            finalData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
-            finalData.data[index + 3] = 255;
-          }
-        }
-
-        for (let y = 1; y < canvas.height - 1; y += 1) {
-          for (let x = 1; x < canvas.width - 1; x += 1) {
-            const pixelIndex = (y * canvas.width + x) * 4;
-            const inside = maskData.data[pixelIndex] > 24;
-            if (!inside) {
-              continue;
-            }
-            const neighbors = [
-              ((y - 1) * canvas.width + x) * 4,
-              ((y + 1) * canvas.width + x) * 4,
-              (y * canvas.width + (x - 1)) * 4,
-              (y * canvas.width + (x + 1)) * 4,
-            ];
-            if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
-              finalData.data[pixelIndex] = Math.min(255, tint[0] + 20);
-              finalData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
-              finalData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
-              finalData.data[pixelIndex + 3] = 255;
-            }
-          }
-        }
-
-        context.putImageData(finalData, 0, 0);
-        setOverlayReady(true);
       } catch {
         if (!cancelled) {
           setOverlayReady(false);
@@ -131,7 +70,7 @@ function MaskOverlayPreview({
   return (
     <>
       <canvas ref={canvasRef} className={panelImageOverlayClass(overlayReady)} aria-label={alt} />
-      {!overlayReady ? <img src={sourceUrl} alt={alt} className={panelImageOverlayFallbackClass(overlayReady)} /> : null}
+      {!overlayReady ? <img src={sourceUrl} alt={alt} decoding="async" className={panelImageOverlayFallbackClass(overlayReady)} /> : null}
     </>
   );
 }
@@ -163,7 +102,7 @@ export function ValidationArtifactStack({
     <div className={panelImageStackClass}>
       {roiCropUrl ? (
         <div className={panelImageCardClass}>
-          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} />
+          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
             <span>{pick(locale, "Cornea-focused crop", "각막 중심 crop")}</span>
@@ -172,7 +111,7 @@ export function ValidationArtifactStack({
       ) : null}
       {gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl ? (
         <div className={panelImageCardClass}>
-          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} />
+          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong>
             <span>{pick(locale, "Model evidence overlay", "모델 근거 오버레이")}</span>
@@ -181,7 +120,13 @@ export function ValidationArtifactStack({
       ) : null}
       {gradcamCorneaUrl ? (
         <div className={panelImageCardClass}>
-          <img src={gradcamCorneaUrl} alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")} className={panelImagePreviewClass} />
+          <img
+            src={gradcamCorneaUrl}
+            alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")}
+            className={panelImagePreviewClass}
+            loading="lazy"
+            decoding="async"
+          />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Cornea Grad-CAM", "각막 Grad-CAM")}</strong>
             <span>{pick(locale, "Context branch attention", "문맥 branch attention")}</span>
@@ -190,7 +135,13 @@ export function ValidationArtifactStack({
       ) : null}
       {gradcamLesionUrl ? (
         <div className={panelImageCardClass}>
-          <img src={gradcamLesionUrl} alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")} className={panelImagePreviewClass} />
+          <img
+            src={gradcamLesionUrl}
+            alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")}
+            className={panelImagePreviewClass}
+            loading="lazy"
+            decoding="async"
+          />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Lesion Grad-CAM", "병변 Grad-CAM")}</strong>
             <span>{pick(locale, "Lesion-detail branch attention", "병변 세부 branch attention")}</span>
@@ -213,7 +164,7 @@ export function ValidationArtifactStack({
       ) : null}
       {lesionCropUrl ? (
         <div className={panelImageCardClass}>
-          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} />
+          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
             <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
             <span>{pick(locale, "Lesion-centered crop", "병변 중심 crop")}</span>

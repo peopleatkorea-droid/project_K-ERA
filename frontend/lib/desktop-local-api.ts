@@ -13,11 +13,11 @@ type DesktopLocalApiFilePayload = {
   field_name: string;
   file_name: string;
   content_type?: string | null;
-  bytes: number[];
+  data: string;
 };
 
 type DesktopLocalApiBinaryResponse = {
-  bytes: number[];
+  data: string;
   media_type?: string | null;
 };
 
@@ -56,18 +56,27 @@ async function normalizeFiles(files: DesktopLocalApiFileInput[]): Promise<Deskto
       file.fileName?.trim() ||
       ("name" in file.file && typeof file.file.name === "string" ? file.file.name.trim() : "") ||
       "upload.bin";
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
     payloads.push({
       field_name: file.fieldName,
       file_name: name,
       content_type: file.contentType ?? file.file.type ?? null,
-      bytes: Array.from(bytes),
+      data: btoa(binary),
     });
   }
   return payloads;
 }
 
 function binaryToBlob(response: DesktopLocalApiBinaryResponse) {
-  return new Blob([Uint8Array.from(response.bytes ?? [])], {
+  const binary = atob(response.data ?? "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], {
     type: response.media_type?.trim() || "application/octet-stream",
   });
 }

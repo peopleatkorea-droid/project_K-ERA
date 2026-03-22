@@ -188,7 +188,7 @@ export function readBearerToken(request: NextRequest): string {
 function localApiSecretKey(): Uint8Array {
   const secret = loadLocalApiSecret();
   if (!secret) {
-    throw new Error("KERA_API_SECRET is not available to verify local access tokens.");
+    throw new Error("KERA_LOCAL_API_JWT_SECRET is not available to verify local access tokens.");
   }
   return new TextEncoder().encode(secret);
 }
@@ -221,7 +221,7 @@ function loadLocalApiSecret(): string {
   if (cachedLocalApiSecret !== undefined) {
     return cachedLocalApiSecret || "";
   }
-  const envSecret = trimText(process.env.KERA_API_SECRET);
+  const envSecret = trimText(process.env.KERA_LOCAL_API_JWT_SECRET) || trimText(process.env.KERA_API_SECRET);
   if (envSecret) {
     cachedLocalApiSecret = envSecret;
     return envSecret;
@@ -249,7 +249,7 @@ function loadLocalApiSecret(): string {
 export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthResponse> {
   const secret = loadLocalApiSecret();
   if (!secret) {
-    throw new Error("KERA_API_SECRET is not available to mint local access tokens.");
+    throw new Error("KERA_LOCAL_API_JWT_SECRET is not available to mint local access tokens.");
   }
   const token = await new SignJWT({
     sub: user.user_id,

@@ -412,6 +412,8 @@ export function AiClinicResult({
                           src={item.preview_url}
                           alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
                           className="aspect-[4/3] w-full object-cover"
+                          loading="lazy"
+                          decoding="async"
                         />
                         <div className="grid gap-1 p-4">
                           <strong className="text-sm font-semibold text-ink">{pick(locale, "Representative image", "대표 이미지")}</strong>

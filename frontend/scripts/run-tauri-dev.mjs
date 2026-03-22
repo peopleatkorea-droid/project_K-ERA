@@ -22,6 +22,10 @@ if (!env.CARGO_BUILD_JOBS) {
   env.CARGO_BUILD_JOBS = "1";
 }
 
+if (!env.KERA_DESKTOP_RUNTIME_MODE) {
+  env.KERA_DESKTOP_RUNTIME_MODE = "dev";
+}
+
 const child =
   process.platform === "win32"
     ? spawn("cmd.exe", ["/d", "/s", "/c", "npx tauri dev"], {

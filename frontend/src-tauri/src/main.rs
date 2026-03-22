@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Cursor, Write};
 #[cfg(windows)]
@@ -10,6 +10,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{SecondsFormat, Utc};
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use reqwest::blocking::multipart::{Form as MultipartForm, Part as MultipartPart};
@@ -21,17 +22,20 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-static ENV_CACHE: OnceLock<HashMap<String, String>> = OnceLock::new();
 static LOCAL_BACKEND_STATE: OnceLock<Mutex<LocalBackendRuntime>> = OnceLock::new();
 static ML_SIDECAR_STATE: OnceLock<Mutex<MlSidecarRuntime>> = OnceLock::new();
+static LOCAL_WORKER_STATE: OnceLock<Mutex<LocalWorkerRuntime>> = OnceLock::new();
+static DESKTOP_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static PREVIEW_WARM_STATE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SITE_JOB_UPDATE_EVENT: &str = "kera://site-job-update";
 const LIVE_LESION_PREVIEW_UPDATE_EVENT: &str = "kera://live-lesion-preview-update";
+const DEFAULT_CASE_REFERENCE_SALT: &str = "kera-case-reference-v1";
 
 #[derive(Debug, Deserialize)]
 struct ListPatientBoardRequest {
@@ -84,6 +88,13 @@ struct VisitImagesRequest {
     site_id: String,
     patient_id: String,
     visit_date: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsureImagePreviewsRequest {
+    site_id: String,
+    image_ids: Vec<String>,
+    max_side: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,7 +270,7 @@ struct LocalApiMultipartFile {
     field_name: String,
     file_name: String,
     content_type: Option<String>,
-    bytes: Vec<u8>,
+    data: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,7 +411,8 @@ struct MutationAuth {
 struct CreatePatientRequest {
     site_id: String,
     user_id: Option<String>,
-    user_role: Option<String>,
+    #[serde(rename = "user_role")]
+    _user_role: Option<String>,
     patient_id: String,
     sex: String,
     age: i64,
@@ -430,7 +442,8 @@ struct OrganismRecord {
 struct CreateVisitRequest {
     site_id: String,
     user_id: Option<String>,
-    user_role: Option<String>,
+    #[serde(rename = "user_role")]
+    _user_role: Option<String>,
     patient_id: String,
     visit_date: String,
     actual_visit_date: Option<String>,
@@ -483,7 +496,8 @@ struct DeleteVisitRequest {
 struct UploadImageRequest {
     site_id: String,
     user_id: Option<String>,
-    user_role: Option<String>,
+    #[serde(rename = "user_role")]
+    _user_role: Option<String>,
     patient_id: String,
     visit_date: String,
     view: String,
@@ -638,6 +652,14 @@ struct DesktopImageRecord {
     quality_scores: Option<JsonValue>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct ImagePreviewPathRecord {
+    image_id: String,
+    preview_path: Option<String>,
+    fallback_path: Option<String>,
+    ready: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct DeleteVisitResponse {
     patient_id: String,
@@ -665,21 +687,13 @@ struct CaseHistoryResponse {
 
 #[derive(Debug, Serialize)]
 struct ImageBinaryResponse {
-    bytes: Vec<u8>,
+    data: String,
     media_type: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct RoiPreviewRecord {
-    patient_id: String,
-    visit_date: String,
-    image_id: Option<String>,
-    view: String,
-    is_representative: bool,
-    source_image_path: String,
-    has_roi_crop: bool,
-    has_medsam_mask: bool,
-    backend: String,
+#[derive(Debug, Serialize)]
+struct FilePathResponse {
+    path: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -760,6 +774,17 @@ struct LocalBackendRuntime {
     launched_by_desktop: bool,
 }
 
+struct LocalWorkerRuntime {
+    child: Option<Child>,
+    python_path: Option<String>,
+    launch_command: Option<Vec<String>>,
+    stdout_log_path: Option<String>,
+    stderr_log_path: Option<String>,
+    last_started_at: Option<String>,
+    last_error: Option<String>,
+    launched_by_desktop: bool,
+}
+
 impl Default for LocalBackendRuntime {
     fn default() -> Self {
         Self {
@@ -776,6 +801,29 @@ impl Default for LocalBackendRuntime {
 }
 
 struct SpawnedLocalBackend {
+    child: Child,
+    python_path: String,
+    launch_command: Vec<String>,
+    stdout_log_path: String,
+    stderr_log_path: String,
+}
+
+impl Default for LocalWorkerRuntime {
+    fn default() -> Self {
+        Self {
+            child: None,
+            python_path: None,
+            launch_command: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            last_started_at: None,
+            last_error: None,
+            launched_by_desktop: false,
+        }
+    }
+}
+
+struct SpawnedLocalWorker {
     child: Child,
     python_path: String,
     launch_command: Vec<String>,
@@ -842,6 +890,21 @@ struct LocalBackendStatus {
 }
 
 #[derive(Debug, Serialize, Clone)]
+struct LocalWorkerStatus {
+    mode: String,
+    managed: bool,
+    running: bool,
+    launched_by_desktop: bool,
+    pid: Option<u32>,
+    python_path: Option<String>,
+    launch_command: Option<Vec<String>>,
+    stdout_log_path: Option<String>,
+    stderr_log_path: Option<String>,
+    last_started_at: Option<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
 struct MlSidecarStatus {
     transport: String,
     mode: String,
@@ -860,17 +923,175 @@ struct MlSidecarStatus {
     last_error: Option<String>,
 }
 
-fn env_values() -> &'static HashMap<String, String> {
-    ENV_CACHE.get_or_init(|| {
-        let mut values = HashMap::new();
-        let env_path = project_root().join(".env.local");
-        if let Ok(entries) = dotenvy::from_path_iter(env_path) {
-            for entry in entries.flatten() {
-                values.insert(entry.0, entry.1);
-            }
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DesktopAppConfigValues {
+    storage_dir: String,
+    control_plane_api_base_url: String,
+    control_plane_node_id: String,
+    control_plane_node_token: String,
+    control_plane_site_id: String,
+    local_backend_python: String,
+    local_backend_mode: String,
+    ml_transport: String,
+}
+
+impl Default for DesktopAppConfigValues {
+    fn default() -> Self {
+        Self {
+            storage_dir: String::new(),
+            control_plane_api_base_url: String::new(),
+            control_plane_node_id: String::new(),
+            control_plane_node_token: String::new(),
+            control_plane_site_id: String::new(),
+            local_backend_python: String::new(),
+            local_backend_mode: "managed".to_string(),
+            ml_transport: "sidecar".to_string(),
         }
-        values
-    })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct DesktopAppConfigFile {
+    env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+struct FederationSaltConfigFile {
+    case_reference_salt: Option<String>,
+    patient_reference_salt: Option<String>,
+    public_alias_salt: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DesktopAppConfigInput {
+    storage_dir: Option<String>,
+    control_plane_api_base_url: Option<String>,
+    control_plane_node_id: Option<String>,
+    control_plane_node_token: Option<String>,
+    control_plane_site_id: Option<String>,
+    local_backend_python: Option<String>,
+    local_backend_mode: Option<String>,
+    ml_transport: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SaveDesktopAppConfigRequest {
+    config: DesktopAppConfigInput,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenDesktopPathRequest {
+    path: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PickDesktopDirectoryRequest {
+    title: Option<String>,
+    default_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DesktopAppConfigResponse {
+    runtime: String,
+    config_path: String,
+    app_local_data_dir: String,
+    repo_root: String,
+    backend_root: String,
+    backend_entry: String,
+    worker_module: String,
+    storage_state_file: Option<String>,
+    setup_ready: bool,
+    runtime_contract: DesktopRuntimeContractResponse,
+    values: DesktopAppConfigValues,
+}
+
+#[derive(Debug, Serialize)]
+struct DesktopRuntimeContractResponse {
+    mode: String,
+    packaged_mode: bool,
+    env_source: String,
+    resource_dir: Option<String>,
+    runtime_dir: String,
+    logs_dir: String,
+    backend_source: String,
+    backend_candidates: Vec<String>,
+    python_candidates: Vec<String>,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+struct DesktopRuntimeReadiness {
+    backend_candidates: Vec<String>,
+    python_candidates: Vec<String>,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DesktopPathCandidate {
+    path: PathBuf,
+    source: String,
+}
+
+#[derive(Debug, Clone)]
+struct DesktopStringCandidate {
+    value: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopRuntimeMode {
+    Dev,
+    Packaged,
+}
+
+impl DesktopRuntimeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Packaged => "packaged",
+        }
+    }
+}
+
+fn normalized_trueish(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn desktop_runtime_mode() -> DesktopRuntimeMode {
+    if let Some(value) = process_env_value("KERA_DESKTOP_RUNTIME_MODE") {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "dev" => return DesktopRuntimeMode::Dev,
+            "packaged" => return DesktopRuntimeMode::Packaged,
+            _ => {}
+        }
+    }
+    if process_env_value("KERA_DESKTOP_FORCE_DEV_MODE")
+        .map(|value| normalized_trueish(&value))
+        .unwrap_or(false)
+    {
+        return DesktopRuntimeMode::Dev;
+    }
+    if process_env_value("KERA_DESKTOP_FORCE_PACKAGED_MODE")
+        .map(|value| normalized_trueish(&value))
+        .unwrap_or(false)
+    {
+        return DesktopRuntimeMode::Packaged;
+    }
+    if cfg!(debug_assertions) {
+        DesktopRuntimeMode::Dev
+    } else {
+        DesktopRuntimeMode::Packaged
+    }
+}
+
+fn desktop_packaged_mode() -> bool {
+    desktop_runtime_mode() == DesktopRuntimeMode::Packaged
 }
 
 fn project_root() -> PathBuf {
@@ -880,12 +1101,976 @@ fn project_root() -> PathBuf {
         .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
-fn env_value(key: &str) -> Option<String> {
+fn desktop_app_local_data_dir() -> PathBuf {
+    process_env_value("KERA_DESKTOP_APP_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            process_env_value("LOCALAPPDATA").map(|value| PathBuf::from(value).join("KERA"))
+        })
+        .or_else(|| {
+            process_env_value("USERPROFILE")
+                .or_else(|| process_env_value("HOME"))
+                .map(|value| PathBuf::from(value).join(".kera-desktop"))
+        })
+        .unwrap_or_else(|| {
+            if desktop_packaged_mode() {
+                current_exe_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".kera-desktop")
+            } else {
+                project_root().join(".desktop-app")
+            }
+        })
+}
+
+fn desktop_config_path() -> PathBuf {
+    desktop_app_local_data_dir().join("desktop-config.json")
+}
+
+fn read_desktop_config_file() -> DesktopAppConfigFile {
+    let path = desktop_config_path();
+    let Ok(raw) = fs::read_to_string(path) else {
+        return DesktopAppConfigFile::default();
+    };
+    serde_json::from_str::<DesktopAppConfigFile>(&raw).unwrap_or_default()
+}
+
+fn write_desktop_config_file(config: &DesktopAppConfigFile) -> Result<(), String> {
+    let path = desktop_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let serialized = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
+    fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn clear_desktop_config_file() -> Result<(), String> {
+    let path = desktop_config_path();
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn process_env_value(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| env_values().get(key).cloned())
         .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_env_values() -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    if !desktop_packaged_mode() {
+        let env_path = project_root().join(".env.local");
+        if let Ok(entries) = dotenvy::from_path_iter(env_path) {
+            for entry in entries.flatten() {
+                values.insert(entry.0, entry.1);
+            }
+        }
+    }
+    for (key, value) in read_desktop_config_file().env {
+        values.insert(key, value);
+    }
+    values
+}
+
+fn configured_or_process_env_value(key: &str, values: &HashMap<String, String>) -> Option<String> {
+    process_env_value(key).or_else(|| {
+        values
+            .get(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn storage_state_file_path() -> PathBuf {
+    if let Some(local_appdata) = process_env_value("LOCALAPPDATA") {
+        return PathBuf::from(local_appdata)
+            .join("KERA")
+            .join("storage_dir.txt");
+    }
+    if let Some(home) = process_env_value("USERPROFILE").or_else(|| process_env_value("HOME")) {
+        return PathBuf::from(home).join(".kera").join("storage_dir.txt");
+    }
+    desktop_app_local_data_dir().join("storage_dir.txt")
+}
+
+fn storage_state_file_hint() -> Option<String> {
+    Some(storage_state_file_path().to_string_lossy().to_string())
+}
+
+fn normalize_storage_bundle_path(candidate: PathBuf) -> PathBuf {
+    let resolved = candidate;
+    let is_sites_dir = resolved
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("sites"))
+        .unwrap_or(false);
+    if !is_sites_dir {
+        return resolved;
+    }
+    let Some(parent) = resolved.parent() else {
+        return resolved;
+    };
+    let parent = parent.to_path_buf();
+    let is_kera_data = parent
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("kera_data"))
+        .unwrap_or(false);
+    if is_kera_data
+        || parent.join("control_plane").exists()
+        || parent.join("models").exists()
+        || parent.join("kera.db").exists()
+        || parent.join("control_plane_cache.db").exists()
+    {
+        return parent;
+    }
+    resolved
+}
+
+fn looks_like_storage_bundle(candidate: &Path) -> bool {
+    candidate.is_dir()
+        && [
+            "sites",
+            "control_plane",
+            "models",
+            "kera.db",
+            "control_plane_cache.db",
+            "kera_secret.key",
+        ]
+        .iter()
+        .any(|marker| candidate.join(marker).exists())
+}
+
+fn push_unique_path(target: &mut Vec<PathBuf>, candidate: PathBuf) {
+    let normalized = candidate.to_string_lossy().to_lowercase();
+    if target
+        .iter()
+        .any(|existing| existing.to_string_lossy().to_lowercase() == normalized)
+    {
+        return;
+    }
+    target.push(candidate);
+}
+
+fn push_unique_path_candidate(target: &mut Vec<DesktopPathCandidate>, path: PathBuf, source: &str) {
+    let normalized = path.to_string_lossy().to_lowercase();
+    if target
+        .iter()
+        .any(|existing| existing.path.to_string_lossy().to_lowercase() == normalized)
+    {
+        return;
+    }
+    target.push(DesktopPathCandidate {
+        path,
+        source: source.to_string(),
+    });
+}
+
+fn push_unique_string_candidate(
+    target: &mut Vec<DesktopStringCandidate>,
+    value: String,
+    source: &str,
+) {
+    let normalized = value.trim().to_string();
+    if normalized.is_empty() {
+        return;
+    }
+    if target
+        .iter()
+        .any(|existing| existing.value.eq_ignore_ascii_case(&normalized))
+    {
+        return;
+    }
+    target.push(DesktopStringCandidate {
+        value: normalized,
+        source: source.to_string(),
+    });
+}
+
+fn default_desktop_storage_dir() -> PathBuf {
+    desktop_app_local_data_dir().join("KERA_DATA")
+}
+
+fn read_storage_state_dir() -> Option<PathBuf> {
+    let path = storage_state_file_path();
+    let raw = fs::read_to_string(path).ok()?;
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalize_storage_bundle_path(PathBuf::from(normalized)))
+}
+
+fn write_storage_state_dir(storage_dir: &Path) -> Result<(), String> {
+    let path = storage_state_file_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(path, storage_dir.to_string_lossy().to_string()).map_err(|error| error.to_string())
+}
+
+fn storage_dir_candidates(configured_storage_dir: Option<&str>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(value) = configured_storage_dir {
+        let normalized = value.trim();
+        if !normalized.is_empty() {
+            push_unique_path(
+                &mut candidates,
+                normalize_storage_bundle_path(PathBuf::from(normalized)),
+            );
+        }
+    }
+    if let Some(value) = read_storage_state_dir() {
+        push_unique_path(&mut candidates, value);
+    }
+    if !desktop_packaged_mode() {
+        if let Some(parent) = project_root().parent() {
+            push_unique_path(&mut candidates, parent.join("KERA_DATA"));
+        }
+    }
+    for root in [
+        process_env_value("HOME"),
+        process_env_value("USERPROFILE"),
+        process_env_value("OneDrive"),
+        process_env_value("OneDriveCommercial"),
+        process_env_value("OneDriveConsumer"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let root_path = PathBuf::from(root);
+        push_unique_path(&mut candidates, root_path.join("KERA_DATA"));
+        push_unique_path(&mut candidates, root_path.join("KERA").join("KERA_DATA"));
+    }
+    push_unique_path(&mut candidates, default_desktop_storage_dir());
+    candidates
+}
+
+fn resolve_storage_dir(values: &HashMap<String, String>) -> PathBuf {
+    let configured = configured_or_process_env_value("KERA_STORAGE_DIR", values);
+    let candidates = storage_dir_candidates(configured.as_deref());
+    for candidate in candidates {
+        if looks_like_storage_bundle(&candidate) {
+            return candidate;
+        }
+    }
+    configured
+        .map(|value| normalize_storage_bundle_path(PathBuf::from(value)))
+        .unwrap_or_else(default_desktop_storage_dir)
+}
+
+fn sqlite_url_for_path(path: &Path) -> String {
+    format!("sqlite:///{}", path.to_string_lossy().replace('\\', "/"))
+}
+
+fn ensure_storage_bundle_dirs(storage_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(storage_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(storage_dir.join("sites")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(storage_dir.join("control_plane")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(storage_dir.join("models")).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent().map(Path::to_path_buf)
+}
+
+fn store_desktop_resource_dir(path: PathBuf) {
+    let _ = DESKTOP_RESOURCE_DIR.set(path);
+}
+
+fn known_desktop_resource_dir() -> Option<PathBuf> {
+    DESKTOP_RESOURCE_DIR.get().cloned()
+}
+
+fn desktop_resource_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = known_desktop_resource_dir() {
+        push_unique_path(&mut candidates, path);
+    }
+    if let Some(value) = process_env_value("KERA_DESKTOP_RESOURCE_DIR") {
+        push_unique_path(&mut candidates, PathBuf::from(value));
+    }
+    if let Some(exe_dir) = current_exe_dir() {
+        push_unique_path(&mut candidates, exe_dir.join("resources"));
+        if let Some(parent) = exe_dir.parent() {
+            push_unique_path(&mut candidates, parent.join("resources"));
+            push_unique_path(&mut candidates, parent.join("Resources"));
+        }
+    }
+    candidates
+}
+
+struct DesktopBackendTarget {
+    root: PathBuf,
+    backend_entry_path: PathBuf,
+    backend_module: String,
+    worker_module: String,
+    python_path_entries: Vec<PathBuf>,
+    source: String,
+}
+
+fn desktop_backend_root_candidates(values: &HashMap<String, String>) -> Vec<DesktopPathCandidate> {
+    let mut candidates = Vec::new();
+    if let Some(value) = configured_or_process_env_value("KERA_DESKTOP_BACKEND_ROOT", values) {
+        push_unique_path_candidate(
+            &mut candidates,
+            PathBuf::from(value),
+            "configured_backend_root",
+        );
+    }
+    if let Some(value) = configured_or_process_env_value("KERA_DESKTOP_RUNTIME_ROOT", values) {
+        let runtime_root = PathBuf::from(value);
+        push_unique_path_candidate(
+            &mut candidates,
+            runtime_root.join("backend"),
+            "configured_runtime_root/backend",
+        );
+        push_unique_path_candidate(&mut candidates, runtime_root, "configured_runtime_root");
+    }
+    for resource_dir in desktop_resource_dir_candidates() {
+        push_unique_path_candidate(
+            &mut candidates,
+            resource_dir.join("backend"),
+            "bundled_resources/backend",
+        );
+        push_unique_path_candidate(
+            &mut candidates,
+            resource_dir.join("python-backend"),
+            "bundled_resources/python-backend",
+        );
+        push_unique_path_candidate(
+            &mut candidates,
+            resource_dir.clone(),
+            "bundled_resources/root",
+        );
+    }
+    push_unique_path_candidate(
+        &mut candidates,
+        desktop_app_local_data_dir().join("runtime").join("backend"),
+        "app_local_runtime/backend",
+    );
+    push_unique_path_candidate(
+        &mut candidates,
+        desktop_app_local_data_dir().join("backend"),
+        "app_local/backend",
+    );
+    if !desktop_packaged_mode() {
+        push_unique_path_candidate(&mut candidates, project_root(), "repo_root");
+    }
+    candidates
+}
+
+fn resolve_desktop_backend_target(
+    values: &HashMap<String, String>,
+) -> Result<DesktopBackendTarget, String> {
+    let candidates = desktop_backend_root_candidates(values);
+    for candidate in &candidates {
+        let root = &candidate.path;
+        let package_entry = root
+            .join("src")
+            .join("kera_research")
+            .join("api")
+            .join("app.py");
+        let app_entry = root.join("app.py");
+        let worker_entry = root.join("src").join("kera_research").join("worker.py");
+        if package_entry.exists() {
+            let mut python_path_entries = Vec::new();
+            let src_dir = root.join("src");
+            if src_dir.exists() {
+                python_path_entries.push(src_dir);
+            }
+            return Ok(DesktopBackendTarget {
+                root: root.clone(),
+                backend_entry_path: package_entry,
+                backend_module: "kera_research.api.app:app".to_string(),
+                worker_module: if worker_entry.exists() {
+                    "kera_research.worker".to_string()
+                } else {
+                    "kera_research.worker".to_string()
+                },
+                python_path_entries,
+                source: candidate.source.clone(),
+            });
+        }
+        if app_entry.exists() {
+            let mut python_path_entries = Vec::new();
+            let src_dir = root.join("src");
+            if src_dir.exists() {
+                python_path_entries.push(src_dir);
+            }
+            return Ok(DesktopBackendTarget {
+                root: root.clone(),
+                backend_entry_path: app_entry,
+                backend_module: "app:app".to_string(),
+                worker_module: "kera_research.worker".to_string(),
+                python_path_entries,
+                source: candidate.source.clone(),
+            });
+        }
+    }
+    let searched = candidates
+        .iter()
+        .map(|candidate| format!("{} -> {}", candidate.source, candidate.path.display()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let prefix = if desktop_packaged_mode() {
+        "Packaged desktop backend assets were not found."
+    } else {
+        "Desktop backend entrypoint was not found."
+    };
+    Err(format!("{prefix} Looked in: {searched}"))
+}
+
+fn python_path_with_entries(entries: &[PathBuf]) -> Option<String> {
+    let mut segments = entries
+        .iter()
+        .map(|entry| entry.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if let Some(existing) = process_env_value("PYTHONPATH")
+        .or_else(|| configured_or_process_env_value("PYTHONPATH", &configured_env_values()))
+    {
+        segments.push(existing);
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        Some(segments.join(separator))
+    }
+}
+
+fn local_backend_python_candidate_infos(
+    values: &HashMap<String, String>,
+) -> Vec<DesktopStringCandidate> {
+    let backend = resolve_desktop_backend_target(values).ok();
+    let mut candidates = Vec::new();
+    if let Some(value) =
+        configured_or_process_env_value("KERA_DESKTOP_LOCAL_BACKEND_PYTHON", values)
+    {
+        push_unique_string_candidate(&mut candidates, value, "configured_python");
+    }
+    #[cfg(windows)]
+    {
+        for resource_dir in desktop_resource_dir_candidates() {
+            let bundled_python = resource_dir.join("python-runtime").join("python.exe");
+            if bundled_python.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    bundled_python.to_string_lossy().to_string(),
+                    "bundled_resources/python-runtime",
+                );
+            }
+        }
+        for candidate in [
+            (
+                desktop_app_local_data_dir()
+                    .join("runtime")
+                    .join("python")
+                    .join("python.exe"),
+                "app_local_runtime/python",
+            ),
+            (
+                desktop_app_local_data_dir()
+                    .join("python")
+                    .join("python.exe"),
+                "app_local/python",
+            ),
+        ] {
+            if candidate.0.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    candidate.0.to_string_lossy().to_string(),
+                    candidate.1,
+                );
+            }
+        }
+        if let Some(backend) = backend.as_ref() {
+            for candidate in [
+                (
+                    backend.root.join("python").join("python.exe"),
+                    "backend_root/python",
+                ),
+                (
+                    backend.root.join("python-runtime").join("python.exe"),
+                    "backend_root/python-runtime",
+                ),
+            ] {
+                if candidate.0.exists() {
+                    push_unique_string_candidate(
+                        &mut candidates,
+                        candidate.0.to_string_lossy().to_string(),
+                        candidate.1,
+                    );
+                }
+            }
+            if !desktop_packaged_mode() {
+                let backend_venv = backend
+                    .root
+                    .join(".venv")
+                    .join("Scripts")
+                    .join("python.exe");
+                if backend_venv.exists() {
+                    push_unique_string_candidate(
+                        &mut candidates,
+                        backend_venv.to_string_lossy().to_string(),
+                        "backend_root/.venv",
+                    );
+                }
+            }
+        }
+        if !desktop_packaged_mode() {
+            let repo_python = project_root()
+                .join(".venv")
+                .join("Scripts")
+                .join("python.exe");
+            if repo_python.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    repo_python.to_string_lossy().to_string(),
+                    "repo_root/.venv",
+                );
+            }
+            if python_command_available("python") {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    "python".to_string(),
+                    "system_python",
+                );
+            }
+            if python_command_available("py") {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    "py".to_string(),
+                    "system_py_launcher",
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for resource_dir in desktop_resource_dir_candidates() {
+            let bundled_python = resource_dir
+                .join("python-runtime")
+                .join("bin")
+                .join("python");
+            if bundled_python.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    bundled_python.to_string_lossy().to_string(),
+                    "bundled_resources/python-runtime",
+                );
+            }
+        }
+        for candidate in [
+            (
+                desktop_app_local_data_dir()
+                    .join("runtime")
+                    .join("python")
+                    .join("bin")
+                    .join("python"),
+                "app_local_runtime/python",
+            ),
+            (
+                desktop_app_local_data_dir()
+                    .join("python")
+                    .join("bin")
+                    .join("python"),
+                "app_local/python",
+            ),
+        ] {
+            if candidate.0.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    candidate.0.to_string_lossy().to_string(),
+                    candidate.1,
+                );
+            }
+        }
+        if let Some(backend) = backend.as_ref() {
+            for candidate in [
+                (
+                    backend.root.join("python").join("bin").join("python"),
+                    "backend_root/python",
+                ),
+                (
+                    backend
+                        .root
+                        .join("python-runtime")
+                        .join("bin")
+                        .join("python"),
+                    "backend_root/python-runtime",
+                ),
+            ] {
+                if candidate.0.exists() {
+                    push_unique_string_candidate(
+                        &mut candidates,
+                        candidate.0.to_string_lossy().to_string(),
+                        candidate.1,
+                    );
+                }
+            }
+            if !desktop_packaged_mode() {
+                let backend_venv = backend.root.join(".venv").join("bin").join("python");
+                if backend_venv.exists() {
+                    push_unique_string_candidate(
+                        &mut candidates,
+                        backend_venv.to_string_lossy().to_string(),
+                        "backend_root/.venv",
+                    );
+                }
+            }
+        }
+        if !desktop_packaged_mode() {
+            let repo_python = project_root().join(".venv").join("bin").join("python");
+            if repo_python.exists() {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    repo_python.to_string_lossy().to_string(),
+                    "repo_root/.venv",
+                );
+            }
+            if python_command_available("python3") {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    "python3".to_string(),
+                    "system_python3",
+                );
+            }
+            if python_command_available("python") {
+                push_unique_string_candidate(
+                    &mut candidates,
+                    "python".to_string(),
+                    "system_python",
+                );
+            }
+        }
+    }
+    candidates
+}
+
+fn resolved_env_values() -> HashMap<String, String> {
+    let mut values = configured_env_values();
+    let storage_dir = resolve_storage_dir(&values);
+    values.insert(
+        "KERA_STORAGE_DIR".to_string(),
+        storage_dir.to_string_lossy().to_string(),
+    );
+    if configured_or_process_env_value("KERA_DATA_PLANE_DATABASE_URL", &values).is_none()
+        && configured_or_process_env_value("KERA_LOCAL_DATABASE_URL", &values).is_none()
+    {
+        values.insert(
+            "KERA_DATA_PLANE_DATABASE_URL".to_string(),
+            sqlite_url_for_path(&storage_dir.join("kera.db")),
+        );
+    }
+    let control_plane_api_base_url =
+        configured_or_process_env_value("KERA_CONTROL_PLANE_API_BASE_URL", &values)
+            .unwrap_or_default();
+    if control_plane_api_base_url.trim().is_empty() {
+        if configured_or_process_env_value("KERA_CONTROL_PLANE_DATABASE_URL", &values).is_none()
+            && configured_or_process_env_value("KERA_AUTH_DATABASE_URL", &values).is_none()
+            && configured_or_process_env_value("KERA_DATABASE_URL", &values).is_none()
+            && configured_or_process_env_value("DATABASE_URL", &values).is_none()
+        {
+            values.insert(
+                "KERA_CONTROL_PLANE_DATABASE_URL".to_string(),
+                sqlite_url_for_path(&storage_dir.join("kera.db")),
+            );
+        }
+    } else if configured_or_process_env_value("KERA_LOCAL_CONTROL_PLANE_DATABASE_URL", &values)
+        .is_none()
+        && configured_or_process_env_value("KERA_CONTROL_PLANE_LOCAL_DATABASE_URL", &values)
+            .is_none()
+    {
+        values.insert(
+            "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL".to_string(),
+            sqlite_url_for_path(&storage_dir.join("control_plane_cache.db")),
+        );
+    }
+    if configured_or_process_env_value("KERA_GOOGLE_CLIENT_ID", &values).is_none() {
+        if let Some(client_id) =
+            configured_or_process_env_value("NEXT_PUBLIC_GOOGLE_CLIENT_ID", &values)
+        {
+            values.insert("KERA_GOOGLE_CLIENT_ID".to_string(), client_id);
+        }
+    }
+    values
+}
+
+fn desktop_config_values_from_env(env: &HashMap<String, String>) -> DesktopAppConfigValues {
+    let read = |key: &str| env.get(key).cloned().unwrap_or_default();
+    DesktopAppConfigValues {
+        storage_dir: read("KERA_STORAGE_DIR"),
+        control_plane_api_base_url: read("KERA_CONTROL_PLANE_API_BASE_URL"),
+        control_plane_node_id: read("KERA_CONTROL_PLANE_NODE_ID"),
+        control_plane_node_token: read("KERA_CONTROL_PLANE_NODE_TOKEN"),
+        control_plane_site_id: read("KERA_CONTROL_PLANE_SITE_ID"),
+        local_backend_python: read("KERA_DESKTOP_LOCAL_BACKEND_PYTHON"),
+        local_backend_mode: {
+            let normalized = read("KERA_DESKTOP_LOCAL_BACKEND_MODE");
+            if normalized.eq_ignore_ascii_case("external") {
+                "external".to_string()
+            } else {
+                "managed".to_string()
+            }
+        },
+        ml_transport: {
+            let normalized = read("KERA_DESKTOP_ML_TRANSPORT");
+            if normalized.eq_ignore_ascii_case("http") {
+                "http".to_string()
+            } else {
+                "sidecar".to_string()
+            }
+        },
+    }
+}
+
+fn desktop_primary_resource_dir() -> Option<PathBuf> {
+    let candidates = desktop_resource_dir_candidates();
+    candidates
+        .iter()
+        .find(|candidate| candidate.exists())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+fn desktop_runtime_readiness(
+    values: &HashMap<String, String>,
+    config_values: &DesktopAppConfigValues,
+    backend: Option<&DesktopBackendTarget>,
+) -> DesktopRuntimeReadiness {
+    let backend_candidates = desktop_backend_root_candidates(values)
+        .into_iter()
+        .map(|candidate| format!("{} -> {}", candidate.source, candidate.path.display()))
+        .collect::<Vec<_>>();
+    let python_candidate_infos = local_backend_python_candidate_infos(values);
+    let python_candidates = python_candidate_infos
+        .iter()
+        .map(|candidate| format!("{} -> {}", candidate.source, candidate.value))
+        .collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if desktop_packaged_mode() && desktop_primary_resource_dir().is_none() {
+        errors.push(
+            "Packaged desktop runtime did not resolve a Tauri resource directory. Reinstall the desktop app or rebuild the installer."
+                .to_string(),
+        );
+    }
+
+    if backend.is_none() {
+        if desktop_packaged_mode() {
+            errors.push(
+                "Packaged desktop runtime did not resolve a bundled backend. Reinstall the desktop app or rebuild the packaged resources."
+                    .to_string(),
+            );
+        } else {
+            warnings.push(
+                "Desktop backend entrypoint was not resolved from the current dev/runtime candidates.".to_string(),
+            );
+        }
+    }
+
+    if config_values.local_backend_mode != "external" && python_candidate_infos.is_empty() {
+        if desktop_packaged_mode() {
+            errors.push(
+                "Packaged managed runtime did not find a bundled or explicitly configured Python interpreter."
+                    .to_string(),
+            );
+        } else {
+            warnings.push("No desktop local backend Python candidate was resolved.".to_string());
+        }
+    }
+
+    if config_values.ml_transport == "sidecar" && python_candidate_infos.is_empty() {
+        let message =
+            "Desktop ML sidecar requires a bundled or explicitly configured Python interpreter."
+                .to_string();
+        if desktop_packaged_mode() {
+            if !errors.iter().any(|existing| existing == &message) {
+                errors.push(message);
+            }
+        } else if !warnings.iter().any(|existing| existing == &message) {
+            warnings.push(message);
+        }
+    }
+
+    DesktopRuntimeReadiness {
+        backend_candidates,
+        python_candidates,
+        errors,
+        warnings,
+    }
+}
+
+fn desktop_runtime_contract_response(
+    values: &HashMap<String, String>,
+    config_values: &DesktopAppConfigValues,
+    backend: Option<&DesktopBackendTarget>,
+) -> DesktopRuntimeContractResponse {
+    let runtime_dir = desktop_app_local_data_dir().join("runtime");
+    let readiness = desktop_runtime_readiness(values, config_values, backend);
+
+    DesktopRuntimeContractResponse {
+        mode: desktop_runtime_mode().as_str().to_string(),
+        packaged_mode: desktop_packaged_mode(),
+        env_source: if desktop_packaged_mode() {
+            "desktop_config_only".to_string()
+        } else {
+            "repo_env_plus_desktop_config".to_string()
+        },
+        resource_dir: desktop_primary_resource_dir().map(|path| path.to_string_lossy().to_string()),
+        runtime_dir: runtime_dir.to_string_lossy().to_string(),
+        logs_dir: runtime_dir.to_string_lossy().to_string(),
+        backend_source: backend
+            .map(|resolved| resolved.source.clone())
+            .unwrap_or_else(|| "missing".to_string()),
+        backend_candidates: readiness.backend_candidates,
+        python_candidates: readiness.python_candidates,
+        errors: readiness.errors,
+        warnings: readiness.warnings,
+    }
+}
+
+fn desktop_setup_ready(values: &DesktopAppConfigValues) -> bool {
+    let resolved_values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&resolved_values);
+    let backend_ref = backend.as_ref().ok();
+    desktop_runtime_readiness(&resolved_values, values, backend_ref)
+        .errors
+        .is_empty()
+}
+
+fn ensure_desktop_runtime_readiness_for_backend() -> Result<(), String> {
+    let values = resolved_env_values();
+    let config_values = desktop_config_values_from_env(&values);
+    let backend = resolve_desktop_backend_target(&values);
+    let readiness = desktop_runtime_readiness(&values, &config_values, backend.as_ref().ok());
+    if !readiness.errors.is_empty() {
+        return Err(readiness.errors.join(" "));
+    }
+    Ok(())
+}
+
+fn ensure_desktop_runtime_readiness_for_sidecar() -> Result<(), String> {
+    let values = resolved_env_values();
+    let mut config_values = desktop_config_values_from_env(&values);
+    config_values.ml_transport = "sidecar".to_string();
+    let backend = resolve_desktop_backend_target(&values);
+    let readiness = desktop_runtime_readiness(&values, &config_values, backend.as_ref().ok());
+    if !readiness.errors.is_empty() {
+        return Err(readiness.errors.join(" "));
+    }
+    Ok(())
+}
+
+fn desktop_app_config_response() -> DesktopAppConfigResponse {
+    let values = resolved_env_values();
+    let config_values = desktop_config_values_from_env(&values);
+    let backend = resolve_desktop_backend_target(&values);
+    let backend_ref = backend.as_ref().ok();
+    DesktopAppConfigResponse {
+        runtime: "desktop".to_string(),
+        config_path: desktop_config_path().to_string_lossy().to_string(),
+        app_local_data_dir: desktop_app_local_data_dir().to_string_lossy().to_string(),
+        repo_root: project_root().to_string_lossy().to_string(),
+        backend_root: backend_ref
+            .map(|resolved| resolved.root.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        backend_entry: backend_ref
+            .map(|resolved| resolved.backend_entry_path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        worker_module: backend_ref
+            .map(|resolved| resolved.worker_module.clone())
+            .unwrap_or_else(|| "kera_research.worker".to_string()),
+        storage_state_file: storage_state_file_hint(),
+        setup_ready: desktop_setup_ready(&config_values),
+        runtime_contract: desktop_runtime_contract_response(&values, &config_values, backend_ref),
+        values: config_values,
+    }
+}
+
+fn set_config_env_value(target: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
+    let normalized = value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match normalized {
+        Some(value) => {
+            target.insert(key.to_string(), value);
+        }
+        None => {
+            target.remove(key);
+        }
+    }
+}
+
+fn normalized_storage_dir_value(value: Option<String>) -> Result<Option<String>, String> {
+    let normalized = value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(value) = normalized else {
+        return Ok(None);
+    };
+    let path = normalize_storage_bundle_path(PathBuf::from(value));
+    ensure_storage_bundle_dirs(&path)?;
+    write_storage_state_dir(&path)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+fn env_value(key: &str) -> Option<String> {
+    process_env_value(key)
+        .or_else(|| resolved_env_values().get(key).cloned())
+        .map(|value| value.trim().to_string())
+}
+
+fn open_path_in_shell(path: &Path) -> Result<(), String> {
+    let resolved = if path.exists() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    if !resolved.exists() {
+        return Err(format!("Path does not exist: {}", path.display()));
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("explorer.exe");
+        if path.exists() && path.is_file() {
+            command.arg(format!("/select,{}", path.display()));
+        } else {
+            command.arg(&resolved);
+        }
+        command.spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        if path.exists() && path.is_file() {
+            command.arg("-R").arg(path);
+        } else {
+            command.arg(&resolved);
+        }
+        command.spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&resolved)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Opening desktop paths is not supported on this platform.".to_string())
 }
 
 fn sqlite_database_path() -> Result<PathBuf, String> {
@@ -903,8 +2088,8 @@ fn sqlite_database_path() -> Result<PathBuf, String> {
 }
 
 fn site_dir(site_id: &str) -> Result<PathBuf, String> {
-    let raw =
-        env_value("KERA_STORAGE_DIR").ok_or_else(|| "KERA_STORAGE_DIR is not configured.".to_string())?;
+    let raw = env_value("KERA_STORAGE_DIR")
+        .ok_or_else(|| "KERA_STORAGE_DIR is not configured.".to_string())?;
     let base = PathBuf::from(raw);
     let site_root = if base
         .file_name()
@@ -926,13 +2111,92 @@ fn control_plane_dir() -> Result<PathBuf, String> {
             return Ok(PathBuf::from(normalized));
         }
     }
-    let raw =
-        env_value("KERA_STORAGE_DIR").ok_or_else(|| "KERA_STORAGE_DIR is not configured.".to_string())?;
+    let raw = env_value("KERA_STORAGE_DIR")
+        .ok_or_else(|| "KERA_STORAGE_DIR is not configured.".to_string())?;
     Ok(PathBuf::from(raw).join("control_plane"))
 }
 
 fn control_plane_case_dir() -> Result<PathBuf, String> {
     Ok(control_plane_dir()?.join("validation_cases"))
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn federation_salt_config_path() -> Option<PathBuf> {
+    control_plane_dir()
+        .ok()
+        .map(|dir| dir.join("federation_salt.json"))
+}
+
+fn read_federation_salt_config_file() -> FederationSaltConfigFile {
+    let Some(path) = federation_salt_config_path() else {
+        return FederationSaltConfigFile::default();
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return FederationSaltConfigFile::default();
+    };
+    serde_json::from_str::<FederationSaltConfigFile>(&raw).unwrap_or_default()
+}
+
+fn write_federation_salt_config_file(config: &FederationSaltConfigFile) -> Result<(), String> {
+    let Some(path) = federation_salt_config_path() else {
+        return Err("Federation salt config path is unavailable.".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let serialized = serde_json::to_string_pretty(config).map_err(|error| error.to_string())?;
+    fs::write(path, serialized).map_err(|error| error.to_string())
+}
+
+fn resolve_federation_salt_config() -> FederationSaltConfigFile {
+    let stored = read_federation_salt_config_file();
+    let explicit_case = env_value("KERA_CASE_REFERENCE_SALT");
+    let explicit_patient = env_value("KERA_PATIENT_REFERENCE_SALT");
+    let explicit_public = env_value("KERA_PUBLIC_ALIAS_SALT");
+    let legacy_secret = env_value("KERA_API_SECRET");
+
+    let case_reference_salt = explicit_case
+        .clone()
+        .or_else(|| normalize_optional_text(stored.case_reference_salt.clone()))
+        .or_else(|| legacy_secret.clone())
+        .unwrap_or_else(|| DEFAULT_CASE_REFERENCE_SALT.to_string());
+    let patient_reference_salt = explicit_patient
+        .clone()
+        .or_else(|| normalize_optional_text(stored.patient_reference_salt.clone()))
+        .unwrap_or_else(|| case_reference_salt.clone());
+    let public_alias_salt = explicit_public
+        .clone()
+        .or_else(|| normalize_optional_text(stored.public_alias_salt.clone()))
+        .unwrap_or_else(|| case_reference_salt.clone());
+
+    let source =
+        if explicit_case.is_some() || explicit_patient.is_some() || explicit_public.is_some() {
+            "explicit_env".to_string()
+        } else if normalize_optional_text(stored.case_reference_salt.clone()).is_some() {
+            normalize_optional_text(stored.source.clone()).unwrap_or_else(|| "stored".to_string())
+        } else if legacy_secret.is_some() {
+            "legacy_kera_api_secret".to_string()
+        } else {
+            "default".to_string()
+        };
+
+    let resolved = FederationSaltConfigFile {
+        case_reference_salt: Some(case_reference_salt),
+        patient_reference_salt: Some(patient_reference_salt),
+        public_alias_salt: Some(public_alias_salt),
+        source: Some(source),
+    };
+
+    if resolved != stored {
+        let _ = write_federation_salt_config_file(&resolved);
+    }
+
+    resolved
 }
 
 fn local_node_api_base_url() -> String {
@@ -1026,7 +2290,7 @@ fn local_backend_startup_timeout() -> Duration {
 }
 
 fn desktop_runtime_dir() -> Result<PathBuf, String> {
-    let path = project_root().join(".desktop-runtime");
+    let path = desktop_app_local_data_dir().join("runtime");
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
@@ -1036,6 +2300,14 @@ fn local_backend_log_paths() -> Result<(PathBuf, PathBuf), String> {
     Ok((
         runtime_dir.join("local-node.stdout.log"),
         runtime_dir.join("local-node.stderr.log"),
+    ))
+}
+
+fn local_worker_log_paths() -> Result<(PathBuf, PathBuf), String> {
+    let runtime_dir = desktop_runtime_dir()?;
+    Ok((
+        runtime_dir.join("local-worker.stdout.log"),
+        runtime_dir.join("local-worker.stderr.log"),
     ))
 }
 
@@ -1070,29 +2342,55 @@ fn wait_for_local_backend_health(base_url: &str, timeout: Duration) -> Result<()
     ))
 }
 
+fn apply_runtime_env_to_command(command: &mut Command, python_path_entries: &[PathBuf]) {
+    for (key, value) in resolved_env_values() {
+        if !value.trim().is_empty() {
+            command.env(key, value);
+        }
+    }
+    command
+        .env("KERA_SKIP_LOCAL_ENV_FILE", "1")
+        .env("KERA_LLM_RELAY_ONLY", "1")
+        .env("KERA_STORAGE_STATE_FILE", storage_state_file_path())
+        .env("KERA_SEGMENTATION_BACKEND", "medsam")
+        .env("SEGMENTATION_BACKEND", "medsam")
+        .env("PYTHONUNBUFFERED", "1");
+    for key in [
+        "OPENAI_API_KEY",
+        "KERA_AI_CLINIC_OPENAI_API_KEY",
+        "KERA_CONTROL_PLANE_OPENAI_API_KEY",
+        "KERA_SEGMENTATION_ROOT",
+        "SEGMENTATION_ROOT",
+        "KERA_SEGMENTATION_SCRIPT",
+        "SEGMENTATION_SCRIPT",
+        "KERA_SEGMENTATION_CHECKPOINT",
+        "SEGMENTATION_CHECKPOINT",
+        "MEDSAM_SCRIPT",
+        "MEDSAM_CHECKPOINT",
+    ] {
+        command.env_remove(key);
+    }
+    if let Some(value) = python_path_with_entries(python_path_entries) {
+        command.env("PYTHONPATH", value);
+    }
+}
+
+fn python_command_available(command_name: &str) -> bool {
+    Command::new(command_name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn local_backend_python_candidates() -> Vec<String> {
-    let mut candidates = Vec::new();
-    if let Some(value) = env_value("KERA_DESKTOP_LOCAL_BACKEND_PYTHON") {
-        candidates.push(value);
-    }
-    #[cfg(windows)]
-    {
-        let venv_python = project_root().join(".venv").join("Scripts").join("python.exe");
-        if venv_python.exists() {
-            candidates.push(venv_python.to_string_lossy().to_string());
-        }
-        candidates.push("python".to_string());
-    }
-    #[cfg(not(windows))]
-    {
-        let venv_python = project_root().join(".venv").join("bin").join("python");
-        if venv_python.exists() {
-            candidates.push(venv_python.to_string_lossy().to_string());
-        }
-        candidates.push("python3".to_string());
-        candidates.push("python".to_string());
-    }
-    candidates
+    let values = resolved_env_values();
+    local_backend_python_candidate_infos(&values)
+        .into_iter()
+        .map(|candidate| candidate.value)
+        .collect()
 }
 
 fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, String> {
@@ -1100,11 +2398,17 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
         .map_err(|error| format!("Invalid local backend base URL: {error}"))?;
     let host = parsed.host_str().unwrap_or("127.0.0.1").to_string();
     let port = parsed.port_or_known_default().unwrap_or(8000).to_string();
-    let project_root = project_root();
-    let app_path = project_root.join("app.py");
-    if !app_path.exists() {
-        return Err(format!("Local backend entrypoint was not found: {}", app_path.display()));
+    let values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&values)?;
+    if !backend.backend_entry_path.exists() {
+        return Err(format!(
+            "Local backend entrypoint was not found: {}",
+            backend.backend_entry_path.display()
+        ));
     }
+    let storage_dir = resolve_storage_dir(&values);
+    ensure_storage_bundle_dirs(&storage_dir)?;
+    let _ = write_storage_state_dir(&storage_dir);
     let (stdout_log_path, stderr_log_path) = local_backend_log_paths()?;
     let mut errors = Vec::new();
 
@@ -1124,7 +2428,7 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
             python_path.clone(),
             "-m".to_string(),
             "uvicorn".to_string(),
-            "app:app".to_string(),
+            backend.backend_module.clone(),
             "--host".to_string(),
             host.clone(),
             "--port".to_string(),
@@ -1135,19 +2439,19 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
 
         let mut command = Command::new(&python_path);
         command
-            .current_dir(&project_root)
+            .current_dir(&backend.root)
             .arg("-m")
             .arg("uvicorn")
-            .arg("app:app")
+            .arg(&backend.backend_module)
             .arg("--host")
             .arg(&host)
             .arg("--port")
             .arg(&port)
             .arg("--log-level")
             .arg("warning")
-            .env("PYTHONUNBUFFERED", "1")
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file));
+        apply_runtime_env_to_command(&mut command, &backend.python_path_entries);
 
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
@@ -1168,6 +2472,88 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
 
     Err(format!(
         "Failed to launch the desktop-managed local backend. {}",
+        errors.join(" | ")
+    ))
+}
+
+fn local_worker_state() -> &'static Mutex<LocalWorkerRuntime> {
+    LOCAL_WORKER_STATE.get_or_init(|| Mutex::new(LocalWorkerRuntime::default()))
+}
+
+fn local_worker_should_be_managed() -> bool {
+    local_backend_should_be_managed(&local_node_api_base_url())
+}
+
+fn spawn_local_worker_process() -> Result<SpawnedLocalWorker, String> {
+    let values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&values)?;
+    let worker_entry = backend
+        .root
+        .join("src")
+        .join("kera_research")
+        .join("worker.py");
+    if !worker_entry.exists() && backend.worker_module == "kera_research.worker" {
+        return Err(format!(
+            "Local worker entrypoint was not found: {}",
+            worker_entry.display()
+        ));
+    }
+    let storage_dir = resolve_storage_dir(&values);
+    ensure_storage_bundle_dirs(&storage_dir)?;
+    let _ = write_storage_state_dir(&storage_dir);
+    let (stdout_log_path, stderr_log_path) = local_worker_log_paths()?;
+    let mut errors = Vec::new();
+
+    for python_path in local_backend_python_candidates() {
+        let stdout_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&stdout_log_path)
+            .map_err(|error| error.to_string())?;
+        let stderr_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&stderr_log_path)
+            .map_err(|error| error.to_string())?;
+
+        let launch_command = vec![
+            python_path.clone(),
+            "-m".to_string(),
+            backend.worker_module.clone(),
+            "--poll-interval".to_string(),
+            "2.0".to_string(),
+        ];
+
+        let mut command = Command::new(&python_path);
+        command
+            .current_dir(&backend.root)
+            .arg("-m")
+            .arg(&backend.worker_module)
+            .arg("--poll-interval")
+            .arg("2.0")
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
+        apply_runtime_env_to_command(&mut command, &backend.python_path_entries);
+
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        match command.spawn() {
+            Ok(child) => {
+                return Ok(SpawnedLocalWorker {
+                    child,
+                    python_path,
+                    launch_command,
+                    stdout_log_path: stdout_log_path.to_string_lossy().to_string(),
+                    stderr_log_path: stderr_log_path.to_string_lossy().to_string(),
+                });
+            }
+            Err(error) => errors.push(format!("{python_path}: {error}")),
+        }
+    }
+
+    Err(format!(
+        "Failed to launch the desktop-managed local worker. {}",
         errors.join(" | ")
     ))
 }
@@ -1193,6 +2579,51 @@ fn sync_local_backend_runtime(runtime: &mut LocalBackendRuntime) {
         runtime.child = None;
         runtime.launched_by_desktop = false;
         runtime.last_error = Some(error);
+    }
+}
+
+fn sync_local_worker_runtime(runtime: &mut LocalWorkerRuntime) {
+    let mut cleared_error: Option<String> = None;
+    if let Some(child) = runtime.child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                cleared_error = Some(format!(
+                    "Desktop-managed local worker exited with status {status}."
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                cleared_error = Some(format!(
+                    "Failed to inspect desktop-managed local worker: {error}"
+                ));
+            }
+        }
+    }
+    if let Some(error) = cleared_error {
+        runtime.child = None;
+        runtime.launched_by_desktop = false;
+        runtime.last_error = Some(error);
+    }
+}
+
+fn local_worker_status_snapshot(runtime: &LocalWorkerRuntime) -> LocalWorkerStatus {
+    let managed = local_worker_should_be_managed();
+    LocalWorkerStatus {
+        mode: if managed {
+            "managed".to_string()
+        } else {
+            "external".to_string()
+        },
+        managed,
+        running: runtime.child.is_some(),
+        launched_by_desktop: runtime.launched_by_desktop,
+        pid: runtime.child.as_ref().map(Child::id),
+        python_path: runtime.python_path.clone(),
+        launch_command: runtime.launch_command.clone(),
+        stdout_log_path: runtime.stdout_log_path.clone(),
+        stderr_log_path: runtime.stderr_log_path.clone(),
+        last_started_at: runtime.last_started_at.clone(),
+        last_error: runtime.last_error.clone(),
     }
 }
 
@@ -1235,6 +2666,14 @@ fn get_local_backend_status_internal() -> Result<LocalBackendStatus, String> {
     Ok(local_backend_status_snapshot(&base_url, &runtime, healthy))
 }
 
+fn get_local_worker_status_internal() -> Result<LocalWorkerStatus, String> {
+    let mut runtime = local_worker_state()
+        .lock()
+        .map_err(|_| "Failed to access desktop local worker state.".to_string())?;
+    sync_local_worker_runtime(&mut runtime);
+    Ok(local_worker_status_snapshot(&runtime))
+}
+
 fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus, String> {
     let base_url = local_node_api_base_url();
     if local_backend_is_healthy(&base_url) {
@@ -1245,6 +2684,7 @@ fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus, String> {
             "Local backend is unavailable at {base_url}. Start the local node manually or set KERA_DESKTOP_LOCAL_BACKEND_MODE=managed."
         ));
     }
+    ensure_desktop_runtime_readiness_for_backend()?;
 
     {
         let mut runtime = local_backend_state()
@@ -1281,8 +2721,61 @@ fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus, String> {
     get_local_backend_status_internal()
 }
 
+fn ensure_local_worker_ready_internal() -> Result<LocalWorkerStatus, String> {
+    if !local_worker_should_be_managed() {
+        return get_local_worker_status_internal();
+    }
+    ensure_desktop_runtime_readiness_for_backend()?;
+    let mut runtime = local_worker_state()
+        .lock()
+        .map_err(|_| "Failed to access desktop local worker state.".to_string())?;
+    sync_local_worker_runtime(&mut runtime);
+    if runtime.child.is_none() {
+        let spawned = spawn_local_worker_process()?;
+        runtime.child = Some(spawned.child);
+        runtime.python_path = Some(spawned.python_path);
+        runtime.launch_command = Some(spawned.launch_command);
+        runtime.stdout_log_path = Some(spawned.stdout_log_path);
+        runtime.stderr_log_path = Some(spawned.stderr_log_path);
+        runtime.last_started_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+        runtime.last_error = None;
+        runtime.launched_by_desktop = true;
+    }
+    Ok(local_worker_status_snapshot(&runtime))
+}
+
+fn stop_local_worker_internal() -> Result<LocalWorkerStatus, String> {
+    let mut runtime = local_worker_state()
+        .lock()
+        .map_err(|_| "Failed to access desktop local worker state.".to_string())?;
+    sync_local_worker_runtime(&mut runtime);
+    if let Some(mut child) = runtime.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    runtime.launched_by_desktop = false;
+    Ok(local_worker_status_snapshot(&runtime))
+}
+
+fn ensure_local_runtime_ready_internal() -> Result<LocalBackendStatus, String> {
+    let backend = ensure_local_backend_ready_internal()?;
+    if local_backend_should_be_managed(&backend.base_url) {
+        ensure_local_worker_ready_internal()?;
+    }
+    if ml_sidecar_should_be_used() {
+        ensure_ml_sidecar_ready_internal()?;
+        schedule_ml_sidecar_workflow_warmup();
+    }
+    Ok(backend)
+}
+
+fn stop_local_runtime_internal() -> Result<LocalBackendStatus, String> {
+    let _ = stop_local_worker_internal();
+    let _ = stop_ml_sidecar_internal();
+    stop_local_backend_internal()
+}
+
 fn stop_local_backend_internal() -> Result<LocalBackendStatus, String> {
-    let base_url = local_node_api_base_url();
     {
         let mut runtime = local_backend_state()
             .lock()
@@ -1309,25 +2802,9 @@ fn ml_sidecar_stderr_log_path() -> Result<PathBuf, String> {
     Ok(desktop_runtime_dir()?.join("ml-sidecar.stderr.log"))
 }
 
-fn python_path_with_project_src() -> Option<String> {
-    let src_path = project_root().join("src");
-    let src_text = src_path.to_string_lossy().to_string();
-    let existing = std::env::var("PYTHONPATH")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| env_value("PYTHONPATH"));
-    match existing {
-        Some(value) => {
-            let separator = if cfg!(windows) { ";" } else { ":" };
-            Some(format!("{src_text}{separator}{value}"))
-        }
-        None => Some(src_text),
-    }
-}
-
 fn spawn_ml_sidecar_process() -> Result<SpawnedMlSidecar, String> {
-    let project_root = project_root();
+    let values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&values)?;
     let stderr_log_path = ml_sidecar_stderr_log_path()?;
     let mut errors = Vec::new();
 
@@ -1344,16 +2821,13 @@ fn spawn_ml_sidecar_process() -> Result<SpawnedMlSidecar, String> {
         ];
         let mut command = Command::new(&python_path);
         command
-            .current_dir(&project_root)
+            .current_dir(&backend.root)
             .arg("-m")
             .arg("kera_research.desktop_sidecar")
-            .env("PYTHONUNBUFFERED", "1")
             .stdout(Stdio::piped())
             .stdin(Stdio::piped())
             .stderr(Stdio::from(stderr_file));
-        if let Some(python_path_env) = python_path_with_project_src() {
-            command.env("PYTHONPATH", python_path_env);
-        }
+        apply_runtime_env_to_command(&mut command, &backend.python_path_entries);
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
 
@@ -1391,15 +2865,11 @@ fn sync_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
     if let Some(child) = runtime.child.as_mut() {
         match child.try_wait() {
             Ok(Some(status)) => {
-                cleared_error = Some(format!(
-                    "Desktop ML sidecar exited with status {status}."
-                ));
+                cleared_error = Some(format!("Desktop ML sidecar exited with status {status}."));
             }
             Ok(None) => {}
             Err(error) => {
-                cleared_error = Some(format!(
-                    "Failed to inspect desktop ML sidecar: {error}"
-                ));
+                cleared_error = Some(format!("Failed to inspect desktop ML sidecar: {error}"));
             }
         }
     }
@@ -1457,20 +2927,12 @@ fn call_ml_sidecar_json_unlocked(
     if bytes_read == 0 || line.trim().is_empty() {
         return Err("Desktop ML sidecar closed the response stream.".to_string());
     }
-    let response =
-        serde_json::from_str::<JsonValue>(&line).map_err(|error| format!("Invalid sidecar response JSON: {error}"))?;
-    if response
-        .get("id")
-        .and_then(|value| value.as_u64())
-        != Some(request_id)
-    {
+    let response = serde_json::from_str::<JsonValue>(&line)
+        .map_err(|error| format!("Invalid sidecar response JSON: {error}"))?;
+    if response.get("id").and_then(|value| value.as_u64()) != Some(request_id) {
         return Err("Desktop ML sidecar returned an unexpected response id.".to_string());
     }
-    if response
-        .get("ok")
-        .and_then(|value| value.as_bool())
-        == Some(true)
-    {
+    if response.get("ok").and_then(|value| value.as_bool()) == Some(true) {
         return Ok(response.get("result").cloned().unwrap_or(JsonValue::Null));
     }
     let error_message = response
@@ -1525,13 +2987,13 @@ fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, String> {
     if !ml_sidecar_should_be_used() {
         return get_ml_sidecar_status_internal();
     }
+    ensure_desktop_runtime_readiness_for_sidecar()?;
     let mut runtime = ml_sidecar_state()
         .lock()
         .map_err(|_| "Failed to access desktop ML sidecar state.".to_string())?;
     sync_ml_sidecar_runtime(&mut runtime);
     let mut needs_spawn = runtime.child.is_none();
-    if !needs_spawn
-        && call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_err()
+    if !needs_spawn && call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_err()
     {
         stop_ml_sidecar_runtime(&mut runtime);
         needs_spawn = true;
@@ -1580,6 +3042,23 @@ fn request_ml_sidecar_json(method: &str, params: JsonValue) -> Result<JsonValue,
     }
 }
 
+fn schedule_ml_sidecar_workflow_warmup() {
+    if !ml_sidecar_should_be_used() {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mut runtime = match ml_sidecar_state().lock() {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+        sync_ml_sidecar_runtime(&mut runtime);
+        if runtime.child.is_none() {
+            return;
+        }
+        let _ = call_ml_sidecar_json_unlocked(&mut runtime, "warm_workflow", JsonValue::Null);
+    });
+}
+
 fn raw_dir(site_id: &str) -> Result<PathBuf, String> {
     Ok(site_dir(site_id)?.join("data").join("raw"))
 }
@@ -1608,12 +3087,31 @@ fn preview_cache_path(site_id: &str, image_id: &str, max_side: u32) -> Result<Pa
         .join(format!("{image_id}.jpg")))
 }
 
+#[derive(Debug, Clone)]
+struct WarmPreviewJob {
+    site_id: String,
+    image_id: String,
+    image_path: PathBuf,
+    max_side: u32,
+}
+
+fn preview_warm_state() -> &'static Mutex<HashSet<String>> {
+    PREVIEW_WARM_STATE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn preview_job_key(site_id: &str, image_id: &str, max_side: u32) -> String {
+    format!("{site_id}::{image_id}::{max_side}")
+}
+
 fn ensure_preview(image_path: &Path, preview_path: &Path, max_side: u32) -> Result<(), String> {
     if preview_path.exists() {
         return Ok(());
     }
     if !image_path.exists() {
-        return Err(format!("Image file not found on disk: {}", image_path.display()));
+        return Err(format!(
+            "Image file not found on disk: {}",
+            image_path.display()
+        ));
     }
     if let Some(parent) = preview_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -1634,14 +3132,82 @@ fn existing_file_path_string(path: &Path) -> Option<String> {
     }
 }
 
-fn preview_file_path(site_id: &str, image_id: &str, image_path: &Path, max_side: u32) -> Result<String, String> {
+fn cached_preview_file_path(
+    site_id: &str,
+    image_id: &str,
+    max_side: u32,
+) -> Result<Option<String>, String> {
+    let preview_path = preview_cache_path(site_id, image_id, max_side)?;
+    Ok(existing_file_path_string(&preview_path))
+}
+
+fn preview_file_path(
+    site_id: &str,
+    image_id: &str,
+    image_path: &Path,
+    max_side: u32,
+) -> Result<String, String> {
     let preview_path = preview_cache_path(site_id, image_id, max_side)?;
     ensure_preview(image_path, &preview_path, max_side)?;
     Ok(preview_path.to_string_lossy().to_string())
 }
 
+fn maybe_queue_preview_job(
+    site_id: &str,
+    image_id: &str,
+    image_path: &Path,
+    max_side: u32,
+) -> Option<WarmPreviewJob> {
+    let preview_path = preview_cache_path(site_id, image_id, max_side).ok()?;
+    if preview_path.exists() || !image_path.exists() {
+        return None;
+    }
+    Some(WarmPreviewJob {
+        site_id: site_id.to_string(),
+        image_id: image_id.to_string(),
+        image_path: image_path.to_path_buf(),
+        max_side,
+    })
+}
+
+fn queue_preview_generation_batch(jobs: Vec<WarmPreviewJob>) {
+    if jobs.is_empty() {
+        return;
+    }
+    let mut queued_jobs = Vec::new();
+    {
+        let mut queued = preview_warm_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for job in jobs {
+            let job_key = preview_job_key(&job.site_id, &job.image_id, job.max_side);
+            if queued.insert(job_key.clone()) {
+                queued_jobs.push((job_key, job));
+            }
+        }
+    }
+    if queued_jobs.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for (job_key, job) in queued_jobs {
+            if let Ok(preview_path) = preview_cache_path(&job.site_id, &job.image_id, job.max_side)
+            {
+                let _ = ensure_preview(&job.image_path, &preview_path, job.max_side);
+            }
+            let mut queued = preview_warm_state()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queued.remove(&job_key);
+        }
+    });
+}
+
 fn open_data_plane_db() -> Result<Connection, String> {
     let path = sqlite_database_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     Connection::open(path).map_err(|error| error.to_string())
 }
 
@@ -1707,10 +3273,9 @@ fn case_history_path(site_id: &str, patient_id: &str, visit_date: &str) -> Resul
 }
 
 fn patient_reference_salt() -> String {
-    env_value("KERA_PATIENT_REFERENCE_SALT")
-        .or_else(|| env_value("KERA_CASE_REFERENCE_SALT"))
-        .or_else(|| env_value("KERA_API_SECRET"))
-        .unwrap_or_else(|| "kera-case-reference-v1".to_string())
+    resolve_federation_salt_config()
+        .patient_reference_salt
+        .unwrap_or_else(|| DEFAULT_CASE_REFERENCE_SALT.to_string())
 }
 
 fn make_id(prefix: &str) -> String {
@@ -1719,7 +3284,12 @@ fn make_id(prefix: &str) -> String {
 }
 
 fn make_patient_reference_id(site_id: &str, patient_id: &str) -> String {
-    let payload = format!("{}::{}::{}", patient_reference_salt(), site_id.trim(), patient_id.trim());
+    let payload = format!(
+        "{}::{}::{}",
+        patient_reference_salt(),
+        site_id.trim(),
+        patient_id.trim()
+    );
     let digest = Sha256::digest(payload.as_bytes());
     let hex = format!("{digest:x}");
     format!("ptref_{}", &hex[..20])
@@ -1742,7 +3312,9 @@ fn normalize_patient_pseudonym(value: &str) -> Result<String, String> {
         );
     }
     let mut chars = normalized.chars();
-    let first = chars.next().ok_or_else(|| "Patient ID is required.".to_string())?;
+    let first = chars
+        .next()
+        .ok_or_else(|| "Patient ID is required.".to_string())?;
     if !first.is_ascii_alphanumeric() {
         return Err(
             "Patient ID must use a local chart/MRN-style ID (letters, numbers, ., -, _ only)."
@@ -1806,10 +3378,13 @@ fn normalize_actual_visit_date(value: Option<&str>) -> Result<Option<String>, St
         return Ok(None);
     }
     let valid = normalized.len() == 10
-        && normalized.chars().enumerate().all(|(index, ch)| match index {
-            4 | 7 => ch == '-',
-            _ => ch.is_ascii_digit(),
-        });
+        && normalized
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| match index {
+                4 | 7 => ch == '-',
+                _ => ch.is_ascii_digit(),
+            });
     if !valid {
         return Err("Actual visit date must use YYYY-MM-DD format.".to_string());
     }
@@ -1936,7 +3511,11 @@ fn organism_summary_label(
         .take(visible_count)
         .cloned()
         .collect::<Vec<_>>();
-    format!("{} + {}", visible.join(" / "), species.len() - visible.len())
+    format!(
+        "{} + {}",
+        visible.join(" / "),
+        species.len() - visible.len()
+    )
 }
 
 fn case_sort_key(record: &CaseSummaryRecord) -> (String, String, String, String) {
@@ -2004,7 +3583,11 @@ fn has_site_wide_write_access(auth: &MutationAuth) -> bool {
     )
 }
 
-fn require_record_owner(auth: &MutationAuth, owner_user_id: Option<&str>, detail: &str) -> Result<(), String> {
+fn require_record_owner(
+    auth: &MutationAuth,
+    owner_user_id: Option<&str>,
+    detail: &str,
+) -> Result<(), String> {
     if has_site_wide_write_access(auth) {
         return Ok(());
     }
@@ -2028,15 +3611,21 @@ fn patient_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PatientR
         created_by_user_id: row.get("created_by_user_id")?,
         sex: row.get::<_, Option<String>>("sex")?.unwrap_or_default(),
         age: row.get::<_, i64>("age")?,
-        chart_alias: row.get::<_, Option<String>>("chart_alias")?.unwrap_or_default(),
-        local_case_code: row.get::<_, Option<String>>("local_case_code")?.unwrap_or_default(),
+        chart_alias: row
+            .get::<_, Option<String>>("chart_alias")?
+            .unwrap_or_default(),
+        local_case_code: row
+            .get::<_, Option<String>>("local_case_code")?
+            .unwrap_or_default(),
         created_at: row.get("created_at")?,
     })
 }
 
 fn visit_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VisitRecord> {
-    let additional_organisms = parse_organism_array(row.get::<_, Option<String>>("additional_organisms")?);
-    let predisposing_factor = parse_json_string_array(row.get::<_, Option<String>>("predisposing_factor")?);
+    let additional_organisms =
+        parse_organism_array(row.get::<_, Option<String>>("additional_organisms")?);
+    let predisposing_factor =
+        parse_json_string_array(row.get::<_, Option<String>>("predisposing_factor")?);
     let visit_status = row
         .get::<_, Option<String>>("visit_status")?
         .unwrap_or_else(|| "active".to_string());
@@ -2047,29 +3636,43 @@ fn visit_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VisitRecor
         visit_date: row.get("visit_date")?,
         actual_visit_date: row.get("actual_visit_date")?,
         culture_confirmed: row.get::<_, Option<i64>>("culture_confirmed")?.unwrap_or(1) != 0,
-        culture_category: row.get::<_, Option<String>>("culture_category")?.unwrap_or_default(),
-        culture_species: row.get::<_, Option<String>>("culture_species")?.unwrap_or_default(),
+        culture_category: row
+            .get::<_, Option<String>>("culture_category")?
+            .unwrap_or_default(),
+        culture_species: row
+            .get::<_, Option<String>>("culture_species")?
+            .unwrap_or_default(),
         additional_organisms,
-        contact_lens_use: row.get::<_, Option<String>>("contact_lens_use")?.unwrap_or_default(),
+        contact_lens_use: row
+            .get::<_, Option<String>>("contact_lens_use")?
+            .unwrap_or_default(),
         predisposing_factor,
-        other_history: row.get::<_, Option<String>>("other_history")?.unwrap_or_default(),
+        other_history: row
+            .get::<_, Option<String>>("other_history")?
+            .unwrap_or_default(),
         visit_status: visit_status.clone(),
         active_stage: row
             .get::<_, Option<i64>>("active_stage")?
             .map(|value| value != 0)
             .unwrap_or_else(|| visit_status == "active"),
         is_initial_visit: row.get::<_, Option<i64>>("is_initial_visit")?.unwrap_or(0) != 0,
-        smear_result: row.get::<_, Option<String>>("smear_result")?.unwrap_or_default(),
+        smear_result: row
+            .get::<_, Option<String>>("smear_result")?
+            .unwrap_or_default(),
         polymicrobial: row.get::<_, Option<i64>>("polymicrobial")?.unwrap_or(0) != 0,
-        created_at: row.get::<_, Option<String>>("created_at")?.unwrap_or_default(),
+        created_at: row
+            .get::<_, Option<String>>("created_at")?
+            .unwrap_or_default(),
     })
 }
 
 fn case_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaseSummaryRecord> {
     let patient_id: String = row.get("patient_id")?;
     let visit_date: String = row.get("visit_date")?;
-    let additional_organisms = parse_json_array(row.get::<_, Option<String>>("additional_organisms")?);
-    let predisposing_factor = parse_json_array(row.get::<_, Option<String>>("predisposing_factor")?);
+    let additional_organisms =
+        parse_json_array(row.get::<_, Option<String>>("additional_organisms")?);
+    let predisposing_factor =
+        parse_json_array(row.get::<_, Option<String>>("predisposing_factor")?);
     let visit_status = row
         .get::<_, Option<String>>("visit_status")?
         .unwrap_or_else(|| "active".to_string());
@@ -2080,8 +3683,8 @@ fn case_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaseSummar
         .get::<_, Option<i64>>("active_stage")?
         .map(|value| value != 0)
         .unwrap_or_else(|| visit_status == "active");
-    let polymicrobial =
-        row.get::<_, Option<i64>>("polymicrobial")?.unwrap_or(0) != 0 || !additional_organisms.is_empty();
+    let polymicrobial = row.get::<_, Option<i64>>("polymicrobial")?.unwrap_or(0) != 0
+        || !additional_organisms.is_empty();
 
     Ok(CaseSummaryRecord {
         case_id: format!("{patient_id}::{visit_date}"),
@@ -2091,20 +3694,34 @@ fn case_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaseSummar
         visit_date,
         visit_index: row.get("visit_index")?,
         actual_visit_date: row.get("actual_visit_date")?,
-        chart_alias: row.get::<_, Option<String>>("chart_alias")?.unwrap_or_default(),
-        local_case_code: row.get::<_, Option<String>>("local_case_code")?.unwrap_or_default(),
+        chart_alias: row
+            .get::<_, Option<String>>("chart_alias")?
+            .unwrap_or_default(),
+        local_case_code: row
+            .get::<_, Option<String>>("local_case_code")?
+            .unwrap_or_default(),
         sex: row.get::<_, Option<String>>("sex")?.unwrap_or_default(),
         age: row.get("age")?,
-        culture_category: row.get::<_, Option<String>>("culture_category")?.unwrap_or_default(),
-        culture_species: row.get::<_, Option<String>>("culture_species")?.unwrap_or_default(),
+        culture_category: row
+            .get::<_, Option<String>>("culture_category")?
+            .unwrap_or_default(),
+        culture_species: row
+            .get::<_, Option<String>>("culture_species")?
+            .unwrap_or_default(),
         additional_organisms,
-        contact_lens_use: row.get::<_, Option<String>>("contact_lens_use")?.unwrap_or_default(),
+        contact_lens_use: row
+            .get::<_, Option<String>>("contact_lens_use")?
+            .unwrap_or_default(),
         predisposing_factor,
-        other_history: row.get::<_, Option<String>>("other_history")?.unwrap_or_default(),
+        other_history: row
+            .get::<_, Option<String>>("other_history")?
+            .unwrap_or_default(),
         visit_status,
         active_stage,
         is_initial_visit: row.get::<_, Option<i64>>("is_initial_visit")?.unwrap_or(0) != 0,
-        smear_result: row.get::<_, Option<String>>("smear_result")?.unwrap_or_default(),
+        smear_result: row
+            .get::<_, Option<String>>("smear_result")?
+            .unwrap_or_default(),
         polymicrobial,
         research_registry_status,
         research_registry_updated_at: row.get("research_registry_updated_at")?,
@@ -2123,7 +3740,7 @@ fn desktop_image_record_from_row(
     row: &rusqlite::Row<'_>,
     site_id: &str,
     preview_max_side: Option<u32>,
-) -> Result<DesktopImageRecord, String> {
+) -> Result<(DesktopImageRecord, Option<WarmPreviewJob>), String> {
     let image_id = row
         .get::<_, String>("image_id")
         .map_err(|error| error.to_string())?;
@@ -2132,59 +3749,77 @@ fn desktop_image_record_from_row(
         .map_err(|error| error.to_string())?;
     let source_path = resolve_site_runtime_path(site_id, &stored_image_path)?;
     let content_path = existing_file_path_string(&source_path);
+    let mut warm_preview_job = None;
     let preview_path = preview_max_side
-        .and_then(|max_side| preview_file_path(site_id, &image_id, &source_path, max_side).ok())
+        .and_then(
+            |max_side| match cached_preview_file_path(site_id, &image_id, max_side) {
+                Ok(Some(path)) => Some(path),
+                Ok(None) => {
+                    warm_preview_job =
+                        maybe_queue_preview_job(site_id, &image_id, &source_path, max_side);
+                    None
+                }
+                Err(_) => None,
+            },
+        )
         .or_else(|| content_path.clone());
 
-    Ok(DesktopImageRecord {
-        image_id,
-        visit_id: row
-            .get::<_, String>("visit_id")
-            .map_err(|error| error.to_string())?,
-        patient_id: row
-            .get::<_, String>("patient_id")
-            .map_err(|error| error.to_string())?,
-        visit_date: row
-            .get::<_, String>("visit_date")
-            .map_err(|error| error.to_string())?,
-        view: row
-            .get::<_, Option<String>>("view")
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| "white".to_string()),
-        image_path: source_path.to_string_lossy().to_string(),
-        is_representative: row
-            .get::<_, Option<i64>>("is_representative")
-            .map_err(|error| error.to_string())?
-            .unwrap_or(0)
-            != 0,
-        content_url: None,
-        preview_url: None,
-        content_path,
-        preview_path,
-        lesion_prompt_box: match parse_json_value(
-            row.get::<_, Option<String>>("lesion_prompt_box")
+    Ok((
+        DesktopImageRecord {
+            image_id,
+            visit_id: row
+                .get::<_, String>("visit_id")
                 .map_err(|error| error.to_string())?,
-            JsonValue::Null,
-        ) {
-            JsonValue::Null => None,
-            value => Some(value),
-        },
-        uploaded_at: row
-            .get::<_, Option<String>>("uploaded_at")
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default(),
-        quality_scores: match parse_json_value(
-            row.get::<_, Option<String>>("quality_scores")
+            patient_id: row
+                .get::<_, String>("patient_id")
                 .map_err(|error| error.to_string())?,
-            JsonValue::Null,
-        ) {
-            JsonValue::Null => None,
-            value => Some(value),
+            visit_date: row
+                .get::<_, String>("visit_date")
+                .map_err(|error| error.to_string())?,
+            view: row
+                .get::<_, Option<String>>("view")
+                .map_err(|error| error.to_string())?
+                .unwrap_or_else(|| "white".to_string()),
+            image_path: source_path.to_string_lossy().to_string(),
+            is_representative: row
+                .get::<_, Option<i64>>("is_representative")
+                .map_err(|error| error.to_string())?
+                .unwrap_or(0)
+                != 0,
+            content_url: None,
+            preview_url: None,
+            content_path,
+            preview_path,
+            lesion_prompt_box: match parse_json_value(
+                row.get::<_, Option<String>>("lesion_prompt_box")
+                    .map_err(|error| error.to_string())?,
+                JsonValue::Null,
+            ) {
+                JsonValue::Null => None,
+                value => Some(value),
+            },
+            uploaded_at: row
+                .get::<_, Option<String>>("uploaded_at")
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default(),
+            quality_scores: match parse_json_value(
+                row.get::<_, Option<String>>("quality_scores")
+                    .map_err(|error| error.to_string())?,
+                JsonValue::Null,
+            ) {
+                JsonValue::Null => None,
+                value => Some(value),
+            },
         },
-    })
+        warm_preview_job,
+    ))
 }
 
-fn get_patient(conn: &Connection, site_id: &str, patient_id: &str) -> Result<Option<PatientRecord>, String> {
+fn get_patient(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+) -> Result<Option<PatientRecord>, String> {
     let sql = "
       select patient_id, created_by_user_id, sex, age, chart_alias, local_case_code, created_at
       from patients
@@ -2195,7 +3830,12 @@ fn get_patient(conn: &Connection, site_id: &str, patient_id: &str) -> Result<Opt
         .map_err(|error| error.to_string())
 }
 
-fn get_visit(conn: &Connection, site_id: &str, patient_id: &str, visit_date: &str) -> Result<Option<VisitRecord>, String> {
+fn get_visit(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+) -> Result<Option<VisitRecord>, String> {
     let sql = "
       select
         visit_id,
@@ -2219,9 +3859,13 @@ fn get_visit(conn: &Connection, site_id: &str, patient_id: &str, visit_date: &st
       from visits
       where site_id = ? and patient_id = ? and visit_date = ?
     ";
-    conn.query_row(sql, params![site_id, patient_id, visit_date], visit_record_from_row)
-        .optional()
-        .map_err(|error| error.to_string())
+    conn.query_row(
+        sql,
+        params![site_id, patient_id, visit_date],
+        visit_record_from_row,
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 fn query_images(
@@ -2262,13 +3906,25 @@ fn query_images(
         .query(params_from_iter(params))
         .map_err(|error| error.to_string())?;
     let mut images = Vec::new();
+    let mut warm_preview_jobs = Vec::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        images.push(desktop_image_record_from_row(row, site_id, preview_max_side)?);
+        let (image, warm_preview_job) =
+            desktop_image_record_from_row(row, site_id, preview_max_side)?;
+        if let Some(job) = warm_preview_job {
+            warm_preview_jobs.push(job);
+        }
+        images.push(image);
     }
+    queue_preview_generation_batch(warm_preview_jobs);
     Ok(images)
 }
 
-fn list_images_for_visit(conn: &Connection, site_id: &str, patient_id: &str, visit_date: &str) -> Result<Vec<DesktopImageRecord>, String> {
+fn list_images_for_visit(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+) -> Result<Vec<DesktopImageRecord>, String> {
     query_images(conn, site_id, Some(patient_id), Some(visit_date), Some(640))
 }
 
@@ -2333,7 +3989,10 @@ fn query_case_summaries(
         Value::Text(site_id.to_string()),
         Value::Text(site_id.to_string()),
     ];
-    if let Some(user_id) = created_by_user_id.map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    if let Some(user_id) = created_by_user_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         sql.push_str(" and p.created_by_user_id = ?");
         params.push(Value::Text(user_id.to_string()));
     }
@@ -2359,9 +4018,10 @@ fn json_string_field(value: &JsonValue, key: &str) -> Option<String> {
 }
 
 fn json_i64_field(value: &JsonValue, key: &str) -> Option<i64> {
-    value
-        .get(key)
-        .and_then(|item| item.as_i64().or_else(|| item.as_u64().map(|raw| raw as i64)))
+    value.get(key).and_then(|item| {
+        item.as_i64()
+            .or_else(|| item.as_u64().map(|raw| raw as i64))
+    })
 }
 
 fn json_f64_field(value: &JsonValue, key: &str) -> Option<f64> {
@@ -2393,7 +4053,10 @@ fn empty_site_activity_response(site_id: &str) -> SiteActivityResponse {
     }
 }
 
-fn lookup_public_aliases(conn: &Connection, user_ids: &[String]) -> Result<HashMap<String, String>, String> {
+fn lookup_public_aliases(
+    conn: &Connection,
+    user_ids: &[String],
+) -> Result<HashMap<String, String>, String> {
     let normalized = user_ids
         .iter()
         .map(|value| value.trim().to_string())
@@ -2607,7 +4270,10 @@ fn request_local_api_binary_owned(
         .bytes()
         .map_err(|error| format!("Failed to read binary response from local API: {error}"))?
         .to_vec();
-    Ok(ImageBinaryResponse { bytes, media_type })
+    Ok(ImageBinaryResponse {
+        data: BASE64_STANDARD.encode(&bytes),
+        media_type,
+    })
 }
 
 fn request_local_api_multipart(
@@ -2647,7 +4313,10 @@ fn request_local_api_multipart(
         if field_name.is_empty() || file_name.is_empty() {
             continue;
         }
-        let mut part = MultipartPart::bytes(file.bytes).file_name(file_name.clone());
+        let file_bytes = BASE64_STANDARD
+            .decode(&file.data)
+            .map_err(|error| format!("Invalid base64 file data for {file_name}: {error}"))?;
+        let mut part = MultipartPart::bytes(file_bytes).file_name(file_name.clone());
         let content_type = file
             .content_type
             .clone()
@@ -2685,13 +4354,38 @@ fn get_local_backend_status() -> Result<LocalBackendStatus, String> {
 }
 
 #[tauri::command]
+fn get_local_worker_status() -> Result<LocalWorkerStatus, String> {
+    get_local_worker_status_internal()
+}
+
+#[tauri::command]
+fn ensure_local_worker() -> Result<LocalWorkerStatus, String> {
+    ensure_local_worker_ready_internal()
+}
+
+#[tauri::command]
 fn ensure_local_backend() -> Result<LocalBackendStatus, String> {
     ensure_local_backend_ready_internal()
 }
 
 #[tauri::command]
+fn ensure_local_runtime() -> Result<LocalBackendStatus, String> {
+    ensure_local_runtime_ready_internal()
+}
+
+#[tauri::command]
 fn stop_local_backend() -> Result<LocalBackendStatus, String> {
     stop_local_backend_internal()
+}
+
+#[tauri::command]
+fn stop_local_worker() -> Result<LocalWorkerStatus, String> {
+    stop_local_worker_internal()
+}
+
+#[tauri::command]
+fn stop_local_runtime() -> Result<LocalBackendStatus, String> {
+    stop_local_runtime_internal()
 }
 
 #[tauri::command]
@@ -2701,12 +4395,133 @@ fn get_ml_sidecar_status() -> Result<MlSidecarStatus, String> {
 
 #[tauri::command]
 fn ensure_ml_sidecar() -> Result<MlSidecarStatus, String> {
-    ensure_ml_sidecar_ready_internal()
+    let status = ensure_ml_sidecar_ready_internal()?;
+    schedule_ml_sidecar_workflow_warmup();
+    Ok(status)
 }
 
 #[tauri::command]
 fn stop_ml_sidecar() -> Result<MlSidecarStatus, String> {
     stop_ml_sidecar_internal()
+}
+
+#[tauri::command]
+fn get_desktop_app_config() -> Result<DesktopAppConfigResponse, String> {
+    Ok(desktop_app_config_response())
+}
+
+#[tauri::command]
+fn save_desktop_app_config(
+    payload: SaveDesktopAppConfigRequest,
+) -> Result<DesktopAppConfigResponse, String> {
+    let mut next_config = read_desktop_config_file();
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_STORAGE_DIR",
+        normalized_storage_dir_value(payload.config.storage_dir)?,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_CONTROL_PLANE_API_BASE_URL",
+        payload.config.control_plane_api_base_url,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_CONTROL_PLANE_NODE_ID",
+        payload.config.control_plane_node_id,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_CONTROL_PLANE_NODE_TOKEN",
+        payload.config.control_plane_node_token,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_CONTROL_PLANE_SITE_ID",
+        payload.config.control_plane_site_id,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_DESKTOP_LOCAL_BACKEND_PYTHON",
+        payload.config.local_backend_python,
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_DESKTOP_LOCAL_BACKEND_MODE",
+        payload.config.local_backend_mode.map(|value| {
+            if value.eq_ignore_ascii_case("external") {
+                "external"
+            } else {
+                "managed"
+            }
+            .to_string()
+        }),
+    );
+    set_config_env_value(
+        &mut next_config.env,
+        "KERA_DESKTOP_ML_TRANSPORT",
+        payload.config.ml_transport.map(|value| {
+            if value.eq_ignore_ascii_case("http") {
+                "http"
+            } else {
+                "sidecar"
+            }
+            .to_string()
+        }),
+    );
+    write_desktop_config_file(&next_config)?;
+    let _ = stop_local_runtime_internal();
+    Ok(desktop_app_config_response())
+}
+
+#[tauri::command]
+fn clear_desktop_app_config() -> Result<DesktopAppConfigResponse, String> {
+    clear_desktop_config_file()?;
+    let _ = stop_local_runtime_internal();
+    Ok(desktop_app_config_response())
+}
+
+#[tauri::command]
+fn open_desktop_path(payload: OpenDesktopPathRequest) -> Result<(), String> {
+    let normalized = payload.path.trim();
+    if normalized.is_empty() {
+        return Err("Path is required.".to_string());
+    }
+    open_path_in_shell(&PathBuf::from(normalized))
+}
+
+#[tauri::command]
+fn pick_desktop_directory(payload: PickDesktopDirectoryRequest) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    let title = payload
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Select a directory");
+    dialog = dialog.set_title(title);
+    if let Some(default_path) = payload
+        .default_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let candidate = PathBuf::from(default_path);
+        let start_dir = if candidate.is_dir() {
+            candidate
+        } else {
+            candidate
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(candidate)
+        };
+        if start_dir.exists() {
+            dialog = dialog.set_directory(start_dir);
+        }
+    }
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -2721,7 +4536,9 @@ fn request_local_json(payload: LocalApiJsonCommandRequest) -> Result<JsonValue, 
 }
 
 #[tauri::command]
-fn request_local_binary(payload: LocalApiJsonCommandRequest) -> Result<ImageBinaryResponse, String> {
+fn request_local_binary(
+    payload: LocalApiJsonCommandRequest,
+) -> Result<ImageBinaryResponse, String> {
     request_local_api_binary_owned(
         normalize_http_method(payload.method.as_deref())?,
         &payload.path,
@@ -2745,7 +4562,7 @@ fn request_local_multipart(payload: LocalApiMultipartCommandRequest) -> Result<J
 fn read_binary_path(path: &Path) -> Result<ImageBinaryResponse, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     Ok(ImageBinaryResponse {
-        bytes,
+        data: BASE64_STANDARD.encode(&bytes),
         media_type: mime_type_for_path(path),
     })
 }
@@ -2757,9 +4574,7 @@ fn ensure_path_within_site(site_id: &str, path: &Path) -> Result<PathBuf, String
         site_dir(site_id)?.join(path)
     };
     let site_root = site_dir(site_id)?;
-    let resolved_site_root = site_root
-        .canonicalize()
-        .unwrap_or(site_root);
+    let resolved_site_root = site_root.canonicalize().unwrap_or(site_root);
     if !candidate.exists() {
         return Err("Artifact file not found on disk.".to_string());
     }
@@ -2813,7 +4628,9 @@ fn run_case_validation(payload: CaseValidationCommandRequest) -> Result<JsonValu
 }
 
 #[tauri::command]
-fn run_case_validation_compare(payload: CaseValidationCompareCommandRequest) -> Result<JsonValue, String> {
+fn run_case_validation_compare(
+    payload: CaseValidationCompareCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -2927,7 +4744,10 @@ fn run_case_contribution(payload: CaseContributionCommandRequest) -> Result<Json
 }
 
 fn is_active_site_job_status(status: &str) -> bool {
-    matches!(status.trim().to_lowercase().as_str(), "queued" | "running" | "cancelling")
+    matches!(
+        status.trim().to_lowercase().as_str(),
+        "queued" | "running" | "cancelling"
+    )
 }
 
 fn fetch_site_job_response(site_id: &str, token: &str, job_id: &str) -> Result<JsonValue, String> {
@@ -2965,9 +4785,7 @@ fn fetch_live_lesion_preview_job_response(
     }
     request_local_api_json(
         HttpMethod::GET,
-        &format!(
-            "/api/sites/{site_id}/images/{image_id}/lesion-live-preview/jobs/{job_id}"
-        ),
+        &format!("/api/sites/{site_id}/images/{image_id}/lesion-live-preview/jobs/{job_id}"),
         token,
         Vec::new(),
         None,
@@ -3039,7 +4857,10 @@ fn fetch_site_job(payload: SiteJobCommandRequest) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
-fn start_site_job_event_stream(app: AppHandle, payload: SiteJobCommandRequest) -> Result<(), String> {
+fn start_site_job_event_stream(
+    app: AppHandle,
+    payload: SiteJobCommandRequest,
+) -> Result<(), String> {
     let site_id = payload.site_id.trim().to_string();
     let job_id = payload.job_id.trim().to_string();
     let token = payload.token;
@@ -3159,7 +4980,9 @@ fn fetch_case_lesion_preview(payload: CasePreviewCommandRequest) -> Result<JsonV
 }
 
 #[tauri::command]
-fn start_live_lesion_preview(payload: LiveLesionPreviewStartCommandRequest) -> Result<JsonValue, String> {
+fn start_live_lesion_preview(
+    payload: LiveLesionPreviewStartCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     let image_id = payload.image_id.trim().to_string();
     if site_id.is_empty() || image_id.is_empty() {
@@ -3196,7 +5019,9 @@ fn start_live_lesion_preview(payload: LiveLesionPreviewStartCommandRequest) -> R
 }
 
 #[tauri::command]
-fn fetch_live_lesion_preview_job(payload: LiveLesionPreviewJobCommandRequest) -> Result<JsonValue, String> {
+fn fetch_live_lesion_preview_job(
+    payload: LiveLesionPreviewJobCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     let image_id = payload.image_id.trim().to_string();
     let job_id = payload.job_id.trim().to_string();
@@ -3225,13 +5050,29 @@ fn start_live_lesion_preview_event_stream(
                     job.get("status").and_then(|value| value.as_str()),
                     Some("running")
                 );
-                emit_live_lesion_preview_update(&app, &site_id, &image_id, &job_id, Some(job), terminal, None);
+                emit_live_lesion_preview_update(
+                    &app,
+                    &site_id,
+                    &image_id,
+                    &job_id,
+                    Some(job),
+                    terminal,
+                    None,
+                );
                 if terminal {
                     break;
                 }
             }
             Err(error) => {
-                emit_live_lesion_preview_update(&app, &site_id, &image_id, &job_id, None, true, Some(error));
+                emit_live_lesion_preview_update(
+                    &app,
+                    &site_id,
+                    &image_id,
+                    &job_id,
+                    None,
+                    true,
+                    Some(error),
+                );
                 break;
             }
         }
@@ -3241,7 +5082,9 @@ fn start_live_lesion_preview_event_stream(
 }
 
 #[tauri::command]
-fn fetch_image_semantic_prompt_scores(payload: SemanticPromptCommandRequest) -> Result<JsonValue, String> {
+fn fetch_image_semantic_prompt_scores(
+    payload: SemanticPromptCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     let image_id = payload.image_id.trim().to_string();
     if site_id.is_empty() || image_id.is_empty() {
@@ -3314,7 +5157,10 @@ fn fetch_site_validations(payload: SiteValidationsCommandRequest) -> Result<Json
         return request_ml_sidecar_json("fetch_site_validations", request_payload);
     }
     let mut query = Vec::new();
-    if let Some(limit) = request_payload.get("limit").and_then(|value| value.as_i64()) {
+    if let Some(limit) = request_payload
+        .get("limit")
+        .and_then(|value| value.as_i64())
+    {
         query.push(("limit", limit.to_string()));
     }
     request_local_api_json(
@@ -3354,7 +5200,10 @@ fn fetch_validation_cases(payload: ValidationCasesCommandRequest) -> Result<Json
     {
         query.push(("misclassified_only", "true".to_string()));
     }
-    if let Some(limit) = request_payload.get("limit").and_then(|value| value.as_i64()) {
+    if let Some(limit) = request_payload
+        .get("limit")
+        .and_then(|value| value.as_i64())
+    {
         query.push(("limit", limit.to_string()));
     }
     request_local_api_json(
@@ -3380,7 +5229,9 @@ fn fetch_validation_cases(payload: ValidationCasesCommandRequest) -> Result<Json
 }
 
 #[tauri::command]
-fn fetch_site_model_versions(payload: SiteModelVersionsCommandRequest) -> Result<JsonValue, String> {
+fn fetch_site_model_versions(
+    payload: SiteModelVersionsCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -3487,7 +5338,9 @@ fn run_initial_training(payload: InitialTrainingCommandRequest) -> Result<JsonVa
 }
 
 #[tauri::command]
-fn run_initial_training_benchmark(payload: InitialTrainingBenchmarkCommandRequest) -> Result<JsonValue, String> {
+fn run_initial_training_benchmark(
+    payload: InitialTrainingBenchmarkCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -3611,7 +5464,9 @@ fn cancel_site_job(payload: CancelSiteJobCommandRequest) -> Result<JsonValue, St
 }
 
 #[tauri::command]
-fn fetch_cross_validation_reports(payload: CrossValidationReportsCommandRequest) -> Result<JsonValue, String> {
+fn fetch_cross_validation_reports(
+    payload: CrossValidationReportsCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -3682,7 +5537,9 @@ fn run_cross_validation(payload: CrossValidationCommandRequest) -> Result<JsonVa
 }
 
 #[tauri::command]
-fn fetch_ai_clinic_embedding_status(payload: AiClinicEmbeddingStatusCommandRequest) -> Result<JsonValue, String> {
+fn fetch_ai_clinic_embedding_status(
+    payload: AiClinicEmbeddingStatusCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -3719,7 +5576,9 @@ fn fetch_ai_clinic_embedding_status(payload: AiClinicEmbeddingStatusCommandReque
 }
 
 #[tauri::command]
-fn backfill_ai_clinic_embeddings(payload: EmbeddingBackfillCommandRequest) -> Result<JsonValue, String> {
+fn backfill_ai_clinic_embeddings(
+    payload: EmbeddingBackfillCommandRequest,
+) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -3795,7 +5654,8 @@ fn validation_artifact_path(
         json_string_field(item, "patient_id").as_deref() == Some(patient_id)
             && json_string_field(item, "visit_date").as_deref() == Some(visit_date)
     });
-    let prediction = prediction.ok_or_else(|| "Validation case prediction not found.".to_string())?;
+    let prediction =
+        prediction.ok_or_else(|| "Validation case prediction not found.".to_string())?;
     let artifact_path_value = json_string_field(prediction, artifact_key)
         .ok_or_else(|| "Requested artifact is not available.".to_string())?;
     ensure_path_within_site(site_id, &PathBuf::from(artifact_path_value))
@@ -3813,7 +5673,9 @@ fn roi_preview_artifact_path(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Image path is invalid.".to_string())?;
     let relative = match artifact_kind.trim() {
-        "roi_crop" => PathBuf::from("artifacts").join("roi_crops").join(format!("{artifact_name}_crop.png")),
+        "roi_crop" => PathBuf::from("artifacts")
+            .join("roi_crops")
+            .join(format!("{artifact_name}_crop.png")),
         "medsam_mask" => PathBuf::from("artifacts")
             .join("medsam_masks")
             .join(format!("{artifact_name}_mask.png")),
@@ -3892,7 +5754,9 @@ fn get_site_activity(payload: SiteActivityRequest) -> Result<SiteActivityRespons
         Err(_) => return Ok(empty_site_activity_response(&site_id)),
     };
     let validation_payloads = validation_rows
-        .query_map(params![site_id.clone()], |row| row.get::<_, Option<String>>(0))
+        .query_map(params![site_id.clone()], |row| {
+            row.get::<_, Option<String>>(0)
+        })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
@@ -3905,7 +5769,8 @@ fn get_site_activity(payload: SiteActivityRequest) -> Result<SiteActivityRespons
                 validation_id: json_string_field(&payload, "validation_id").unwrap_or_default(),
                 run_date: json_string_field(&payload, "run_date").unwrap_or_default(),
                 model_version: json_string_field(&payload, "model_version").unwrap_or_default(),
-                model_architecture: json_string_field(&payload, "model_architecture").unwrap_or_default(),
+                model_architecture: json_string_field(&payload, "model_architecture")
+                    .unwrap_or_default(),
                 n_cases: json_i64_field(&payload, "n_cases").unwrap_or(0),
                 n_images: json_i64_field(&payload, "n_images").unwrap_or(0),
                 accuracy: json_f64_field(&payload, "accuracy"),
@@ -3940,7 +5805,9 @@ fn get_site_activity(payload: SiteActivityRequest) -> Result<SiteActivityRespons
     let mut updates_by_id = HashMap::new();
     for (raw_payload, update_id, status) in update_rows {
         let payload = parse_json_value(raw_payload, json!({}));
-        let normalized_update_id = json_string_field(&payload, "update_id").or(update_id).unwrap_or_default();
+        let normalized_update_id = json_string_field(&payload, "update_id")
+            .or(update_id)
+            .unwrap_or_default();
         if normalized_update_id.is_empty() {
             continue;
         }
@@ -4025,23 +5892,23 @@ fn get_site_activity(payload: SiteActivityRequest) -> Result<SiteActivityRespons
                 public_alias,
                 case_reference_id: json_string_field(payload, "case_reference_id"),
                 update_id,
-                update_status: update
-                    .map(|(item, status)| json_string_field(item, "status").unwrap_or_else(|| status.clone())),
+                update_status: update.map(|(item, status)| {
+                    json_string_field(item, "status").unwrap_or_else(|| status.clone())
+                }),
                 upload_type: update.and_then(|(item, _)| json_string_field(item, "upload_type")),
             }
         })
         .collect::<Vec<_>>();
 
-    let mut contributor_counts: HashMap<String, (i64, Option<String>, Option<String>)> = HashMap::new();
+    let mut contributor_counts: HashMap<String, (i64, Option<String>, Option<String>)> =
+        HashMap::new();
     for payload in &contribution_payloads {
         let Some(user_id) = json_string_field(payload, "user_id") else {
             continue;
         };
         let created_at = json_string_field(payload, "created_at");
         let payload_alias = json_string_field(payload, "public_alias");
-        let entry = contributor_counts
-            .entry(user_id)
-            .or_insert((0, None, None));
+        let entry = contributor_counts.entry(user_id).or_insert((0, None, None));
         entry.0 += 1;
         if let Some(alias) = payload_alias {
             entry.2 = Some(alias);
@@ -4060,24 +5927,39 @@ fn get_site_activity(payload: SiteActivityRequest) -> Result<SiteActivityRespons
 
     let mut ranked = contributor_counts
         .into_iter()
-        .map(|(user_id, (contribution_count, last_contribution_at, payload_alias))| {
-            let public_alias = payload_alias
-                .or_else(|| alias_map.get(&user_id).cloned())
-                .unwrap_or_else(|| "Anonymous member".to_string());
-            (user_id, contribution_count, last_contribution_at, public_alias)
-        })
+        .map(
+            |(user_id, (contribution_count, last_contribution_at, payload_alias))| {
+                let public_alias = payload_alias
+                    .or_else(|| alias_map.get(&user_id).cloned())
+                    .unwrap_or_else(|| "Anonymous member".to_string());
+                (
+                    user_id,
+                    contribution_count,
+                    last_contribution_at,
+                    public_alias,
+                )
+            },
+        )
         .collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
         right
             .1
             .cmp(&left.1)
-            .then_with(|| right.2.clone().unwrap_or_default().cmp(&left.2.clone().unwrap_or_default()))
+            .then_with(|| {
+                right
+                    .2
+                    .clone()
+                    .unwrap_or_default()
+                    .cmp(&left.2.clone().unwrap_or_default())
+            })
             .then_with(|| right.0.cmp(&left.0))
     });
 
     let mut leaderboard = Vec::new();
     let mut current_user_entry = None;
-    for (index, (user_id, contribution_count, last_contribution_at, public_alias)) in ranked.into_iter().enumerate() {
+    for (index, (user_id, contribution_count, last_contribution_at, public_alias)) in
+        ranked.into_iter().enumerate()
+    {
         let entry = ContributionLeaderboardEntry {
             rank: (index + 1) as i64,
             user_id: user_id.clone(),
@@ -4296,16 +6178,74 @@ fn get_visit_images(payload: VisitImagesRequest) -> Result<Vec<DesktopImageRecor
     list_images_for_visit(&conn, &site_id, &patient_id, &visit_date)
 }
 
-fn visit_owner_user_id(conn: &Connection, site_id: &str, patient_id: &str, visit_date: &str) -> Result<Option<String>, String> {
+#[tauri::command]
+fn ensure_image_previews(
+    payload: EnsureImagePreviewsRequest,
+) -> Result<Vec<ImagePreviewPathRecord>, String> {
+    let site_id = payload.site_id.trim().to_string();
+    if site_id.is_empty() {
+        return Err("site_id is required.".to_string());
+    }
+    let max_side = payload.max_side.unwrap_or(640).clamp(96, 1024);
+    let conn = open_data_plane_db()?;
+    let mut stmt = conn
+        .prepare("select image_path from images where site_id = ? and image_id = ?")
+        .map_err(|error| error.to_string())?;
+    let mut seen_ids = HashSet::new();
+    let mut records = Vec::new();
+    for raw_image_id in payload.image_ids {
+        let image_id = raw_image_id.trim().to_string();
+        if image_id.is_empty() || !seen_ids.insert(image_id.clone()) {
+            continue;
+        }
+        let stored_image_path = stmt
+            .query_row(params![&site_id, &image_id], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(stored_image_path) = stored_image_path else {
+            records.push(ImagePreviewPathRecord {
+                image_id,
+                preview_path: None,
+                fallback_path: None,
+                ready: false,
+            });
+            continue;
+        };
+        let source_path = resolve_site_runtime_path(&site_id, &stored_image_path)?;
+        let fallback_path = existing_file_path_string(&source_path);
+        let preview_path = preview_file_path(&site_id, &image_id, &source_path, max_side).ok();
+        records.push(ImagePreviewPathRecord {
+            image_id,
+            ready: preview_path.is_some(),
+            preview_path,
+            fallback_path,
+        });
+    }
+    Ok(records)
+}
+
+fn visit_owner_user_id(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+) -> Result<Option<String>, String> {
     let sql = "
       select created_by_user_id
       from visits
       where site_id = ? and patient_id = ? and visit_date = ?
     ";
-    conn.query_row(sql, params![site_id, patient_id, visit_date], |row| row.get::<_, Option<String>>(0))
-        .optional()
-        .map(|value| value.flatten().map(|item| item.trim().to_string()).filter(|item| !item.is_empty()))
-        .map_err(|error| error.to_string())
+    conn.query_row(sql, params![site_id, patient_id, visit_date], |row| {
+        row.get::<_, Option<String>>(0)
+    })
+    .optional()
+    .map(|value| {
+        value
+            .flatten()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn require_visit_write_access(
@@ -4340,7 +6280,9 @@ fn require_visit_image_write_access(
     ";
     let mut stmt = conn.prepare(sql).map_err(|error| error.to_string())?;
     let rows = stmt
-        .query_map(params![site_id, patient_id, visit_date], |row| row.get::<_, Option<String>>(0))
+        .query_map(params![site_id, patient_id, visit_date], |row| {
+            row.get::<_, Option<String>>(0)
+        })
         .map_err(|error| error.to_string())?;
     let mut found_images = false;
     let visit_owner = visit_owner_user_id(conn, site_id, patient_id, visit_date)?;
@@ -4381,7 +6323,11 @@ fn delete_image_preview_cache(site_id: &str, image_id: &str) -> Result<i64, Stri
     Ok(deleted)
 }
 
-fn delete_patient_if_empty(conn: &Connection, site_id: &str, patient_id: &str) -> Result<bool, String> {
+fn delete_patient_if_empty(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+) -> Result<bool, String> {
     let remaining_visits = conn
         .query_row(
             "select count(*) from visits where site_id = ? and patient_id = ?",
@@ -4398,7 +6344,12 @@ fn delete_patient_if_empty(conn: &Connection, site_id: &str, patient_id: &str) -
     )
     .map_err(|error| error.to_string())?;
     let history_dir = case_history_dir(site_id)?.join(safe_path_component(patient_id));
-    if history_dir.exists() && fs::read_dir(&history_dir).map_err(|error| error.to_string())?.next().is_none() {
+    if history_dir.exists()
+        && fs::read_dir(&history_dir)
+            .map_err(|error| error.to_string())?
+            .next()
+            .is_none()
+    {
         fs::remove_dir(&history_dir).map_err(|error| error.to_string())?;
     }
     Ok(true)
@@ -4408,7 +6359,12 @@ fn sanitize_image_bytes(content: &[u8], file_name: &str) -> Result<(Vec<u8>, Str
     let guessed = image::guess_format(content).map_err(|_| "Invalid image file.".to_string())?;
     let allowed = matches!(
         guessed,
-        ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff | ImageFormat::Bmp | ImageFormat::WebP | ImageFormat::Gif
+        ImageFormat::Jpeg
+            | ImageFormat::Png
+            | ImageFormat::Tiff
+            | ImageFormat::Bmp
+            | ImageFormat::WebP
+            | ImageFormat::Gif
     );
     if !allowed {
         return Err("Unsupported image format.".to_string());
@@ -4433,7 +6389,10 @@ fn sanitize_image_bytes(content: &[u8], file_name: &str) -> Result<(Vec<u8>, Str
         return Ok((bytes.into_inner(), ".png".to_string()));
     }
 
-    let output_image = if matches!(image.color(), image::ColorType::Rgb8 | image::ColorType::L8 | image::ColorType::La8) {
+    let output_image = if matches!(
+        image.color(),
+        image::ColorType::Rgb8 | image::ColorType::L8 | image::ColorType::La8
+    ) {
         image
     } else {
         DynamicImage::ImageRgb8(image.to_rgb8())
@@ -4624,7 +6583,9 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
     );
 
     let total_count = conn
-        .query_row(&count_sql, params_from_iter(count_params), |row| row.get::<_, i64>(0))
+        .query_row(&count_sql, params_from_iter(count_params), |row| {
+            row.get::<_, i64>(0)
+        })
         .map_err(|error| error.to_string())?
         .max(0) as u32;
     let total_pages = total_count.max(1).div_ceil(page_size);
@@ -4763,13 +6724,15 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
         "
     );
 
-    let mut cases_by_patient: HashMap<String, Vec<(CaseSummaryRecord, Option<String>)>> = HashMap::new();
+    let mut cases_by_patient: HashMap<String, Vec<(CaseSummaryRecord, Option<String>)>> =
+        HashMap::new();
     {
         let mut stmt = conn.prepare(&case_sql).map_err(|error| error.to_string())?;
         let rows = stmt
             .query_map(params_from_iter(case_params), |row| {
                 let record = case_summary_from_row(row)?;
-                let representative_image_path = row.get::<_, Option<String>>("representative_image_path")?;
+                let representative_image_path =
+                    row.get::<_, Option<String>>("representative_image_path")?;
                 Ok((record, representative_image_path))
             })
             .map_err(|error| error.to_string())?;
@@ -4784,6 +6747,7 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
     }
 
     let mut items = Vec::new();
+    let mut warm_preview_jobs = Vec::new();
     for patient_id in patient_ids {
         let mut cases = cases_by_patient.remove(&patient_id).unwrap_or_default();
         if cases.is_empty() {
@@ -4801,7 +6765,18 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
                 let image_id = case_record.representative_image_id.clone()?;
                 let stored_path = representative_image_path.as_ref()?;
                 let source_path = resolve_site_runtime_path(&site_id, stored_path).ok()?;
-                let preview_path = preview_file_path(&site_id, &image_id, &source_path, 256).ok();
+                let preview_path = match cached_preview_file_path(&site_id, &image_id, 256) {
+                    Ok(Some(path)) => Some(path),
+                    Ok(None) => {
+                        if let Some(job) =
+                            maybe_queue_preview_job(&site_id, &image_id, &source_path, 256)
+                        {
+                            warm_preview_jobs.push(job);
+                        }
+                        None
+                    }
+                    Err(_) => None,
+                };
                 let fallback_path = existing_file_path_string(&source_path);
                 Some(PatientListThumbnailRecord {
                     case_id: case_record.case_id.clone(),
@@ -4831,6 +6806,7 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
             representative_thumbnails,
         });
     }
+    queue_preview_generation_batch(warm_preview_jobs);
 
     Ok(PatientListPageResponse {
         items,
@@ -4862,7 +6838,11 @@ fn create_patient(payload: CreatePatientRequest) -> Result<PatientRecord, String
         sex: payload.sex,
         age: payload.age,
         chart_alias: payload.chart_alias.unwrap_or_default().trim().to_string(),
-        local_case_code: payload.local_case_code.unwrap_or_default().trim().to_string(),
+        local_case_code: payload
+            .local_case_code
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
         created_at: Some(utc_now()),
     };
     conn.execute(
@@ -4914,7 +6894,11 @@ fn update_patient(payload: UpdatePatientRequest) -> Result<PatientRecord, String
             payload.sex,
             payload.age,
             payload.chart_alias.unwrap_or_default().trim().to_string(),
-            payload.local_case_code.unwrap_or_default().trim().to_string(),
+            payload
+                .local_case_code
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             site_id,
             normalized_patient_id
         ],
@@ -4932,7 +6916,8 @@ fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, String> {
     }
     let normalized_patient_id = normalize_patient_pseudonym(&payload.patient_id)?;
     let normalized_visit_date = normalize_visit_label(&payload.visit_date)?;
-    let normalized_actual_visit_date = normalize_actual_visit_date(payload.actual_visit_date.as_deref())?;
+    let normalized_actual_visit_date =
+        normalize_actual_visit_date(payload.actual_visit_date.as_deref())?;
     if !payload.culture_confirmed {
         return Err("Only culture-proven keratitis cases are allowed.".to_string());
     }
@@ -4940,7 +6925,14 @@ fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, String> {
     if get_patient(&conn, &site_id, &normalized_patient_id)?.is_none() {
         return Err(format!("Patient {normalized_patient_id} does not exist."));
     }
-    if get_visit(&conn, &site_id, &normalized_patient_id, &normalized_visit_date)?.is_some() {
+    if get_visit(
+        &conn,
+        &site_id,
+        &normalized_patient_id,
+        &normalized_visit_date,
+    )?
+    .is_some()
+    {
         return Err(format!(
             "Visit {normalized_patient_id} / {normalized_visit_date} already exists."
         ));
@@ -5000,8 +6992,15 @@ fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, String> {
         ],
     )
     .map_err(|error| error.to_string())?;
-    get_visit(&conn, &payload.site_id, &normalized_patient_id, &normalized_visit_date)?
-        .ok_or_else(|| format!("Visit {normalized_patient_id} / {normalized_visit_date} does not exist."))
+    get_visit(
+        &conn,
+        &payload.site_id,
+        &normalized_patient_id,
+        &normalized_visit_date,
+    )?
+    .ok_or_else(|| {
+        format!("Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
+    })
 }
 
 #[tauri::command]
@@ -5018,17 +7017,31 @@ fn update_visit(payload: UpdateVisitRequest) -> Result<VisitRecord, String> {
     let normalized_visit_date = normalize_visit_label(&payload.visit_date)?;
     let normalized_target_patient_id = normalize_patient_pseudonym(&payload.target_patient_id)?;
     let normalized_target_visit_date = normalize_visit_label(&payload.target_visit_date)?;
-    let normalized_actual_visit_date = normalize_actual_visit_date(payload.actual_visit_date.as_deref())?;
+    let normalized_actual_visit_date =
+        normalize_actual_visit_date(payload.actual_visit_date.as_deref())?;
     if !payload.culture_confirmed {
         return Err("Only culture-proven keratitis cases are allowed.".to_string());
     }
     let conn = open_data_plane_db()?;
-    if get_visit(&conn, &site_id, &normalized_patient_id, &normalized_visit_date)?.is_none() {
+    if get_visit(
+        &conn,
+        &site_id,
+        &normalized_patient_id,
+        &normalized_visit_date,
+    )?
+    .is_none()
+    {
         return Err(format!(
             "Visit {normalized_patient_id} / {normalized_visit_date} does not exist."
         ));
     }
-    require_visit_write_access(&conn, &auth, &site_id, &normalized_patient_id, &normalized_visit_date)?;
+    require_visit_write_access(
+        &conn,
+        &auth,
+        &site_id,
+        &normalized_patient_id,
+        &normalized_visit_date,
+    )?;
     let target_patient = get_patient(&conn, &site_id, &normalized_target_patient_id)?
         .ok_or_else(|| format!("Patient {normalized_target_patient_id} does not exist."))?;
     if normalized_target_patient_id != normalized_patient_id {
@@ -5110,14 +7123,22 @@ fn update_visit(payload: UpdateVisitRequest) -> Result<VisitRecord, String> {
     )
     .map_err(|error| error.to_string())?;
     if target_changed {
-        let source_history_path = case_history_path(&payload.site_id, &normalized_patient_id, &normalized_visit_date)?;
-        let target_history_path =
-            case_history_path(&payload.site_id, &normalized_target_patient_id, &normalized_target_visit_date)?;
+        let source_history_path = case_history_path(
+            &payload.site_id,
+            &normalized_patient_id,
+            &normalized_visit_date,
+        )?;
+        let target_history_path = case_history_path(
+            &payload.site_id,
+            &normalized_target_patient_id,
+            &normalized_target_visit_date,
+        )?;
         if source_history_path.exists() {
             if target_history_path.exists() {
                 fs::remove_file(&target_history_path).map_err(|error| error.to_string())?;
             }
-            fs::rename(&source_history_path, &target_history_path).map_err(|error| error.to_string())?;
+            fs::rename(&source_history_path, &target_history_path)
+                .map_err(|error| error.to_string())?;
         } else if target_history_path.exists() {
             fs::remove_file(&target_history_path).map_err(|error| error.to_string())?;
         }
@@ -5208,8 +7229,10 @@ fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRecord, Strin
     let visit_dir = raw_dir(&site_id)?.join(&patient_id).join(&visit_date);
     fs::create_dir_all(&visit_dir).map_err(|error| error.to_string())?;
     let image_id = make_id("image");
-    let (sanitized_content, normalized_suffix) =
-        sanitize_image_bytes(&payload.bytes, payload.file_name.as_deref().unwrap_or("upload.bin"))?;
+    let (sanitized_content, normalized_suffix) = sanitize_image_bytes(
+        &payload.bytes,
+        payload.file_name.as_deref().unwrap_or("upload.bin"),
+    )?;
     let destination = visit_dir.join(format!("{image_id}{normalized_suffix}"));
     fs::write(&destination, sanitized_content).map_err(|error| error.to_string())?;
     let quality_scores = score_slit_lamp_image(&destination, &payload.view).ok();
@@ -5231,7 +7254,11 @@ fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRecord, Strin
             payload.user_id,
             payload.view,
             destination.to_string_lossy().to_string(),
-            if payload.is_representative.unwrap_or(false) { 1 } else { 0 },
+            if payload.is_representative.unwrap_or(false) {
+                1
+            } else {
+                0
+            },
             Option::<String>::None,
             0,
             0,
@@ -5264,7 +7291,7 @@ fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRecord, Strin
         .next()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Uploaded image not found.".to_string())?;
-    desktop_image_record_from_row(row, &payload.site_id, Some(640))
+    desktop_image_record_from_row(row, &payload.site_id, Some(640)).map(|(record, _)| record)
 }
 
 #[tauri::command]
@@ -5300,7 +7327,9 @@ fn delete_visit_images(payload: DeleteVisitImagesRequest) -> Result<DeleteImages
 }
 
 #[tauri::command]
-fn set_representative_image(payload: RepresentativeImageRequest) -> Result<RepresentativeImageResponse, String> {
+fn set_representative_image(
+    payload: RepresentativeImageRequest,
+) -> Result<RepresentativeImageResponse, String> {
     let site_id = payload.site_id.trim().to_string();
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
@@ -5331,7 +7360,11 @@ fn set_representative_image(payload: RepresentativeImageRequest) -> Result<Repre
         conn.execute(
             "update images set is_representative = ? where site_id = ? and image_id = ?",
             params![
-                if image.image_id == representative_image_id { 1 } else { 0 },
+                if image.image_id == representative_image_id {
+                    1
+                } else {
+                    0
+                },
                 payload.site_id,
                 image.image_id
             ],
@@ -5377,7 +7410,9 @@ fn get_case_history(payload: CaseHistoryRequest) -> Result<CaseHistoryResponse, 
 }
 
 #[tauri::command]
-fn list_stored_case_lesion_previews(payload: StoredLesionPreviewsRequest) -> Result<Vec<LesionPreviewRecord>, String> {
+fn list_stored_case_lesion_previews(
+    payload: StoredLesionPreviewsRequest,
+) -> Result<Vec<LesionPreviewRecord>, String> {
     let site_id = payload.site_id.trim().to_string();
     let patient_id = payload.patient_id.trim().to_string();
     let visit_date = payload.visit_date.trim().to_string();
@@ -5387,10 +7422,14 @@ fn list_stored_case_lesion_previews(payload: StoredLesionPreviewsRequest) -> Res
     let conn = open_data_plane_db()?;
     let images = query_images(&conn, &site_id, Some(&patient_id), Some(&visit_date), None)?;
     if images.is_empty() {
-        return Err(format!("No images found for patient {patient_id} / {visit_date}."));
+        return Err(format!(
+            "No images found for patient {patient_id} / {visit_date}."
+        ));
     }
 
-    let lesion_meta_dir = site_dir(&site_id)?.join("artifacts").join("lesion_preview_meta");
+    let lesion_meta_dir = site_dir(&site_id)?
+        .join("artifacts")
+        .join("lesion_preview_meta");
     let mut previews = Vec::new();
     for image in images {
         let Some(lesion_prompt_box) = image.lesion_prompt_box.clone() else {
@@ -5413,7 +7452,8 @@ fn list_stored_case_lesion_previews(payload: StoredLesionPreviewsRequest) -> Res
         let metadata_path = lesion_meta_dir.join(format!("{artifact_name}.json"));
         let backend = if metadata_path.exists() {
             let metadata_raw = fs::read_to_string(&metadata_path).unwrap_or_default();
-            let metadata = serde_json::from_str::<JsonValue>(&metadata_raw).unwrap_or(JsonValue::Null);
+            let metadata =
+                serde_json::from_str::<JsonValue>(&metadata_raw).unwrap_or(JsonValue::Null);
             json_string_field(&metadata, "backend").unwrap_or_else(|| "unknown".to_string())
         } else {
             "unknown".to_string()
@@ -5436,12 +7476,18 @@ fn list_stored_case_lesion_previews(payload: StoredLesionPreviewsRequest) -> Res
 }
 
 #[tauri::command]
-fn read_validation_artifact(payload: ValidationArtifactRequest) -> Result<ImageBinaryResponse, String> {
+fn read_validation_artifact(
+    payload: ValidationArtifactRequest,
+) -> Result<ImageBinaryResponse, String> {
     let site_id = payload.site_id.trim().to_string();
     let validation_id = payload.validation_id.trim().to_string();
     let patient_id = payload.patient_id.trim().to_string();
     let visit_date = payload.visit_date.trim().to_string();
-    if site_id.is_empty() || validation_id.is_empty() || patient_id.is_empty() || visit_date.is_empty() {
+    if site_id.is_empty()
+        || validation_id.is_empty()
+        || patient_id.is_empty()
+        || visit_date.is_empty()
+    {
         return Err("site_id, validation_id, patient_id, and visit_date are required.".to_string());
     }
     let artifact_path = validation_artifact_path(
@@ -5455,7 +7501,36 @@ fn read_validation_artifact(payload: ValidationArtifactRequest) -> Result<ImageB
 }
 
 #[tauri::command]
-fn read_case_roi_preview_artifact(payload: CasePreviewArtifactRequest) -> Result<ImageBinaryResponse, String> {
+fn resolve_validation_artifact_path(
+    payload: ValidationArtifactRequest,
+) -> Result<FilePathResponse, String> {
+    let site_id = payload.site_id.trim().to_string();
+    let validation_id = payload.validation_id.trim().to_string();
+    let patient_id = payload.patient_id.trim().to_string();
+    let visit_date = payload.visit_date.trim().to_string();
+    if site_id.is_empty()
+        || validation_id.is_empty()
+        || patient_id.is_empty()
+        || visit_date.is_empty()
+    {
+        return Err("site_id, validation_id, patient_id, and visit_date are required.".to_string());
+    }
+    let artifact_path = validation_artifact_path(
+        &site_id,
+        &validation_id,
+        &patient_id,
+        &visit_date,
+        &payload.artifact_kind,
+    )?;
+    Ok(FilePathResponse {
+        path: artifact_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn read_case_roi_preview_artifact(
+    payload: CasePreviewArtifactRequest,
+) -> Result<ImageBinaryResponse, String> {
     let site_id = payload.site_id.trim().to_string();
     let patient_id = payload.patient_id.trim().to_string();
     let visit_date = payload.visit_date.trim().to_string();
@@ -5465,12 +7540,15 @@ fn read_case_roi_preview_artifact(payload: CasePreviewArtifactRequest) -> Result
     }
     let conn = open_data_plane_db()?;
     let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
-    let artifact_path = roi_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    let artifact_path =
+        roi_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
     read_binary_path(&artifact_path)
 }
 
 #[tauri::command]
-fn read_case_lesion_preview_artifact(payload: CasePreviewArtifactRequest) -> Result<ImageBinaryResponse, String> {
+fn resolve_case_roi_preview_artifact_path(
+    payload: CasePreviewArtifactRequest,
+) -> Result<FilePathResponse, String> {
     let site_id = payload.site_id.trim().to_string();
     let patient_id = payload.patient_id.trim().to_string();
     let visit_date = payload.visit_date.trim().to_string();
@@ -5480,8 +7558,49 @@ fn read_case_lesion_preview_artifact(payload: CasePreviewArtifactRequest) -> Res
     }
     let conn = open_data_plane_db()?;
     let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
-    let artifact_path = lesion_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    let artifact_path =
+        roi_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    Ok(FilePathResponse {
+        path: artifact_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn read_case_lesion_preview_artifact(
+    payload: CasePreviewArtifactRequest,
+) -> Result<ImageBinaryResponse, String> {
+    let site_id = payload.site_id.trim().to_string();
+    let patient_id = payload.patient_id.trim().to_string();
+    let visit_date = payload.visit_date.trim().to_string();
+    let image_id = payload.image_id.trim().to_string();
+    if site_id.is_empty() || patient_id.is_empty() || visit_date.is_empty() || image_id.is_empty() {
+        return Err("site_id, patient_id, visit_date, and image_id are required.".to_string());
+    }
+    let conn = open_data_plane_db()?;
+    let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
+    let artifact_path =
+        lesion_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
     read_binary_path(&artifact_path)
+}
+
+#[tauri::command]
+fn resolve_case_lesion_preview_artifact_path(
+    payload: CasePreviewArtifactRequest,
+) -> Result<FilePathResponse, String> {
+    let site_id = payload.site_id.trim().to_string();
+    let patient_id = payload.patient_id.trim().to_string();
+    let visit_date = payload.visit_date.trim().to_string();
+    let image_id = payload.image_id.trim().to_string();
+    if site_id.is_empty() || patient_id.is_empty() || visit_date.is_empty() || image_id.is_empty() {
+        return Err("site_id, patient_id, visit_date, and image_id are required.".to_string());
+    }
+    let conn = open_data_plane_db()?;
+    let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
+    let artifact_path =
+        lesion_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    Ok(FilePathResponse {
+        path: artifact_path.to_string_lossy().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -5504,20 +7623,36 @@ fn read_image_blob(payload: ImageBlobRequest) -> Result<ImageBinaryResponse, Str
     let source_path = resolve_site_runtime_path(&payload.site_id, &stored_image_path)?;
     let bytes = fs::read(&source_path).map_err(|error| error.to_string())?;
     Ok(ImageBinaryResponse {
-        bytes,
+        data: BASE64_STANDARD.encode(&bytes),
         media_type: mime_type_for_path(&source_path),
     })
 }
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            if let Ok(path) = app.path().resource_dir() {
+                store_desktop_resource_dir(path);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_local_backend_status,
+            get_local_worker_status,
+            ensure_local_worker,
             ensure_local_backend,
+            ensure_local_runtime,
             stop_local_backend,
+            stop_local_worker,
+            stop_local_runtime,
             get_ml_sidecar_status,
             ensure_ml_sidecar,
             stop_ml_sidecar,
+            get_desktop_app_config,
+            save_desktop_app_config,
+            clear_desktop_app_config,
+            open_desktop_path,
+            pick_desktop_directory,
             request_local_json,
             request_local_binary,
             request_local_multipart,
@@ -5553,6 +7688,7 @@ fn main() {
             list_visits,
             list_images,
             get_visit_images,
+            ensure_image_previews,
             create_patient,
             update_patient,
             create_visit,
@@ -5564,8 +7700,11 @@ fn main() {
             get_case_history,
             list_stored_case_lesion_previews,
             read_validation_artifact,
+            resolve_validation_artifact_path,
             read_case_roi_preview_artifact,
+            resolve_case_roi_preview_artifact_path,
             read_case_lesion_preview_artifact,
+            resolve_case_lesion_preview_artifact_path,
             read_image_blob
         ])
         .run(tauri::generate_context!())

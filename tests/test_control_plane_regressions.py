@@ -208,6 +208,34 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(len(self.cp.workspace.list_projects()), 1)
         self.assertEqual(self.cp.workspace.get_site("REG_SITE")["display_name"], "Regression Site")
 
+    def test_workspace_collaborator_backfills_institution_name_for_hira_site(self) -> None:
+        project = self.cp.create_project("Institution Project", "test", "owner")
+        self.cp.upsert_institutions(
+            [
+                {
+                    "institution_id": "39100103",
+                    "name": "Jeju National University Hospital",
+                    "source": "hira",
+                    "synced_at": "2026-03-22T00:00:00+00:00",
+                }
+            ]
+        )
+        self.cp.create_site(
+            project["project_id"],
+            "39100103",
+            "39100103",
+            "39100103",
+            source_institution_id="39100103",
+        )
+
+        hydrated_site = self.cp.get_site("39100103")
+        listed_site = next(site for site in self.cp.list_sites() if site["site_id"] == "39100103")
+
+        self.assertEqual(hydrated_site["display_name"], "Jeju National University Hospital")
+        self.assertEqual(hydrated_site["hospital_name"], "Jeju National University Hospital")
+        self.assertEqual(listed_site["display_name"], "Jeju National University Hospital")
+        self.assertEqual(listed_site["hospital_name"], "Jeju National University Hospital")
+
     def test_site_store_can_recover_metadata_from_manifest(self) -> None:
         site_store, image = self._seed_recoverable_site("REC_MANIFEST")
         site_store._clear_site_metadata_rows()

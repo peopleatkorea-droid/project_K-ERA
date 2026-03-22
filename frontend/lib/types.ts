@@ -4,6 +4,7 @@ export type SiteRecord = {
   site_id: string;
   display_name: string;
   hospital_name: string;
+  source_institution_name?: string | null;
 };
 
 export type PublicInstitutionRecord = {

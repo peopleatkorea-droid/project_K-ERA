@@ -48,13 +48,28 @@ function formatProcessState(
   return pick(locale, "Stopped", "중지");
 }
 
+function formatWorkerState(
+  locale: Locale,
+  process:
+    | {
+        running: boolean;
+      }
+    | null
+    | undefined,
+) {
+  if (!process) {
+    return pick(locale, "Unavailable", "사용 불가");
+  }
+  return process.running ? pick(locale, "Running", "실행 중") : pick(locale, "Stopped", "중지");
+}
+
 function renderProcessDetails(
   locale: Locale,
   process:
     | {
-        base_url: string;
         mode: string;
-        transport: string;
+        base_url?: string | null;
+        transport?: string | null;
         pid?: number | null;
         python_path?: string | null;
         stdout_log_path?: string | null;
@@ -74,8 +89,8 @@ function renderProcessDetails(
 
   const rows = [
     [pick(locale, "Mode", "모드"), process.mode],
-    [pick(locale, "Transport", "전송"), process.transport],
-    [pick(locale, "Base URL", "기본 URL"), process.base_url],
+    [pick(locale, "Transport", "전송"), process.transport ?? null],
+    [pick(locale, "Base URL", "기본 URL"), process.base_url ?? null],
     [pick(locale, "PID", "PID"), process.pid ? String(process.pid) : null],
     [pick(locale, "Python", "Python"), process.python_path],
     [pick(locale, "stdout log", "stdout 로그"), process.stdout_log_path],
@@ -175,6 +190,7 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
           value={formatProcessState(locale, snapshot?.localBackend)}
           label={pick(locale, "Local backend", "로컬 backend")}
         />
+        <MetricItem value={formatWorkerState(locale, snapshot?.localWorker)} label={pick(locale, "Local worker", "로컬 worker")} />
         <MetricItem value={formatProcessState(locale, snapshot?.mlBackend)} label={pick(locale, "ML sidecar", "ML sidecar")} />
         <MetricItem
           value={formatBoolean(locale, controlPlane?.node_sync_enabled ?? null)}
@@ -204,7 +220,7 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
         </div>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-3">
         <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
           <SectionHeader
             title={pick(locale, "Local backend", "로컬 backend")}
@@ -216,6 +232,19 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
             }
           />
           {renderProcessDetails(locale, snapshot?.localBackend)}
+        </Card>
+
+        <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
+          <SectionHeader
+            title={pick(locale, "Local worker", "로컬 worker")}
+            titleAs="h4"
+            description={
+              snapshot?.localWorker?.last_started_at
+                ? `${pick(locale, "Last started", "마지막 시작")} ${formatDateTime(snapshot.localWorker.last_started_at)}`
+                : undefined
+            }
+          />
+          {renderProcessDetails(locale, snapshot?.localWorker)}
         </Card>
 
         <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">

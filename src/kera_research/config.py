@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from kera_research.federation_salt import resolve_federation_salts
 from kera_research.passwords import hash_password
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -200,20 +201,10 @@ CONTROL_PLANE_ARTIFACT_DIR = _resolve_path_env(
     "KERA_CONTROL_PLANE_ARTIFACT_DIR",
     CONTROL_PLANE_DIR / "artifacts",
 )
-CASE_REFERENCE_SALT = (
-    os.getenv("KERA_CASE_REFERENCE_SALT", "").strip()
-    or os.getenv("KERA_API_SECRET", "").strip()
-    or "kera-case-reference-v1"
-)
-PATIENT_REFERENCE_SALT = (
-    os.getenv("KERA_PATIENT_REFERENCE_SALT", "").strip()
-    or CASE_REFERENCE_SALT
-)
-PUBLIC_ALIAS_SALT = (
-    os.getenv("KERA_PUBLIC_ALIAS_SALT", "").strip()
-    or os.getenv("KERA_API_SECRET", "").strip()
-    or CASE_REFERENCE_SALT
-)
+_FEDERATION_SALTS = resolve_federation_salts(control_plane_dir=CONTROL_PLANE_DIR)
+CASE_REFERENCE_SALT = _FEDERATION_SALTS.case_reference_salt
+PATIENT_REFERENCE_SALT = _FEDERATION_SALTS.patient_reference_salt
+PUBLIC_ALIAS_SALT = _FEDERATION_SALTS.public_alias_salt
 # First 16 hex chars of SHA256(salt) — safe to transmit, never reveals the actual salt.
 # All nodes in the same federation must produce the same fingerprint.
 CASE_REFERENCE_SALT_FINGERPRINT = hashlib.sha256(CASE_REFERENCE_SALT.encode()).hexdigest()[:16]

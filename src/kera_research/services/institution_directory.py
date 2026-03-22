@@ -94,6 +94,35 @@ class HiraInstitutionDirectoryClient:
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
 
+    def fetch_by_ykiho(self, ykiho: str) -> dict[str, Any] | None:
+        """Fetch a single institution by HIRA ykiho code. Returns None if not found or on error."""
+        if not self.service_key:
+            return None
+        try:
+            response = self.session.get(
+                self.base_url,
+                params={
+                    "serviceKey": self.service_key,
+                    "pageNo": "1",
+                    "numOfRows": "1",
+                    "ykiho": ykiho,
+                    "_type": "json",
+                },
+                timeout=self.timeout_seconds,
+            )
+            if response.status_code >= 400:
+                return None
+            text = response.text.lstrip()
+            if "json" in (response.headers.get("content-type") or "").lower() or text.startswith("{"):
+                page = self._parse_json_page(response.json(), page_no=1, num_rows=1)
+            elif text.startswith("<"):
+                page = self._parse_xml_page(text, page_no=1, num_rows=1)
+            else:
+                return None
+            return page.items[0] if page.items else None
+        except Exception:
+            return None
+
     def fetch_ophthalmology_page(
         self,
         *,

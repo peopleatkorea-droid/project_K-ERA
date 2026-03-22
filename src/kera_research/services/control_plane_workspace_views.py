@@ -7,6 +7,28 @@ class ControlPlaneWorkspaceFacade:
     def __init__(self, store: Any) -> None:
         self.store = store
 
+    def _hydrate_site_labels(self, site: dict[str, Any]) -> dict[str, Any]:
+        hydrated = dict(site)
+        site_id = str(hydrated.get("site_id") or "").strip()
+        if not site_id:
+            return hydrated
+
+        display_name = str(hydrated.get("display_name") or "").strip()
+        hospital_name = str(hydrated.get("hospital_name") or "").strip()
+        source_institution_id = str(hydrated.get("source_institution_id") or site_id).strip()
+        institution = self.store.get_institution(source_institution_id) if source_institution_id else None
+        institution_name = str(institution.get("name") or "").strip() if isinstance(institution, dict) else ""
+
+        if institution_name:
+            if not display_name or display_name == site_id:
+                display_name = institution_name
+            if not hospital_name or hospital_name == site_id:
+                hospital_name = institution_name
+
+        hydrated["display_name"] = display_name or hospital_name or site_id
+        hydrated["hospital_name"] = hospital_name or display_name or site_id
+        return hydrated
+
     def list_projects(self) -> list[dict[str, Any]]:
         merged: dict[str, dict[str, Any]] = {
             str(row["project_id"]): dict(row)
@@ -58,8 +80,8 @@ class ControlPlaneWorkspaceFacade:
                 merged_site["local_storage_root"] = local_storage_root
             if research_registry_enabled is not None:
                 merged_site["research_registry_enabled"] = bool(research_registry_enabled)
-            merged[site_id] = merged_site
-        site_rows = list(merged.values())
+            merged[site_id] = self._hydrate_site_labels(merged_site)
+        site_rows = [self._hydrate_site_labels(site) for site in merged.values()]
         if project_id:
             site_rows = [site for site in site_rows if str(site.get("project_id") or "") == project_id]
         return sorted(
@@ -85,8 +107,10 @@ class ControlPlaneWorkspaceFacade:
                 merged["local_storage_root"] = local_site.get("local_storage_root")
             if local_site.get("research_registry_enabled") is not None:
                 merged["research_registry_enabled"] = bool(local_site.get("research_registry_enabled"))
-            return merged
-        return local_site or remote_site
+            return self._hydrate_site_labels(merged)
+        site = local_site or remote_site
+        return self._hydrate_site_labels(site) if site else None
 
     def get_site_by_source_institution_id(self, source_institution_id: str) -> dict[str, Any] | None:
-        return self.store.workspace.get_site_by_source_institution_id(source_institution_id)
+        site = self.store.workspace.get_site_by_source_institution_id(source_institution_id)
+        return self._hydrate_site_labels(site) if site else None

@@ -32,7 +32,7 @@ function serializeSite(row: Row | null): ControlPlaneSite | null {
   if (!row) {
     return null;
   }
-  return {
+  const site: ControlPlaneSite = {
     site_id: rowValue<string>(row, "site_id"),
     display_name: rowValue<string>(row, "display_name"),
     hospital_name: rowValue<string>(row, "hospital_name"),
@@ -40,6 +40,11 @@ function serializeSite(row: Row | null): ControlPlaneSite | null {
     status: rowValue<string>(row, "status"),
     created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
   };
+  const sourceInstitutionName = rowValue<string | null | undefined>(row, "source_institution_name");
+  if (typeof sourceInstitutionName === "string" && sourceInstitutionName.trim()) {
+    site.source_institution_name = sourceInstitutionName.trim();
+  }
+  return site;
 }
 
 function serializeMembership(row: Row): ControlPlaneMembership {
@@ -164,9 +169,12 @@ async function membershipsForUser(userId: string): Promise<ControlPlaneMembershi
       s.hospital_name,
       s.source_institution_id,
       s.status,
-      s.created_at
+      s.created_at,
+      institution_directory.name as source_institution_name
     from site_memberships as m
     left join sites as s on s.site_id = m.site_id
+    left join institution_directory
+      on institution_directory.institution_id = coalesce(nullif(s.source_institution_id, ''), s.site_id)
     where m.user_id = ${userId}
     order by m.created_at asc
   `;

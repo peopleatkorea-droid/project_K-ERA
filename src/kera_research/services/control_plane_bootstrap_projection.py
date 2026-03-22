@@ -92,19 +92,25 @@ class ControlPlaneBootstrapProjectionFacade:
             site_id = str(raw_site.get("site_id") or "").strip()
             if not site_id:
                 return
-            site_index[site_id] = {
+            source_institution_name = str(raw_site.get("source_institution_name") or "").strip()
+            hospital_name_raw = str(raw_site.get("hospital_name") or raw_site.get("display_name") or site_id).strip() or site_id
+            # Prefer source_institution_name (from Neon institution_directory JOIN) when hospital_name is a placeholder
+            hospital_name = source_institution_name if (source_institution_name and hospital_name_raw == site_id) else hospital_name_raw
+            site_record: dict[str, Any] = {
                 "site_id": site_id,
                 "project_id": project_id,
                 "site_code": str(raw_site.get("site_code") or site_id).strip() or site_id,
                 "display_name": str(raw_site.get("display_name") or site_id).strip() or site_id,
-                "hospital_name": str(raw_site.get("hospital_name") or raw_site.get("display_name") or site_id).strip()
-                or site_id,
+                "hospital_name": hospital_name,
                 "source_institution_id": str(raw_site.get("source_institution_id") or "").strip() or None,
                 "research_registry_enabled": bool(raw_site.get("research_registry_enabled", True)),
                 "local_storage_root": raw_site.get("local_storage_root"),
                 "status": str(raw_site.get("status") or "active").strip() or "active",
                 "created_at": str(raw_site.get("created_at") or utc_now()),
             }
+            if source_institution_name:
+                site_record["source_institution_name"] = source_institution_name
+            site_index[site_id] = site_record
 
         add_site(bootstrap.get("site"))
         for membership in raw_memberships:

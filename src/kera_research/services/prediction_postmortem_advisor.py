@@ -14,9 +14,14 @@ def _clamp01(value: float) -> float:
 
 class PredictionPostmortemAdvisor:
     def __init__(self) -> None:
+        self._relay_only = os.getenv("KERA_LLM_RELAY_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
         self._api_key = (
-            os.getenv("KERA_AI_CLINIC_OPENAI_API_KEY", "").strip()
-            or os.getenv("OPENAI_API_KEY", "").strip()
+            ""
+            if self._relay_only
+            else (
+                os.getenv("KERA_AI_CLINIC_OPENAI_API_KEY", "").strip()
+                or os.getenv("OPENAI_API_KEY", "").strip()
+            )
         )
         self._model = os.getenv("KERA_AI_CLINIC_LLM_MODEL", "").strip() or "gpt-4o-mini"
         self._base_url = (
@@ -33,7 +38,7 @@ class PredictionPostmortemAdvisor:
     ) -> dict[str, Any]:
         fallback = self._build_local_fallback(analysis_context=analysis_context)
         try:
-            if self._api_key:
+            if self._api_key and not self._relay_only:
                 llm_result = self._generate_openai_postmortem(analysis_context=analysis_context)
             elif self._remote_control_plane.is_configured() and self._remote_control_plane.has_node_credentials():
                 llm_result = self._generate_relay_postmortem(analysis_context=analysis_context)
