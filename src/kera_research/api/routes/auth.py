@@ -1,9 +1,11 @@
 from typing import Any
 
+import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from kera_research.api.control_plane_proxy import (
     call_remote_control_plane_method,
     call_remote_public_control_plane_method,
+    prefer_local_control_plane,
     remote_control_plane_is_primary,
 )
 
@@ -23,6 +25,54 @@ def build_auth_router(support: Any) -> APIRouter:
     LoginRequest = support.LoginRequest
     GoogleLoginRequest = support.GoogleLoginRequest
     AccessRequestCreateRequest = support.AccessRequestCreateRequest
+
+    def remote_control_plane_error(exc: Exception, *, fallback_detail: str) -> HTTPException:
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            detail = fallback_detail
+            try:
+                payload = exc.response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                remote_detail = payload.get("detail")
+                if isinstance(remote_detail, str) and remote_detail.strip():
+                    detail = remote_detail.strip()
+                elif remote_detail is not None:
+                    detail = str(remote_detail)
+            if detail == fallback_detail:
+                response_text = exc.response.text.strip()
+                if response_text:
+                    detail = response_text
+            return HTTPException(status_code=exc.response.status_code, detail=detail)
+        message = str(exc).strip()
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=message or fallback_detail,
+        )
+
+    def call_required_remote_public_method(
+        *,
+        cp: Any,
+        control_plane_owner: str | None,
+        fallback_detail: str,
+        method_name: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if prefer_local_control_plane(control_plane_owner) or not cp.remote_control_plane_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=fallback_detail,
+            )
+        try:
+            payload = getattr(cp.remote_control_plane, method_name)(**kwargs)
+        except Exception as exc:
+            raise remote_control_plane_error(exc, fallback_detail=fallback_detail) from exc
+        if isinstance(payload, dict):
+            return payload
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=fallback_detail,
+        )
 
     @router.get("/api/public/sites")
     def public_sites(
@@ -148,6 +198,41 @@ def build_auth_router(support: Any) -> APIRouter:
                 detail="Admin and site admin accounts must use local password sign-in.",
             )
         return build_auth_response(cp, user)
+
+    @router.post("/api/auth/desktop/start")
+    def desktop_google_start(
+        payload: dict[str, Any],
+        cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        return call_required_remote_public_method(
+            cp=cp,
+            control_plane_owner=control_plane_owner,
+            fallback_detail="Central control plane desktop Google sign-in is unavailable.",
+            method_name="main_desktop_auth_start",
+            payload_json={
+                "redirect_uri": str(payload.get("redirect_uri") or "").strip(),
+            },
+        )
+
+    @router.post("/api/auth/desktop/exchange")
+    def desktop_google_exchange(
+        payload: dict[str, Any],
+        cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        return call_required_remote_public_method(
+            cp=cp,
+            control_plane_owner=control_plane_owner,
+            fallback_detail="Central control plane desktop Google authentication is unavailable.",
+            method_name="main_desktop_auth_exchange",
+            payload_json={
+                "code": str(payload.get("code") or "").strip(),
+                "flow_token": str(payload.get("flow_token") or "").strip(),
+                "redirect_uri": str(payload.get("redirect_uri") or "").strip(),
+                "state": str(payload.get("state") or "").strip(),
+            },
+        )
 
     @router.get("/api/auth/me")
     def me(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:

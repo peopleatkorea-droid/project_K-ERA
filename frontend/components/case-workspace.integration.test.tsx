@@ -52,6 +52,10 @@ const apiMocks = vi.hoisted(() => ({
   runCaseValidationCompare: vi.fn(),
   runCaseContribution: vi.fn(),
 }));
+const desktopTransportMocks = vi.hoisted(() => ({
+  canUseDesktopTransport: vi.fn(() => false),
+  prefetchDesktopVisitImages: vi.fn(),
+}));
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
@@ -90,10 +94,20 @@ vi.mock("../lib/api", async () => {
     runCaseContribution: apiMocks.runCaseContribution,
   };
 });
+vi.mock("../lib/desktop-transport", async () => {
+  const actual = await vi.importActual<typeof import("../lib/desktop-transport")>("../lib/desktop-transport");
+  return {
+    ...actual,
+    canUseDesktopTransport: desktopTransportMocks.canUseDesktopTransport,
+    prefetchDesktopVisitImages: desktopTransportMocks.prefetchDesktopVisitImages,
+  };
+});
 
 describe("CaseWorkspace integration", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(false);
+    desktopTransportMocks.prefetchDesktopVisitImages.mockImplementation(() => undefined);
     window.localStorage.clear();
     window.history.replaceState(null, "", "/");
     vi.stubGlobal("confirm", vi.fn(() => true));
@@ -1649,8 +1663,9 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
 
     expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
-    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.getByText("Artifact backlog stays idle until you enable it.")).toBeInTheDocument();
+    expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Enable backlog" }));
     await waitFor(() => {
       expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
         "SITE_A",
@@ -1704,8 +1719,8 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
 
     expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
-    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(screen.getByText("Artifact backlog stays idle until you enable it.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enable backlog" }));
     await waitFor(() => {
       expect(apiMocks.fetchMedsamArtifactStatus).toHaveBeenCalledWith(
         "SITE_A",
@@ -1725,7 +1740,7 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
 
     expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
-    expect(screen.getByText("Refresh to check artifact backlog")).toBeInTheDocument();
+    expect(screen.getByText("Artifact backlog stays idle until you enable it.")).toBeInTheDocument();
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 250));
     });
@@ -1734,6 +1749,16 @@ describe("CaseWorkspace integration", () => {
     expect(apiMocks.fetchCases).not.toHaveBeenCalled();
     expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
     expect(screen.queryByText("Recent validation and contribution flow")).not.toBeInTheDocument();
+  });
+
+  it("keeps the backlog panel in the patient list sidebar during desktop fast mode", async () => {
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(true);
+
+    renderWorkspace();
+
+    expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enable backlog" })).toBeInTheDocument();
+    expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
   });
 
   it("auto-runs five-model analysis after AI validation", async () => {

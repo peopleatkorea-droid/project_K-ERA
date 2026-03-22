@@ -4,31 +4,42 @@ import type { ControlPlaneIdentity } from "./types";
 
 let cachedClient: OAuth2Client | null = null;
 
-function googleClientId(): string {
-  return (
-    process.env.KERA_GOOGLE_CLIENT_ID?.trim() ||
-    process.env.GOOGLE_CLIENT_ID?.trim() ||
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() ||
-    ""
-  );
+function googleClientIds(): string[] {
+  const values = new Set<string>();
+  for (const rawValue of [
+    process.env.KERA_GOOGLE_DESKTOP_CLIENT_ID,
+    process.env.NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID,
+    process.env.KERA_GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+    process.env.KERA_GOOGLE_CLIENT_IDS,
+  ]) {
+    for (const entry of String(rawValue ?? "").split(",")) {
+      const normalized = entry.trim();
+      if (normalized) {
+        values.add(normalized);
+      }
+    }
+  }
+  return Array.from(values);
 }
 
 function oauthClient(): OAuth2Client {
   if (cachedClient) {
     return cachedClient;
   }
-  cachedClient = new OAuth2Client(googleClientId());
+  cachedClient = new OAuth2Client();
   return cachedClient;
 }
 
 export async function verifyGoogleIdentityToken(idToken: string): Promise<ControlPlaneIdentity> {
-  const clientId = googleClientId();
-  if (!clientId) {
+  const clientIds = googleClientIds();
+  if (clientIds.length === 0) {
     throw new Error("Google authentication is not configured.");
   }
   const ticket = await oauthClient().verifyIdToken({
     idToken,
-    audience: clientId,
+    audience: clientIds,
   });
   const payload = ticket.getPayload();
   const email = payload?.email?.trim().toLowerCase();

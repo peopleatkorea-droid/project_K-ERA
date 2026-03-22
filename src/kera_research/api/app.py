@@ -180,12 +180,26 @@ IMPORT_TEMPLATE_ROWS = [
 ]
 
 
+def _google_client_ids() -> list[str]:
+    values: list[str] = []
+    for raw in (
+        os.getenv("KERA_GOOGLE_DESKTOP_CLIENT_ID", ""),
+        os.getenv("NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID", ""),
+        os.getenv("KERA_GOOGLE_CLIENT_ID", ""),
+        os.getenv("GOOGLE_CLIENT_ID", ""),
+        os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", ""),
+        os.getenv("KERA_GOOGLE_CLIENT_IDS", ""),
+    ):
+        for entry in str(raw).split(","):
+            normalized = entry.strip()
+            if normalized and normalized not in values:
+                values.append(normalized)
+    return values
+
+
 def _google_client_id() -> str:
-    return (
-        os.getenv("KERA_GOOGLE_CLIENT_ID", "").strip()
-        or os.getenv("GOOGLE_CLIENT_ID", "").strip()
-        or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", "").strip()
-    )
+    client_ids = _google_client_ids()
+    return client_ids[0] if client_ids else ""
 
 
 def _local_login_enabled() -> bool:
@@ -222,8 +236,8 @@ def _decode_access_token(token: str) -> dict[str, Any]:
 
 
 def _verify_google_id_token(id_token: str) -> dict[str, str]:
-    client_id = _google_client_id()
-    if not client_id:
+    client_ids = _google_client_ids()
+    if not client_ids:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Google authentication is not configured on the server.",
@@ -233,13 +247,16 @@ def _verify_google_id_token(id_token: str) -> dict[str, str]:
         payload = google_id_token.verify_oauth2_token(
             id_token,
             google.auth.transport.requests.Request(),
-            client_id,
+            None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token verification failed.") from exc
 
     if str(payload.get("iss", "")).strip() not in GOOGLE_ISSUERS:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token issuer mismatch.")
+    audience = str(payload.get("aud", "")).strip()
+    if audience not in client_ids:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token audience mismatch.")
     if str(payload.get("email_verified", "")).lower() not in {"true", "1"}:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email is not verified.")
 
@@ -1492,7 +1509,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "service": "kera-api",
-            "google_auth_configured": bool(_google_client_id()),
+            "google_auth_configured": bool(_google_client_ids()),
         }
 
     @app.get("/api/control-plane/node/status")

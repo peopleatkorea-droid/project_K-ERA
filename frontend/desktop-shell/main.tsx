@@ -9,7 +9,7 @@ import { SectionHeader } from "../components/ui/section-header";
 import { DesktopLandingScreen } from "./desktop-landing";
 import { downloadManifest, fetchSiteSummary, type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
 import { prewarmPatientListPage } from "../lib/cases";
-import { clearDesktopSession, clearDesktopSessionCache, DESKTOP_TOKEN_KEY, desktopFetchApprovedSites, desktopFetchCurrentUser, desktopLocalDevLogin, desktopLocalLogin, loadDesktopSessionCache, persistDesktopSession, saveDesktopSessionCache } from "../lib/desktop-auth";
+import { clearDesktopSession, clearDesktopSessionCache, DESKTOP_TOKEN_KEY, desktopFetchApprovedSites, desktopFetchCurrentUser, desktopLocalDevLogin, desktopLocalLogin, exchangeDesktopGoogleLogin, loadDesktopSessionCache, persistDesktopSession, saveDesktopSessionCache, startDesktopGoogleLogin } from "../lib/desktop-auth";
 import {
   clearDesktopAppConfig,
   fetchDesktopAppConfig,
@@ -26,6 +26,7 @@ import {
   stopDesktopLocalRuntime,
   type DesktopDiagnosticsSnapshot,
 } from "../lib/desktop-diagnostics";
+import { authenticateWithDesktopGoogle, canUseDesktopGoogleAuth } from "../lib/desktop-google-auth";
 import { describeDesktopOnboarding, type DesktopOnboardingStepId } from "../lib/desktop-onboarding";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
 import { ThemeProvider, useTheme } from "../lib/theme";
@@ -93,6 +94,7 @@ function DesktopShellApp() {
     resetSettings: pick(locale, "Reset setup", "설정 초기화"),
     username: pick(locale, "Username", "아이디"),
     password: pick(locale, "Password", "비밀번호"),
+    googleSignIn: pick(locale, "Sign in with Google", "Google로 로그인"),
     signIn: pick(locale, "Sign in and open workspace", "로그인하고 워크스페이스 열기"),
     signingIn: pick(locale, "Signing in...", "로그인 중..."),
     devSignIn: pick(locale, "Dev admin login", "개발용 관리자 로그인"),
@@ -228,13 +230,14 @@ function DesktopShellApp() {
     loginSectionTitle: pick(locale, "2. Sign in", "2. 로그인"),
     loginSectionDescription: pick(
       locale,
-      "After setup is complete, sign in with your approved local workspace account.",
+      "Researchers sign in with Google. Admin and site admin accounts can still use passwords after setup is complete.",
       "설정이 끝나면 승인된 로컬 워크스페이스 계정으로 로그인하세요."
     ),
     setupStepOne: pick(locale, "Choose a data folder.", "데이터 폴더를 선택합니다."),
     setupStepTwo: pick(locale, "Enter the hospital connection details.", "병원 연결 정보를 입력합니다."),
     setupStepThree: pick(locale, "Start the app services and check that they are ready.", "앱 서비스를 시작하고 준비 상태를 확인합니다."),
   };
+  const desktopGoogleAuthEnabled = canUseDesktopGoogleAuth();
 
   function onboardingStepContent(stepId: DesktopOnboardingStepId) {
     switch (stepId) {
@@ -297,7 +300,21 @@ function DesktopShellApp() {
   }
 
   function describeError(nextError: unknown, fallback: string) {
-    return nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+    if (nextError instanceof Error) {
+      return translateApiError(locale, nextError.message);
+    }
+    if (typeof nextError === "string" && nextError.trim()) {
+      return translateApiError(locale, nextError.trim());
+    }
+    if (
+      nextError &&
+      typeof nextError === "object" &&
+      "message" in nextError &&
+      typeof (nextError as { message?: unknown }).message === "string"
+    ) {
+      return translateApiError(locale, String((nextError as { message: string }).message));
+    }
+    return fallback;
   }
 
   async function loadConfigAndRuntime({
@@ -357,10 +374,9 @@ function DesktopShellApp() {
     setBootstrapBusy(true);
     setError(null);
     try {
-      const [nextUser, nextSites] = await Promise.all([
-        desktopFetchCurrentUser(currentToken),
-        desktopFetchApprovedSites(currentToken),
-      ]);
+      const nextUser = await desktopFetchCurrentUser(currentToken);
+      const nextSites =
+        nextUser.approval_status === "approved" ? await desktopFetchApprovedSites(currentToken) : [];
       setUser(nextUser);
       setSites(nextSites);
       const preferredSiteId = nextSites[0]?.site_id ?? null;
@@ -399,10 +415,9 @@ function DesktopShellApp() {
         }
         // 백그라운드에서 Python 시작 + 조용히 세션 갱신 (실패해도 화면 유지)
         void loadConfigAndRuntime({ autoStart: true, diagnosticsMode: "runtime" }).then(() => {
-          void Promise.all([
-            desktopFetchCurrentUser(cached.token),
-            desktopFetchApprovedSites(cached.token),
-          ]).then(([nextUser, nextSites]) => {
+          void desktopFetchCurrentUser(cached.token).then(async (nextUser) => {
+            const nextSites =
+              nextUser.approval_status === "approved" ? await desktopFetchApprovedSites(cached.token) : [];
             setUser(nextUser);
             setSites(nextSites);
             void saveDesktopSessionCache({ token: cached.token, user: nextUser, sites: nextSites });
@@ -475,6 +490,24 @@ function DesktopShellApp() {
       persistDesktopSession(auth.access_token);
       setToken(auth.access_token);
     } catch (nextError) {
+      setError(describeError(nextError, copy.loginFailed));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleGoogleLogin() {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      const auth = await authenticateWithDesktopGoogle({
+        exchangeLogin: exchangeDesktopGoogleLogin,
+        startLogin: ({ redirect_uri }) => startDesktopGoogleLogin(redirect_uri),
+      });
+      persistDesktopSession(auth.access_token);
+      setToken(auth.access_token);
+    } catch (nextError) {
+      console.error("[kera-desktop-google-login]", nextError);
       setError(describeError(nextError, copy.loginFailed));
     } finally {
       setAuthBusy(false);
@@ -1102,6 +1135,11 @@ function DesktopShellApp() {
                 title={copy.loginSectionTitle}
                 description={copy.loginSectionDescription}
               />
+              {desktopGoogleAuthEnabled ? (
+                <Button type="button" variant="primary" disabled={authBusy || !backendHealthy} onClick={() => void handleGoogleLogin()}>
+                  {authBusy ? copy.signingIn : copy.googleSignIn}
+                </Button>
+              ) : null}
               <Field as="div" label={copy.username} htmlFor="desktop-username">
                 <input
                   id="desktop-username"
@@ -1118,7 +1156,7 @@ function DesktopShellApp() {
                 />
               </Field>
               <div className="flex flex-wrap gap-3">
-                <Button type="submit" variant="primary" disabled={authBusy || !backendHealthy}>
+                <Button type="submit" variant={desktopGoogleAuthEnabled ? "ghost" : "primary"} disabled={authBusy || !backendHealthy}>
                   {authBusy ? copy.signingIn : copy.signIn}
                 </Button>
                 {process.env.NODE_ENV !== "production" ? (

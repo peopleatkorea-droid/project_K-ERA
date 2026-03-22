@@ -14,7 +14,8 @@ import {
   type PublicInstitutionRecord,
   type SiteRecord,
 } from "../lib/api";
-import { googleLogin } from "../lib/auth";
+import { exchangeDesktopGoogleLogin, googleLogin, startDesktopGoogleLogin } from "../lib/auth";
+import { authenticateWithDesktopGoogle, canUseDesktopGoogleAuth } from "../lib/desktop-google-auth";
 import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
 import {
   findGoogleInteractive,
@@ -298,6 +299,12 @@ export function useHomeAuthBootstrap({
     if (hosts.length === 0) {
       return;
     }
+    if (canUseDesktopGoogleAuth()) {
+      hosts.forEach((host) => {
+        resetGoogleButtonHost(host);
+      });
+      return;
+    }
     const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
     if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleId) {
       hosts.forEach((host) => {
@@ -390,6 +397,33 @@ export function useHomeAuthBootstrap({
   }
 
   function handleGoogleLaunch() {
+    if (canUseDesktopGoogleAuth()) {
+      setError(null);
+      setGoogleLaunchPulse(true);
+      setAuthBusy(true);
+      void authenticateWithDesktopGoogle({
+        exchangeLogin: exchangeDesktopGoogleLogin,
+        startLogin: ({ redirect_uri }) => startDesktopGoogleLogin(redirect_uri),
+      })
+        .then((auth) => {
+          window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+          setToken(auth.access_token);
+          setUser(auth.user);
+          if (auth.user.approval_status === "approved") {
+            setMyRequests([]);
+            applyApprovedWorkspaceState(auth.user);
+          }
+        })
+        .catch((nextError) => {
+          console.error("[kera-desktop-google-login]", nextError);
+          setError(describeError(nextError, copy.googleLoginFailed));
+        })
+        .finally(() => {
+          setAuthBusy(false);
+          setGoogleLaunchPulse(false);
+        });
+      return;
+    }
     if (!GOOGLE_CLIENT_ID) {
       setError(copy.googleDisabled);
       return;

@@ -19,6 +19,7 @@ import {
 import { useApprovedWorkspaceState } from "./use-approved-workspace-state";
 import { useHomeAuthBootstrap } from "./use-home-auth-bootstrap";
 import { cn } from "../lib/cn";
+import { canUseDesktopGoogleAuth } from "../lib/desktop-google-auth";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
 import { useTheme } from "../lib/theme";
@@ -201,6 +202,7 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
 export default function HomePage() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
+  const [nativeDesktopGoogleAuth, setNativeDesktopGoogleAuth] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
   const [googleButtonSlotVersion, setGoogleButtonSlotVersion] = useState(0);
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
@@ -220,6 +222,11 @@ export default function HomePage() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("management");
   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
+
+  useEffect(() => {
+    setNativeDesktopGoogleAuth(canUseDesktopGoogleAuth());
+  }, []);
+
   const copy = {
     unableLoadInstitutions: pick(locale, "Unable to load institutions.", "湲곌? 紐⑸줉??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
     failedConnect: pick(locale, "Failed to connect.", "?곌껐???ㅽ뙣?덉뒿?덈떎."),
@@ -248,8 +255,8 @@ export default function HomePage() {
     googleLogin: pick(locale, "Institution Google login", "기관 Google 로그인"),
     googleDisabled: pick(
       locale,
-      "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` is set.",
-      "`NEXT_PUBLIC_GOOGLE_CLIENT_ID`媛 ?ㅼ젙?섍린 ?꾧퉴吏 Google 濡쒓렇?몄씠 鍮꾪솢?깊솕?⑸땲??"
+      "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` or `NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID` is set.",
+      "`NEXT_PUBLIC_GOOGLE_CLIENT_ID` 또는 `NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID`가 설정되기 전까지 Google 로그인이 비활성화됩니다."
     ),
     adminRecoveryOnly: pick(locale, "Password sign-in for admin and site admin", "admin 및 site admin 비밀번호 로그인"),
     username: pick(locale, "Username", "아이디"),
@@ -684,9 +691,25 @@ export default function HomePage() {
       href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard",
     },
   ];
+  function describeUnknownError(nextError: unknown, fallback: string): string {
+    if (nextError instanceof Error) {
+      return translateApiError(locale, nextError.message);
+    }
+    if (typeof nextError === "string" && nextError.trim()) {
+      return translateApiError(locale, nextError.trim());
+    }
+    if (
+      nextError &&
+      typeof nextError === "object" &&
+      "message" in nextError &&
+      typeof (nextError as { message?: unknown }).message === "string"
+    ) {
+      return translateApiError(locale, String((nextError as { message: string }).message));
+    }
+    return fallback;
+  }
   const describeError = useCallback(
-    (nextError: unknown, fallback: string) =>
-      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+    (nextError: unknown, fallback: string) => describeUnknownError(nextError, fallback),
     [locale],
   );
   const {
@@ -917,7 +940,7 @@ export default function HomePage() {
         locale={locale}
         authBusy={authBusy}
         error={errorMessage}
-        googleClientId={GOOGLE_CLIENT_ID}
+        googleClientId={nativeDesktopGoogleAuth ? "" : GOOGLE_CLIENT_ID}
         googleButtonRefs={googleButtonRefs}
         googleLaunchPulse={googleLaunchPulse}
         onGoogleReady={() => setGoogleReady(true)}

@@ -251,6 +251,31 @@ class RemoteControlPlaneClient:
         payload = self._request_json("GET", "/main/public/statistics")
         return dict(payload) if isinstance(payload, dict) else {}
 
+    def main_desktop_auth_start(
+        self,
+        *,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/auth/desktop/start",
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_desktop_auth_exchange(
+        self,
+        *,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/auth/desktop/exchange",
+            json_body=payload_json,
+            timeout_seconds=max(self.timeout_seconds, 60.0),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def main_sites(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
         payload = self._request_json("GET", "/main/sites", headers=self._user_headers(user_bearer_token))
         return [dict(item) for item in payload] if isinstance(payload, list) else []

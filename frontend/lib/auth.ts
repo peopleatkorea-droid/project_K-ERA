@@ -1,4 +1,5 @@
 import { persistMainAppToken, requestMainControlPlane } from "./main-control-plane-client";
+import type { DesktopGoogleAuthExchangePayload, DesktopGoogleAuthStartResponse } from "./desktop-google-auth";
 import type {
   AccessRequestRecord,
   AuthResponse,
@@ -28,6 +29,20 @@ export async function googleLogin(idToken: string): Promise<AuthResponse> {
   return requestMainControlPlane<AuthResponse>("/auth/google", {
     method: "POST",
     body: JSON.stringify({ id_token: idToken }),
+  });
+}
+
+export async function startDesktopGoogleLogin(redirectUri: string): Promise<DesktopGoogleAuthStartResponse> {
+  return requestMainControlPlane<DesktopGoogleAuthStartResponse>("/auth/desktop/start", {
+    method: "POST",
+    body: JSON.stringify({ redirect_uri: redirectUri }),
+  });
+}
+
+export async function exchangeDesktopGoogleLogin(payload: DesktopGoogleAuthExchangePayload): Promise<AuthResponse> {
+  return requestMainControlPlane<AuthResponse>("/auth/desktop/exchange", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

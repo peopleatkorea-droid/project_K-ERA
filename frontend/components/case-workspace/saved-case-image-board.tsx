@@ -40,6 +40,8 @@ import type {
 } from "./shared";
 
 const LIVE_LESION_MASK_TINT = [242, 164, 154] as const;
+const savedImageSupportChipClass =
+  "inline-flex min-h-7 items-center rounded-full border border-border/80 bg-surface px-2.5 py-1 text-[0.72rem] font-medium tracking-[0.01em] text-muted";
 
 type SavedCaseImageBoardProps = {
   locale: Locale;
@@ -79,6 +81,23 @@ function ScoreBar({ score }: { score: number | null | undefined }) {
     <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border/60">
       <div className="h-full rounded-full bg-brand/50 transition-all duration-300" style={{ width: `${pct}%` }} />
     </div>
+  );
+}
+
+function SavedImageSupportChip({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | null | undefined;
+}) {
+  if (value == null) {
+    return null;
+  }
+  return (
+    <span className={savedImageSupportChipClass}>
+      {label} {Number(value).toFixed(1)}
+    </span>
   );
 }
 
@@ -236,8 +255,8 @@ export function SavedCaseImageBoard({
             onClick={onToggleLiveLesionMask}
           >
             {liveLesionMaskEnabled
-              ? pick(locale, "Lesion mask on", "병변 mask 켜짐")
-              : pick(locale, "Lesion mask off", "병변 mask 꺼짐")}
+              ? pick(locale, "MedSAM mask on", "MedSAM mask 켜짐")
+              : pick(locale, "MedSAM mask off", "MedSAM mask 꺼짐")}
           </button>
           <select
             aria-label={pick(locale, "BiomedCLIP input", "BiomedCLIP 입력")}
@@ -254,6 +273,13 @@ export function SavedCaseImageBoard({
         </div>
         <span className={docSiteBadgeClass}>{panelBusy ? commonLoading : `${selectedCaseImages.length} ${pick(locale, "images", "이미지")}`}</span>
       </div>
+      <p className="m-0 text-sm leading-6 text-muted">
+        {pick(
+          locale,
+          "Drag a lesion box on the image. When you release, K-ERA saves the box and starts a live MedSAM mask preview.",
+          "이미지에서 병변 박스를 드래그한 뒤 손을 떼면, K-ERA가 박스를 저장하고 live MedSAM 마스크 미리보기를 시작합니다.",
+        )}
+      </p>
 
       {selectedCaseImages.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -274,7 +300,7 @@ export function SavedCaseImageBoard({
                     ? pick(locale, "Mask ready", "Mask 준비됨")
                     : draftBox
                       ? pick(locale, "Box ready", "Box 준비됨")
-                      : pick(locale, "Drag to segment", "드래그해서 분할");
+                      : pick(locale, "Draw box for MedSAM", "MedSAM용 박스 그리기");
 
             return (
               <Card as="section" variant="panel" key={`doc-${image.image_id}`} className="grid content-start gap-2.5 p-3">
@@ -357,16 +383,8 @@ export function SavedCaseImageBoard({
                 )}
 
                 <div className="flex flex-wrap gap-2 text-[0.78rem] text-muted">
-                  {image.quality_scores?.quality_score != null ? (
-                    <span className="rounded-[8px] border border-border bg-surface px-3 py-1.5">
-                      Q {Number(image.quality_scores.quality_score).toFixed(2)}
-                    </span>
-                  ) : null}
-                  {image.quality_scores?.view_score != null ? (
-                    <span className="rounded-[8px] border border-border bg-surface px-3 py-1.5">
-                      View {Number(image.quality_scores.view_score).toFixed(2)}
-                    </span>
-                  ) : null}
+                  <SavedImageSupportChip label="Q" value={image.quality_scores?.quality_score} />
+                  <SavedImageSupportChip label="View" value={image.quality_scores?.view_score} />
                   {livePreview?.status === "failed" && livePreview.error ? (
                     <span className="rounded-[8px] border border-danger/30 bg-danger/8 px-3 py-1.5 text-danger">
                       {livePreview.error}

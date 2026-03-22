@@ -9,11 +9,14 @@ import type { LocalePick } from "./shared";
 type MedsamArtifactBacklogPanelProps = {
   locale: Locale;
   pick: LocalePick;
+  medsamArtifactPanelEnabled: boolean;
   medsamArtifactStatus: MedsamArtifactStatusSummary | null;
   medsamArtifactStatusBusy: boolean;
   medsamArtifactBackfillBusy: boolean;
   medsamArtifactActiveStatus: MedsamArtifactStatusKey | null;
   canBackfillMedsamArtifacts: boolean;
+  onEnableMedsamArtifactPanel: () => void;
+  onDisableMedsamArtifactPanel: () => void;
   onRefreshMedsamArtifactStatus: () => void;
   onOpenMedsamArtifactBacklog: (status: MedsamArtifactStatusKey) => void;
   onCloseMedsamArtifactBacklog: () => void;
@@ -23,11 +26,14 @@ type MedsamArtifactBacklogPanelProps = {
 export function MedsamArtifactBacklogPanel({
   locale,
   pick,
+  medsamArtifactPanelEnabled,
   medsamArtifactStatus,
   medsamArtifactStatusBusy,
   medsamArtifactBackfillBusy,
   medsamArtifactActiveStatus,
   canBackfillMedsamArtifacts,
+  onEnableMedsamArtifactPanel,
+  onDisableMedsamArtifactPanel,
   onRefreshMedsamArtifactStatus,
   onOpenMedsamArtifactBacklog,
   onCloseMedsamArtifactBacklog,
@@ -92,8 +98,20 @@ export function MedsamArtifactBacklogPanel({
   const showBackfillButton =
     medsamArtifactBackfillBusy ||
     Boolean(hasLoadedStatus && medsamArtifactStatus && medsamArtifactStatus.statuses.medsam_backfill_ready.images > 0);
-  const summaryLabel = !hasLoadedStatus
-    ? pick(locale, "Refresh to check artifact backlog", "새로고침으로 아티팩트 백로그를 확인하세요")
+  const activationSummaryLabel = pick(
+    locale,
+    "Artifact backlog stays idle until you enable it.",
+    "활성화 전까지 아티팩트 백로그는 대기 상태로 유지됩니다."
+  );
+  const activationHintLabel = pick(
+    locale,
+    "No status fetches or polling run until you turn it on.",
+    "켜기 전에는 상태 조회나 폴링이 실행되지 않습니다."
+  );
+  const summaryLabel = !medsamArtifactPanelEnabled
+    ? activationSummaryLabel
+    : !hasLoadedStatus
+      ? pick(locale, "Refresh to check artifact backlog", "새로고침으로 아티팩트 백로그를 확인하세요")
     : hasBacklog
       ? pick(
           locale,
@@ -110,49 +128,80 @@ export function MedsamArtifactBacklogPanel({
             <div className="grid gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <strong className="text-sm font-semibold text-ink">{pick(locale, "Artifact backlog", "아티팩트 백로그")}</strong>
-                {activeJobStateLabel ? (
+                {medsamArtifactPanelEnabled && activeJobStateLabel ? (
                   <span aria-live="polite" className="text-xs font-medium text-brand">
                     {activeJobStateLabel}
                   </span>
                 ) : null}
-                {medsamArtifactStatus?.active_job ? <span className={docSiteBadgeClass}>{activeJobBadgeLabel}</span> : null}
+                {medsamArtifactPanelEnabled && medsamArtifactStatus?.active_job ? (
+                  <span className={docSiteBadgeClass}>{activeJobBadgeLabel}</span>
+                ) : null}
               </div>
               <p className="m-0 text-sm leading-6 text-muted">{summaryLabel}</p>
+              {!medsamArtifactPanelEnabled ? (
+                <p className="m-0 text-xs leading-5 text-muted">{activationHintLabel}</p>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="justify-center"
-                onClick={onRefreshMedsamArtifactStatus}
-                disabled={medsamArtifactStatusBusy}
-              >
-                {medsamArtifactStatusBusy ? pick(locale, "Refreshing", "새로고침 중") : pick(locale, "Refresh", "새로고침")}
-              </Button>
-              {showBackfillButton ? (
+              {!medsamArtifactPanelEnabled ? (
                 <Button
                   type="button"
                   size="sm"
                   variant="primary"
                   className="justify-center"
-                  onClick={onBackfillMedsamArtifacts}
-                  disabled={
-                    !canBackfillMedsamArtifacts ||
-                    medsamArtifactBackfillBusy ||
-                    !medsamArtifactStatus ||
-                    medsamArtifactStatus.statuses.medsam_backfill_ready.images <= 0
-                  }
+                  onClick={onEnableMedsamArtifactPanel}
+                  disabled={medsamArtifactStatusBusy}
                 >
-                  {medsamArtifactBackfillBusy ? pick(locale, "Queueing", "등록 중") : pick(locale, "Backfill", "백필")}
+                  {medsamArtifactStatusBusy
+                    ? pick(locale, "Activating", "활성화 중")
+                    : pick(locale, "Enable backlog", "백로그 활성화")}
                 </Button>
-              ) : null}
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="justify-center"
+                    onClick={onDisableMedsamArtifactPanel}
+                  >
+                    {pick(locale, "Disable", "비활성화")}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="justify-center"
+                    onClick={onRefreshMedsamArtifactStatus}
+                    disabled={medsamArtifactStatusBusy}
+                  >
+                    {medsamArtifactStatusBusy ? pick(locale, "Refreshing", "새로고침 중") : pick(locale, "Refresh", "새로고침")}
+                  </Button>
+                  {showBackfillButton ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="primary"
+                      className="justify-center"
+                      onClick={onBackfillMedsamArtifacts}
+                      disabled={
+                        !canBackfillMedsamArtifacts ||
+                        medsamArtifactBackfillBusy ||
+                        !medsamArtifactStatus ||
+                        medsamArtifactStatus.statuses.medsam_backfill_ready.images <= 0
+                      }
+                    >
+                      {medsamArtifactBackfillBusy ? pick(locale, "Queueing", "등록 중") : pick(locale, "Backfill", "백필")}
+                    </Button>
+                  ) : null}
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        {hasBacklog ? (
+        {medsamArtifactPanelEnabled && hasBacklog ? (
           <div className="grid content-start gap-3">
             {visibleCards.map((card) => {
               const active = medsamArtifactActiveStatus === card.key;

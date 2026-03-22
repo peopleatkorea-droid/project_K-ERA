@@ -834,6 +834,7 @@ export function CaseWorkspace({
   const [patientIdLookup, setPatientIdLookup] = useState<PatientIdLookupResponse | null>(null);
   const [patientIdLookupBusy, setPatientIdLookupBusy] = useState(false);
   const [patientIdLookupError, setPatientIdLookupError] = useState<string | null>(null);
+  const [medsamArtifactPanelEnabled, setMedsamArtifactPanelEnabled] = useState(false);
   const [medsamArtifactStatus, setMedsamArtifactStatus] = useState<MedsamArtifactStatusSummary | null>(null);
   const [medsamArtifactStatusBusy, setMedsamArtifactStatusBusy] = useState(false);
   const [medsamArtifactBackfillBusy, setMedsamArtifactBackfillBusy] = useState(false);
@@ -1088,13 +1089,24 @@ export function CaseWorkspace({
     setToast,
   });
   const onArtifactsChanged = useCallback(() => {
-    if (desktopFastMode || !selectedSiteId) {
+    if (!medsamArtifactPanelEnabled || !medsamArtifactStatus || !selectedSiteId) {
       return;
     }
     void fetchMedsamArtifactStatus(selectedSiteId, token, { mine: showOnlyMine })
       .then((nextStatus) => setMedsamArtifactStatus(nextStatus))
       .catch(() => {});
-  }, [desktopFastMode, selectedSiteId, token, showOnlyMine]);
+  }, [medsamArtifactPanelEnabled, medsamArtifactStatus, selectedSiteId, token, showOnlyMine]);
+  useEffect(() => {
+    setMedsamArtifactStatus(null);
+    setMedsamArtifactStatusBusy(false);
+    setMedsamArtifactBackfillBusy(false);
+    setMedsamArtifactActiveStatus(null);
+    setMedsamArtifactItems([]);
+    setMedsamArtifactItemsBusy(false);
+    setMedsamArtifactPage(1);
+    setMedsamArtifactTotalCount(0);
+    setMedsamArtifactTotalPages(1);
+  }, [selectedSiteId, showOnlyMine]);
   const {
     validationBusy,
     validationResult,
@@ -1641,6 +1653,29 @@ export function CaseWorkspace({
     setPatientListPage(nextPage);
   }
 
+  function resetMedsamArtifactBacklogState() {
+    setMedsamArtifactStatus(null);
+    setMedsamArtifactStatusBusy(false);
+    setMedsamArtifactActiveStatus(null);
+    setMedsamArtifactItems([]);
+    setMedsamArtifactItemsBusy(false);
+    setMedsamArtifactPage(1);
+    setMedsamArtifactTotalCount(0);
+    setMedsamArtifactTotalPages(1);
+  }
+
+  async function handleEnableMedsamArtifactPanel() {
+    resetMedsamArtifactBacklogState();
+    setMedsamArtifactPanelEnabled(true);
+    await handleRefreshMedsamArtifactStatus(true);
+  }
+
+  function handleDisableMedsamArtifactPanel() {
+    setMedsamArtifactPanelEnabled(false);
+    setMedsamArtifactBackfillBusy(false);
+    resetMedsamArtifactBacklogState();
+  }
+
   async function handleRefreshMedsamArtifactStatus(refresh = true) {
     if (!selectedSiteId) {
       return;
@@ -1663,6 +1698,9 @@ export function CaseWorkspace({
   }
 
   function handleOpenMedsamArtifactBacklog(status: MedsamArtifactStatusKey) {
+    if (!medsamArtifactPanelEnabled) {
+      return;
+    }
     if (medsamArtifactActiveStatus === status) {
       handleCloseMedsamArtifactBacklog();
       return;
@@ -2655,7 +2693,7 @@ export function CaseWorkspace({
   }, [selectedSiteId, token, showOnlyMine, patientListPage, normalizedPatientListSearch, railView, describeError, copy.unableLoadPatientList, setToast]);
 
   useEffect(() => {
-    if (!selectedSiteId || railView !== "patients" || !medsamArtifactActiveStatus) {
+    if (!selectedSiteId || railView !== "patients" || !medsamArtifactPanelEnabled || !medsamArtifactActiveStatus) {
       setMedsamArtifactItems([]);
       setMedsamArtifactTotalCount(0);
       setMedsamArtifactTotalPages(1);
@@ -2713,6 +2751,7 @@ export function CaseWorkspace({
     token,
     showOnlyMine,
     railView,
+    medsamArtifactPanelEnabled,
     medsamArtifactActiveStatus,
     medsamArtifactScope,
     medsamArtifactPage,
@@ -2723,7 +2762,7 @@ export function CaseWorkspace({
   ]);
 
   useEffect(() => {
-    if (!selectedSiteId || railView !== "patients") {
+    if (!medsamArtifactPanelEnabled || !selectedSiteId || railView !== "patients") {
       return;
     }
     const activeJob = medsamArtifactStatus?.active_job as { status?: string } | null;
@@ -2743,7 +2782,7 @@ export function CaseWorkspace({
         });
     }, 4000);
     return () => window.clearInterval(intervalId);
-  }, [selectedSiteId, token, showOnlyMine, railView, medsamArtifactStatus]);
+  }, [medsamArtifactPanelEnabled, selectedSiteId, token, showOnlyMine, railView, medsamArtifactStatus]);
 
   const safePage = Math.min(Math.max(1, patientListPage), patientListTotalPages);
 
@@ -2979,7 +3018,7 @@ export function CaseWorkspace({
             "한 케이스의 intake, 이미지, 제출 상태를 정리합니다."
           );
   const showSecondaryPanel = !desktopFastMode && railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
-  const showPatientListSidebar = railView === "patients" && !desktopFastMode;
+  const showPatientListSidebar = railView === "patients";
   const mainLayoutClass = showSecondaryPanel || showPatientListSidebar ? workspaceCenterClass : "grid gap-6";
 
   return (
@@ -3167,23 +3206,24 @@ export function CaseWorkspace({
                   onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
                 />
               </div>
-              {!desktopFastMode ? (
-                <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
-                  <MedsamArtifactBacklogPanel
-                    locale={locale}
-                    pick={pick}
-                    medsamArtifactStatus={medsamArtifactStatus}
-                    medsamArtifactStatusBusy={medsamArtifactStatusBusy}
-                    medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
-                    medsamArtifactActiveStatus={medsamArtifactActiveStatus}
-                    canBackfillMedsamArtifacts={canRunValidation}
-                    onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
-                    onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
-                    onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
-                    onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
-                  />
-                </aside>
-              ) : null}
+              <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
+                <MedsamArtifactBacklogPanel
+                  locale={locale}
+                  pick={pick}
+                  medsamArtifactPanelEnabled={medsamArtifactPanelEnabled}
+                  medsamArtifactStatus={medsamArtifactStatus}
+                  medsamArtifactStatusBusy={medsamArtifactStatusBusy}
+                  medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
+                  medsamArtifactActiveStatus={medsamArtifactActiveStatus}
+                  canBackfillMedsamArtifacts={canRunValidation}
+                  onEnableMedsamArtifactPanel={() => void handleEnableMedsamArtifactPanel()}
+                  onDisableMedsamArtifactPanel={handleDisableMedsamArtifactPanel}
+                  onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
+                  onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
+                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
+                  onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
+                />
+              </aside>
             </>
           ) : selectedCase ? (
           <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>

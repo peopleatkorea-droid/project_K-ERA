@@ -22,7 +22,8 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Window};
+use tauri_plugin_oauth::{cancel as cancel_oauth, start as start_oauth};
 use uuid::Uuid;
 
 static LOCAL_BACKEND_STATE: OnceLock<Mutex<LocalBackendRuntime>> = OnceLock::new();
@@ -35,6 +36,7 @@ static PREVIEW_WARM_STATE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SITE_JOB_UPDATE_EVENT: &str = "kera://site-job-update";
 const LIVE_LESION_PREVIEW_UPDATE_EVENT: &str = "kera://live-lesion-preview-update";
+const GOOGLE_OAUTH_REDIRECT_EVENT: &str = "kera://oauth-redirect";
 const DEFAULT_CASE_REFERENCE_SALT: &str = "kera-case-reference-v1";
 
 #[derive(Debug, Deserialize)]
@@ -992,6 +994,24 @@ struct PickDesktopDirectoryRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct GoogleOAuthServerResponse {
+    port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleOAuthCodeExchangeRequest {
+    client_id: String,
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GoogleOAuthCodeExchangeResponse {
+    id_token: String,
+}
+
+#[derive(Debug, Serialize)]
 struct DesktopAppConfigResponse {
     runtime: String,
     config_path: String,
@@ -1792,12 +1812,32 @@ fn resolved_env_values() -> HashMap<String, String> {
             sqlite_url_for_path(&storage_dir.join("control_plane_cache.db")),
         );
     }
+    let mut google_client_ids = Vec::new();
+    for key in [
+        "KERA_GOOGLE_DESKTOP_CLIENT_ID",
+        "NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID",
+        "KERA_GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_ID",
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+    ] {
+        if let Some(value) = configured_or_process_env_value(key, &values) {
+            if !value.is_empty() && !google_client_ids.contains(&value) {
+                google_client_ids.push(value);
+            }
+        }
+    }
     if configured_or_process_env_value("KERA_GOOGLE_CLIENT_ID", &values).is_none() {
-        if let Some(client_id) =
-            configured_or_process_env_value("NEXT_PUBLIC_GOOGLE_CLIENT_ID", &values)
-        {
+        if let Some(client_id) = google_client_ids.first().cloned() {
             values.insert("KERA_GOOGLE_CLIENT_ID".to_string(), client_id);
         }
+    }
+    if configured_or_process_env_value("KERA_GOOGLE_CLIENT_IDS", &values).is_none()
+        && !google_client_ids.is_empty()
+    {
+        values.insert(
+            "KERA_GOOGLE_CLIENT_IDS".to_string(),
+            google_client_ids.join(","),
+        );
     }
     values
 }
@@ -2071,6 +2111,41 @@ fn open_path_in_shell(path: &Path) -> Result<(), String> {
     }
     #[allow(unreachable_code)]
     Err("Opening desktop paths is not supported on this platform.".to_string())
+}
+
+fn open_external_url_in_browser(url: &str) -> Result<(), String> {
+    let parsed = HttpUrl::parse(url).map_err(|error| error.to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("Only http and https URLs are supported.".to_string()),
+    }
+
+    #[cfg(windows)]
+    {
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", parsed.as_str()])
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(parsed.as_str())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(parsed.as_str())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Opening external URLs is not supported on this platform.".to_string())
 }
 
 fn sqlite_database_path() -> Result<PathBuf, String> {
@@ -4512,6 +4587,109 @@ fn open_desktop_path(payload: OpenDesktopPathRequest) -> Result<(), String> {
         return Err("Path is required.".to_string());
     }
     open_path_in_shell(&PathBuf::from(normalized))
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let normalized = url.trim();
+    if normalized.is_empty() {
+        return Err("URL is required.".to_string());
+    }
+    open_external_url_in_browser(normalized)
+}
+
+#[tauri::command]
+fn start_google_oauth_server(window: Window) -> Result<GoogleOAuthServerResponse, String> {
+    let listener_window = window.clone();
+    let port = start_oauth(move |url| {
+        let _ = listener_window.emit(GOOGLE_OAUTH_REDIRECT_EVENT, url);
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(GoogleOAuthServerResponse { port })
+}
+
+#[tauri::command]
+fn cancel_google_oauth_server(port: u16) -> Result<(), String> {
+    cancel_oauth(port).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn exchange_google_oauth_code(
+    payload: GoogleOAuthCodeExchangeRequest,
+) -> Result<GoogleOAuthCodeExchangeResponse, String> {
+    let client_id = payload.client_id.trim().to_string();
+    let code = payload.code.trim().to_string();
+    let code_verifier = payload.code_verifier.trim().to_string();
+    let redirect_uri = payload.redirect_uri.trim().to_string();
+    if client_id.is_empty() || code.is_empty() || code_verifier.is_empty() || redirect_uri.is_empty()
+    {
+        return Err("client_id, code, code_verifier, and redirect_uri are required.".to_string());
+    }
+    let parsed_redirect = HttpUrl::parse(&redirect_uri).map_err(|error| error.to_string())?;
+    match parsed_redirect.scheme() {
+        "http" | "https" => {}
+        _ => return Err("redirect_uri must use http or https.".to_string()),
+    }
+    let client_secret = env_value("KERA_GOOGLE_DESKTOP_CLIENT_SECRET")
+        .or_else(|| env_value("GOOGLE_DESKTOP_CLIENT_SECRET"))
+        .or_else(|| env_value("KERA_GOOGLE_CLIENT_SECRET"))
+        .or_else(|| env_value("GOOGLE_CLIENT_SECRET"));
+
+    let mut form_params = vec![
+        ("client_id", client_id.clone()),
+        ("code", code.clone()),
+        ("code_verifier", code_verifier.clone()),
+        ("redirect_uri", redirect_uri.clone()),
+        ("grant_type", "authorization_code".to_string()),
+    ];
+    if let Some(secret) = client_secret.clone().filter(|value| !value.trim().is_empty()) {
+        form_params.push(("client_secret", secret));
+    }
+
+    let response = HttpClient::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&form_params)
+        .send()
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<JsonValue>(&body)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("error_description")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| payload.get("error").and_then(|value| value.as_str()))
+                    .map(|value| value.trim().to_string())
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| body.trim().to_string());
+        if detail.eq_ignore_ascii_case("client_secret is missing.") && client_secret.is_none() {
+            return Err(
+                "Google token exchange failed: set KERA_GOOGLE_DESKTOP_CLIENT_SECRET.".to_string(),
+            );
+        }
+        if detail.is_empty() {
+            return Err(format!(
+                "Google token exchange failed with status {}.",
+                status.as_u16()
+            ));
+        }
+        return Err(format!("Google token exchange failed: {}", detail));
+    }
+
+    let payload = serde_json::from_str::<JsonValue>(&body).map_err(|error| error.to_string())?;
+    let id_token = payload
+        .get("id_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if id_token.is_empty() {
+        return Err("Google login did not return an ID token.".to_string());
+    }
+    Ok(GoogleOAuthCodeExchangeResponse { id_token })
 }
 
 #[tauri::command]
@@ -7741,6 +7919,7 @@ fn read_image_blob(payload: ImageBlobRequest) -> Result<ImageBinaryResponse, Str
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_oauth::init())
         .setup(|app| {
             if let Ok(path) = app.path().resource_dir() {
                 store_desktop_resource_dir(path);
@@ -7765,6 +7944,10 @@ fn main() {
             save_desktop_app_config,
             clear_desktop_app_config,
             open_desktop_path,
+            open_external_url,
+            start_google_oauth_server,
+            cancel_google_oauth_server,
+            exchange_google_oauth_code,
             pick_desktop_directory,
             request_local_json,
             request_local_binary,

@@ -2,6 +2,7 @@
 
 import { request } from "./api-core";
 import { hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
+import type { DesktopGoogleAuthExchangePayload, DesktopGoogleAuthStartResponse } from "./desktop-google-auth";
 import type { AuthResponse, AuthUser, SiteRecord } from "./types";
 import { filterVisibleSites } from "./site-labels";
 
@@ -50,6 +51,27 @@ export async function desktopLocalLogin(username: string, password: string): Pro
 export async function desktopLocalDevLogin(): Promise<AuthResponse> {
   return request<AuthResponse>("/api/auth/dev-login", {
     method: "POST",
+  });
+}
+
+export async function desktopGoogleLogin(idToken: string): Promise<AuthResponse> {
+  return request<AuthResponse>("/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ id_token: idToken }),
+  });
+}
+
+export async function startDesktopGoogleLogin(redirectUri: string): Promise<DesktopGoogleAuthStartResponse> {
+  return request<DesktopGoogleAuthStartResponse>("/api/auth/desktop/start", {
+    method: "POST",
+    body: JSON.stringify({ redirect_uri: redirectUri }),
+  });
+}
+
+export async function exchangeDesktopGoogleLogin(payload: DesktopGoogleAuthExchangePayload): Promise<AuthResponse> {
+  return request<AuthResponse>("/api/auth/desktop/exchange", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
