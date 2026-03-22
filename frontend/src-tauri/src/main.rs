@@ -3208,7 +3208,31 @@ fn open_data_plane_db() -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    Connection::open(path).map_err(|error| error.to_string())
+    let conn = Connection::open(&path).map_err(|error| error.to_string())?;
+    // WAL mode: readers don't block writers, much faster for concurrent access
+    let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+    Ok(conn)
+}
+
+/// Called once at startup to ensure performance-critical indexes exist.
+fn ensure_data_plane_indexes() {
+    let Ok(conn) = open_data_plane_db() else {
+        return;
+    };
+    let _ = conn.execute_batch("
+        CREATE INDEX IF NOT EXISTS idx_images_site_visit
+          ON images(site_id, visit_id);
+        CREATE INDEX IF NOT EXISTS idx_images_site_image_id
+          ON images(site_id, image_id);
+        CREATE INDEX IF NOT EXISTS idx_images_site_representative
+          ON images(site_id, visit_id, is_representative);
+        CREATE INDEX IF NOT EXISTS idx_visits_site_patient
+          ON visits(site_id, patient_id);
+        CREATE INDEX IF NOT EXISTS idx_visits_site_visit_id
+          ON visits(site_id, visit_id);
+        CREATE INDEX IF NOT EXISTS idx_patients_site_patient
+          ON patients(site_id, patient_id);
+    ");
 }
 
 fn control_plane_sqlite_database_path() -> Result<PathBuf, String> {
@@ -6187,22 +6211,49 @@ fn ensure_image_previews(
         return Err("site_id is required.".to_string());
     }
     let max_side = payload.max_side.unwrap_or(640).clamp(96, 1024);
+    // Deduplicate preserving order
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let unique_ids: Vec<String> = payload
+        .image_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty() && seen_ids.insert(id.clone()))
+        .collect();
+    if unique_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let conn = open_data_plane_db()?;
-    let mut stmt = conn
-        .prepare("select image_path from images where site_id = ? and image_id = ?")
-        .map_err(|error| error.to_string())?;
-    let mut seen_ids = HashSet::new();
-    let mut records = Vec::new();
-    for raw_image_id in payload.image_ids {
-        let image_id = raw_image_id.trim().to_string();
-        if image_id.is_empty() || !seen_ids.insert(image_id.clone()) {
-            continue;
+
+    // Batch fetch all image paths in a single IN query instead of N round-trips
+    let placeholders = std::iter::repeat("?")
+        .take(unique_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let batch_sql = format!(
+        "select image_id, image_path from images where site_id = ? and image_id in ({placeholders})"
+    );
+    let mut batch_params: Vec<Value> = vec![Value::Text(site_id.clone())];
+    for id in &unique_ids {
+        batch_params.push(Value::Text(id.clone()));
+    }
+    let mut path_by_id: HashMap<String, String> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(&batch_sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(batch_params), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (image_id, image_path) = row.map_err(|e| e.to_string())?;
+            path_by_id.insert(image_id, image_path);
         }
-        let stored_image_path = stmt
-            .query_row(params![&site_id, &image_id], |row| row.get::<_, String>(0))
-            .optional()
-            .map_err(|error| error.to_string())?;
-        let Some(stored_image_path) = stored_image_path else {
+    }
+
+    let mut records = Vec::new();
+    for image_id in unique_ids {
+        let Some(stored_image_path) = path_by_id.get(&image_id) else {
             records.push(ImagePreviewPathRecord {
                 image_id,
                 preview_path: None,
@@ -6211,7 +6262,7 @@ fn ensure_image_previews(
             });
             continue;
         };
-        let source_path = resolve_site_runtime_path(&site_id, &stored_image_path)?;
+        let source_path = resolve_site_runtime_path(&site_id, stored_image_path)?;
         let fallback_path = existing_file_path_string(&source_path);
         let preview_path = preview_file_path(&site_id, &image_id, &source_path, max_side).ok();
         records.push(ImagePreviewPathRecord {
@@ -6592,8 +6643,8 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
     let safe_page = page.min(total_pages.max(1));
     let offset = (safe_page.saturating_sub(1) * page_size) as i64;
 
+    // params: p.site_id, v.site_id, [user_id?], [search×7?], images.site_id, page_size, offset
     let mut ids_params = vec![
-        Value::Text(site_id.clone()),
         Value::Text(site_id.clone()),
         Value::Text(site_id.clone()),
     ];
@@ -6601,30 +6652,35 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
         ids_params.push(Value::Text(created_by_user_id.clone()));
     }
     let search_clause = build_search_clause(&payload.search, &mut ids_params);
+    ids_params.push(Value::Text(site_id.clone())); // image_stats: site_id (after search params)
     ids_params.push(Value::Integer(page_size as i64));
     ids_params.push(Value::Integer(offset));
 
     let ids_sql = format!(
         "
-        with image_stats as (
-          select visit_id, count(image_id) as image_count, max(uploaded_at) as latest_image_uploaded_at
+        with filtered_visits as (
+          select v.visit_id, v.patient_id, v.created_at, v.visit_index
+          from patients p
+          join visits v on p.site_id = v.site_id and p.patient_id = v.patient_id
+          where p.site_id = ? and v.site_id = ?
+          {mine_clause}
+          {search_clause}
+        ),
+        image_stats as (
+          select visit_id, max(uploaded_at) as latest_image_uploaded_at
           from images
-          where site_id = ?
+          where site_id = ? and visit_id in (select visit_id from filtered_visits)
           group by visit_id
         )
         select
-          p.patient_id,
-          count(v.visit_id) as case_count,
+          fv.patient_id,
+          count(fv.visit_id) as case_count,
           max(coalesce(image_stats.latest_image_uploaded_at, '')) as max_upload,
-          max(coalesce(v.created_at, '')) as max_created,
-          max(coalesce(v.visit_index, 0)) as max_visit_index
-        from patients p
-        join visits v on p.site_id = v.site_id and p.patient_id = v.patient_id
-        left join image_stats on v.visit_id = image_stats.visit_id
-        where p.site_id = ? and v.site_id = ?
-        {mine_clause}
-        {search_clause}
-        group by p.patient_id
+          max(coalesce(fv.created_at, '')) as max_created,
+          max(coalesce(fv.visit_index, 0)) as max_visit_index
+        from filtered_visits fv
+        left join image_stats on fv.visit_id = image_stats.visit_id
+        group by fv.patient_id
         order by max_upload desc, max_created desc, max_visit_index desc
         limit ? offset ?
         "
@@ -6660,27 +6716,36 @@ fn list_patient_board(payload: ListPatientBoardRequest) -> Result<PatientListPag
         .take(patient_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
-    let mut case_params = vec![
-        Value::Text(site_id.clone()),
-        Value::Text(site_id.clone()),
-        Value::Text(site_id.clone()),
-    ];
+    // params: site_id + patient_ids (paged_visits), site_id (image_stats),
+    //         site_id (rep_images), site_id (main WHERE) + patient_ids
+    let mut case_params = vec![Value::Text(site_id.clone())];
+    for patient_id in &patient_ids {
+        case_params.push(Value::Text(patient_id.clone()));
+    }
+    case_params.push(Value::Text(site_id.clone()));
+    case_params.push(Value::Text(site_id.clone()));
+    case_params.push(Value::Text(site_id.clone()));
     for patient_id in &patient_ids {
         case_params.push(Value::Text(patient_id.clone()));
     }
 
     let case_sql = format!(
         "
-        with image_stats as (
+        with paged_patient_visits as (
+          select visit_id from visits
+          where site_id = ? and patient_id in ({placeholders})
+        ),
+        image_stats as (
           select visit_id, count(image_id) as image_count, max(uploaded_at) as latest_image_uploaded_at
           from images
-          where site_id = ?
+          where site_id = ? and visit_id in (select visit_id from paged_patient_visits)
           group by visit_id
         ),
         representative_images as (
           select visit_id, image_id as representative_image_id, view as representative_view, image_path as representative_image_path
           from images
           where site_id = ? and is_representative = 1
+            and visit_id in (select visit_id from paged_patient_visits)
         )
         select
           v.visit_id,
@@ -7634,6 +7699,8 @@ fn main() {
             if let Ok(path) = app.path().resource_dir() {
                 store_desktop_resource_dir(path);
             }
+            // Ensure SQLite performance indexes exist (no-op if already present)
+            ensure_data_plane_indexes();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
