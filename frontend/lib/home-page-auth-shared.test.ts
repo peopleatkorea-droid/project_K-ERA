@@ -4,6 +4,7 @@ import {
   cacheSiteRecords,
   mergeSiteRecordMetadata,
   mergeSitesWithCachedMetadata,
+  parseOperationsLaunchFromSearch,
   siteRecordNeedsLabelHydration,
   sitesNeedLabelHydration,
 } from "../app/home-page-auth-shared";
@@ -115,5 +116,23 @@ describe("home page site metadata helpers", () => {
         source_institution_name: "제주대학교병원",
       }),
     ).toBe(false);
+  });
+
+  it("defaults an operations launch without a section to management", () => {
+    window.history.replaceState(null, "", "/?workspace=operations");
+
+    expect(parseOperationsLaunchFromSearch()).toEqual({
+      mode: "operations",
+      section: "management",
+    });
+  });
+
+  it("accepts an explicit management operations section", () => {
+    window.history.replaceState(null, "", "/?workspace=operations&section=management");
+
+    expect(parseOperationsLaunchFromSearch()).toEqual({
+      mode: "operations",
+      section: "management",
+    });
   });
 });

@@ -17,6 +17,13 @@ import {
 import { googleLogin } from "../lib/auth";
 import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
 import {
+  findGoogleInteractive,
+  renderGoogleButtons,
+  resetGoogleButtonHost,
+  triggerRenderedGoogleButton,
+  type GoogleAccountsIdApi,
+} from "../lib/google-login-bridge";
+import {
   CLIENT_BOOTSTRAP_TIMING_LOGS,
   GOOGLE_CLIENT_ID,
   isAuthBootstrapError,
@@ -52,18 +59,6 @@ type UseHomeAuthBootstrapOptions = {
   googleReady: boolean;
   requestForm: RequestFormState;
   setRequestForm: Dispatch<SetStateAction<RequestFormState>>;
-};
-
-type GooglePromptMomentNotification = {
-  isDismissedMoment?: () => boolean;
-  isNotDisplayed?: () => boolean;
-  isSkippedMoment?: () => boolean;
-};
-
-type GoogleAccountsIdApi = {
-  initialize: (config: Record<string, unknown>) => void;
-  prompt?: (listener?: (notification: GooglePromptMomentNotification) => void) => void;
-  renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
 };
 
 export function useHomeAuthBootstrap({
@@ -124,18 +119,6 @@ export function useHomeAuthBootstrap({
 
   function getGoogleButtonHosts() {
     return googleButtonRefs.current.filter((host) => host?.isConnected);
-  }
-
-  function resetGoogleButtonHost(host: HTMLDivElement) {
-    host.dataset.googleReady = "false";
-    host.replaceChildren();
-  }
-
-  function findGoogleInteractive(host?: HTMLDivElement) {
-    if (!host) {
-      return null;
-    }
-    return host.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]');
   }
 
   function focusGoogleButtonHost(host?: HTMLDivElement) {
@@ -322,11 +305,11 @@ export function useHomeAuthBootstrap({
       });
       return;
     }
-    hosts.forEach((host) => {
-      resetGoogleButtonHost(host);
-    });
-    googleId.initialize({
-      client_id: GOOGLE_CLIENT_ID,
+    renderGoogleButtons({
+      clientId: GOOGLE_CLIENT_ID,
+      googleButtonWidth,
+      googleId,
+      hosts,
       callback: async (response: { credential?: string }) => {
         if (!response.credential) {
           setError(copy.googleNoCredential);
@@ -349,16 +332,6 @@ export function useHomeAuthBootstrap({
           setAuthBusy(false);
         }
       },
-    });
-    hosts.forEach((host) => {
-      googleId.renderButton(host, {
-        theme: "outline",
-        size: "large",
-        width: host.clientWidth || googleButtonWidth,
-        text: "signin_with",
-        shape: "pill",
-      });
-      host.dataset.googleReady = "true";
     });
   }, [
     applyApprovedWorkspaceState,
@@ -426,13 +399,13 @@ export function useHomeAuthBootstrap({
       return;
     }
     const [host] = getGoogleButtonHosts();
+    const interactive = findGoogleInteractive(host);
     const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
     setError(null);
     setGoogleLaunchPulse(true);
-    const interactive = findGoogleInteractive(host);
     if (host?.dataset.googleReady === "true" && interactive) {
       focusGoogleButtonHost(host);
-      interactive.click();
+      triggerRenderedGoogleButton(host);
     } else if (typeof googleId?.prompt === "function") {
       googleId.prompt((notification) => {
         if (

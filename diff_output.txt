@@ -1,0 +1,499 @@
+diff --git a/frontend/app/home-page-auth-shared.ts b/frontend/app/home-page-auth-shared.ts
+index a808161..1becc7a 100644
+--- a/frontend/app/home-page-auth-shared.ts
++++ b/frontend/app/home-page-auth-shared.ts
+@@ -6,7 +6,7 @@ const SITE_RECORD_CACHE_KEY = "kera_cached_site_records_v1";
+ export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+ export const CLIENT_BOOTSTRAP_TIMING_LOGS = process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
+ 
+-export type OperationsSection = "dashboard" | "training" | "cross_validation";
++export type OperationsSection = "management" | "dashboard" | "training" | "cross_validation";
+ export type WorkspaceMode = "canvas" | "operations";
+ 
+ export type LaunchTarget = { mode: WorkspaceMode; section: OperationsSection };
+@@ -39,10 +39,10 @@ export function parseOperationsLaunchFromSearch(): LaunchTarget | null {
+     return null;
+   }
+   const section = params.get("section");
+-  if (section === "training" || section === "cross_validation" || section === "dashboard") {
++  if (section === "management" || section === "training" || section === "cross_validation" || section === "dashboard") {
+     return { mode: "operations", section };
+   }
+-  return { mode: "operations", section: "dashboard" };
++  return { mode: "operations", section: "management" };
+ }
+ 
+ function readJwtPayload(token: string): MainAppTokenPayload | null {
+diff --git a/frontend/app/page.tsx b/frontend/app/page.tsx
+index 99500cc..50228e9 100644
+--- a/frontend/app/page.tsx
++++ b/frontend/app/page.tsx
+@@ -218,7 +218,7 @@ export default function HomePage() {
+   });
+   const [institutionQuery, setInstitutionQuery] = useState("");
+   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
+-  const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
++  const [operationsSection, setOperationsSection] = useState<OperationsSection>("management");
+   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
+   const copy = {
+     unableLoadInstitutions: pick(locale, "Unable to load institutions.", "湲곌? 紐⑸줉??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
+@@ -863,7 +863,7 @@ export default function HomePage() {
+   function handleWorkspaceLogout() {
+     handleLogout();
+     setWorkspaceMode("canvas");
+-    setOperationsSection("dashboard");
++    setOperationsSection("management");
+   }
+ 
+   const landingHospitalChips = [
+@@ -1143,12 +1143,12 @@ export default function HomePage() {
+         summary={summary}
+         canOpenOperations={canOpenOperations}
+         onSelectSite={setSelectedSiteId}
+-        onExportManifest={handleManifestDownload}
++        onExportManifest={handleManifestDownload}
+         onLogout={handleWorkspaceLogout}
+-        onOpenOperations={(section) => {
+-          setOperationsSection(section ?? "dashboard");
+-          setWorkspaceMode("operations");
+-        }}
++        onOpenOperations={(section) => {
++          setOperationsSection(section ?? "management");
++          setWorkspaceMode("operations");
++        }}
+         onSiteDataChanged={async (siteId) => {
+           await refreshSiteData(siteId, token);
+         }}
+diff --git a/frontend/app/use-home-auth-bootstrap.ts b/frontend/app/use-home-auth-bootstrap.ts
+index 3b201d8..3c97bc6 100644
+--- a/frontend/app/use-home-auth-bootstrap.ts
++++ b/frontend/app/use-home-auth-bootstrap.ts
+@@ -16,6 +16,13 @@ import {
+ } from "../lib/api";
+ import { googleLogin } from "../lib/auth";
+ import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
++import {
++  findGoogleInteractive,
++  renderGoogleButtons,
++  resetGoogleButtonHost,
++  triggerRenderedGoogleButton,
++  type GoogleAccountsIdApi,
++} from "../lib/google-login-bridge";
+ import {
+   CLIENT_BOOTSTRAP_TIMING_LOGS,
+   GOOGLE_CLIENT_ID,
+@@ -54,18 +61,6 @@ type UseHomeAuthBootstrapOptions = {
+   setRequestForm: Dispatch<SetStateAction<RequestFormState>>;
+ };
+ 
+-type GooglePromptMomentNotification = {
+-  isDismissedMoment?: () => boolean;
+-  isNotDisplayed?: () => boolean;
+-  isSkippedMoment?: () => boolean;
+-};
+-
+-type GoogleAccountsIdApi = {
+-  initialize: (config: Record<string, unknown>) => void;
+-  prompt?: (listener?: (notification: GooglePromptMomentNotification) => void) => void;
+-  renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
+-};
+-
+ export function useHomeAuthBootstrap({
+   copy,
+   deferredInstitutionQuery,
+@@ -126,18 +121,6 @@ export function useHomeAuthBootstrap({
+     return googleButtonRefs.current.filter((host) => host?.isConnected);
+   }
+ 
+-  function resetGoogleButtonHost(host: HTMLDivElement) {
+-    host.dataset.googleReady = "false";
+-    host.replaceChildren();
+-  }
+-
+-  function findGoogleInteractive(host?: HTMLDivElement) {
+-    if (!host) {
+-      return null;
+-    }
+-    return host.querySelector<HTMLElement>('div[role="button"], [role="button"], button, [tabindex="0"]');
+-  }
+-
+   function focusGoogleButtonHost(host?: HTMLDivElement) {
+     if (!host) {
+       return;
+@@ -322,11 +305,11 @@ export function useHomeAuthBootstrap({
+       });
+       return;
+     }
+-    hosts.forEach((host) => {
+-      resetGoogleButtonHost(host);
+-    });
+-    googleId.initialize({
+-      client_id: GOOGLE_CLIENT_ID,
++    renderGoogleButtons({
++      clientId: GOOGLE_CLIENT_ID,
++      googleButtonWidth,
++      googleId,
++      hosts,
+       callback: async (response: { credential?: string }) => {
+         if (!response.credential) {
+           setError(copy.googleNoCredential);
+@@ -350,16 +333,6 @@ export function useHomeAuthBootstrap({
+         }
+       },
+     });
+-    hosts.forEach((host) => {
+-      googleId.renderButton(host, {
+-        theme: "outline",
+-        size: "large",
+-        width: host.clientWidth || googleButtonWidth,
+-        text: "signin_with",
+-        shape: "pill",
+-      });
+-      host.dataset.googleReady = "true";
+-    });
+   }, [
+     applyApprovedWorkspaceState,
+     copy.googleLoginFailed,
+@@ -426,13 +399,13 @@ export function useHomeAuthBootstrap({
+       return;
+     }
+     const [host] = getGoogleButtonHosts();
++    const interactive = findGoogleInteractive(host);
+     const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
+     setError(null);
+     setGoogleLaunchPulse(true);
+-    const interactive = findGoogleInteractive(host);
+     if (host?.dataset.googleReady === "true" && interactive) {
+       focusGoogleButtonHost(host);
+-      interactive.click();
++      triggerRenderedGoogleButton(host);
+     } else if (typeof googleId?.prompt === "function") {
+       googleId.prompt((notification) => {
+         if (
+diff --git a/frontend/components/case-workspace.tsx b/frontend/components/case-workspace.tsx
+index 31d82f8..24f49cc 100644
+--- a/frontend/components/case-workspace.tsx
++++ b/frontend/components/case-workspace.tsx
+@@ -350,7 +350,7 @@ type CaseWorkspaceProps = {
+   onSelectSite: (siteId: string) => void;
+   onExportManifest: () => void;
+   onLogout: () => void;
+-  onOpenOperations: (section?: "dashboard" | "training" | "cross_validation") => void;
++  onOpenOperations: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
+   onSiteDataChanged: (siteId: string) => Promise<void>;
+   onToggleTheme: () => void;
+ };
+diff --git a/frontend/components/home-page.integration.test.tsx b/frontend/components/home-page.integration.test.tsx
+index 6b999a5..20c4135 100644
+--- a/frontend/components/home-page.integration.test.tsx
++++ b/frontend/components/home-page.integration.test.tsx
+@@ -25,11 +25,27 @@ vi.mock("./public/landing-v4", () => ({
+ }));
+ 
+ vi.mock("./case-workspace", () => ({
+-  CaseWorkspace: () => <div>Workspace</div>,
++  CaseWorkspace: ({
++    onOpenOperations,
++  }: {
++    onOpenOperations?: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
++  }) => (
++    <div>
++      <div>Workspace</div>
++      <button type="button" onClick={() => onOpenOperations?.()}>
++        Open Operations
++      </button>
++    </div>
++  ),
+ }));
+ 
+ vi.mock("./admin-workspace", () => ({
+-  AdminWorkspace: () => <div>Admin Workspace</div>,
++  AdminWorkspace: ({ initialSection }: { initialSection?: string }) => (
++    <div>
++      <div>Admin Workspace</div>
++      <div data-testid="admin-initial-section">{initialSection ?? ""}</div>
++    </div>
++  ),
+ }));
+ 
+ vi.mock("./ui/button", () => ({
+@@ -435,9 +451,51 @@ describe("HomePage history guard", () => {
+     render(<HomePage />);
+ 
+     expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
++    expect(screen.getByTestId("admin-initial-section")).toHaveTextContent("dashboard");
+     expect(screen.queryByText("Landing")).not.toBeInTheDocument();
+   });
+ 
++  it("defaults the admin workspace to management when operations is opened without a section", async () => {
++    const adminToken = makeStoredToken({
++      sub: "user_admin",
++      username: "admin",
++      full_name: "Admin",
++      role: "admin",
++      site_ids: ["SITE_A"],
++      approval_status: "approved",
++    });
++    window.localStorage.setItem("kera_web_token", adminToken);
++    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
++      auth_state: "approved",
++      access_token: adminToken,
++      token_type: "bearer",
++      user: {
++        user_id: "user_admin",
++        username: "admin",
++        full_name: "Admin",
++        role: "admin",
++        site_ids: ["SITE_A"],
++        approval_status: "approved",
++      },
++      sites: [
++        {
++          site_id: "SITE_A",
++          display_name: "Site A",
++          hospital_name: "Hospital A",
++        },
++      ],
++      my_access_requests: [],
++    });
++
++    render(<HomePage />);
++
++    expect(await screen.findByText("Workspace")).toBeInTheDocument();
++    fireEvent.click(screen.getByRole("button", { name: "Open Operations" }));
++
++    expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
++    expect(screen.getByTestId("admin-initial-section")).toHaveTextContent("management");
++  });
++
+   it("shows the case workspace before the site list bootstrap finishes for approved users", async () => {
+     const approvedToken = makeStoredToken();
+     window.localStorage.setItem("kera_web_token", approvedToken);
+diff --git a/frontend/components/public/google-login-overlay.test.tsx b/frontend/components/public/google-login-overlay.test.tsx
+deleted file mode 100644
+index e966735..0000000
+--- a/frontend/components/public/google-login-overlay.test.tsx
++++ /dev/null
+@@ -1,187 +0,0 @@
+-import React, { useRef, useState } from "react";
+-
+-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+-import { beforeEach, describe, expect, it, vi } from "vitest";
+-
+-const apiMocks = vi.hoisted(() => ({
+-  fetchMainBootstrap: vi.fn(),
+-  fetchMyAccessRequests: vi.fn(),
+-  fetchPatientListPage: vi.fn(),
+-  fetchPublicSites: vi.fn(),
+-  searchPublicInstitutions: vi.fn(),
+-  submitAccessRequest: vi.fn(),
+-}));
+-
+-const authMocks = vi.hoisted(() => ({
+-  googleLogin: vi.fn(),
+-}));
+-
+-const desktopMocks = vi.hoisted(() => ({
+-  canUseDesktopTransport: vi.fn(() => false),
+-  prefetchDesktopVisitImages: vi.fn(),
+-}));
+-
+-const approvedWorkspaceState = vi.hoisted(() => ({
+-  applyApprovedWorkspaceState: vi.fn(),
+-  clearApprovedWorkspaceState: vi.fn(),
+-  refreshApprovedSites: vi.fn(),
+-  refreshSiteData: vi.fn(),
+-  setSelectedSiteId: vi.fn(),
+-  setSummary: vi.fn(),
+-}));
+-
+-vi.mock("../../lib/api", async () => {
+-  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+-  return {
+-    ...actual,
+-    ...apiMocks,
+-  };
+-});
+-
+-vi.mock("../../lib/auth", () => ({
+-  googleLogin: authMocks.googleLogin,
+-}));
+-
+-vi.mock("../../lib/desktop-transport", () => desktopMocks);
+-
+-vi.mock("../../app/home-page-auth-shared", async () => {
+-  const actual = await vi.importActual<typeof import("../../app/home-page-auth-shared")>(
+-    "../../app/home-page-auth-shared",
+-  );
+-  return {
+-    ...actual,
+-    GOOGLE_CLIENT_ID: "test-google-client-id",
+-  };
+-});
+-
+-vi.mock("../../app/use-approved-workspace-state", () => ({
+-  useApprovedWorkspaceState: () => ({
+-    ...approvedWorkspaceState,
+-    selectedSiteId: null,
+-    siteError: null,
+-    sites: [],
+-    summary: null,
+-  }),
+-}));
+-
+-import { useHomeAuthBootstrap } from "../../app/use-home-auth-bootstrap";
+-
+-function GoogleLoginHarness({ googleReady = true }: { googleReady?: boolean }) {
+-  const googleButtonRefs = useRef<HTMLDivElement[]>([]);
+-  const [requestForm, setRequestForm] = useState({
+-    requested_site_id: "",
+-    requested_site_label: "",
+-    requested_role: "researcher",
+-    message: "",
+-  });
+-  const { handleGoogleLaunch } = useHomeAuthBootstrap({
+-    copy: {
+-      failedConnect: "failedConnect",
+-      failedLoadSiteData: "failedLoadSiteData",
+-      googleDisabled: "googleDisabled",
+-      googleLoginFailed: "googleLoginFailed",
+-      googleNoCredential: "googleNoCredential",
+-      googlePreparing: "googlePreparing",
+-      requestSubmissionFailed: "requestSubmissionFailed",
+-      unableLoadInstitutions: "unableLoadInstitutions",
+-    },
+-    deferredInstitutionQuery: "",
+-    describeError: (_error, fallback) => fallback,
+-    googleButtonRefs,
+-    googleButtonSlotVersion: 1,
+-    googleButtonWidth: 320,
+-    googleReady,
+-    requestForm,
+-    setRequestForm,
+-  });
+-
+-  return (
+-    <>
+-      <button type="button" onClick={handleGoogleLaunch}>
+-        Launch Google
+-      </button>
+-      <div
+-        data-testid="google-host"
+-        ref={(node) => {
+-          googleButtonRefs.current = node ? [node] : [];
+-        }}
+-      />
+-    </>
+-  );
+-}
+-
+-describe("landing google login overlay", () => {
+-  beforeEach(() => {
+-    vi.clearAllMocks();
+-    window.localStorage.clear();
+-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+-      configurable: true,
+-      value: vi.fn(),
+-    });
+-    window.google = undefined;
+-  });
+-
+-  it("marks the google slot ready after GIS renders a button", async () => {
+-    const initialize = vi.fn();
+-    const renderButton = vi.fn((host: HTMLElement) => {
+-      const button = document.createElement("div");
+-      button.setAttribute("role", "button");
+-      host.appendChild(button);
+-    });
+-
+-    window.google = {
+-      accounts: {
+-        id: {
+-          initialize,
+-          renderButton,
+-          prompt: vi.fn(),
+-        },
+-      },
+-    } as unknown as Window["google"];
+-
+-    render(<GoogleLoginHarness />);
+-
+-    await waitFor(() => {
+-      expect(renderButton).toHaveBeenCalledTimes(1);
+-    });
+-
+-    expect(initialize).toHaveBeenCalledWith(
+-      expect.objectContaining({
+-        client_id: "test-google-client-id",
+-      }),
+-    );
+-    expect(screen.getByTestId("google-host")).toHaveAttribute("data-google-ready", "true");
+-  });
+-
+-  it("routes fake CTA clicks to the rendered GIS button once the slot is ready", async () => {
+-    const interactiveClick = vi.fn();
+-    const prompt = vi.fn();
+-    const renderButton = vi.fn((host: HTMLElement) => {
+-      const button = document.createElement("button");
+-      button.type = "button";
+-      button.addEventListener("click", interactiveClick);
+-      host.appendChild(button);
+-    });
+-
+-    window.google = {
+-      accounts: {
+-        id: {
+-          initialize: vi.fn(),
+-          renderButton,
+-          prompt,
+-        },
+-      },
+-    } as unknown as Window["google"];
+-
+-    render(<GoogleLoginHarness />);
+-
+-    await waitFor(() => {
+-      expect(screen.getByTestId("google-host")).toHaveAttribute("data-google-ready", "true");
+-    });
+-
+-    fireEvent.click(screen.getByRole("button", { name: "Launch Google" }));
+-
+-    expect(interactiveClick).toHaveBeenCalledTimes(1);
+-    expect(prompt).not.toHaveBeenCalled();
+-  });
+-});
+diff --git a/frontend/lib/home-page-auth-shared.test.ts b/frontend/lib/home-page-auth-shared.test.ts
+index 8d587f2..b571d39 100644
+--- a/frontend/lib/home-page-auth-shared.test.ts
++++ b/frontend/lib/home-page-auth-shared.test.ts
+@@ -4,6 +4,7 @@ import {
+   cacheSiteRecords,
+   mergeSiteRecordMetadata,
+   mergeSitesWithCachedMetadata,
++  parseOperationsLaunchFromSearch,
+   siteRecordNeedsLabelHydration,
+   sitesNeedLabelHydration,
+ } from "../app/home-page-auth-shared";
+@@ -116,4 +117,22 @@ describe("home page site metadata helpers", () => {
+       }),
+     ).toBe(false);
+   });
++
++  it("defaults an operations launch without a section to management", () => {
++    window.history.replaceState(null, "", "/?workspace=operations");
++
++    expect(parseOperationsLaunchFromSearch()).toEqual({
++      mode: "operations",
++      section: "management",
++    });
++  });
++
++  it("accepts an explicit management operations section", () => {
++    window.history.replaceState(null, "", "/?workspace=operations&section=management");
++
++    expect(parseOperationsLaunchFromSearch()).toEqual({
++      mode: "operations",
++      section: "management",
++    });
++  });
+ });

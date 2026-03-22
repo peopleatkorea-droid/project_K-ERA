@@ -48,6 +48,7 @@ type SavedCaseImageBoardProps = {
   panelBusy: boolean;
   selectedCaseImageCountHint: number;
   selectedCaseImages: SavedImagePreview[];
+  liveLesionMaskEnabled: boolean;
   semanticPromptInputMode: SemanticPromptInputMode;
   semanticPromptInputOptions: SemanticPromptInputOption[];
   semanticPromptBusyImageId: string | null;
@@ -62,6 +63,7 @@ type SavedCaseImageBoardProps = {
   pick: LocalePick;
   translateOption: TranslateOption;
   formatSemanticScore: (value: number | null | undefined, emptyLabel: string) => string;
+  onToggleLiveLesionMask: () => void;
   onSemanticPromptInputModeChange: (mode: SemanticPromptInputMode) => void;
   onSetSavedRepresentative: (imageId: string) => void | Promise<void>;
   onReviewSemanticPrompts: (imageId: string) => void | Promise<void>;
@@ -197,6 +199,7 @@ export function SavedCaseImageBoard({
   panelBusy,
   selectedCaseImageCountHint,
   selectedCaseImages,
+  liveLesionMaskEnabled,
   semanticPromptInputMode,
   semanticPromptInputOptions,
   semanticPromptBusyImageId,
@@ -211,6 +214,7 @@ export function SavedCaseImageBoard({
   pick,
   translateOption,
   formatSemanticScore,
+  onToggleLiveLesionMask,
   onSemanticPromptInputModeChange,
   onSetSavedRepresentative,
   onReviewSemanticPrompts,
@@ -225,6 +229,16 @@ export function SavedCaseImageBoard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className={docSectionLabelClass}>{pick(locale, "Saved images", "저장 이미지")}</div>
+          <button
+            type="button"
+            className={togglePillClass(liveLesionMaskEnabled, true)}
+            aria-pressed={liveLesionMaskEnabled}
+            onClick={onToggleLiveLesionMask}
+          >
+            {liveLesionMaskEnabled
+              ? pick(locale, "Lesion mask on", "병변 mask 켜짐")
+              : pick(locale, "Lesion mask off", "병변 mask 꺼짐")}
+          </button>
           <select
             aria-label={pick(locale, "BiomedCLIP input", "BiomedCLIP 입력")}
             className="min-h-8 rounded-[10px] border border-border bg-white/60 px-3 text-[0.82rem] text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
@@ -247,7 +261,9 @@ export function SavedCaseImageBoard({
             const promptReviewOpen = semanticPromptOpenImageIds.includes(image.image_id);
             const livePreview = liveLesionPreviews[image.image_id];
             const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
-            const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
+            const maskReady = Boolean(
+              liveLesionMaskEnabled && livePreview?.status === "done" && livePreview?.lesion_mask_url
+            );
             const prioritizeImage = index < 2;
             const statusCopy =
               lesionBoxBusyImageId === image.image_id

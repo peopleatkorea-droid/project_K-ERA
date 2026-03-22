@@ -350,7 +350,7 @@ type CaseWorkspaceProps = {
   onSelectSite: (siteId: string) => void;
   onExportManifest: () => void;
   onLogout: () => void;
-  onOpenOperations: (section?: "dashboard" | "training" | "cross_validation") => void;
+  onOpenOperations: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onToggleTheme: () => void;
 };
@@ -1113,6 +1113,8 @@ export function CaseWorkspace({
     semanticPromptOpenImageIds,
     semanticPromptInputMode,
     setSemanticPromptInputMode,
+    liveLesionCropEnabled,
+    setLiveLesionCropEnabled,
     liveLesionPreviews,
     lesionPromptDrafts,
     lesionPromptSaved,
@@ -3217,6 +3219,7 @@ export function CaseWorkspace({
               panelBusy={panelBusy}
               selectedCaseImageCountHint={selectedCase.image_count}
               selectedCaseImages={selectedCaseImages}
+              liveLesionMaskEnabled={liveLesionCropEnabled}
               semanticPromptInputMode={semanticPromptInputMode}
               semanticPromptInputOptions={semanticPromptInputOptions}
               semanticPromptBusyImageId={semanticPromptBusyImageId}
@@ -3231,6 +3234,7 @@ export function CaseWorkspace({
               pick={pick}
               translateOption={translateOption}
               formatSemanticScore={formatSemanticScore}
+              onToggleLiveLesionMask={() => setLiveLesionCropEnabled((current) => !current)}
               onSemanticPromptInputModeChange={setSemanticPromptInputMode}
               onSetSavedRepresentative={handleSetSavedRepresentative}
               onReviewSemanticPrompts={handleReviewSemanticPrompts}

@@ -25,11 +25,27 @@ vi.mock("./public/landing-v4", () => ({
 }));
 
 vi.mock("./case-workspace", () => ({
-  CaseWorkspace: () => <div>Workspace</div>,
+  CaseWorkspace: ({
+    onOpenOperations,
+  }: {
+    onOpenOperations?: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
+  }) => (
+    <div>
+      <div>Workspace</div>
+      <button type="button" onClick={() => onOpenOperations?.()}>
+        Open Operations
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("./admin-workspace", () => ({
-  AdminWorkspace: () => <div>Admin Workspace</div>,
+  AdminWorkspace: ({ initialSection }: { initialSection?: string }) => (
+    <div>
+      <div>Admin Workspace</div>
+      <div data-testid="admin-initial-section">{initialSection ?? ""}</div>
+    </div>
+  ),
 }));
 
 vi.mock("./ui/button", () => ({
@@ -435,7 +451,49 @@ describe("HomePage history guard", () => {
     render(<HomePage />);
 
     expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("admin-initial-section")).toHaveTextContent("dashboard");
     expect(screen.queryByText("Landing")).not.toBeInTheDocument();
+  });
+
+  it("defaults the admin workspace to management when operations is opened without a section", async () => {
+    const adminToken = makeStoredToken({
+      sub: "user_admin",
+      username: "admin",
+      full_name: "Admin",
+      role: "admin",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    });
+    window.localStorage.setItem("kera_web_token", adminToken);
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "approved",
+      access_token: adminToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_admin",
+        username: "admin",
+        full_name: "Admin",
+        role: "admin",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+      },
+      sites: [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ],
+      my_access_requests: [],
+    });
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Operations" }));
+
+    expect(await screen.findByText("Admin Workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("admin-initial-section")).toHaveTextContent("management");
   });
 
   it("shows the case workspace before the site list bootstrap finishes for approved users", async () => {

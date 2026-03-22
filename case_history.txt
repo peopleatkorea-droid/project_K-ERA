@@ -1,0 +1,2561 @@
+commit 900cc28f734e417efbb423d17b1e5930f278d7e8
+Author: peopleatkorea-droid <people.at.korea@gmail.com>
+Date:   Sun Mar 22 18:25:47 2026 +0900
+
+    0.62 Tauri optimization
+
+diff --git a/frontend/components/case-workspace/case-workspace-left-rail.tsx b/frontend/components/case-workspace/case-workspace-left-rail.tsx
+index 7d6fcea..b33d84c 100644
+--- a/frontend/components/case-workspace/case-workspace-left-rail.tsx
++++ b/frontend/components/case-workspace/case-workspace-left-rail.tsx
+@@ -42,6 +42,7 @@ type CaseWorkspaceLeftRailProps = {
+   visibleSites: SiteRecord[];
+   selectedSiteId: string | null;
+   summary: SiteSummary | null;
++  fastMode?: boolean;
+   newCaseModeActive: boolean;
+   listModeActive: boolean;
+   isAuthoringCanvas: boolean;
+@@ -52,6 +53,7 @@ type CaseWorkspaceLeftRailProps = {
+   draftStatusLabel: string;
+   latestSiteValidation: SiteValidationRunRecord | null;
+   siteValidationRuns: SiteValidationRunRecord[];
++  deferValidationHistory: boolean;
+   siteValidationBusy: boolean;
+   canRunValidation: boolean;
+   commonNotAvailable: string;
+@@ -67,6 +69,7 @@ export function CaseWorkspaceLeftRail({
+   visibleSites,
+   selectedSiteId,
+   summary,
++  fastMode = false,
+   newCaseModeActive,
+   listModeActive,
+   isAuthoringCanvas,
+@@ -77,6 +80,7 @@ export function CaseWorkspaceLeftRail({
+   draftStatusLabel,
+   latestSiteValidation,
+   siteValidationRuns,
++  deferValidationHistory,
+   siteValidationBusy,
+   canRunValidation,
+   commonNotAvailable,
+@@ -86,6 +90,10 @@ export function CaseWorkspaceLeftRail({
+   onSelectSite,
+   onRunSiteValidation,
+ }: CaseWorkspaceLeftRailProps) {
++  const validationHistoryDeferred = deferValidationHistory && siteValidationRuns.length === 0;
++  const hasStoredSiteValidations = (summary?.n_validation_runs ?? 0) > 0;
++  const shouldShowDeferredValidationMessage = validationHistoryDeferred && (!summary || hasStoredSiteValidations);
++
+   return (
+     <aside className={workspaceRailClass}>
+       <div className={workspaceBrandClass}>
+@@ -136,7 +144,7 @@ export function CaseWorkspaceLeftRail({
+             </button>
+           ))}
+         </div>
+-        {selectedSiteId && summary ? (
++        {!fastMode && selectedSiteId && summary ? (
+           <MetricGrid className={railMetricGridClass} columns={2}>
+             <div className={railMetricCardClass}>
+               <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
+@@ -190,7 +198,7 @@ export function CaseWorkspaceLeftRail({
+             </div>
+           </div>
+         </Card>
+-      ) : (
++      ) : fastMode ? null : (
+         <Card as="section" variant="nested" className={railSectionClass}>
+           <div className={`${railSectionHeadClass} ${validationRailHeadClass}`}>
+             <div className="grid gap-1">
+@@ -233,22 +241,32 @@ export function CaseWorkspaceLeftRail({
+                 <span className={railMetricLabelClass}>{pick(locale, "latest model", "최신 모델")}</span>
+               </div>
+             </div>
++          ) : shouldShowDeferredValidationMessage ? (
++            <div className={emptySurfaceClass}>
++              {pick(
++                locale,
++                "Recent hospital validation history loads only when you open a case.",
++                "최근 병원 검증 히스토리는 케이스를 열 때만 불러옵니다."
++              )}
++            </div>
+           ) : (
+             <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "아직 병원 단위 검증이 실행되지 않았습니다.")}</div>
+           )}
+-          <div className={railActivityListClass}>
+-            {siteValidationRuns.slice(0, 3).map((item) => (
+-              <div key={item.validation_id} className={railActivityItemClass}>
+-                <strong>{item.model_version}</strong>
+-                <span>{formatDateTime(item.run_date)}</span>
+-                <span>
+-                  {typeof item.accuracy === "number"
+-                    ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}`
+-                    : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}
+-                </span>
+-              </div>
+-            ))}
+-          </div>
++          {!validationHistoryDeferred ? (
++            <div className={railActivityListClass}>
++              {siteValidationRuns.slice(0, 3).map((item) => (
++                <div key={item.validation_id} className={railActivityItemClass}>
++                  <strong>{item.model_version}</strong>
++                  <span>{formatDateTime(item.run_date)}</span>
++                  <span>
++                    {typeof item.accuracy === "number"
++                      ? `${pick(locale, "acc", "정확도")} ${item.accuracy.toFixed(3)}`
++                      : `${item.n_cases ?? 0} ${pick(locale, "cases", "케이스")}`}
++                  </span>
++                </div>
++              ))}
++            </div>
++          ) : null}
+           {!canRunValidation ? (
+             <p className={railCopyClass}>
+               {pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "뷰어 계정은 지표만 확인할 수 있고 병원 검증은 실행할 수 없습니다.")}
+diff --git a/frontend/components/case-workspace/mask-overlay-renderer.ts b/frontend/components/case-workspace/mask-overlay-renderer.ts
+index 700a40d..9986200 100644
+--- a/frontend/components/case-workspace/mask-overlay-renderer.ts
++++ b/frontend/components/case-workspace/mask-overlay-renderer.ts
+@@ -74,7 +74,15 @@ async function renderMaskOverlay(
+     const overlayData = finalContext.createImageData(width, height);
+     overlayData.data.set(sourceData.data);
+ 
++    // Yield to the main thread periodically to prevent the UI from freezing
++    const yieldToMain = () => new Promise((resolve) => setTimeout(resolve, 0));
++    const CHUNK_SIZE = width * 50; // Process 50 rows of pixels before yielding
++
+     for (let index = 0; index < maskData.data.length; index += 4) {
++      if (index > 0 && index % (CHUNK_SIZE * 4) === 0) {
++        await yieldToMain();
++      }
++
+       const intensity = maskData.data[index];
+       if (intensity <= 24) {
+         continue;
+@@ -87,6 +95,10 @@ async function renderMaskOverlay(
+     }
+ 
+     for (let y = 1; y < height - 1; y += 1) {
++      if (y % 50 === 0) {
++        await yieldToMain();
++      }
++
+       for (let x = 1; x < width - 1; x += 1) {
+         const pixelIndex = (y * width + x) * 4;
+         if (maskData.data[pixelIndex] <= 24) {
+diff --git a/frontend/components/case-workspace/patient-list-board.tsx b/frontend/components/case-workspace/patient-list-board.tsx
+index a457fe1..62b22c2 100644
+--- a/frontend/components/case-workspace/patient-list-board.tsx
++++ b/frontend/components/case-workspace/patient-list-board.tsx
+@@ -66,6 +66,8 @@ type PatientListBoardProps = {
+   onMedsamArtifactPageChange: (page: number) => void;
+ };
+ 
++const VISIBLE_THUMBNAIL_COUNT = 2;
++
+ export function PatientListBoard({
+   locale,
+   localeTag,
+@@ -248,7 +250,8 @@ export function PatientListBoard({
+     );
+   }
+ 
+-  function renderPatientRow(row: PatientListRow) {
++  function renderPatientRow(row: PatientListRow, rowIndex = 0) {
++    const prioritizeThumbnails = rowIndex < 4;
+     return (
+       <button
+         key={`board-${row.patient_id}`}
+@@ -279,7 +282,7 @@ export function PatientListBoard({
+           {row.representative_thumbnails.length === 0 ? (
+             <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
+           ) : (
+-            row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
++            row.representative_thumbnails.slice(0, VISIBLE_THUMBNAIL_COUNT).map((thumbnail) => {
+               const resolvedThumbnail =
+                 patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
+                 thumbnail;
+@@ -290,9 +293,9 @@ export function PatientListBoard({
+                   src={previewUrl}
+                   alt={`${row.patient_id}-${thumbnail.case_id}`}
+                   className={patientListThumbClass}
+-                  loading="lazy"
++                  loading={prioritizeThumbnails ? "eager" : "lazy"}
+                   decoding="async"
+-                  fetchPriority="low"
++                  fetchPriority={prioritizeThumbnails ? "high" : "low"}
+                   onError={(event) => {
+                     const fallbackUrl = resolvedThumbnail.fallback_url;
+                     if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
+@@ -309,8 +312,8 @@ export function PatientListBoard({
+               );
+             })
+           )}
+-          {row.representative_thumbnails.length > 4 ? (
+-            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
++          {row.representative_thumbnails.length > VISIBLE_THUMBNAIL_COUNT ? (
++            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - VISIBLE_THUMBNAIL_COUNT}</span>
+           ) : null}
+         </div>
+       </button>
+@@ -427,7 +430,7 @@ export function PatientListBoard({
+                           transform: `translateY(${virtualRow.start}px)`,
+                         }}
+                       >
+-                        {renderPatientRow(row)}
++                        {renderPatientRow(row, virtualRow.index)}
+                       </div>
+                     );
+                   })}
+@@ -435,7 +438,7 @@ export function PatientListBoard({
+               </div>
+             ) : (
+               <div className={listBoardStackClass}>
+-                {patientListRows.map((row) => renderPatientRow(row))}
++                {patientListRows.map((row, rowIndex) => renderPatientRow(row, rowIndex))}
+               </div>
+             )}
+           </>
+diff --git a/frontend/components/case-workspace/preview-media.tsx b/frontend/components/case-workspace/preview-media.tsx
+index 9048811..6a0c7dd 100644
+--- a/frontend/components/case-workspace/preview-media.tsx
++++ b/frontend/components/case-workspace/preview-media.tsx
+@@ -14,6 +14,8 @@ import {
+ } from "../ui/workspace-patterns";
+ import type { NormalizedBox } from "./shared";
+ 
++const DEFAULT_MASK_TINT = [125, 211, 195] as const;
++
+ export function LiveCropPreview({
+   sourceUrl,
+   box,
+@@ -99,14 +101,14 @@ export function MaskOverlayPreview({
+   sourceUrl,
+   maskUrl,
+   alt,
+-  tint = [125, 211, 195],
++  tint = DEFAULT_MASK_TINT,
+   className,
+   fallbackClassName,
+ }: {
+   sourceUrl: string | null | undefined;
+   maskUrl: string | null | undefined;
+   alt: string;
+-  tint?: [number, number, number];
++  tint?: readonly [number, number, number];
+   className?: string;
+   fallbackClassName?: string;
+ }) {
+@@ -146,7 +148,7 @@ export function MaskOverlayPreview({
+     return () => {
+       cancelled = true;
+     };
+-  }, [maskUrl, sourceUrl, tint]);
++  }, [maskUrl, sourceUrl, tint[0], tint[1], tint[2]]);
+ 
+   if (!sourceUrl || !maskUrl) {
+     return <div className={panelImageFallbackClass}>{alt}</div>;
+diff --git a/frontend/components/case-workspace/saved-case-image-board.tsx b/frontend/components/case-workspace/saved-case-image-board.tsx
+index 1e7d1ae..5c1745b 100644
+--- a/frontend/components/case-workspace/saved-case-image-board.tsx
++++ b/frontend/components/case-workspace/saved-case-image-board.tsx
+@@ -39,6 +39,8 @@ import type {
+   TranslateOption,
+ } from "./shared";
+ 
++const LIVE_LESION_MASK_TINT = [242, 164, 154] as const;
++
+ type SavedCaseImageBoardProps = {
+   locale: Locale;
+   commonLoading: string;
+@@ -241,11 +243,12 @@ export function SavedCaseImageBoard({
+ 
+       {selectedCaseImages.length > 0 ? (
+         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+-          {selectedCaseImages.map((image) => {
++          {selectedCaseImages.map((image, index) => {
+             const promptReviewOpen = semanticPromptOpenImageIds.includes(image.image_id);
+             const livePreview = liveLesionPreviews[image.image_id];
+             const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
+             const maskReady = Boolean(livePreview?.status === "done" && livePreview?.lesion_mask_url);
++            const prioritizeImage = index < 2;
+             const statusCopy =
+               lesionBoxBusyImageId === image.image_id
+                 ? pick(locale, "Saving...", "저장 중...")
+@@ -291,7 +294,7 @@ export function SavedCaseImageBoard({
+                           sourceUrl={image.preview_url}
+                           maskUrl={livePreview?.lesion_mask_url}
+                           alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
+-                          tint={[242, 164, 154]}
++                          tint={LIVE_LESION_MASK_TINT}
+                           className="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
+                           fallbackClassName="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
+                         />
+@@ -301,6 +304,8 @@ export function SavedCaseImageBoard({
+                           alt={image.image_id}
+                           className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
+                           decoding="async"
++                          loading={prioritizeImage ? "eager" : "lazy"}
++                          fetchPriority={prioritizeImage ? "high" : "low"}
+                           draggable={false}
+                           onDragStart={(event) => event.preventDefault()}
+                         />
+diff --git a/frontend/components/case-workspace/saved-case-overview.tsx b/frontend/components/case-workspace/saved-case-overview.tsx
+index f4b10a3..b5055aa 100644
+--- a/frontend/components/case-workspace/saved-case-overview.tsx
++++ b/frontend/components/case-workspace/saved-case-overview.tsx
+@@ -168,6 +168,7 @@ export function SavedCaseOverview({
+               const hasLoadedVisitImages = Array.isArray(visitImages);
+               const visibleVisitImages = visitImages ?? [];
+               const isCurrentVisit = selectedCase.case_id === caseItem.case_id;
++              const visitImagesPending = !hasLoadedVisitImages && Number(caseItem.image_count ?? 0) > 0;
+               const visitLabel = resolveVisitLabel(locale, caseItem.visit_date, caseItem.is_initial_visit, pick, displayVisitReference);
+               const imageCount = visibleVisitImages.length || caseItem.image_count;
+               const visitMeta = [
+@@ -256,7 +257,9 @@ export function SavedCaseOverview({
+                     <div className={emptySurfaceClass}>
+                       {(isCurrentVisit && panelBusy) || (patientVisitGalleryBusy && !hasLoadedVisitImages)
+                         ? commonLoading
+-                        : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
++                        : visitImagesPending
++                          ? pick(locale, "Open this visit to load saved images.", "이 방문을 열면 저장 이미지를 불러옵니다.")
++                          : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
+                     </div>
+                   )}
+                 </Card>
+diff --git a/frontend/components/case-workspace/use-case-workspace-analysis.ts b/frontend/components/case-workspace/use-case-workspace-analysis.ts
+index 39ea704..73ac133 100644
+--- a/frontend/components/case-workspace/use-case-workspace-analysis.ts
++++ b/frontend/components/case-workspace/use-case-workspace-analysis.ts
+@@ -117,8 +117,20 @@ function revokeUrls(urls: string[]) {
+     }
+   }
+ }
+-
+-export function useCaseWorkspaceAnalysis({
++
++function areNormalizedBoxesEqual(left: NormalizedBox | null | undefined, right: NormalizedBox | null | undefined): boolean {
++  if (!left || !right) {
++    return left == null && right == null;
++  }
++  return (
++    left.x0 === right.x0 &&
++    left.y0 === right.y0 &&
++    left.x1 === right.x1 &&
++    left.y1 === right.y1
++  );
++}
++
++export function useCaseWorkspaceAnalysis({
+   locale,
+   token,
+   selectedSiteId,
+@@ -183,11 +195,11 @@ export function useCaseWorkspaceAnalysis({
+   selectedCaseImagesRef.current = selectedCaseImages;
+   const caseImagesKey = `${selectedCase?.case_id ?? ""}:${selectedCaseImages.map((i) => i.image_id).join(",")}`;
+ 
+-  const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
+-  const lesionBoxChangedImageIds = selectedCaseImages
+-    .map((image) => image.image_id)
+-    .filter((imageId) => JSON.stringify(lesionPromptDrafts[imageId] ?? null) !== JSON.stringify(lesionPromptSaved[imageId] ?? null));
+-  const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some((value) => value);
++  const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
++  const lesionBoxChangedImageIds = selectedCaseImages
++    .map((image) => image.image_id)
++    .filter((imageId) => !areNormalizedBoxesEqual(lesionPromptDrafts[imageId] ?? null, lesionPromptSaved[imageId] ?? null));
++  const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some((value) => value);
+ 
+   function clearValidationArtifacts() {
+     revokeUrls(validationArtifactUrlsRef.current);
+@@ -734,7 +746,7 @@ export function useCaseWorkspaceAnalysis({
+     }
+   }
+ 
+-  function updateLesionDraftFromPointer(imageId: string, clientX: number, clientY: number, element: HTMLDivElement) {
++  function updateLesionDraftFromPointer(imageId: string, clientX: number, clientY: number, element: HTMLDivElement) {
+     const drawState = lesionDrawStateRef.current;
+     if (!drawState || drawState.imageId !== imageId) {
+       return;
+@@ -745,16 +757,22 @@ export function useCaseWorkspaceAnalysis({
+     }
+     const currentX = clamp01((clientX - rect.left) / rect.width);
+     const currentY = clamp01((clientY - rect.top) / rect.height);
+-    setLesionPromptDrafts((current) => ({
+-      ...current,
+-      [imageId]: normalizeBox({
+-        x0: drawState.x,
+-        y0: drawState.y,
+-        x1: currentX,
+-        y1: currentY,
+-      }),
+-    }));
+-  }
++    const nextBox = normalizeBox({
++      x0: drawState.x,
++      y0: drawState.y,
++      x1: currentX,
++      y1: currentY,
++    });
++    setLesionPromptDrafts((current) => {
++      if (areNormalizedBoxesEqual(current[imageId] ?? null, nextBox)) {
++        return current;
++      }
++      return {
++        ...current,
++        [imageId]: nextBox,
++      };
++    });
++  }
+ 
+   function handleLesionPointerDown(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+     event.preventDefault();
+diff --git a/frontend/components/case-workspace/use-case-workspace-draft.test.tsx b/frontend/components/case-workspace/use-case-workspace-draft.test.tsx
+new file mode 100644
+index 0000000..695e00a
+--- /dev/null
++++ b/frontend/components/case-workspace/use-case-workspace-draft.test.tsx
+@@ -0,0 +1,137 @@
++import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++import { useCaseWorkspaceDraftState } from "./use-case-workspace-draft";
++
++const persistenceMocks = vi.hoisted(() => ({
++  readPersistedDraftAssets: vi.fn(async () => null),
++  writePersistedDraftAssets: vi.fn(async () => undefined),
++  deletePersistedDraftAssets: vi.fn(async () => undefined),
++}));
++
++vi.mock("../../lib/draft-persistence", () => ({
++  readPersistedDraftAssets: persistenceMocks.readPersistedDraftAssets,
++  writePersistedDraftAssets: persistenceMocks.writePersistedDraftAssets,
++  deletePersistedDraftAssets: persistenceMocks.deletePersistedDraftAssets,
++}));
++
++function Harness() {
++  const {
++    draft,
++    draftSavedAt,
++    replaceDraftImages,
++    setDraft,
++  } = useCaseWorkspaceDraftState({
++    selectedSiteId: "SITE_A",
++    userId: "user_researcher",
++    recoveredDraftMessage: "recovered",
++    recoveredDraftWithAssetsMessage: "recovered-assets",
++    cultureSpecies: {
++      bacterial: ["Pseudomonas"],
++    },
++    setToast: vi.fn(),
++    createDraft: () => ({
++      patient_id: "",
++      chart_alias: "",
++      local_case_code: "",
++      sex: "unknown",
++      age: "",
++      actual_visit_date: "",
++      follow_up_number: "",
++      culture_category: "bacterial",
++      culture_species: "Pseudomonas",
++      additional_organisms: [],
++      contact_lens_use: "none",
++      visit_status: "active",
++      is_initial_visit: true,
++      predisposing_factor: [],
++      other_history: "",
++      intake_completed: false,
++    }),
++    normalizeRecoveredDraft: (nextDraft) => nextDraft,
++    hasDraftContent: (nextDraft) => Boolean(nextDraft.patient_id.trim()),
++    draftStorageKey: (userId, siteId) => `draft:${userId}:${siteId}`,
++    favoriteStorageKey: (userId, siteId) => `favorites:${userId}:${siteId}`,
++  });
++
++  return (
++    <div>
++      <button
++        type="button"
++        onClick={() =>
++          replaceDraftImages([
++            {
++              draft_id: "draft_image_1",
++              file: new File(["image-binary"], "slit.png", {
++                type: "image/png",
++                lastModified: 1700000000000,
++              }),
++              preview_url: "blob:slit",
++              view: "white",
++              is_representative: true,
++            },
++          ])
++        }
++      >
++        add-image
++      </button>
++      <button
++        type="button"
++        onClick={() =>
++          setDraft((current) => ({
++            ...current,
++            patient_id: "KERA-2026-001",
++          }))
++        }
++      >
++        update-draft
++      </button>
++      <div data-testid="patient-id">{draft.patient_id}</div>
++      <div data-testid="saved-at">{draftSavedAt ?? ""}</div>
++    </div>
++  );
++}
++
++async function flushAutosave() {
++  await act(async () => {
++    vi.advanceTimersByTime(500);
++    await Promise.resolve();
++    await Promise.resolve();
++  });
++}
++
++describe("useCaseWorkspaceDraftState", () => {
++  beforeEach(() => {
++    vi.useFakeTimers();
++    window.localStorage.clear();
++    persistenceMocks.readPersistedDraftAssets.mockClear();
++    persistenceMocks.readPersistedDraftAssets.mockResolvedValue(null);
++    persistenceMocks.writePersistedDraftAssets.mockClear();
++    persistenceMocks.deletePersistedDraftAssets.mockClear();
++    vi.stubGlobal(
++      "URL",
++      Object.assign(URL, {
++        revokeObjectURL: vi.fn(),
++      }),
++    );
++  });
++
++  it("does not rewrite persisted draft image assets when only text fields change", async () => {
++    render(<Harness />);
++
++    await waitFor(() => expect(persistenceMocks.readPersistedDraftAssets).toHaveBeenCalledTimes(1));
++
++    fireEvent.click(screen.getByRole("button", { name: "add-image" }));
++    await flushAutosave();
++
++    expect(persistenceMocks.writePersistedDraftAssets).toHaveBeenCalledTimes(1);
++
++    fireEvent.click(screen.getByRole("button", { name: "update-draft" }));
++    await flushAutosave();
++
++    expect(persistenceMocks.writePersistedDraftAssets).toHaveBeenCalledTimes(1);
++    expect(screen.getByTestId("patient-id")).toHaveTextContent("KERA-2026-001");
++    expect(window.localStorage.getItem("draft:user_researcher:SITE_A")).toContain("\"patient_id\":\"KERA-2026-001\"");
++    expect(screen.getByTestId("saved-at")).not.toBeEmptyDOMElement();
++  });
++});
+diff --git a/frontend/components/case-workspace/use-case-workspace-draft.ts b/frontend/components/case-workspace/use-case-workspace-draft.ts
+index 056b49e..9ca4618 100644
+--- a/frontend/components/case-workspace/use-case-workspace-draft.ts
++++ b/frontend/components/case-workspace/use-case-workspace-draft.ts
+@@ -55,6 +55,8 @@ type ToastState = {
+   message: string;
+ } | null;
+ 
++const EMPTY_DRAFT_ASSET_SIGNATURE = "draft-assets:empty";
++
+ type Args = {
+   selectedSiteId: string | null;
+   userId: string;
+@@ -69,6 +71,41 @@ type Args = {
+   favoriteStorageKey: (userId: string, siteId: string) => string;
+ };
+ 
++function serializeDraftBox(box: NormalizedBox | null | undefined): string {
++  if (!box) {
++    return "null";
++  }
++  return [box.x0, box.y0, box.x1, box.y1].map((value) => Number(value).toFixed(6)).join(",");
++}
++
++export function buildDraftAssetSignature(draftImages: DraftImage[], lesionBoxes: LesionBoxMap): string {
++  if (draftImages.length === 0 && Object.keys(lesionBoxes).length === 0) {
++    return EMPTY_DRAFT_ASSET_SIGNATURE;
++  }
++
++  const imageTokens = draftImages
++    .map((image) =>
++      [
++        image.draft_id,
++        image.file.name,
++        image.file.size,
++        image.file.lastModified,
++        image.view,
++        image.is_representative ? "1" : "0",
++      ].join(":"),
++    )
++    .sort();
++
++  const boxTokens = Object.entries(lesionBoxes)
++    .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
++    .map(([draftId, box]) => `${draftId}:${serializeDraftBox(box)}`);
++
++  return JSON.stringify({
++    images: imageTokens,
++    boxes: boxTokens,
++  });
++}
++
+ export function useCaseWorkspaceDraftState({
+   selectedSiteId,
+   userId,
+@@ -93,6 +130,18 @@ export function useCaseWorkspaceDraftState({
+   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+   const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>([]);
+   const draftImagesRef = useRef<DraftImage[]>([]);
++  const lastPersistedAssetSignatureRef = useRef<string>(EMPTY_DRAFT_ASSET_SIGNATURE);
++  const lastPersistedAssetStorageKeyRef = useRef<string | null>(null);
++
++  function rememberPersistedAssets(storageKey: string, draftImagesForSignature: DraftImage[], lesionBoxes: LesionBoxMap) {
++    lastPersistedAssetSignatureRef.current = buildDraftAssetSignature(draftImagesForSignature, lesionBoxes);
++    lastPersistedAssetStorageKeyRef.current = storageKey;
++  }
++
++  function resetPersistedAssetSnapshot() {
++    lastPersistedAssetSignatureRef.current = EMPTY_DRAFT_ASSET_SIGNATURE;
++    lastPersistedAssetStorageKeyRef.current = null;
++  }
+ 
+   function defaultPendingOrganism(category = "bacterial"): OrganismRecord {
+     const nextCategory = String(category || "bacterial");
+@@ -151,6 +200,7 @@ export function useCaseWorkspaceDraftState({
+ 
+     async function loadPersistedDraftState() {
+       if (!selectedSiteId) {
++        resetPersistedAssetSnapshot();
+         setDraft(createDraft());
+         setPendingOrganism(defaultPendingOrganism());
+         setShowAdditionalOrganismForm(false);
+@@ -189,6 +239,7 @@ export function useCaseWorkspaceDraftState({
+       }
+ 
+       if (!rawDraft) {
++        rememberPersistedAssets(storageKey, [], {});
+         setDraft(createDraft());
+         setPendingOrganism(defaultPendingOrganism());
+         setShowAdditionalOrganismForm(false);
+@@ -208,12 +259,14 @@ export function useCaseWorkspaceDraftState({
+           ...parsed.draft,
+         });
+         const recoveredImages = persistedAssets ? recoverDraftImages(persistedAssets.images) : [];
++        const recoveredLesionBoxes = pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {});
++        rememberPersistedAssets(storageKey, recoveredImages, recoveredLesionBoxes);
+         setDraft(recoveredDraft);
+         setPendingOrganism(defaultPendingOrganism(recoveredDraft.culture_category));
+         setShowAdditionalOrganismForm(false);
+         setDraftSavedAt(parsed.updated_at);
+         replaceDraftImages(recoveredImages);
+-        setDraftLesionPromptBoxes(pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {}));
++        setDraftLesionPromptBoxes(recoveredLesionBoxes);
+         setToast({
+           tone: "success",
+           message: recoveredImages.length > 0 ? recoveredDraftWithAssetsMessage : recoveredDraftMessage,
+@@ -221,6 +274,7 @@ export function useCaseWorkspaceDraftState({
+       } catch {
+         window.localStorage.removeItem(storageKey);
+         void deletePersistedDraftAssets(storageKey);
++        resetPersistedAssetSnapshot();
+         setDraft(createDraft());
+         setPendingOrganism(defaultPendingOrganism());
+         setShowAdditionalOrganismForm(false);
+@@ -252,10 +306,15 @@ export function useCaseWorkspaceDraftState({
+     const storageKey = draftStorageKey(userId, selectedSiteId);
+     const persistedLesionBoxes = pruneLesionBoxes(draftImages, draftLesionPromptBoxes);
+     const shouldKeepDraft = hasDraftContent(draft) || draftImages.length > 0 || Object.keys(persistedLesionBoxes).length > 0;
++    const assetSignature = buildDraftAssetSignature(draftImages, persistedLesionBoxes);
++    const shouldPersistAssets = assetSignature !== EMPTY_DRAFT_ASSET_SIGNATURE;
++    const assetsChanged =
++      lastPersistedAssetStorageKeyRef.current !== storageKey || lastPersistedAssetSignatureRef.current !== assetSignature;
+ 
+     if (!shouldKeepDraft) {
+       window.localStorage.removeItem(storageKey);
+       void deletePersistedDraftAssets(storageKey);
++      rememberPersistedAssets(storageKey, [], {});
+       setDraftSavedAt(null);
+       return;
+     }
+@@ -268,10 +327,16 @@ export function useCaseWorkspaceDraftState({
+       };
+ 
+       window.localStorage.setItem(storageKey, JSON.stringify(payload));
++      if (!cancelled) {
++        setDraftSavedAt(payload.updated_at);
++      }
+ 
+       const persistAssets = async () => {
+         try {
+-          if (draftImages.length > 0 || Object.keys(persistedLesionBoxes).length > 0) {
++          if (shouldPersistAssets) {
++            if (!assetsChanged) {
++              return;
++            }
+             await writePersistedDraftAssets({
+               storage_key: storageKey,
+               updated_at: payload.updated_at,
+@@ -286,16 +351,17 @@ export function useCaseWorkspaceDraftState({
+                 blob: image.file,
+               })),
+             });
++            rememberPersistedAssets(storageKey, draftImages, persistedLesionBoxes);
+           } else {
++            if (!assetsChanged) {
++              return;
++            }
+             await deletePersistedDraftAssets(storageKey);
++            rememberPersistedAssets(storageKey, [], {});
+           }
+         } catch {
+           // Local field persistence still succeeds even if the browser blocks IndexedDB.
+         }
+-
+-        if (!cancelled) {
+-          setDraftSavedAt(payload.updated_at);
+-        }
+       };
+ 
+       void persistAssets();
+@@ -320,6 +386,7 @@ export function useCaseWorkspaceDraftState({
+ 
+   function clearDraftStorage(siteId: string | null = selectedSiteId) {
+     if (!siteId) {
++      resetPersistedAssetSnapshot();
+       setDraftSavedAt(null);
+       return;
+     }
+@@ -327,6 +394,7 @@ export function useCaseWorkspaceDraftState({
+     const storageKey = draftStorageKey(userId, siteId);
+     window.localStorage.removeItem(storageKey);
+     void deletePersistedDraftAssets(storageKey);
++    rememberPersistedAssets(storageKey, [], {});
+     setDraftSavedAt(null);
+   }
+ 
+diff --git a/frontend/components/case-workspace/use-case-workspace-site-data.ts b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+index d2224d6..01419da 100644
+--- a/frontend/components/case-workspace/use-case-workspace-site-data.ts
++++ b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+@@ -22,6 +22,8 @@ type SavedImagePreview = ImageRecord & {
+   preview_url: string | null;
+ };
+ 
++const FOLLOW_UP_VISIT_PATTERN = /^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i;
++
+ function normalizeVisitMatchKey(value: string | null | undefined): string {
+   const normalized = String(value ?? "").trim();
+   if (!normalized) {
+@@ -30,7 +32,7 @@ function normalizeVisitMatchKey(value: string | null | undefined): string {
+   if (/^(initial|초진)$/i.test(normalized)) {
+     return "initial";
+   }
+-  const followUpMatch = normalized.match(/^(?:F\/?U|FU)[-\s_#]*0*(\d+)$/i);
++  const followUpMatch = normalized.match(FOLLOW_UP_VISIT_PATTERN);
+   if (followUpMatch) {
+     return `fu:${String(Number(followUpMatch[1]) || 0)}`;
+   }
+@@ -521,13 +523,32 @@ export function useCaseWorkspaceSiteData({
+       }
+     }
+ 
+-    // Fire all three in parallel — no artificial delays
+-    void loadSelectedCaseImages();
+-    void loadPatientCaseGallery();
+-    void loadSelectedCaseHistory();
++    let cancelDeferredGallery: () => void = () => {};
++    let cancelDeferredHistory: () => void = () => {};
++    const shouldLoadPatientTimelineImmediately = canUseDesktopTransport();
++    const deferredGalleryDelayMs = 900;
++    const deferredHistoryDelayMs = canUseDesktopTransport() ? 12000 : 1600;
++    if (shouldLoadPatientTimelineImmediately) {
++      void loadPatientCaseGallery();
++    }
++    void loadSelectedCaseImages().finally(() => {
++      if (cancelled) {
++        return;
++      }
++      if (!shouldLoadPatientTimelineImmediately) {
++        cancelDeferredGallery = scheduleDeferredBrowserTask(() => {
++          void loadPatientCaseGallery();
++        }, deferredGalleryDelayMs);
++      }
++      cancelDeferredHistory = scheduleDeferredBrowserTask(() => {
++        void loadSelectedCaseHistory();
++      }, deferredHistoryDelayMs);
++    });
+     return () => {
+       cancelled = true;
+       controller.abort();
++      cancelDeferredGallery();
++      cancelDeferredHistory();
+     };
+   }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
+ 
+
+commit 2f23f286b5a24335d34a69dad6a12809744b1b3d
+Author: peopleatkorea-droid <people.at.korea@gmail.com>
+Date:   Sun Mar 22 16:20:05 2026 +0900
+
+    0.63 strip critical path: no stat/preview on list load, parallel loads
+    
+    - list_patient_board: remove cached_preview_file_path stat() calls per
+      thumbnail and preview job queuing — return raw paths immediately
+    - loadSelectedCaseImages/Gallery/History: fire all three in parallel,
+      remove 120ms and 220ms artificial delays
+    - ensureVisitImagePreviews: defer 500ms after render, never blocks display
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/frontend/components/case-workspace/use-case-workspace-site-data.ts b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+index 4ca4618..d2224d6 100644
+--- a/frontend/components/case-workspace/use-case-workspace-site-data.ts
++++ b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+@@ -269,13 +269,16 @@ export function useCaseWorkspaceSiteData({
+       setSelectedCaseImages([]);
+       setPatientVisitGallery(Object.keys(cachedPatientVisitGallery).length > 0 ? cachedPatientVisitGallery : { [currentCase.case_id]: [] });
+     }
++    // Preview warming is fire-and-forget, never blocks list rendering
+     if (hasCachedSelectedCaseImages) {
+-      void ensureVisitImagePreviews(
+-        currentCase.case_id,
+-        currentCase.patient_id,
+-        currentCase.visit_date,
+-        cachedSelectedCaseImages,
+-      );
++      setTimeout(() => {
++        void ensureVisitImagePreviews(
++          currentCase.case_id,
++          currentCase.patient_id,
++          currentCase.visit_date,
++          cachedSelectedCaseImages,
++        );
++      }, 500);
+     }
+ 
+     function commitCaseImages(caseId: string, images: SavedImagePreview[]) {
+@@ -518,24 +521,13 @@ export function useCaseWorkspaceSiteData({
+       }
+     }
+ 
+-    let cancelDeferredGallery: () => void = () => {};
+-    let cancelDeferredHistory: () => void = () => {};
+-    void loadSelectedCaseImages().finally(() => {
+-      if (cancelled) {
+-        return;
+-      }
+-      cancelDeferredGallery = scheduleDeferredBrowserTask(() => {
+-        void loadPatientCaseGallery();
+-      }, 120);
+-      cancelDeferredHistory = scheduleDeferredBrowserTask(() => {
+-        void loadSelectedCaseHistory();
+-      }, 220);
+-    });
++    // Fire all three in parallel — no artificial delays
++    void loadSelectedCaseImages();
++    void loadPatientCaseGallery();
++    void loadSelectedCaseHistory();
+     return () => {
+       cancelled = true;
+       controller.abort();
+-      cancelDeferredGallery();
+-      cancelDeferredHistory();
+     };
+   }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
+ 
+
+commit 15bf4a3f687c7501d6c8d6968d2d503e8e07860a
+Author: peopleatkorea-droid <people.at.korea@gmail.com>
+Date:   Sun Mar 22 16:00:35 2026 +0900
+
+    0.61 hospital name fix + desktop perf improvements
+    
+    - Fix hospital names showing HIRA codes: membershipsForUser now JOINs
+      institution_directory so source_institution_name is included in the
+      bootstrap payload sent to desktop nodes
+    - Pass source_institution_name through ControlPlaneSite type and
+      bootstrap projection so Python can use it as hospital_name fallback
+    - Add local institution_directory backfill background thread for offline
+      fallback via Neon public_institutions or HIRA API
+    - Parallel image loading with Promise.all instead of sequential for loop
+    - Hover prefetch for case images on patient row pointer enter
+    - content-visibility: auto on patient list rows for scroll performance
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+diff --git a/frontend/components/case-workspace/ai-clinic-result.tsx b/frontend/components/case-workspace/ai-clinic-result.tsx
+index 76e1d32..e1600df 100644
+--- a/frontend/components/case-workspace/ai-clinic-result.tsx
++++ b/frontend/components/case-workspace/ai-clinic-result.tsx
+@@ -408,11 +408,13 @@ export function AiClinicResult({
+                   <div className="min-w-0">
+                     {item.preview_url ? (
+                       <Card as="div" variant="panel" className="overflow-hidden">
+-                        <img
+-                          src={item.preview_url}
+-                          alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
+-                          className="aspect-[4/3] w-full object-cover"
+-                        />
++                        <img
++                          src={item.preview_url}
++                          alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
++                          className="aspect-[4/3] w-full object-cover"
++                          loading="lazy"
++                          decoding="async"
++                        />
+                         <div className="grid gap-1 p-4">
+                           <strong className="text-sm font-semibold text-ink">{pick(locale, "Representative image", "대표 이미지")}</strong>
+                           <span className="text-sm text-muted">{item.culture_species || notAvailableLabel}</span>
+diff --git a/frontend/components/case-workspace/html-image-cache.ts b/frontend/components/case-workspace/html-image-cache.ts
+new file mode 100644
+index 0000000..4df7115
+--- /dev/null
++++ b/frontend/components/case-workspace/html-image-cache.ts
+@@ -0,0 +1,24 @@
++"use client";
++
++const htmlImageCache = new Map<string, Promise<HTMLImageElement>>();
++
++export function loadCachedHtmlImage(src: string): Promise<HTMLImageElement> {
++  const cachedImage = htmlImageCache.get(src);
++  if (cachedImage) {
++    return cachedImage;
++  }
++
++  const nextImage = new Promise<HTMLImageElement>((resolve, reject) => {
++    const image = new Image();
++    image.decoding = "async";
++    image.onload = () => resolve(image);
++    image.onerror = () => {
++      htmlImageCache.delete(src);
++      reject(new Error(`Unable to load image: ${src}`));
++    };
++    image.src = src;
++  });
++
++  htmlImageCache.set(src, nextImage);
++  return nextImage;
++}
+diff --git a/frontend/components/case-workspace/image-manager-panel.tsx b/frontend/components/case-workspace/image-manager-panel.tsx
+index 7afc25e..53acb42 100644
+--- a/frontend/components/case-workspace/image-manager-panel.tsx
++++ b/frontend/components/case-workspace/image-manager-panel.tsx
+@@ -107,6 +107,8 @@ function ImageGrid({
+                 src={image.preview_url}
+                 alt={image.file.name}
+                 className={imagePreviewCoverClass}
++                loading="lazy"
++                decoding="async"
+                 draggable={false}
+                 onDragStart={(event) => event.preventDefault()}
+               />
+diff --git a/frontend/components/case-workspace/mask-overlay-renderer.ts b/frontend/components/case-workspace/mask-overlay-renderer.ts
+new file mode 100644
+index 0000000..700a40d
+--- /dev/null
++++ b/frontend/components/case-workspace/mask-overlay-renderer.ts
+@@ -0,0 +1,139 @@
++"use client";
++
++import { loadCachedHtmlImage } from "./html-image-cache";
++
++type MaskOverlayTint = readonly [number, number, number];
++type MaskOverlayOptions = {
++  maxDimension?: number;
++};
++
++const MAX_MASK_OVERLAY_CACHE_ENTRIES = 24;
++const maskOverlayCache = new Map<string, Promise<HTMLCanvasElement>>();
++const DEFAULT_MASK_OVERLAY_MAX_DIMENSION = 960;
++
++function buildMaskOverlayCacheKey(sourceUrl: string, maskUrl: string, tint: MaskOverlayTint, maxDimension: number): string {
++  return `${sourceUrl}::${maskUrl}::${tint.join(",")}::${maxDimension}`;
++}
++
++function rememberMaskOverlay(key: string, value: Promise<HTMLCanvasElement>) {
++  if (maskOverlayCache.has(key)) {
++    maskOverlayCache.delete(key);
++  }
++  maskOverlayCache.set(key, value);
++  while (maskOverlayCache.size > MAX_MASK_OVERLAY_CACHE_ENTRIES) {
++    const oldestKey = maskOverlayCache.keys().next().value;
++    if (!oldestKey) {
++      break;
++    }
++    maskOverlayCache.delete(oldestKey);
++  }
++}
++
++async function renderMaskOverlay(
++  sourceUrl: string,
++  maskUrl: string,
++  tint: MaskOverlayTint,
++  options: MaskOverlayOptions = {},
++): Promise<HTMLCanvasElement> {
++  const maxDimension = Math.max(1, options.maxDimension ?? DEFAULT_MASK_OVERLAY_MAX_DIMENSION);
++  const cacheKey = buildMaskOverlayCacheKey(sourceUrl, maskUrl, tint, maxDimension);
++  const cachedOverlay = maskOverlayCache.get(cacheKey);
++  if (cachedOverlay) {
++    return cachedOverlay;
++  }
++
++  const nextOverlay = (async () => {
++    const [sourceImage, maskImage] = await Promise.all([loadCachedHtmlImage(sourceUrl), loadCachedHtmlImage(maskUrl)]);
++    const sourceWidth = sourceImage.naturalWidth || sourceImage.width;
++    const sourceHeight = sourceImage.naturalHeight || sourceImage.height;
++    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
++    const width = Math.max(1, Math.round(sourceWidth * scale));
++    const height = Math.max(1, Math.round(sourceHeight * scale));
++
++    const finalCanvas = document.createElement("canvas");
++    finalCanvas.width = width;
++    finalCanvas.height = height;
++    const finalContext = finalCanvas.getContext("2d");
++    if (!finalContext) {
++      throw new Error("Unable to acquire final overlay context");
++    }
++
++    finalContext.drawImage(sourceImage, 0, 0, width, height);
++
++    const maskCanvas = document.createElement("canvas");
++    maskCanvas.width = width;
++    maskCanvas.height = height;
++    const maskContext = maskCanvas.getContext("2d");
++    if (!maskContext) {
++      throw new Error("Unable to acquire mask overlay context");
++    }
++
++    maskContext.drawImage(maskImage, 0, 0, width, height);
++    const maskData = maskContext.getImageData(0, 0, width, height);
++    const sourceData = finalContext.getImageData(0, 0, width, height);
++    const overlayData = finalContext.createImageData(width, height);
++    overlayData.data.set(sourceData.data);
++
++    for (let index = 0; index < maskData.data.length; index += 4) {
++      const intensity = maskData.data[index];
++      if (intensity <= 24) {
++        continue;
++      }
++      const alpha = 0.34;
++      overlayData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
++      overlayData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
++      overlayData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
++      overlayData.data[index + 3] = 255;
++    }
++
++    for (let y = 1; y < height - 1; y += 1) {
++      for (let x = 1; x < width - 1; x += 1) {
++        const pixelIndex = (y * width + x) * 4;
++        if (maskData.data[pixelIndex] <= 24) {
++          continue;
++        }
++        const neighbors = [
++          ((y - 1) * width + x) * 4,
++          ((y + 1) * width + x) * 4,
++          (y * width + (x - 1)) * 4,
++          (y * width + (x + 1)) * 4,
++        ];
++        if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
++          overlayData.data[pixelIndex] = Math.min(255, tint[0] + 20);
++          overlayData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
++          overlayData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
++          overlayData.data[pixelIndex + 3] = 255;
++        }
++      }
++    }
++
++    finalContext.putImageData(overlayData, 0, 0);
++    return finalCanvas;
++  })().catch((error) => {
++    maskOverlayCache.delete(cacheKey);
++    throw error;
++  });
++
++  rememberMaskOverlay(cacheKey, nextOverlay);
++  return nextOverlay;
++}
++
++export async function drawCachedMaskOverlay(
++  canvas: HTMLCanvasElement,
++  sourceUrl: string,
++  maskUrl: string,
++  tint: MaskOverlayTint,
++  options?: MaskOverlayOptions,
++): Promise<boolean> {
++  const renderedOverlay = await renderMaskOverlay(sourceUrl, maskUrl, tint, options);
++  const context = canvas.getContext("2d");
++  if (!context) {
++    return false;
++  }
++
++  canvas.width = renderedOverlay.width;
++  canvas.height = renderedOverlay.height;
++  context.clearRect(0, 0, canvas.width, canvas.height);
++  context.drawImage(renderedOverlay, 0, 0, canvas.width, canvas.height);
++  return true;
++}
+diff --git a/frontend/components/case-workspace/patient-list-board.tsx b/frontend/components/case-workspace/patient-list-board.tsx
+index e8be0bd..a457fe1 100644
+--- a/frontend/components/case-workspace/patient-list-board.tsx
++++ b/frontend/components/case-workspace/patient-list-board.tsx
+@@ -1,7 +1,7 @@
+ "use client";
+ 
+-import type { ChangeEvent } from "react";
+-import { useEffect, useRef } from "react";
++import { useDeferredValue, useEffect, useRef, useState } from "react";
++import { useVirtualizer } from "@tanstack/react-virtual";
+ 
+ import type { CaseSummaryRecord, MedsamArtifactListItem, MedsamArtifactStatusKey } from "../../lib/api";
+ import type { Locale } from "../../lib/i18n";
+@@ -53,6 +53,7 @@ type PatientListBoardProps = {
+   onShowOnlyMineChange: (nextValue: boolean) => void;
+   onPageChange: (page: number) => void;
+   onOpenSavedCase: (caseRecord: CaseSummaryRecord, nextView: "cases" | "patients") => void;
++  onPrefetchCase?: (caseRecord: CaseSummaryRecord) => void;
+   medsamArtifactActiveStatus: MedsamArtifactStatusKey | null;
+   medsamArtifactScope: "patient" | "visit" | "image";
+   medsamArtifactItems: MedsamArtifactListItem[];
+@@ -63,7 +64,6 @@ type PatientListBoardProps = {
+   onCloseMedsamArtifactBacklog: () => void;
+   onMedsamArtifactScopeChange: (scope: "patient" | "visit" | "image") => void;
+   onMedsamArtifactPageChange: (page: number) => void;
+-  onRowVisible: (patientId: string) => void;
+ };
+ 
+ export function PatientListBoard({
+@@ -92,6 +92,7 @@ export function PatientListBoard({
+   onShowOnlyMineChange,
+   onPageChange,
+   onOpenSavedCase,
++  onPrefetchCase,
+   medsamArtifactActiveStatus,
+   medsamArtifactScope,
+   medsamArtifactItems,
+@@ -102,35 +103,31 @@ export function PatientListBoard({
+   onCloseMedsamArtifactBacklog,
+   onMedsamArtifactScopeChange,
+   onMedsamArtifactPageChange,
+-  onRowVisible,
+ }: PatientListBoardProps) {
+-  const rowButtonRefsMap = useRef<Map<string, HTMLButtonElement>>(new Map());
++  const [localSearch, setLocalSearch] = useState(caseSearch);
++  const deferredSearch = useDeferredValue(localSearch);
+ 
+   useEffect(() => {
+-    const refsMap = rowButtonRefsMap.current;
+-    if (refsMap.size === 0) {
++    setLocalSearch((current) => (current === caseSearch ? current : caseSearch));
++  }, [caseSearch]);
++
++  useEffect(() => {
++    if (deferredSearch !== caseSearch) {
++      onSearchChange(deferredSearch);
++    }
++  }, [deferredSearch, caseSearch, onSearchChange]);
++
++  useEffect(() => {
++    const scrollElement = patientListScrollRef.current;
++    if (!scrollElement) {
+       return;
+     }
+-    const observer = new IntersectionObserver(
+-      (entries) => {
+-        for (const entry of entries) {
+-          if (entry.isIntersecting) {
+-            const patientId = (entry.target as HTMLElement).dataset.patientId;
+-            if (patientId) {
+-              onRowVisible(patientId);
+-            }
+-          }
+-        }
+-      },
+-      { threshold: 0.1 },
+-    );
+-    for (const element of refsMap.values()) {
+-      observer.observe(element);
++    if (typeof scrollElement.scrollTo === "function") {
++      scrollElement.scrollTo({ top: 0, behavior: "auto" });
++      return;
+     }
+-    return () => {
+-      observer.disconnect();
+-    };
+-  }, [patientListRows, onRowVisible]);
++    scrollElement.scrollTop = 0;
++  }, [patientListPage, caseSearch, showOnlyMine, medsamArtifactActiveStatus]);
+ 
+   const pageWindow = 5;
+   const patientPageStart = Math.max(1, patientListPage - Math.floor(pageWindow / 2));
+@@ -172,6 +169,14 @@ export function PatientListBoard({
+       : medsamArtifactScope === "visit"
+         ? pick(locale, "visits", "방문")
+         : pick(locale, "images", "이미지");
++  const patientListScrollRef = useRef<HTMLDivElement | null>(null);
++  const shouldWindowPatients = !activeArtifactFilter && patientListRows.length > 8;
++  const patientRowVirtualizer = useVirtualizer({
++    count: activeArtifactFilter ? 0 : patientListRows.length,
++    getScrollElement: () => patientListScrollRef.current,
++    estimateSize: () => 156,
++    overscan: 6,
++  });
+ 
+   function renderArtifactRow(item: MedsamArtifactListItem) {
+     const caseSummary = item.case_summary ?? null;
+@@ -243,6 +248,75 @@ export function PatientListBoard({
+     );
+   }
+ 
++  function renderPatientRow(row: PatientListRow) {
++    return (
++      <button
++        key={`board-${row.patient_id}`}
++        className={patientListRowClass(selectedPatientId === row.patient_id)}
++        type="button"
++        onPointerEnter={() => onPrefetchCase?.(row.latest_case)}
++        onClick={() => onOpenSavedCase(row.latest_case, "cases")}
++      >
++        <div className={patientListRowMainClass}>
++          <div className={patientListRowChipsClass}>
++            {row.latest_case.local_case_code && row.latest_case.local_case_code !== row.patient_id ? (
++              <span className={patientListChipClass(true)}>{row.latest_case.local_case_code}</span>
++            ) : null}
++            <span className={patientListChipClass(!row.latest_case.local_case_code || row.latest_case.local_case_code === row.patient_id)}>
++              {row.patient_id}
++            </span>
++            <span className={patientListChipClass()}>{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? commonNotAvailable}`}</span>
++            <span className={patientListChipClass()}>{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
++            <span className={patientListChipClass()}>{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>
++          </div>
++          <div className={patientListRowMetaClass}>
++            <span>{displayVisitReference(locale, row.latest_case.visit_date)}</span>
++            {row.latest_case.actual_visit_date ? <span>{row.latest_case.actual_visit_date}</span> : null}
++            <span>{formatDateTime(row.latest_case.latest_image_uploaded_at ?? row.latest_case.created_at, localeTag, commonNotAvailable)}</span>
++          </div>
++        </div>
++        <div className={patientListThumbnailsClass}>
++          {row.representative_thumbnails.length === 0 ? (
++            <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
++          ) : (
++            row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
++              const resolvedThumbnail =
++                patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
++                thumbnail;
++              const previewUrl = resolvedThumbnail.preview_url;
++              return previewUrl ? (
++                <img
++                  key={`board-${thumbnail.case_id}`}
++                  src={previewUrl}
++                  alt={`${row.patient_id}-${thumbnail.case_id}`}
++                  className={patientListThumbClass}
++                  loading="lazy"
++                  decoding="async"
++                  fetchPriority="low"
++                  onError={(event) => {
++                    const fallbackUrl = resolvedThumbnail.fallback_url;
++                    if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
++                      return;
++                    }
++                    event.currentTarget.dataset.fallbackApplied = "true";
++                    event.currentTarget.src = fallbackUrl;
++                  }}
++                />
++              ) : (
++                <div key={`board-${thumbnail.case_id}`} className={`${patientListThumbClass} grid place-items-center`}>
++                  {translateOption(locale, "view", thumbnail.view ?? "white")}
++                </div>
++              );
++            })
++          )}
++          {row.representative_thumbnails.length > 4 ? (
++            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
++          ) : null}
++        </div>
++      </button>
++    );
++  }
++
+   return (
+     <section className={docSurfaceClass}>
+       <div className="flex min-w-0 flex-wrap items-center gap-2 pb-1">
+@@ -307,8 +381,8 @@ export function PatientListBoard({
+         ) : (
+           <input
+             className={`${listBoardSearchClass} min-h-10 min-w-[220px] flex-1 rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.84))] px-4 text-sm text-ink shadow-[0_8px_20px_rgba(15,23,42,0.04)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] md:ml-auto md:max-w-[320px] dark:bg-white/4`}
+-            value={caseSearch}
+-            onChange={(event: ChangeEvent<HTMLInputElement>) => onSearchChange(event.target.value)}
++            value={localSearch}
++            onChange={(event) => setLocalSearch(event.target.value)}
+             placeholder={pick(locale, "Search patient or organism", "환자 / 균종 검색")}
+           />
+         )}
+@@ -333,78 +407,37 @@ export function PatientListBoard({
+             {!casesLoading && patientListRows.length === 0 ? (
+               <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장된 환자가 아직 없습니다.")}</div>
+             ) : null}
+-            <div className={listBoardStackClass}>
+-              {patientListRows.map((row) => (
+-                <button
+-                  key={`board-${row.patient_id}`}
+-                  className={patientListRowClass(selectedPatientId === row.patient_id)}
+-                  type="button"
+-                  data-patient-id={row.patient_id}
+-                  ref={(el) => {
+-                    if (el) {
+-                      rowButtonRefsMap.current.set(row.patient_id, el);
+-                    } else {
+-                      rowButtonRefsMap.current.delete(row.patient_id);
+-                    }
++            {shouldWindowPatients ? (
++              <div ref={patientListScrollRef} className="max-h-[min(68vh,920px)] overflow-y-auto pr-1">
++                <div
++                  className="relative"
++                  style={{
++                    height: `${patientRowVirtualizer.getTotalSize()}px`,
+                   }}
+-                  onClick={() => onOpenSavedCase(row.latest_case, "cases")}
+                 >
+-                  <div className={patientListRowMainClass}>
+-                    <div className={patientListRowChipsClass}>
+-                      {row.latest_case.local_case_code && row.latest_case.local_case_code !== row.patient_id ? (
+-                        <span className={patientListChipClass(true)}>{row.latest_case.local_case_code}</span>
+-                      ) : null}
+-                      <span className={patientListChipClass(!row.latest_case.local_case_code || row.latest_case.local_case_code === row.patient_id)}>
+-                        {row.patient_id}
+-                      </span>
+-                      <span className={patientListChipClass()}>{`${translateOption(locale, "sex", row.latest_case.sex)} · ${row.latest_case.age ?? commonNotAvailable}`}</span>
+-                      <span className={patientListChipClass()}>{`${row.case_count} ${pick(locale, "cases", "케이스")}`}</span>
+-                      <span className={patientListChipClass()}>{`${translateOption(locale, "cultureCategory", row.latest_case.culture_category)} · ${row.organism_summary}`}</span>
+-                    </div>
+-                    <div className={patientListRowMetaClass}>
+-                      <span>{displayVisitReference(locale, row.latest_case.visit_date)}</span>
+-                      {row.latest_case.actual_visit_date ? <span>{row.latest_case.actual_visit_date}</span> : null}
+-                      <span>{formatDateTime(row.latest_case.latest_image_uploaded_at ?? row.latest_case.created_at, localeTag, commonNotAvailable)}</span>
+-                    </div>
+-                  </div>
+-                  <div className={patientListThumbnailsClass}>
+-                    {row.representative_thumbnails.length === 0 ? (
+-                      <span className={patientListThumbEmptyClass}>{pick(locale, "No thumbnails", "썸네일 없음")}</span>
+-                    ) : (
+-                      row.representative_thumbnails.slice(0, 4).map((thumbnail) => {
+-                        const resolvedThumbnail =
+-                          patientListThumbsByPatient[row.patient_id]?.find((item) => item.case_id === thumbnail.case_id) ??
+-                          thumbnail;
+-                        const previewUrl = resolvedThumbnail.preview_url;
+-                        return previewUrl ? (
+-                          <img
+-                            key={`board-${thumbnail.case_id}`}
+-                            src={previewUrl}
+-                            alt={`${row.patient_id}-${thumbnail.case_id}`}
+-                            className={patientListThumbClass}
+-                            onError={(event) => {
+-                              const fallbackUrl = resolvedThumbnail.fallback_url;
+-                              if (!fallbackUrl || event.currentTarget.dataset.fallbackApplied === "true") {
+-                                return;
+-                              }
+-                              event.currentTarget.dataset.fallbackApplied = "true";
+-                              event.currentTarget.src = fallbackUrl;
+-                            }}
+-                          />
+-                        ) : (
+-                          <div key={`board-${thumbnail.case_id}`} className={`${patientListThumbClass} grid place-items-center`}>
+-                            {translateOption(locale, "view", thumbnail.view ?? "white")}
+-                          </div>
+-                        );
+-                      })
+-                    )}
+-                    {row.representative_thumbnails.length > 4 ? (
+-                      <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - 4}</span>
+-                    ) : null}
+-                  </div>
+-                </button>
+-              ))}
+-            </div>
++                  {patientRowVirtualizer.getVirtualItems().map((virtualRow) => {
++                    const row = patientListRows[virtualRow.index];
++                    return (
++                      <div
++                        key={`virtual-patient-${row.patient_id}`}
++                        data-index={virtualRow.index}
++                        ref={patientRowVirtualizer.measureElement}
++                        className="absolute left-0 top-0 w-full pb-3"
++                        style={{
++                          transform: `translateY(${virtualRow.start}px)`,
++                        }}
++                      >
++                        {renderPatientRow(row)}
++                      </div>
++                    );
++                  })}
++                </div>
++              </div>
++            ) : (
++              <div className={listBoardStackClass}>
++                {patientListRows.map((row) => renderPatientRow(row))}
++              </div>
++            )}
+           </>
+         )}
+         {activeArtifactFilter ? (
+diff --git a/frontend/components/case-workspace/preview-media.tsx b/frontend/components/case-workspace/preview-media.tsx
+index c632f6c..9048811 100644
+--- a/frontend/components/case-workspace/preview-media.tsx
++++ b/frontend/components/case-workspace/preview-media.tsx
+@@ -3,6 +3,8 @@
+ import { useEffect, useRef, useState } from "react";
+ 
+ import { cn } from "../../lib/cn";
++import { loadCachedHtmlImage } from "./html-image-cache";
++import { drawCachedMaskOverlay } from "./mask-overlay-renderer";
+ import {
+   liveCropCanvasClass,
+   liveCropFallbackClass,
+@@ -12,15 +14,6 @@ import {
+ } from "../ui/workspace-patterns";
+ import type { NormalizedBox } from "./shared";
+ 
+-function loadHtmlImage(src: string): Promise<HTMLImageElement> {
+-  return new Promise((resolve, reject) => {
+-    const image = new Image();
+-    image.onload = () => resolve(image);
+-    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
+-    image.src = src;
+-  });
+-}
+-
+ export function LiveCropPreview({
+   sourceUrl,
+   box,
+@@ -47,7 +40,7 @@ export function LiveCropPreview({
+       }
+ 
+       try {
+-        const sourceImage = await loadHtmlImage(sourceUrl);
++        const sourceImage = await loadCachedHtmlImage(sourceUrl);
+         if (cancelled || !canvasRef.current) {
+           return;
+         }
+@@ -90,7 +83,14 @@ export function LiveCropPreview({
+   return (
+     <>
+       <canvas ref={canvasRef} className={cn(liveCropCanvasClass(previewReady), className)} aria-label={alt} />
+-      {!previewReady ? <img src={sourceUrl} alt={alt} className={cn(liveCropFallbackClass(previewReady), fallbackClassName)} /> : null}
++      {!previewReady ? (
++        <img
++          src={sourceUrl}
++          alt={alt}
++          decoding="async"
++          className={cn(liveCropFallbackClass(previewReady), fallbackClassName)}
++        />
++      ) : null}
+     </>
+   );
+ }
+@@ -122,71 +122,19 @@ export function MaskOverlayPreview({
+         return;
+       }
+       try {
+-        const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(sourceUrl), loadHtmlImage(maskUrl)]);
+-        if (cancelled || !canvasRef.current) {
+-          return;
+-        }
+         const canvas = canvasRef.current;
+-        canvas.width = sourceImage.naturalWidth || sourceImage.width;
+-        canvas.height = sourceImage.naturalHeight || sourceImage.height;
+-        const context = canvas.getContext("2d");
+-        if (!context) {
+-          setOverlayReady(false);
+-          return;
+-        }
+-
+-        context.clearRect(0, 0, canvas.width, canvas.height);
+-        context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
+-
+-        const maskCanvas = document.createElement("canvas");
+-        maskCanvas.width = canvas.width;
+-        maskCanvas.height = canvas.height;
+-        const maskContext = maskCanvas.getContext("2d");
+-        if (!maskContext) {
+-          setOverlayReady(false);
++        if (cancelled || !canvas) {
+           return;
+         }
+-        maskContext.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+-        const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
+-        const sourceData = context.getImageData(0, 0, canvas.width, canvas.height);
+-        const finalData = context.createImageData(canvas.width, canvas.height);
+-        finalData.data.set(sourceData.data);
+-
+-        for (let index = 0; index < maskData.data.length; index += 4) {
+-          const intensity = maskData.data[index];
+-          if (intensity > 24) {
+-            const alpha = 0.34;
+-            finalData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
+-            finalData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
+-            finalData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
+-            finalData.data[index + 3] = 255;
+-          }
+-        }
+-
+-        for (let y = 1; y < canvas.height - 1; y += 1) {
+-          for (let x = 1; x < canvas.width - 1; x += 1) {
+-            const pixelIndex = (y * canvas.width + x) * 4;
+-            const inside = maskData.data[pixelIndex] > 24;
+-            if (!inside) {
+-              continue;
+-            }
+-            const neighbors = [
+-              ((y - 1) * canvas.width + x) * 4,
+-              ((y + 1) * canvas.width + x) * 4,
+-              (y * canvas.width + (x - 1)) * 4,
+-              (y * canvas.width + (x + 1)) * 4,
+-            ];
+-            if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
+-              finalData.data[pixelIndex] = Math.min(255, tint[0] + 20);
+-              finalData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
+-              finalData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
+-              finalData.data[pixelIndex + 3] = 255;
+-            }
+-          }
++        const pixelRatio = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
++        const maxDimension = Math.max(
++          320,
++          Math.round(Math.max(canvas.clientWidth || 0, canvas.clientHeight || 0, 320) * pixelRatio),
++        );
++        const rendered = await drawCachedMaskOverlay(canvas, sourceUrl, maskUrl, tint, { maxDimension });
++        if (!cancelled) {
++          setOverlayReady(rendered);
+         }
+-
+-        context.putImageData(finalData, 0, 0);
+-        setOverlayReady(true);
+       } catch {
+         if (!cancelled) {
+           setOverlayReady(false);
+@@ -207,7 +155,14 @@ export function MaskOverlayPreview({
+   return (
+     <>
+       <canvas ref={canvasRef} className={cn(panelImageOverlayClass(overlayReady), className)} aria-label={alt} />
+-      {!overlayReady ? <img src={sourceUrl} alt={alt} className={cn(panelImageOverlayFallbackClass(overlayReady), fallbackClassName)} /> : null}
++      {!overlayReady ? (
++        <img
++          src={sourceUrl}
++          alt={alt}
++          decoding="async"
++          className={cn(panelImageOverlayFallbackClass(overlayReady), fallbackClassName)}
++        />
++      ) : null}
+     </>
+   );
+ }
+diff --git a/frontend/components/case-workspace/saved-case-image-board.tsx b/frontend/components/case-workspace/saved-case-image-board.tsx
+index 11d17ad..1e7d1ae 100644
+--- a/frontend/components/case-workspace/saved-case-image-board.tsx
++++ b/frontend/components/case-workspace/saved-case-image-board.tsx
+@@ -300,6 +300,7 @@ export function SavedCaseImageBoard({
+                           src={image.preview_url}
+                           alt={image.image_id}
+                           className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
++                          decoding="async"
+                           draggable={false}
+                           onDragStart={(event) => event.preventDefault()}
+                         />
+diff --git a/frontend/components/case-workspace/saved-case-overview.tsx b/frontend/components/case-workspace/saved-case-overview.tsx
+index 888b6dd..f4b10a3 100644
+--- a/frontend/components/case-workspace/saved-case-overview.tsx
++++ b/frontend/components/case-workspace/saved-case-overview.tsx
+@@ -223,6 +223,8 @@ export function SavedCaseOverview({
+                                   src={image.preview_url}
+                                   alt={image.image_id}
+                                   className="block h-full w-full object-cover"
++                                  loading="lazy"
++                                  decoding="async"
+                                   draggable={false}
+                                   onDragStart={(event) => event.preventDefault()}
+                                 />
+diff --git a/frontend/components/case-workspace/saved-case-preview-panels.tsx b/frontend/components/case-workspace/saved-case-preview-panels.tsx
+index 4c59894..8d2ddb2 100644
+--- a/frontend/components/case-workspace/saved-case-preview-panels.tsx
++++ b/frontend/components/case-workspace/saved-case-preview-panels.tsx
+@@ -98,7 +98,7 @@ export function SavedCasePreviewPanels({
+                 <div className={panelPreviewGridClass}>
+                   <div>
+                     {item.source_preview_url ? (
+-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} />
++                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                     ) : (
+                       <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                     )}
+@@ -123,7 +123,7 @@ export function SavedCasePreviewPanels({
+                   </div>
+                   <div>
+                     {item.roi_crop_url ? (
+-                      <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} />
++                      <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                     ) : (
+                       <div className={panelImageFallbackClass}>{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>
+                     )}
+@@ -186,7 +186,7 @@ export function SavedCasePreviewPanels({
+                 <div className={panelPreviewGridClass}>
+                   <div>
+                     {item.source_preview_url ? (
+-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} />
++                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                     ) : (
+                       <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                     )}
+@@ -211,7 +211,7 @@ export function SavedCasePreviewPanels({
+                   </div>
+                   <div>
+                     {item.lesion_crop_url ? (
+-                      <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} />
++                      <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                     ) : (
+                       <div className={panelImageFallbackClass}>{pick(locale, "Lesion crop unavailable", "병변 crop을 표시할 수 없습니다")}</div>
+                     )}
+diff --git a/frontend/components/case-workspace/use-case-workspace-analysis.ts b/frontend/components/case-workspace/use-case-workspace-analysis.ts
+index 4d7c47c..39ea704 100644
+--- a/frontend/components/case-workspace/use-case-workspace-analysis.ts
++++ b/frontend/components/case-workspace/use-case-workspace-analysis.ts
+@@ -2,20 +2,20 @@
+ 
+ import { type PointerEvent as ReactPointerEvent, type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
+ 
+-import {
+-  clearImageLesionBox,
+-  fetchCaseLesionPreview,
+-  fetchStoredCaseLesionPreview,
+-  fetchCaseLesionPreviewArtifactBlob,
+-  fetchCaseRoiPreview,
+-  fetchCaseRoiPreviewArtifactBlob,
+-  fetchCases,
+-  fetchImageBlob,
+-  fetchImageSemanticPromptScores,
+-  fetchValidationArtifactBlob,
+-  runCaseAiClinic,
+-  runCaseValidation,
+-  runCaseValidationCompare,
++import {
++  clearImageLesionBox,
++  fetchCaseLesionPreview,
++  fetchStoredCaseLesionPreview,
++  fetchCaseLesionPreviewArtifactUrl,
++  fetchCaseRoiPreview,
++  fetchCaseRoiPreviewArtifactUrl,
++  fetchCases,
++  fetchImagePreviewUrl,
++  fetchImageSemanticPromptScores,
++  fetchValidationArtifactUrl,
++  runCaseAiClinic,
++  runCaseValidation,
++  runCaseValidationCompare,
+   setRepresentativeImage as setRepresentativeImageOnServer,
+   startLiveLesionPreview,
+   updateImageLesionBox,
+@@ -110,11 +110,13 @@ type Args = {
+   onArtifactsChanged?: () => void;
+ };
+ 
+-function revokeUrls(urls: string[]) {
+-  for (const url of urls) {
+-    URL.revokeObjectURL(url);
+-  }
+-}
++function revokeUrls(urls: string[]) {
++  for (const url of urls) {
++    if (String(url).startsWith("blob:")) {
++      URL.revokeObjectURL(url);
++    }
++  }
++}
+ 
+ export function useCaseWorkspaceAnalysis({
+   locale,
+@@ -356,35 +358,37 @@ export function useCaseWorkspaceAnalysis({
+               continue;
+             }
+ 
+-            const nextUrls: string[] = [];
+-            try {
+-              const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+-                selectedSiteId,
+-                patientId,
+-                visitDate,
+-                image.image_id,
+-                "lesion_mask",
+-                token
+-              );
+-              const lesionMaskUrl = URL.createObjectURL(maskBlob);
+-              nextUrls.push(lesionMaskUrl);
+-
+-              let lesionCropUrl: string | null = null;
+-              if (preview.has_lesion_crop) {
+-                try {
+-                  const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+-                    selectedSiteId,
+-                    patientId,
+-                    visitDate,
+-                    image.image_id,
+-                    "lesion_crop",
+-                    token
+-                  );
+-                  lesionCropUrl = URL.createObjectURL(cropBlob);
+-                  nextUrls.push(lesionCropUrl);
+-                } catch {
+-                  lesionCropUrl = null;
+-                }
++            const nextUrls: string[] = [];
++            try {
++              const lesionMaskUrl = await fetchCaseLesionPreviewArtifactUrl(
++                selectedSiteId,
++                patientId,
++                visitDate,
++                image.image_id,
++                "lesion_mask",
++                token
++              );
++              if (lesionMaskUrl) {
++                nextUrls.push(lesionMaskUrl);
++              }
++
++              let lesionCropUrl: string | null = null;
++              if (preview.has_lesion_crop) {
++                try {
++                  lesionCropUrl = await fetchCaseLesionPreviewArtifactUrl(
++                    selectedSiteId,
++                    patientId,
++                    visitDate,
++                    image.image_id,
++                    "lesion_crop",
++                    token
++                  );
++                  if (lesionCropUrl) {
++                    nextUrls.push(lesionCropUrl);
++                  }
++                } catch {
++                  lesionCropUrl = null;
++                }
+               }
+ 
+               if (cancelled) {
+@@ -459,40 +463,42 @@ export function useCaseWorkspaceAnalysis({
+ 
+     const nextUrls: string[] = [];
+     let lesionMaskUrl: string | null = null;
+-    let lesionCropUrl: string | null = null;
+-
+-    if (job.has_lesion_mask) {
+-      try {
+-        const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+-          selectedSiteId,
+-          job.patient_id,
+-          job.visit_date,
+-          imageId,
+-          "lesion_mask",
+-          token
+-        );
+-        lesionMaskUrl = URL.createObjectURL(maskBlob);
+-        nextUrls.push(lesionMaskUrl);
+-      } catch {
+-        lesionMaskUrl = null;
+-      }
++    let lesionCropUrl: string | null = null;
++
++    if (job.has_lesion_mask) {
++      try {
++        lesionMaskUrl = await fetchCaseLesionPreviewArtifactUrl(
++          selectedSiteId,
++          job.patient_id,
++          job.visit_date,
++          imageId,
++          "lesion_mask",
++          token
++        );
++        if (lesionMaskUrl) {
++          nextUrls.push(lesionMaskUrl);
++        }
++      } catch {
++        lesionMaskUrl = null;
++      }
+     }
+-
+-    if (job.has_lesion_crop) {
+-      try {
+-        const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+-          selectedSiteId,
+-          job.patient_id,
+-          job.visit_date,
+-          imageId,
+-          "lesion_crop",
+-          token
+-        );
+-        lesionCropUrl = URL.createObjectURL(cropBlob);
+-        nextUrls.push(lesionCropUrl);
+-      } catch {
+-        lesionCropUrl = null;
+-      }
++
++    if (job.has_lesion_crop) {
++      try {
++        lesionCropUrl = await fetchCaseLesionPreviewArtifactUrl(
++          selectedSiteId,
++          job.patient_id,
++          job.visit_date,
++          imageId,
++          "lesion_crop",
++          token
++        );
++        if (lesionCropUrl) {
++          nextUrls.push(lesionCropUrl);
++        }
++      } catch {
++        lesionCropUrl = null;
++      }
+     }
+ 
+     if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+@@ -868,48 +874,51 @@ export function useCaseWorkspaceAnalysis({
+             source_preview_url: null,
+             lesion_crop_url: null,
+             lesion_mask_url: null,
+-          };
+-          if (item.image_id) {
+-            try {
+-              const sourceBlob = await fetchImageBlob(selectedSiteId, item.image_id, token);
+-              const sourceUrl = URL.createObjectURL(sourceBlob);
+-              lesionPreviewUrlsRef.current.push(sourceUrl);
+-              nextCard.source_preview_url = sourceUrl;
+-            } catch {
+-              nextCard.source_preview_url = null;
+-            }
+-            if (item.has_lesion_crop) {
+-              try {
+-                const cropBlob = await fetchCaseLesionPreviewArtifactBlob(
+-                  selectedSiteId,
+-                  selectedCase.patient_id,
+-                  selectedCase.visit_date,
+-                  item.image_id,
+-                  "lesion_crop",
+-                  token
+-                );
+-                const cropUrl = URL.createObjectURL(cropBlob);
+-                lesionPreviewUrlsRef.current.push(cropUrl);
+-                nextCard.lesion_crop_url = cropUrl;
+-              } catch {
+-                nextCard.lesion_crop_url = null;
+-              }
+-            }
+-            if (item.has_lesion_mask) {
+-              try {
+-                const maskBlob = await fetchCaseLesionPreviewArtifactBlob(
+-                  selectedSiteId,
+-                  selectedCase.patient_id,
+-                  selectedCase.visit_date,
+-                  item.image_id,
+-                  "lesion_mask",
+-                  token
+-                );
+-                const maskUrl = URL.createObjectURL(maskBlob);
+-                lesionPreviewUrlsRef.current.push(maskUrl);
+-                nextCard.lesion_mask_url = maskUrl;
+-              } catch {
+-                nextCard.lesion_mask_url = null;
++          };
++          if (item.image_id) {
++            try {
++              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
++              if (sourceUrl) {
++                lesionPreviewUrlsRef.current.push(sourceUrl);
++              }
++              nextCard.source_preview_url = sourceUrl;
++            } catch {
++              nextCard.source_preview_url = null;
++            }
++            if (item.has_lesion_crop) {
++              try {
++                const cropUrl = await fetchCaseLesionPreviewArtifactUrl(
++                  selectedSiteId,
++                  selectedCase.patient_id,
++                  selectedCase.visit_date,
++                  item.image_id,
++                  "lesion_crop",
++                  token
++                );
++                if (cropUrl) {
++                  lesionPreviewUrlsRef.current.push(cropUrl);
++                }
++                nextCard.lesion_crop_url = cropUrl;
++              } catch {
++                nextCard.lesion_crop_url = null;
++              }
++            }
++            if (item.has_lesion_mask) {
++              try {
++                const maskUrl = await fetchCaseLesionPreviewArtifactUrl(
++                  selectedSiteId,
++                  selectedCase.patient_id,
++                  selectedCase.visit_date,
++                  item.image_id,
++                  "lesion_mask",
++                  token
++                );
++                if (maskUrl) {
++                  lesionPreviewUrlsRef.current.push(maskUrl);
++                }
++                nextCard.lesion_mask_url = maskUrl;
++              } catch {
++                nextCard.lesion_mask_url = null;
+               }
+             }
+           }
+@@ -1055,48 +1064,51 @@ export function useCaseWorkspaceAnalysis({
+             source_preview_url: null,
+             roi_crop_url: null,
+             medsam_mask_url: null,
+-          };
+-          if (item.image_id) {
+-            try {
+-              const sourceBlob = await fetchImageBlob(selectedSiteId, item.image_id, token);
+-              const sourceUrl = URL.createObjectURL(sourceBlob);
+-              roiPreviewUrlsRef.current.push(sourceUrl);
+-              nextCard.source_preview_url = sourceUrl;
+-            } catch {
+-              nextCard.source_preview_url = null;
+-            }
+-            if (item.has_roi_crop) {
+-              try {
+-                const roiBlob = await fetchCaseRoiPreviewArtifactBlob(
+-                  selectedSiteId,
+-                  selectedCase.patient_id,
+-                  selectedCase.visit_date,
+-                  item.image_id,
+-                  "roi_crop",
+-                  token
+-                );
+-                const roiUrl = URL.createObjectURL(roiBlob);
+-                roiPreviewUrlsRef.current.push(roiUrl);
+-                nextCard.roi_crop_url = roiUrl;
+-              } catch {
+-                nextCard.roi_crop_url = null;
+-              }
+-            }
+-            if (item.has_medsam_mask) {
+-              try {
+-                const maskBlob = await fetchCaseRoiPreviewArtifactBlob(
+-                  selectedSiteId,
+-                  selectedCase.patient_id,
+-                  selectedCase.visit_date,
+-                  item.image_id,
+-                  "medsam_mask",
+-                  token
+-                );
+-                const maskUrl = URL.createObjectURL(maskBlob);
+-                roiPreviewUrlsRef.current.push(maskUrl);
+-                nextCard.medsam_mask_url = maskUrl;
+-              } catch {
+-                nextCard.medsam_mask_url = null;
++          };
++          if (item.image_id) {
++            try {
++              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
++              if (sourceUrl) {
++                roiPreviewUrlsRef.current.push(sourceUrl);
++              }
++              nextCard.source_preview_url = sourceUrl;
++            } catch {
++              nextCard.source_preview_url = null;
++            }
++            if (item.has_roi_crop) {
++              try {
++                const roiUrl = await fetchCaseRoiPreviewArtifactUrl(
++                  selectedSiteId,
++                  selectedCase.patient_id,
++                  selectedCase.visit_date,
++                  item.image_id,
++                  "roi_crop",
++                  token
++                );
++                if (roiUrl) {
++                  roiPreviewUrlsRef.current.push(roiUrl);
++                }
++                nextCard.roi_crop_url = roiUrl;
++              } catch {
++                nextCard.roi_crop_url = null;
++              }
++            }
++            if (item.has_medsam_mask) {
++              try {
++                const maskUrl = await fetchCaseRoiPreviewArtifactUrl(
++                  selectedSiteId,
++                  selectedCase.patient_id,
++                  selectedCase.visit_date,
++                  item.image_id,
++                  "medsam_mask",
++                  token
++                );
++                if (maskUrl) {
++                  roiPreviewUrlsRef.current.push(maskUrl);
++                }
++                nextCard.medsam_mask_url = maskUrl;
++              } catch {
++                nextCard.medsam_mask_url = null;
+               }
+             }
+           }
+@@ -1166,23 +1178,24 @@ export function useCaseWorkspaceAnalysis({
+                 : artifactKind === "lesion_crop"
+                   ? result.artifact_availability.lesion_crop
+                   : result.artifact_availability.lesion_mask;
+-        if (!isAvailable) {
+-          continue;
+-        }
+-        try {
+-          const blob = await fetchValidationArtifactBlob(
+-            selectedSiteId,
+-            result.summary.validation_id,
+-            selectedCase.patient_id,
+-            selectedCase.visit_date,
+-            artifactKind,
+-            token
+-          );
+-          const url = URL.createObjectURL(blob);
+-          validationArtifactUrlsRef.current.push(url);
+-          nextArtifacts[artifactKind] = url;
+-        } catch {
+-          nextArtifacts[artifactKind] = null;
++        if (!isAvailable) {
++          continue;
++        }
++        try {
++          const url = await fetchValidationArtifactUrl(
++            selectedSiteId,
++            result.summary.validation_id,
++            selectedCase.patient_id,
++            selectedCase.visit_date,
++            artifactKind,
++            token
++          );
++          if (url) {
++            validationArtifactUrlsRef.current.push(url);
++          }
++          nextArtifacts[artifactKind] = url;
++        } catch {
++          nextArtifacts[artifactKind] = null;
+         }
+       }
+ 
+@@ -1298,17 +1311,18 @@ export function useCaseWorkspaceAnalysis({
+         top_k: 3,
+         retrieval_backend: "standard",
+       });
+-      const similarCases = await Promise.all(
+-        result.similar_cases.map(async (item) => {
+-          let previewUrl: string | null = null;
+-          if (item.representative_image_id) {
+-            try {
+-              const blob = await fetchImageBlob(selectedSiteId, item.representative_image_id, token);
+-              previewUrl = URL.createObjectURL(blob);
+-              aiClinicPreviewUrlsRef.current.push(previewUrl);
+-            } catch {
+-              previewUrl = null;
+-            }
++      const similarCases = await Promise.all(
++        result.similar_cases.map(async (item) => {
++          let previewUrl: string | null = null;
++          if (item.representative_image_id) {
++            try {
++              previewUrl = await fetchImagePreviewUrl(selectedSiteId, item.representative_image_id, token, { maxSide: 384 });
++              if (previewUrl) {
++                aiClinicPreviewUrlsRef.current.push(previewUrl);
++              }
++            } catch {
++              previewUrl = null;
++            }
+           }
+           return {
+             ...item,
+diff --git a/frontend/components/case-workspace/use-case-workspace-site-data.ts b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+index 29aaa53..4ca4618 100644
+--- a/frontend/components/case-workspace/use-case-workspace-site-data.ts
++++ b/frontend/components/case-workspace/use-case-workspace-site-data.ts
+@@ -1,6 +1,6 @@
+ ﻿"use client";
+ 
+-import { useCallback, useEffect, useRef, useState } from "react";
++import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+ 
+ import {
+   type CaseHistoryResponse,
+@@ -16,6 +16,7 @@ import {
+   fetchSiteValidations,
+   fetchVisitImagesWithPreviews,
+ } from "../../lib/api";
++import { canUseDesktopTransport, ensureDesktopImagePreviews } from "../../lib/desktop-transport";
+ 
+ type SavedImagePreview = ImageRecord & {
+   preview_url: string | null;
+@@ -36,6 +37,18 @@ function normalizeVisitMatchKey(value: string | null | undefined): string {
+   return normalized.toLowerCase().replace(/\s+/g, " ");
+ }
+ 
++function scheduleDeferredBrowserTask(task: () => void, timeoutMs = 180) {
++  if (typeof window === "undefined") {
++    return () => undefined;
++  }
++  if (typeof window.requestIdleCallback === "function") {
++    const idleId = window.requestIdleCallback(() => task(), { timeout: timeoutMs });
++    return () => window.cancelIdleCallback(idleId);
++  }
++  const timerId = window.setTimeout(task, timeoutMs);
++  return () => window.clearTimeout(timerId);
++}
++
+ type ToastState = {
+   tone: "success" | "error";
+   message: string;
+@@ -93,6 +106,7 @@ export function useCaseWorkspaceSiteData({
+   const selectedCaseImageCaseIdRef = useRef<string | null>(null);
+   const visitImageRecordCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
+   const visitImageRecordPromiseCacheRef = useRef<Map<string, Promise<SavedImagePreview[]>>>(new Map());
++  const visitImagePreviewWarmPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
+   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
+   const caseHistoryCacheRef = useRef<Map<string, CaseHistoryResponse>>(new Map());
+   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
+@@ -102,6 +116,7 @@ export function useCaseWorkspaceSiteData({
+   function clearCaseImageCache() {
+     visitImageRecordCacheRef.current.clear();
+     visitImageRecordPromiseCacheRef.current.clear();
++    visitImagePreviewWarmPromiseCacheRef.current.clear();
+     caseImageCacheRef.current.clear();
+     selectedCaseImageCaseIdRef.current = null;
+   }
+@@ -254,6 +269,14 @@ export function useCaseWorkspaceSiteData({
+       setSelectedCaseImages([]);
+       setPatientVisitGallery(Object.keys(cachedPatientVisitGallery).length > 0 ? cachedPatientVisitGallery : { [currentCase.case_id]: [] });
+     }
++    if (hasCachedSelectedCaseImages) {
++      void ensureVisitImagePreviews(
++        currentCase.case_id,
++        currentCase.patient_id,
++        currentCase.visit_date,
++        cachedSelectedCaseImages,
++      );
++    }
+ 
+     function commitCaseImages(caseId: string, images: SavedImagePreview[]) {
+       caseImageCacheRef.current.set(caseId, images);
+@@ -266,6 +289,74 @@ export function useCaseWorkspaceSiteData({
+       }
+     }
+ 
++    async function ensureVisitImagePreviews(
++      caseId: string,
++      patientId: string,
++      visitDate: string,
++      images: SavedImagePreview[],
++    ): Promise<void> {
++      if (!canUseDesktopTransport()) {
++        return;
++      }
++      const imageIds = images
++        .map((image) => String(image.image_id ?? "").trim())
++        .filter((imageId) => imageId.length > 0);
++      if (!imageIds.length) {
++        return;
++      }
++      const cacheKey = buildVisitImageCacheKey(patientId, visitDate);
++      const pendingWarm = visitImagePreviewWarmPromiseCacheRef.current.get(cacheKey);
++      if (pendingWarm) {
++        return pendingWarm;
++      }
++      const nextWarm = ensureDesktopImagePreviews(currentSiteId, imageIds, {
++        maxSide: 640,
++        signal: controller.signal,
++      })
++        .then((previewUrlsById) => {
++          if (cancelled || previewUrlsById.size === 0) {
++            return;
++          }
++          const cachedImages = visitImageRecordCacheRef.current.get(cacheKey) ?? images;
++          let changed = false;
++          const nextImages = cachedImages.map((image) => {
++            const previewUrl = previewUrlsById.get(image.image_id);
++            if (!previewUrl || previewUrl === image.preview_url) {
++              return image;
++            }
++            changed = true;
++            return {
++              ...image,
++              preview_url: previewUrl,
++            };
++          });
++          if (!changed) {
++            return;
++          }
++          visitImageRecordCacheRef.current.set(cacheKey, nextImages);
++          caseImageCacheRef.current.set(caseId, nextImages);
++          startTransition(() => {
++            setPatientVisitGallery((current) => ({
++              ...current,
++              [caseId]: nextImages,
++            }));
++            if (selectedCaseImageCaseIdRef.current === caseId) {
++              setSelectedCaseImages(nextImages);
++            }
++          });
++        })
++        .catch((nextError) => {
++          if (!isAbortError(nextError)) {
++            console.warn("Desktop image preview warm-up failed", nextError);
++          }
++        })
++        .finally(() => {
++          visitImagePreviewWarmPromiseCacheRef.current.delete(cacheKey);
++        });
++      visitImagePreviewWarmPromiseCacheRef.current.set(cacheKey, nextWarm);
++      return nextWarm;
++    }
++
+     async function loadVisitImageRecords(patientId: string, visitDate: string): Promise<SavedImagePreview[]> {
+       const cacheKey = buildVisitImageCacheKey(patientId, visitDate);
+       const cachedRecords = visitImageRecordCacheRef.current.get(cacheKey);
+@@ -307,6 +398,7 @@ export function useCaseWorkspaceSiteData({
+         }
+         selectedCaseImageCaseIdRef.current = currentCase.case_id;
+         commitCaseImages(currentCase.case_id, visitImages);
++        void ensureVisitImagePreviews(currentCase.case_id, currentCase.patient_id, currentCase.visit_date, visitImages);
+       } catch (nextError) {
+         if (isAbortError(nextError)) {
+           return;
+@@ -348,33 +440,29 @@ export function useCaseWorkspaceSiteData({
+       }
+ 
+       try {
+-        const nextGallery: Record<string, SavedImagePreview[]> = {};
+-        const galleryEntries = await Promise.all(
++        await Promise.all(
+           patientCases.map(async (caseItem) => {
+             const cachedImages = caseImageCacheRef.current.get(caseItem.case_id);
+-            if (hasSettledCaseImageCache(caseItem, cachedImages)) {
+-              return [caseItem.case_id, cachedImages] as const;
++            const images = hasSettledCaseImageCache(caseItem, cachedImages)
++              ? cachedImages
++              : await loadVisitImageRecords(caseItem.patient_id, caseItem.visit_date);
++            if (cancelled) {
++              return;
+             }
+-            const visitImages = await loadVisitImageRecords(caseItem.patient_id, caseItem.visit_date);
+-            return [caseItem.case_id, visitImages] as const;
++            caseImageCacheRef.current.set(caseItem.case_id, images);
++            startTransition(() => {
++              setPatientVisitGallery((current) => ({
++                ...current,
++                [caseItem.case_id]: images,
++              }));
++              if (caseItem.case_id === currentCase.case_id) {
++                selectedCaseImageCaseIdRef.current = currentCase.case_id;
++                setSelectedCaseImages(images);
++              }
++            });
++            void ensureVisitImagePreviews(caseItem.case_id, caseItem.patient_id, caseItem.visit_date, images);
+           }),
+         );
+-        for (const [caseId, images] of galleryEntries) {
+-          caseImageCacheRef.current.set(caseId, images);
+-          nextGallery[caseId] = images;
+-        }
+-
+-        if (cancelled) {
+-          return;
+-        }
+-
+-        const selectedImages = nextGallery[currentCase.case_id] ?? caseImageCacheRef.current.get(currentCase.case_id) ?? [];
+-        selectedCaseImageCaseIdRef.current = currentCase.case_id;
+-        setSelectedCaseImages(selectedImages);
+-        setPatientVisitGallery((current) => ({
+-          ...current,
+-          ...nextGallery,
+-        }));
+       } catch (nextError) {
+         if (isAbortError(nextError)) {
+           return;
+@@ -430,12 +518,24 @@ export function useCaseWorkspaceSiteData({
+       }
+     }
+ 
+-    void loadSelectedCaseImages();
+-    void loadPatientCaseGallery();
+-    void loadSelectedCaseHistory();
++    let cancelDeferredGallery: () => void = () => {};
++    let cancelDeferredHistory: () => void = () => {};
++    void loadSelectedCaseImages().finally(() => {
++      if (cancelled) {
++        return;
++      }
++      cancelDeferredGallery = scheduleDeferredBrowserTask(() => {
++        void loadPatientCaseGallery();
++      }, 120);
++      cancelDeferredHistory = scheduleDeferredBrowserTask(() => {
++        void loadSelectedCaseHistory();
++      }, 220);
++    });
+     return () => {
+       cancelled = true;
+       controller.abort();
++      cancelDeferredGallery();
++      cancelDeferredHistory();
+     };
+   }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
+ 
+diff --git a/frontend/components/case-workspace/validation-artifact-stack.tsx b/frontend/components/case-workspace/validation-artifact-stack.tsx
+index 4e2ae06..316cf48 100644
+--- a/frontend/components/case-workspace/validation-artifact-stack.tsx
++++ b/frontend/components/case-workspace/validation-artifact-stack.tsx
+@@ -1,26 +1,18 @@
+-"use client";
+-
+-import { useEffect, useRef, useState } from "react";
+-
+-import { pick, type Locale } from "../../lib/i18n";
+-import {
+-  panelImageCardClass,
+-  panelImageCopyClass,
+-  panelImageFallbackClass,
++"use client";
++
++import { useEffect, useRef, useState } from "react";
++
++import { pick, type Locale } from "../../lib/i18n";
++import { drawCachedMaskOverlay } from "./mask-overlay-renderer";
++import {
++  panelImageCardClass,
++  panelImageCopyClass,
++  panelImageFallbackClass,
+   panelImageOverlayClass,
+   panelImageOverlayFallbackClass,
+-  panelImagePreviewClass,
+-  panelImageStackClass,
+-} from "../ui/workspace-patterns";
+-
+-function loadHtmlImage(src: string): Promise<HTMLImageElement> {
+-  return new Promise((resolve, reject) => {
+-    const image = new Image();
+-    image.onload = () => resolve(image);
+-    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
+-    image.src = src;
+-  });
+-}
++  panelImagePreviewClass,
++  panelImageStackClass,
++} from "../ui/workspace-patterns";
+ 
+ function MaskOverlayPreview({
+   sourceUrl,
+@@ -39,81 +31,28 @@ function MaskOverlayPreview({
+   useEffect(() => {
+     let cancelled = false;
+ 
+-    async function renderOverlay() {
+-      if (!canvasRef.current || !sourceUrl || !maskUrl) {
+-        setOverlayReady(false);
+-        return;
+-      }
+-      try {
+-        const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(sourceUrl), loadHtmlImage(maskUrl)]);
+-        if (cancelled || !canvasRef.current) {
+-          return;
+-        }
+-
+-        const canvas = canvasRef.current;
+-        canvas.width = sourceImage.naturalWidth || sourceImage.width;
+-        canvas.height = sourceImage.naturalHeight || sourceImage.height;
+-        const context = canvas.getContext("2d");
+-        if (!context) {
+-          setOverlayReady(false);
+-          return;
+-        }
+-
+-        context.clearRect(0, 0, canvas.width, canvas.height);
+-        context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
+-
+-        const maskCanvas = document.createElement("canvas");
+-        maskCanvas.width = canvas.width;
+-        maskCanvas.height = canvas.height;
+-        const maskContext = maskCanvas.getContext("2d");
+-        if (!maskContext) {
+-          setOverlayReady(false);
+-          return;
+-        }
+-        maskContext.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+-        const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
+-        const sourceData = context.getImageData(0, 0, canvas.width, canvas.height);
+-        const finalData = context.createImageData(canvas.width, canvas.height);
+-        finalData.data.set(sourceData.data);
+-
+-        for (let index = 0; index < maskData.data.length; index += 4) {
+-          const intensity = maskData.data[index];
+-          if (intensity > 24) {
+-            const alpha = 0.34;
+-            finalData.data[index] = Math.round((1 - alpha) * sourceData.data[index] + alpha * tint[0]);
+-            finalData.data[index + 1] = Math.round((1 - alpha) * sourceData.data[index + 1] + alpha * tint[1]);
+-            finalData.data[index + 2] = Math.round((1 - alpha) * sourceData.data[index + 2] + alpha * tint[2]);
+-            finalData.data[index + 3] = 255;
+-          }
+-        }
+-
+-        for (let y = 1; y < canvas.height - 1; y += 1) {
+-          for (let x = 1; x < canvas.width - 1; x += 1) {
+-            const pixelIndex = (y * canvas.width + x) * 4;
+-            const inside = maskData.data[pixelIndex] > 24;
+-            if (!inside) {
+-              continue;
+-            }
+-            const neighbors = [
+-              ((y - 1) * canvas.width + x) * 4,
+-              ((y + 1) * canvas.width + x) * 4,
+-              (y * canvas.width + (x - 1)) * 4,
+-              (y * canvas.width + (x + 1)) * 4,
+-            ];
+-            if (neighbors.some((neighborIndex) => maskData.data[neighborIndex] <= 24)) {
+-              finalData.data[pixelIndex] = Math.min(255, tint[0] + 20);
+-              finalData.data[pixelIndex + 1] = Math.min(255, tint[1] + 20);
+-              finalData.data[pixelIndex + 2] = Math.min(255, tint[2] + 20);
+-              finalData.data[pixelIndex + 3] = 255;
+-            }
+-          }
+-        }
+-
+-        context.putImageData(finalData, 0, 0);
+-        setOverlayReady(true);
+-      } catch {
+-        if (!cancelled) {
+-          setOverlayReady(false);
++    async function renderOverlay() {
++      if (!canvasRef.current || !sourceUrl || !maskUrl) {
++        setOverlayReady(false);
++        return;
++      }
++      try {
++        const canvas = canvasRef.current;
++        if (cancelled || !canvas) {
++          return;
++        }
++        const pixelRatio = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
++        const maxDimension = Math.max(
++          320,
++          Math.round(Math.max(canvas.clientWidth || 0, canvas.clientHeight || 0, 320) * pixelRatio),
++        );
++        const rendered = await drawCachedMaskOverlay(canvas, sourceUrl, maskUrl, tint, { maxDimension });
++        if (!cancelled) {
++          setOverlayReady(rendered);
++        }
++      } catch {
++        if (!cancelled) {
++          setOverlayReady(false);
+         }
+       }
+     }
+@@ -128,13 +67,13 @@ function MaskOverlayPreview({
+     return <div className={panelImageFallbackClass}>{alt}</div>;
+   }
+ 
+-  return (
+-    <>
+-      <canvas ref={canvasRef} className={panelImageOverlayClass(overlayReady)} aria-label={alt} />
+-      {!overlayReady ? <img src={sourceUrl} alt={alt} className={panelImageOverlayFallbackClass(overlayReady)} /> : null}
+-    </>
+-  );
+-}
++  return (
++    <>
++      <canvas ref={canvasRef} className={panelImageOverlayClass(overlayReady)} aria-label={alt} />
++      {!overlayReady ? <img src={sourceUrl} alt={alt} decoding="async" className={panelImageOverlayFallbackClass(overlayReady)} /> : null}
++    </>
++  );
++}
+ 
+ type Props = {
+   locale: Locale;
+@@ -161,18 +100,18 @@ export function ValidationArtifactStack({
+ }: Props) {
+   return (
+     <div className={panelImageStackClass}>
+-      {roiCropUrl ? (
+-        <div className={panelImageCardClass}>
+-          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} />
+-          <div className={panelImageCopyClass}>
+-            <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
+-            <span>{pick(locale, "Cornea-focused crop", "각막 중심 crop")}</span>
++      {roiCropUrl ? (
++        <div className={panelImageCardClass}>
++          <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
++          <div className={panelImageCopyClass}>
++            <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
++            <span>{pick(locale, "Cornea-focused crop", "각막 중심 crop")}</span>
+           </div>
+         </div>
+       ) : null}
+       {gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl ? (
+         <div className={panelImageCardClass}>
+-          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} />
++          <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+           <div className={panelImageCopyClass}>
+             <strong>{pick(locale, "Grad-CAM", "Grad-CAM")}</strong>
+             <span>{pick(locale, "Model evidence overlay", "모델 근거 오버레이")}</span>
+@@ -181,7 +120,13 @@ export function ValidationArtifactStack({
+       ) : null}
+       {gradcamCorneaUrl ? (
+         <div className={panelImageCardClass}>
+-          <img src={gradcamCorneaUrl} alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")} className={panelImagePreviewClass} />
++          <img
++            src={gradcamCorneaUrl}
++            alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")}
++            className={panelImagePreviewClass}
++            loading="lazy"
++            decoding="async"
++          />
+           <div className={panelImageCopyClass}>
+             <strong>{pick(locale, "Cornea Grad-CAM", "각막 Grad-CAM")}</strong>
+             <span>{pick(locale, "Context branch attention", "문맥 branch attention")}</span>
+@@ -190,7 +135,13 @@ export function ValidationArtifactStack({
+       ) : null}
+       {gradcamLesionUrl ? (
+         <div className={panelImageCardClass}>
+-          <img src={gradcamLesionUrl} alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")} className={panelImagePreviewClass} />
++          <img
++            src={gradcamLesionUrl}
++            alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")}
++            className={panelImagePreviewClass}
++            loading="lazy"
++            decoding="async"
++          />
+           <div className={panelImageCopyClass}>
+             <strong>{pick(locale, "Lesion Grad-CAM", "병변 Grad-CAM")}</strong>
+             <span>{pick(locale, "Lesion-detail branch attention", "병변 세부 branch attention")}</span>
+@@ -211,12 +162,12 @@ export function ValidationArtifactStack({
+           </div>
+         </div>
+       ) : null}
+-      {lesionCropUrl ? (
+-        <div className={panelImageCardClass}>
+-          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} />
+-          <div className={panelImageCopyClass}>
+-            <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
+-            <span>{pick(locale, "Lesion-centered crop", "병변 중심 crop")}</span>
++      {lesionCropUrl ? (
++        <div className={panelImageCardClass}>
++          <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
++          <div className={panelImageCopyClass}>
++            <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
++            <span>{pick(locale, "Lesion-centered crop", "병변 중심 crop")}</span>
+           </div>
+         </div>
+       ) : null}

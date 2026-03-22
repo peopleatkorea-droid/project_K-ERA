@@ -218,7 +218,7 @@ export default function HomePage() {
   });
   const [institutionQuery, setInstitutionQuery] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
-  const [operationsSection, setOperationsSection] = useState<OperationsSection>("dashboard");
+  const [operationsSection, setOperationsSection] = useState<OperationsSection>("management");
   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
   const copy = {
     unableLoadInstitutions: pick(locale, "Unable to load institutions.", "湲곌? 紐⑸줉??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
@@ -863,7 +863,7 @@ export default function HomePage() {
   function handleWorkspaceLogout() {
     handleLogout();
     setWorkspaceMode("canvas");
-    setOperationsSection("dashboard");
+    setOperationsSection("management");
   }
 
   const landingHospitalChips = [
@@ -1146,7 +1146,7 @@ export default function HomePage() {
         onExportManifest={handleManifestDownload}
         onLogout={handleWorkspaceLogout}
         onOpenOperations={(section) => {
-          setOperationsSection(section ?? "dashboard");
+          setOperationsSection(section ?? "management");
           setWorkspaceMode("operations");
         }}
         onSiteDataChanged={async (siteId) => {
