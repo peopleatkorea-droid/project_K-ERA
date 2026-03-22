@@ -298,7 +298,11 @@ def build_auth_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown site.")
         requested_site_label = (
             payload.requested_site_label.strip()
-            or str(requested_site.get("display_name") if requested_site is not None else requested_institution.get("name"))
+            or (
+                cp.site_display_label(requested_site, requested_site_id)
+                if requested_site is not None
+                else str(requested_institution.get("name") or requested_site_id)
+            )
         )
         requested_site_source = "site" if requested_site is not None else "institution_directory"
         request_record = cp.submit_access_request(

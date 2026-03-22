@@ -102,6 +102,20 @@ function requireDesktopGoogleOAuthConfig(): { clientId: string; clientSecret: st
   return { clientId, clientSecret };
 }
 
+export function desktopGoogleOAuthStatus(): {
+  client_id_configured: boolean;
+  client_secret_configured: boolean;
+  configured: boolean;
+} {
+  const clientId = desktopGoogleClientId();
+  const clientSecret = desktopGoogleClientSecret();
+  return {
+    client_id_configured: Boolean(clientId),
+    client_secret_configured: Boolean(clientSecret),
+    configured: Boolean(clientId && clientSecret),
+  };
+}
+
 function validateDesktopRedirectUri(rawRedirectUri: string): string {
   const redirectUri = trimText(rawRedirectUri);
   if (!redirectUri) {

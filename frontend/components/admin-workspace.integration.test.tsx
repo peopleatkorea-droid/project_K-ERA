@@ -1,6 +1,6 @@
 import React from "react";
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { LocaleProvider } from "../lib/i18n";
@@ -1524,6 +1524,132 @@ describe("AdminWorkspace integration", () => {
     expect(await screen.findByText("Recent auto-approved researcher access")).toBeInTheDocument();
     expect(screen.getByText("researcher@example.com")).toBeInTheDocument();
     expect(screen.getByText("Immediate access")).toBeInTheDocument();
+  });
+
+  it("raises a live toast and badges when new request activity arrives in the background", async () => {
+    vi.useFakeTimers();
+    const flushMicrotasks = async (count = 6) => {
+      for (let index = 0; index < count; index += 1) {
+        await Promise.resolve();
+      }
+    };
+    apiMocks.fetchAdminOverview
+      .mockResolvedValueOnce({
+        site_count: 1,
+        model_version_count: 1,
+        pending_access_requests: 0,
+        auto_approved_access_requests: 0,
+        pending_model_updates: 0,
+        current_model_version: "global-http-seed",
+        aggregation_count: 0,
+      })
+      .mockResolvedValue({
+        site_count: 1,
+        model_version_count: 1,
+        pending_access_requests: 1,
+        auto_approved_access_requests: 1,
+        pending_model_updates: 0,
+        current_model_version: "global-http-seed",
+        aggregation_count: 0,
+      });
+    apiMocks.fetchAccessRequests.mockImplementation((_token, statusFilter = "pending") =>
+      Promise.resolve(
+        statusFilter === "approved"
+          ? [
+              {
+                request_id: "access_auto_1",
+                user_id: "user_researcher",
+                email: "auto@example.com",
+                requested_site_id: "SITE_A",
+                requested_site_label: "Site A",
+                requested_site_source: "site",
+                resolved_site_id: "SITE_A",
+                resolved_site_label: "Site A",
+                requested_role: "researcher",
+                message: "Immediate access",
+                status: "approved",
+                reviewed_by: null,
+                reviewer_notes: "Automatically approved researcher access request.",
+                created_at: "2026-03-17T00:00:00Z",
+                reviewed_at: "2026-03-17T00:01:00Z",
+              },
+            ]
+          : [
+              {
+                request_id: "access_pending_1",
+                user_id: "user_researcher",
+                email: "pending@example.com",
+                requested_site_id: "SITE_A",
+                requested_site_label: "Site A",
+                requested_site_source: "site",
+                resolved_site_id: "SITE_A",
+                resolved_site_label: "Site A",
+                requested_role: "researcher",
+                message: "Need access",
+                status: "pending",
+                reviewed_by: null,
+                reviewer_notes: "",
+                created_at: "2026-03-17T00:00:00Z",
+                reviewed_at: null,
+              },
+            ],
+      ),
+    );
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="dashboard"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(apiMocks.fetchAdminWorkspaceBootstrap).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+      await flushMicrotasks();
+    });
+
+    expect(screen.getByText("1 new pending access request, 1 new auto-approved researcher access detected.")).toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /Access requests/i })).getByText("2")).toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /Recent alerts/i })).getByText("1")).toBeInTheDocument();
   });
 
   it("keeps a rejected request removed even if the follow-up refresh fails", async () => {

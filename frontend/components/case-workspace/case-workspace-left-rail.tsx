@@ -144,7 +144,7 @@ export function CaseWorkspaceLeftRail({
             </button>
           ))}
         </div>
-        {!fastMode && selectedSiteId && summary ? (
+        {selectedSiteId && summary ? (
           <MetricGrid className={railMetricGridClass} columns={2}>
             <div className={railMetricCardClass}>
               <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
@@ -157,10 +157,6 @@ export function CaseWorkspaceLeftRail({
             <div className={railMetricCardClass}>
               <strong className={railMetricValueClass}>{summary.n_images ?? 0}</strong>
               <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
-            </div>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{summary.n_validation_runs ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "validations", "검증")}</span>
             </div>
           </MetricGrid>
         ) : null}
@@ -182,7 +178,7 @@ export function CaseWorkspaceLeftRail({
             {pick(
               locale,
               "The writing view stays focused on one clinical case. The dashboard metrics return once you switch back to list or review mode.",
-              "작성 화면은 한 건의 임상 케이스에만 집중합니다. 리스트나 리뷰 모드로 돌아가면 운영 지표가 다시 보입니다."
+              "작성 화면은 한 건의 임상 케이스에만 집중합니다. 리스트나 리뷰 모드로 돌아가면 운영 지표가 다시 보입니다.",
             )}
           </p>
           <div className={railActivityListClass}>
@@ -204,7 +200,7 @@ export function CaseWorkspaceLeftRail({
             <div className="grid gap-1">
               <span className={railLabelClass}>{pick(locale, "Validation", "검증")}</span>
               <p className="m-0 text-sm leading-6 text-muted">
-                {pick(locale, "Run the latest site-level check from here", "여기에서 최신 병원 단위 검증을 실행합니다")}
+                {pick(locale, "Run the latest site-level check from here", "여기에서 최신 병원 단위 검증을 실행합니다.")}
               </p>
             </div>
             <Button
@@ -246,11 +242,13 @@ export function CaseWorkspaceLeftRail({
               {pick(
                 locale,
                 "Recent hospital validation history loads only when you open a case.",
-                "최근 병원 검증 히스토리는 케이스를 열 때만 불러옵니다."
+                "최근 병원 검증 히스토리는 케이스를 열 때만 불러옵니다.",
               )}
             </div>
           ) : (
-            <div className={emptySurfaceClass}>{pick(locale, "No hospital-level validation has been run yet.", "아직 병원 단위 검증이 실행되지 않았습니다.")}</div>
+            <div className={emptySurfaceClass}>
+              {pick(locale, "No hospital-level validation has been run yet.", "아직 병원 단위 검증이 실행되지 않았습니다.")}
+            </div>
           )}
           {!validationHistoryDeferred ? (
             <div className={railActivityListClass}>
@@ -269,7 +267,11 @@ export function CaseWorkspaceLeftRail({
           ) : null}
           {!canRunValidation ? (
             <p className={railCopyClass}>
-              {pick(locale, "Viewer accounts can review metrics but cannot run hospital validation.", "뷰어 계정은 지표만 확인할 수 있고 병원 검증은 실행할 수 없습니다.")}
+              {pick(
+                locale,
+                "Viewer accounts can review metrics but cannot run hospital validation.",
+                "뷰어 계정은 지표만 확인할 수 있고 병원 검증은 실행할 수 없습니다.",
+              )}
             </p>
           ) : null}
         </Card>

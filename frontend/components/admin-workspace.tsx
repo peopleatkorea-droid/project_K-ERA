@@ -340,6 +340,11 @@ export function AdminWorkspace({
   });
   const selectedSiteRecord = visibleRailSites.find((site) => site.site_id === selectedSiteId) ?? selectedManagedSite ?? null;
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
+  const requestActivityCount = Math.max(
+    0,
+    Number(overview?.pending_access_requests ?? pendingRequests.length) +
+      Number(overview?.auto_approved_access_requests ?? autoApprovedRequests.length),
+  );
   const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
   const alertsPanelRef = useRef<HTMLDivElement | null>(null);
   const alertsCopy = {
@@ -471,7 +476,12 @@ export function AdminWorkspace({
                 type="button"
                 onClick={() => setSection(value as typeof section)}
               >
-                {label}
+                <span className="flex items-center justify-between gap-3">
+                  <span>{label}</span>
+                  {value === "requests" && requestActivityCount > 0 ? (
+                    <span className={docSiteBadgeClass}>{requestActivityCount}</span>
+                  ) : null}
+                </span>
               </button>
             ))}
             </div>
@@ -540,7 +550,6 @@ export function AdminWorkspace({
             ) : null}
             {summary ? (
               <div className="grid gap-2 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm leading-6 text-muted">
-                <div className="font-medium text-ink">{selectedSiteLabel ?? common.notAvailable}</div>
                 <div>{`${summary.n_patients} ${pick(locale, "patients", "?섏옄")} / ${summary.n_images} ${pick(locale, "images", "?대?吏")}`}</div>
               </div>
             ) : null}

@@ -2,10 +2,16 @@
 
 import type { ReactNode } from "react";
 
+import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionHeadClass } from "../ui/workspace-patterns";
-import type { AiClinicResponse, AiClinicSimilarCaseRecord } from "../../lib/api";
+import type {
+  AiClinicResponse,
+  AiClinicSimilarCaseRecord,
+  CaseValidationCompareResponse,
+  CaseValidationResponse,
+} from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
 
 type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
@@ -18,7 +24,13 @@ type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
 
 type Props = {
   locale: Locale;
+  validationResult: CaseValidationResponse | null;
+  modelCompareResult: CaseValidationCompareResponse | null;
   result: AiClinicPreviewResponse | null;
+  aiClinicPreviewBusy: boolean;
+  aiClinicExpandedBusy: boolean;
+  canExpandAiClinic: boolean;
+  onExpandAiClinic: () => void;
   notAvailableLabel: string;
   aiClinicTextUnavailableLabel: string;
   displayVisitReference: (visitReference: string) => string;
@@ -38,7 +50,6 @@ function FieldGrid({ items }: { items: FieldItem[] }) {
   if (visibleItems.length === 0) {
     return null;
   }
-
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {visibleItems.map((item) => (
@@ -51,15 +62,7 @@ function FieldGrid({ items }: { items: FieldItem[] }) {
   );
 }
 
-function Section({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: ReactNode;
-}) {
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
     <Card as="section" variant="nested" className="grid gap-4 p-5">
       <SectionHeader title={title} titleAs="h4" description={subtitle} className={docSectionHeadClass} />
@@ -97,60 +100,49 @@ function joinValues(values: string[] | undefined, fallback: string) {
   return values && values.length > 0 ? values.join(" / ") : fallback;
 }
 
-function formatProfileLabel(result: AiClinicPreviewResponse, locale: Locale) {
-  return result.ai_clinic_profile?.label ?? pick(locale, "AI Clinic standard", "AI Clinic standard");
-}
-
-function formatProfileDescription(result: AiClinicPreviewResponse, locale: Locale) {
-  return (
-    result.ai_clinic_profile?.description ??
-    pick(
-      locale,
-      "AI Clinic combines similar-patient retrieval, narrative evidence, differential ranking, and workflow guidance in one review flow.",
-      "AI Clinic은 유사 환자 검색, 서술 근거, differential ranking, 워크플로 가이드를 하나의 리뷰 흐름으로 묶습니다."
-    )
+function buildReadySummary(
+  validationResult: CaseValidationResponse | null,
+  modelCompareResult: CaseValidationCompareResponse | null,
+) {
+  if (!validationResult) {
+    return null;
+  }
+  const successfulComparisons = (modelCompareResult?.comparisons ?? []).filter(
+    (item) => !item.error && item.summary?.predicted_label
   );
-}
-
-function formatVisualEngineLabel(value: string | null | undefined, locale: Locale) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "classifier_penultimate_feature") {
-    return pick(locale, "Model-space similarity", "모델 공간 유사도");
-  }
-  if (normalized === "dinov2_visual_embedding") {
-    return pick(locale, "Visual similarity", "시각 유사도");
-  }
-  if (normalized === "hybrid_classifier_dinov2") {
-    return pick(locale, "Combined visual and model-space similarity", "시각 유사도 + 모델 공간 유사도 결합");
-  }
-  if (normalized === "ai_clinic_standard") {
-    return pick(locale, "AI Clinic standard retrieval", "AI Clinic 표준 검색");
-  }
-  return value || "";
-}
-
-function formatNarrativeEngineLabel(value: string | null | undefined, locale: Locale) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "biomedclip_image_to_text") {
-    return pick(locale, "Image-to-case narrative retrieval", "이미지-서술 근거 검색");
-  }
-  if (normalized === "unavailable") {
-    return pick(locale, "Unavailable", "사용 불가");
-  }
-  return value || "";
-}
-
-function formatWorkflowProviderLabel(result: AiClinicPreviewResponse, locale: Locale) {
-  return (
-    result.workflow_recommendation?.provider_label ??
-    result.technical_details?.workflow_guidance_engine?.provider_label ??
-    pick(locale, "Rules-based local guidance", "규칙 기반 로컬 가이드")
-  );
+  const comparedLabels = successfulComparisons
+    .map((item) => String(item.summary?.predicted_label || "").trim())
+    .filter((item) => item.length > 0);
+  const anchorLabel = String(validationResult.summary.predicted_label || "").trim() || null;
+  const successfulModelCount = comparedLabels.length > 0 ? comparedLabels.length : 1;
+  const agreementCount = anchorLabel
+    ? comparedLabels.length > 0
+      ? comparedLabels.filter((item) => item === anchorLabel).length
+      : 1
+    : 0;
+  return {
+    anchorLabel,
+    anchorModelName:
+      validationResult.model_version.version_name ||
+      validationResult.summary.model_version ||
+      validationResult.model_version.architecture ||
+      null,
+    successfulModelCount,
+    agreementCount,
+    disagreementCount: Math.max(0, successfulModelCount - agreementCount),
+    predictionProbability: validationResult.summary.prediction_probability,
+  };
 }
 
 export function AiClinicResult({
   locale,
+  validationResult,
+  modelCompareResult,
   result,
+  aiClinicPreviewBusy,
+  aiClinicExpandedBusy,
+  canExpandAiClinic,
+  onExpandAiClinic,
   notAvailableLabel,
   aiClinicTextUnavailableLabel,
   displayVisitReference,
@@ -159,131 +151,104 @@ export function AiClinicResult({
   formatProbability,
   formatMetadataField,
 }: Props) {
+  const readySummary = buildReadySummary(validationResult, modelCompareResult);
+
   if (!result) {
     return (
-      <p className="m-0 text-sm leading-6 text-muted">
-        {pick(
-          locale,
-          "AI Clinic will use the validated model version to retrieve similar patient cases from the local hospital dataset.",
-          "AI Clinic은 검증된 모델 버전으로 병원 내 유사 환자 케이스를 검색합니다."
-        )}
-      </p>
+      <div className="grid gap-4">
+        <Message>
+          {pick(
+            locale,
+            "AI Clinic is ready. Use the saved validation result as the anchor, pull similar cases first, then expand into narrative evidence only when needed.",
+            "AI Clinic 준비가 끝났습니다. 저장된 validation 결과를 anchor로 쓰고, 먼저 유사 케이스를 불러온 뒤 필요할 때만 확장 근거를 추가로 불러옵니다."
+          )}
+        </Message>
+        {readySummary ? (
+          <Section title={pick(locale, "AI Clinic ready", "AI Clinic 준비 상태")}>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard
+                label={pick(locale, "Anchor label", "Anchor 라벨")}
+                value={
+                  readySummary.anchorLabel
+                    ? translateOption(locale, "cultureCategory", readySummary.anchorLabel)
+                    : notAvailableLabel
+                }
+              />
+              <KpiCard label={pick(locale, "Compared models", "비교 모델 수")} value={readySummary.successfulModelCount} />
+              <KpiCard
+                label={pick(locale, "Agreement", "일치 수")}
+                value={`${readySummary.agreementCount} / ${readySummary.successfulModelCount}`}
+              />
+              <KpiCard
+                label={pick(locale, "Anchor confidence", "Anchor confidence")}
+                value={formatProbability(readySummary.predictionProbability, notAvailableLabel)}
+              />
+            </div>
+            <FieldGrid
+              items={[
+                { label: pick(locale, "Anchor model", "Anchor 모델"), value: readySummary.anchorModelName ?? notAvailableLabel },
+                { label: pick(locale, "Disagreement", "불일치 수"), value: String(readySummary.disagreementCount) },
+              ]}
+            />
+          </Section>
+        ) : null}
+      </div>
     );
   }
 
-  const queryCase = result.query_case;
+  const isExpanded = result.analysis_stage === "expanded";
   const classification = result.classification_context;
-  const profileLabel = formatProfileLabel(result, locale);
-  const profileDescription = formatProfileDescription(result, locale);
-  const similarCaseEngine = result.technical_details?.similar_case_engine;
-  const narrativeEngine = result.technical_details?.narrative_evidence_engine;
-  const workflowProviderLabel = formatWorkflowProviderLabel(result, locale);
+  const queryCase = result.query_case;
+  const narrativeUnavailable = result.text_retrieval_mode === "unavailable";
 
   return (
     <div className="grid gap-4">
-      <Section title={pick(locale, "AI Clinic overview", "AI Clinic 개요")} subtitle={profileLabel}>
+      <Section
+        title={pick(locale, "AI Clinic overview", "AI Clinic 개요")}
+        subtitle={result.ai_clinic_profile?.label ?? pick(locale, "AI Clinic standard", "AI Clinic standard")}
+      >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <KpiCard label={pick(locale, "similar patients", "유사 환자")} value={result.similar_cases.length} />
           <KpiCard label={pick(locale, "eligible cases", "검색 가능 케이스")} value={result.eligible_candidate_count} />
-          <KpiCard label={pick(locale, "narrative evidence", "서술 근거")} value={result.text_evidence.length} />
           <KpiCard
-            label={pick(locale, "workflow steps", "워크플로 단계")}
-            value={result.workflow_recommendation?.recommended_steps.length ?? 0}
+            label={isExpanded ? pick(locale, "text evidence", "텍스트 근거") : pick(locale, "compared models", "비교 모델 수")}
+            value={isExpanded ? result.text_evidence.length : (readySummary?.successfulModelCount ?? 0)}
+          />
+          <KpiCard
+            label={isExpanded ? pick(locale, "workflow steps", "workflow steps") : pick(locale, "agreement", "일치 수")}
+            value={
+              isExpanded
+                ? (result.workflow_recommendation?.recommended_steps.length ?? 0)
+                : readySummary
+                  ? `${readySummary.agreementCount} / ${readySummary.successfulModelCount}`
+                  : notAvailableLabel
+            }
           />
         </div>
-
-        <Message>{profileDescription}</Message>
-
-        <details className="rounded-[18px] border border-border bg-surface px-4 py-3">
-          <summary className="cursor-pointer text-sm font-semibold text-ink">
-            {pick(locale, "Technical details", "기술 세부정보")}
-          </summary>
-          <div className="mt-4 grid gap-4">
-            <FieldGrid
-              items={[
-                {
-                  label: pick(locale, "Similar-case engine", "유사 증례 엔진"),
-                  value: formatVisualEngineLabel(similarCaseEngine?.mode ?? result.retrieval_mode, locale) || notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Narrative evidence engine", "서술 근거 엔진"),
-                  value: formatNarrativeEngineLabel(narrativeEngine?.mode ?? result.text_retrieval_mode, locale) || notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Workflow guidance provider", "워크플로 가이드 제공자"),
-                  value: workflowProviderLabel || notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Execution device", "실행 디바이스"),
-                  value: result.execution_device,
-                },
-              ]}
-            />
-          </div>
-        </details>
-      </Section>
-      <Section title={pick(locale, "Retrieval overview", "검색 개요")}>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <KpiCard label={pick(locale, "similar patients", "유사 환자")} value={result.similar_cases.length} />
-          <KpiCard label={pick(locale, "eligible cases", "검색 가능 케이스")} value={result.eligible_candidate_count} />
-          <KpiCard label={pick(locale, "top-k", "top-k")} value={result.top_k} />
-          <KpiCard label={pick(locale, "text evidence", "텍스트 근거")} value={result.text_evidence.length} />
-          <KpiCard label={pick(locale, "retrieval model", "검색 모델")} value={result.model_version.version_name ?? notAvailableLabel} />
-          <KpiCard label={pick(locale, "device", "디바이스")} value={result.execution_device} />
-          <KpiCard label={pick(locale, "retrieval mode", "검색 모드")} value={result.retrieval_mode} />
-          <KpiCard label={pick(locale, "vector index", "벡터 인덱스")} value={result.vector_index_mode ?? notAvailableLabel} />
-        </div>
-
-        <FieldGrid
-          items={[
-            {
-              label: pick(locale, "Text retrieval", "텍스트 검색"),
-              value: result.text_retrieval_mode ?? notAvailableLabel,
-            },
-            {
-              label: pick(locale, "Text embedding", "텍스트 임베딩"),
-              value: result.text_embedding_model ?? notAvailableLabel,
-            },
-            {
-              label: pick(locale, "Metadata reranking", "메타데이터 재정렬"),
-              value: result.metadata_reranking ?? notAvailableLabel,
-            },
-            {
-              label: pick(locale, "Backends", "백엔드"),
-              value: joinValues(result.retrieval_backends_used, notAvailableLabel),
-            },
-          ]}
-        />
-
-        <p className="m-0 text-sm leading-6 text-muted">
-          {pick(
-            locale,
-            "Top-K retrieval is limited to one case per patient, so the result list stays patient-diverse.",
-            "Top-K 검색은 환자당 한 케이스로 제한되어 결과 목록의 환자 다양성을 유지합니다."
-          )}
-        </p>
-
-        {result.text_retrieval_mode === "unavailable" ? (
+        <Message>
+          {result.ai_clinic_profile?.description ??
+            pick(
+              locale,
+              "AI Clinic combines similar-patient retrieval, narrative evidence, differential ranking, and workflow guidance in one review flow.",
+              "AI Clinic은 유사 환자 검색, narrative evidence, differential ranking, workflow guidance를 하나의 review 흐름으로 묶습니다."
+            )}
+        </Message>
+        {!isExpanded ? (
           <Message>
-            {result.text_retrieval_error
-              ? `${aiClinicTextUnavailableLabel} (${result.text_retrieval_error})`
-              : aiClinicTextUnavailableLabel}
+            {pick(
+              locale,
+              "Similar cases are ready. Load evidence only when you want narrative support, differential ranking, and workflow guidance.",
+              "유사 케이스 검색은 준비됐습니다. narrative support, differential ranking, workflow guidance가 필요할 때만 확장 근거를 불러오세요."
+            )}
           </Message>
         ) : null}
-        {result.retrieval_warning ? <Message>{result.retrieval_warning}</Message> : null}
       </Section>
 
       <Section title={pick(locale, "Query context", "질의 케이스 컨텍스트")}>
         <FieldGrid
           items={[
-            {
-              label: pick(locale, "Patient / visit", "환자 / 방문"),
-              value: `${queryCase.patient_id} / ${displayVisitReference(queryCase.visit_date)}`,
-            },
-            {
-              label: pick(locale, "Case ID", "케이스 ID"),
-              value: queryCase.case_id,
-            },
+            { label: pick(locale, "Patient / visit", "환자 / 방문"), value: `${queryCase.patient_id} / ${displayVisitReference(queryCase.visit_date)}` },
+            { label: pick(locale, "Case ID", "케이스 ID"), value: queryCase.case_id },
             {
               label: pick(locale, "Demographics", "기본 정보"),
               value: `${translateOption(locale, "sex", queryCase.sex ?? "unknown")} / ${queryCase.age ?? notAvailableLabel}`,
@@ -293,12 +258,8 @@ export function AiClinicResult({
               value: translateOption(locale, "view", queryCase.representative_view ?? "white"),
             },
             {
-              label: pick(locale, "Visit status", "방문 상태"),
-              value: translateOption(locale, "visitStatus", queryCase.visit_status ?? "active"),
-            },
-            {
-              label: pick(locale, "Contact lens", "콘택트렌즈"),
-              value: translateOption(locale, "contactLens", queryCase.contact_lens_use ?? "unknown"),
+              label: pick(locale, "Image quality", "이미지 품질"),
+              value: `${pick(locale, "Q-score", "Q-score")} ${formatImageQualityScore(queryCase.quality_score, notAvailableLabel)}`,
             },
             {
               label: pick(locale, "Predisposing factors", "선행 인자"),
@@ -307,105 +268,68 @@ export function AiClinicResult({
                 notAvailableLabel
               ),
             },
-            {
-              label: pick(locale, "Image quality", "이미지 품질"),
-              value: `${pick(locale, "Q-score", "Q-score")} ${formatImageQualityScore(queryCase.quality_score, notAvailableLabel)} / ${pick(locale, "View score", "View score")} ${formatImageQualityScore(queryCase.view_score, notAvailableLabel)}`,
-            },
-            {
-              label: pick(locale, "Smear / polymicrobial", "도말 / 다균종"),
-              value: `${queryCase.smear_result ?? notAvailableLabel} / ${queryCase.polymicrobial ? pick(locale, "yes", "예") : pick(locale, "no", "아니오")}`,
-            },
           ]}
         />
-
-        {classification ? (
-          <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
-            <SectionHeader title={pick(locale, "Validation context", "검증 컨텍스트")} titleAs="h4" className={docSectionHeadClass} />
-            <FieldGrid
-              items={[
-                {
-                  label: pick(locale, "Validation ID", "검증 ID"),
-                  value: classification.validation_id ?? notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Model version", "모델 버전"),
-                  value: classification.model_version ?? classification.model_version_id ?? notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Predicted label", "예측 라벨"),
-                  value: classification.predicted_label
+        {(classification || readySummary) ? (
+          <FieldGrid
+            items={[
+              {
+                label: pick(locale, "Validation model", "validation 모델"),
+                value:
+                  classification?.model_version ??
+                  validationResult?.model_version.version_name ??
+                  readySummary?.anchorModelName ??
+                  notAvailableLabel,
+              },
+              {
+                label: pick(locale, "Predicted label", "예측 라벨"),
+                value:
+                  classification?.predicted_label
                     ? translateOption(locale, "cultureCategory", classification.predicted_label)
-                    : notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "True label", "실제 라벨"),
-                  value: classification.true_label
-                    ? translateOption(locale, "cultureCategory", classification.true_label)
-                    : notAvailableLabel,
-                },
-                {
-                  label: pick(locale, "Prediction probability", "예측 확률"),
-                  value: formatProbability(classification.prediction_probability, notAvailableLabel),
-                },
-                {
-                  label: pick(locale, "Correct", "정답 여부"),
-                  value:
-                    classification.is_correct === null || classification.is_correct === undefined
-                      ? notAvailableLabel
-                      : classification.is_correct
-                        ? pick(locale, "correct", "정답")
-                        : pick(locale, "incorrect", "오답"),
-                },
-              ]}
-            />
-          </Card>
+                    : readySummary?.anchorLabel
+                      ? translateOption(locale, "cultureCategory", readySummary.anchorLabel)
+                      : notAvailableLabel,
+              },
+              {
+                label: pick(locale, "Prediction probability", "예측 확률"),
+                value: formatProbability(
+                  classification?.prediction_probability ?? readySummary?.predictionProbability,
+                  notAvailableLabel
+                ),
+              },
+              {
+                label: pick(locale, "Agreement", "일치 수"),
+                value: readySummary ? `${readySummary.agreementCount} / ${readySummary.successfulModelCount}` : notAvailableLabel,
+              },
+            ]}
+          />
         ) : null}
       </Section>
 
       <Section
         title={pick(locale, "Similar patients", "유사 환자")}
-        subtitle={
-          result.similar_cases.length > 0
-            ? pick(locale, `${result.similar_cases.length} ranked results`, `${result.similar_cases.length}개 순위 결과`)
-            : undefined
-        }
+        subtitle={pick(locale, `${result.similar_cases.length} ranked results`, `${result.similar_cases.length}개 순위 결과`)}
       >
         {result.similar_cases.length === 0 ? (
           <Message>
             {pick(
               locale,
               "No eligible similar patient was found for this model and crop setup yet.",
-              "현재 모델과 crop 설정 기준으로 검색 가능한 유사 환자가 아직 없습니다."
+              "현재 이 모델과 crop 설정 기준으로 검색 가능한 유사 환자가 아직 없습니다."
             )}
           </Message>
         ) : (
           <div className="grid gap-4">
             {result.similar_cases.map((item, index) => (
-              <Card
-                key={`${item.patient_id}-${item.visit_date}`}
-                as="article"
-                variant="nested"
-                className="grid gap-4 border border-border/80 p-4"
-              >
+              <Card key={`${item.patient_id}-${item.visit_date}`} as="article" variant="nested" className="grid gap-4 border border-border/80 p-4">
                 <SectionHeader
                   title={pick(locale, `Patient ${index + 1}`, `환자 ${index + 1}`)}
                   titleAs="h4"
                   description={displayVisitReference(item.visit_date)}
-                  aside={
-                    <div className="flex flex-wrap gap-2">
-                      <Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>
-                      {typeof item.classifier_similarity === "number" ? (
-                        <Badge>{`${pick(locale, "Classifier", "분류기")} ${formatSemanticScore(item.classifier_similarity, notAvailableLabel)}`}</Badge>
-                      ) : null}
-                      {typeof item.dinov2_similarity === "number" ? (
-                        <Badge>{`DINOv2 ${formatSemanticScore(item.dinov2_similarity, notAvailableLabel)}`}</Badge>
-                      ) : null}
-                    </div>
-                  }
+                  aside={<Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>}
                 />
-
-                <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
-                  <div className="min-w-0">
+                <div className="grid gap-4 xl:grid-cols-[240px_minmax(0,1fr)]">
+                  <div>
                     {item.preview_url ? (
                       <Card as="div" variant="panel" className="overflow-hidden">
                         <img
@@ -415,44 +339,22 @@ export function AiClinicResult({
                           loading="lazy"
                           decoding="async"
                         />
-                        <div className="grid gap-1 p-4">
-                          <strong className="text-sm font-semibold text-ink">{pick(locale, "Representative image", "대표 이미지")}</strong>
-                          <span className="text-sm text-muted">{item.culture_species || notAvailableLabel}</span>
-                        </div>
                       </Card>
                     ) : (
-                      <Message>{pick(locale, "Representative image preview is unavailable.", "대표 이미지 미리보기를 불러올 수 없습니다.")}</Message>
+                      <Message>
+                        {aiClinicPreviewBusy && item.representative_image_id
+                          ? pick(locale, "Loading representative image...", "대표 이미지를 불러오는 중입니다.")
+                          : pick(locale, "Representative image preview is unavailable.", "대표 이미지 미리보기를 불러올 수 없습니다.")}
+                      </Message>
                     )}
                   </div>
-
                   <div className="grid gap-4">
                     <FieldGrid
                       items={[
-                        {
-                          label: pick(locale, "Patient / code", "환자 / 코드"),
-                          value: item.local_case_code || item.chart_alias || item.patient_id,
-                        },
+                        { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
                         {
                           label: pick(locale, "Culture", "배양"),
                           value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
-                        },
-                        {
-                          label: pick(locale, "Base similarity", "기본 유사도"),
-                          value:
-                            typeof item.base_similarity === "number"
-                              ? formatSemanticScore(item.base_similarity, notAvailableLabel)
-                              : notAvailableLabel,
-                        },
-                        {
-                          label: pick(locale, "Metadata adjustment", "메타데이터 보정"),
-                          value:
-                            typeof item.metadata_reranking?.adjustment === "number"
-                              ? `${item.metadata_reranking.adjustment >= 0 ? "+" : ""}${formatSemanticScore(item.metadata_reranking.adjustment, notAvailableLabel)}`
-                              : notAvailableLabel,
-                        },
-                        {
-                          label: pick(locale, "Demographics", "기본 정보"),
-                          value: `${translateOption(locale, "sex", item.sex ?? "unknown")} / ${item.age ?? notAvailableLabel}`,
                         },
                         {
                           label: pick(locale, "View / visit status", "View / 방문 상태"),
@@ -462,46 +364,27 @@ export function AiClinicResult({
                           label: pick(locale, "Image quality", "이미지 품질"),
                           value: `${pick(locale, "Q-score", "Q-score")} ${formatImageQualityScore(item.quality_score, notAvailableLabel)}`,
                         },
-                        {
-                          label: pick(locale, "Contact lens", "콘택트렌즈"),
-                          value: translateOption(locale, "contactLens", item.contact_lens_use ?? "unknown"),
-                        },
-                        {
-                          label: pick(locale, "Smear / polymicrobial", "도말 / 다균종"),
-                          value: `${item.smear_result ?? notAvailableLabel} / ${item.polymicrobial ? pick(locale, "yes", "예") : pick(locale, "no", "아니오")}`,
-                        },
-                        {
-                          label: pick(locale, "Predisposing factors", "선행 인자"),
-                          value: joinValues(
-                            (item.predisposing_factor ?? []).map((factor) => translateOption(locale, "predisposing", factor)),
-                            notAvailableLabel
-                          ),
-                        },
                       ]}
                     />
-
                     {item.metadata_reranking?.alignment ? (
-                      <Card as="div" variant="nested" className="grid gap-4 border border-border/80 p-4">
-                        <SectionHeader title={pick(locale, "Metadata alignment", "메타데이터 정렬")} titleAs="h4" className={docSectionHeadClass} />
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
-                            <span className="block text-[0.82rem] text-muted">{pick(locale, "Matched", "일치")}</span>
-                            <strong className="mt-1 block text-sm leading-6 text-ink">
-                              {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0
+                      <FieldGrid
+                        items={[
+                          {
+                            label: pick(locale, "Matched metadata", "일치 메타데이터"),
+                            value:
+                              (item.metadata_reranking.alignment.matched_fields ?? []).length > 0
                                 ? (item.metadata_reranking.alignment.matched_fields ?? []).map(formatMetadataField).join(", ")
-                                : notAvailableLabel}
-                            </strong>
-                          </div>
-                          <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
-                            <span className="block text-[0.82rem] text-muted">{pick(locale, "Conflicts", "충돌")}</span>
-                            <strong className="mt-1 block text-sm leading-6 text-ink">
-                              {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
+                                : notAvailableLabel,
+                          },
+                          {
+                            label: pick(locale, "Conflicted metadata", "충돌 메타데이터"),
+                            value:
+                              (item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
                                 ? (item.metadata_reranking.alignment.conflicted_fields ?? []).map(formatMetadataField).join(", ")
-                                : notAvailableLabel}
-                            </strong>
-                          </div>
-                        </div>
-                      </Card>
+                                : notAvailableLabel,
+                          },
+                        ]}
+                      />
                     ) : null}
                   </div>
                 </div>
@@ -511,23 +394,32 @@ export function AiClinicResult({
         )}
       </Section>
 
+      {!isExpanded ? (
+        <Section title={pick(locale, "Expanded evidence", "확장 근거")} subtitle={pick(locale, "On demand", "필요할 때만")}>
+          <Message>
+            {pick(
+              locale,
+              "Load evidence when you want narrative retrieval, differential ranking, and workflow guidance on top of the similar-patient list.",
+              "유사 환자 목록 위에 narrative retrieval, differential ranking, workflow guidance가 필요할 때만 확장 근거를 불러오세요."
+            )}
+          </Message>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="ghost" onClick={onExpandAiClinic} disabled={!canExpandAiClinic || aiClinicExpandedBusy}>
+              {aiClinicExpandedBusy
+                ? pick(locale, "Loading evidence...", "근거 불러오는 중...")
+                : pick(locale, "Load evidence and workflow", "근거와 workflow 불러오기")}
+            </Button>
+          </div>
+        </Section>
+      ) : null}
+
+      {narrativeUnavailable ? <Message>{aiClinicTextUnavailableLabel}</Message> : null}
+
       {result.text_evidence.length > 0 ? (
-        <Section
-          title={pick(locale, "Retrieved text evidence", "검색된 텍스트 근거")}
-          subtitle={pick(
-            locale,
-            `${result.eligible_text_count ?? result.text_evidence.length} indexed cases`,
-            `인덱싱된 케이스 ${result.eligible_text_count ?? result.text_evidence.length}개`
-          )}
-        >
-          <div className="grid gap-4">
+        <Section title={pick(locale, "Retrieved text evidence", "검색된 텍스트 근거")}>
+          <div className="grid gap-3">
             {result.text_evidence.map((item, index) => (
-              <Card
-                key={`${item.patient_id}-${item.visit_date}-text`}
-                as="article"
-                variant="nested"
-                className="grid gap-4 border border-border/80 p-4"
-              >
+              <Card key={`${item.patient_id}-${item.visit_date}-text`} as="article" variant="panel" className="grid gap-3 p-4">
                 <SectionHeader
                   title={pick(locale, `Evidence ${index + 1}`, `근거 ${index + 1}`)}
                   titleAs="h4"
@@ -535,18 +427,8 @@ export function AiClinicResult({
                 />
                 <FieldGrid
                   items={[
-                    {
-                      label: pick(locale, "Patient / code", "환자 / 코드"),
-                      value: item.local_case_code || item.chart_alias || item.patient_id,
-                    },
-                    {
-                      label: pick(locale, "Similarity", "유사도"),
-                      value: formatSemanticScore(item.similarity, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Culture", "배양"),
-                      value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
-                    },
+                    { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
+                    { label: pick(locale, "Similarity", "유사도"), value: formatSemanticScore(item.similarity, notAvailableLabel) },
                   ]}
                 />
                 <p className="m-0 whitespace-pre-wrap text-sm leading-6 text-muted">{item.text}</p>
@@ -557,29 +439,10 @@ export function AiClinicResult({
       ) : null}
 
       {result.differential ? (
-        <Section title={pick(locale, "Differential ranking", "감별 진단 랭킹")} subtitle={result.differential.engine}>
-          <FieldGrid
-            items={[
-              {
-                label: pick(locale, "Top label", "최상위 라벨"),
-                value: result.differential.top_label
-                  ? translateOption(locale, "cultureCategory", result.differential.top_label)
-                  : notAvailableLabel,
-              },
-              {
-                label: pick(locale, "Uncertainty", "불확실성"),
-                value: result.differential.overall_uncertainty,
-              },
-              {
-                label: pick(locale, "Generated", "생성 시각"),
-                value: result.differential.generated_at ?? notAvailableLabel,
-              },
-            ]}
-          />
-
-          <div className="grid gap-4">
+        <Section title={pick(locale, "Differential ranking", "감별 진단 순위")} subtitle={result.differential.engine}>
+          <div className="grid gap-3">
             {result.differential.differential.map((item, index) => (
-              <Card key={`differential-${item.label}`} as="article" variant="nested" className="grid gap-4 border border-border/80 p-4">
+              <Card key={`diff-${item.label}`} as="article" variant="panel" className="grid gap-3 p-4">
                 <SectionHeader
                   title={`${index + 1}. ${translateOption(locale, "cultureCategory", item.label)}`}
                   titleAs="h4"
@@ -587,65 +450,25 @@ export function AiClinicResult({
                 />
                 <FieldGrid
                   items={[
-                    {
-                      label: pick(locale, "Score", "점수"),
-                      value: formatProbability(item.score, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Classifier", "분류기"),
-                      value: formatSemanticScore(item.component_scores.classifier, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Retrieval", "검색"),
-                      value: formatSemanticScore(item.component_scores.retrieval, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Text", "텍스트"),
-                      value: formatSemanticScore(item.component_scores.text, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Metadata", "메타데이터"),
-                      value: formatSemanticScore(item.component_scores.metadata, notAvailableLabel),
-                    },
-                    {
-                      label: pick(locale, "Penalty", "패널티"),
-                      value: formatSemanticScore(item.component_scores.quality_penalty, notAvailableLabel),
-                    },
+                    { label: pick(locale, "Score", "점수"), value: formatProbability(item.score, notAvailableLabel) },
+                    { label: pick(locale, "Classifier", "분류기"), value: formatSemanticScore(item.component_scores.classifier, notAvailableLabel) },
+                    { label: pick(locale, "Retrieval", "검색"), value: formatSemanticScore(item.component_scores.retrieval, notAvailableLabel) },
+                    { label: pick(locale, "Text", "텍스트"), value: formatSemanticScore(item.component_scores.text, notAvailableLabel) },
                   ]}
                 />
-
-                {item.supporting_evidence.length > 0 || item.conflicting_evidence.length > 0 ? (
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
-                      <SectionHeader title={pick(locale, "Supporting evidence", "지지 근거")} titleAs="h4" className={docSectionHeadClass} />
-                      {item.supporting_evidence.length > 0 ? (
-                        <div className="grid gap-3">
-                          {item.supporting_evidence.map((entry, evidenceIndex) => (
-                            <Card key={`differential-support-${item.label}-${evidenceIndex}`} as="article" variant="panel" className="p-4">
-                              <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
-                            </Card>
-                          ))}
-                        </div>
-                      ) : (
-                        <Message>{notAvailableLabel}</Message>
-                      )}
-                    </Card>
-
-                    <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
-                      <SectionHeader title={pick(locale, "Conflicting evidence", "상충 근거")} titleAs="h4" className={docSectionHeadClass} />
-                      {item.conflicting_evidence.length > 0 ? (
-                        <div className="grid gap-3">
-                          {item.conflicting_evidence.map((entry, evidenceIndex) => (
-                            <Card key={`differential-conflict-${item.label}-${evidenceIndex}`} as="article" variant="panel" className="p-4">
-                              <p className="m-0 text-sm leading-6 text-muted">{entry}</p>
-                            </Card>
-                          ))}
-                        </div>
-                      ) : (
-                        <Message>{notAvailableLabel}</Message>
-                      )}
-                    </Card>
-                  </div>
+                {(item.supporting_evidence.length > 0 || item.conflicting_evidence.length > 0) ? (
+                  <FieldGrid
+                    items={[
+                      {
+                        label: pick(locale, "Supporting evidence", "지지 근거"),
+                        value: item.supporting_evidence.length > 0 ? item.supporting_evidence.join(" / ") : notAvailableLabel,
+                      },
+                      {
+                        label: pick(locale, "Conflicting evidence", "상충 근거"),
+                        value: item.conflicting_evidence.length > 0 ? item.conflicting_evidence.join(" / ") : notAvailableLabel,
+                      },
+                    ]}
+                  />
                 ) : null}
               </Card>
             ))}
@@ -654,77 +477,14 @@ export function AiClinicResult({
       ) : null}
 
       {result.workflow_recommendation ? (
-        <Section
-          title={pick(locale, "Workflow recommendation", "워크플로 추천")}
-          subtitle={result.workflow_recommendation.mode}
-        >
+        <Section title={pick(locale, "Workflow recommendation", "workflow recommendation")} subtitle={result.workflow_recommendation.mode}>
+          <Message>{result.workflow_recommendation.summary}</Message>
           <FieldGrid
             items={[
-              {
-                label: pick(locale, "LLM model", "LLM 모델"),
-                value: result.workflow_recommendation.model ?? notAvailableLabel,
-              },
-              {
-                label: pick(locale, "Generated", "생성 시각"),
-                value: result.workflow_recommendation.generated_at ?? notAvailableLabel,
-              },
-            ]}
-          />
-
-          {result.workflow_recommendation.llm_error ? (
-            <Message>
-              {pick(
-                locale,
-                `LLM generation failed and AI Clinic used the local fallback instead. ${result.workflow_recommendation.llm_error}`,
-                `LLM 생성에 실패하여 AI Clinic이 로컬 fallback recommendation을 사용했습니다. ${result.workflow_recommendation.llm_error}`
-              )}
-            </Message>
-          ) : null}
-
-          <Card as="div" variant="panel" className="grid gap-3 p-4">
-            <SectionHeader title={pick(locale, "Summary", "요약")} titleAs="h4" className={docSectionHeadClass} />
-            <p className="m-0 text-sm leading-6 text-muted">{result.workflow_recommendation.summary}</p>
-          </Card>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
-              <SectionHeader title={pick(locale, "Recommended steps", "권장 단계")} titleAs="h4" className={docSectionHeadClass} />
-              <div className="grid gap-3">
-                {result.workflow_recommendation.recommended_steps.map((step, index) => (
-                  <Card key={`workflow-step-${index}`} as="article" variant="panel" className="grid gap-2 p-4">
-                    <strong className="text-sm font-semibold text-ink">{pick(locale, `Step ${index + 1}`, `단계 ${index + 1}`)}</strong>
-                    <p className="m-0 text-sm leading-6 text-muted">{step}</p>
-                  </Card>
-                ))}
-              </div>
-            </Card>
-
-            <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
-              <SectionHeader title={pick(locale, "Flags to review", "우선 확인 플래그")} titleAs="h4" className={docSectionHeadClass} />
-              <div className="grid gap-3">
-                {result.workflow_recommendation.flags_to_review.map((flag, index) => (
-                  <Card key={`workflow-flag-${index}`} as="article" variant="panel" className="p-4">
-                    <p className="m-0 text-sm leading-6 text-muted">{flag}</p>
-                  </Card>
-                ))}
-              </div>
-            </Card>
-          </div>
-
-          <FieldGrid
-            items={[
-              {
-                label: pick(locale, "Rationale", "근거"),
-                value: result.workflow_recommendation.rationale,
-              },
-              {
-                label: pick(locale, "Uncertainty", "불확실성"),
-                value: result.workflow_recommendation.uncertainty,
-              },
-              {
-                label: pick(locale, "Disclaimer", "주의"),
-                value: result.workflow_recommendation.disclaimer,
-              },
+              { label: pick(locale, "Recommended steps", "권장 단계"), value: result.workflow_recommendation.recommended_steps.join(" / ") || notAvailableLabel },
+              { label: pick(locale, "Flags to review", "검토 플래그"), value: result.workflow_recommendation.flags_to_review.join(" / ") || notAvailableLabel },
+              { label: pick(locale, "Rationale", "근거"), value: result.workflow_recommendation.rationale },
+              { label: pick(locale, "Uncertainty", "불확실성"), value: result.workflow_recommendation.uncertainty },
             ]}
           />
         </Section>

@@ -7,6 +7,7 @@ const apiCoreMocks = vi.hoisted(() => ({
 const analysisRuntimeMocks = vi.hoisted(() => ({
   fetchAnalysisSiteJob: vi.fn(),
   runAnalysisCaseAiClinic: vi.fn(),
+  runAnalysisCaseAiClinicSimilarCases: vi.fn(),
   runAnalysisCaseValidation: vi.fn(),
   runAnalysisCaseValidationCompare: vi.fn(),
 }));
@@ -23,6 +24,7 @@ vi.mock("./api-core", () => ({
 vi.mock("./analysis-runtime", () => ({
   fetchAnalysisSiteJob: analysisRuntimeMocks.fetchAnalysisSiteJob,
   runAnalysisCaseAiClinic: analysisRuntimeMocks.runAnalysisCaseAiClinic,
+  runAnalysisCaseAiClinicSimilarCases: analysisRuntimeMocks.runAnalysisCaseAiClinicSimilarCases,
   runAnalysisCaseValidation: analysisRuntimeMocks.runAnalysisCaseValidation,
   runAnalysisCaseValidationCompare: analysisRuntimeMocks.runAnalysisCaseValidationCompare,
 }));
@@ -145,6 +147,29 @@ describe("training desktop routing", () => {
         model_version_id: "model_1",
         force_refresh: true,
       },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop AI Clinic similar-cases runner when the desktop runtime is available", async () => {
+    analysisRuntimeMocks.runAnalysisCaseAiClinicSimilarCases.mockResolvedValue({
+      analysis_stage: "similar_cases",
+      similar_cases: [],
+    });
+
+    const mod = await import("./training");
+    await mod.runCaseAiClinicSimilarCases("SITE_A", "desktop-token", {
+      patient_id: "P-001",
+      visit_date: "Initial",
+      model_version_id: "model_1",
+      retrieval_backend: "classifier",
+    });
+
+    expect(analysisRuntimeMocks.runAnalysisCaseAiClinicSimilarCases).toHaveBeenCalledWith("SITE_A", "desktop-token", {
+      patient_id: "P-001",
+      visit_date: "Initial",
+      model_version_id: "model_1",
+      retrieval_backend: "classifier",
     });
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });

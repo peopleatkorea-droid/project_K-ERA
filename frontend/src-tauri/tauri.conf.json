@@ -39,11 +39,15 @@
         "https://github.com/peopleatkorea-droid/project_K-ERA/releases/latest/download/latest.json"
       ],
       "dialog": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUyMUJBMjQ4OTlENUEzNEQKUldSTm85V1pTS0liNGhhRFZoQjZTS09DUlNKa2pzMVY0Y1JGd041dzRkOHpxRTROMU9rQVZOWWQK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBOEJDMENFQTRGNjhCNDUKUldSRmkvYWt6c0NMZWpEZE1OSnd2amFtZ1E5S0h4TmNQRjlMZE9nVy9acmRhcXg3SG0zTkFYUU0K",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis",
       "msi"

@@ -388,7 +388,45 @@ def _run_case_ai_clinic(params: dict[str, Any]) -> dict[str, Any]:
         retrieval_backend=str(params.get("retrieval_backend") or "standard"),
     )
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
-    return result
+    return {
+        **result,
+        "analysis_stage": "expanded",
+    }
+
+
+def _run_case_ai_clinic_similar_cases(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_validation_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    workflow = _ensure_shared_workflow(cp)
+    model_version = _resolve_case_model_version(cp, params)
+    execution_device = _resolve_execution_device(str(params.get("execution_mode") or "auto"))
+    patient_id = str(params.get("patient_id") or "").strip()
+    visit_date = str(params.get("visit_date") or "").strip()
+    result = workflow.run_ai_clinic_similar_cases(
+        site_store,
+        patient_id=patient_id,
+        visit_date=visit_date,
+        model_version=model_version,
+        execution_device=execution_device,
+        top_k=int(params.get("top_k") or 3),
+        retrieval_backend=str(params.get("retrieval_backend") or "classifier"),
+    )
+    _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
+    return {
+        **result,
+        "analysis_stage": "similar_cases",
+        "text_retrieval_mode": None,
+        "text_embedding_model": None,
+        "eligible_text_count": 0,
+        "text_evidence": [],
+        "text_retrieval_error": None,
+        "classification_context": None,
+        "differential": None,
+        "workflow_recommendation": None,
+    }
 
 
 def _run_case_contribution(params: dict[str, Any]) -> dict[str, Any]:
@@ -1028,6 +1066,7 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "run_case_validation": _run_case_validation,
     "run_case_validation_compare": _run_case_validation_compare,
     "run_case_ai_clinic": _run_case_ai_clinic,
+    "run_case_ai_clinic_similar_cases": _run_case_ai_clinic_similar_cases,
     "run_case_contribution": _run_case_contribution,
     "fetch_case_roi_preview": _fetch_case_roi_preview,
     "fetch_case_lesion_preview": _fetch_case_lesion_preview,

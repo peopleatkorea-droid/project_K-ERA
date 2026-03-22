@@ -51,6 +51,7 @@ type DesktopImagePreviewPathRecord = {
   ready: boolean;
 };
 
+const PATIENT_LIST_THUMBNAIL_MAX_SIDE = 160;
 const patientListPageCache = new Map<string, PatientListPageResponse>();
 const patientListPagePromiseCache = new Map<string, Promise<PatientListPageResponse>>();
 const visitImagesCache = new Map<string, DesktopVisitImageRecord[]>();
@@ -116,6 +117,42 @@ async function normalizeDesktopPatientListPage(
   };
 }
 
+async function hydrateDesktopPatientListThumbnails(
+  siteId: string,
+  response: PatientListPageResponse,
+  signal?: AbortSignal,
+): Promise<PatientListPageResponse> {
+  const thumbnailIds = response.items.flatMap((row) =>
+    row.representative_thumbnails
+      .map((thumbnail) => String(thumbnail.image_id ?? "").trim())
+      .filter((imageId) => imageId.length > 0),
+  );
+  if (!thumbnailIds.length) {
+    return response;
+  }
+  try {
+    const previewUrls = await ensureDesktopImagePreviews(siteId, thumbnailIds, {
+      maxSide: PATIENT_LIST_THUMBNAIL_MAX_SIDE,
+      signal,
+    });
+    if (!previewUrls.size) {
+      return response;
+    }
+    return {
+      ...response,
+      items: response.items.map((row) => ({
+        ...row,
+        representative_thumbnails: row.representative_thumbnails.map((thumbnail) => ({
+          ...thumbnail,
+          preview_url: previewUrls.get(thumbnail.image_id) ?? thumbnail.preview_url,
+        })),
+      })),
+    };
+  } catch {
+    return response;
+  }
+}
+
 async function normalizeDesktopVisitImages(
   response: DesktopPathBackedVisitImageRecord[],
 ): Promise<DesktopVisitImageRecord[]> {
@@ -165,6 +202,7 @@ export async function fetchDesktopPatientListPage(
     options.signal,
   )
     .then(normalizeDesktopPatientListPage)
+    .then((response) => hydrateDesktopPatientListThumbnails(siteId, response, options.signal))
     .then((response) => {
       patientListPageCache.set(cacheKey, response);
       return response;

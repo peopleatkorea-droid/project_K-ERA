@@ -71,6 +71,10 @@ export type DesktopDiagnosticsSnapshot = {
   nodeStatusError: string | null;
 };
 
+export type DesktopDiagnosticsBundleResponse = {
+  path: string;
+};
+
 function webSnapshot(): DesktopDiagnosticsSnapshot {
   return {
     runtime: "web",
@@ -203,4 +207,11 @@ export async function stopDesktopDiagnosticsBackends(signal?: AbortSignal) {
   }
   await stopDesktopLocalRuntime(signal);
   return fetchDesktopDiagnosticsSnapshot(signal);
+}
+
+export async function exportDesktopDiagnosticsBundle(signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    throw new Error("Desktop runtime is unavailable.");
+  }
+  return invokeDesktop<DesktopDiagnosticsBundleResponse | null>("export_desktop_diagnostics_bundle", {}, signal);
 }

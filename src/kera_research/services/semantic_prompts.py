@@ -246,16 +246,6 @@ class SemanticPromptScoringService:
             )
 
         overall_top_matches = sorted(scored_entries, key=lambda item: item["score"], reverse=True)[:top_k]
-        layers: list[dict[str, Any]] = []
-        for layer_id, layer_entries in _PROMPT_DICTIONARIES[dictionary_name].items():
-            layer_matches = [item for item in scored_entries if item["layer_id"] == layer_id]
-            layers.append(
-                {
-                    "layer_id": layer_id,
-                    "layer_label": layer_entries[0].layer_label if layer_entries else layer_id.title(),
-                    "matches": sorted(layer_matches, key=lambda item: item["score"], reverse=True)[:top_k],
-                }
-            )
 
         return {
             "model_name": "BiomedCLIP",
@@ -265,5 +255,5 @@ class SemanticPromptScoringService:
             "dictionary_name": dictionary_name,
             "top_k": top_k,
             "overall_top_matches": overall_top_matches,
-            "layers": layers,
+            "layers": [],
         }

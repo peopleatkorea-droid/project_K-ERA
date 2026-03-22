@@ -15,7 +15,7 @@ import { controlPlaneDevAuthEnabled } from "./config";
 import { controlPlaneSql } from "./db";
 import { verifyGoogleIdentityToken } from "./google";
 import type { ControlPlaneUser } from "./types";
-import { getSiteAlias, getSiteOfficialName } from "../site-labels";
+import { getSiteAlias, getSiteDisplayName, getSiteOfficialName } from "../site-labels";
 export {
   createMainAdminSite,
   createMainProject,
@@ -132,7 +132,10 @@ async function listSitesForMainUserRecord(user: AuthUser, canonicalUser?: Contro
     return [];
   }
   if (user.role !== "admin" && canonicalUser) {
-    return siteRecordsFromMemberships(canonicalUser);
+    const membershipSites = siteRecordsFromMemberships(canonicalUser);
+    if (membershipSites.length > 0) {
+      return membershipSites;
+    }
   }
   const sql = await controlPlaneSql();
   const rows =
@@ -385,7 +388,7 @@ export async function submitMainAccessRequest(
     requested_site_id: requestedSiteId,
     requested_site_label:
       trimText(payload.requested_site_label) ||
-      (site ? rowValue<string>(site, "display_name") : institution ? rowValue<string>(institution, "name") : requestedSiteId),
+      (site ? getSiteDisplayName(site as never, requestedSiteId) : institution ? rowValue<string>(institution, "name") : requestedSiteId),
     requested_site_source: site ? "site" : "institution_directory",
     requested_role: requestedRole,
     message: trimText(payload.message),

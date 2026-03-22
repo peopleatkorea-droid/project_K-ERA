@@ -10,6 +10,7 @@ frontend/.desktop-runtime/
 frontend/desktop-dist/assets/
 frontend/src-tauri/target/
 frontend/tsconfig.tsbuildinfo
+frontend/~/.tauri/
 .desktop-runtime/
 storage/
 models/

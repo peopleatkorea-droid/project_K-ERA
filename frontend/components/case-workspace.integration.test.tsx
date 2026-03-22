@@ -41,6 +41,9 @@ const apiMocks = vi.hoisted(() => ({
   fetchVisitImagesWithPreviews: vi.fn(),
   fetchImageBlob: vi.fn(),
   fetchImagePreviewUrl: vi.fn(),
+  fetchCaseRoiPreview: vi.fn(),
+  fetchCaseLesionPreview: vi.fn(),
+  fetchImageSemanticPromptScores: vi.fn(),
   fetchValidationArtifactUrl: vi.fn(),
   fetchCaseRoiPreviewArtifactUrl: vi.fn(),
   fetchCaseLesionPreviewArtifactUrl: vi.fn(),
@@ -48,6 +51,8 @@ const apiMocks = vi.hoisted(() => ({
   fetchCaseHistory: vi.fn(),
   fetchStoredCaseLesionPreview: vi.fn(),
   enrollResearchRegistry: vi.fn(),
+  runCaseAiClinic: vi.fn(),
+  runCaseAiClinicSimilarCases: vi.fn(),
   runCaseValidation: vi.fn(),
   runCaseValidationCompare: vi.fn(),
   runCaseContribution: vi.fn(),
@@ -82,6 +87,9 @@ vi.mock("../lib/api", async () => {
     fetchVisitImagesWithPreviews: apiMocks.fetchVisitImagesWithPreviews,
     fetchImageBlob: apiMocks.fetchImageBlob,
     fetchImagePreviewUrl: apiMocks.fetchImagePreviewUrl,
+    fetchCaseRoiPreview: apiMocks.fetchCaseRoiPreview,
+    fetchCaseLesionPreview: apiMocks.fetchCaseLesionPreview,
+    fetchImageSemanticPromptScores: apiMocks.fetchImageSemanticPromptScores,
     fetchValidationArtifactUrl: apiMocks.fetchValidationArtifactUrl,
     fetchCaseRoiPreviewArtifactUrl: apiMocks.fetchCaseRoiPreviewArtifactUrl,
     fetchCaseLesionPreviewArtifactUrl: apiMocks.fetchCaseLesionPreviewArtifactUrl,
@@ -89,6 +97,8 @@ vi.mock("../lib/api", async () => {
     fetchCaseHistory: apiMocks.fetchCaseHistory,
     fetchStoredCaseLesionPreview: apiMocks.fetchStoredCaseLesionPreview,
     enrollResearchRegistry: apiMocks.enrollResearchRegistry,
+    runCaseAiClinic: apiMocks.runCaseAiClinic,
+    runCaseAiClinicSimilarCases: apiMocks.runCaseAiClinicSimilarCases,
     runCaseValidation: apiMocks.runCaseValidation,
     runCaseValidationCompare: apiMocks.runCaseValidationCompare,
     runCaseContribution: apiMocks.runCaseContribution,
@@ -302,6 +312,35 @@ describe("CaseWorkspace integration", () => {
       },
     ]);
     apiMocks.fetchImageBlob.mockResolvedValue(new Blob(["image"], { type: "image/png" }));
+    apiMocks.fetchImagePreviewUrl.mockImplementation(async (_siteId, imageId: string) => `/preview/${imageId}`);
+    apiMocks.fetchCaseRoiPreview.mockResolvedValue([
+      {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_id: "image_1",
+        view: "white",
+        is_representative: true,
+        source_image_path: "C:\\KERA\\image_1.png",
+        has_roi_crop: true,
+        has_medsam_mask: true,
+        backend: "medsam",
+      },
+    ]);
+    apiMocks.fetchCaseLesionPreview.mockResolvedValue([]);
+    apiMocks.fetchCaseRoiPreviewArtifactUrl.mockResolvedValue("/roi/image_1");
+    apiMocks.fetchCaseLesionPreviewArtifactUrl.mockResolvedValue("/lesion/image_1");
+    apiMocks.fetchImageSemanticPromptScores.mockResolvedValue({
+      image_id: "image_1",
+      image_path: "C:\\KERA\\image_1.png",
+      view: "white",
+      input_mode: "source",
+      dictionary_name: "dict",
+      model_name: "biomedclip",
+      model_id: "model_1",
+      top_k: 3,
+      overall_top_matches: [],
+      layers: [],
+    });
     apiMocks.prewarmPatientListPage.mockImplementation(() => undefined);
     apiMocks.fetchCaseHistory.mockResolvedValue({
       validations: [],
@@ -314,6 +353,193 @@ describe("CaseWorkspace integration", () => {
       user_enrolled_at: "2026-03-15T00:00:00Z",
       included_cases: 0,
       excluded_cases: 0,
+    });
+    apiMocks.runCaseAiClinicSimilarCases.mockResolvedValue({
+      analysis_stage: "similar_cases",
+      query_case: {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        case_id: "case_1",
+        sex: "female",
+        age: 65,
+        representative_view: "white",
+        visit_status: "active",
+        predisposing_factor: [],
+        quality_score: 78.6,
+      },
+      model_version: {
+        version_id: "model_vit",
+        version_name: "vit-v1",
+        architecture: "vit",
+        crop_mode: "automated",
+      },
+      ai_clinic_profile: {
+        profile_id: "classifier",
+        label: "AI Clinic lite",
+        description: "Similar-case retrieval first.",
+        effective_retrieval_backend: "classifier",
+      },
+      technical_details: {
+        similar_case_engine: {
+          mode: "classifier_penultimate_feature",
+          vector_index_mode: "faiss_local",
+          backends_used: ["classifier"],
+          metadata_reranking: "enabled",
+        },
+      },
+      execution_device: "cpu",
+      retrieval_mode: "classifier_penultimate_feature",
+      vector_index_mode: "faiss_local",
+      metadata_reranking: "enabled",
+      retrieval_backends_used: ["classifier"],
+      top_k: 3,
+      eligible_candidate_count: 2,
+      similar_cases: [
+        {
+          patient_id: "SIM-001",
+          visit_date: "FU #1",
+          case_id: "similar_case_1",
+          representative_image_id: "similar_image_1",
+          representative_view: "white",
+          culture_category: "fungal",
+          culture_species: "Candida",
+          image_count: 2,
+          quality_score: 74.2,
+          similarity: 0.832,
+          metadata_reranking: {
+            adjustment: 0.03,
+            alignment: {
+              matched_fields: ["visit_status"],
+              conflicted_fields: [],
+            },
+          },
+        },
+      ],
+      text_retrieval_mode: null,
+      text_embedding_model: null,
+      eligible_text_count: 0,
+      text_evidence: [],
+      text_retrieval_error: null,
+      classification_context: null,
+      differential: null,
+      workflow_recommendation: null,
+    });
+    apiMocks.runCaseAiClinic.mockResolvedValue({
+      analysis_stage: "expanded",
+      query_case: {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        case_id: "case_1",
+        sex: "female",
+        age: 65,
+        representative_view: "white",
+        visit_status: "active",
+        predisposing_factor: [],
+        quality_score: 78.6,
+      },
+      model_version: {
+        version_id: "model_vit",
+        version_name: "vit-v1",
+        architecture: "vit",
+        crop_mode: "automated",
+      },
+      ai_clinic_profile: {
+        profile_id: "classifier",
+        label: "AI Clinic lite",
+        description: "Similar-case retrieval first.",
+        effective_retrieval_backend: "classifier",
+      },
+      technical_details: {
+        similar_case_engine: {
+          mode: "classifier_penultimate_feature",
+          vector_index_mode: "faiss_local",
+          backends_used: ["classifier"],
+          metadata_reranking: "enabled",
+        },
+        narrative_evidence_engine: {
+          mode: "biomedclip_image_to_text",
+          model: "biomedclip",
+        },
+        workflow_guidance_engine: {
+          mode: "local_fallback",
+          provider_label: "Rules-based local guidance",
+        },
+      },
+      execution_device: "cpu",
+      retrieval_mode: "classifier_penultimate_feature",
+      vector_index_mode: "faiss_local",
+      metadata_reranking: "enabled",
+      retrieval_backends_used: ["classifier"],
+      top_k: 3,
+      eligible_candidate_count: 2,
+      similar_cases: [
+        {
+          patient_id: "SIM-001",
+          visit_date: "FU #1",
+          case_id: "similar_case_1",
+          representative_image_id: "similar_image_1",
+          representative_view: "white",
+          culture_category: "fungal",
+          culture_species: "Candida",
+          image_count: 2,
+          quality_score: 74.2,
+          similarity: 0.832,
+        },
+      ],
+      text_retrieval_mode: "biomedclip_image_to_text",
+      text_embedding_model: "biomedclip",
+      eligible_text_count: 1,
+      text_evidence: [
+        {
+          case_id: "similar_case_1",
+          patient_id: "SIM-001",
+          visit_date: "FU #1",
+          culture_category: "fungal",
+          culture_species: "Candida",
+          text: "Dense stromal infiltrate with satellite lesions.",
+          similarity: 0.79,
+        },
+      ],
+      text_retrieval_error: null,
+      classification_context: {
+        validation_id: "validation_1",
+        model_version_id: "model_vit",
+        model_version: "vit-v1",
+        predicted_label: "fungal",
+        true_label: "bacterial",
+        prediction_probability: 0.82,
+        is_correct: false,
+      },
+      differential: {
+        engine: "ai_clinic_differential",
+        overall_uncertainty: "moderate",
+        top_label: "fungal",
+        differential: [
+          {
+            label: "fungal",
+            score: 0.78,
+            confidence_band: "high",
+            component_scores: {
+              classifier: 0.81,
+              retrieval: 0.77,
+              text: 0.73,
+              metadata: 0.12,
+              quality_penalty: 0.03,
+            },
+            supporting_evidence: ["Similar cases cluster on fungal labels."],
+            conflicting_evidence: ["Culture still points bacterial."],
+          },
+        ],
+      },
+      workflow_recommendation: {
+        mode: "local_fallback",
+        summary: "Review fungal-supporting evidence before final interpretation.",
+        recommended_steps: ["Review similar case thumbnails", "Read narrative evidence"],
+        flags_to_review: ["Culture mismatch"],
+        rationale: "The retrieval evidence leans fungal while culture disagrees.",
+        uncertainty: "Moderate",
+        disclaimer: "Research support only.",
+      },
     });
     apiMocks.runCaseValidation.mockResolvedValue({
       summary: {
@@ -697,7 +923,7 @@ describe("CaseWorkspace integration", () => {
     expect(within(hospitalSection).getByText("patients")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("visits")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("images")).toBeInTheDocument();
-    expect(within(hospitalSection).getByText("validations")).toBeInTheDocument();
+    expect(within(hospitalSection).queryByText("validations")).not.toBeInTheDocument();
     expect(within(hospitalSection).queryByText("linked")).not.toBeInTheDocument();
     expect(screen.queryByText("Selected hospital")).not.toBeInTheDocument();
     expect(screen.queryByText("Momentum")).not.toBeInTheDocument();
@@ -1124,6 +1350,101 @@ describe("CaseWorkspace integration", () => {
 
     await screen.findByText("Case intake locked and ready for image work");
     expect(screen.getAllByText("17461463")).toHaveLength(1);
+  });
+
+  it("keeps BiomedCLIP analysis on the source image even when the saved image mode changes", async () => {
+    renderWorkspace();
+    await openSavedCase();
+
+    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+      target: { value: "lesion_crop" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Run BiomedCLIP analysis" }));
+
+    await waitFor(() => {
+      expect(apiMocks.fetchImageSemanticPromptScores).toHaveBeenCalledWith("SITE_A", "image_1", "test-token", {
+        top_k: 3,
+        input_mode: "source",
+      });
+    });
+  });
+
+  it("generates ROI previews when the saved image mode switches to cornea crop", async () => {
+    renderWorkspace();
+    await openSavedCase();
+
+    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+      target: { value: "roi_crop" },
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.fetchCaseRoiPreview).toHaveBeenCalledWith("SITE_A", "KERA-2026-001", "Initial", "test-token");
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchCaseRoiPreviewArtifactUrl).toHaveBeenCalledWith(
+        "SITE_A",
+        "KERA-2026-001",
+        "Initial",
+        "image_1",
+        "roi_crop",
+        "test-token",
+      );
+    });
+  });
+
+  it("generates lesion previews when the saved image mode switches to lesion crop and a lesion box exists", async () => {
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: { x0: 0.2, y0: 0.2, x1: 0.5, y1: 0.5 },
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
+    apiMocks.fetchCaseLesionPreview.mockResolvedValue([
+      {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_id: "image_1",
+        view: "white",
+        is_representative: true,
+        source_image_path: "C:\\KERA\\image_1.png",
+        has_lesion_crop: true,
+        has_lesion_mask: true,
+        backend: "medsam",
+        lesion_prompt_box: { x0: 0.2, y0: 0.2, x1: 0.5, y1: 0.5 },
+      },
+    ]);
+
+    renderWorkspace();
+    await openSavedCase();
+
+    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+      target: { value: "lesion_crop" },
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.fetchCaseLesionPreview).toHaveBeenCalledWith("SITE_A", "KERA-2026-001", "Initial", "test-token");
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchCaseLesionPreviewArtifactUrl).toHaveBeenCalledWith(
+        "SITE_A",
+        "KERA-2026-001",
+        "Initial",
+        "image_1",
+        "lesion_crop",
+        "test-token",
+      );
+    });
   });
 
   it("overwrites an existing visit when the user confirms overwrite", async () => {
@@ -1754,14 +2075,27 @@ describe("CaseWorkspace integration", () => {
   it("keeps the backlog panel in the patient list sidebar during desktop fast mode", async () => {
     desktopTransportMocks.canUseDesktopTransport.mockReturnValue(true);
 
-    renderWorkspace();
+    renderWorkspace(undefined, {
+      n_patients: 22,
+      n_visits: 43,
+      n_images: 112,
+      n_validation_runs: 7,
+    });
 
     expect(await screen.findByText("Artifact backlog")).toBeInTheDocument();
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+    expect(within(hospitalSection).getByText("22")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("43")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("112")).toBeInTheDocument();
+    expect(within(hospitalSection).queryByText("validations")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Enable backlog" })).toBeInTheDocument();
     expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
   });
 
-  it("auto-runs five-model analysis after AI validation", async () => {
+  it("uses multi-model compare as the primary AI validation flow", async () => {
     apiMocks.fetchCases.mockReset();
     apiMocks.fetchCases.mockResolvedValue([
       {
@@ -1877,25 +2211,25 @@ describe("CaseWorkspace integration", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
 
     await waitFor(() => {
-      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith("SITE_A", "test-token", {
-        patient_id: "KERA-2026-001",
-        visit_date: "Initial",
-        model_version_id: undefined,
-        model_version_ids: ["model_vit", "model_swin", "model_dinov2", "model_dinov2_mil", "model_convnext", "model_dense", "model_eff"],
-      });
-    });
-
-    await waitFor(() => {
       expect(apiMocks.runCaseValidationCompare).toHaveBeenCalledWith("SITE_A", "test-token", {
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
         model_version_ids: ["model_vit", "model_swin", "model_dinov2", "model_dinov2_mil", "model_convnext", "model_dense", "model_eff"],
+        execution_mode: "auto",
+      });
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
         execution_mode: "cpu",
+        model_version_id: "model_vit",
       });
     });
 
     expect(await screen.findByText("Consensus snapshot")).toBeInTheDocument();
-    expect(screen.getByText("4 / 5")).toBeInTheDocument();
+    expect(screen.getAllByText("4 / 5").length).toBeGreaterThan(0);
   });
 
   it("renders prediction post-mortem after AI validation", async () => {
@@ -1912,6 +2246,67 @@ describe("CaseWorkspace integration", () => {
     expect(screen.getByText("Culture confirmed a bacterial label.")).toBeInTheDocument();
     expect(screen.getByText("Structured analysis")).toBeInTheDocument();
     expect(screen.getByText("Boundary case")).toBeInTheDocument();
+  });
+
+  it("runs AI Clinic in staged similar-cases then expanded-evidence flow", async () => {
+    apiMocks.fetchSiteModelVersions.mockResolvedValue([
+      { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", ready: true },
+      { version_id: "model_swin", version_name: "swin-v1", architecture: "swin", ready: true },
+      { version_id: "model_dinov2", version_name: "dinov2-v1", architecture: "dinov2", ready: true },
+      { version_id: "model_dinov2_mil", version_name: "dinov2-mil-v1", architecture: "dinov2_mil", ready: true },
+      { version_id: "model_convnext", version_name: "conv-v1", architecture: "convnext_tiny", ready: true },
+      { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
+      { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
+    ]);
+
+    renderWorkspace();
+    await openSavedCase();
+    await waitFor(() => {
+      expect(apiMocks.fetchSiteModelVersions).toHaveBeenCalledWith("SITE_A", "test-token", expect.any(AbortSignal));
+    });
+    expect(await screen.findByText("vit")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI validation" }));
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidationCompare).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Find similar cases" })).not.toBeDisabled();
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Find similar cases" }));
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseAiClinicSimilarCases).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        execution_mode: "cpu",
+        model_version_id: "model_vit",
+        top_k: 3,
+        retrieval_backend: "classifier",
+      });
+    });
+
+    expect(await screen.findByText("Expanded evidence")).toBeInTheDocument();
+    expect(screen.getByText("SIM-001")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load evidence" }));
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseAiClinic).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        execution_mode: "cpu",
+        model_version_id: "model_vit",
+        top_k: 3,
+        retrieval_backend: "classifier",
+      });
+    });
+
+    expect(await screen.findByText("Retrieved text evidence")).toBeInTheDocument();
+    expect(screen.getByText("Dense stromal infiltrate with satellite lesions.")).toBeInTheDocument();
+    expect(screen.getByText("Workflow recommendation")).toBeInTheDocument();
   });
 
   it("submits contribution with the selected five-model set", async () => {

@@ -595,3 +595,14 @@ npm run dev:clean
 - [docs/dataset_schema.md](docs/dataset_schema.md)
 - [docs/ai_clinic_llm_setup.md](docs/ai_clinic_llm_setup.md)
 - [CHANGELOG.md](CHANGELOG.md)
+
+---
+
+## Desktop Release Signing
+
+- Never commit Tauri updater signing keys to this repository.
+- Keep `TAURI_SIGNING_PRIVATE_KEY` only in GitHub Actions secrets.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional and should be set only when the private key was generated with a password.
+- The desktop app should contain only the updater public key embedded in `frontend/src-tauri/tauri.conf.json`.
+- The `desktop-release` workflow now fails if tracked files exist under `frontend/~/.tauri/`.
+- Rotate the updater key with `cd frontend && npm run desktop:rotate-updater-key`.

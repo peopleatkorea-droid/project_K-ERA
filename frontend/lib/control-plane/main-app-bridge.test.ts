@@ -245,6 +245,50 @@ describe("fetchSitesForMainUser", () => {
     ]);
   });
 
+  it("falls back to SQL site lookup when approved memberships omit embedded site records", async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        site_id: "39100103",
+        display_name: "",
+        hospital_name: "Jeju University Hospital",
+        source_institution_name: "Jeju University Hospital",
+      },
+    ]);
+    requireMainAppBridgeUser.mockResolvedValue({
+      user: {
+        role: "researcher",
+        site_ids: ["39100103"],
+      },
+      canonicalUser: {
+        memberships: [
+          {
+            membership_id: "membership_1",
+            site_id: "39100103",
+            role: "member",
+            status: "approved",
+            approved_at: "2026-03-22T00:00:00Z",
+            created_at: "2026-03-22T00:00:00Z",
+            site: null,
+          },
+        ],
+      },
+    });
+    controlPlaneSql.mockResolvedValue(sql);
+
+    const result = await fetchSitesForMainUser({} as never);
+
+    expect(controlPlaneSql).toHaveBeenCalledTimes(1);
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([
+      {
+        site_id: "39100103",
+        display_name: "Jeju University Hospital",
+        hospital_name: "Jeju University Hospital",
+        source_institution_name: "Jeju University Hospital",
+      },
+    ]);
+  });
+
   it("returns user and sites from a single bootstrap call for approved users", async () => {
     const sql = vi.fn().mockResolvedValue([
       {

@@ -14,6 +14,7 @@ import {
   deleteModelVersion,
   downloadImportTemplate,
   fetchAccessRequests,
+  fetchAdminOverview,
   fetchAdminWorkspaceBootstrap,
   fetchAggregations,
   fetchInstitutionDirectoryStatus,
@@ -74,6 +75,7 @@ const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
 const DASHBOARD_VALIDATION_RUN_LIMIT = 24;
+const ACCESS_REQUEST_NOTIFICATION_POLL_MS = 15_000;
 
 type AdminWorkspaceState = ReturnType<typeof useAdminWorkspaceState>;
 
@@ -135,6 +137,10 @@ function suggestedSiteCodeFromRequest(request: {
     return humanReadable;
   }
   return sanitizeSiteCodeSegment(request.requested_site_id);
+}
+
+function countAutoApprovedRequests(items: Array<{ reviewer_notes?: string | null }>) {
+  return items.filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE).length;
 }
 
 function createReviewDraft(
@@ -374,6 +380,11 @@ export function useAdminWorkspaceController({
   } = state;
   const dashboardPreviewUrlsRef = useRef<string[]>([]);
   const modelUpdatePreviewUrlsRef = useRef<string[]>([]);
+  const accessRequestNotificationSnapshotRef = useRef<{
+    pending: number;
+    autoApproved: number;
+  } | null>(null);
+  const accessRequestNotificationBusyRef = useRef(false);
   const autoPublishEnabled = Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled);
   const describeError = useCallback(
     (nextError: unknown, fallback: string) =>
@@ -381,6 +392,64 @@ export function useAdminWorkspaceController({
     [locale],
   );
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedManagedSite, selectedSiteId) : "";
+  const getAccessRequestNotificationSnapshot = useCallback(
+    (params: {
+      overview?: AdminWorkspaceState["overview"] | null;
+      pendingRequests?: AdminWorkspaceState["pendingRequests"];
+      approvedRequests?: AdminWorkspaceState["autoApprovedRequests"];
+    }) => ({
+      pending: Math.max(
+        0,
+        Number(
+          params.overview?.pending_access_requests ??
+            params.pendingRequests?.length ??
+            0,
+        ) || 0,
+      ),
+      autoApproved: Math.max(
+        0,
+        Number(
+          params.overview?.auto_approved_access_requests ??
+            (params.approvedRequests ? countAutoApprovedRequests(params.approvedRequests) : 0),
+        ) || 0,
+      ),
+    }),
+    [],
+  );
+  const buildAccessRequestActivityToast = useCallback(
+    (pendingDelta: number, autoApprovedDelta: number) => {
+      const parts: string[] = [];
+      if (pendingDelta > 0) {
+        parts.push(
+          pick(
+            locale,
+            pendingDelta === 1 ? "1 new pending access request" : `${pendingDelta} new pending access requests`,
+            pendingDelta === 1 ? "새 승인 대기 접근 요청 1건" : `새 승인 대기 접근 요청 ${pendingDelta}건`,
+          ),
+        );
+      }
+      if (autoApprovedDelta > 0) {
+        parts.push(
+          pick(
+            locale,
+            autoApprovedDelta === 1
+              ? "1 new auto-approved researcher access"
+              : `${autoApprovedDelta} new auto-approved researcher access events`,
+            autoApprovedDelta === 1 ? "새 자동 승인 접근 1건" : `새 자동 승인 접근 ${autoApprovedDelta}건`,
+          ),
+        );
+      }
+      if (parts.length === 0) {
+        return null;
+      }
+      return pick(
+        locale,
+        `${parts.join(", ")} detected.`,
+        `${parts.join(", ")}이 들어왔습니다.`,
+      );
+    },
+    [locale],
+  );
   const copy = {
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
@@ -644,6 +713,9 @@ export function useAdminWorkspaceController({
     const nextProjects = nextWorkspaceBootstrap.projects;
     const nextManagedSites = nextWorkspaceBootstrap.managed_sites;
     setOverview(nextOverview);
+    accessRequestNotificationSnapshotRef.current = getAccessRequestNotificationSnapshot({
+      overview: nextOverview,
+    });
     setProjects(nextProjects);
     setManagedSites(nextManagedSites);
     setSiteStorageRootForm((current) => {
@@ -663,6 +735,7 @@ export function useAdminWorkspaceController({
     nextPendingRequests: AdminWorkspaceState["pendingRequests"],
     nextApprovedRequests: AdminWorkspaceState["autoApprovedRequests"],
     projectIdHint = DEFAULT_WORKSPACE_PROJECT_ID,
+    nextOverview: AdminWorkspaceState["overview"] | null = overview,
   ) {
     setPendingRequests(nextPendingRequests);
     setAutoApprovedRequests(
@@ -670,6 +743,11 @@ export function useAdminWorkspaceController({
         .filter((item) => item.reviewer_notes === AUTO_APPROVAL_REVIEWER_NOTE)
         .slice(0, 8),
     );
+    accessRequestNotificationSnapshotRef.current = getAccessRequestNotificationSnapshot({
+      overview: nextOverview,
+      pendingRequests: nextPendingRequests,
+      approvedRequests: nextApprovedRequests,
+    });
     setReviewDrafts((current) => {
       const next = { ...current };
       for (const item of nextPendingRequests) {
@@ -811,6 +889,82 @@ export function useAdminWorkspaceController({
       cancelled = true;
     };
   }, [token, setManagedSites, setOverview, setProjects, setSiteForm, setSiteStorageRootForm, setToast]);
+
+  useEffect(() => {
+    if (!canManagePlatform) {
+      accessRequestNotificationSnapshotRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    const projectIdHint = projects[0]?.project_id ?? DEFAULT_WORKSPACE_PROJECT_ID;
+
+    async function pollAccessRequestActivity(notify: boolean) {
+      if (cancelled || accessRequestNotificationBusyRef.current) {
+        return;
+      }
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      accessRequestNotificationBusyRef.current = true;
+      try {
+        const [nextOverview, nextPendingRequests, nextApprovedRequests] = await Promise.all([
+          fetchAdminOverview(token),
+          fetchAccessRequests(token, "pending"),
+          fetchAccessRequests(token, "approved"),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        const previousSnapshot = accessRequestNotificationSnapshotRef.current;
+        const nextSnapshot = getAccessRequestNotificationSnapshot({
+          overview: nextOverview,
+          pendingRequests: nextPendingRequests,
+          approvedRequests: nextApprovedRequests,
+        });
+        setOverview(nextOverview);
+        applyRequestData(nextPendingRequests, nextApprovedRequests, projectIdHint, nextOverview);
+        if (notify && previousSnapshot) {
+          const message = buildAccessRequestActivityToast(
+            Math.max(0, nextSnapshot.pending - previousSnapshot.pending),
+            Math.max(0, nextSnapshot.autoApproved - previousSnapshot.autoApproved),
+          );
+          if (message) {
+            setToast({ tone: "success", message });
+          }
+        }
+      } catch {
+        // Polling failures should stay quiet so they do not drown out real operator toasts.
+      } finally {
+        accessRequestNotificationBusyRef.current = false;
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollAccessRequestActivity(true);
+    }, ACCESS_REQUEST_NOTIFICATION_POLL_MS);
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void pollAccessRequestActivity(true);
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    buildAccessRequestActivityToast,
+    canManagePlatform,
+    getAccessRequestNotificationSnapshot,
+    projects,
+    setOverview,
+    setToast,
+    token,
+  ]);
 
   async function refreshWorkspace(siteScoped = false) {
     const nextWorkspaceBootstrap = await fetchAdminWorkspaceBootstrap(token, { scope: "initial" });

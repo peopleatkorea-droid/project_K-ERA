@@ -115,6 +115,13 @@ export async function openDesktopPath(path: string, signal?: AbortSignal) {
   return invokeDesktop<void>("open_desktop_path", { payload: { path } }, signal);
 }
 
+export async function openDesktopExternalUrl(url: string, signal?: AbortSignal) {
+  if (!hasDesktopRuntime()) {
+    throw new Error("Desktop runtime is unavailable.");
+  }
+  return invokeDesktop<void>("open_external_url", { url }, signal);
+}
+
 export async function pickDesktopDirectory(
   options: { title?: string; defaultPath?: string } = {},
   signal?: AbortSignal,

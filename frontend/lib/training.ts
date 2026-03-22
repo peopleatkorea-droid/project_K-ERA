@@ -2,6 +2,7 @@ import { request } from "./api-core";
 import {
   fetchAnalysisSiteJob as fetchSiteJobRuntime,
   runAnalysisCaseAiClinic as runCaseAiClinicRuntime,
+  runAnalysisCaseAiClinicSimilarCases as runCaseAiClinicSimilarCasesRuntime,
   runAnalysisCaseValidation as runCaseValidationRuntime,
   runAnalysisCaseValidationCompare as runCaseValidationCompareRuntime,
 } from "./analysis-runtime";
@@ -135,6 +136,22 @@ export async function runCaseAiClinic(
   },
 ) {
   return runCaseAiClinicRuntime(siteId, token, payload);
+}
+
+export async function runCaseAiClinicSimilarCases(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    model_version_ids?: string[];
+    top_k?: number;
+    retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+  },
+) {
+  return runCaseAiClinicSimilarCasesRuntime(siteId, token, payload);
 }
 
 export async function backfillAiClinicEmbeddings(

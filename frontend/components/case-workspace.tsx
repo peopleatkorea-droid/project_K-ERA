@@ -958,7 +958,9 @@ export function CaseWorkspace({
     selectValidationBeforeAiClinic: pick(locale, "Run validation before opening AI Clinic retrieval.", "AI Clinic 寃?됱쓣 ?닿린 ?꾩뿉 癒쇱? 寃利앹쓣 ?ㅽ뻾?섏꽭??"),
     aiClinicReady: (count: number) =>
       pick(locale, `AI Clinic found ${count} similar patient case(s).`, `AI Clinic???좎궗 ?섏옄 耳?댁뒪 ${count}嫄댁쓣 李얠븯?듬땲??`),
+    aiClinicExpandedReady: pick(locale, "AI Clinic evidence and workflow are ready.", "AI Clinic 근거와 workflow가 준비되었습니다."),
     aiClinicFailed: pick(locale, "AI Clinic retrieval failed.", "AI Clinic 寃?됱뿉 ?ㅽ뙣?덉뒿?덈떎."),
+    aiClinicExpandFirst: pick(locale, "Load similar-patient retrieval before expanding AI Clinic.", "AI Clinic 확장 전에 먼저 유사 환자 검색을 불러오세요."),
     aiClinicTextUnavailable: pick(locale, "BiomedCLIP text retrieval is currently unavailable in this runtime.", "?꾩옱 ?ㅽ뻾 ?섍꼍?먯꽌??BiomedCLIP ?띿뒪??寃?됱쓣 ?ъ슜?????놁뒿?덈떎."),
     selectSavedCaseForContribution: pick(locale, "Select a saved case before contributing.", "湲곗뿬瑜??ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??"),
     activeOnly: pick(locale, "Only active visits are enabled for contribution under the current policy.", "?꾩옱 ?뺤콉?먯꽌??active 諛⑸Ц留?湲곗뿬?????덉뒿?덈떎."),
@@ -1114,6 +1116,8 @@ export function CaseWorkspace({
     modelCompareResult,
     validationArtifacts,
     aiClinicBusy,
+    aiClinicExpandedBusy,
+    aiClinicPreviewBusy,
     aiClinicResult,
     roiPreviewBusy,
     roiPreviewItems,
@@ -1128,6 +1132,10 @@ export function CaseWorkspace({
     liveLesionCropEnabled,
     setLiveLesionCropEnabled,
     liveLesionPreviews,
+    savedImageRoiCropUrls,
+    savedImageRoiCropBusy,
+    savedImageLesionCropUrls,
+    savedImageLesionCropBusy,
     lesionPromptDrafts,
     lesionPromptSaved,
     lesionBoxBusyImageId,
@@ -1138,6 +1146,7 @@ export function CaseWorkspace({
     handleRunValidation,
     handleRunModelCompare,
     handleRunAiClinic,
+    handleExpandAiClinic,
     handleRunRoiPreview,
     handleRunLesionPreview,
     handleSetSavedRepresentative,
@@ -2975,12 +2984,21 @@ export function CaseWorkspace({
       locale={locale}
       validationResult={validationResult}
       aiClinicBusy={aiClinicBusy}
+      aiClinicExpandedBusy={aiClinicExpandedBusy}
       canRunAiClinic={canRunAiClinic}
+      canExpandAiClinic={canRunAiClinic && Boolean(aiClinicResult) && aiClinicResult.analysis_stage !== "expanded"}
       onRunAiClinic={() => void handleRunAiClinic()}
+      onExpandAiClinic={() => void handleExpandAiClinic()}
     >
       <AiClinicResult
         locale={locale}
+        validationResult={validationResult}
+        modelCompareResult={modelCompareResult}
         result={aiClinicResult}
+        aiClinicPreviewBusy={aiClinicPreviewBusy}
+        aiClinicExpandedBusy={aiClinicExpandedBusy}
+        canExpandAiClinic={canRunAiClinic && Boolean(aiClinicResult) && aiClinicResult.analysis_stage !== "expanded"}
+        onExpandAiClinic={() => void handleExpandAiClinic()}
         notAvailableLabel={common.notAvailable}
         aiClinicTextUnavailableLabel={copy.aiClinicTextUnavailable}
         displayVisitReference={(visitReference) => displayVisitReference(locale, visitReference)}
@@ -3256,6 +3274,8 @@ export function CaseWorkspace({
               locale={locale}
               commonLoading={common.loading}
               commonNotAvailable={common.notAvailable}
+              siteId={selectedSiteId ?? ""}
+              token={token}
               panelBusy={panelBusy}
               selectedCaseImageCountHint={selectedCase.image_count}
               selectedCaseImages={selectedCaseImages}
@@ -3267,6 +3287,10 @@ export function CaseWorkspace({
               semanticPromptErrors={semanticPromptErrors}
               semanticPromptOpenImageIds={semanticPromptOpenImageIds}
               liveLesionPreviews={liveLesionPreviews}
+              savedImageRoiCropUrls={savedImageRoiCropUrls}
+              savedImageRoiCropBusy={savedImageRoiCropBusy}
+              savedImageLesionCropUrls={savedImageLesionCropUrls}
+              savedImageLesionCropBusy={savedImageLesionCropBusy}
               lesionPromptDrafts={lesionPromptDrafts}
               lesionPromptSaved={lesionPromptSaved}
               lesionBoxBusyImageId={lesionBoxBusyImageId}

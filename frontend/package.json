@@ -9,6 +9,7 @@
     "desktop:prepare-runtime": "node ./scripts/prepare-embedded-python.mjs",
     "desktop:build": "node ./scripts/build-desktop-shell.mjs",
     "desktop:bundle": "npm run desktop:prepare-runtime && npm run desktop:build",
+    "desktop:rotate-updater-key": "node ./scripts/rotate-updater-key.mjs",
     "desktop:verify": "node ./scripts/verify-desktop-runtime.mjs",
     "desktop:smoke": "node ./scripts/run-desktop-smoke.mjs",
     "desktop:smoke-installed": "powershell -ExecutionPolicy Bypass -File ./scripts/run-installed-desktop-smoke.ps1",
@@ -25,6 +26,8 @@
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.23",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.0",
     "google-auth-library": "^10.1.0",
     "jose": "^6.1.0",
     "next": "^15.2.0",

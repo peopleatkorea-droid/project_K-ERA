@@ -13,7 +13,6 @@ type LocalApiJwtKeyMaterial = {
   audience: string;
   issuer: string;
   keyId: string;
-  sharedSecret: string;
 };
 
 let cachedKeyMaterial: LocalApiJwtKeyMaterial | null | undefined;
@@ -77,16 +76,14 @@ function readPemValue(options: {
 function loadKeyMaterial(): LocalApiJwtKeyMaterial {
   if (cachedKeyMaterial !== undefined) {
     return cachedKeyMaterial || {
-      privateKey: null,
-      publicKey: null,
-      audience: DEFAULT_LOCAL_API_JWT_AUDIENCE,
-      issuer: DEFAULT_LOCAL_API_JWT_ISSUER,
-      keyId: "",
-      sharedSecret: "",
-    };
+        privateKey: null,
+        publicKey: null,
+        audience: DEFAULT_LOCAL_API_JWT_AUDIENCE,
+        issuer: DEFAULT_LOCAL_API_JWT_ISSUER,
+        keyId: "",
+      };
   }
 
-  const sharedSecret = readCandidateValue(process.env.KERA_LOCAL_API_JWT_SECRET, process.env.KERA_API_SECRET);
   const audience = readCandidateValue(process.env.KERA_LOCAL_API_JWT_AUDIENCE) || DEFAULT_LOCAL_API_JWT_AUDIENCE;
   const issuer = readCandidateValue(process.env.KERA_LOCAL_API_JWT_ISSUER) || DEFAULT_LOCAL_API_JWT_ISSUER;
   const keyId = readCandidateValue(process.env.KERA_LOCAL_API_JWT_KEY_ID);
@@ -120,7 +117,6 @@ function loadKeyMaterial(): LocalApiJwtKeyMaterial {
     audience,
     issuer,
     keyId,
-    sharedSecret,
   };
   return cachedKeyMaterial;
 }
@@ -147,8 +143,4 @@ export function localApiJwtPrivateKey(): KeyObject | null {
 
 export function localApiJwtPublicKey(): KeyObject | null {
   return loadKeyMaterial().publicKey;
-}
-
-export function localApiJwtSharedSecret(): string {
-  return loadKeyMaterial().sharedSecret;
 }

@@ -6,6 +6,25 @@ from typing import Any
 
 def build_route_supports(**deps: Any) -> SimpleNamespace:
     return SimpleNamespace(
+        desktop=SimpleNamespace(
+            get_control_plane=deps["get_control_plane"],
+            google_client_ids=deps["google_client_ids"],
+            desktop_self_check=deps["desktop_self_check"],
+            load_node_credentials=deps["load_node_credentials"],
+            node_credentials_status=deps["node_credentials_status"],
+            save_node_credentials=deps["save_node_credentials"],
+            clear_node_credentials=deps["clear_node_credentials"],
+            database_topology=deps["database_topology"],
+            remote_node_os_info=deps["remote_node_os_info"],
+            local_control_plane_dev_auth_enabled=deps["local_control_plane_dev_auth_enabled"],
+            case_reference_salt_fingerprint=deps["case_reference_salt_fingerprint"],
+            make_id=deps["make_id"],
+            get_app_version=deps["get_app_version"],
+            RemoteControlPlaneClient=deps["RemoteControlPlaneClient"],
+            LocalControlPlaneNodeRegisterRequest=deps["LocalControlPlaneNodeRegisterRequest"],
+            LocalControlPlaneNodeCredentialsRequest=deps["LocalControlPlaneNodeCredentialsRequest"],
+            LocalControlPlaneSmokeRequest=deps["LocalControlPlaneSmokeRequest"],
+        ),
         auth=SimpleNamespace(
             get_control_plane=deps["get_control_plane"],
             get_current_user=deps["get_current_user"],

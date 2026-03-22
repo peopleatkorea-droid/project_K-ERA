@@ -155,6 +155,62 @@ class BiomedClipTextRetriever:
             "text_evidence": ranked[: max(1, min(int(top_k or 3), 10))],
         }
 
+    def retrieve_images(
+        self,
+        *,
+        query_text: str,
+        image_records: list[dict[str, Any]],
+        requested_device: str,
+        top_k: int = 10,
+    ) -> dict[str, Any]:
+        if not image_records:
+            return {
+                "text_retrieval_mode": "biomedclip_text_to_image",
+                "text_embedding_model": BIOMEDCLIP_MODEL_ID,
+                "eligible_image_count": 0,
+                "results": [],
+            }
+
+        text_features = self.encode_texts([query_text], requested_device)
+        query_vector = text_features[0].astype(np.float32)
+
+        valid_records: list[dict[str, Any]] = []
+        valid_paths: list[str] = []
+        for record in image_records:
+            path = str(record.get("image_path") or "").strip()
+            if path:
+                valid_records.append(record)
+                valid_paths.append(path)
+
+        if not valid_paths:
+            return {
+                "text_retrieval_mode": "biomedclip_text_to_image",
+                "text_embedding_model": BIOMEDCLIP_MODEL_ID,
+                "eligible_image_count": 0,
+                "results": [],
+            }
+
+        image_features = self.encode_images(valid_paths, requested_device)
+        similarities = np.matmul(image_features, query_vector).tolist()
+
+        ranked = sorted(
+            zip(valid_records, similarities, strict=False),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )
+
+        results = [
+            {**record, "score": round(float(score), 4)}
+            for record, score in ranked[: max(1, min(int(top_k or 10), 50))]
+        ]
+
+        return {
+            "text_retrieval_mode": "biomedclip_text_to_image",
+            "text_embedding_model": BIOMEDCLIP_MODEL_ID,
+            "eligible_image_count": len(valid_records),
+            "results": results,
+        }
+
 
 class Dinov2ImageRetriever:
     def __init__(self) -> None:

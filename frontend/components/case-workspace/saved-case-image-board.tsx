@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import type { SemanticPromptInputMode, SemanticPromptReviewResponse } from "../../lib/api";
+import { searchAnalysisImagesByText, type ImageTextSearchResult } from "../../lib/analysis-runtime";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -50,6 +51,8 @@ type SavedCaseImageBoardProps = {
   locale: Locale;
   commonLoading: string;
   commonNotAvailable: string;
+  siteId: string;
+  token: string;
   panelBusy: boolean;
   selectedCaseImageCountHint: number;
   selectedCaseImages: SavedImagePreview[];
@@ -61,6 +64,10 @@ type SavedCaseImageBoardProps = {
   semanticPromptErrors: SemanticPromptErrorMap;
   semanticPromptOpenImageIds: string[];
   liveLesionPreviews: LiveLesionPreviewMap;
+  savedImageRoiCropUrls: Record<string, string | null>;
+  savedImageRoiCropBusy: boolean;
+  savedImageLesionCropUrls: Record<string, string | null>;
+  savedImageLesionCropBusy: boolean;
   lesionPromptDrafts: LesionBoxMap;
   lesionPromptSaved: LesionBoxMap;
   lesionBoxBusyImageId: string | null;
@@ -208,7 +215,13 @@ function SemanticPromptReviewPanel({
           ) : null}
         </>
       ) : (
-        <div className={emptySurfaceClass}>{pick(locale, "Run BiomedCLIP analysis once to inspect the top-ranked matches.", "Top-ranked 결과를 보려면 BiomedCLIP 분석을 실행해 주세요.")}</div>
+        <div className={emptySurfaceClass}>
+          {pick(
+            locale,
+            "Run BiomedCLIP analysis once to inspect the top-ranked matches.",
+            "상위 결과를 보려면 BiomedCLIP 분석을 한 번 실행해 주세요.",
+          )}
+        </div>
       )}
     </Card>
   );
@@ -218,6 +231,8 @@ export function SavedCaseImageBoard({
   locale,
   commonLoading,
   commonNotAvailable,
+  siteId,
+  token,
   panelBusy,
   selectedCaseImageCountHint,
   selectedCaseImages,
@@ -229,6 +244,10 @@ export function SavedCaseImageBoard({
   semanticPromptErrors,
   semanticPromptOpenImageIds,
   liveLesionPreviews,
+  savedImageRoiCropUrls,
+  savedImageRoiCropBusy,
+  savedImageLesionCropUrls,
+  savedImageLesionCropBusy,
   lesionPromptDrafts,
   lesionPromptSaved,
   lesionBoxBusyImageId,
@@ -244,7 +263,57 @@ export function SavedCaseImageBoard({
   onLesionPointerMove,
   onFinishLesionPointer,
 }: SavedCaseImageBoardProps) {
+  const [textSearchQuery, setTextSearchQuery] = useState("");
+  const [textSearchBusy, setTextSearchBusy] = useState(false);
+  const [textSearchResults, setTextSearchResults] = useState<ImageTextSearchResult[] | null>(null);
+  const [textSearchError, setTextSearchError] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleTextSearch(event: React.FormEvent) {
+    event.preventDefault();
+    const query = textSearchQuery.trim();
+    if (!query) return;
+    setTextSearchBusy(true);
+    setTextSearchError(null);
+    setTextSearchResults(null);
+    try {
+      const response = await searchAnalysisImagesByText(siteId, query, token);
+      setTextSearchResults(response.results);
+    } catch {
+      setTextSearchError(pick(locale, "Search failed. Please try again.", "검색 실패. 다시 시도해 주세요."));
+    } finally {
+      setTextSearchBusy(false);
+    }
+  }
+
+  function handleClearSearch() {
+    setTextSearchQuery("");
+    setTextSearchResults(null);
+    setTextSearchError(null);
+    searchInputRef.current?.focus();
+  }
+
   const loadingCardCount = Math.max(1, Math.min(selectedCaseImageCountHint || selectedCaseImages.length || 1, 3));
+  const sourceModeActive = semanticPromptInputMode === "source";
+  const roiCropModeActive = semanticPromptInputMode === "roi_crop";
+  const lesionCropModeActive = semanticPromptInputMode === "lesion_crop";
+  const boardHelpCopy = sourceModeActive
+    ? pick(
+        locale,
+        "Drag a lesion box on the source image. When you release, K-ERA saves the box and starts a live MedSAM mask preview.",
+        "원본 이미지에서 병변 박스를 드래그한 뒤 손을 떼면, K-ERA가 박스를 저장하고 live MedSAM 마스크 미리보기를 시작합니다.",
+      )
+    : roiCropModeActive
+      ? pick(
+          locale,
+          "Cornea crop mode shows saved cornea crops when available. MedSAM overlays stay hidden in crop modes.",
+          "각막 crop 모드에서는 저장된 각막 crop을 보여주고, crop 모드에서는 MedSAM 오버레이를 숨깁니다.",
+        )
+      : pick(
+          locale,
+          "Lesion crop mode shows saved lesion crops when available. Return to the source image to draw or edit lesion boxes.",
+          "병변 crop 모드에서는 저장된 병변 crop을 보여주며, 병변 박스 편집은 원본 이미지 모드에서만 할 수 있습니다.",
+        );
 
   return (
     <section className={docSectionClass}>
@@ -253,7 +322,7 @@ export function SavedCaseImageBoard({
           <div className={docSectionLabelClass}>{pick(locale, "Saved images", "저장 이미지")}</div>
           <button
             type="button"
-            className={togglePillClass(liveLesionMaskEnabled, true)}
+            className={`${togglePillClass(liveLesionMaskEnabled, true)} order-2`}
             aria-pressed={liveLesionMaskEnabled}
             onClick={onToggleLiveLesionMask}
           >
@@ -262,8 +331,8 @@ export function SavedCaseImageBoard({
               : pick(locale, "MedSAM mask off", "MedSAM mask 꺼짐")}
           </button>
           <select
-            aria-label={pick(locale, "BiomedCLIP input", "BiomedCLIP 입력")}
-            className="min-h-8 rounded-[10px] border border-border bg-white/60 px-3 text-[0.82rem] text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
+            aria-label={pick(locale, "Saved image mode", "저장 이미지 모드")}
+            className="order-1 min-h-8 rounded-[10px] border border-border bg-white/60 px-3 text-[0.82rem] text-ink outline-none transition duration-150 ease-out focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
             value={semanticPromptInputMode}
             onChange={(event) => onSemanticPromptInputModeChange(event.target.value as SemanticPromptInputMode)}
           >
@@ -274,15 +343,69 @@ export function SavedCaseImageBoard({
             ))}
           </select>
         </div>
-        <span className={docSiteBadgeClass}>{panelBusy ? commonLoading : `${selectedCaseImages.length} ${pick(locale, "images", "이미지")}`}</span>
+        <span className={docSiteBadgeClass}>
+          {panelBusy ? commonLoading : `${selectedCaseImages.length} ${pick(locale, "images", "이미지")}`}
+        </span>
       </div>
-      <p className="m-0 text-sm leading-6 text-muted">
-        {pick(
-          locale,
-          "Drag a lesion box on the image. When you release, K-ERA saves the box and starts a live MedSAM mask preview.",
-          "이미지에서 병변 박스를 드래그한 뒤 손을 떼면, K-ERA가 박스를 저장하고 live MedSAM 마스크 미리보기를 시작합니다.",
-        )}
-      </p>
+      <p className="m-0 text-sm leading-6 text-muted">{boardHelpCopy}</p>
+
+      <form onSubmit={(e) => void handleTextSearch(e)} className="flex gap-2">
+        <input
+          ref={searchInputRef}
+          type="text"
+          value={textSearchQuery}
+          onChange={(e) => setTextSearchQuery(e.target.value)}
+          placeholder={pick(locale, "Search images by description (e.g. hypopyon, feathery border)…", "이미지 설명으로 검색 (예: hypopyon, 각막 혼탁)…")}
+          className="min-h-9 flex-1 rounded-[10px] border border-border bg-white/60 px-3 text-[0.85rem] text-ink outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
+          disabled={textSearchBusy}
+        />
+        <Button type="submit" size="sm" variant="ghost" disabled={textSearchBusy || !textSearchQuery.trim()}>
+          {textSearchBusy ? commonLoading : pick(locale, "Search", "검색")}
+        </Button>
+        {textSearchResults !== null ? (
+          <Button type="button" size="sm" variant="ghost" onClick={handleClearSearch}>
+            {pick(locale, "Clear", "초기화")}
+          </Button>
+        ) : null}
+      </form>
+
+      {textSearchError ? (
+        <div className={emptySurfaceClass}>{textSearchError}</div>
+      ) : textSearchResults !== null ? (
+        <Card as="div" variant="nested" className="grid gap-3 p-4">
+          <div className="text-[0.82rem] font-semibold text-muted">
+            {pick(locale, `${textSearchResults.length} results for`, `"${textSearchQuery}" 검색 결과`)} &ldquo;{textSearchQuery}&rdquo;
+          </div>
+          {textSearchResults.length > 0 ? (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {textSearchResults.map((result) => (
+                <Card key={result.image_id} as="div" variant="panel" className="grid gap-2 p-3">
+                  <div className="flex items-center justify-between gap-2 text-[0.82rem]">
+                    <span className="font-semibold text-ink">{result.patient_id}</span>
+                    <span className={docSiteBadgeClass}>{result.visit_date}</span>
+                  </div>
+                  {result.preview_url ? (
+                    <img
+                      src={result.preview_url}
+                      alt={result.image_id}
+                      className="block max-h-[200px] w-auto max-w-full rounded-[10px] border border-border/60 object-contain"
+                      loading="lazy"
+                    />
+                  ) : null}
+                  <div className="flex items-center justify-between gap-2 text-[0.78rem] text-muted">
+                    <span>{result.view}</span>
+                    <span className={savedImageSupportChipClass}>score {result.score.toFixed(2)}</span>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[0.85rem] text-muted">
+              {pick(locale, "No matching images found.", "일치하는 이미지가 없습니다.")}
+            </div>
+          )}
+        </Card>
+      ) : null}
 
       {selectedCaseImages.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -290,20 +413,53 @@ export function SavedCaseImageBoard({
             const promptReviewOpen = semanticPromptOpenImageIds.includes(image.image_id);
             const livePreview = liveLesionPreviews[image.image_id];
             const draftBox = lesionPromptDrafts[image.image_id] ?? lesionPromptSaved[image.image_id] ?? null;
+            const roiCropKnown = Object.prototype.hasOwnProperty.call(savedImageRoiCropUrls, image.image_id);
+            const lesionCropKnown = Object.prototype.hasOwnProperty.call(savedImageLesionCropUrls, image.image_id);
+            const roiCropUrl = savedImageRoiCropUrls[image.image_id] ?? null;
+            const lesionCropUrl = livePreview?.lesion_crop_url ?? savedImageLesionCropUrls[image.image_id] ?? null;
+            const roiCropLoading =
+              roiCropModeActive && savedImageRoiCropBusy && Boolean(image.has_roi_crop) && !roiCropKnown;
+            const lesionCropLoading =
+              lesionCropModeActive &&
+              ((livePreview?.status === "running" && !livePreview?.lesion_crop_url) ||
+                (savedImageLesionCropBusy &&
+                  Boolean(image.has_lesion_crop) &&
+                  !lesionCropKnown &&
+                  !livePreview?.lesion_crop_url));
+            const displayUrl = roiCropModeActive ? roiCropUrl : lesionCropModeActive ? lesionCropUrl : image.preview_url;
             const maskReady = Boolean(
-              liveLesionMaskEnabled && livePreview?.status === "done" && livePreview?.lesion_mask_url
+              sourceModeActive && liveLesionMaskEnabled && livePreview?.status === "done" && livePreview?.lesion_mask_url
             );
             const prioritizeImage = index < 2;
             const statusCopy =
               lesionBoxBusyImageId === image.image_id
                 ? pick(locale, "Saving...", "저장 중...")
-                : livePreview?.status === "running"
-                  ? pick(locale, "MedSAM running", "MedSAM 실행 중")
-                  : maskReady
-                    ? pick(locale, "Mask ready", "Mask 준비됨")
-                    : draftBox
-                      ? pick(locale, "Box ready", "Box 준비됨")
-                      : pick(locale, "Draw box for MedSAM", "MedSAM용 박스 그리기");
+                : roiCropModeActive
+                  ? roiCropLoading
+                    ? pick(locale, "Preparing cornea crop", "각막 crop 준비 중")
+                    : roiCropUrl
+                      ? pick(locale, "Cornea crop ready", "각막 crop 준비됨")
+                      : pick(locale, "Cornea crop unavailable", "각막 crop 없음")
+                  : lesionCropModeActive
+                    ? lesionCropLoading
+                      ? pick(locale, "Preparing lesion crop", "병변 crop 준비 중")
+                      : lesionCropUrl
+                        ? pick(locale, "Lesion crop ready", "병변 crop 준비됨")
+                        : draftBox
+                          ? pick(locale, "Box ready", "Box 준비됨")
+                          : pick(locale, "Lesion crop unavailable", "병변 crop 없음")
+                    : livePreview?.status === "running"
+                      ? pick(locale, "MedSAM running", "MedSAM 실행 중")
+                      : maskReady
+                        ? pick(locale, "Mask ready", "Mask 준비됨")
+                        : draftBox
+                          ? pick(locale, "Box ready", "Box 준비됨")
+                          : pick(locale, "Draw box for MedSAM", "MedSAM용 박스 그리기");
+            const unavailableCopy = roiCropModeActive
+              ? pick(locale, "Cornea crop unavailable", "각막 crop이 없습니다")
+              : lesionCropModeActive
+                ? pick(locale, "Lesion crop unavailable", "병변 crop이 없습니다")
+                : pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다");
 
             return (
               <Card as="section" variant="panel" key={`doc-${image.image_id}`} className="grid content-start gap-2.5 p-3">
@@ -317,35 +473,35 @@ export function SavedCaseImageBoard({
                         {pick(locale, "Representative image", "대표 이미지")}
                       </span>
                     ) : (
-                      <span className="shrink-0">
-                        · {pick(locale, "Supporting image", "보조 이미지")}
-                      </span>
+                      <span className="shrink-0">· {pick(locale, "Supporting image", "보조 이미지")}</span>
                     )}
                   </div>
                   <span className={docSiteBadgeClass}>{statusCopy}</span>
                 </div>
 
-                {image.preview_url ? (
+                {displayUrl ? (
                   <div className="grid place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2">
                     <div
-                      className="relative mx-auto w-fit max-w-full cursor-crosshair overflow-hidden rounded-[12px] border border-border/60 bg-surface-elevated touch-none"
-                      onPointerDown={(event) => onLesionPointerDown(image.image_id, event)}
-                      onPointerMove={(event) => onLesionPointerMove(image.image_id, event)}
-                      onPointerUp={(event) => onFinishLesionPointer(image.image_id, event)}
-                      onPointerCancel={(event) => onFinishLesionPointer(image.image_id, event)}
+                      className={`relative mx-auto w-fit max-w-full overflow-hidden rounded-[12px] border border-border/60 bg-surface-elevated ${
+                        sourceModeActive ? "cursor-crosshair touch-none" : "cursor-default"
+                      }`}
+                      onPointerDown={sourceModeActive ? (event) => onLesionPointerDown(image.image_id, event) : undefined}
+                      onPointerMove={sourceModeActive ? (event) => onLesionPointerMove(image.image_id, event) : undefined}
+                      onPointerUp={sourceModeActive ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
+                      onPointerCancel={sourceModeActive ? (event) => onFinishLesionPointer(image.image_id, event) : undefined}
                     >
                       {maskReady ? (
                         <MaskOverlayPreview
                           sourceUrl={image.preview_url}
                           maskUrl={livePreview?.lesion_mask_url}
-                          alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM mask overlay")}
+                          alt={pick(locale, "Live MedSAM mask overlay", "실시간 MedSAM 마스크 오버레이")}
                           tint={LIVE_LESION_MASK_TINT}
                           className="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
                           fallbackClassName="pointer-events-none !aspect-auto block !max-h-[320px] !w-auto max-w-full object-contain select-none rounded-[12px]"
                         />
                       ) : (
                         <img
-                          src={image.preview_url}
+                          src={displayUrl}
                           alt={image.image_id}
                           className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px]"
                           decoding="async"
@@ -356,7 +512,7 @@ export function SavedCaseImageBoard({
                         />
                       )}
 
-                      {draftBox && !maskReady ? (
+                      {sourceModeActive && draftBox && !maskReady ? (
                         <div
                           className={lesionBoxOverlayClass}
                           style={{
@@ -368,21 +524,25 @@ export function SavedCaseImageBoard({
                         />
                       ) : null}
 
-                      {livePreview?.status === "running" ? (
+                      {sourceModeActive && livePreview?.status === "running" ? (
                         <div className="pointer-events-none absolute right-3 top-3 rounded-[8px] bg-ink/78 px-3 py-1 text-[0.72rem] font-semibold text-white">
                           {pick(locale, "MedSAM running", "MedSAM 실행 중")}
                         </div>
                       ) : null}
                     </div>
                   </div>
-                ) : panelBusy ? (
+                ) : panelBusy || roiCropLoading || lesionCropLoading ? (
                   <div className="grid place-items-center rounded-[14px] border border-border bg-surface-muted/45 p-2">
                     <div className="grid h-[220px] w-full max-w-[320px] place-items-center rounded-[12px] border border-border/60 bg-white/75 text-sm text-muted dark:bg-white/4">
-                      {pick(locale, "Loading preview...", "미리보기를 불러오는 중...")}
+                      {roiCropModeActive
+                        ? pick(locale, "Preparing cornea crop...", "각막 crop 준비 중...")
+                        : lesionCropModeActive
+                          ? pick(locale, "Preparing lesion crop...", "병변 crop 준비 중...")
+                          : pick(locale, "Loading preview...", "미리보기를 불러오는 중...")}
                     </div>
                   </div>
                 ) : (
-                  <div className={panelImageFallbackClass}>{pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다")}</div>
+                  <div className={panelImageFallbackClass}>{unavailableCopy}</div>
                 )}
 
                 <div className="flex flex-wrap gap-2 text-[0.78rem] text-muted">
@@ -401,6 +561,19 @@ export function SavedCaseImageBoard({
 
                 <div className={savedImageActionBarClass}>
                   <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void onReviewSemanticPrompts(image.image_id)}
+                    disabled={semanticPromptBusyImageId === image.image_id}
+                  >
+                    {semanticPromptBusyImageId === image.image_id
+                      ? commonLoading
+                      : promptReviewOpen
+                        ? pick(locale, "Hide BiomedCLIP analysis", "BiomedCLIP 분석 숨기기")
+                        : pick(locale, "Run BiomedCLIP analysis", "BiomedCLIP 분석")}
+                  </Button>
+                  <Button
                     className={image.is_representative ? savedCaseActionButtonClass(true) : "px-4"}
                     type="button"
                     size="sm"
@@ -411,22 +584,8 @@ export function SavedCaseImageBoard({
                     {representativeBusyImageId === image.image_id
                       ? commonLoading
                       : image.is_representative
-                        ? pick(locale, "Representative", "대표 이미지")
-                        : pick(locale, "Set representative", "대표 이미지로 지정")}
-                  </Button>
-                  <Button
-                    className={togglePillClass(promptReviewOpen, true)}
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void onReviewSemanticPrompts(image.image_id)}
-                    disabled={semanticPromptBusyImageId === image.image_id}
-                  >
-                    {semanticPromptBusyImageId === image.image_id
-                      ? commonLoading
-                      : promptReviewOpen
-                        ? pick(locale, "Hide BiomedCLIP analysis", "BiomedCLIP 분석 닫기")
-                        : pick(locale, "Run BiomedCLIP analysis", "BiomedCLIP 분석")}
+                        ? pick(locale, "Representative", "대표")
+                        : pick(locale, "Set representative", "대표로 지정")}
                   </Button>
                 </div>
 
@@ -441,6 +600,7 @@ export function SavedCaseImageBoard({
                     formatSemanticScore={formatSemanticScore}
                   />
                 ) : null}
+
               </Card>
             );
           })}
@@ -466,7 +626,9 @@ export function SavedCaseImageBoard({
       ) : null}
 
       {!selectedCaseImages.length && !panelBusy ? (
-        <div className={emptySurfaceClass}>{pick(locale, "No saved images are attached to this case yet.", "이 케이스에는 아직 저장 이미지가 없습니다.")}</div>
+        <div className={emptySurfaceClass}>
+          {pick(locale, "No saved images are attached to this case yet.", "이 케이스에는 아직 저장된 이미지가 없습니다.")}
+        </div>
       ) : null}
     </section>
   );

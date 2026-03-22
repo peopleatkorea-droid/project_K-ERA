@@ -13,8 +13,11 @@ type Props = {
   locale: Locale;
   validationResult: CaseValidationResponse | null;
   aiClinicBusy: boolean;
+  aiClinicExpandedBusy: boolean;
   canRunAiClinic: boolean;
+  canExpandAiClinic: boolean;
   onRunAiClinic: () => void;
+  onExpandAiClinic: () => void;
   children: ReactNode;
 };
 
@@ -22,25 +25,40 @@ export function AiClinicPanel({
   locale,
   validationResult,
   aiClinicBusy,
+  aiClinicExpandedBusy,
   canRunAiClinic,
+  canExpandAiClinic,
   onRunAiClinic,
+  onExpandAiClinic,
   children,
 }: Props) {
   return (
     <Card as="section" variant="panel" className="grid gap-4 p-5">
       <SectionHeader
         eyebrow={<div className={docSectionLabelClass}>{pick(locale, "AI Clinic", "AI Clinic")}</div>}
-        title={pick(locale, "Run AI Clinic review", "AI Clinic 리뷰 실행")}
+        title={pick(locale, "Run AI Clinic review", "AI Clinic review 실행")}
         titleAs="h4"
         description={pick(
           locale,
-          "Use the saved validation result to assemble similar-patient evidence, narrative evidence, and workflow guidance in one AI Clinic flow.",
-          "저장된 검증 결과를 바탕으로 유사 환자 근거, 서술 근거, 워크플로 가이드를 하나의 AI Clinic 흐름으로 묶습니다."
+          "Start with similar-patient retrieval, then load narrative evidence and workflow guidance only when needed.",
+          "먼저 유사 환자 검색을 띄우고, 필요할 때만 narrative evidence와 workflow guidance를 추가로 불러옵니다."
         )}
         aside={
-          <Button type="button" variant="ghost" onClick={onRunAiClinic} disabled={aiClinicBusy || !canRunAiClinic}>
-            {aiClinicBusy ? pick(locale, "Running...", "실행 중...") : pick(locale, "Run AI Clinic", "AI Clinic 실행")}
-          </Button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onRunAiClinic} disabled={aiClinicBusy || !canRunAiClinic}>
+              {aiClinicBusy ? pick(locale, "Finding...", "검색 중...") : pick(locale, "Find similar cases", "유사 환자 찾기")}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onExpandAiClinic}
+              disabled={aiClinicExpandedBusy || !canExpandAiClinic}
+            >
+              {aiClinicExpandedBusy
+                ? pick(locale, "Loading evidence...", "근거 불러오는 중...")
+                : pick(locale, "Load evidence", "근거 불러오기")}
+            </Button>
+          </div>
         }
       />
 
@@ -48,8 +66,8 @@ export function AiClinicPanel({
         <div className={emptySurfaceClass}>
           {pick(
             locale,
-            "Run validation first, then AI Clinic can build a combined review from similar patients, narrative evidence, and workflow guidance.",
-            "먼저 검증을 실행하면 AI Clinic이 유사 환자, 서술 근거, 워크플로 가이드를 묶어 리뷰를 구성합니다."
+            "Run validation first. AI Clinic uses that result to stage similar-case retrieval first and expanded evidence second.",
+            "먼저 validation을 실행하세요. AI Clinic은 그 결과를 기준으로 유사 케이스 검색을 먼저, 확장 근거는 그다음 단계로 불러옵니다."
           )}
         </div>
       ) : (

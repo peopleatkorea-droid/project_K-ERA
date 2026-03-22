@@ -179,6 +179,44 @@ export async function runAnalysisCaseAiClinic(
   );
 }
 
+export async function runAnalysisCaseAiClinicSimilarCases(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    model_version_ids?: string[];
+    top_k?: number;
+    retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+  },
+) {
+  if (canUseDesktopAnalysisTransport()) {
+    return invokeDesktop<AiClinicResponse>("run_case_ai_clinic_similar_cases", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  warnAnalysisFallback("runCaseAiClinicSimilarCases");
+  return request<AiClinicResponse>(
+    `/api/sites/${siteId}/cases/ai-clinic/similar-cases`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        top_k: 3,
+        retrieval_backend: "classifier",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
 export async function runAnalysisCaseContribution(
   siteId: string,
   token: string,
@@ -532,6 +570,38 @@ export async function fetchAnalysisSemanticPromptScores(
   return request<SemanticPromptReviewResponse>(
     `/api/sites/${siteId}/images/${imageId}/semantic-prompts?${params.toString()}`,
     {},
+    token,
+  );
+}
+
+export type ImageTextSearchResult = {
+  image_id: string;
+  patient_id: string;
+  visit_date: string;
+  view: string;
+  preview_url: string | null;
+  score: number;
+};
+
+export type ImageTextSearchResponse = {
+  query: string;
+  eligible_image_count: number;
+  results: ImageTextSearchResult[];
+};
+
+export async function searchAnalysisImagesByText(
+  siteId: string,
+  query: string,
+  token: string,
+  topK = 10,
+): Promise<ImageTextSearchResponse> {
+  return request<ImageTextSearchResponse>(
+    `/api/sites/${siteId}/images/search/text`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, top_k: topK }),
+    },
     token,
   );
 }

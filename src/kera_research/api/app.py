@@ -5,14 +5,13 @@ import inspect
 import io
 import mimetypes
 import os
-import platform
 import threading
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import google.auth.transport.requests
 import jwt
@@ -23,7 +22,6 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from google.oauth2 import id_token as google_id_token
-from pydantic import BaseModel, Field
 
 from kera_research.config import (
     CASE_REFERENCE_SALT_FINGERPRINT,
@@ -34,6 +32,43 @@ from kera_research.config import (
 )
 from kera_research.db import CONTROL_PLANE_ENGINE, DATABASE_TOPOLOGY, institution_directory, sites as control_plane_sites
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
+from kera_research.api.control_plane_sync import start_control_plane_sync_loop, stop_control_plane_sync_loop
+from kera_research.api.desktop_support import desktop_self_check as _desktop_self_check, remote_node_os_info as _remote_node_os_info
+from kera_research.api.models import (
+    AccessRequestCreateRequest,
+    AccessRequestReviewRequest,
+    AggregationRunRequest,
+    CaseAiClinicRequest,
+    CaseContributionRequest,
+    CaseValidationCompareRequest,
+    CaseValidationRequest,
+    CrossValidationRunRequest,
+    EmbeddingBackfillRequest,
+    GoogleLoginRequest,
+    InitialTrainingBenchmarkRequest,
+    InitialTrainingRequest,
+    LesionBoxRequest,
+    LocalControlPlaneNodeCredentialsRequest,
+    LocalControlPlaneNodeRegisterRequest,
+    LocalControlPlaneSmokeRequest,
+    LoginRequest,
+    ModelUpdateReviewRequest,
+    ModelVersionAutoPublishRequest,
+    ModelVersionPublishRequest,
+    PatientCreateRequest,
+    PatientUpdateRequest,
+    ProjectCreateRequest,
+    RepresentativeImageRequest,
+    ResumeBenchmarkRequest,
+    SiteCreateRequest,
+    SiteMetadataRecoveryRequest,
+    SiteStorageRootUpdateRequest,
+    SiteUpdateRequest,
+    SiteValidationRunRequest,
+    StorageSettingsUpdateRequest,
+    UserUpsertRequest,
+    VisitCreateRequest,
+)
 from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
@@ -73,6 +108,7 @@ from kera_research.api.route_support import build_route_supports
 from kera_research.api.routes.admin import build_admin_router
 from kera_research.api.routes.auth import build_auth_router
 from kera_research.api.routes.cases import build_cases_router
+from kera_research.api.routes.desktop import build_desktop_router
 from kera_research.api.routes.sites import build_sites_router
 
 
@@ -238,7 +274,10 @@ def _create_access_token(user: dict[str, Any]) -> str:
 
 def _decode_control_plane_access_token(token: str) -> dict[str, Any]:
     if not CONTROL_PLANE_JWT_PUBLIC_KEY:
-        raise RuntimeError("KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not configured.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not configured on the local node.",
+        )
     try:
         return jwt.decode(
             token,
@@ -263,12 +302,10 @@ def _decode_access_token(token: str) -> dict[str, Any]:
         header = {}
     algorithm = str(header.get("alg") or "").strip().upper()
 
-    if CONTROL_PLANE_JWT_PUBLIC_KEY and algorithm == "RS256":
-        try:
-            return _decode_control_plane_access_token(token)
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_401_UNAUTHORIZED:
-                raise
+    if algorithm == "RS256":
+        return _decode_control_plane_access_token(token)
+    if algorithm and algorithm != API_ALGORITHM:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
     try:
         return jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
     except jwt.PyJWTError as exc:
@@ -597,10 +634,6 @@ def _resolve_execution_device(selection: str) -> str:
 def _preferred_embedding_execution_device() -> str:
     hardware = detect_hardware()
     return "cuda" if hardware.get("gpu_available") else "cpu"
-
-
-def _remote_node_os_info() -> str:
-    return f"{platform.system()} {platform.release()} ({platform.machine()})".strip()
 
 
 def _call_with_supported_kwargs(func: Any, /, **kwargs: Any) -> Any:
@@ -1177,268 +1210,6 @@ def _attach_image_quality_scores(images: list[dict[str, Any]]) -> list[dict[str,
     ]
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class GoogleLoginRequest(BaseModel):
-    id_token: str
-
-
-class AccessRequestCreateRequest(BaseModel):
-    requested_site_id: str
-    requested_site_label: str = ""
-    requested_role: str
-    message: str = ""
-
-
-class AccessRequestReviewRequest(BaseModel):
-    decision: str
-    assigned_role: str | None = None
-    assigned_site_id: str | None = None
-    create_site_if_missing: bool = False
-    project_id: str | None = None
-    site_code: str | None = None
-    display_name: str | None = None
-    hospital_name: str | None = None
-    research_registry_enabled: bool = True
-    reviewer_notes: str = ""
-
-
-class PatientCreateRequest(BaseModel):
-    patient_id: str
-    sex: str
-    age: int
-    chart_alias: str = ""
-    local_case_code: str = ""
-
-
-class PatientUpdateRequest(BaseModel):
-    sex: str
-    age: int
-    chart_alias: str = ""
-    local_case_code: str = ""
-
-
-class OrganismSelection(BaseModel):
-    culture_category: str
-    culture_species: str
-
-
-class VisitCreateRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    actual_visit_date: str | None = None
-    culture_confirmed: bool = True
-    culture_category: str
-    culture_species: str
-    additional_organisms: list[OrganismSelection] = Field(default_factory=list)
-    contact_lens_use: str
-    predisposing_factor: list[str] = Field(default_factory=list)
-    other_history: str = ""
-    visit_status: str = "active"
-    is_initial_visit: bool = False
-    smear_result: str = ""
-    polymicrobial: bool = False
-
-
-class RepresentativeImageRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    representative_image_id: str
-
-
-class LesionBoxRequest(BaseModel):
-    x0: float
-    y0: float
-    x1: float
-    y1: float
-
-
-class CaseValidationRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    execution_mode: str = "auto"
-    model_version_id: str | None = None
-    model_version_ids: list[str] = Field(default_factory=list)
-    generate_gradcam: bool = True
-    generate_medsam: bool = True
-
-
-class CaseAiClinicRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    execution_mode: str = "auto"
-    model_version_id: str | None = None
-    model_version_ids: list[str] = Field(default_factory=list)
-    top_k: int = 3
-    retrieval_backend: str = "standard"
-
-
-class CaseContributionRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    execution_mode: str = "auto"
-    model_version_id: str | None = None
-    model_version_ids: list[str] = Field(default_factory=list)
-
-
-class SiteValidationRunRequest(BaseModel):
-    execution_mode: str = "auto"
-    generate_gradcam: bool = True
-    generate_medsam: bool = True
-    model_version_id: str | None = None
-
-
-class InitialTrainingRequest(BaseModel):
-    architecture: str = "convnext_tiny"
-    execution_mode: str = "auto"
-    crop_mode: str = "automated"
-    case_aggregation: str = "mean"
-    epochs: int = 30
-    learning_rate: float = 1e-4
-    batch_size: int = 16
-    val_split: float = 0.2
-    test_split: float = 0.2
-    use_pretrained: bool = True
-    regenerate_split: bool = False
-
-
-class InitialTrainingBenchmarkRequest(BaseModel):
-    architectures: list[str] = Field(default_factory=lambda: ["vit", "swin", "dinov2", "dinov2_mil", "dual_input_concat", "convnext_tiny", "densenet121", "efficientnet_v2_s"])
-    execution_mode: str = "auto"
-    crop_mode: str = "automated"
-    case_aggregation: str = "mean"
-    epochs: int = 30
-    learning_rate: float = 1e-4
-    batch_size: int = 16
-    val_split: float = 0.2
-    test_split: float = 0.2
-    use_pretrained: bool = True
-    regenerate_split: bool = False
-
-
-class ResumeBenchmarkRequest(BaseModel):
-    job_id: str
-    execution_mode: str | None = None
-
-
-class CrossValidationRunRequest(BaseModel):
-    architecture: str = "convnext_tiny"
-    execution_mode: str = "auto"
-    crop_mode: str = "automated"
-    case_aggregation: str = "mean"
-    num_folds: int = 5
-    epochs: int = 10
-    learning_rate: float = 1e-4
-    batch_size: int = 16
-    val_split: float = 0.2
-    use_pretrained: bool = True
-
-
-class CaseValidationCompareRequest(BaseModel):
-    patient_id: str
-    visit_date: str
-    model_version_ids: list[str] = Field(default_factory=list)
-    execution_mode: str = "auto"
-    generate_gradcam: bool = False
-    generate_medsam: bool = False
-
-
-class EmbeddingBackfillRequest(BaseModel):
-    execution_mode: str = "auto"
-    model_version_id: str | None = None
-    force_refresh: bool = False
-
-
-class AggregationRunRequest(BaseModel):
-    update_ids: list[str] = Field(default_factory=list)
-    new_version_name: str | None = None
-
-
-class ModelUpdateReviewRequest(BaseModel):
-    decision: str
-    reviewer_notes: str = ""
-
-
-class ModelVersionPublishRequest(BaseModel):
-    download_url: str
-    set_current: bool = False
-
-
-class ModelVersionAutoPublishRequest(BaseModel):
-    set_current: bool = False
-
-
-class ProjectCreateRequest(BaseModel):
-    name: str
-    description: str = ""
-
-
-class SiteCreateRequest(BaseModel):
-    project_id: str
-    site_code: str
-    display_name: str
-    hospital_name: str = ""
-    source_institution_id: str | None = None
-    research_registry_enabled: bool = True
-
-
-class SiteUpdateRequest(BaseModel):
-    display_name: str
-    hospital_name: str = ""
-    research_registry_enabled: bool = True
-
-
-class StorageSettingsUpdateRequest(BaseModel):
-    storage_root: str
-
-
-class SiteStorageRootUpdateRequest(BaseModel):
-    storage_root: str
-
-
-class SiteMetadataRecoveryRequest(BaseModel):
-    source: Literal["auto", "backup", "manifest"] = "auto"
-    force_replace: bool = True
-    backup_path: str | None = None
-
-
-class UserUpsertRequest(BaseModel):
-    user_id: str | None = None
-    username: str
-    full_name: str = ""
-    password: str = ""
-    role: str = "viewer"
-    site_ids: list[str] = Field(default_factory=list)
-
-
-class LocalControlPlaneNodeRegisterRequest(BaseModel):
-    control_plane_base_url: str | None = None
-    control_plane_user_token: str
-    device_name: str = "local-node"
-    os_info: str = ""
-    app_version: str = ""
-    site_id: str | None = None
-    display_name: str | None = None
-    hospital_name: str | None = None
-    source_institution_id: str | None = None
-    overwrite: bool = False
-
-
-class LocalControlPlaneNodeCredentialsRequest(BaseModel):
-    control_plane_base_url: str
-    node_id: str
-    node_token: str
-    site_id: str | None = None
-    overwrite: bool = False
-
-
-class LocalControlPlaneSmokeRequest(BaseModel):
-    update_suffix: str = ""
-
-
 def _bool_from_value(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1544,241 +1315,21 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "Accept"],
     )
 
-    @app.get("/api/health")
-    def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "service": "kera-api",
-            "google_auth_configured": bool(_google_client_ids()),
-        }
-
-    @app.get("/api/control-plane/node/status")
-    def local_control_plane_node_status(cp=Depends(get_control_plane)) -> dict[str, Any]:
-        cp.reload_remote_control_plane_credentials()
-        bootstrap = cp.remote_bootstrap_state()
-        current_release = cp.current_global_model()
-        credential_status = node_credentials_status()
-        return {
-            "control_plane": {
-                "configured": cp.remote_control_plane_enabled(),
-                "node_sync_enabled": cp.remote_node_sync_enabled(),
-                "base_url": cp.remote_control_plane.base_url,
-                "node_id": cp.remote_control_plane.node_id,
-            },
-            "credentials": credential_status,
-            "stored_credentials_present": load_node_credentials() is not None,
-            "database_topology": DATABASE_TOPOLOGY,
-            "bootstrap": bootstrap,
-            "current_release": current_release,
-        }
-
-    @app.post("/api/control-plane/node/credentials")
-    def persist_local_control_plane_node_credentials(
-        payload: LocalControlPlaneNodeCredentialsRequest,
-        cp=Depends(get_control_plane),
-    ) -> dict[str, Any]:
-        existing = load_node_credentials()
-        if existing is not None and not payload.overwrite:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Node credentials are already configured. Pass overwrite=true to replace them.",
-            )
-        saved = save_node_credentials(
-            control_plane_base_url=payload.control_plane_base_url,
-            node_id=payload.node_id,
-            node_token=payload.node_token,
-            site_id=payload.site_id,
-        )
-        cp.clear_remote_control_plane_state()
-        cp.reload_remote_control_plane_credentials()
-        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
-        if bootstrap is not None:
-            cp.record_remote_node_heartbeat(
-                app_version=app.version,
-                os_info=_remote_node_os_info(),
-                status="credentials_saved",
-            )
-        return {
-            "saved": True,
-            "credentials": node_credentials_status(),
-            "bootstrap": bootstrap,
-        }
-
-    @app.delete("/api/control-plane/node/credentials")
-    def clear_local_control_plane_node_credentials(cp=Depends(get_control_plane)) -> dict[str, Any]:
-        clear_node_credentials()
-        cp.clear_remote_control_plane_state()
-        return {
-            "cleared": True,
-            "credentials": node_credentials_status(),
-        }
-
-    @app.post("/api/control-plane/node/register")
-    def register_local_control_plane_node(
-        payload: LocalControlPlaneNodeRegisterRequest,
-        cp=Depends(get_control_plane),
-    ) -> dict[str, Any]:
-        existing = load_node_credentials()
-        if existing is not None and not payload.overwrite:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Node credentials are already configured. Pass overwrite=true to replace them.",
-            )
-
-        client = RemoteControlPlaneClient(
-            base_url=payload.control_plane_base_url,
-            node_id="",
-            node_token="",
-        )
-        try:
-            registration = client.register_node(
-                user_bearer_token=payload.control_plane_user_token,
-                device_name=payload.device_name,
-                os_info=payload.os_info or _remote_node_os_info(),
-                app_version=payload.app_version or app.version,
-                site_id=payload.site_id,
-                display_name=payload.display_name,
-                hospital_name=payload.hospital_name,
-                source_institution_id=payload.source_institution_id,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Control plane node registration failed: {exc}",
-            ) from exc
-
-        node_id = str(registration.get("node_id") or "").strip()
-        node_token = str(registration.get("node_token") or "").strip()
-        if not node_id or not node_token:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Control plane node registration did not return node credentials.",
-            )
-        save_node_credentials(
-            control_plane_base_url=client.base_url,
-            node_id=node_id,
-            node_token=node_token,
-            site_id=str(payload.site_id or registration.get("bootstrap", {}).get("site", {}).get("site_id") or "").strip() or None,
-        )
-        cp.clear_remote_control_plane_state()
-        cp.reload_remote_control_plane_credentials()
-        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
-        cp.record_remote_node_heartbeat(
-            app_version=payload.app_version or app.version,
-            os_info=payload.os_info or _remote_node_os_info(),
-            status="registered",
-        )
-        return {
-            "registered": True,
-            "node_id": node_id,
-            "node_token": node_token,
-            "bootstrap": bootstrap,
-            "credentials": node_credentials_status(),
-        }
-
-    @app.post("/api/dev/control-plane/smoke")
-    def smoke_remote_control_plane(
-        payload: LocalControlPlaneSmokeRequest,
-        cp=Depends(get_control_plane),
-    ) -> dict[str, Any]:
-        if not _local_control_plane_dev_auth_enabled():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Local control-plane smoke routes are disabled.",
-            )
-        if not cp.remote_node_sync_enabled():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Node credentials are not configured for remote control-plane sync.",
-            )
-
-        bootstrap = cp.remote_bootstrap_state(force_refresh=True)
-        if not isinstance(bootstrap, dict):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Control plane bootstrap is unavailable.",
-            )
-        current_model = cp.current_global_model()
-        if current_model is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No current model release is available from the control plane.",
-            )
-
-        site = bootstrap.get("site") if isinstance(bootstrap.get("site"), dict) else {}
-        project = bootstrap.get("project") if isinstance(bootstrap.get("project"), dict) else {}
-        site_id = str(site.get("site_id") or "").strip()
-        project_id = str(project.get("project_id") or "project_default").strip() or "project_default"
-        if not site_id:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Bootstrap did not include an active site.",
-            )
-
-        suffix = str(payload.update_suffix or "").strip() or make_id("smoke")[-8:]
-        update_record = cp.register_model_update(
-            {
-                "update_id": f"update_smoke_{suffix}",
-                "site_id": site_id,
-                "base_model_version_id": current_model.get("version_id"),
-                "model_version_id": current_model.get("version_id"),
-                "version_name": current_model.get("version_name"),
-                "architecture": current_model.get("architecture"),
-                "upload_type": "weight delta",
-                "status": "pending_upload",
-                "n_cases": 1,
-                "n_images": 1,
-                "delta_l2_norm": 0.0,
-                "case_reference_id": f"case_ref_smoke_{suffix}",
-                "patient_reference_id": f"patient_ref_smoke_{suffix}",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
-                "artifact_distribution_status": "metadata_only",
-                "artifact_source_provider": "metadata_only",
-                "notes": "synthetic smoke-test update",
-            }
-        )
-
-        validation_id = f"validation_smoke_{suffix}"
-        validation_summary = cp.save_validation_run(
-            {
-                "validation_id": validation_id,
-                "project_id": project_id,
-                "site_id": site_id,
-                "model_version_id": current_model.get("version_id"),
-                "model_version": current_model.get("version_name"),
-                "model_architecture": current_model.get("architecture"),
-                "run_date": datetime.now(timezone.utc).isoformat(),
-                "n_cases": 0,
-                "n_images": 0,
-                "AUROC": None,
-                "accuracy": 1.0,
-                "sensitivity": None,
-                "specificity": None,
-                "F1": None,
-                "source": "control_plane_smoke",
-            },
-            [],
-        )
-
-        return {
-            "status": "ok",
-            "steps": [
-                "bootstrap",
-                "current-release",
-                "model-update-upload",
-                "validation-upload",
-            ],
-            "bootstrap": bootstrap,
-            "current_release": current_model,
-            "model_update": update_record,
-            "validation_summary": validation_summary,
-        }
-
     route_supports = build_route_supports(
         get_control_plane=get_control_plane,
         get_current_user=get_current_user,
         get_approved_user=get_approved_user,
+        google_client_ids=_google_client_ids,
+        desktop_self_check=_desktop_self_check,
+        load_node_credentials=load_node_credentials,
+        node_credentials_status=node_credentials_status,
+        save_node_credentials=save_node_credentials,
+        clear_node_credentials=clear_node_credentials,
+        database_topology=DATABASE_TOPOLOGY,
+        remote_node_os_info=_remote_node_os_info,
+        local_control_plane_dev_auth_enabled=_local_control_plane_dev_auth_enabled,
+        get_app_version=lambda: app.version,
+        RemoteControlPlaneClient=RemoteControlPlaneClient,
         local_login_enabled=_local_login_enabled,
         local_dev_auth_enabled=_local_control_plane_dev_auth_enabled,
         verify_google_id_token=_verify_google_id_token,
@@ -1870,8 +1421,12 @@ def create_app() -> FastAPI:
         UserUpsertRequest=UserUpsertRequest,
         SiteStorageRootUpdateRequest=SiteStorageRootUpdateRequest,
         SiteMetadataRecoveryRequest=SiteMetadataRecoveryRequest,
+        LocalControlPlaneNodeRegisterRequest=LocalControlPlaneNodeRegisterRequest,
+        LocalControlPlaneNodeCredentialsRequest=LocalControlPlaneNodeCredentialsRequest,
+        LocalControlPlaneSmokeRequest=LocalControlPlaneSmokeRequest,
     )
 
+    app.include_router(build_desktop_router(route_supports.desktop))
     app.include_router(build_auth_router(route_supports.auth))
     app.include_router(build_admin_router(route_supports.admin))
     app.include_router(build_sites_router(route_supports.sites))
@@ -1880,41 +1435,18 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def _startup_remote_control_plane_sync() -> None:
         cp = get_control_plane()
-        if not cp.remote_node_sync_enabled():
-            return
-        stop_event = threading.Event()
-        app.state.control_plane_sync_stop = stop_event
-
-        def sync_loop() -> None:
-            last_bootstrap_sync = time.time()
-            bootstrap = cp.remote_bootstrap_state(force_refresh=True)
-            if bootstrap is not None:
-                cp.record_remote_node_heartbeat(
-                    app_version=app.version,
-                    os_info=_remote_node_os_info(),
-                    status="startup",
-                )
-            while not stop_event.wait(float(CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS)):
-                cp.record_remote_node_heartbeat(
-                    app_version=app.version,
-                    os_info=_remote_node_os_info(),
-                    status="ok",
-                )
-                if (time.time() - last_bootstrap_sync) >= float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS):
-                    cp.remote_bootstrap_state(force_refresh=True)
-                    last_bootstrap_sync = time.time()
-
-        threading.Thread(
-            target=sync_loop,
-            daemon=True,
-            name="kera-control-plane-sync",
-        ).start()
+        start_control_plane_sync_loop(
+            app,
+            cp,
+            heartbeat_interval_seconds=float(CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS),
+            bootstrap_refresh_seconds=float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS),
+            app_version=app.version,
+            os_info=_remote_node_os_info(),
+        )
 
     @app.on_event("shutdown")
     def _shutdown_remote_control_plane_sync() -> None:
-        stop_event = getattr(app.state, "control_plane_sync_stop", None)
-        if isinstance(stop_event, threading.Event):
-            stop_event.set()
+        stop_control_plane_sync_loop(app)
 
     return app
 

@@ -178,6 +178,12 @@ export type ImageRecord = {
   image_path: string;
   is_representative: boolean;
   content_url?: string | null;
+  has_lesion_box?: boolean;
+  has_roi_crop?: boolean;
+  has_medsam_mask?: boolean;
+  has_lesion_crop?: boolean;
+  has_lesion_mask?: boolean;
+  artifact_status_updated_at?: string | null;
   lesion_prompt_box?: {
     x0: number;
     y0: number;
@@ -694,6 +700,7 @@ export type AiClinicDifferential = {
 };
 
 export type AiClinicResponse = {
+  analysis_stage?: "similar_cases" | "expanded" | null;
   query_case: {
     patient_id: string;
     visit_date: string;
