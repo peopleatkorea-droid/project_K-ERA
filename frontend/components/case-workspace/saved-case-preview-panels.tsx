@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -37,7 +38,7 @@ type SavedCasePreviewPanelsProps = {
   onRunLesionPreview: () => void | Promise<void>;
 };
 
-export function SavedCasePreviewPanels({
+function SavedCasePreviewPanelsInner({
   locale,
   commonLoading,
   canRunRoiPreview,
@@ -228,3 +229,5 @@ export function SavedCasePreviewPanels({
     </div>
   );
 }
+
+export const SavedCasePreviewPanels = memo(SavedCasePreviewPanelsInner);

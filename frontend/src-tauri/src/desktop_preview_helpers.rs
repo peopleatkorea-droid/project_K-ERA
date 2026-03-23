@@ -1,0 +1,127 @@
+pub(super) fn preview_cache_path(
+    site_id: &str,
+    image_id: &str,
+    max_side: u32,
+) -> Result<PathBuf, String> {
+    Ok(site_dir(site_id)?
+        .join("artifacts")
+        .join("image_previews")
+        .join(max_side.to_string())
+        .join(format!("{image_id}.jpg")))
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct WarmPreviewJob {
+    pub(super) site_id: String,
+    pub(super) image_id: String,
+    pub(super) image_path: PathBuf,
+    pub(super) max_side: u32,
+}
+
+fn preview_warm_state() -> &'static Mutex<HashSet<String>> {
+    PREVIEW_WARM_STATE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn preview_job_key(site_id: &str, image_id: &str, max_side: u32) -> String {
+    format!("{site_id}::{image_id}::{max_side}")
+}
+
+fn ensure_preview(image_path: &Path, preview_path: &Path, max_side: u32) -> Result<(), String> {
+    if preview_path.exists() {
+        return Ok(());
+    }
+    if !image_path.exists() {
+        return Err(format!(
+            "Image file not found on disk: {}",
+            image_path.display()
+        ));
+    }
+    if let Some(parent) = preview_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let image = image::open(image_path).map_err(|error| error.to_string())?;
+    let clamped_side = max_side.clamp(96, 1024);
+    let thumbnail = image.thumbnail(clamped_side, clamped_side);
+    thumbnail
+        .save_with_format(preview_path, ImageFormat::Jpeg)
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn existing_file_path_string(path: &Path) -> Option<String> {
+    if path.exists() {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+pub(super) fn cached_preview_file_path(
+    site_id: &str,
+    image_id: &str,
+    max_side: u32,
+) -> Result<Option<String>, String> {
+    let preview_path = preview_cache_path(site_id, image_id, max_side)?;
+    Ok(existing_file_path_string(&preview_path))
+}
+
+pub(super) fn preview_file_path(
+    site_id: &str,
+    image_id: &str,
+    image_path: &Path,
+    max_side: u32,
+) -> Result<String, String> {
+    let preview_path = preview_cache_path(site_id, image_id, max_side)?;
+    ensure_preview(image_path, &preview_path, max_side)?;
+    Ok(preview_path.to_string_lossy().to_string())
+}
+
+pub(super) fn maybe_queue_preview_job(
+    site_id: &str,
+    image_id: &str,
+    image_path: &Path,
+    max_side: u32,
+) -> Option<WarmPreviewJob> {
+    let preview_path = preview_cache_path(site_id, image_id, max_side).ok()?;
+    if preview_path.exists() || !image_path.exists() {
+        return None;
+    }
+    Some(WarmPreviewJob {
+        site_id: site_id.to_string(),
+        image_id: image_id.to_string(),
+        image_path: image_path.to_path_buf(),
+        max_side,
+    })
+}
+
+pub(super) fn queue_preview_generation_batch(jobs: Vec<WarmPreviewJob>) {
+    if jobs.is_empty() {
+        return;
+    }
+    let mut queued_jobs = Vec::new();
+    {
+        let mut queued = preview_warm_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for job in jobs {
+            let job_key = preview_job_key(&job.site_id, &job.image_id, job.max_side);
+            if queued.insert(job_key.clone()) {
+                queued_jobs.push((job_key, job));
+            }
+        }
+    }
+    if queued_jobs.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for (job_key, job) in queued_jobs {
+            if let Ok(preview_path) = preview_cache_path(&job.site_id, &job.image_id, job.max_side)
+            {
+                let _ = ensure_preview(&job.image_path, &preview_path, job.max_side);
+            }
+            let mut queued = preview_warm_state()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queued.remove(&job_key);
+        }
+    });
+}

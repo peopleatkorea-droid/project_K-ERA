@@ -10,21 +10,29 @@ import type { DesktopUpdateCheckResult } from "../lib/desktop-updater";
 
 import type { DesktopShellCopy } from "./shell-copy";
 
-type DesktopSettingsFormProps = {
-  copy: DesktopShellCopy;
+export type DesktopSettingsFormState = {
   config: DesktopAppConfigState | null;
   configForm: DesktopAppConfigValues;
   configBusy: boolean;
   runtimeContract: DesktopRuntimeContractState | null;
   storagePath: string;
+};
+
+export type DesktopSettingsSupportState = {
   supportBusy: boolean;
   supportMessage: string | null;
   supportBundlePath: string | null;
   supportError: string | null;
+};
+
+export type DesktopSettingsUpdateState = {
   updateState: DesktopUpdateCheckResult | null;
   updateBusy: boolean;
   updateMessage: string | null;
   updateProgress: string | null;
+};
+
+export type DesktopSettingsFormActions = {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onReset: () => void;
   onConfigChange: (patch: Partial<DesktopAppConfigValues>) => void;
@@ -36,31 +44,35 @@ type DesktopSettingsFormProps = {
   onOpenReleaseDownload: () => void;
 };
 
+type DesktopSettingsFormProps = {
+  copy: DesktopShellCopy;
+  form: DesktopSettingsFormState;
+  support: DesktopSettingsSupportState;
+  updates: DesktopSettingsUpdateState;
+  actions: DesktopSettingsFormActions;
+};
+
 export function DesktopSettingsForm({
   copy,
-  config,
-  configForm,
-  configBusy,
-  runtimeContract,
-  storagePath,
-  supportBusy,
-  supportMessage,
-  supportBundlePath,
-  supportError,
-  updateState,
-  updateBusy,
-  updateMessage,
-  updateProgress,
-  onSubmit,
-  onReset,
-  onConfigChange,
-  onPickStorageDir,
-  onOpenPath,
-  onExportSupportBundle,
-  onCheckUpdates,
-  onInstallUpdate,
-  onOpenReleaseDownload,
+  form,
+  support,
+  updates,
+  actions,
 }: DesktopSettingsFormProps) {
+  const { config, configForm, configBusy, runtimeContract, storagePath } = form;
+  const { supportBusy, supportMessage, supportBundlePath, supportError } = support;
+  const { updateState, updateBusy, updateMessage, updateProgress } = updates;
+  const {
+    onSubmit,
+    onReset,
+    onConfigChange,
+    onPickStorageDir,
+    onOpenPath,
+    onExportSupportBundle,
+    onCheckUpdates,
+    onInstallUpdate,
+    onOpenReleaseDownload,
+  } = actions;
   return (
     <form className="grid gap-4" onSubmit={onSubmit}>
       {runtimeContract?.errors.length ? (
@@ -102,41 +114,48 @@ export function DesktopSettingsForm({
             </Button>
           </div>
         </Field>
-
-        <Field as="div" label={copy.controlPlaneUrl} hint={copy.controlPlaneUrlHint} htmlFor="desktop-control-plane-url">
-          <input
-            id="desktop-control-plane-url"
-            value={configForm.control_plane_api_base_url}
-            onChange={(event) => onConfigChange({ control_plane_api_base_url: event.target.value })}
-            placeholder="https://example.org/control-plane/api"
-          />
-        </Field>
-
-        <Field as="div" label={copy.nodeId} hint={copy.nodeIdHint} htmlFor="desktop-node-id">
-          <input
-            id="desktop-node-id"
-            value={configForm.control_plane_node_id}
-            onChange={(event) => onConfigChange({ control_plane_node_id: event.target.value })}
-          />
-        </Field>
-
-        <Field as="div" label={copy.nodeToken} hint={copy.nodeTokenHint} htmlFor="desktop-node-token">
-          <input
-            id="desktop-node-token"
-            type="password"
-            value={configForm.control_plane_node_token}
-            onChange={(event) => onConfigChange({ control_plane_node_token: event.target.value })}
-          />
-        </Field>
-
-        <Field as="div" label={copy.siteId} hint={copy.siteIdHint} htmlFor="desktop-site-id">
-          <input
-            id="desktop-site-id"
-            value={configForm.control_plane_site_id}
-            onChange={(event) => onConfigChange({ control_plane_site_id: event.target.value })}
-          />
-        </Field>
       </div>
+
+      <details className="rounded-[22px] border border-border bg-surface-muted/50 p-4 text-sm">
+        <summary className="cursor-pointer font-semibold text-ink">{copy.connectionSettingsToggle}</summary>
+        <div className="mt-4 grid gap-4">
+          <SectionHeader title={copy.connectionSettingsTitle} description={copy.connectionSettingsDescription} />
+
+          <Field as="div" label={copy.controlPlaneUrl} hint={copy.controlPlaneUrlHint} htmlFor="desktop-control-plane-url">
+            <input
+              id="desktop-control-plane-url"
+              value={configForm.control_plane_api_base_url}
+              onChange={(event) => onConfigChange({ control_plane_api_base_url: event.target.value })}
+              placeholder="https://kera-bay.vercel.app/control-plane/api"
+            />
+          </Field>
+
+          <Field as="div" label={copy.nodeId} hint={copy.nodeIdHint} htmlFor="desktop-node-id">
+            <input
+              id="desktop-node-id"
+              value={configForm.control_plane_node_id}
+              onChange={(event) => onConfigChange({ control_plane_node_id: event.target.value })}
+            />
+          </Field>
+
+          <Field as="div" label={copy.nodeToken} hint={copy.nodeTokenHint} htmlFor="desktop-node-token">
+            <input
+              id="desktop-node-token"
+              type="password"
+              value={configForm.control_plane_node_token}
+              onChange={(event) => onConfigChange({ control_plane_node_token: event.target.value })}
+            />
+          </Field>
+
+          <Field as="div" label={copy.siteId} hint={copy.siteIdHint} htmlFor="desktop-site-id">
+            <input
+              id="desktop-site-id"
+              value={configForm.control_plane_site_id}
+              onChange={(event) => onConfigChange({ control_plane_site_id: event.target.value })}
+            />
+          </Field>
+        </div>
+      </details>
 
       <details className="rounded-[22px] border border-border bg-surface-muted/50 p-4 text-sm">
         <summary className="cursor-pointer font-semibold text-ink">{copy.advancedSettingsToggle}</summary>

@@ -2,9 +2,20 @@
 
 import { FormEvent, useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 
-import { AdminWorkspace } from "../components/admin-workspace";
-import { CaseWorkspace } from "../components/case-workspace";
-import { LandingV4 } from "../components/public/landing-v4";
+import dynamic from "next/dynamic";
+
+const AdminWorkspace = dynamic(() =>
+  import("../components/admin-workspace").then((m) => ({ default: m.AdminWorkspace })),
+  { loading: () => null },
+);
+const CaseWorkspace = dynamic(() =>
+  import("../components/case-workspace").then((m) => ({ default: m.CaseWorkspace })),
+  { loading: () => null },
+);
+const LandingV4 = dynamic(() =>
+  import("../components/public/landing-v4").then((m) => ({ default: m.LandingV4 })),
+  { loading: () => null },
+);
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Field } from "../components/ui/field";

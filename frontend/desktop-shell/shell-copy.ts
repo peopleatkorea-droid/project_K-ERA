@@ -7,11 +7,12 @@ export function createDesktopShellCopy(locale: Locale) {
     title: pick(locale, "K-ERA Desktop Workspace", "K-ERA 데스크톱 워크스페이스"),
     subtitle: pick(
       locale,
-      "Set up the local data folder, hospital connection, and sign-in for this PC.",
-      "이 PC에서 사용할 데이터 폴더, 병원 연결 정보, 로그인만 설정하면 됩니다.",
+      "Sign in first, then change the local data folder for this PC only if you need to.",
+      "먼저 로그인하고, 필요하면 이 PC의 데이터 폴더만 바꾸면 됩니다.",
     ),
     openSettings: pick(locale, "Setup", "설정"),
     closeSettings: pick(locale, "Hide setup", "설정 닫기"),
+    returnToWorkspace: pick(locale, "Open workspace", "워크스페이스 열기"),
     startRuntime: pick(locale, "Start app services", "앱 서비스 시작"),
     startingRuntime: pick(locale, "Starting app services...", "앱 서비스 시작 중..."),
     refreshingRuntime: pick(locale, "Refreshing status...", "상태 새로고침 중..."),
@@ -44,26 +45,26 @@ export function createDesktopShellCopy(locale: Locale) {
     controlPlaneUrl: pick(locale, "Hospital server URL", "병원 서버 주소"),
     controlPlaneUrlHint: pick(
       locale,
-      "Enter the server address provided for this hospital or site.",
-      "이 병원 또는 사이트에 대해 받은 서버 주소를 입력하세요.",
+      "This usually stays on the default K-ERA control-plane server unless support asks you to change it.",
+      "보통은 기본 K-ERA 중앙 서버를 그대로 사용합니다. 지원 요청이 있을 때만 바꾸세요.",
     ),
     nodeId: pick(locale, "This PC ID", "이 PC ID"),
     nodeIdHint: pick(
       locale,
-      "Use the PC ID provided during setup. It identifies this desktop in the hospital network.",
-      "초기 설정 때 받은 PC ID를 입력하세요. 병원 네트워크에서 이 데스크톱을 구분하는 값입니다.",
+      "Leave this empty unless you were given a specific desktop node ID.",
+      "별도 데스크톱 노드 ID를 받은 경우가 아니면 비워 두세요.",
     ),
     nodeToken: pick(locale, "Connection key", "연결 키"),
     nodeTokenHint: pick(
       locale,
-      "Use the connection key provided for this PC.",
-      "이 PC에 대해 받은 연결 키를 입력하세요.",
+      "Leave this empty unless you were given a connection key for this desktop.",
+      "이 데스크톱용 연결 키를 받은 경우가 아니면 비워 두세요.",
     ),
     siteId: pick(locale, "Default hospital code", "기본 병원 코드"),
     siteIdHint: pick(
       locale,
-      "Enter the hospital code that should open by default after sign-in.",
-      "로그인 후 기본으로 열 병원 코드를 입력하세요.",
+      "Only set this if you need a specific hospital to open by default after sign-in.",
+      "로그인 후 특정 병원을 기본으로 열어야 할 때만 입력하세요.",
     ),
     pythonPath: pick(locale, "Python path override", "Python 경로 직접 지정"),
     pythonPathHint: pick(
@@ -85,8 +86,8 @@ export function createDesktopShellCopy(locale: Locale) {
     runtimeStatus: pick(locale, "App status", "앱 상태"),
     appStatusDescription: pick(
       locale,
-      "You only need the basic setup below. Technical details stay hidden unless you open them.",
-      "아래 기본 설정만 입력하면 됩니다. 기술 정보는 필요할 때만 열어보세요.",
+      "Login comes first. Runtime status and technical tools only appear when you need them.",
+      "먼저 로그인하고, 런타임 상태와 기술 도구는 필요할 때만 확인하면 됩니다.",
     ),
     configPath: pick(locale, "Config file", "설정 파일"),
     backendUrl: pick(locale, "App server", "앱 서버"),
@@ -117,8 +118,8 @@ export function createDesktopShellCopy(locale: Locale) {
     setupChecklistTitle: pick(locale, "First-time setup", "처음 실행 설정"),
     setupChecklistDescription: pick(
       locale,
-      "Most users only need three things: a data folder, the hospital connection, and a login.",
-      "대부분의 사용자는 데이터 폴더, 병원 연결 정보, 로그인만 준비하면 됩니다.",
+      "Most users can sign in first and only adjust the local data folder later.",
+      "대부분의 사용자는 먼저 로그인하고, 나중에 데이터 폴더만 조정하면 됩니다.",
     ),
     guidedSetupTitle: pick(locale, "Guided setup", "안내 설정"),
     guidedSetupDescription: pick(
@@ -156,8 +157,15 @@ export function createDesktopShellCopy(locale: Locale) {
     ),
     requiredSettingsDescription: pick(
       locale,
-      "Most users only need these fields.",
-      "대부분의 사용자는 아래 항목만 입력하면 됩니다.",
+      "Most users only need to choose the local data folder.",
+      "대부분의 사용자는 데이터 폴더만 정하면 됩니다.",
+    ),
+    connectionSettingsTitle: pick(locale, "Hospital connection", "병원 연결 정보"),
+    connectionSettingsToggle: pick(locale, "Open hospital connection settings", "병원 연결 정보 열기"),
+    connectionSettingsDescription: pick(
+      locale,
+      "These are usually prefilled or managed separately. Change them only when the desktop needs to be rebound.",
+      "이 항목들은 보통 미리 채워져 있거나 별도로 관리됩니다. 데스크톱 연결을 다시 묶어야 할 때만 바꾸세요.",
     ),
     advancedSettingsDescription: pick(
       locale,
@@ -167,8 +175,8 @@ export function createDesktopShellCopy(locale: Locale) {
     loginSectionTitle: pick(locale, "2. Sign in", "2. 로그인"),
     loginSectionDescription: pick(
       locale,
-      "Researchers sign in with Google. Admin and site admin accounts can still use passwords after setup is complete.",
-      "설정이 끝나면 승인된 로컬 워크스페이스 계정으로 로그인하세요.",
+      "Sign in first. You can adjust storage and desktop-specific settings afterward.",
+      "먼저 로그인하세요. 저장소와 데스크톱 설정은 그다음에 조정할 수 있습니다.",
     ),
     selfCheckTitle: pick(locale, "Automatic checks", "자동 점검"),
     selfCheckDescription: pick(

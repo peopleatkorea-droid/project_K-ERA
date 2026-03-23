@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import { pick, type Locale } from "../../lib/i18n";
 import { drawCachedMaskOverlay } from "./mask-overlay-renderer";
@@ -87,7 +87,7 @@ type Props = {
   lesionMaskUrl: string | null | undefined;
 };
 
-export function ValidationArtifactStack({
+function ValidationArtifactStackInner({
   locale,
   representativePreviewUrl,
   roiCropUrl,
@@ -193,3 +193,5 @@ export function ValidationArtifactStack({
     </div>
   );
 }
+
+export const ValidationArtifactStack = memo(ValidationArtifactStackInner);

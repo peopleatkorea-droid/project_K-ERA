@@ -5,7 +5,7 @@ const internalApiBaseUrl =
   "http://127.0.0.1:8000";
 
 const nextConfig = {
-  reactStrictMode: true,
+  reactStrictMode: process.env.KERA_NEXT_STRICT_MODE?.trim() !== "0",
   allowedDevOrigins: ["http://localhost:3000", "http://127.0.0.1:3000"],
   async rewrites() {
     return [

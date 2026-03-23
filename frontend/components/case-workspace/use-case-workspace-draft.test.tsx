@@ -119,7 +119,12 @@ describe("useCaseWorkspaceDraftState", () => {
   it("does not rewrite persisted draft image assets when only text fields change", async () => {
     render(<Harness />);
 
-    await waitFor(() => expect(persistenceMocks.readPersistedDraftAssets).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(persistenceMocks.readPersistedDraftAssets).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "add-image" }));
     await flushAutosave();

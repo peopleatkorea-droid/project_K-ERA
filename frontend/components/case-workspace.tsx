@@ -351,6 +351,7 @@ type CaseWorkspaceProps = {
   onExportManifest: () => void;
   onLogout: () => void;
   onOpenOperations: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
+  onOpenDesktopSettings?: () => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onToggleTheme: () => void;
 };
@@ -786,6 +787,7 @@ export function CaseWorkspace({
   onExportManifest,
   onLogout,
   onOpenOperations,
+  onOpenDesktopSettings,
   onSiteDataChanged,
   onToggleTheme,
 }: CaseWorkspaceProps) {
@@ -1205,6 +1207,17 @@ export function CaseWorkspace({
       }
     },
   });
+  const hasSavedCase = Boolean(selectedCase);
+  const [analysisSectionMounted, setAnalysisSectionMounted] = useState(false);
+
+  useEffect(() => {
+    if (hasSavedCase) {
+      startTransition(() => setAnalysisSectionMounted(true));
+    } else {
+      setAnalysisSectionMounted(false);
+    }
+  }, [hasSavedCase]);
+
   const whiteDraftImages = draftImages.filter((image) => image.view === "white");
   const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
 
@@ -2874,11 +2887,15 @@ export function CaseWorkspace({
     };
   }, [canRunValidation, ensureSiteModelVersionsLoaded, railView, selectedCase, selectedSiteId]);
 
-  const compareModelCandidates = MODEL_COMPARE_ARCHITECTURES.map((architecture) =>
-    [...siteModelVersions]
-      .reverse()
-      .find((item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture)
-  ).filter((item): item is ModelVersionRecord => Boolean(item?.version_id));
+  const compareModelCandidates = useMemo(
+    () =>
+      MODEL_COMPARE_ARCHITECTURES.map((architecture) =>
+        [...siteModelVersions]
+          .reverse()
+          .find((item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture)
+      ).filter((item): item is ModelVersionRecord => Boolean(item?.version_id)),
+    [siteModelVersions],
+  );
   const canContributeSelectedCase =
     canRunValidation && Boolean(selectedCase) && selectedCase?.visit_status === "active";
   const researchRegistryEnabled = Boolean(summary?.research_registry?.site_enabled);
@@ -2941,73 +2958,134 @@ export function CaseWorkspace({
   if (draftImages.length > 0 && draftRepresentativeCount === 0) {
     draftPendingItems.push(pick(locale, "Mark one representative image.", "대표 이미지를 한 장 지정하세요."));
   }
-  const validationPanelContent = (
-    <ValidationPanel
-      locale={locale}
-      common={common}
-      validationResult={validationResult}
-      validationBusy={validationBusy}
-      canRunValidation={canRunValidation}
-      hasSelectedCase={Boolean(selectedCase)}
-      validationConfidence={validationConfidence}
-      validationConfidenceTone={validationConfidenceTone}
-      validationPredictedConfidence={validationPredictedConfidence}
-      onRunValidation={() => void handleRunValidation()}
-      artifactContent={
-        <ValidationArtifactStack
-          locale={locale}
-          representativePreviewUrl={representativeSavedImage?.preview_url}
-          roiCropUrl={validationArtifacts.roi_crop}
-          gradcamUrl={validationArtifacts.gradcam}
-          gradcamCorneaUrl={validationArtifacts.gradcam_cornea}
-          gradcamLesionUrl={validationArtifacts.gradcam_lesion}
-          medsamMaskUrl={validationArtifacts.medsam_mask}
-          lesionCropUrl={validationArtifacts.lesion_crop}
-          lesionMaskUrl={validationArtifacts.lesion_mask}
-        />
-      }
-      modelCompareBusy={modelCompareBusy}
-      selectedCompareModelVersionIds={selectedCompareModelVersionIds}
-      compareModelCandidates={compareModelCandidates}
-      onToggleModelVersion={(versionId, checked) =>
-        setSelectedCompareModelVersionIds((current) =>
-          checked ? [...current, versionId] : current.filter((item) => item !== versionId)
-        )
-      }
-      onRunModelCompare={() => void handleRunModelCompare()}
-      modelCompareResult={modelCompareResult}
-      formatProbability={formatProbability}
-    />
+  const handleRunValidationStable = useCallback(() => void handleRunValidation(), [handleRunValidation]);
+  const handleRunModelCompareStable = useCallback(() => void handleRunModelCompare(), [handleRunModelCompare]);
+  const handleToggleModelVersion = useCallback(
+    (versionId: string, checked: boolean) =>
+      setSelectedCompareModelVersionIds((current) =>
+        checked ? [...current, versionId] : current.filter((item) => item !== versionId)
+      ),
+    [],
   );
-  const aiClinicPanelContent = (
-    <AiClinicPanel
-      locale={locale}
-      validationResult={validationResult}
-      aiClinicBusy={aiClinicBusy}
-      aiClinicExpandedBusy={aiClinicExpandedBusy}
-      canRunAiClinic={canRunAiClinic}
-      canExpandAiClinic={canRunAiClinic && Boolean(aiClinicResult) && aiClinicResult.analysis_stage !== "expanded"}
-      onRunAiClinic={() => void handleRunAiClinic()}
-      onExpandAiClinic={() => void handleExpandAiClinic()}
-    >
-      <AiClinicResult
+  const artifactContent = useMemo(
+    () => (
+      <ValidationArtifactStack
+        locale={locale}
+        representativePreviewUrl={representativeSavedImage?.preview_url}
+        roiCropUrl={validationArtifacts.roi_crop}
+        gradcamUrl={validationArtifacts.gradcam}
+        gradcamCorneaUrl={validationArtifacts.gradcam_cornea}
+        gradcamLesionUrl={validationArtifacts.gradcam_lesion}
+        medsamMaskUrl={validationArtifacts.medsam_mask}
+        lesionCropUrl={validationArtifacts.lesion_crop}
+        lesionMaskUrl={validationArtifacts.lesion_mask}
+      />
+    ),
+    [
+      locale,
+      representativeSavedImage?.preview_url,
+      validationArtifacts.roi_crop,
+      validationArtifacts.gradcam,
+      validationArtifacts.gradcam_cornea,
+      validationArtifacts.gradcam_lesion,
+      validationArtifacts.medsam_mask,
+      validationArtifacts.lesion_crop,
+      validationArtifacts.lesion_mask,
+    ],
+  );
+  const validationPanelContent = useMemo(
+    () => (
+      <ValidationPanel
+        locale={locale}
+        common={common}
+        validationResult={validationResult}
+        validationBusy={validationBusy}
+        canRunValidation={canRunValidation}
+        hasSelectedCase={Boolean(selectedCase)}
+        validationConfidence={validationConfidence}
+        validationConfidenceTone={validationConfidenceTone}
+        validationPredictedConfidence={validationPredictedConfidence}
+        onRunValidation={handleRunValidationStable}
+        artifactContent={artifactContent}
+        modelCompareBusy={modelCompareBusy}
+        selectedCompareModelVersionIds={selectedCompareModelVersionIds}
+        compareModelCandidates={compareModelCandidates}
+        onToggleModelVersion={handleToggleModelVersion}
+        onRunModelCompare={handleRunModelCompareStable}
+        modelCompareResult={modelCompareResult}
+        formatProbability={formatProbability}
+      />
+    ),
+    [
+      locale,
+      common,
+      validationResult,
+      validationBusy,
+      canRunValidation,
+      selectedCase,
+      validationConfidence,
+      validationConfidenceTone,
+      validationPredictedConfidence,
+      handleRunValidationStable,
+      artifactContent,
+      modelCompareBusy,
+      selectedCompareModelVersionIds,
+      compareModelCandidates,
+      handleToggleModelVersion,
+      handleRunModelCompareStable,
+      modelCompareResult,
+      formatProbability,
+    ],
+  );
+  const handleRunAiClinicStable = useCallback(() => void handleRunAiClinic(), [handleRunAiClinic]);
+  const handleExpandAiClinicStable = useCallback(() => void handleExpandAiClinic(), [handleExpandAiClinic]);
+  const displayVisitReferenceForLocale = useCallback(
+    (visitReference: string) => displayVisitReference(locale, visitReference),
+    [locale],
+  );
+  const formatAiClinicMetadataFieldForLocale = useCallback(
+    (field: string) => formatAiClinicMetadataField(locale, field),
+    [locale],
+  );
+  const canExpandAiClinic = canRunAiClinic && aiClinicResult !== null && aiClinicResult.analysis_stage !== "expanded";
+  const aiClinicPanelContent = useMemo(
+    () => (
+      <AiClinicPanel
         locale={locale}
         validationResult={validationResult}
-        modelCompareResult={modelCompareResult}
-        result={aiClinicResult}
-        aiClinicPreviewBusy={aiClinicPreviewBusy}
+        aiClinicBusy={aiClinicBusy}
         aiClinicExpandedBusy={aiClinicExpandedBusy}
-        canExpandAiClinic={canRunAiClinic && Boolean(aiClinicResult) && aiClinicResult.analysis_stage !== "expanded"}
-        onExpandAiClinic={() => void handleExpandAiClinic()}
-        notAvailableLabel={common.notAvailable}
-        aiClinicTextUnavailableLabel={copy.aiClinicTextUnavailable}
-        displayVisitReference={(visitReference) => displayVisitReference(locale, visitReference)}
-        formatSemanticScore={formatSemanticScore}
-        formatImageQualityScore={formatImageQualityScore}
-        formatProbability={formatProbability}
-        formatMetadataField={(field) => formatAiClinicMetadataField(locale, field)}
-      />
-    </AiClinicPanel>
+        canRunAiClinic={canRunAiClinic}
+        canExpandAiClinic={canExpandAiClinic}
+        onRunAiClinic={handleRunAiClinicStable}
+        onExpandAiClinic={handleExpandAiClinicStable}
+      >
+        <AiClinicResult
+          locale={locale}
+          validationResult={validationResult}
+          modelCompareResult={modelCompareResult}
+          result={aiClinicResult}
+          aiClinicPreviewBusy={aiClinicPreviewBusy}
+          aiClinicExpandedBusy={aiClinicExpandedBusy}
+          canExpandAiClinic={canExpandAiClinic}
+          onExpandAiClinic={handleExpandAiClinicStable}
+          notAvailableLabel={common.notAvailable}
+          aiClinicTextUnavailableLabel={copy.aiClinicTextUnavailable}
+          displayVisitReference={displayVisitReferenceForLocale}
+          formatSemanticScore={formatSemanticScore}
+          formatImageQualityScore={formatImageQualityScore}
+          formatProbability={formatProbability}
+          formatMetadataField={formatAiClinicMetadataFieldForLocale}
+        />
+      </AiClinicPanel>
+    ),
+    [
+      locale, validationResult, aiClinicBusy, aiClinicExpandedBusy, canRunAiClinic, canExpandAiClinic,
+      handleRunAiClinicStable, handleExpandAiClinicStable,
+      modelCompareResult, aiClinicResult, aiClinicPreviewBusy,
+      common.notAvailable, copy.aiClinicTextUnavailable,
+      displayVisitReferenceForLocale, formatAiClinicMetadataFieldForLocale,
+    ],
   );
   const mainHeaderTitle =
     railView === "patients"
@@ -3019,13 +3097,7 @@ export function CaseWorkspace({
     railView === "patients"
       ? copy.listViewHeaderCopy
       : selectedCase
-        ? desktopFastMode
-          ? pick(
-              locale,
-              "Open the saved case images immediately.",
-              "저장된 케이스 이미지를 바로 엽니다."
-            )
-          : pick(
+        ? pick(
             locale,
             "Review the saved visit, validation context, and contribution history in one place.",
             "저장된 방문, 검증 맥락, 기여 이력을 한 곳에서 검토합니다."
@@ -3168,6 +3240,11 @@ export function CaseWorkspace({
                 {pick(locale, "Operations", "?댁쁺 ?붾㈃")}
               </Button>
             ) : null}
+            {onOpenDesktopSettings ? (
+              <Button variant="ghost" type="button" onClick={onOpenDesktopSettings}>
+                {pick(locale, "Desktop settings", "데스크톱 설정")}
+              </Button>
+            ) : null}
             <Button variant="ghost" type="button" onClick={onExportManifest} disabled={!selectedSiteId}>
               {pick(locale, "Export manifest", "留ㅻ땲?섏뒪???대낫?닿린")}
             </Button>
@@ -3307,7 +3384,7 @@ export function CaseWorkspace({
               onFinishLesionPointer={finishLesionPointer}
             />
 
-            {!desktopFastMode ? (
+            {analysisSectionMounted ? (
               <>
                 <SavedCasePreviewPanels
                   locale={locale}

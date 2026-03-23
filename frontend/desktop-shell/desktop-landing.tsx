@@ -13,8 +13,8 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
 
   const copy = {
     badge: pick(locale, "Hospital-local desktop workspace", "병원 로컬 데스크톱 워크스페이스"),
-    statusReady: pick(locale, "Ready for local sign-in", "로컬 로그인 준비 완료"),
-    statusSetup: pick(locale, "One-time setup needed", "최초 1회 설정 필요"),
+    statusReady: pick(locale, "Ready for sign-in", "로그인 준비 완료"),
+    statusSetup: pick(locale, "Storage can be changed later", "저장소는 나중에 변경 가능"),
     heroEyebrow: pick(
       locale,
       "Culture results arrive later. Right now, the image is all you have.",
@@ -27,11 +27,11 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
     ),
     heroBody: pick(
       locale,
-      "This desktop app opens the hospital-local K-ERA workspace with the same softer landing you used before. Local setup and troubleshooting stay below instead of taking over the first screen.",
-      "예전에 쓰던 랜딩 톤을 그대로 가져오고, 설치 정보와 문제 해결 도구는 아래로 내렸습니다. 첫 화면은 병원 로컬 K-ERA 워크스페이스답게 더 부드럽게 시작합니다."
+      "Sign in first, then adjust the local data folder only if you need to. Hospital connection details and troubleshooting stay inside settings instead of taking over the first screen.",
+      "먼저 로그인하고, 필요하면 그다음에 데이터 폴더만 바꾸면 됩니다. 병원 연결 정보와 문제 해결 도구는 첫 화면이 아니라 설정 안에만 둡니다."
     ),
-    primaryAction: pick(locale, "Open local workspace", "로컬 워크스페이스 열기"),
-    secondaryAction: pick(locale, "View setup and status", "설정과 상태 보기"),
+    primaryAction: pick(locale, "Go to sign-in", "로그인으로 이동"),
+    secondaryAction: pick(locale, "Open storage settings", "저장소 설정 보기"),
     cardOneTitle: pick(locale, "Data stays inside the hospital", "데이터는 병원 안에 보관"),
     cardOneBody: pick(
       locale,
@@ -41,14 +41,14 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
     cardTwoTitle: pick(locale, "Built-in local services", "내장 로컬 서비스"),
     cardTwoBody: pick(
       locale,
-      "The desktop runtime starts the local app server, worker, and AI sidecar for you after setup.",
-      "설정이 끝나면 데스크톱 런타임이 로컬 앱 서버, 워커, AI 사이드카를 직접 시작합니다."
+      "The desktop runtime starts the local app server, worker, and AI sidecar when the workspace needs them.",
+      "데스크톱 런타임은 워크스페이스가 필요로 할 때 로컬 앱 서버, 워커, AI 사이드카를 직접 시작합니다."
     ),
     cardThreeTitle: pick(locale, "Approved accounts only", "승인된 계정만 사용"),
     cardThreeBody: pick(
       locale,
-      "The local workspace opens with approved hospital-local accounts, while central administration remains on the web.",
-      "로컬 워크스페이스는 승인된 병원 로컬 계정으로 열리고, 중앙 운영은 웹에서 계속 관리합니다."
+      "The local workspace opens with approved accounts, while the central server continues to handle shared metadata and secret keys.",
+      "로컬 워크스페이스는 승인된 계정으로 열리고, 중앙 서버는 공용 메타데이터와 비밀 키 관리를 계속 맡습니다."
     ),
     heroAlt: pick(locale, "A clinician reviewing corneal images in a quiet exam room", "진료실에서 각막 이미지를 검토하는 장면"),
     scrollHint: pick(locale, "scroll", "scroll"),
@@ -156,13 +156,13 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
             <div className="absolute inset-x-6 bottom-6 rounded-[22px] border border-[rgba(45,212,192,0.16)] bg-[rgba(9,13,24,0.8)] px-5 py-4 shadow-[0_18px_36px_rgba(6,10,20,0.3)] backdrop-blur">
               <div className="text-[0.7rem] uppercase tracking-[0.14em] text-[#8a96b0]">K-ERA Desktop</div>
               <div className="mt-2 text-[1rem] font-semibold text-[#f7f9ff]">
-                {pick(locale, "Local research workspace, softer entry.", "로컬 연구 워크스페이스, 부드러운 첫 진입")}
+                {pick(locale, "Local research workspace, login first.", "로컬 연구 워크스페이스, 로그인 우선")}
               </div>
               <div className="mt-2 text-sm leading-6 text-[#8c97b1]">
                 {pick(
                   locale,
-                  "The app still runs hospital-local services, but it no longer drops every runtime detail on the first screen.",
-                  "병원 로컬 서비스를 그대로 운영하되, 첫 화면에서 모든 런타임 정보를 한꺼번에 쏟아내지 않도록 정리했습니다."
+                  "The desktop still runs hospital-local services, but it no longer forces setup details onto the first screen.",
+                  "병원 로컬 서비스는 그대로 두되, 첫 화면에서 설정 세부사항을 강제로 쏟아내지 않도록 정리했습니다."
                 )}
               </div>
             </div>

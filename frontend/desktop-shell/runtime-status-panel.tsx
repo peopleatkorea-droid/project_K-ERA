@@ -18,9 +18,7 @@ export type RuntimeServiceSummary = {
   tone: "ready" | "attention" | "neutral";
 };
 
-type DesktopRuntimeStatusPanelProps = {
-  locale: Locale;
-  copy: DesktopShellCopy;
+export type DesktopRuntimeStatusPanelState = {
   runtimeError: string | null;
   error: string | null;
   showOnboarding: boolean;
@@ -39,6 +37,9 @@ type DesktopRuntimeStatusPanelProps = {
   canRunSelfCheck: boolean;
   config: DesktopAppConfigState | null;
   storagePath: string;
+};
+
+export type DesktopRuntimeStatusPanelActions = {
   onOpenSettings: () => void;
   onRefreshRuntime: () => void;
   onStartRuntime: () => void;
@@ -47,34 +48,40 @@ type DesktopRuntimeStatusPanelProps = {
   onOpenPath: (path: string | null | undefined) => void;
 };
 
+type DesktopRuntimeStatusPanelProps = {
+  locale: Locale;
+  copy: DesktopShellCopy;
+  state: DesktopRuntimeStatusPanelState;
+  actions: DesktopRuntimeStatusPanelActions;
+};
+
 export function DesktopRuntimeStatusPanel({
   locale,
   copy,
-  runtimeError,
-  error,
-  showOnboarding,
-  onboarding,
-  runtimeServiceSummaries,
-  runtimeBusy,
-  runtimeAction,
-  backendHealthy,
-  workerRunning,
-  runtimeSummary,
-  selfCheck,
-  selfCheckBusy,
-  selfCheckError,
-  selfCheckBlockingFailures,
-  selfCheckSummary,
-  canRunSelfCheck,
-  config,
-  storagePath,
-  onOpenSettings,
-  onRefreshRuntime,
-  onStartRuntime,
-  onStopRuntime,
-  onRunSelfCheck,
-  onOpenPath,
+  state,
+  actions,
 }: DesktopRuntimeStatusPanelProps) {
+  const {
+    runtimeError,
+    error,
+    showOnboarding,
+    onboarding,
+    runtimeServiceSummaries,
+    runtimeBusy,
+    runtimeAction,
+    backendHealthy,
+    workerRunning,
+    runtimeSummary,
+    selfCheck,
+    selfCheckBusy,
+    selfCheckError,
+    selfCheckBlockingFailures,
+    selfCheckSummary,
+    canRunSelfCheck,
+    config,
+    storagePath,
+  } = state;
+  const { onOpenSettings, onRefreshRuntime, onStartRuntime, onStopRuntime, onRunSelfCheck, onOpenPath } = actions;
   const runtimeContract = config?.runtime_contract ?? null;
   const onboardingCurrentStep = onboardingStepContent(locale, onboarding.currentStepId);
 

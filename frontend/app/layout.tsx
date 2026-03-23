@@ -23,34 +23,40 @@ const sans = Manrope({
 const serif = Fraunces({
   subsets: ["latin"],
   variable: "--font-serif",
+  preload: false,
 });
 
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
+  preload: false,
 });
 
 const ebGaramond = EB_Garamond({
   subsets: ["latin"],
   variable: "--font-eb-garamond",
+  preload: false,
 });
 
 const dmMono = DM_Mono({
   subsets: ["latin"],
   weight: ["300", "400"],
   variable: "--font-dm-mono",
+  preload: false,
 });
 
 const dmSans = DM_Sans({
   subsets: ["latin"],
   weight: ["300", "400", "500"],
   variable: "--font-dm-sans",
+  preload: false,
 });
 
 const dmSerifDisplay = DM_Serif_Display({
   subsets: ["latin"],
   weight: ["400"],
   variable: "--font-dm-serif-display",
+  preload: false,
 });
 
 const notoSansKr = Noto_Sans_KR({
@@ -63,6 +69,7 @@ const notoSerifKr = Noto_Serif_KR({
   subsets: ["latin"],
   weight: ["300", "400", "500", "600"],
   variable: "--font-noto-serif-kr",
+  preload: false,
 });
 
 export const metadata: Metadata = {

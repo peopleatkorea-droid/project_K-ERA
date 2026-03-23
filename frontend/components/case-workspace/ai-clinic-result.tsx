@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -134,7 +134,7 @@ function buildReadySummary(
   };
 }
 
-export function AiClinicResult({
+function AiClinicResultInner({
   locale,
   validationResult,
   modelCompareResult,
@@ -151,7 +151,10 @@ export function AiClinicResult({
   formatProbability,
   formatMetadataField,
 }: Props) {
-  const readySummary = buildReadySummary(validationResult, modelCompareResult);
+  const readySummary = useMemo(
+    () => buildReadySummary(validationResult, modelCompareResult),
+    [validationResult, modelCompareResult],
+  );
 
   if (!result) {
     return (
@@ -492,3 +495,5 @@ export function AiClinicResult({
     </div>
   );
 }
+
+export const AiClinicResult = memo(AiClinicResultInner);

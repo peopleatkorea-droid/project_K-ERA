@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -139,7 +139,7 @@ function formatScore(value: number | null | undefined, emptyLabel: string): stri
   return value >= 10 ? value.toFixed(1) : value.toFixed(2);
 }
 
-export function ValidationPanel({
+function ValidationPanelInner({
   locale,
   common,
   validationResult,
@@ -827,3 +827,5 @@ export function ValidationPanel({
     </>
   );
 }
+
+export const ValidationPanel = memo(ValidationPanelInner);

@@ -4,6 +4,16 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 const env = { ...process.env };
+const rawArgs = process.argv.slice(2);
+const useNextDev = rawArgs.includes("--next");
+const cleanNextDev = rawArgs.includes("--clean");
+const strictNextDev = rawArgs.includes("--strict");
+const cleanPythonBytecode =
+  rawArgs.includes("--clean-python-cache") ||
+  ["1", "true", "yes", "on"].includes(String(env.KERA_CLEAN_PYTHON_BYTECODE ?? "").trim().toLowerCase());
+const tauriConfigPath = useNextDev ? "src-tauri/tauri.next.dev.conf.json" : "src-tauri/tauri.dev.conf.json";
+const devServerPort = useNextDev ? 3000 : 3001;
+const tauriArgs = rawArgs.filter((arg) => !["--next", "--clean", "--strict", "--clean-python-cache"].includes(arg));
 const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 const pathEntries = String(env[pathKey] ?? "")
   .split(path.delimiter)
@@ -21,7 +31,7 @@ const cargoTargetDir = path.resolve(env.CARGO_TARGET_DIR);
 const repoPythonSourceDir = path.resolve(process.cwd(), "..", "src");
 
 if (!env.CARGO_BUILD_JOBS) {
-  env.CARGO_BUILD_JOBS = "1";
+  env.CARGO_BUILD_JOBS = String(Math.max(1, Math.min(os.cpus().length, 4)));
 }
 
 if (!env.KERA_DESKTOP_RUNTIME_MODE) {
@@ -29,7 +39,15 @@ if (!env.KERA_DESKTOP_RUNTIME_MODE) {
 }
 
 if (!env.KERA_NEXT_DEV_CLEAN) {
-  env.KERA_NEXT_DEV_CLEAN = "1";
+  env.KERA_NEXT_DEV_CLEAN = cleanNextDev ? "1" : "0";
+}
+
+if (!env.KERA_NEXT_STRICT_MODE) {
+  env.KERA_NEXT_STRICT_MODE = strictNextDev ? "1" : "0";
+}
+
+if (!env.KERA_DESKTOP_STRICT_MODE) {
+  env.KERA_DESKTOP_STRICT_MODE = strictNextDev ? "1" : "0";
 }
 
 function removePythonBytecodeCaches(rootDir) {
@@ -60,7 +78,7 @@ function removePythonBytecodeCaches(rootDir) {
   }
 }
 
-console.log("Cleaning up previous Tauri and DevServer processes...");
+console.log(`Cleaning up previous Tauri and ${useNextDev ? "Next" : "desktop-shell"} dev processes...`);
 if (process.platform === "win32") {
   spawnSync("taskkill", ["/f", "/im", "kera-desktop-shell.exe", "/t"], { stdio: "ignore" });
   spawnSync("powershell", [
@@ -81,21 +99,27 @@ if (process.platform === "win32") {
   ], { stdio: "ignore" });
   spawnSync("powershell", [
     "-Command",
-    "Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+    `Get-NetTCPConnection -LocalPort ${devServerPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`
   ], { stdio: "ignore" });
 } else {
   spawnSync("pkill", ["-f", "kera-desktop-shell"], { stdio: "ignore" });
-  spawnSync("sh", ["-c", "lsof -ti:3000 | xargs kill -9 >/dev/null 2>&1"], { stdio: "ignore" });
+  spawnSync("sh", ["-c", `lsof -ti:${devServerPort} | xargs kill -9 >/dev/null 2>&1`], { stdio: "ignore" });
 }
-removePythonBytecodeCaches(repoPythonSourceDir);
+if (cleanPythonBytecode) {
+  removePythonBytecodeCaches(repoPythonSourceDir);
+}
 
 const child =
   process.platform === "win32"
-    ? spawn("cmd.exe", ["/d", "/s", "/c", "npx tauri dev --config src-tauri/tauri.dev.conf.json"], {
-        stdio: "inherit",
-        env,
-      })
-    : spawn("npx", ["tauri", "dev", "--config", "src-tauri/tauri.dev.conf.json"], {
+    ? spawn(
+        "cmd.exe",
+        ["/d", "/s", "/c", `npx tauri dev --config ${tauriConfigPath} ${tauriArgs.join(" ")}`.trim()],
+        {
+          stdio: "inherit",
+          env,
+        },
+      )
+    : spawn("npx", ["tauri", "dev", "--config", tauriConfigPath, ...tauriArgs], {
         stdio: "inherit",
         env,
       });

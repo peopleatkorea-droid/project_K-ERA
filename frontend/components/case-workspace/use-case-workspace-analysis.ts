@@ -489,20 +489,11 @@ export function useCaseWorkspaceAnalysis({
         return;
       }
       aiClinicPreviewUrlsRef.current.push(...nextUrls);
-      const previewByCaseKey = new Map(
-        resolvedCases.map((item) => [aiClinicSimilarCaseKey(item), item.preview_url] as const)
-      );
       setAiClinicResult((current) => {
         if (!current) {
           return current;
         }
-        return {
-          ...current,
-          similar_cases: current.similar_cases.map((item) => ({
-            ...item,
-            preview_url: previewByCaseKey.get(aiClinicSimilarCaseKey(item)) ?? item.preview_url ?? null,
-          })),
-        };
+        return { ...current, similar_cases: resolvedCases };
       });
     } finally {
       if (aiClinicPreviewRequestRef.current === previewRequestId) {

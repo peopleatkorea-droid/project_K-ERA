@@ -51,11 +51,6 @@ export function describeDesktopOnboarding(
   const runtimeContractErrors = config?.runtime_contract.errors.length ?? 0;
 
   const storageReady = hasValue(values?.storage_dir);
-  const controlPlaneReady =
-    hasValue(values?.control_plane_api_base_url) &&
-    hasValue(values?.control_plane_node_id) &&
-    hasValue(values?.control_plane_node_token);
-  const siteReady = hasValue(values?.control_plane_site_id);
   const runtimeContractReady = runtimeContractErrors === 0;
 
   const workerRequired = (values?.local_backend_mode ?? "managed") !== "external";
@@ -64,13 +59,11 @@ export function describeDesktopOnboarding(
   const workerReady = !workerRequired || diagnostics?.localWorker?.running === true;
   const mlReady = !mlRequired || diagnostics?.mlBackend?.healthy === true;
   const runtimeServicesReady = backendReady && workerReady && mlReady;
-  const canStartRuntime = storageReady && controlPlaneReady && siteReady && runtimeContractReady;
-  const canSignIn = canStartRuntime && runtimeServicesReady;
+  const canStartRuntime = storageReady && runtimeContractReady;
+  const canSignIn = runtimeContractReady && runtimeServicesReady;
 
   const baseSteps: Array<{ id: DesktopOnboardingStepId; ready: boolean }> = [
     { id: "storage", ready: storageReady },
-    { id: "controlPlane", ready: controlPlaneReady },
-    { id: "site", ready: siteReady },
     { id: "runtimeContract", ready: runtimeContractReady },
     { id: "runtimeServices", ready: runtimeServicesReady },
     { id: "signIn", ready: canSignIn },
@@ -93,7 +86,7 @@ export function describeDesktopOnboarding(
     canStartRuntime,
     canSignIn,
     canOpenWorkspace: Boolean(config?.setup_ready) && canSignIn,
-    needsSettings: ["storage", "controlPlane", "site", "runtimeContract"].includes(currentStepId),
+    needsSettings: ["storage", "runtimeContract"].includes(currentStepId),
     runtimeServices: {
       backendReady,
       workerRequired,

@@ -1,5 +1,6 @@
 {
-  "bundle": {
-    "resources": {}
+  "build": {
+    "beforeDevCommand": "npm run desktop:shell:dev",
+    "devUrl": "http://127.0.0.1:3001"
   }
 }

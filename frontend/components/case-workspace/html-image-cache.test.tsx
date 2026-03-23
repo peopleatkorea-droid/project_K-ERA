@@ -64,7 +64,7 @@ describe("html-image-cache", () => {
     fetchMock.mockResolvedValue({
       ok: true,
       blob: vi.fn().mockResolvedValue(new Blob(["mask"], { type: "image/png" })),
-    } as Response);
+    } as unknown as Response);
 
     const image = await loadCachedHtmlImage("asset://localhost/mask.png");
 

@@ -2258,6 +2258,49 @@ describe("CaseWorkspace integration", () => {
       { version_id: "model_dense", version_name: "dense-v1", architecture: "densenet121", ready: true },
       { version_id: "model_eff", version_name: "eff-v1", architecture: "efficientnet_v2_s", ready: true },
     ]);
+    apiMocks.runCaseValidationCompare.mockResolvedValue({
+      patient_id: "KERA-2026-001",
+      visit_date: "Initial",
+      execution_device: "cpu",
+      comparisons: [
+        {
+          model_version: { version_id: "model_vit", version_name: "vit-v1", architecture: "vit", crop_mode: "automated" },
+          summary: { predicted_label: "fungal", prediction_probability: 0.81, model_version: "vit-v1" },
+          error: null,
+        },
+      ],
+    });
+    apiMocks.runCaseValidation.mockResolvedValue({
+      summary: {
+        validation_id: "validation_ai_clinic",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        predicted_label: "fungal",
+        true_label: null,
+        prediction_probability: 0.82,
+        is_correct: null,
+      },
+      case_prediction: null,
+      model_version: {
+        version_id: "model_vit",
+        version_name: "vit-v1",
+        architecture: "vit",
+        requires_medsam_crop: false,
+        crop_mode: "automated",
+        ensemble_mode: null,
+      },
+      execution_device: "cpu",
+      artifact_availability: {
+        gradcam: false,
+        gradcam_cornea: false,
+        gradcam_lesion: false,
+        roi_crop: false,
+        medsam_mask: false,
+        lesion_crop: false,
+        lesion_mask: false,
+      },
+      post_mortem: null,
+    });
 
     renderWorkspace();
     await openSavedCase();

@@ -41,6 +41,8 @@ function renderBoard(
       onLesionPointerDown={() => undefined}
       onLesionPointerMove={() => undefined}
       onFinishLesionPointer={() => undefined}
+      siteId="site-1"
+      token="token-1"
       {...overrides}
     />,
   );
@@ -100,6 +102,8 @@ describe("SavedCaseImageBoard", () => {
         onLesionPointerDown={() => undefined}
         onLesionPointerMove={() => undefined}
         onFinishLesionPointer={() => undefined}
+        siteId="site-1"
+        token="token-1"
       />,
     );
 

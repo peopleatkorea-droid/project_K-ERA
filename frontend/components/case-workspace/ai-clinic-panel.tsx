@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -21,7 +21,7 @@ type Props = {
   children: ReactNode;
 };
 
-export function AiClinicPanel({
+function AiClinicPanelInner({
   locale,
   validationResult,
   aiClinicBusy,
@@ -76,3 +76,5 @@ export function AiClinicPanel({
     </Card>
   );
 }
+
+export const AiClinicPanel = memo(AiClinicPanelInner);

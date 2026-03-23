@@ -8,16 +8,33 @@ import type { DesktopOnboardingStepId } from "../lib/desktop-onboarding";
 
 import type { DesktopShellCopy } from "./shell-copy";
 
+export const DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL = "https://kera-bay.vercel.app/control-plane/api";
+
 export function createEmptyDesktopConfigForm(controlPlaneBaseUrl = ""): DesktopAppConfigValues {
+  const resolvedControlPlaneBaseUrl =
+    controlPlaneBaseUrl.trim() || DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL;
   return {
     storage_dir: "",
-    control_plane_api_base_url: controlPlaneBaseUrl,
+    control_plane_api_base_url: resolvedControlPlaneBaseUrl,
     control_plane_node_id: "",
     control_plane_node_token: "",
     control_plane_site_id: "",
     local_backend_python: "",
     local_backend_mode: "managed",
     ml_transport: "sidecar",
+  };
+}
+
+export function normalizeDesktopConfigForm(
+  values: Partial<DesktopAppConfigValues> | null | undefined,
+  controlPlaneBaseUrl = "",
+): DesktopAppConfigValues {
+  const defaults = createEmptyDesktopConfigForm(controlPlaneBaseUrl);
+  return {
+    ...defaults,
+    ...values,
+    control_plane_api_base_url:
+      values?.control_plane_api_base_url?.trim() || defaults.control_plane_api_base_url,
   };
 }
 
