@@ -29,6 +29,8 @@ const runtimeSnapshotDir = path.join(runtimeSnapshotRoot, "python-runtime");
 const repoPythonSourceDir = path.resolve(frontendRoot, "..", "src");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
 const generatedConfigPath = path.join(srcTauriDir, "tauri.build.generated.conf.json");
+const hasUpdaterSigningKey = Boolean(String(env.TAURI_SIGNING_PRIVATE_KEY ?? "").trim());
+const buildVariant = String(env.KERA_DESKTOP_BUILD_VARIANT ?? "cpu").trim().toLowerCase() || "cpu";
 
 function removePythonBytecodeCaches(rootDir) {
   if (!fs.existsSync(rootDir)) {
@@ -163,7 +165,10 @@ function prepareBuildConfig() {
     throw new Error(`Desktop runtime cache was not found: ${runtimeCacheDir}`);
   }
   copyDirectorySnapshot(runtimeCacheDir, runtimeSnapshotDir);
+  removePythonBytecodeCaches(runtimeSnapshotDir);
   const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, "utf8"));
+  const configuredTargets = Array.isArray(tauriConfig.bundle?.targets) ? tauriConfig.bundle.targets : [];
+  const resolvedTargets = buildVariant === "gpu" ? ["msi"] : configuredTargets;
   const generatedConfig = {
     ...tauriConfig,
     build: {
@@ -172,12 +177,24 @@ function prepareBuildConfig() {
     },
     bundle: {
       ...(tauriConfig.bundle ?? {}),
+      targets: resolvedTargets,
+      createUpdaterArtifacts: hasUpdaterSigningKey
+        ? tauriConfig.bundle?.createUpdaterArtifacts ?? false
+        : false,
       resources: {
         ...(tauriConfig.bundle?.resources ?? {}),
         "../.desktop-runtime/python-runtime": "../.desktop-runtime-bundle/python-runtime",
       },
     },
   };
+  if (!hasUpdaterSigningKey && tauriConfig.bundle?.createUpdaterArtifacts) {
+    process.stdout.write(
+      "[run-tauri-build] TAURI_SIGNING_PRIVATE_KEY is not set; updater artifacts will be skipped for this local package build.\n",
+    );
+  }
+  if (buildVariant === "gpu") {
+    process.stdout.write("[run-tauri-build] GPU package build selected; restricting bundle targets to MSI.\n");
+  }
   fs.writeFileSync(generatedConfigPath, `${JSON.stringify(generatedConfig, null, 2)}\n`, "utf8");
 }
 
@@ -193,6 +210,7 @@ stopRunningReleaseArtifacts();
 removePythonBytecodeCaches(repoPythonSourceDir);
 cleanupBuildArtifacts();
 runChecked(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "desktop:bundle"]);
+removePythonBytecodeCaches(runtimeCacheDir);
 prepareBuildConfig();
 const cliArgs = ["tauri", "build", "--config", path.relative(frontendRoot, generatedConfigPath), ...process.argv.slice(2)];
 const child =

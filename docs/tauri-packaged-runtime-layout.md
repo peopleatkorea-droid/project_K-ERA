@@ -62,6 +62,37 @@ Run these from [frontend/package.json](/c:/Users/USER/Downloads/project_K-ERA/fr
 7. `cargo check`
 8. `npm run desktop:smoke-installed` after running the installer on a Windows machine
 
+If you want the packaging and installation smoke to run as one command, use:
+
+- `npm run desktop:smoke-installed:cpu`
+- `npm run desktop:smoke-installed:gpu`
+
+## CPU And GPU Variants
+
+The default packaged desktop flow remains CPU-safe. The embedded-runtime preparation step normalizes CUDA torch builds back to CPU wheels unless a GPU-specific build is requested.
+
+Use these explicit variants when you need separate desktop package outputs:
+
+- `npm run desktop:bundle:cpu`
+- `npm run desktop:bundle:gpu`
+- `npm run desktop:package:cpu`
+- `npm run desktop:package:gpu`
+
+`desktop:package:cpu` copies the finished Tauri installer bundle tree into:
+
+- `frontend/desktop-package-variants/cpu`
+
+`desktop:package:gpu` builds a portable packaged runtime and copies it into:
+
+- `frontend/desktop-package-variants/gpu/portable`
+
+Important:
+
+- `desktop:package:gpu` requires the repo `.venv` to already contain a CUDA torch build such as the one installed by `.\scripts\setup_local_node.ps1 -TorchProfile gpu`
+- the GPU variant is meant for NVIDIA driver / CUDA-compatible targets only
+- the CPU variant is the safer default for mixed environments
+- the GPU variant is portable rather than installer-based because the embedded CUDA runtime exceeds the practical NSIS/WiX packaging limits in the current toolchain
+
 `desktop:verify` checks:
 
 - packaged `desktop-dist` exists
@@ -82,10 +113,10 @@ Run these from [frontend/package.json](/c:/Users/USER/Downloads/project_K-ERA/fr
 - `tauri:build`
 - `desktop:verify-package`
 
-`desktop:smoke-installed` verifies the installed app layout:
+`desktop:smoke-installed` verifies the packaged app layout:
 
 - desktop executable exists under a real install directory
-- bundled `resources/` exists after installation
+- packaged runtime layout resolves after install or portable package copy
 - installed backend entry exists
 - installed backend source tree exists
 - installed Python runtime exists
