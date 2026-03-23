@@ -55,8 +55,7 @@ type UseHomeAuthBootstrapOptions = {
   copy: CopyBundle;
   deferredInstitutionQuery: string;
   describeError: (nextError: unknown, fallback: string) => string;
-  googleButtonRefs: MutableRefObject<HTMLDivElement[]>;
-  googleButtonSlotVersion: number;
+  googleButtonRef: MutableRefObject<HTMLDivElement | null>;
   googleButtonWidth: number;
   googleReady: boolean;
   requestForm: RequestFormState;
@@ -67,8 +66,7 @@ export function useHomeAuthBootstrap({
   copy,
   deferredInstitutionQuery,
   describeError,
-  googleButtonRefs,
-  googleButtonSlotVersion,
+  googleButtonRef,
   googleButtonWidth,
   googleReady,
   requestForm,
@@ -119,10 +117,6 @@ export function useHomeAuthBootstrap({
     }
     const timerId = window.setTimeout(task, timeoutMs);
     return () => window.clearTimeout(timerId);
-  }
-
-  function getGoogleButtonHosts() {
-    return googleButtonRefs.current.filter((host) => host?.isConnected);
   }
 
   function focusGoogleButtonHost(host?: HTMLDivElement) {
@@ -324,28 +318,24 @@ export function useHomeAuthBootstrap({
   }, [approved, selectedSiteId, token, workspaceDataPlaneState]);
 
   useEffect(() => {
-    const hosts = getGoogleButtonHosts();
-    if (hosts.length === 0) {
+    const host = googleButtonRef.current;
+    if (!host?.isConnected) {
       return;
     }
     if (canUseDesktopGoogleAuth()) {
-      hosts.forEach((host) => {
-        resetGoogleButtonHost(host);
-      });
+      resetGoogleButtonHost(host);
       return;
     }
     const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
     if (!googleReady || !GOOGLE_CLIENT_ID || token || !googleId) {
-      hosts.forEach((host) => {
-        resetGoogleButtonHost(host);
-      });
+      resetGoogleButtonHost(host);
       return;
     }
     renderGoogleButtons({
       clientId: GOOGLE_CLIENT_ID,
       googleButtonWidth,
       googleId,
-      hosts,
+      hosts: [host],
       callback: async (response: { credential?: string }) => {
         if (!response.credential) {
           setError(copy.googleNoCredential);
@@ -374,8 +364,7 @@ export function useHomeAuthBootstrap({
     copy.googleLoginFailed,
     copy.googleNoCredential,
     describeError,
-    googleButtonRefs,
-    googleButtonSlotVersion,
+    googleButtonRef,
     googleButtonWidth,
     googleReady,
     token,
@@ -461,7 +450,7 @@ export function useHomeAuthBootstrap({
       setError(copy.googlePreparing);
       return;
     }
-    const [host] = getGoogleButtonHosts();
+    const host = googleButtonRef.current ?? undefined;
     const interactive = findGoogleInteractive(host);
     const googleId = window.google?.accounts?.id as GoogleAccountsIdApi | undefined;
     setError(null);

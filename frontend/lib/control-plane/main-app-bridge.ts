@@ -244,7 +244,7 @@ export async function loginMainWithGoogle(request: NextRequest, idToken: string)
     throw new Error("id_token is required.");
   }
   const identity = await verifyGoogleIdentityToken(normalizedIdToken);
-  const user = await ensureControlPlaneIdentity(identity);
+  const user = await ensureControlPlaneIdentity(identity, { skipAutoAdminPromotion: true });
   const auth = await buildMainAuthResponse(user.user_id, {
     username: user.email,
     full_name: user.full_name,

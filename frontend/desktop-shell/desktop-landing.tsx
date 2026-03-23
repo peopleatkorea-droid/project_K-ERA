@@ -19,7 +19,7 @@ const PUBLIC_SITE_ROOT = "https://kera-bay.vercel.app";
 
 export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
   const { locale } = useI18n();
-  const googleButtonRefs = useRef<HTMLDivElement[]>([]);
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const [publicSites, setPublicSites] = useState<SiteRecord[]>([]);
 
   useEffect(() => {
@@ -75,10 +75,9 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
         authBusy={props.authBusy}
         error={props.error}
         googleClientId=""
-        googleButtonRefs={googleButtonRefs}
+        googleButtonRef={googleButtonRef}
         googleLaunchPulse={props.authBusy}
         onGoogleReady={() => undefined}
-        onGoogleSlotsChange={() => undefined}
         onGoogleLaunch={props.onGoogleLaunch}
         connectingLabel={pick(locale, "Connecting...", "연결 중...")}
         googleLoginLabel={pick(locale, "Institution Google login", "기관 Google 로그인")}

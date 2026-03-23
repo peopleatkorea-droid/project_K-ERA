@@ -247,7 +247,7 @@ async function exchangeGoogleAuthorizationCode(args: {
 
 async function loginMainWithDesktopGoogleIdToken(idToken: string): Promise<AuthResponse> {
   const identity = await verifyGoogleIdentityToken(idToken);
-  const user = await ensureControlPlaneIdentity(identity);
+  const user = await ensureControlPlaneIdentity(identity, { skipAutoAdminPromotion: true });
   const auth = await buildMainAuthResponse(user.user_id, {
     full_name: user.full_name,
     username: user.email,

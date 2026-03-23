@@ -259,7 +259,10 @@ export async function getControlPlaneUser(userId: string): Promise<ControlPlaneU
   return serializeUser(row, memberships);
 }
 
-export async function ensureControlPlaneIdentity(identity: ControlPlaneIdentity): Promise<ControlPlaneUser> {
+export async function ensureControlPlaneIdentity(
+  identity: ControlPlaneIdentity,
+  options?: { skipAutoAdminPromotion?: boolean },
+): Promise<ControlPlaneUser> {
   const sql = await controlPlaneSql();
   const email = normalizeEmail(identity.email);
   const existingByEmail = await userRowByEmail(email);
@@ -271,7 +274,7 @@ export async function ensureControlPlaneIdentity(identity: ControlPlaneIdentity)
     if (shouldPromoteToAdmin(email)) {
       nextRole = "admin";
     }
-  } else {
+  } else if (!options?.skipAutoAdminPromotion) {
     const userCountRows = await sql`select count(*)::int as count from users`;
     const currentCount = Number(rowValue<number>(userCountRows[0], "count") || 0);
     if (currentCount === 0) {

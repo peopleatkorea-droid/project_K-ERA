@@ -13,10 +13,9 @@ type LandingV4Props = {
   authBusy: boolean;
   error: string | null;
   googleClientId: string;
-  googleButtonRefs: MutableRefObject<HTMLDivElement[]>;
+  googleButtonRef: MutableRefObject<HTMLDivElement | null>;
   googleLaunchPulse: boolean;
   onGoogleReady: () => void;
-  onGoogleSlotsChange: () => void;
   onGoogleLaunch: () => void;
   connectingLabel: string;
   googleLoginLabel: string;
@@ -37,9 +36,10 @@ export function LandingV4(props: LandingV4Props) {
       return;
     }
 
-    const googleSlots = Array.from(root.querySelectorAll<HTMLDivElement>("[data-google-slot]"));
-    props.googleButtonRefs.current = googleSlots;
-    props.onGoogleSlotsChange();
+    props.googleButtonRef.current = root.querySelector<HTMLDivElement>("[data-google-slot]");
+    if (window.google?.accounts?.id) {
+      props.onGoogleReady();
+    }
 
     const revealTargets = Array.from(root.querySelectorAll<HTMLElement>("[data-reveal]"));
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -73,9 +73,9 @@ export function LandingV4(props: LandingV4Props) {
 
     return () => {
       observer?.disconnect();
-      props.googleButtonRefs.current = [];
+      props.googleButtonRef.current = null;
     };
-  }, [props.googleButtonRefs, props.locale, props.onGoogleSlotsChange]);
+  }, [props.googleButtonRef, props.locale, props.onGoogleReady]);
 
   return (
     <>
@@ -109,6 +109,9 @@ export function LandingV4(props: LandingV4Props) {
             onLocaleChange={(locale) => setLocale(locale)}
           />
         )}
+        <div className="pointer-events-none absolute left-[-9999px] top-0 h-px w-px overflow-hidden opacity-0" aria-hidden="true">
+          <div data-google-slot="" />
+        </div>
       </div>
     </>
   );

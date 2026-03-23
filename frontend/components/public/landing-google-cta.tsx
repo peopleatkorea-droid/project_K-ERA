@@ -20,7 +20,6 @@ export function LandingGoogleCta({
   googleLaunchPulse = false,
   onGoogleLaunch,
   pulseClassName,
-  slotClassName,
   wrapperClassName,
 }: LandingGoogleCtaProps) {
   return (
@@ -40,15 +39,6 @@ export function LandingGoogleCta({
       >
         <span className="pointer-events-none">{children}</span>
       </div>
-      <div
-        aria-hidden="true"
-        data-google-ready="false"
-        className={cn(
-          "pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden opacity-0 data-[google-ready=true]:pointer-events-auto data-[google-ready=true]:opacity-[0.01]",
-          slotClassName,
-        )}
-        data-google-slot=""
-      />
     </div>
   );
 }

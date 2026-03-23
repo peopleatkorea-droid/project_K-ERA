@@ -1,5 +1,3 @@
-import React from "react";
-
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,36 +25,6 @@ vi.mock("../lib/i18n", () => ({
   pick: (_locale: string, en: string) => en,
   translateApiError: (_locale: string, message: string) => message,
   useI18n: () => ({ locale: "en" }),
-}));
-
-vi.mock("./ui/button", () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
-}));
-
-vi.mock("./ui/card", () => ({
-  Card: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock("./ui/field", () => ({
-  Field: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock("./ui/section-header", () => ({
-  SectionHeader: ({
-    eyebrow,
-    title,
-    description,
-  }: {
-    eyebrow?: React.ReactNode;
-    title?: React.ReactNode;
-    description?: React.ReactNode;
-  }) => (
-    <div>
-      {eyebrow}
-      {title}
-      {description}
-    </div>
-  ),
 }));
 
 import AdminLoginPage from "../app/admin-login/page";
@@ -88,7 +56,7 @@ describe("AdminLoginPage", () => {
     });
   });
 
-  it("redirects direct admin login to the patient list workspace by default", async () => {
+  it("redirects direct admin login to the default workspace path", async () => {
     const { container } = render(<AdminLoginPage />);
 
     fireEvent.change(container.querySelector("#username") as HTMLInputElement, { target: { value: "admin" } });
@@ -108,8 +76,28 @@ describe("AdminLoginPage", () => {
     expect(window.localStorage.getItem("kera_cached_site_records_v1")).toContain("제주대학교병원");
   });
 
-  it("ignores operations next targets and still opens the patient list workspace", async () => {
+  it("respects safe next targets after admin login", async () => {
     window.history.replaceState(null, "", "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining");
+
+    const { container } = render(<AdminLoginPage />);
+
+    fireEvent.change(container.querySelector("#username") as HTMLInputElement, { target: { value: "admin" } });
+    fireEvent.change(container.querySelector("#password") as HTMLInputElement, { target: { value: "admin123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter operator workspace" }));
+
+    await waitFor(() => {
+      expect(apiMocks.login).toHaveBeenCalledWith("admin", "admin123");
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("admin-token");
+    });
+    await waitFor(() => {
+      expect(routerReplace).toHaveBeenCalledWith("/?workspace=operations&section=training");
+    });
+  });
+
+  it("falls back to the default path for unsafe next targets", async () => {
+    window.history.replaceState(null, "", "/admin-login?next=%2F%2Fevil.example");
 
     const { container } = render(<AdminLoginPage />);
 

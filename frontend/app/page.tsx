@@ -216,12 +216,8 @@ export default function HomePage() {
   const { resolvedTheme, setTheme } = useTheme();
   const [nativeDesktopGoogleAuth, setNativeDesktopGoogleAuth] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
-  const [googleButtonSlotVersion, setGoogleButtonSlotVersion] = useState(0);
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
-  const googleButtonRefs = useRef<HTMLDivElement[]>([]);
-  const handleGoogleSlotsChange = useCallback(() => {
-    setGoogleButtonSlotVersion((current) => current + 1);
-  }, []);
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const workspaceHistoryReadyRef = useRef(false);
   const workspaceModeRef = useRef<WorkspaceMode>("canvas");
   const [requestForm, setRequestForm] = useState<RequestFormState>({
@@ -781,12 +777,11 @@ export default function HomePage() {
       unableLoadInstitutions: copy.unableLoadInstitutions,
     },
     deferredInstitutionQuery,
-      describeError,
-      googleButtonRefs,
-      googleButtonSlotVersion,
-      googleButtonWidth,
-      googleReady,
-      requestForm,
+    describeError,
+    googleButtonRef,
+    googleButtonWidth,
+    googleReady,
+    requestForm,
     setRequestForm,
   });
   const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
@@ -975,10 +970,9 @@ export default function HomePage() {
         authBusy={authBusy}
         error={errorMessage}
         googleClientId={nativeDesktopGoogleAuth ? "" : GOOGLE_CLIENT_ID}
-        googleButtonRefs={googleButtonRefs}
+        googleButtonRef={googleButtonRef}
         googleLaunchPulse={googleLaunchPulse}
         onGoogleReady={() => setGoogleReady(true)}
-        onGoogleSlotsChange={handleGoogleSlotsChange}
         onGoogleLaunch={handleGoogleLaunch}
         connectingLabel={copy.connecting}
         googleLoginLabel={copy.googleLogin}
