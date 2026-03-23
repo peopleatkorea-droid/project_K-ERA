@@ -65,6 +65,18 @@ function desktopShellJsBuildOptions(rootDir, { onEnd } = {}) {
   const paths = desktopShellPaths(rootDir);
   const plugins = [];
 
+  plugins.push({
+    name: "desktop-next-adapters",
+    setup(build) {
+      build.onResolve({ filter: /^next\/image$/ }, () => ({
+        path: path.join(rootDir, "desktop-shell", "adapters", "next-image.tsx"),
+      }));
+      build.onResolve({ filter: /^next\/script$/ }, () => ({
+        path: path.join(rootDir, "desktop-shell", "adapters", "next-script.tsx"),
+      }));
+    },
+  });
+
   if (typeof onEnd === "function") {
     plugins.push({
       name: "desktop-shell-build-notifier",

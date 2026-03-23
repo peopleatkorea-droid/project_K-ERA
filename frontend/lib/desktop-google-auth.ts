@@ -5,6 +5,7 @@ import { hasDesktopRuntime, invokeDesktop, listenDesktopEvent } from "./desktop-
 const GOOGLE_OAUTH_REDIRECT_EVENT = "kera://oauth-redirect";
 const GOOGLE_OAUTH_TIMEOUT_MS = 120_000;
 const DESKTOP_GOOGLE_LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"];
+const DEFAULT_DESKTOP_GOOGLE_WEB_LOGIN_ROOT = "https://kera-bay.vercel.app";
 
 type GoogleOAuthServerResponse = {
   port: number;
@@ -27,6 +28,10 @@ export type DesktopGoogleAuthExchangePayload = {
 export type DesktopGoogleAuthClient<T> = {
   exchangeLogin: (payload: DesktopGoogleAuthExchangePayload) => Promise<T>;
   startLogin: (payload: { redirect_uri: string }) => Promise<DesktopGoogleAuthStartResponse>;
+};
+
+export type DesktopGoogleBrowserAuthClient<T> = {
+  exchangeLogin: (idToken: string) => Promise<T>;
 };
 
 export function canUseDesktopGoogleAuth(): boolean {
@@ -64,6 +69,39 @@ export function parseDesktopGoogleRedirectUrl(
     throw new Error("Google OAuth did not return an authorization code.");
   }
   return { code, state: returnedState };
+}
+
+export function parseDesktopGoogleBrowserRedirectUrl(
+  redirectUrl: string,
+  expectedPort: number,
+  expectedState: string,
+): { idToken: string; state: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUrl);
+  } catch {
+    throw new Error("Google login redirect URL is invalid.");
+  }
+  if (!DESKTOP_GOOGLE_LOOPBACK_HOSTS.includes(parsed.hostname)) {
+    throw new Error("Google login redirect host is invalid.");
+  }
+  if (parsed.port !== String(expectedPort)) {
+    throw new Error("Google login redirect port is invalid.");
+  }
+  const returnedState = parsed.searchParams.get("state")?.trim() || "";
+  if (!returnedState || returnedState !== expectedState) {
+    throw new Error("Google login state mismatch.");
+  }
+  const oauthError = parsed.searchParams.get("error")?.trim() || "";
+  if (oauthError) {
+    const description = parsed.searchParams.get("error_description")?.trim() || oauthError;
+    throw new Error(description);
+  }
+  const idToken = parsed.searchParams.get("credential")?.trim() || parsed.searchParams.get("id_token")?.trim() || "";
+  if (!idToken) {
+    throw new Error("Google login did not return a credential.");
+  }
+  return { idToken, state: returnedState };
 }
 
 function normalizeDesktopRedirectUri(redirectUri: string, expectedPort: number): string {
@@ -127,6 +165,26 @@ async function waitForDesktopGoogleRedirect(): Promise<{
   };
 }
 
+function createDesktopGoogleBrowserState(): string {
+  const values = new Uint8Array(16);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeDesktopGoogleWebLoginRoot(rawRoot?: string): string {
+  const normalized = String(rawRoot ?? "").trim().replace(/\/+$/, "");
+  if (!normalized) {
+    return DEFAULT_DESKTOP_GOOGLE_WEB_LOGIN_ROOT;
+  }
+  if (normalized.endsWith("/control-plane/api")) {
+    return normalized.slice(0, -"/control-plane/api".length);
+  }
+  if (normalized.endsWith("/api")) {
+    return normalized.slice(0, -"/api".length);
+  }
+  return normalized;
+}
+
 export async function authenticateWithDesktopGoogle<T>(
   client: DesktopGoogleAuthClient<T>,
 ): Promise<T> {
@@ -161,6 +219,38 @@ export async function authenticateWithDesktopGoogle<T>(
       redirect_uri: redirectUri,
       state: returnedState,
     });
+  } finally {
+    await cleanup();
+  }
+}
+
+export async function authenticateWithDesktopGoogleViaWebLogin<T>(
+  client: DesktopGoogleBrowserAuthClient<T>,
+  options: {
+    locale?: string;
+    publicRoot?: string;
+  } = {},
+): Promise<T> {
+  if (!hasDesktopRuntime()) {
+    throw new Error("Desktop runtime is unavailable.");
+  }
+
+  const { cleanup, port, redirectPromise } = await waitForDesktopGoogleRedirect();
+  const state = createDesktopGoogleBrowserState();
+  const callbackUrl = new URL(`http://127.0.0.1:${port}/desktop-google-login`);
+  const publicRoot = normalizeDesktopGoogleWebLoginRoot(options.publicRoot);
+  const loginUrl = new URL("/desktop-google-login", `${publicRoot}/`);
+  loginUrl.searchParams.set("return_to", callbackUrl.toString());
+  loginUrl.searchParams.set("state", state);
+  if (options.locale?.trim()) {
+    loginUrl.searchParams.set("locale", options.locale.trim());
+  }
+
+  try {
+    await invokeDesktop("open_external_url", { url: loginUrl.toString() });
+    const redirectUrl = await redirectPromise;
+    const { idToken } = parseDesktopGoogleBrowserRedirectUrl(redirectUrl, port, state);
+    return await client.exchangeLogin(idToken);
   } finally {
     await cleanup();
   }

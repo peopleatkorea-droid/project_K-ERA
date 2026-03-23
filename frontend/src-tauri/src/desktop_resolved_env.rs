@@ -1,3 +1,6 @@
+const DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL: &str =
+    "https://kera-bay.vercel.app/control-plane/api";
+
 pub(super) fn resolved_env_values() -> HashMap<String, String> {
     let mut values = configured_env_values();
     let storage_dir = resolve_storage_dir(&values);
@@ -13,21 +16,17 @@ pub(super) fn resolved_env_values() -> HashMap<String, String> {
             sqlite_url_for_path(&storage_dir.join("kera.db")),
         );
     }
-    let control_plane_api_base_url =
-        configured_or_process_env_value("KERA_CONTROL_PLANE_API_BASE_URL", &values)
-            .unwrap_or_default();
-    if control_plane_api_base_url.trim().is_empty() {
-        if configured_or_process_env_value("KERA_CONTROL_PLANE_DATABASE_URL", &values).is_none()
-            && configured_or_process_env_value("KERA_AUTH_DATABASE_URL", &values).is_none()
-            && configured_or_process_env_value("KERA_DATABASE_URL", &values).is_none()
-            && configured_or_process_env_value("DATABASE_URL", &values).is_none()
-        {
-            values.insert(
-                "KERA_CONTROL_PLANE_DATABASE_URL".to_string(),
-                sqlite_url_for_path(&storage_dir.join("kera.db")),
-            );
-        }
-    } else if configured_or_process_env_value("KERA_LOCAL_CONTROL_PLANE_DATABASE_URL", &values)
+    let control_plane_api_base_url = configured_or_process_env_value(
+        "KERA_CONTROL_PLANE_API_BASE_URL",
+        &values,
+    )
+    .filter(|value| !value.trim().is_empty())
+    .unwrap_or_else(|| DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL.to_string());
+    values.insert(
+        "KERA_CONTROL_PLANE_API_BASE_URL".to_string(),
+        control_plane_api_base_url,
+    );
+    if configured_or_process_env_value("KERA_LOCAL_CONTROL_PLANE_DATABASE_URL", &values)
         .is_none()
         && configured_or_process_env_value("KERA_CONTROL_PLANE_LOCAL_DATABASE_URL", &values)
             .is_none()

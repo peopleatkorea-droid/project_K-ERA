@@ -27,6 +27,7 @@ const runtimeCacheDir = path.join(frontendRoot, ".desktop-runtime", "python-runt
 const runtimeSnapshotRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
 const runtimeSnapshotDir = path.join(runtimeSnapshotRoot, "python-runtime");
 const repoPythonSourceDir = path.resolve(frontendRoot, "..", "src");
+const devCargoTargetDir = path.join(os.tmpdir(), "kera-tauri-dev", "target");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
 const generatedConfigPath = path.join(srcTauriDir, "tauri.build.generated.conf.json");
 const hasUpdaterSigningKey = Boolean(String(env.TAURI_SIGNING_PRIVATE_KEY ?? "").trim());
@@ -64,7 +65,7 @@ function stopRunningReleaseArtifacts() {
   if (process.platform !== "win32") {
     return;
   }
-  const prefixes = [releaseDir, runtimeCacheDir]
+  const prefixes = [releaseDir, runtimeCacheDir, devCargoTargetDir]
     .map((entry) => path.resolve(entry))
     .filter((entry, index, values) => values.indexOf(entry) === index);
   const nsisNeedle = path.resolve(nsisWorkDir);

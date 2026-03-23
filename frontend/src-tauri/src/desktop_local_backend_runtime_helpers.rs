@@ -32,6 +32,52 @@ fn local_backend_health_url(base_url: &str) -> String {
     format!("{}/api/health", base_url.trim_end_matches('/'))
 }
 
+fn local_backend_openapi_url(base_url: &str) -> String {
+    format!("{}/openapi.json", base_url.trim_end_matches('/'))
+}
+
+fn local_backend_matches_desktop_contract(client: &HttpClient, base_url: &str) -> bool {
+    let Ok(response) = client.get(local_backend_openapi_url(base_url)).send() else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(payload) = response.json::<serde_json::Value>() else {
+        return false;
+    };
+    let Some(paths) = payload.get("paths").and_then(|value| value.as_object()) else {
+        return false;
+    };
+    for required_path in [
+        "/api/auth/desktop/start",
+        "/api/auth/desktop/exchange",
+        "/api/desktop/self-check",
+    ] {
+        if !paths.contains_key(required_path) {
+            return false;
+        }
+    }
+    true
+}
+
+pub(super) fn local_backend_port_is_occupied(base_url: &str) -> bool {
+    let Ok(url) = HttpUrl::parse(base_url) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or("127.0.0.1");
+    let port = url.port_or_known_default().unwrap_or(8000);
+    let Ok(addresses) = std::net::ToSocketAddrs::to_socket_addrs(&format!("{host}:{port}")) else {
+        return false;
+    };
+    for address in addresses {
+        if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 fn local_backend_is_healthy(base_url: &str) -> bool {
     let Ok(client) = HttpClient::builder()
         .timeout(Duration::from_millis(1200))
@@ -42,7 +88,7 @@ fn local_backend_is_healthy(base_url: &str) -> bool {
     let Ok(response) = client.get(local_backend_health_url(base_url)).send() else {
         return false;
     };
-    response.status().is_success()
+    response.status().is_success() && local_backend_matches_desktop_contract(&client, base_url)
 }
 
 fn wait_for_local_backend_health(base_url: &str, timeout: Duration) -> Result<(), String> {

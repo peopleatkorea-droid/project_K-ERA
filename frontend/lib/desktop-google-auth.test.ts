@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   canUseDesktopGoogleAuth,
+  parseDesktopGoogleBrowserRedirectUrl,
   parseDesktopGoogleRedirectUrl,
 } from "./desktop-google-auth";
 
@@ -28,5 +29,18 @@ describe("desktop google auth", () => {
     expect(() =>
       parseDesktopGoogleRedirectUrl("http://127.0.0.1:44556/?code=test-code&state=wrong-state", 44556, "state-token"),
     ).toThrow("Google OAuth state mismatch.");
+  });
+
+  it("parses a valid browser bridge redirect URL", () => {
+    expect(
+      parseDesktopGoogleBrowserRedirectUrl(
+        "http://127.0.0.1:44556/desktop-google-login?credential=test-id-token&state=bridge-state",
+        44556,
+        "bridge-state",
+      ),
+    ).toEqual({
+      idToken: "test-id-token",
+      state: "bridge-state",
+    });
   });
 });

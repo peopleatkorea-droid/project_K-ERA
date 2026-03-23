@@ -2,6 +2,7 @@
 
 import { request } from "./api-core";
 import { hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
+import { requestDesktopLocalApiJson } from "./desktop-local-api";
 import type { DesktopGoogleAuthExchangePayload, DesktopGoogleAuthStartResponse } from "./desktop-google-auth";
 import type { AuthResponse, AuthUser, SiteRecord } from "./types";
 import { filterVisibleSites } from "./site-labels";
@@ -41,46 +42,70 @@ export async function clearDesktopSessionCache(): Promise<void> {
 
 export const DESKTOP_TOKEN_KEY = "kera_desktop_token";
 
+async function requestDesktopAuthJson<T>(
+  path: string,
+  options: {
+    method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+    body?: unknown;
+  } = {},
+  token = "",
+): Promise<T> {
+  if (hasDesktopRuntime()) {
+    return requestDesktopLocalApiJson<T>(path, token, {
+      method: options.method,
+      body: options.body,
+    });
+  }
+  return request<T>(
+    path,
+    {
+      method: options.method,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    },
+    token || undefined,
+  );
+}
+
 export async function desktopLocalLogin(username: string, password: string): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/login", {
+  return requestDesktopAuthJson<AuthResponse>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: { username, password },
   });
 }
 
 export async function desktopLocalDevLogin(): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/dev-login", {
+  return requestDesktopAuthJson<AuthResponse>("/api/auth/dev-login", {
     method: "POST",
   });
 }
 
 export async function desktopGoogleLogin(idToken: string): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/google", {
+  return requestDesktopAuthJson<AuthResponse>("/api/auth/google", {
     method: "POST",
-    body: JSON.stringify({ id_token: idToken }),
+    body: { id_token: idToken },
   });
 }
 
 export async function startDesktopGoogleLogin(redirectUri: string): Promise<DesktopGoogleAuthStartResponse> {
-  return request<DesktopGoogleAuthStartResponse>("/api/auth/desktop/start", {
+  return requestDesktopAuthJson<DesktopGoogleAuthStartResponse>("/api/auth/desktop/start", {
     method: "POST",
-    body: JSON.stringify({ redirect_uri: redirectUri }),
+    body: { redirect_uri: redirectUri },
   });
 }
 
 export async function exchangeDesktopGoogleLogin(payload: DesktopGoogleAuthExchangePayload): Promise<AuthResponse> {
-  return request<AuthResponse>("/api/auth/desktop/exchange", {
+  return requestDesktopAuthJson<AuthResponse>("/api/auth/desktop/exchange", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: payload,
   });
 }
 
 export async function desktopFetchCurrentUser(token: string): Promise<AuthUser> {
-  return request<AuthUser>("/api/auth/me", {}, token);
+  return requestDesktopAuthJson<AuthUser>("/api/auth/me", {}, token);
 }
 
 export async function desktopFetchApprovedSites(token: string): Promise<SiteRecord[]> {
-  return filterVisibleSites(await request<SiteRecord[]>("/api/sites", {}, token));
+  return filterVisibleSites(await requestDesktopAuthJson<SiteRecord[]>("/api/sites", {}, token));
 }
 
 export function persistDesktopSession(token: string | null | undefined) {

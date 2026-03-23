@@ -50,6 +50,35 @@ if (!env.KERA_DESKTOP_STRICT_MODE) {
   env.KERA_DESKTOP_STRICT_MODE = strictNextDev ? "1" : "0";
 }
 
+function cleanupDevProcesses() {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/f", "/im", "kera-desktop-shell.exe", "/t"], { stdio: "ignore" });
+    spawnSync("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        `$targetPrefix = ${JSON.stringify(cargoTargetDir)}`,
+        "Get-CimInstance Win32_Process |",
+        "  Where-Object {",
+        "    $processPath = $_.ExecutablePath",
+        "    if (-not $processPath) { return $false }",
+        "    return $processPath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)",
+        "  } |",
+        "  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+      ].join("\n"),
+    ], { stdio: "ignore" });
+    spawnSync("powershell", [
+      "-Command",
+      `Get-NetTCPConnection -LocalPort ${devServerPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`
+    ], { stdio: "ignore" });
+    return;
+  }
+  spawnSync("pkill", ["-f", "kera-desktop-shell"], { stdio: "ignore" });
+  spawnSync("sh", ["-c", `lsof -ti:${devServerPort} | xargs kill -9 >/dev/null 2>&1`], { stdio: "ignore" });
+}
+
 function removePythonBytecodeCaches(rootDir) {
   if (!fs.existsSync(rootDir)) {
     return;
@@ -79,32 +108,7 @@ function removePythonBytecodeCaches(rootDir) {
 }
 
 console.log(`Cleaning up previous Tauri and ${useNextDev ? "Next" : "desktop-shell"} dev processes...`);
-if (process.platform === "win32") {
-  spawnSync("taskkill", ["/f", "/im", "kera-desktop-shell.exe", "/t"], { stdio: "ignore" });
-  spawnSync("powershell", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    [
-      "$ErrorActionPreference = 'SilentlyContinue'",
-      `$targetPrefix = ${JSON.stringify(cargoTargetDir)}`,
-      "Get-CimInstance Win32_Process |",
-      "  Where-Object {",
-      "    $processPath = $_.ExecutablePath",
-      "    if (-not $processPath) { return $false }",
-      "    return $processPath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)",
-      "  } |",
-      "  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-    ].join("\n"),
-  ], { stdio: "ignore" });
-  spawnSync("powershell", [
-    "-Command",
-    `Get-NetTCPConnection -LocalPort ${devServerPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`
-  ], { stdio: "ignore" });
-} else {
-  spawnSync("pkill", ["-f", "kera-desktop-shell"], { stdio: "ignore" });
-  spawnSync("sh", ["-c", `lsof -ti:${devServerPort} | xargs kill -9 >/dev/null 2>&1`], { stdio: "ignore" });
-}
+cleanupDevProcesses();
 if (cleanPythonBytecode) {
   removePythonBytecodeCaches(repoPythonSourceDir);
 }
@@ -125,9 +129,16 @@ const child =
       });
 
 child.on("exit", (code, signal) => {
+  cleanupDevProcesses();
   if (signal) {
     process.kill(process.pid, signal);
     return;
   }
   process.exit(code ?? 0);
 });
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    cleanupDevProcesses();
+  });
+}

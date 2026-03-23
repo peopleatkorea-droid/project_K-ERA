@@ -386,20 +386,25 @@ function readWorkspaceHistoryEntry(state: unknown): WorkspaceHistoryEntry | null
     return null;
   }
   const entry = rawEntry as Record<string, unknown>;
-  if (entry.scope !== "case-workspace" || entry.version !== 1) {
+  const scope = entry.scope;
+  const version = entry.version;
+  const railView = entry.rail_view;
+  const selectedCaseId = entry.selected_case_id;
+
+  if (scope !== "case-workspace" || version !== 1) {
     return null;
   }
-  if (entry.rail_view !== "cases" && entry.rail_view !== "patients") {
+  if (railView !== "cases" && railView !== "patients") {
     return null;
   }
-  if (entry.selected_case_id !== null && typeof entry.selected_case_id !== "string") {
+  if (selectedCaseId !== null && typeof selectedCaseId !== "string") {
     return null;
   }
   return {
     scope: "case-workspace",
     version: 1,
-    rail_view: entry.rail_view,
-    selected_case_id: entry.selected_case_id,
+    rail_view: railView,
+    selected_case_id: selectedCaseId,
   };
 }
 
