@@ -29,6 +29,7 @@ if (!env.CARGO_TARGET_DIR) {
 }
 const cargoTargetDir = path.resolve(env.CARGO_TARGET_DIR);
 const repoPythonSourceDir = path.resolve(process.cwd(), "..", "src");
+const runtimeCacheDir = path.resolve(process.cwd(), ".desktop-runtime", "python-runtime");
 
 if (!env.CARGO_BUILD_JOBS) {
   env.CARGO_BUILD_JOBS = String(Math.max(1, Math.min(os.cpus().length, 4)));
@@ -59,12 +60,15 @@ function cleanupDevProcesses() {
       "-Command",
       [
         "$ErrorActionPreference = 'SilentlyContinue'",
-        `$targetPrefix = ${JSON.stringify(cargoTargetDir)}`,
+        `$targets = @(${[cargoTargetDir, runtimeCacheDir].map((entry) => JSON.stringify(entry)).join(", ")})`,
         "Get-CimInstance Win32_Process |",
         "  Where-Object {",
         "    $processPath = $_.ExecutablePath",
         "    if (-not $processPath) { return $false }",
-        "    return $processPath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)",
+        "    foreach ($targetPrefix in $targets) {",
+        "      if ($processPath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }",
+        "    }",
+        "    return $false",
         "  } |",
         "  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
       ].join("\n"),

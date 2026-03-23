@@ -49,12 +49,33 @@ def _read_pem(
     return ""
 
 
+def _derive_public_pem_from_private(private_pem: str) -> str:
+    normalized = _normalize_text(private_pem)
+    if not normalized:
+        return ""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        private_key = serialization.load_pem_private_key(normalized.encode("utf-8"), password=None)
+        public_key = private_key.public_key()
+        return public_key.public_bytes(
+            encoding=Encoding.PEM,
+            format=PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
 def load_control_plane_jwt_public_key() -> str:
-    return _read_pem(
+    public_pem = _read_pem(
         b64_env_names=["KERA_LOCAL_API_JWT_PUBLIC_KEY_B64"],
         pem_env_names=["KERA_LOCAL_API_JWT_PUBLIC_KEY_PEM"],
         path_env_names=["KERA_LOCAL_API_JWT_PUBLIC_KEY_PATH"],
     )
+    if public_pem:
+        return public_pem
+    return _derive_public_pem_from_private(load_control_plane_jwt_private_key())
 
 
 def load_control_plane_jwt_private_key() -> str:
