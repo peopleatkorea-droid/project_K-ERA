@@ -56,22 +56,67 @@ if (-not $resolvedExe) {
 }
 Write-Ok "desktop executable: $resolvedExe"
 
-$resourceDir = Resolve-ExistingPath @((Join-Path $resolvedInstallDir "resources"))
-if (-not $resourceDir) {
-  throw "Could not find the bundled resources directory under $resolvedInstallDir."
-}
-Write-Ok "resources dir: $resourceDir"
-
-$requiredResourcePaths = @(
-  (Join-Path $resourceDir "backend\\app.py"),
-  (Join-Path $resourceDir "backend\\src"),
-  (Join-Path $resourceDir "python-runtime")
+$layoutCandidates = @(
+  @{
+    Name = "resources"
+    ResourceDir = Join-Path $resolvedInstallDir "resources"
+    BackendRoot = Join-Path $resolvedInstallDir "resources\\backend"
+    PythonRuntimeDir = Join-Path $resolvedInstallDir "resources\\python-runtime"
+  },
+  @{
+    Name = "updater-bundle"
+    ResourceDir = $null
+    BackendRoot = Join-Path $resolvedInstallDir "backend"
+    PythonRuntimeDir = Join-Path $resolvedInstallDir "_up_\\.desktop-runtime-bundle\\python-runtime"
+  }
 )
 
-foreach ($requiredPath in $requiredResourcePaths) {
-  if (-not (Test-Path $requiredPath)) {
-    throw "Missing installed runtime resource: $requiredPath"
+$resolvedLayout = $null
+foreach ($layout in $layoutCandidates) {
+  $requiredPaths = @(
+    (Join-Path $layout.BackendRoot "app.py"),
+    (Join-Path $layout.BackendRoot "src"),
+    $layout.PythonRuntimeDir
+  )
+  $allPresent = $true
+  foreach ($requiredPath in $requiredPaths) {
+    if (-not (Test-Path $requiredPath)) {
+      $allPresent = $false
+      break
+    }
   }
+  if ($allPresent) {
+    $resolvedLayout = $layout
+    break
+  }
+}
+
+if (-not $resolvedLayout) {
+  $checkedPaths = $layoutCandidates | ForEach-Object {
+    @(
+      (Join-Path $_.BackendRoot "app.py"),
+      (Join-Path $_.BackendRoot "src"),
+      $_.PythonRuntimeDir
+    ) -join ", "
+  }
+  throw "Could not resolve the installed runtime layout under $resolvedInstallDir. Checked: $($checkedPaths -join ' | ')"
+}
+
+Write-Ok "runtime layout: $($resolvedLayout.Name)"
+if ($resolvedLayout.ResourceDir) {
+  $resourceDir = Resolve-ExistingPath @($resolvedLayout.ResourceDir)
+  if ($resourceDir) {
+    Write-Ok "resources dir: $resourceDir"
+  }
+}
+
+$requiredRuntimePaths = @(
+  (Join-Path $resolvedLayout.BackendRoot "app.py"),
+  (Join-Path $resolvedLayout.BackendRoot "src"),
+  $resolvedLayout.PythonRuntimeDir
+)
+
+foreach ($requiredPath in $requiredRuntimePaths) {
   Write-Ok "runtime resource: $requiredPath"
 }
 
