@@ -72,7 +72,7 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
         googleLaunchPulse={props.authBusy}
         onGoogleReady={() => undefined}
         onGoogleSlotsChange={() => undefined}
-        onGoogleLaunch={() => void openDesktopExternalUrl(PUBLIC_SITE_ROOT).catch(() => undefined)}
+        onGoogleLaunch={props.onGoogleLaunch}
         connectingLabel={pick(locale, "Connecting...", "연결 중...")}
         googleLoginLabel={pick(locale, "Institution Google login", "기관 Google 로그인")}
         googleDisabledLabel={pick(
