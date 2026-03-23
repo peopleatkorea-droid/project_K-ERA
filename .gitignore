@@ -7,9 +7,13 @@ frontend/.next/
 frontend/.next_broken/
 frontend/out/
 frontend/.desktop-runtime/
+frontend/desktop-installed-smoke/
+frontend/desktop-package-variants/
 frontend/desktop-dist/assets/
 frontend/src-tauri/target/
 frontend/tsconfig.tsbuildinfo
+frontend/test-errors.txt
+frontend/ts-errors.txt
 frontend/~/.tauri/
 .desktop-runtime/
 storage/
