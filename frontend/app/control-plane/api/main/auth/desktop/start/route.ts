@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
 
-import { jsonError } from "../../../../../../../lib/control-plane/http";
 import { startMainDesktopGoogleAuth } from "../../../../../../../lib/control-plane/main-app-bridge-desktop-auth";
 
 const CORS_HEADERS = {
@@ -19,6 +18,6 @@ export async function POST(request: NextRequest) {
     return Response.json(await startMainDesktopGoogleAuth(body), { headers: CORS_HEADERS });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Desktop Google sign-in could not start.";
-    return jsonError(message, 400);
+    return Response.json({ detail: message }, { status: 400, headers: CORS_HEADERS });
   }
 }

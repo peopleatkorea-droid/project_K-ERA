@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
 
-import { jsonError } from "../../../../../../../lib/control-plane/http";
 import { exchangeMainDesktopGoogleAuth } from "../../../../../../../lib/control-plane/main-app-bridge-desktop-auth";
 
 const CORS_HEADERS = {
@@ -24,6 +23,6 @@ export async function POST(request: NextRequest) {
     return Response.json(await exchangeMainDesktopGoogleAuth(body), { headers: CORS_HEADERS });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Desktop Google authentication failed.";
-    return jsonError(message, 401);
+    return Response.json({ detail: message }, { status: 401, headers: CORS_HEADERS });
   }
 }
