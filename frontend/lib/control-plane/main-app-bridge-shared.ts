@@ -12,6 +12,7 @@ import {
   localApiJwtKeyId,
   localApiJwtPrivateKey,
   localApiJwtPublicKey,
+  localApiJwtSharedSecret,
 } from "./local-api-jwt";
 import type { ControlPlaneSiteRole } from "./types";
 
@@ -192,42 +193,94 @@ export function readBearerToken(request: NextRequest): string {
 export async function readMainAppTokenClaims(request: NextRequest): Promise<MainAppTokenClaims> {
   const token = readBearerToken(request);
   const publicKey = localApiJwtPublicKey();
-  if (!publicKey) {
-    throw new Error("KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not available to verify control-plane access tokens.");
+  if (publicKey) {
+    try {
+      const verified = await jwtVerify(token, publicKey, {
+        algorithms: ["RS256"],
+        audience: localApiJwtAudience(),
+        issuer: localApiJwtIssuer(),
+      });
+      return {
+        sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
+        username: typeof verified.payload.username === "string" ? verified.payload.username : null,
+        full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
+        public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
+        role: typeof verified.payload.role === "string" ? verified.payload.role : null,
+        site_ids: normalizeStringArray(verified.payload.site_ids),
+        approval_status:
+          typeof verified.payload.approval_status === "string"
+            ? (verified.payload.approval_status as AuthState)
+            : null,
+        registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
+      };
+    } catch {
+      // Fall through to legacy shared-secret verification when configured.
+    }
   }
-  try {
-    const verified = await jwtVerify(token, publicKey, {
-      algorithms: ["RS256"],
-      audience: localApiJwtAudience(),
-      issuer: localApiJwtIssuer(),
-    });
-    return {
-      sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
-      username: typeof verified.payload.username === "string" ? verified.payload.username : null,
-      full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
-      public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
-      role: typeof verified.payload.role === "string" ? verified.payload.role : null,
-      site_ids: normalizeStringArray(verified.payload.site_ids),
-      approval_status:
-        typeof verified.payload.approval_status === "string"
-          ? (verified.payload.approval_status as AuthState)
-          : null,
-      registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
-    };
-  } catch {
+  const sharedSecret = localApiJwtSharedSecret();
+  if (sharedSecret) {
+    try {
+      const verified = await jwtVerify(token, new TextEncoder().encode(sharedSecret), {
+        algorithms: ["HS256"],
+      });
+      return {
+        sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
+        username: typeof verified.payload.username === "string" ? verified.payload.username : null,
+        full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
+        public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
+        role: typeof verified.payload.role === "string" ? verified.payload.role : null,
+        site_ids: normalizeStringArray(verified.payload.site_ids),
+        approval_status:
+          typeof verified.payload.approval_status === "string"
+            ? (verified.payload.approval_status as AuthState)
+            : null,
+        registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
+      };
+    } catch {
+      throw new Error("Authentication required.");
+    }
+  }
+  if (publicKey) {
     throw new Error("Authentication required.");
   }
+  throw new Error("KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not available to verify control-plane access tokens.");
 }
 
 export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthResponse> {
   const privateKey = localApiJwtPrivateKey();
-  if (!privateKey) {
-    throw new Error("KERA_LOCAL_API_JWT_PRIVATE_KEY_B64 is not available to mint control-plane access tokens.");
+  if (privateKey) {
+    const protectedHeader: { alg: "RS256"; kid?: string } = { alg: "RS256" };
+    const keyId = localApiJwtKeyId();
+    if (keyId) {
+      protectedHeader.kid = keyId;
+    }
+    const token = await new SignJWT({
+      sub: user.user_id,
+      username: user.username,
+      full_name: user.full_name,
+      public_alias: user.public_alias ?? null,
+      role: user.role,
+      site_ids: user.site_ids ?? [],
+      approval_status: user.approval_status,
+      registry_consents: normalizeRegistryConsents(user.registry_consents),
+    })
+      .setProtectedHeader(protectedHeader)
+      .setIssuer(localApiJwtIssuer())
+      .setAudience(localApiJwtAudience())
+      .setIssuedAt()
+      .setExpirationTime(`${LOCAL_TOKEN_TTL_HOURS}h`)
+      .sign(privateKey);
+    return {
+      auth_state: user.approval_status,
+      access_token: token,
+      token_type: "bearer",
+      user,
+    };
   }
-  const protectedHeader: { alg: "RS256"; kid?: string } = { alg: "RS256" };
-  const keyId = localApiJwtKeyId();
-  if (keyId) {
-    protectedHeader.kid = keyId;
+
+  const sharedSecret = localApiJwtSharedSecret();
+  if (!sharedSecret) {
+    throw new Error("KERA_LOCAL_API_JWT_PRIVATE_KEY_B64 is not available to mint control-plane access tokens.");
   }
   const token = await new SignJWT({
     sub: user.user_id,
@@ -238,13 +291,11 @@ export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthRespon
     site_ids: user.site_ids ?? [],
     approval_status: user.approval_status,
     registry_consents: normalizeRegistryConsents(user.registry_consents),
-    })
-    .setProtectedHeader(protectedHeader)
-    .setIssuer(localApiJwtIssuer())
-    .setAudience(localApiJwtAudience())
+  })
+    .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${LOCAL_TOKEN_TTL_HOURS}h`)
-    .sign(privateKey);
+    .sign(new TextEncoder().encode(sharedSecret));
   return {
     auth_state: user.approval_status,
     access_token: token,

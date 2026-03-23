@@ -12,6 +12,7 @@ type DesktopLandingScreenProps = {
   authBusy: boolean;
   error: string | null;
   onGoogleLaunch: () => void;
+  onAdminLaunch: () => void;
 };
 
 const PUBLIC_SITE_ROOT = "https://kera-bay.vercel.app";
@@ -46,6 +47,12 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
     }
     const rawHref = anchor.getAttribute("href")?.trim() ?? "";
     if (!rawHref || rawHref.startsWith("#") || rawHref.startsWith("mailto:")) {
+      return;
+    }
+
+    if (rawHref === "/admin-login" || rawHref.startsWith("/admin-login?")) {
+      event.preventDefault();
+      props.onAdminLaunch();
       return;
     }
 

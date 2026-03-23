@@ -14,9 +14,12 @@ import {
   DESKTOP_TOKEN_KEY,
   desktopFetchApprovedSites,
   desktopFetchCurrentUser,
+  desktopLocalLogin,
+  exchangeDesktopGoogleLogin,
   loadDesktopSessionCache,
   persistDesktopSession,
   saveDesktopSessionCache,
+  startDesktopGoogleLogin,
 } from "../lib/desktop-auth";
 import {
   fetchDesktopAppConfig,
@@ -28,7 +31,6 @@ import {
 } from "../lib/desktop-app-config";
 import { ensureDesktopLocalRuntimeReady } from "../lib/desktop-diagnostics";
 import { authenticateWithDesktopGoogle } from "../lib/desktop-google-auth";
-import type { AuthResponse } from "../lib/types";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import { DesktopLandingScreen } from "./desktop-landing";
@@ -59,6 +61,8 @@ function DesktopShellApp() {
   const [config, setConfig] = useState<DesktopAppConfigState | null>(null);
   const [configForm, setConfigForm] = useState<ConfigFormState>(createEmptyConfigForm);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
+  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  const [adminForm, setAdminForm] = useState({ username: "", password: "" });
   const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [configBusy, setConfigBusy] = useState(false);
@@ -76,6 +80,13 @@ function DesktopShellApp() {
       "이 데스크톱 앱은 승인된 로컬 워크스페이스 계정만 엽니다. 접근 요청과 중앙 운영은 웹 관리자 앱에서 진행하세요.",
     ),
     signOut: pick(locale, "Sign out", "로그아웃"),
+    adminLoginTitle: pick(locale, "Admin sign-in", "관리자 로그인"),
+    adminLoginDescription: pick(locale, "Password sign-in for admin and site admin accounts.", "admin 및 site admin 계정 비밀번호 로그인입니다."),
+    adminUsername: pick(locale, "Username", "사용자명"),
+    adminPassword: pick(locale, "Password", "비밀번호"),
+    adminSubmit: pick(locale, "Sign in", "로그인"),
+    adminSubmitting: pick(locale, "Signing in...", "로그인 중..."),
+    adminCancel: pick(locale, "Cancel", "취소"),
     settingsTitle: pick(locale, "Desktop settings", "데스크톱 설정"),
     settingsDescription: pick(
       locale,
@@ -246,37 +257,32 @@ function DesktopShellApp() {
     setAuthBusy(true);
     setError(null);
     try {
-      const VERCEL_ROOT = "https://kera-bay.vercel.app";
-      const auth = await authenticateWithDesktopGoogle<AuthResponse>({
-        startLogin: async ({ redirect_uri }) => {
-          const resp = await fetch(`${VERCEL_ROOT}/control-plane/api/main/auth/desktop/start`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ redirect_uri }),
-          });
-          if (!resp.ok) {
-            const payload = await resp.json().catch(() => ({})) as { detail?: string };
-            throw new Error(payload.detail || "Google 로그인을 시작할 수 없습니다.");
-          }
-          return resp.json();
-        },
-        exchangeLogin: async (payload) => {
-          const resp = await fetch(`${VERCEL_ROOT}/control-plane/api/main/auth/desktop/exchange`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          if (!resp.ok) {
-            const body = await resp.json().catch(() => ({})) as { detail?: string };
-            throw new Error(body.detail || "Google 로그인에 실패했습니다.");
-          }
-          return resp.json() as Promise<AuthResponse>;
-        },
+      const auth = await authenticateWithDesktopGoogle({
+        exchangeLogin: exchangeDesktopGoogleLogin,
+        startLogin: ({ redirect_uri }) => startDesktopGoogleLogin(redirect_uri),
       });
       persistDesktopSession(auth.access_token);
       setToken(auth.access_token);
     } catch (nextError) {
       console.error("[kera-desktop-google-login]", nextError);
+      setError(describeError(nextError, copy.loginFailed));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleAdminLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setError(null);
+    try {
+      await loadDesktopRuntime(true);
+      const auth = await desktopLocalLogin(adminForm.username.trim(), adminForm.password);
+      persistDesktopSession(auth.access_token);
+      setToken(auth.access_token);
+      setAdminLoginOpen(false);
+      setAdminForm({ username: "", password: "" });
+    } catch (nextError) {
       setError(describeError(nextError, copy.loginFailed));
     } finally {
       setAuthBusy(false);
@@ -364,6 +370,8 @@ function DesktopShellApp() {
     setSelectedSiteId(null);
     setSummary(null);
     setWorkspaceSettingsOpen(false);
+    setAdminLoginOpen(false);
+    setAdminForm({ username: "", password: "" });
     setError(null);
   }
 
@@ -495,8 +503,54 @@ function DesktopShellApp() {
     );
   }
 
+  if (!token && adminLoginOpen) {
+    return (
+      <main className="min-h-screen bg-[#0d0f14] px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mx-auto grid max-w-sm gap-5">
+          {screenError ? (
+            <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">{screenError}</div>
+          ) : null}
+          <Card as="section" variant="surface" className="grid gap-5 p-6">
+            <form className="grid gap-5" onSubmit={handleAdminLogin}>
+              <SectionHeader title={copy.adminLoginTitle} description={copy.adminLoginDescription} />
+              <Field as="div" label={copy.adminUsername} htmlFor="admin-username" unstyledControl>
+                <input
+                  id="admin-username"
+                  className="min-h-12 w-full rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2.5 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)]"
+                  autoComplete="username"
+                  disabled={authBusy}
+                  value={adminForm.username}
+                  onChange={(e) => setAdminForm((f) => ({ ...f, username: e.target.value }))}
+                />
+              </Field>
+              <Field as="div" label={copy.adminPassword} htmlFor="admin-password" unstyledControl>
+                <input
+                  id="admin-password"
+                  type="password"
+                  className="min-h-12 w-full rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2.5 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)]"
+                  autoComplete="current-password"
+                  disabled={authBusy}
+                  value={adminForm.password}
+                  onChange={(e) => setAdminForm((f) => ({ ...f, password: e.target.value }))}
+                />
+              </Field>
+              <div className="flex flex-wrap gap-3">
+                <Button type="submit" variant="primary" disabled={authBusy || !adminForm.username || !adminForm.password}>
+                  {authBusy ? copy.adminSubmitting : copy.adminSubmit}
+                </Button>
+                <Button type="button" variant="ghost" disabled={authBusy} onClick={() => { setAdminLoginOpen(false); setError(null); }}>
+                  {copy.adminCancel}
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      </main>
+    );
+  }
+
   if (!token) {
-    return <DesktopLandingScreen authBusy={authBusy} error={screenError} onGoogleLaunch={() => void handleGoogleLogin()} />;
+    return <DesktopLandingScreen authBusy={authBusy} error={screenError} onGoogleLaunch={() => void handleGoogleLogin()} onAdminLaunch={() => setAdminLoginOpen(true)} />;
   }
 
   if (!user || bootstrapBusy) {

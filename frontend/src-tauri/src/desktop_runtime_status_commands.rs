@@ -9,18 +9,24 @@ pub(super) fn get_local_worker_status() -> Result<LocalWorkerStatus, String> {
 }
 
 #[tauri::command]
-pub(super) fn ensure_local_worker() -> Result<LocalWorkerStatus, String> {
-    ensure_local_worker_ready_internal()
+pub(super) async fn ensure_local_worker() -> Result<LocalWorkerStatus, String> {
+    tauri::async_runtime::spawn_blocking(ensure_local_worker_ready_internal)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub(super) fn ensure_local_backend() -> Result<LocalBackendStatus, String> {
-    ensure_local_backend_ready_internal()
+pub(super) async fn ensure_local_backend() -> Result<LocalBackendStatus, String> {
+    tauri::async_runtime::spawn_blocking(ensure_local_backend_ready_internal)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub(super) fn ensure_local_runtime() -> Result<LocalBackendStatus, String> {
-    ensure_local_runtime_ready_internal()
+pub(super) async fn ensure_local_runtime() -> Result<LocalBackendStatus, String> {
+    tauri::async_runtime::spawn_blocking(ensure_local_runtime_ready_internal)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

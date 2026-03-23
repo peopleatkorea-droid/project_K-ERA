@@ -37,24 +37,47 @@ fn local_backend_openapi_url(base_url: &str) -> String {
 }
 
 fn local_backend_matches_desktop_contract(client: &HttpClient, base_url: &str) -> bool {
-    let Ok(response) = client.get(local_backend_openapi_url(base_url)).send() else {
-        return false;
-    };
-    if !response.status().is_success() {
-        return false;
+    // Try OpenAPI spec first; fall back to probing required routes directly.
+    let openapi_ok = (|| -> bool {
+        let Ok(response) = client.get(local_backend_openapi_url(base_url)).send() else {
+            return false;
+        };
+        if !response.status().is_success() {
+            return false;
+        }
+        let Ok(payload) = response.json::<serde_json::Value>() else {
+            return false;
+        };
+        let Some(paths) = payload.get("paths").and_then(|value| value.as_object()) else {
+            return false;
+        };
+        for required_path in [
+            "/api/auth/desktop/start",
+            "/api/auth/desktop/exchange",
+            "/api/desktop/self-check",
+        ] {
+            if !paths.contains_key(required_path) {
+                return false;
+            }
+        }
+        true
+    })();
+    if openapi_ok {
+        return true;
     }
-    let Ok(payload) = response.json::<serde_json::Value>() else {
-        return false;
-    };
-    let Some(paths) = payload.get("paths").and_then(|value| value.as_object()) else {
-        return false;
-    };
+    // Fallback: probe each required route directly (OPTIONS or GET).
     for required_path in [
         "/api/auth/desktop/start",
         "/api/auth/desktop/exchange",
         "/api/desktop/self-check",
     ] {
-        if !paths.contains_key(required_path) {
+        let url = format!("{}{}", base_url.trim_end_matches('/'), required_path);
+        let reachable = client
+            .get(&url)
+            .send()
+            .map(|r| r.status().as_u16() != 404)
+            .unwrap_or(false);
+        if !reachable {
             return false;
         }
     }
