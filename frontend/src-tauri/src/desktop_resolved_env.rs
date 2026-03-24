@@ -1,8 +1,48 @@
 const DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL: &str =
     "https://kera-bay.vercel.app/control-plane/api";
 
+fn compile_time_env_value(key: &str) -> Option<String> {
+    let value = match key {
+        "KERA_CONTROL_PLANE_API_BASE_URL" => option_env!("KERA_CONTROL_PLANE_API_BASE_URL"),
+        "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL" => {
+            option_env!("NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL")
+        }
+        "KERA_LOCAL_API_JWT_PUBLIC_KEY_B64" => option_env!("KERA_LOCAL_API_JWT_PUBLIC_KEY_B64"),
+        "KERA_LOCAL_API_JWT_ISSUER" => option_env!("KERA_LOCAL_API_JWT_ISSUER"),
+        "KERA_LOCAL_API_JWT_AUDIENCE" => option_env!("KERA_LOCAL_API_JWT_AUDIENCE"),
+        "KERA_GOOGLE_DESKTOP_CLIENT_ID" => option_env!("KERA_GOOGLE_DESKTOP_CLIENT_ID"),
+        "NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID" => option_env!("NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID"),
+        "KERA_GOOGLE_CLIENT_ID" => option_env!("KERA_GOOGLE_CLIENT_ID"),
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID" => option_env!("NEXT_PUBLIC_GOOGLE_CLIENT_ID"),
+        "KERA_GOOGLE_CLIENT_IDS" => option_env!("KERA_GOOGLE_CLIENT_IDS"),
+        _ => None,
+    };
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub(super) fn resolved_env_values() -> HashMap<String, String> {
     let mut values = configured_env_values();
+    for key in [
+        "KERA_CONTROL_PLANE_API_BASE_URL",
+        "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL",
+        "KERA_LOCAL_API_JWT_PUBLIC_KEY_B64",
+        "KERA_LOCAL_API_JWT_ISSUER",
+        "KERA_LOCAL_API_JWT_AUDIENCE",
+        "KERA_GOOGLE_DESKTOP_CLIENT_ID",
+        "NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID",
+        "KERA_GOOGLE_CLIENT_ID",
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+        "KERA_GOOGLE_CLIENT_IDS",
+    ] {
+        if configured_or_process_env_value(key, &values).is_none() {
+            if let Some(value) = compile_time_env_value(key) {
+                values.insert(key.to_string(), value);
+            }
+        }
+    }
     let storage_dir = resolve_storage_dir(&values);
     values.insert(
         "KERA_STORAGE_DIR".to_string(),
@@ -20,6 +60,7 @@ pub(super) fn resolved_env_values() -> HashMap<String, String> {
         "KERA_CONTROL_PLANE_API_BASE_URL",
         &values,
     )
+    .or_else(|| compile_time_env_value("NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL"))
     .filter(|value| !value.trim().is_empty())
     .unwrap_or_else(|| DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL.to_string());
     values.insert(

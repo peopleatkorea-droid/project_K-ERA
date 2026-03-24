@@ -5,6 +5,7 @@ description = "K-ERA desktop shell"
 edition = "2021"
 
 [build-dependencies]
+dotenvy = "0.15"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
