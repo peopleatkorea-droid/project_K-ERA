@@ -41,6 +41,7 @@ type CaseWorkspaceLeftRailProps = {
   locale: Locale;
   visibleSites: SiteRecord[];
   selectedSiteId: string | null;
+  allowCaseCreation?: boolean;
   summary: SiteSummary | null;
   fastMode?: boolean;
   newCaseModeActive: boolean;
@@ -68,6 +69,7 @@ export function CaseWorkspaceLeftRail({
   locale,
   visibleSites,
   selectedSiteId,
+  allowCaseCreation = true,
   summary,
   fastMode = false,
   newCaseModeActive,
@@ -108,6 +110,7 @@ export function CaseWorkspaceLeftRail({
             variant={newCaseModeActive ? "primary" : "ghost"}
             aria-pressed={newCaseModeActive}
             data-state={newCaseModeActive ? "active" : "inactive"}
+            disabled={!allowCaseCreation}
             onClick={onStartNewCase}
           >
             {pick(locale, "New case", "새 케이스")}

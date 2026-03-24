@@ -1928,11 +1928,17 @@ class SiteStore:
                 continue
             sorted_cases = sorted(cases, key=_case_summary_sort_key, reverse=True)
             latest_case = sorted_cases[0]
+            representative_cases = [
+                item
+                for item in sorted_cases
+                if item.get("representative_image_id")
+            ]
             rows.append(
                 {
                     "patient_id": patient_id,
                     "latest_case": latest_case,
                     "case_count": case_counts.get(patient_id, len(sorted_cases)),
+                    "representative_thumbnail_count": len(representative_cases),
                     "organism_summary": _organism_summary_label(
                         str(latest_case.get("culture_category") or ""),
                         str(latest_case.get("culture_species") or ""),
@@ -1946,8 +1952,7 @@ class SiteStore:
                             "view": item.get("representative_view"),
                             "preview_url": None,
                         }
-                        for item in sorted_cases
-                        if item.get("representative_image_id")
+                        for item in representative_cases
                     ][:3],
                 }
             )

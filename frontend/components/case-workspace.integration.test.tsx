@@ -1803,6 +1803,79 @@ describe("CaseWorkspace integration", () => {
     );
   });
 
+  it("shows up to three representative thumbnails before collapsing the remainder into a +N badge", async () => {
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_4",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "fungal",
+            culture_species: "Candida",
+            additional_organisms: [],
+            visit_date: "FU #2",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-21T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-21T00:00:00Z",
+            image_count: 4,
+            representative_image_id: "image_4",
+            representative_view: "white",
+            age: 77,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: false,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+          case_count: 4,
+          representative_thumbnail_count: 4,
+          organism_summary: "Candida",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
+            },
+            {
+              case_id: "case_2",
+              image_id: "image_2",
+              view: "white",
+              preview_url: "/preview/image_2",
+              fallback_url: "/content/image_2",
+            },
+            {
+              case_id: "case_3",
+              image_id: "image_3",
+              view: "white",
+              preview_url: "/preview/image_3",
+              fallback_url: "/content/image_3",
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
+
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
+
+    expect(await screen.findByAltText("KERA-2026-001-case_1")).toBeInTheDocument();
+    expect(screen.getByAltText("KERA-2026-001-case_2")).toBeInTheDocument();
+    expect(screen.getByAltText("KERA-2026-001-case_3")).toBeInTheDocument();
+    expect(screen.queryByAltText("KERA-2026-001-case_4")).not.toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+  });
+
   it("shows patient timeline images even when image records only match by visit date", async () => {
     renderWorkspace();
     await openSavedCase();

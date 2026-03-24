@@ -1,4 +1,5 @@
 use super::*;
+use tauri_plugin_oauth::{start_with_config as start_oauth_with_config, OauthConfig};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct OpenDesktopPathRequest {
@@ -14,6 +15,40 @@ pub(super) struct PickDesktopDirectoryRequest {
 #[derive(Debug, Serialize)]
 pub(super) struct GoogleOAuthServerResponse {
     pub(super) port: u16,
+}
+
+fn google_oauth_browser_response_html() -> String {
+    [
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "<head>",
+        "<meta charset=\"utf-8\" />",
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+        "<title>K-ERA Sign-In Complete</title>",
+        "<style>",
+        "body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f6fb;color:#0f172a;display:grid;place-items:center;min-height:100vh;}",
+        ".card{max-width:440px;margin:24px;padding:24px 28px;border-radius:20px;background:#ffffff;box-shadow:0 18px 48px rgba(15,23,42,.12);text-align:center;}",
+        "h1{margin:0 0 12px;font-size:1.25rem;line-height:1.3;}",
+        "p{margin:0;color:#475569;line-height:1.6;}",
+        "</style>",
+        "<script>",
+        "window.addEventListener('load',()=>{",
+        "  window.setTimeout(()=>{",
+        "    window.open('', '_self');",
+        "    window.close();",
+        "  }, 450);",
+        "});",
+        "</script>",
+        "</head>",
+        "<body>",
+        "<div class=\"card\">",
+        "<h1>Sign-in complete</h1>",
+        "<p>Returning to K-ERA now. If this tab stays open, you can close it.</p>",
+        "</div>",
+        "</body>",
+        "</html>",
+    ]
+    .join("")
 }
 
 pub(super) fn open_path_in_shell(path: &Path) -> Result<(), String> {
@@ -117,7 +152,14 @@ pub(super) fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub(super) fn start_google_oauth_server(window: Window) -> Result<GoogleOAuthServerResponse, String> {
     let listener_window = window.clone();
-    let port = start_oauth(move |url| {
+    let config = OauthConfig {
+        ports: None,
+        response: Some(google_oauth_browser_response_html().into()),
+    };
+    let port = start_oauth_with_config(config, move |url| {
+        let _ = listener_window.unminimize();
+        let _ = listener_window.show();
+        let _ = listener_window.set_focus();
         let _ = listener_window.emit(GOOGLE_OAUTH_REDIRECT_EVENT, url);
     })
     .map_err(|error| error.to_string())?;

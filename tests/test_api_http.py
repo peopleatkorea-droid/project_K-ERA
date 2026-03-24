@@ -15,6 +15,8 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import jwt
 from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -38,6 +40,10 @@ def reload_app_module(
         "KERA_AUTH_DATABASE_URL",
         "KERA_DATA_PLANE_DATABASE_URL",
         "KERA_LOCAL_DATABASE_URL",
+        "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL",
+        "KERA_CONTROL_PLANE_LOCAL_DATABASE_URL",
+        "KERA_CONTROL_PLANE_API_BASE_URL",
+        "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL",
         "KERA_STORAGE_DIR",
         "KERA_STORAGE_STATE_FILE",
         "KERA_CONTROL_PLANE_DIR",
@@ -54,6 +60,7 @@ def reload_app_module(
         "KERA_ONEDRIVE_ROOT_PATH",
         "KERA_ONEDRIVE_SHARE_SCOPE",
         "KERA_ONEDRIVE_SHARE_TYPE",
+        "KERA_SKIP_LOCAL_ENV_FILE",
     ):
         os.environ.pop(env_name, None)
 
@@ -75,6 +82,7 @@ def reload_app_module(
     os.environ["KERA_CASE_REFERENCE_SALT"] = "test-case-reference-salt"
     os.environ["KERA_PATIENT_REFERENCE_SALT"] = "test-patient-reference-salt"
     os.environ["KERA_DISABLE_CASE_EMBEDDING_REFRESH"] = "true"
+    os.environ["KERA_SKIP_LOCAL_ENV_FILE"] = "1"
     if model_distribution_mode is not None:
         os.environ["KERA_MODEL_DISTRIBUTION_MODE"] = model_distribution_mode
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
@@ -1135,6 +1143,103 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(user)
         return self.app_module._create_access_token(user)
 
+    def test_auth_me_accepts_remote_control_plane_token_when_local_verification_fails(self):
+        remote_token = jwt.encode(
+            {
+                "sub": "remote_control_plane_user",
+                "username": "remote.user@example.com",
+            },
+            "wrong-shared-secret",
+            algorithm="HS256",
+        )
+        remote_client = Mock()
+        remote_client.is_configured.return_value = True
+        remote_client.main_auth_me.return_value = {
+            "access_token": "refreshed-token",
+            "token_type": "bearer",
+            "user": {
+                "user_id": "remote_control_plane_user",
+                "username": "remote.user@example.com",
+                "full_name": "Remote User",
+                "public_alias": None,
+                "role": "researcher",
+                "site_ids": [self.site_id],
+                "approval_status": "approved",
+                "registry_consents": {},
+            },
+        }
+
+        with patch.object(self.app_module, "RemoteControlPlaneClient", return_value=remote_client):
+            response = self.client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {remote_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["user_id"], "remote_control_plane_user")
+        self.assertEqual(response.json()["username"], "remote.user@example.com")
+        remote_client.main_auth_me.assert_called_once_with(user_bearer_token=remote_token)
+
+    def test_auth_login_proxies_to_remote_control_plane_when_remote_is_primary(self):
+        remote_token = jwt.encode(
+            {
+                "sub": "remote_admin_user",
+                "username": "admin",
+            },
+            "wrong-shared-secret",
+            algorithm="HS256",
+        )
+        remote_client = Mock()
+        remote_client.is_configured.return_value = True
+        remote_client.main_auth_login.return_value = {
+            "access_token": remote_token,
+            "token_type": "bearer",
+            "user": {
+                "user_id": "remote_admin_user",
+                "username": "admin",
+                "full_name": "Remote Admin",
+                "public_alias": None,
+                "role": "admin",
+                "site_ids": [],
+                "approval_status": "approved",
+                "registry_consents": {},
+            },
+        }
+        remote_client.main_auth_me.return_value = {
+            "access_token": remote_token,
+            "token_type": "bearer",
+            "user": {
+                "user_id": "remote_admin_user",
+                "username": "admin",
+                "full_name": "Remote Admin",
+                "public_alias": None,
+                "role": "admin",
+                "site_ids": [],
+                "approval_status": "approved",
+                "registry_consents": {},
+            },
+        }
+
+        self.app_module.get_control_plane()._resolve().remote_control_plane = remote_client
+
+        with patch.object(self.app_module, "RemoteControlPlaneClient", return_value=remote_client):
+            response = self.client.post("/api/auth/login", json={"username": "admin", "password": "Jnuh41133*"})
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["access_token"], remote_token)
+            remote_client.main_auth_login.assert_called_once_with(
+                payload_json={"username": "admin", "password": "Jnuh41133*"}
+            )
+
+            me_response = self.client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {remote_token}"},
+            )
+
+            self.assertEqual(me_response.status_code, 200, me_response.text)
+            self.assertEqual(me_response.json()["user_id"], "remote_admin_user")
+            remote_client.main_auth_me.assert_called_once_with(user_bearer_token=remote_token)
+
     def _make_test_image_bytes(self, image_format: str = "PNG", color: tuple[int, int, int] = (32, 96, 160)) -> bytes:
         buffer = io.BytesIO()
         Image.new("RGB", (24, 24), color=color).save(buffer, format=image_format)
@@ -1167,11 +1272,20 @@ class ApiHttpTests(unittest.TestCase):
             self.assertTrue(mocked_init.called)
 
     def test_local_login_is_restricted_to_admin_and_site_admin_http(self):
-        researcher_response = self.client.post("/api/auth/login", json={"username": "http_researcher", "password": "research123"})
+        local_headers = {"x-kera-control-plane-owner": "local"}
+        researcher_response = self.client.post(
+            "/api/auth/login",
+            headers=local_headers,
+            json={"username": "http_researcher", "password": "research123"},
+        )
         self.assertEqual(researcher_response.status_code, 403, researcher_response.text)
         self.assertIn("admin and site admin accounts", researcher_response.text)
 
-        site_admin_response = self.client.post("/api/auth/login", json={"username": "http_site_admin", "password": "siteadmin123"})
+        site_admin_response = self.client.post(
+            "/api/auth/login",
+            headers=local_headers,
+            json={"username": "http_site_admin", "password": "siteadmin123"},
+        )
         self.assertEqual(site_admin_response.status_code, 200, site_admin_response.text)
         self.assertEqual(site_admin_response.json()["user"]["role"], "site_admin")
 

@@ -53,7 +53,10 @@ def _default_local_control_plane_cache_url() -> str:
 
 
 def _control_plane_remote_api_enabled() -> bool:
-    return bool((os.getenv("KERA_CONTROL_PLANE_API_BASE_URL") or "").strip())
+    return bool(
+        (os.getenv("KERA_CONTROL_PLANE_API_BASE_URL") or os.getenv("NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL") or "")
+        .strip()
+    )
 
 
 def _resolve_control_plane_database_url() -> str:

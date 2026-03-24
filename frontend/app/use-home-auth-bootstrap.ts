@@ -151,7 +151,7 @@ export function useHomeAuthBootstrap({
   }, [applyApprovedWorkspaceState]);
 
   useEffect(() => {
-    if (!token || !user || approved) {
+    if (!token || !user) {
       return;
     }
     void fetchPublicSites()
@@ -168,7 +168,7 @@ export function useHomeAuthBootstrap({
   }, [approved, applyApprovedWorkspaceState, copy.unableLoadInstitutions, describeError, setRequestForm, token, user]);
 
   useEffect(() => {
-    if (!token || !user || approved) {
+    if (!token || !user) {
       setPublicInstitutions([]);
       setInstitutionSearchBusy(false);
       return;
@@ -384,7 +384,7 @@ export function useHomeAuthBootstrap({
         setToken(refreshedToken);
       }
       setUser(response.user);
-      if (response.user.approval_status === "approved") {
+      if (response.user.approval_status === "approved" && response.request.status === "approved") {
         const preferredSiteId = response.request.resolved_site_id || response.request.requested_site_id;
         setMyRequests([]);
         applyApprovedWorkspaceState(response.user, { preferredSiteId });
@@ -392,6 +392,11 @@ export function useHomeAuthBootstrap({
         setMyRequests(nextRequests);
         const nextSites = await refreshApprovedSites(refreshedToken, { preferredSiteId });
         applyApprovedWorkspaceState(response.user, { preferredSiteId, sites: nextSites });
+      } else if (response.user.approval_status === "approved") {
+        const nextRequests = await fetchMyAccessRequests(refreshedToken);
+        setMyRequests(nextRequests);
+        const nextSites = await refreshApprovedSites(refreshedToken);
+        applyApprovedWorkspaceState(response.user, { sites: nextSites });
       } else {
         clearApprovedWorkspaceState();
         const nextRequests = await fetchMyAccessRequests(refreshedToken);

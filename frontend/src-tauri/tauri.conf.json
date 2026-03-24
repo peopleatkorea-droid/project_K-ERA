@@ -56,7 +56,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../.desktop-runtime/python-runtime": "python-runtime",
+      "../.desktop-runtime-bundle/python-runtime.zip": "python-runtime.zip",
       "../../app.py": "backend/app.py",
       "../../src": "backend/src",
       "../../MedSAM-main": "backend/MedSAM-main"

@@ -351,6 +351,7 @@ type CaseWorkspaceProps = {
   onExportManifest: () => void;
   onLogout: () => void;
   onOpenOperations: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
+  onOpenHospitalAccessRequest?: () => void;
   onOpenDesktopSettings?: () => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onToggleTheme: () => void;
@@ -792,6 +793,7 @@ export function CaseWorkspace({
   onExportManifest,
   onLogout,
   onOpenOperations,
+  onOpenHospitalAccessRequest,
   onOpenDesktopSettings,
   onSiteDataChanged,
   onToggleTheme,
@@ -1652,6 +1654,10 @@ export function CaseWorkspace({
   }
 
   function startNewCaseDraft() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForCase });
+      return;
+    }
     setEditingCaseContext(null);
     if (hasDraftContent(draft) || draftImages.length > 0) {
       setRailView("cases");
@@ -3127,6 +3133,7 @@ export function CaseWorkspace({
         locale={locale}
         visibleSites={visibleSites}
         selectedSiteId={selectedSiteId}
+        allowCaseCreation={Boolean(selectedSiteId)}
         summary={summary}
         fastMode={desktopFastMode}
         newCaseModeActive={newCaseModeActive}
@@ -3240,6 +3247,13 @@ export function CaseWorkspace({
             <Button variant="ghost" type="button" onClick={onToggleTheme}>
               {theme === "dark" ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶") : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}
             </Button>
+            {onOpenHospitalAccessRequest ? (
+              <Button variant="ghost" type="button" onClick={onOpenHospitalAccessRequest}>
+                {selectedSiteId
+                  ? pick(locale, "Request hospital change", "병원 변경 요청")
+                  : pick(locale, "Request hospital access", "병원 접근 요청")}
+              </Button>
+            ) : null}
             {canOpenOperations ? (
               <Button variant="ghost" type="button" onClick={() => onOpenOperations()}>
                 {pick(locale, "Operations", "?댁쁺 ?붾㈃")}
@@ -3428,6 +3442,34 @@ export function CaseWorkspace({
               </>
             ) : null}
           </section>
+          ) : !selectedSiteId ? (
+            <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
+              <SectionHeader
+                className={docSectionHeadClass}
+                eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Hospital access", "병원 접근")}</div>}
+                title={pick(locale, "Choose or request a hospital before creating a case", "케이스 생성 전에 병원을 선택하거나 요청하세요")}
+                titleAs="h4"
+                description={pick(
+                  locale,
+                  "Case authoring is blocked until a hospital workspace is linked to this session.",
+                  "현재 세션에 병원 워크스페이스가 연결되기 전에는 케이스 작성을 막습니다.",
+                )}
+                aside={
+                  onOpenHospitalAccessRequest ? (
+                    <Button type="button" variant="ghost" onClick={onOpenHospitalAccessRequest}>
+                      {pick(locale, "Open hospital request", "병원 요청 열기")}
+                    </Button>
+                  ) : null
+                }
+              />
+              <div className={emptySurfaceClass}>
+                {pick(
+                  locale,
+                  "Select an approved hospital or submit a hospital change request first. Patient, visit, and image authoring stay disabled until then.",
+                  "승인된 병원을 선택하거나 병원 변경 요청을 먼저 제출하세요. 그전까지는 환자, 방문, 이미지 작성이 비활성화됩니다.",
+                )}
+              </div>
+            </section>
           ) : (
             <CaseWorkspaceAuthoringCanvas
               locale={locale}

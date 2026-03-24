@@ -436,6 +436,42 @@ describe("HomePage history guard", () => {
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
   });
 
+  it("routes approved users without linked hospitals back to the institution request screen", async () => {
+    const approvedTokenWithoutSite = makeStoredToken({
+      site_ids: [],
+      approval_status: "approved",
+    });
+    window.localStorage.setItem("kera_web_token", approvedTokenWithoutSite);
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "approved",
+      access_token: approvedTokenWithoutSite,
+      token_type: "bearer",
+      user: {
+        user_id: "user_researcher",
+        username: "researcher",
+        full_name: "Researcher",
+        role: "researcher",
+        site_ids: [],
+        approval_status: "approved",
+      },
+      sites: [],
+      my_access_requests: [],
+    });
+    apiMocks.fetchPublicSites.mockResolvedValueOnce([
+      {
+        site_id: "SITE_B",
+        display_name: "Site B",
+        hospital_name: "Hospital B",
+      },
+    ]);
+
+    render(<HomePage />);
+
+    expect(await screen.findByText("No institution request submitted yet.")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Submit institution request" })).toBeInTheDocument();
+    expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
+  });
+
   it("opens the admin workspace when an approved admin lands on the operations route", async () => {
     const adminToken = makeStoredToken({
       sub: "user_admin",

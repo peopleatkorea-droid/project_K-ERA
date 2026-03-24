@@ -24,8 +24,8 @@ const releaseDir = path.join(srcTauriDir, "target", "release");
 const bundleOutputDir = path.join(releaseDir, "bundle");
 const nsisWorkDir = path.join(releaseDir, "nsis");
 const runtimeCacheDir = path.join(frontendRoot, ".desktop-runtime", "python-runtime");
-const runtimeSnapshotRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
-const runtimeSnapshotDir = path.join(runtimeSnapshotRoot, "python-runtime");
+const runtimeBundleRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
+const runtimeArchivePath = path.join(runtimeBundleRoot, "python-runtime.zip");
 const repoPythonSourceDir = path.resolve(frontendRoot, "..", "src");
 const devCargoTargetDir = path.join(os.tmpdir(), "kera-tauri-dev", "target");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
@@ -143,30 +143,13 @@ function runChecked(command, args) {
   }
 }
 
-function copyDirectorySnapshot(sourceDir, destinationDir) {
-  const attempts = 6;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      fs.rmSync(destinationDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
-      fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
-      fs.cpSync(sourceDir, destinationDir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (attempt === attempts) {
-        throw error;
-      }
-      stopRunningReleaseArtifacts();
-      sleep(750 * attempt);
-    }
-  }
-}
-
 function prepareBuildConfig() {
   if (!fs.existsSync(runtimeCacheDir)) {
     throw new Error(`Desktop runtime cache was not found: ${runtimeCacheDir}`);
   }
-  copyDirectorySnapshot(runtimeCacheDir, runtimeSnapshotDir);
-  removePythonBytecodeCaches(runtimeSnapshotDir);
+  if (!fs.existsSync(runtimeArchivePath)) {
+    throw new Error(`Desktop runtime archive was not found: ${runtimeArchivePath}`);
+  }
   const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, "utf8"));
   const configuredTargets = Array.isArray(tauriConfig.bundle?.targets) ? tauriConfig.bundle.targets : [];
   const resolvedTargets = buildVariant === "gpu" ? ["msi"] : configuredTargets;
@@ -184,7 +167,7 @@ function prepareBuildConfig() {
         : false,
       resources: {
         ...(tauriConfig.bundle?.resources ?? {}),
-        "../.desktop-runtime/python-runtime": "../.desktop-runtime-bundle/python-runtime",
+        "../.desktop-runtime-bundle/python-runtime.zip": "python-runtime.zip",
       },
     },
   };

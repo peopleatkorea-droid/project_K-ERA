@@ -226,6 +226,7 @@ export default function HomePage() {
     requested_role: "researcher",
     message: "",
   });
+  const [accessRequestMode, setAccessRequestMode] = useState(false);
   const [institutionQuery, setInstitutionQuery] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("management");
@@ -796,6 +797,40 @@ export default function HomePage() {
     selectedExistingSite && !filteredExistingSites.some((site) => site.site_id === selectedExistingSite.site_id)
       ? [selectedExistingSite, ...filteredExistingSites]
       : filteredExistingSites;
+  const approvedButUnassigned = Boolean(token && user && approved && sites.length === 0);
+  const showAccessRequestScreen = Boolean(token && user && (!approved || accessRequestMode || approvedButUnassigned));
+  const accessRequestEyebrow = approved
+    ? pick(locale, approvedButUnassigned ? "Hospital setup" : "Hospital change", approvedButUnassigned ? "병원 연결" : "병원 변경")
+    : copy.approvalRequired;
+  const accessRequestTitle = approved
+    ? pick(
+        locale,
+        approvedButUnassigned ? "Connect your hospital workspace" : "Request a hospital change",
+        approvedButUnassigned ? "병원 워크스페이스 연결" : "병원 변경 요청",
+      )
+    : copy.institutionAccessRequest;
+  const accessRequestDescription = approved
+    ? pick(
+        locale,
+        approvedButUnassigned
+          ? "Your account is approved, but no hospital is linked yet. Choose the hospital you need before entering the case workspace."
+          : "Choose the hospital you want next. Existing access stays active until the new request is reviewed.",
+        approvedButUnassigned
+          ? "계정은 승인되었지만 아직 연결된 병원이 없습니다. 케이스 워크스페이스에 들어가기 전에 필요한 병원을 선택하세요."
+          : "다음에 사용할 병원을 선택하세요. 새 요청이 검토될 때까지 기존 접근 권한은 유지됩니다.",
+      )
+    : copy.signedInAs(user?.full_name ?? "", user?.username ?? "");
+  const accessRequestStatusBody = approved
+    ? pick(
+        locale,
+        approvedButUnassigned
+          ? "Hospital access is required before case authoring, uploads, and review can open."
+          : "A hospital change request does not revoke your current access immediately. Review and reassignment stay audited.",
+        approvedButUnassigned
+          ? "병원 접근이 연결되기 전에는 케이스 작성, 업로드, 검토를 열 수 없습니다."
+          : "병원 변경 요청은 현재 접근 권한을 즉시 제거하지 않습니다. 검토와 재배정은 감사 가능하게 유지됩니다.",
+      )
+    : copy.approvedBody;
 
   useEffect(() => {
     function syncGoogleButtonWidth() {
@@ -914,6 +949,7 @@ export default function HomePage() {
 
   function handleWorkspaceLogout() {
     handleLogout();
+    setAccessRequestMode(false);
     setWorkspaceMode("canvas");
     setOperationsSection("management");
   }
@@ -985,7 +1021,7 @@ export default function HomePage() {
     );
   }
 
-  if (!approved) {
+  if (showAccessRequestScreen) {
     return (
       <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto flex w-full max-w-6xl justify-end">
@@ -996,15 +1032,22 @@ export default function HomePage() {
             <SectionHeader
               eyebrow={
                 <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
-                  {copy.approvalRequired}
+                  {accessRequestEyebrow}
                 </span>
               }
-              title={copy.institutionAccessRequest}
-              description={copy.signedInAs(user.full_name, user.username)}
+              title={accessRequestTitle}
+              description={accessRequestDescription}
               aside={
-                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
-                  {copy.logOut}
-                </Button>
+                <div className="flex items-center gap-2">
+                  {approved && accessRequestMode && sites.length > 0 ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setAccessRequestMode(false)}>
+                      {pick(locale, "Back to workspace", "워크스페이스로 돌아가기")}
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
+                    {copy.logOut}
+                  </Button>
+                </div>
               }
             />
 
@@ -1019,7 +1062,7 @@ export default function HomePage() {
                 <SectionHeader
                   titleAs="h4"
                   title={copy.currentStatus}
-                  description={statusCopy(locale, user.approval_status)}
+                  description={approved ? accessRequestStatusBody : statusCopy(locale, user.approval_status)}
                   aside={
                     <span
                       className={cn(
@@ -1038,7 +1081,7 @@ export default function HomePage() {
                     </span>
                   }
                 />
-                <p className="m-0 text-sm leading-6 text-muted">{copy.approvedBody}</p>
+                <p className="m-0 text-sm leading-6 text-muted">{accessRequestStatusBody}</p>
                 {myRequests.length === 0 ? (
                   <div className="rounded-[20px] border border-dashed border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
                     {copy.noInstitutionRequest}
@@ -1258,6 +1301,7 @@ export default function HomePage() {
         onSelectSite={setSelectedSiteId}
         onExportManifest={handleManifestDownload}
         onLogout={handleWorkspaceLogout}
+        onOpenHospitalAccessRequest={() => setAccessRequestMode(true)}
         onOpenOperations={(section) => {
           setOperationsSection(section ?? "management");
           setWorkspaceMode("operations");

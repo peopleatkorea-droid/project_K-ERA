@@ -367,6 +367,7 @@ export async function submitMainAccessRequest(
   const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   const requestedRole = "researcher";
   const requestedSiteId = trimText(payload.requested_site_id);
+  const existingSiteIds = new Set(normalizeStringArray(user.site_ids));
   if (!requestedSiteId) {
     throw new Error("Requested institution is required.");
   }
@@ -377,6 +378,10 @@ export async function submitMainAccessRequest(
   }
   const mappedSite = site ? null : await siteRowBySourceInstitutionId(requestedSiteId);
   const resolvedSite = site ?? mappedSite;
+  const resolvedSiteId = resolvedSite ? trimText(rowValue<string>(resolvedSite, "site_id")) : "";
+  if (existingSiteIds.has(requestedSiteId) || (resolvedSiteId && existingSiteIds.has(resolvedSiteId))) {
+    throw new Error("You already have access to this hospital.");
+  }
   const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
   if (latestRequest?.status === "pending") {
     throw new Error("There is already a pending approval request for this user.");
@@ -399,8 +404,7 @@ export async function submitMainAccessRequest(
     reviewed_at: null,
   };
   await upsertAccessRequestRecord(canonicalUserId, legacyEmailForLocalUser(user), requestRecord);
-  if (resolvedSite) {
-    const resolvedSiteId = rowValue<string>(resolvedSite, "site_id");
+  if (resolvedSite && existingSiteIds.size === 0) {
     const sql = await controlPlaneSql();
     await sql`
       insert into site_memberships (

@@ -4,6 +4,14 @@ const requireMainAppBridgeUser = vi.hoisted(() => vi.fn());
 const controlPlaneSql = vi.hoisted(() => vi.fn());
 const buildLocalAuthResponse = vi.hoisted(() => vi.fn());
 const listAccessRequestsForCanonicalUser = vi.hoisted(() => vi.fn());
+const institutionRowById = vi.hoisted(() => vi.fn());
+const latestAccessRequestForCanonicalUser = vi.hoisted(() => vi.fn());
+const siteRowById = vi.hoisted(() => vi.fn());
+const siteRowBySourceInstitutionId = vi.hoisted(() => vi.fn());
+const upsertAccessRequestRecord = vi.hoisted(() => vi.fn());
+const buildLegacyAuthUser = vi.hoisted(() => vi.fn());
+const buildMainAuthResponse = vi.hoisted(() => vi.fn());
+const legacyEmailForLocalUser = vi.hoisted(() => vi.fn());
 
 vi.mock("server-only", () => ({}));
 
@@ -59,8 +67,8 @@ vi.mock("./main-app-bridge-public", () => ({
 
 vi.mock("./main-app-bridge-records", () => ({
   ensureDefaultProject: vi.fn(),
-  institutionRowById: vi.fn(),
-  latestAccessRequestForCanonicalUser: vi.fn(),
+  institutionRowById,
+  latestAccessRequestForCanonicalUser,
   listAccessRequestsForCanonicalUser,
   serializeSiteRecord: (row: Record<string, unknown>) => {
     const siteId = typeof row.site_id === "string" ? row.site_id : "";
@@ -85,15 +93,15 @@ vi.mock("./main-app-bridge-records", () => ({
       ...(sourceInstitutionName ? { source_institution_name: sourceInstitutionName } : {}),
     };
   },
-  siteRowById: vi.fn(),
-  siteRowBySourceInstitutionId: vi.fn(),
-  upsertAccessRequestRecord: vi.fn(),
+  siteRowById,
+  siteRowBySourceInstitutionId,
+  upsertAccessRequestRecord,
 }));
 
 vi.mock("./main-app-bridge-users", () => ({
   authenticateMainAppUser: vi.fn(),
-  buildLegacyAuthUser: vi.fn(),
-  buildMainAuthResponse: vi.fn(),
+  buildLegacyAuthUser,
+  buildMainAuthResponse,
   canonicalUserRowById: vi.fn(),
   requireMainAppBridgeUser,
 }));
@@ -101,7 +109,7 @@ vi.mock("./main-app-bridge-users", () => ({
 vi.mock("./main-app-bridge-shared", () => ({
   buildLocalAuthResponse,
   fetchLegacyLocalNodeApi: vi.fn(),
-  legacyEmailForLocalUser: vi.fn(),
+  legacyEmailForLocalUser,
   normalizeRegistryConsents: (value: unknown) => value ?? {},
   normalizeStringArray: (value: unknown) =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [],
@@ -114,7 +122,7 @@ vi.mock("./store", () => ({
   ensureControlPlaneIdentity: vi.fn(),
 }));
 
-import { fetchMainBootstrap, fetchSitesForMainUser } from "./main-app-bridge";
+import { fetchMainBootstrap, fetchSitesForMainUser, submitMainAccessRequest } from "./main-app-bridge";
 
 describe("fetchSitesForMainUser", () => {
   beforeEach(() => {
@@ -388,6 +396,69 @@ describe("fetchSitesForMainUser", () => {
       user: pendingUser,
       sites: [],
       my_access_requests: requests,
+    });
+  });
+
+  it("keeps hospital change requests pending for users who already have site access", async () => {
+    const currentUser = {
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    };
+    const pendingRequest = {
+      request_id: "access_change_1",
+      user_id: "user_researcher",
+      email: "researcher@example.com",
+      requested_site_id: "SITE_B",
+      requested_site_label: "Hospital B",
+      requested_site_source: "site",
+      requested_role: "researcher",
+      message: "Switch me to Hospital B",
+      status: "pending",
+      reviewed_by: null,
+      reviewer_notes: "",
+      created_at: "2026-03-24T00:00:00Z",
+      reviewed_at: null,
+    };
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_researcher",
+      user: currentUser,
+    });
+    siteRowById.mockResolvedValue({
+      site_id: "SITE_B",
+      display_name: "Site B",
+      hospital_name: "Hospital B",
+    });
+    institutionRowById.mockResolvedValue(null);
+    siteRowBySourceInstitutionId.mockResolvedValue(null);
+    latestAccessRequestForCanonicalUser.mockResolvedValue(null);
+    legacyEmailForLocalUser.mockReturnValue("researcher@example.com");
+    buildLegacyAuthUser.mockResolvedValue(currentUser);
+    buildMainAuthResponse.mockResolvedValue({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: currentUser,
+    });
+    listAccessRequestsForCanonicalUser.mockResolvedValue([pendingRequest]);
+
+    const result = await submitMainAccessRequest({} as never, {
+      requested_site_id: "SITE_B",
+      requested_role: "researcher",
+      message: "Switch me to Hospital B",
+    });
+
+    expect(upsertAccessRequestRecord).toHaveBeenCalledTimes(1);
+    expect(controlPlaneSql).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: currentUser,
+      request: pendingRequest,
     });
   });
 });

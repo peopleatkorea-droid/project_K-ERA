@@ -304,6 +304,7 @@ export type PatientListRowRecord = {
   patient_id: string;
   latest_case: CaseSummaryRecord;
   case_count: number;
+  representative_thumbnail_count?: number;
   organism_summary: string;
   representative_thumbnails: PatientListThumbnailRecord[];
 };

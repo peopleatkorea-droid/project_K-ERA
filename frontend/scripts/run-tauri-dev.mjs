@@ -30,6 +30,7 @@ if (!env.CARGO_TARGET_DIR) {
 const cargoTargetDir = path.resolve(env.CARGO_TARGET_DIR);
 const repoPythonSourceDir = path.resolve(process.cwd(), "..", "src");
 const runtimeCacheDir = path.resolve(process.cwd(), ".desktop-runtime", "python-runtime");
+const runtimeArchivePath = path.resolve(process.cwd(), ".desktop-runtime-bundle", "python-runtime.zip");
 
 if (!env.CARGO_BUILD_JOBS) {
   env.CARGO_BUILD_JOBS = String(Math.max(1, Math.min(os.cpus().length, 4)));
@@ -37,6 +38,14 @@ if (!env.CARGO_BUILD_JOBS) {
 
 if (!env.KERA_DESKTOP_RUNTIME_MODE) {
   env.KERA_DESKTOP_RUNTIME_MODE = "dev";
+}
+
+if (!env.KERA_DESKTOP_LOCAL_BACKEND_PYTHON) {
+  env.KERA_DESKTOP_LOCAL_BACKEND_PYTHON = path.join(runtimeCacheDir, "python.exe");
+}
+
+if (!env.KERA_DESKTOP_BACKEND_ROOT) {
+  env.KERA_DESKTOP_BACKEND_ROOT = path.resolve(process.cwd(), "..");
 }
 
 if (!env.KERA_NEXT_DEV_CLEAN) {
@@ -111,8 +120,31 @@ function removePythonBytecodeCaches(rootDir) {
   }
 }
 
+function ensureRuntimeArchiveExists() {
+  if (fs.existsSync(runtimeArchivePath)) {
+    return;
+  }
+  const result =
+    process.platform === "win32"
+      ? spawnSync("cmd.exe", ["/d", "/s", "/c", "node ./scripts/prepare-embedded-python.mjs"], {
+          stdio: "inherit",
+          env,
+        })
+      : spawnSync("node", ["./scripts/prepare-embedded-python.mjs"], {
+          stdio: "inherit",
+          env,
+        });
+  if (result.error) {
+    throw result.error;
+  }
+  if (typeof result.status === "number" && result.status !== 0) {
+    process.exit(result.status);
+  }
+}
+
 console.log(`Cleaning up previous Tauri and ${useNextDev ? "Next" : "desktop-shell"} dev processes...`);
 cleanupDevProcesses();
+ensureRuntimeArchiveExists();
 if (cleanPythonBytecode) {
   removePythonBytecodeCaches(repoPythonSourceDir);
 }

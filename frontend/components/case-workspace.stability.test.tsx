@@ -301,4 +301,38 @@ describe("CaseWorkspace stability", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
+
+  it("blocks case authoring when no hospital workspace is selected", async () => {
+    render(
+      <LocaleProvider>
+        <CaseWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin",
+            role: "admin",
+            site_ids: [],
+            approval_status: "approved",
+          }}
+          sites={[]}
+          selectedSiteId={null}
+          summary={null}
+          canOpenOperations
+          theme="light"
+          onSelectSite={vi.fn()}
+          onExportManifest={vi.fn()}
+          onLogout={vi.fn()}
+          onOpenHospitalAccessRequest={vi.fn()}
+          onOpenOperations={vi.fn()}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "New case" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Request hospital access" })).toBeInTheDocument();
+    expect(screen.queryByText("Case authoring is blocked until a hospital workspace is linked to this session.")).not.toBeInTheDocument();
+  });
 });

@@ -26,6 +26,7 @@ def reload_app_module(
     control_plane_artifact_dir: Path,
     model_distribution_mode: str = "local_path",
     control_plane_api_base_url: str | None = None,
+    next_public_control_plane_api_base_url: str | None = None,
     local_control_plane_db_path: Path | None = None,
     data_plane_database_url: str | None = None,
     storage_dir: Path | None = None,
@@ -41,6 +42,7 @@ def reload_app_module(
         "KERA_LOCAL_CONTROL_PLANE_DATABASE_URL",
         "KERA_CONTROL_PLANE_LOCAL_DATABASE_URL",
         "KERA_CONTROL_PLANE_API_BASE_URL",
+        "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL",
         "KERA_STORAGE_DIR",
         "KERA_STORAGE_STATE_FILE",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
@@ -58,6 +60,8 @@ def reload_app_module(
     os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
     if control_plane_api_base_url is not None:
         os.environ["KERA_CONTROL_PLANE_API_BASE_URL"] = control_plane_api_base_url
+    if next_public_control_plane_api_base_url is not None:
+        os.environ["NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL"] = next_public_control_plane_api_base_url
     if local_control_plane_db_path is not None:
         os.environ["KERA_LOCAL_CONTROL_PLANE_DATABASE_URL"] = f"sqlite:///{local_control_plane_db_path.as_posix()}"
     if storage_dir is not None:
@@ -357,6 +361,25 @@ class ControlPlaneRegressionTests(unittest.TestCase):
             )
 
         self.assertIn("requires KERA_DATA_PLANE_DATABASE_URL", str(ctx.exception))
+
+    def test_next_public_control_plane_api_base_url_enables_remote_cache_mode(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        self.app_module = reload_app_module(
+            Path(self.tempdir.name) / "remote_data_plane_next_public.db",
+            control_plane_artifact_dir=Path(self.tempdir.name) / "remote_control_artifacts_next_public",
+            next_public_control_plane_api_base_url="https://control-plane.example.test",
+            local_control_plane_db_path=Path(self.tempdir.name) / "remote_control_plane_next_public.db",
+            storage_dir=Path(self.tempdir.name) / "remote_storage_next_public",
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        config_module = sys.modules["kera_research.config"]
+        self.cp = self.app_module.ControlPlaneStore()
+
+        self.assertEqual(config_module.CONTROL_PLANE_API_BASE_URL, "https://control-plane.example.test")
+        self.assertEqual(self.db_module.DATABASE_TOPOLOGY["control_plane_connection_mode"], "remote_api_cache")
+        self.assertTrue(self.cp.remote_control_plane_enabled())
 
     def test_site_store_keeps_local_storage_override_even_when_remote_control_plane_is_present(self) -> None:
         self._reload_remote_control_plane_app()

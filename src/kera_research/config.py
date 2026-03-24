@@ -227,7 +227,17 @@ MODEL_AUTO_DOWNLOAD = (os.getenv("KERA_MODEL_AUTO_DOWNLOAD", "").strip().lower()
 MODEL_KEEP_VERSIONS = max(1, int(os.getenv("KERA_MODEL_KEEP_VERSIONS", "").strip() or "2"))
 MODEL_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("KERA_MODEL_DOWNLOAD_TIMEOUT_SECONDS", "").strip() or "300")
 MODEL_DISTRIBUTION_MODE = os.getenv("KERA_MODEL_DISTRIBUTION_MODE", "").strip().lower() or "local_path"
-CONTROL_PLANE_API_BASE_URL = os.getenv("KERA_CONTROL_PLANE_API_BASE_URL", "").strip().rstrip("/")
+
+
+def _resolve_control_plane_api_base_url() -> str:
+    for env_name in ("KERA_CONTROL_PLANE_API_BASE_URL", "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL"):
+        value = os.getenv(env_name, "").strip().rstrip("/")
+        if value:
+            return value
+    return ""
+
+
+CONTROL_PLANE_API_BASE_URL = _resolve_control_plane_api_base_url()
 CONTROL_PLANE_NODE_ID = os.getenv("KERA_CONTROL_PLANE_NODE_ID", "").strip()
 CONTROL_PLANE_NODE_TOKEN = os.getenv("KERA_CONTROL_PLANE_NODE_TOKEN", "").strip()
 CONTROL_PLANE_API_TIMEOUT_SECONDS = float(os.getenv("KERA_CONTROL_PLANE_API_TIMEOUT_SECONDS", "").strip() or "30")

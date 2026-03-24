@@ -23,12 +23,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, Window};
-use tauri_plugin_oauth::{cancel as cancel_oauth, start as start_oauth};
+use tauri_plugin_oauth::cancel as cancel_oauth;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 mod desktop_diagnostics;
+mod desktop_bundled_runtime;
 mod desktop_analysis_commands;
 mod desktop_artifact_helpers;
 mod desktop_command_helpers;
@@ -51,6 +52,7 @@ mod desktop_shell_bridge;
 mod desktop_site_activity;
 
 use desktop_diagnostics::*;
+use desktop_bundled_runtime::*;
 use desktop_analysis_commands::*;
 use desktop_artifact_helpers::*;
 use desktop_command_helpers::*;
@@ -100,6 +102,8 @@ fn main() {
             if let Ok(path) = app.path().resource_dir() {
                 store_desktop_resource_dir(path);
             }
+            ensure_bundled_python_runtime_ready()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             // Ensure SQLite performance indexes exist (no-op if already present)
             ensure_data_plane_indexes();
             Ok(())

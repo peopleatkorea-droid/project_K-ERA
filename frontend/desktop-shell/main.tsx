@@ -30,6 +30,7 @@ import {
   type DesktopAppConfigValues,
 } from "../lib/desktop-app-config";
 import { ensureDesktopLocalRuntimeReady } from "../lib/desktop-diagnostics";
+import { stopDesktopLocalRuntime } from "../lib/desktop-diagnostics";
 import { authenticateWithDesktopGoogle } from "../lib/desktop-google-auth";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
 import { ThemeProvider, useTheme } from "../lib/theme";
@@ -80,13 +81,31 @@ function DesktopShellApp() {
       "이 데스크톱 앱은 승인된 로컬 워크스페이스 계정만 엽니다. 접근 요청과 중앙 운영은 웹 관리자 앱에서 진행하세요.",
     ),
     signOut: pick(locale, "Sign out", "로그아웃"),
-    adminLoginTitle: pick(locale, "Admin sign-in", "관리자 로그인"),
-    adminLoginDescription: pick(locale, "Password sign-in for admin and site admin accounts.", "admin 및 site admin 계정 비밀번호 로그인입니다."),
-    adminUsername: pick(locale, "Username", "사용자명"),
+    adminLoginEyebrow: pick(locale, "Operator Sign-In", "운영 계정 로그인"),
+    adminLoginPanelTitle: pick(locale, "Admin Access", "관리자 접근"),
+    adminLoginTitle: pick(locale, "Local admin / site admin sign-in", "로컬 admin / site admin 로그인"),
+    adminLoginDescription: pick(
+      locale,
+      "Use this path for admin and site admin accounts. Research users should return to Google sign-in.",
+      "이 경로는 admin 및 site admin 계정 전용입니다. 연구 사용자는 Google 로그인으로 돌아가야 합니다."
+    ),
+    adminUsername: pick(locale, "Username", "아이디"),
     adminPassword: pick(locale, "Password", "비밀번호"),
-    adminSubmit: pick(locale, "Sign in", "로그인"),
+    adminSubmit: pick(locale, "Enter operator workspace", "운영 계정으로 입장"),
     adminSubmitting: pick(locale, "Signing in...", "로그인 중..."),
-    adminCancel: pick(locale, "Cancel", "취소"),
+    adminBackToMain: pick(locale, "Back to Google sign-in", "Google 로그인으로 돌아가기"),
+    adminSafetyTitle: pick(locale, "Restricted entry", "제한된 진입"),
+    adminSafetyBody: pick(
+      locale,
+      "This route bypasses the standard researcher flow. Use it only for operational accounts.",
+      "이 경로는 일반 연구자 흐름을 우회합니다. 운영 계정에만 사용하세요."
+    ),
+    adminSafetyFootnote: pick(
+      locale,
+      "Admin and site admin accounts should sign in here with passwords.",
+      "admin 및 site admin 계정은 이곳에서 비밀번호로 로그인해야 합니다."
+    ),
+    researchUserSignIn: pick(locale, "Research user sign-in", "연구 사용자 로그인"),
     settingsTitle: pick(locale, "Desktop settings", "데스크톱 설정"),
     settingsDescription: pick(
       locale,
@@ -271,11 +290,18 @@ function DesktopShellApp() {
     }
   }
 
+  function closeAdminLogin() {
+    setAdminLoginOpen(false);
+    setError(null);
+    setAdminForm({ username: "", password: "" });
+  }
+
   async function handleAdminLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthBusy(true);
     setError(null);
     try {
+      await stopDesktopLocalRuntime().catch(() => null);
       await loadDesktopRuntime(true);
       const auth = await desktopLocalLogin(adminForm.username.trim(), adminForm.password);
       persistDesktopSession(auth.access_token);
@@ -505,46 +531,82 @@ function DesktopShellApp() {
 
   if (!token && adminLoginOpen) {
     return (
-      <main className="min-h-screen bg-[#0d0f14] px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-sm gap-5">
-          {screenError ? (
-            <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">{screenError}</div>
-          ) : null}
-          <Card as="section" variant="surface" className="grid gap-5 p-6">
-            <form className="grid gap-5" onSubmit={handleAdminLogin}>
-              <SectionHeader title={copy.adminLoginTitle} description={copy.adminLoginDescription} />
-              <Field as="div" label={copy.adminUsername} htmlFor="admin-username" unstyledControl>
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_36%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-6xl justify-end">
+          <LocaleToggle />
+        </div>
+
+        <section className="mx-auto mt-6 grid w-full max-w-6xl gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+          <Card as="article" variant="surface" className="flex min-h-[540px] flex-col justify-between gap-8 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {copy.adminLoginEyebrow}
+                </span>
+              }
+              title={copy.adminLoginPanelTitle}
+              description={copy.adminLoginDescription}
+            />
+
+            <div className="grid gap-4">
+              <Card as="div" variant="nested" className="grid gap-3 p-5">
+                <strong className="text-sm font-semibold text-ink">{copy.adminSafetyTitle}</strong>
+                <p className="m-0 text-sm leading-6 text-muted">{copy.adminSafetyBody}</p>
+                <p className="m-0 text-sm leading-6 text-muted">{copy.adminSafetyFootnote}</p>
+              </Card>
+            </div>
+          </Card>
+
+          <Card as="section" variant="panel" className="grid gap-6 p-6 sm:p-8">
+            <SectionHeader
+              title={copy.adminLoginTitle}
+              description={copy.adminLoginDescription}
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {copy.adminLoginEyebrow}
+                </span>
+              }
+            />
+
+            <form className="grid gap-4" onSubmit={handleAdminLogin}>
+              <Field as="div" label={copy.adminUsername} htmlFor="admin-username">
                 <input
                   id="admin-username"
-                  className="min-h-12 w-full rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2.5 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)]"
                   autoComplete="username"
                   disabled={authBusy}
                   value={adminForm.username}
                   onChange={(e) => setAdminForm((f) => ({ ...f, username: e.target.value }))}
                 />
               </Field>
-              <Field as="div" label={copy.adminPassword} htmlFor="admin-password" unstyledControl>
+
+              <Field as="div" label={copy.adminPassword} htmlFor="admin-password">
                 <input
                   id="admin-password"
                   type="password"
-                  className="min-h-12 w-full rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2.5 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)]"
                   autoComplete="current-password"
                   disabled={authBusy}
                   value={adminForm.password}
                   onChange={(e) => setAdminForm((f) => ({ ...f, password: e.target.value }))}
                 />
               </Field>
-              <div className="flex flex-wrap gap-3">
-                <Button type="submit" variant="primary" disabled={authBusy || !adminForm.username || !adminForm.password}>
-                  {authBusy ? copy.adminSubmitting : copy.adminSubmit}
-                </Button>
-                <Button type="button" variant="ghost" disabled={authBusy} onClick={() => { setAdminLoginOpen(false); setError(null); }}>
-                  {copy.adminCancel}
-                </Button>
-              </div>
+
+              {screenError ? (
+                <div className="rounded-[18px] border border-danger/25 bg-danger/8 px-4 py-3 text-sm text-danger">{screenError}</div>
+              ) : null}
+
+              <Button type="submit" variant="primary" className="w-full" disabled={authBusy || !adminForm.username || !adminForm.password}>
+                {authBusy ? copy.adminSubmitting : copy.adminSubmit}
+              </Button>
             </form>
+
+            <div className="grid gap-3">
+              <div className="text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">{copy.researchUserSignIn}</div>
+              <Button type="button" variant="ghost" className="w-full rounded-full" disabled={authBusy} onClick={closeAdminLogin}>
+                {copy.adminBackToMain}
+              </Button>
+            </div>
           </Card>
-        </div>
+        </section>
       </main>
     );
   }

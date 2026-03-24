@@ -272,8 +272,60 @@ def _create_access_token(user: dict[str, Any]) -> str:
     return jwt.encode(payload, API_SECRET, algorithm=API_ALGORITHM)
 
 
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for entry in value:
+        normalized = str(entry or "").strip()
+        if normalized and normalized not in items:
+            items.append(normalized)
+    return items
+
+
+def _decode_remote_control_plane_access_token(token: str) -> dict[str, Any] | None:
+    normalized_token = str(token or "").strip()
+    if not normalized_token:
+        return None
+    try:
+        client = RemoteControlPlaneClient()
+    except Exception:
+        return None
+    if not client.is_configured():
+        return None
+    try:
+        payload = client.main_auth_me(user_bearer_token=normalized_token)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else None
+    if not isinstance(user, dict):
+        return None
+
+    user_id = str(user.get("user_id") or "").strip()
+    username = str(user.get("username") or "").strip()
+    if not user_id or not username:
+        return None
+
+    registry_consents = user.get("registry_consents") if isinstance(user.get("registry_consents"), dict) else {}
+    return {
+        "sub": user_id,
+        "username": username,
+        "full_name": str(user.get("full_name") or username).strip(),
+        "public_alias": str(user.get("public_alias") or "").strip() or None,
+        "role": str(user.get("role") or "viewer").strip() or "viewer",
+        "site_ids": _normalize_string_list(user.get("site_ids")),
+        "approval_status": str(user.get("approval_status") or "application_required").strip() or "application_required",
+        "registry_consents": registry_consents,
+    }
+
+
 def _decode_control_plane_access_token(token: str) -> dict[str, Any]:
     if not CONTROL_PLANE_JWT_PUBLIC_KEY:
+        remote_payload = _decode_remote_control_plane_access_token(token)
+        if remote_payload is not None:
+            return remote_payload
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="KERA_LOCAL_API_JWT_PUBLIC_KEY_B64 is not configured on the local node.",
@@ -292,6 +344,9 @@ def _decode_control_plane_access_token(token: str) -> dict[str, Any]:
             detail="RS256 JWT verification requires the cryptography package on the local node.",
         ) from exc
     except jwt.PyJWTError as exc:
+        remote_payload = _decode_remote_control_plane_access_token(token)
+        if remote_payload is not None:
+            return remote_payload
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.") from exc
 
 
@@ -305,10 +360,16 @@ def _decode_access_token(token: str) -> dict[str, Any]:
     if algorithm == "RS256":
         return _decode_control_plane_access_token(token)
     if algorithm and algorithm != API_ALGORITHM:
+        remote_payload = _decode_remote_control_plane_access_token(token)
+        if remote_payload is not None:
+            return remote_payload
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
     try:
         return jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
     except jwt.PyJWTError as exc:
+        remote_payload = _decode_remote_control_plane_access_token(token)
+        if remote_payload is not None:
+            return remote_payload
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.") from exc
 
 

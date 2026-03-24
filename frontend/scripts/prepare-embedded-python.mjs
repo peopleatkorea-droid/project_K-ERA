@@ -9,6 +9,8 @@ const frontendRoot = process.cwd();
 const repoRoot = path.resolve(frontendRoot, "..");
 const buildRoot = path.join(frontendRoot, ".desktop-runtime");
 const runtimeDir = path.join(buildRoot, "python-runtime");
+const runtimeBundleRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
+const runtimeArchivePath = path.join(runtimeBundleRoot, "python-runtime.zip");
 const manifestPath = path.join(buildRoot, "python-runtime-manifest.json");
 const cpuWheelCacheDir = path.join(buildRoot, "wheels", "cpu");
 const defaultVenvDir = process.env.KERA_DESKTOP_EMBED_VENV
@@ -554,6 +556,29 @@ async function validateEmbeddedPythonRuntime(runtimePythonPath) {
   runPython(runtimePythonPath, backendImport, { env: backendEnv });
 }
 
+async function syncBundledRuntimeArchive(runtimePythonPath) {
+  log(`syncing bundled runtime archive to ${runtimeArchivePath}`);
+  await fs.mkdir(runtimeBundleRoot, { recursive: true });
+  const archiveScript = [
+    "from pathlib import Path",
+    "import sys, zipfile",
+    "source = Path(sys.argv[1])",
+    "target = Path(sys.argv[2])",
+    "tmp = target.with_suffix('.tmp')",
+    "if tmp.exists():",
+    "    tmp.unlink()",
+    "with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:",
+    "    for path in sorted(source.rglob('*')):",
+    "        if path.is_dir():",
+    "            continue",
+    "        archive.write(path, path.relative_to(source).as_posix())",
+    "if target.exists():",
+    "    target.unlink()",
+    "tmp.replace(target)",
+  ].join("\n");
+  runPythonArgs(runtimePythonPath, ["-c", archiveScript, runtimeDir, runtimeArchivePath]);
+}
+
 async function main() {
   if (normalizeBoolean(process.env.KERA_DESKTOP_SKIP_EMBED_PYTHON)) {
     log("skipping embedded python preparation because KERA_DESKTOP_SKIP_EMBED_PYTHON is set");
@@ -573,6 +598,9 @@ async function main() {
   const force = normalizeBoolean(process.env.KERA_DESKTOP_FORCE_EMBED_PYTHON);
 
   if (!force && existingManifest?.signature === signature && existsSync(path.join(runtimeDir, "python.exe"))) {
+    if (!existsSync(runtimeArchivePath)) {
+      await syncBundledRuntimeArchive(pythonInfo.venvPythonPath);
+    }
     log(`reusing cached runtime at ${runtimeDir}`);
     return;
   }
@@ -593,6 +621,7 @@ async function main() {
   };
   await fs.mkdir(buildRoot, { recursive: true });
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await syncBundledRuntimeArchive(pythonInfo.venvPythonPath);
   log(`runtime ready: ${runtimeDir}`);
 }
 

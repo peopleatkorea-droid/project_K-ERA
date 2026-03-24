@@ -66,7 +66,7 @@ type PatientListBoardProps = {
   onMedsamArtifactPageChange: (page: number) => void;
 };
 
-const VISIBLE_THUMBNAIL_COUNT = 2;
+const VISIBLE_THUMBNAIL_COUNT = 3;
 
 export function PatientListBoard({
   locale,
@@ -252,6 +252,10 @@ export function PatientListBoard({
 
   function renderPatientRow(row: PatientListRow, rowIndex = 0) {
     const prioritizeThumbnails = rowIndex < 4;
+    const representativeThumbnailCount = Math.max(
+      row.representative_thumbnails.length,
+      Number(row.representative_thumbnail_count ?? row.representative_thumbnails.length) || 0,
+    );
     return (
       <button
         key={`board-${row.patient_id}`}
@@ -312,8 +316,8 @@ export function PatientListBoard({
               );
             })
           )}
-          {row.representative_thumbnails.length > VISIBLE_THUMBNAIL_COUNT ? (
-            <span className={patientListThumbMoreClass}>+{row.representative_thumbnails.length - VISIBLE_THUMBNAIL_COUNT}</span>
+          {representativeThumbnailCount > VISIBLE_THUMBNAIL_COUNT ? (
+            <span className={patientListThumbMoreClass}>+{representativeThumbnailCount - VISIBLE_THUMBNAIL_COUNT}</span>
           ) : null}
         </div>
       </button>

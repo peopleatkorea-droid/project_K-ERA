@@ -145,13 +145,29 @@ def build_auth_router(support: Any) -> APIRouter:
         return cp.get_public_statistics()
 
     @router.post("/api/auth/login")
-    def login(payload: LoginRequest, cp=Depends(get_control_plane)) -> dict[str, Any]:
+    def login(
+        payload: LoginRequest,
+        cp=Depends(get_control_plane),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
         if not local_login_enabled():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Local username/password login is disabled. Use Google sign-in.",
             )
-        user = cp.authenticate(payload.username.strip().lower(), payload.password)
+        normalized_username = payload.username.strip().lower()
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            return call_required_remote_public_method(
+                cp=cp,
+                control_plane_owner=control_plane_owner,
+                fallback_detail="Central control plane admin sign-in is unavailable.",
+                method_name="main_auth_login",
+                payload_json={
+                    "username": normalized_username,
+                    "password": payload.password,
+                },
+            )
+        user = cp.authenticate(normalized_username, payload.password)
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
         if user.get("role") not in {"admin", "site_admin"}:
@@ -289,6 +305,7 @@ def build_auth_router(support: Any) -> APIRouter:
             )
         requested_role = "researcher"
         requested_site_id = payload.requested_site_id.strip()
+        existing_site_ids = {str(site_id).strip() for site_id in (user.get("site_ids") or []) if str(site_id).strip()}
         if not requested_site_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requested institution is required.")
 
@@ -305,6 +322,10 @@ def build_auth_router(support: Any) -> APIRouter:
             )
         )
         requested_site_source = "site" if requested_site is not None else "institution_directory"
+        resolved_site = requested_site or cp.get_site_by_source_institution_id(requested_site_id)
+        resolved_site_id = str(resolved_site.get("site_id") or "").strip() if resolved_site is not None else ""
+        if requested_site_id in existing_site_ids or (resolved_site_id and resolved_site_id in existing_site_ids):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You already have access to this hospital.")
         request_record = cp.submit_access_request(
             user_id=user["user_id"],
             requested_site_id=requested_site_id,
@@ -313,8 +334,7 @@ def build_auth_router(support: Any) -> APIRouter:
             requested_site_label=requested_site_label,
             requested_site_source=requested_site_source,
         )
-        resolved_site = requested_site or cp.get_site_by_source_institution_id(requested_site_id)
-        if resolved_site is not None:
+        if resolved_site is not None and not existing_site_ids:
             request_record = cp.review_access_request(
                 request_id=request_record["request_id"],
                 reviewer_user_id=AUTO_APPROVAL_REVIEWER_ID,
