@@ -4,6 +4,7 @@ import type { CaseSummaryRecord, OrganismRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
+import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import {
   emptySurfaceClass,
   patientVisitGalleryCardClass,
@@ -25,6 +26,14 @@ const savedCaseCurrentVisitActionClass =
   "min-h-9 rounded-[10px] border border-brand-strong/45 bg-brand px-4 text-[0.86rem] font-semibold text-[var(--accent-contrast)] shadow-[0_10px_22px_rgba(48,88,255,0.22)] ring-1 ring-brand/20 transition duration-150 ease-out hover:border-brand-strong hover:bg-brand-strong hover:shadow-[0_14px_28px_rgba(48,88,255,0.26)] dark:border-brand/50 dark:bg-brand dark:text-[var(--accent-contrast)] dark:ring-brand/24";
 const savedCaseSummaryBarClass =
   "overflow-hidden rounded-[14px] border border-border bg-surface-muted/70 dark:border-white/8 dark:bg-surface-muted/70";
+const savedCaseOverviewMainClass = "grid gap-5 min-w-0";
+const savedCaseSidebarClass = "grid content-start gap-4 xl:sticky xl:top-6 xl:self-start";
+const savedCaseSidebarCardClass = "grid gap-4 rounded-[18px] border border-border bg-surface-elevated p-4";
+const savedCaseSidebarHeadingClass = "text-[0.8rem] font-semibold uppercase tracking-[0.12em] text-muted";
+const savedCaseSidebarTitleClass = "text-[1.02rem] font-semibold tracking-[-0.02em] text-ink";
+const savedCaseReadinessValueClass = "inline-flex min-h-8 items-center rounded-full border px-3 text-[0.76rem] font-semibold tracking-[-0.01em]";
+const savedCaseReadinessPositiveClass = `${savedCaseReadinessValueClass} border-brand/18 bg-brand-soft/80 text-brand`;
+const savedCaseReadinessNeutralClass = `${savedCaseReadinessValueClass} border-border bg-surface text-muted`;
 
 type SavedCaseOverviewProps = {
   locale: Locale;
@@ -36,7 +45,6 @@ type SavedCaseOverviewProps = {
   panelBusy: boolean;
   patientVisitGalleryBusy: boolean;
   patientVisitGallery: Record<string, SavedImagePreview[]>;
-  editDraftBusy: boolean;
   pick: (locale: Locale, en: string, ko: string) => string;
   translateOption: TranslateOption;
   displayVisitReference: (locale: Locale, visitReference: string) => string;
@@ -47,6 +55,7 @@ type SavedCaseOverviewProps = {
     additionalOrganisms?: OrganismRecord[],
     limit?: number
   ) => string;
+  editDraftBusy: boolean;
   onStartEditDraft: () => void | Promise<void>;
   onStartFollowUpDraft: () => void | Promise<void>;
   onToggleFavorite: (caseId: string) => void;
@@ -54,6 +63,14 @@ type SavedCaseOverviewProps = {
   onDeleteSavedCase: (caseRecord: CaseSummaryRecord) => void | Promise<void>;
   isFavoriteCase: (caseId: string) => boolean;
   caseTitle: string;
+};
+
+export type SavedCaseSidebarProps = {
+  locale: Locale;
+  pick: (locale: Locale, en: string, ko: string) => string;
+  selectedCaseImageCount: number;
+  hasRepresentativeImage: boolean;
+  hasAnySavedLesionBox: boolean;
 };
 
 function resolveVisitLabel(
@@ -79,12 +96,12 @@ export function SavedCaseOverview({
   panelBusy,
   patientVisitGalleryBusy,
   patientVisitGallery,
-  editDraftBusy,
   pick,
   translateOption,
   displayVisitReference,
   formatDateTime,
   organismSummaryLabel,
+  editDraftBusy,
   onStartEditDraft,
   onStartFollowUpDraft,
   onToggleFavorite,
@@ -103,7 +120,7 @@ export function SavedCaseOverview({
   )}`;
 
   return (
-    <>
+    <div className={savedCaseOverviewMainClass}>
       <section className="grid gap-3.5 border-b border-border/70 pb-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className={savedCaseMintLabelClass}>{pick(locale, "Case summary", "케이스 요약")}</div>
@@ -235,21 +252,21 @@ export function SavedCaseOverview({
                                 {translateOption(locale, "view", image.view)}
                               </div>
                             )}
-                          <div className="flex min-w-0 items-center gap-1.5 text-[0.84rem] leading-5 text-muted">
-                            <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
-                              {translateOption(locale, "view", image.view)}
-                            </strong>
-                            {image.is_representative ? (
-                              <span className={`${representativeImageTagClass} shrink-0`}>
-                                {pick(locale, "Representative image", "대표 이미지")}
-                              </span>
-                            ) : (
-                              <span className="shrink-0">
-                                · {pick(locale, "Supporting image", "보조 이미지")}
-                              </span>
-                            )}
+                            <div className="flex min-w-0 items-center gap-1.5 text-[0.84rem] leading-5 text-muted">
+                              <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
+                                {translateOption(locale, "view", image.view)}
+                              </strong>
+                              {image.is_representative ? (
+                                <span className={`${representativeImageTagClass} shrink-0`}>
+                                  {pick(locale, "Representative image", "대표 이미지")}
+                                </span>
+                              ) : (
+                                <span className="shrink-0">
+                                  · {pick(locale, "Supporting image", "보조 이미지")}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
                         );
                       })}
                     </div>
@@ -268,6 +285,57 @@ export function SavedCaseOverview({
           </div>
         ) : null}
       </section>
-    </>
+    </div>
+  );
+}
+
+export function SavedCaseSidebar({
+  locale,
+  pick,
+  selectedCaseImageCount,
+  hasRepresentativeImage,
+  hasAnySavedLesionBox,
+}: SavedCaseSidebarProps) {
+  const readinessItems = [
+    {
+      label: pick(locale, "Intake", "Intake"),
+      value: <span className={savedCaseReadinessPositiveClass}>{pick(locale, "Complete", "완료")}</span>,
+    },
+    {
+      label: pick(locale, "Images", "이미지"),
+      value: String(selectedCaseImageCount),
+    },
+    {
+      label: pick(locale, "Representative", "대표 이미지"),
+      value: (
+        <span className={hasRepresentativeImage ? savedCaseReadinessPositiveClass : savedCaseReadinessNeutralClass}>
+          {pick(locale, hasRepresentativeImage ? "Assigned" : "Missing", hasRepresentativeImage ? "지정됨" : "없음")}
+        </span>
+      ),
+    },
+    {
+      label: pick(locale, "Lesion box", "Lesion box"),
+      value: (
+        <span className={hasAnySavedLesionBox ? savedCaseReadinessPositiveClass : savedCaseReadinessNeutralClass}>
+          {pick(locale, hasAnySavedLesionBox ? "Saved" : "Missing", hasAnySavedLesionBox ? "저장됨" : "없음")}
+        </span>
+      ),
+    },
+  ];
+
+  return (
+    <aside className={savedCaseSidebarClass}>
+      <Card as="section" variant="panel" className={savedCaseSidebarCardClass}>
+        <div className="grid gap-1.5">
+          <div className={savedCaseSidebarHeadingClass}>{pick(locale, "Case readiness", "Case Readiness")}</div>
+          <div className={savedCaseSidebarTitleClass}>{pick(locale, "Submission state", "현재 준비 상태")}</div>
+        </div>
+        <MetricGrid columns={2}>
+          {readinessItems.map((item) => (
+            <MetricItem key={String(item.label)} value={item.value} label={item.label} />
+          ))}
+        </MetricGrid>
+      </Card>
+    </aside>
   );
 }

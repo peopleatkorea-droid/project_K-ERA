@@ -10,6 +10,8 @@
 
 ## 아키텍처
 
+### 웹 앱 (Next.js + FastAPI)
+
 ```
 [Browser]
    |
@@ -27,6 +29,24 @@
    +-- <저장 루트>/sites/<SITE_ID>/model_updates/    기여 delta
    +-- <저장 루트>/models/                           글로벌 모델 파일
 ```
+
+### 데스크탑 앱 (Tauri)
+
+```
+[Tauri 데스크탑 앱]
+   |
+   +-- [Desktop Shell UI]  (React, desktop-shell/)
+   |      |
+   |      v
+   +-- [내장 FastAPI 서버]  (Python 런타임 자동 시작)
+          |
+          +-- Data Plane DB     (로컬 SQLite)
+          +-- <저장 루트>/sites/<SITE_ID>/...
+          |
+          +-- [Remote Control Plane]  (선택, 연합학습 / 모델 동기화용)
+```
+
+데스크탑 앱은 Tauri 셸이 Python 런타임과 FastAPI 서버를 내장해 병원 PC 단독으로 동작합니다. 웹 앱과 동일한 FastAPI 백엔드를 사용하며, Remote Control Plane 연동 시 연합학습과 모델 배포가 가능합니다.
 
 기본 저장 루트: `앱 폴더의 상위 디렉토리\KERA_DATA\`
 
@@ -68,7 +88,6 @@ local-first control plane까지 같이 쓰는 현재 기준 최소 예시는 아
 ```dotenv
 NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL=http://127.0.0.1:8000
 KERA_CONTROL_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_control_plane?sslmode=require
-KERA_CONTROL_PLANE_SESSION_SECRET=change-this-local-secret
 KERA_CONTROL_PLANE_DEV_AUTH=true
 KERA_SITE_STORAGE_SOURCE=local
 ```
@@ -162,7 +181,39 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 .\scripts\configure_shared_control_plane_client.ps1 -ControlPlaneDatabaseUrl "postgresql://.../kera_control_plane?sslmode=require&channel_binding=require"
 ```
 
-### 7. 2026-03-19 업데이트
+### 7. Tauri 데스크탑 앱 실행 (개발)
+
+Tauri 데스크탑 앱을 개발 모드로 실행하려면:
+
+```powershell
+cd .\frontend
+node .\scripts\run-tauri-dev.mjs
+```
+
+이 스크립트는 Python sidecar 서버와 Tauri 앱을 함께 시작합니다. 실행 전 `setup_local_node.ps1`로 의존성이 설치되어 있어야 합니다.
+
+#### 데스크탑 패키지 빌드 (CPU/GPU 선택)
+
+```powershell
+# CPU 전용 패키지 빌드
+cd .\frontend
+node .\scripts\run-desktop-profile-command.mjs package cpu
+
+# GPU(CUDA) 패키지 빌드
+node .\scripts\run-desktop-profile-command.mjs package gpu
+```
+
+데스크탑 배포판(`.exe` 인스톨러)은 GitHub Actions `desktop-release` 워크플로(`v*` 태그 푸시 시 자동 실행)로 생성할 수 있습니다.
+
+#### 데스크탑 앱 인증 흐름
+
+데스크탑 앱은 웹 앱과 별개의 인증 경로를 사용합니다.
+
+- **Google 로그인**: Tauri 셸 내 브라우저 창에서 OAuth 인증 후 토큰을 로컬 세션에 저장
+- **로컬 로그인**: Remote Control Plane 없이 dev 모드에서 직접 로그인
+- 세션은 `DESKTOP_TOKEN_KEY`로 로컬 스토리지에 캐시되며, 앱 재시작 시 자동 복원
+
+### 8. 2026-03-19 업데이트
 
 - initial training 기준 supervised backbone이 8종으로 확장되었습니다.
   - `DenseNet121`
@@ -180,6 +231,19 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 - case validation 뒤에는 prediction snapshot, structured analysis, root-cause/action tag, LLM/local fallback summary를 포함한 post-mortem이 함께 생성됩니다.
 - 7종 benchmark 진행 카드에는 전체 퍼센트, 현재 architecture, 순서, 남은 모델 수와 함께 ETA가 표시됩니다.
 - 단일 initial training과 benchmark는 작업 중단이 가능하고, benchmark는 완료되지 않은 architecture만 다시 시작할 수 있습니다.
+
+### 9. 2026-03-22 ~ 2026-03-24 업데이트
+
+- Tauri 데스크탑 앱이 100개 이상의 Rust 모듈로 분리되어 대규모 리팩토링이 완료되었습니다 (v0.6 → v0.69).
+- 데스크탑 전용 Google OAuth 인증 흐름(`auth/desktop/start` → `exchange`)과 세션 캐시가 추가되었습니다.
+- Python 백엔드 라우터가 역할별로 분리되었습니다.
+  - `admin.py` → `admin_access`, `admin_management`, `admin_registry`, `admin_shared`
+  - `cases.py` → `case_analysis`, `case_images`, `case_records`, `case_shared`
+  - `sites.py` → `site_training`, `site_imports`, `site_overview`, `site_shared`
+- Federation Salt 시스템이 추가되어 다기관 환경에서 케이스/환자/별칭 참조값을 독립적으로 솔팅합니다.
+- 데스크탑 패키지 빌드에서 CPU / GPU 두 가지 배포판을 지원합니다.
+- GitHub Actions `desktop-release` 워크플로(`v*` 태그 기반)와 `desktop-verify` 워크플로(PR 검증)가 추가되었습니다.
+- SQLite N+1 쿼리 수정, CTE 최적화, 인덱스 추가 등 성능 개선이 적용되었습니다.
 
 ---
 
@@ -228,6 +292,8 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 | `KERA_AI_CLINIC_LLM_MODEL` | 사용할 LLM 모델명 (기본: gpt-4o-mini) |
 | `KERA_AI_CLINIC_LLM_BASE_URL` | LLM API base URL (OpenAI 호환 엔드포인트) |
 | `KERA_AI_CLINIC_LLM_TIMEOUT_SECONDS` | LLM 요청 타임아웃 (초) |
+| `KERA_DESKTOP_RUNTIME_MODE` | 데스크탑 앱 런타임 모드. `packaged`(배포판) 또는 개발 시 미설정. 빌드 스크립트가 자동으로 주입 |
+| `KERA_DESKTOP_EMBED_VENV` | 데스크탑 패키지 빌드 시 번들할 Python venv 경로. 기본값: `.venv` |
 
 **참고:**
 - 로컬 계정(`KERA_ADMIN_USERNAME` 등)은 해당 환경변수가 있을 때만 앱 시작 시 시드됩니다.
@@ -254,12 +320,28 @@ Single-DB에서 split control/data plane으로 전환할 때는 [docs/control_pl
 
 ### 인증과 접근 제어
 
+**웹 앱:**
 - Google Sign-In (기본 연구자 로그인 경로, `/`)
 - 로컬 username/password 로그인 (관리자 복구용, `/admin-login`)
 - JWT 기반 세션, 2시간 만료
 - 기관(site) 및 역할(role) 접근 요청 제출 및 승인/반려
 
+**데스크탑 앱:**
+- Google OAuth 토큰 교환 (`/auth/desktop/start` → `/auth/desktop/exchange`)
+- 개발 모드 로컬 로그인 (`KERA_CONTROL_PLANE_DEV_AUTH=true` 환경에서만)
+- 세션은 로컬에 캐시되어 앱 재시작 시 자동 복원
+
 지원 역할: `admin`, `site_admin`, `researcher`, `viewer`
+
+### 데스크탑 앱 (Tauri)
+
+Tauri 기반 Windows 데스크탑 앱으로, 병원 PC 단독 설치 운영을 위한 별도 실행 경로입니다.
+
+- Python 런타임과 FastAPI 서버를 앱 내에 내장 — 별도 서버 설치 불필요
+- CPU / GPU(CUDA) 두 가지 패키지 배포판 지원
+- Google OAuth 및 로컬 로그인 지원
+- Remote Control Plane 연동 시 연합학습, 모델 동기화, 사이트 활동 리더보드 사용 가능
+- 웹 앱과 동일한 케이스 등록, 검증, AI Clinic, 학습/기여 워크플로우 제공
 
 ### Case Canvas
 
@@ -366,6 +448,21 @@ Retrieval backend: `classifier` / `dinov2` / `hybrid` 모드 지원
 case_reference_id = SHA256(KERA_CASE_REFERENCE_SALT + site_id + patient_id + visit_date)
 ```
 중앙 control plane에는 환자 ID 대신 이 해시 키만 저장됩니다.
+
+**Federation Salt:**
+
+다기관 환경에서 케이스 참조, 환자 참조, 공개 별칭의 솔팅값을 기관별로 분리 관리합니다.
+
+- `federation_salt.json` — control plane 디렉토리에 저장되는 salt 파일
+- `case_reference_salt`, `patient_reference_salt`, `public_alias_salt` 세 값을 독립 관리
+- 기존 단일 `KERA_CASE_REFERENCE_SALT` 환경변수와 하위 호환됩니다.
+- 마이그레이션 가이드: [docs/federation-salt-migration.md](docs/federation-salt-migration.md)
+
+**기여 공개 별칭 (Public Alias):**
+
+- Google 로그인 사용자는 최초 인증 시 `warm_gorilla_221` 형태의 language-neutral 별칭이 자동 생성됩니다.
+- 기여 이력과 사이트 활동 리더보드에는 실명 대신 별칭이 표시됩니다.
+- 한국어: `따스한 고릴라 #221`, 영어: `Warm Gorilla #221` 형태로 locale에 맞게 렌더링됩니다.
 
 ### 연구 registry / 가명처리 정책
 
@@ -489,6 +586,19 @@ KERA_MODEL_DISTRIBUTION_MODE=download_url
 - `GET /api/auth/me`
 - `POST /api/auth/request-access`
 
+데스크탑 인증 (Next.js 라우트):
+
+- `POST /control-plane/api/main/auth/desktop/start`
+- `POST /control-plane/api/main/auth/desktop/exchange`
+- `GET /control-plane/api/main/auth/desktop/status`
+
+데스크탑 / 로컬 노드 (FastAPI):
+
+- `GET /api/desktop/self-check`
+- `GET /api/control-plane/node/status`
+- `POST /api/control-plane/node/register`
+- `POST /api/control-plane/node/credentials`
+
 사이트 작업:
 
 - `GET /api/sites`
@@ -519,6 +629,7 @@ KERA_MODEL_DISTRIBUTION_MODE=download_url
 운영 / 관리자:
 
 - `GET /api/admin/overview`
+- `POST /api/admin/institutions/sync`
 - `GET /api/admin/storage-settings`
 - `PATCH /api/admin/storage-settings`
 - `GET /api/admin/model-versions`
@@ -539,7 +650,7 @@ KERA_MODEL_DISTRIBUTION_MODE=download_url
 - `POST /api/admin/users`
 - `GET /api/admin/site-comparison`
 
-전체 엔드포인트 목록은 [src/kera_research/api/app.py](src/kera_research/api/app.py)에서 확인할 수 있습니다.
+전체 엔드포인트 목록은 [src/kera_research/api/routes/](src/kera_research/api/routes/)에서 라우터별로 확인할 수 있습니다.
 
 ---
 
@@ -556,6 +667,8 @@ python -m unittest tests.test_modeling
 
 ## 현재 한계와 주의사항
 
+- 데스크탑 앱(Tauri)은 현재 Windows 전용입니다. macOS / Linux 빌드는 지원하지 않습니다.
+- 데스크탑 앱의 내장 Python 런타임은 앱 시작 시 자동으로 시작되며, 초기 로딩에 수 초가 소요될 수 있습니다.
 - 케이스 단위 validation, AI Clinic retrieval/report 생성 등 일부 작업은 여전히 API 요청-응답 안에서 동기 실행됩니다.
 - 사이트 단위 validation, initial training, multi-model benchmark, cross-validation은 `site_jobs`에 큐잉되며, 별도 worker(`python -m kera_research.worker`)가 처리합니다. `.\scripts\run_local_node.ps1`는 이 worker를 함께 실행하지만, API만 단독 실행하면 해당 작업은 `queued` 상태에 머무를 수 있습니다.
 - training / benchmark ETA는 `elapsed time + current percent` 기반 추정치이므로 정확한 wall-clock 보장은 아닙니다.
@@ -596,15 +709,19 @@ npm run dev:clean
 - [docs/local_node_deployment.md](docs/local_node_deployment.md)
 - [docs/dataset_schema.md](docs/dataset_schema.md)
 - [docs/ai_clinic_llm_setup.md](docs/ai_clinic_llm_setup.md)
+- [docs/federation-salt-migration.md](docs/federation-salt-migration.md) — Federation Salt 마이그레이션 가이드
+- [docs/tauri-packaged-runtime-layout.md](docs/tauri-packaged-runtime-layout.md) — 데스크탑 패키지 런타임 구조
+- [docs/desktop-installed-smoke.md](docs/desktop-installed-smoke.md) — 데스크탑 설치 후 smoke test 가이드
+- [docs/tauri-embedded-ui-plan.md](docs/tauri-embedded-ui-plan.md) — Tauri 임베디드 UI 설계 문서
 - [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
-## Desktop Release Signing
+## 데스크탑 릴리즈 서명 (Desktop Release Signing)
 
-- Never commit Tauri updater signing keys to this repository.
-- Keep `TAURI_SIGNING_PRIVATE_KEY` only in GitHub Actions secrets.
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional and should be set only when the private key was generated with a password.
-- The desktop app should contain only the updater public key embedded in `frontend/src-tauri/tauri.conf.json`.
-- The `desktop-release` workflow now fails if tracked files exist under `frontend/~/.tauri/`.
-- Rotate the updater key with `cd frontend && npm run desktop:rotate-updater-key`.
+- Tauri 업데이터 서명 키는 절대 이 저장소에 커밋하지 않습니다.
+- `TAURI_SIGNING_PRIVATE_KEY`는 GitHub Actions Secrets에만 보관합니다.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`는 키 생성 시 암호를 설정한 경우에만 설정합니다.
+- 데스크탑 앱 빌드에는 `frontend/src-tauri/tauri.conf.json`에 업데이터 public key만 포함합니다.
+- `desktop-release` 워크플로는 `frontend/~/.tauri/` 경로에 추적된 파일이 있으면 자동으로 빌드를 실패 처리합니다.
+- 업데이터 키 교체: `cd frontend && npm run desktop:rotate-updater-key`

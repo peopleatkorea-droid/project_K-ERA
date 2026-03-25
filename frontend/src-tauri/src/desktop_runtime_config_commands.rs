@@ -108,6 +108,7 @@ pub(super) fn export_desktop_diagnostics_bundle(app: AppHandle) -> Result<Option
         "",
         Vec::new(),
         None,
+        None,
     )));
     let local_node_status = redacted_json(&diagnostics_value(request_local_api_json_owned(
         HttpMethod::GET,
@@ -115,12 +116,14 @@ pub(super) fn export_desktop_diagnostics_bundle(app: AppHandle) -> Result<Option
         "",
         Vec::new(),
         None,
+        None,
     )));
     let desktop_self_check = redacted_json(&diagnostics_value(request_local_api_json_owned(
         HttpMethod::GET,
         "/api/desktop/self-check",
         "",
         Vec::new(),
+        None,
         None,
     )));
     let control_plane_auth_status = redacted_json(&fetch_control_plane_status_for_bundle(

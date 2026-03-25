@@ -25,6 +25,42 @@ fn fetch_site_job_response(site_id: &str, token: &str, job_id: &str) -> Result<J
     )
 }
 
+fn list_site_jobs_response(
+    site_id: &str,
+    token: &str,
+    job_type: Option<&str>,
+    status: Option<&str>,
+    limit: Option<i64>,
+) -> Result<JsonValue, String> {
+    let request_payload = json!({
+        "site_id": site_id,
+        "token": token,
+        "job_type": job_type,
+        "status": status,
+        "limit": limit,
+    });
+    if ml_sidecar_should_be_used() {
+        return request_ml_sidecar_json("list_site_jobs", request_payload);
+    }
+    let mut query = Vec::new();
+    if let Some(value) = job_type.filter(|value| !value.trim().is_empty()) {
+        query.push(("job_type", value.trim().to_string()));
+    }
+    if let Some(value) = status.filter(|value| !value.trim().is_empty()) {
+        query.push(("status", value.trim().to_string()));
+    }
+    if let Some(value) = limit.filter(|value| *value > 0) {
+        query.push(("limit", value.to_string()));
+    }
+    request_local_api_json(
+        HttpMethod::GET,
+        &format!("/api/sites/{site_id}/jobs"),
+        token,
+        query,
+        None,
+    )
+}
+
 fn fetch_live_lesion_preview_job_response(
     site_id: &str,
     token: &str,
@@ -112,6 +148,22 @@ pub(super) fn fetch_site_job_command(
         return Err("site_id and job_id are required.".to_string());
     }
     fetch_site_job_response(&site_id, &payload.token, &job_id)
+}
+
+pub(super) fn list_site_jobs_command(
+    payload: SiteJobListCommandRequest,
+) -> Result<JsonValue, String> {
+    let site_id = payload.site_id.trim().to_string();
+    if site_id.is_empty() {
+        return Err("site_id is required.".to_string());
+    }
+    list_site_jobs_response(
+        &site_id,
+        &payload.token,
+        payload.job_type.as_deref(),
+        payload.status.as_deref(),
+        payload.limit,
+    )
 }
 
 pub(super) fn start_site_job_event_stream_command(

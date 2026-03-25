@@ -60,6 +60,27 @@ IMAGENET_CHANNEL_STD = (0.229, 0.224, 0.225)
 DEFAULT_CASE_AGGREGATION = "mean"
 CASE_AGGREGATIONS = ("mean", "logit_mean", "quality_weighted_mean", "attention_mil")
 DUAL_INPUT_ARCHITECTURES = ("dual_input_concat",)
+TRAINING_PRETRAINING_SOURCES = ("scratch", "imagenet", "ssl")
+SSL_BACKBONE_ARCHITECTURE_BY_MODEL = {
+    "densenet121": "densenet121",
+    "convnext_tiny": "convnext_tiny",
+    "efficientnet_v2_s": "efficientnet_v2_s",
+    "vit": "vit",
+    "swin": "swin",
+    "dinov2": "dinov2",
+    "dinov2_mil": "dinov2",
+    "dual_input_concat": "dinov2",
+}
+IMAGENET_PRETRAINED_ARCHITECTURES = {
+    "vit",
+    "swin",
+    "convnext_tiny",
+    "efficientnet_v2_s",
+    "dinov2",
+    "dinov2_mil",
+    "dual_input_concat",
+    *DENSENET_VARIANTS,
+}
 
 
 def _legacy_preprocess_metadata(image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
@@ -1827,6 +1848,130 @@ class ModelManager:
             return DualInputConcatKeratitis(num_classes=num_classes, pretrained=True)
         raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
 
+    def normalize_training_pretraining_source(
+        self,
+        pretraining_source: str | None,
+        *,
+        use_pretrained: bool = True,
+    ) -> str:
+        normalized = str(pretraining_source or "").strip().lower()
+        if not normalized:
+            return "imagenet" if use_pretrained else "scratch"
+        if normalized == "pretrained":
+            return "imagenet"
+        if normalized not in TRAINING_PRETRAINING_SOURCES:
+            raise ValueError(
+                f"Unsupported pretraining source: {pretraining_source}. "
+                f"Supported: {', '.join(TRAINING_PRETRAINING_SOURCES)}"
+            )
+        return normalized
+
+    def supports_imagenet_pretraining(self, architecture: str) -> bool:
+        return str(architecture or "").strip().lower() in IMAGENET_PRETRAINED_ARCHITECTURES
+
+    def ssl_backbone_architecture_for_model(self, architecture: str) -> str:
+        normalized = str(architecture or "").strip().lower()
+        resolved = SSL_BACKBONE_ARCHITECTURE_BY_MODEL.get(normalized)
+        if not resolved:
+            raise ValueError(f"SSL initialization is not supported for architecture: {architecture}.")
+        return resolved
+
+    def _ssl_target_module(self, model: nn.Module, architecture: str) -> nn.Module:
+        normalized = str(architecture or "").strip().lower()
+        if normalized in DENSENET_VARIANTS:
+            return getattr(model, "model", model)
+        if normalized == "convnext_tiny":
+            return getattr(model, "model", model)
+        if normalized in {"vit", "swin", "efficientnet_v2_s"}:
+            return model
+        if normalized in {"dinov2", "dinov2_mil", "dual_input_concat"}:
+            backbone = getattr(model, "backbone", None)
+            if backbone is None:
+                raise ValueError(f"{architecture} does not expose a backbone module for SSL initialization.")
+            return backbone
+        raise ValueError(f"SSL initialization is not supported for architecture: {architecture}.")
+
+    def _allowed_missing_ssl_keys(self, architecture: str) -> tuple[str, ...]:
+        normalized = str(architecture or "").strip().lower()
+        if normalized in DENSENET_VARIANTS:
+            return ("classifier.",)
+        if normalized == "convnext_tiny":
+            return ("classifier.",)
+        if normalized == "vit":
+            return ("heads.",)
+        if normalized == "swin":
+            return ("head.",)
+        if normalized == "efficientnet_v2_s":
+            return ("classifier.",)
+        return ()
+
+    def load_ssl_encoder_into_model(
+        self,
+        model: nn.Module,
+        architecture: str,
+        ssl_checkpoint_path: str | Path,
+    ) -> dict[str, Any]:
+        require_torch()
+        checkpoint_path = Path(ssl_checkpoint_path).expanduser().resolve()
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"SSL checkpoint does not exist: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("SSL checkpoint format is invalid.")
+        state_dict = checkpoint.get("state_dict")
+        if not isinstance(state_dict, dict) or not state_dict:
+            raise ValueError("SSL checkpoint does not contain an encoder state_dict.")
+
+        expected_backbone = self.ssl_backbone_architecture_for_model(architecture)
+        checkpoint_architecture = str(checkpoint.get("architecture") or "").strip().lower()
+        if checkpoint_architecture and checkpoint_architecture != expected_backbone:
+            raise ValueError(
+                f"SSL checkpoint architecture mismatch: expected {expected_backbone}, found {checkpoint_architecture}."
+            )
+
+        target_module = self._ssl_target_module(model, architecture)
+        incompatible = target_module.load_state_dict(state_dict, strict=False)
+        missing_keys = [
+            key
+            for key in incompatible.missing_keys
+            if not any(key.startswith(prefix) for prefix in self._allowed_missing_ssl_keys(architecture))
+        ]
+        unexpected_keys = list(incompatible.unexpected_keys)
+        if missing_keys or unexpected_keys:
+            raise ValueError(
+                "SSL checkpoint could not be applied cleanly: "
+                f"missing={missing_keys[:8]}, unexpected={unexpected_keys[:8]}"
+            )
+        return {
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_architecture": checkpoint_architecture or expected_backbone,
+            "checkpoint_epoch": checkpoint.get("epoch"),
+            "checkpoint_records_count": checkpoint.get("records_count"),
+        }
+
+    def build_model_for_training(
+        self,
+        architecture: str,
+        *,
+        pretraining_source: str | None = None,
+        use_pretrained: bool = True,
+        ssl_checkpoint_path: str | Path | None = None,
+        num_classes: int = DEFAULT_NUM_CLASSES,
+    ) -> tuple[nn.Module, str, dict[str, Any] | None]:
+        normalized_source = self.normalize_training_pretraining_source(
+            pretraining_source,
+            use_pretrained=use_pretrained,
+        )
+        if normalized_source == "ssl":
+            if not ssl_checkpoint_path:
+                raise ValueError("ssl_checkpoint_path is required when pretraining_source='ssl'.")
+            model = self.build_model(architecture)
+            ssl_metadata = self.load_ssl_encoder_into_model(model, architecture, ssl_checkpoint_path)
+            return model, normalized_source, ssl_metadata
+        if normalized_source == "imagenet" and self.supports_imagenet_pretraining(architecture):
+            return self.build_model_pretrained(architecture, num_classes=num_classes), normalized_source, None
+        return self.build_model(architecture), "scratch", None
+
     def _split_ids_with_fallback(
         self,
         patient_ids: list[str],
@@ -1976,6 +2121,99 @@ class ModelManager:
     ) -> list[int]:
         normalized_threshold = min(max(float(threshold), 0.0), 1.0)
         return [1 if float(probability) >= normalized_threshold else 0 for probability in positive_probabilities]
+
+    def _image_prediction_rows_from_records(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index, record in enumerate(records):
+            patient_id = str(record.get("patient_id") or "")
+            visit_date = str(record.get("visit_date") or "")
+            true_label = str(record.get("culture_category") or "").strip().lower()
+            true_label_index = LABEL_TO_INDEX.get(true_label)
+            source_image_path = str(record.get("source_image_path") or record.get("image_path") or "")
+            prepared_image_path = str(record.get("image_path") or "")
+            cornea_image_path = str(record.get("cornea_image_path") or record.get("roi_crop_path") or prepared_image_path or "")
+            lesion_image_path = str(record.get("lesion_image_path") or record.get("lesion_crop_path") or "")
+            sample_key = f"image::{patient_id}::{visit_date}::{source_image_path or prepared_image_path or index}"
+            rows.append(
+                {
+                    "sample_key": sample_key,
+                    "sample_kind": "image",
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "true_label": true_label or INDEX_TO_LABEL.get(int(true_label_index or 0), "bacterial"),
+                    "true_label_index": int(true_label_index or 0),
+                    "source_image_path": source_image_path or None,
+                    "prepared_image_path": prepared_image_path or None,
+                    "cornea_image_path": cornea_image_path or None,
+                    "lesion_image_path": lesion_image_path or None,
+                    "view": str(record.get("view") or "").strip() or None,
+                }
+            )
+        return rows
+
+    def _visit_prediction_rows_from_records(self, visit_records: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index, bag_records in enumerate(visit_records):
+            if not bag_records:
+                continue
+            patient_id = str(bag_records[0].get("patient_id") or "")
+            visit_date = str(bag_records[0].get("visit_date") or "")
+            true_label = str(bag_records[0].get("culture_category") or "").strip().lower()
+            true_label_index = LABEL_TO_INDEX.get(true_label)
+            source_image_paths = [
+                str(item.get("source_image_path") or item.get("image_path") or "")
+                for item in bag_records
+                if str(item.get("source_image_path") or item.get("image_path") or "").strip()
+            ]
+            prepared_image_paths = [
+                str(item.get("image_path") or "")
+                for item in bag_records
+                if str(item.get("image_path") or "").strip()
+            ]
+            views = [str(item.get("view") or "").strip() for item in bag_records if str(item.get("view") or "").strip()]
+            sample_key = f"visit::{patient_id}::{visit_date or index}"
+            rows.append(
+                {
+                    "sample_key": sample_key,
+                    "sample_kind": "visit",
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "true_label": true_label or INDEX_TO_LABEL.get(int(true_label_index or 0), "bacterial"),
+                    "true_label_index": int(true_label_index or 0),
+                    "source_image_paths": source_image_paths,
+                    "prepared_image_paths": prepared_image_paths,
+                    "view": views[0] if views else None,
+                    "views": views,
+                }
+            )
+        return rows
+
+    def _build_prediction_records(
+        self,
+        sample_rows: list[dict[str, Any]],
+        positive_probabilities: list[float],
+        *,
+        threshold: float = 0.5,
+    ) -> list[dict[str, Any]]:
+        if len(sample_rows) != len(positive_probabilities):
+            raise ValueError("Prediction rows and probabilities must have the same length.")
+        predicted_labels = self._predicted_labels_from_threshold(positive_probabilities, threshold=threshold)
+        prediction_rows: list[dict[str, Any]] = []
+        for row, positive_probability, predicted_index in zip(sample_rows, positive_probabilities, predicted_labels):
+            true_label_index = int(row.get("true_label_index") or 0)
+            true_label = str(row.get("true_label") or INDEX_TO_LABEL.get(true_label_index, "bacterial"))
+            prediction_rows.append(
+                {
+                    **row,
+                    "true_label": true_label,
+                    "true_label_index": true_label_index,
+                    "predicted_label": INDEX_TO_LABEL.get(int(predicted_index), str(predicted_index)),
+                    "predicted_label_index": int(predicted_index),
+                    "positive_probability": float(positive_probability),
+                    "is_correct": int(predicted_index) == true_label_index,
+                }
+            )
+        return prediction_rows
 
     def _collect_loader_outputs(
         self,
@@ -2186,6 +2424,8 @@ class ModelManager:
         val_split: float,
         test_split: float,
         use_pretrained: bool,
+        pretraining_source: str | None,
+        ssl_checkpoint_path: str | Path | None,
         saved_split: dict[str, Any] | None,
         crop_mode: str | None,
         training_input_policy: str | None,
@@ -2234,8 +2474,14 @@ class ModelManager:
         val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, val_case_count)), shuffle=False, collate_fn=collate_visit_bags)
         test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, test_case_count)), shuffle=False, collate_fn=collate_visit_bags)
 
-        model = (self.build_model_pretrained(architecture) if use_pretrained else self.build_model(architecture)).to(device)
-        backbone_frozen = bool(use_pretrained)
+        model, resolved_pretraining_source, ssl_metadata = self.build_model_for_training(
+            architecture,
+            pretraining_source=pretraining_source,
+            use_pretrained=use_pretrained,
+            ssl_checkpoint_path=ssl_checkpoint_path,
+        )
+        model = model.to(device)
+        backbone_frozen = resolved_pretraining_source != "scratch"
         if backbone_frozen:
             self._freeze_backbone(model, architecture)
 
@@ -2311,6 +2557,11 @@ class ModelManager:
             threshold=decision_threshold,
         )
         val_metrics["n_samples"] = len(val_outputs["true_labels"])
+        val_predictions = self._build_prediction_records(
+            self._visit_prediction_rows_from_records(val_ds.visit_records),
+            [float(value) for value in val_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
         test_outputs = self._collect_bag_loader_outputs(model, test_loader, device)
         test_metrics = self.classification_metrics(
             [int(value) for value in test_outputs["true_labels"]],
@@ -2319,6 +2570,11 @@ class ModelManager:
             threshold=decision_threshold,
         )
         test_metrics["n_samples"] = len(test_outputs["true_labels"])
+        test_predictions = self._build_prediction_records(
+            self._visit_prediction_rows_from_records(test_ds.visit_records),
+            [float(value) for value in test_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
         torch.save(
             {
                 "architecture": architecture,
@@ -2350,7 +2606,10 @@ class ModelManager:
             "n_val_patients": len(val_patient_ids),
             "n_test_patients": len(test_patient_ids),
             "best_val_acc": round(best_val_acc, 4),
-            "use_pretrained": use_pretrained,
+            "use_pretrained": resolved_pretraining_source != "scratch",
+            "pretraining_source": resolved_pretraining_source,
+            "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
+            "ssl_checkpoint": ssl_metadata,
             "history": history,
             "patient_split": patient_split,
             "decision_threshold": decision_threshold,
@@ -2358,6 +2617,8 @@ class ModelManager:
             "threshold_selection_metrics": threshold_selection["selection_metrics"],
             "val_metrics": val_metrics,
             "test_metrics": test_metrics,
+            "val_predictions": val_predictions,
+            "test_predictions": test_predictions,
             "case_aggregation": "attention_mil",
             "bag_level": True,
             "backbone_frozen": backbone_frozen,
@@ -2375,6 +2636,8 @@ class ModelManager:
         val_split: float = 0.2,
         test_split: float = 0.2,
         use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | Path | None = None,
         saved_split: dict[str, Any] | None = None,
         crop_mode: str | None = None,
         case_aggregation: str | None = None,
@@ -2413,6 +2676,8 @@ class ModelManager:
                 val_split=val_split,
                 test_split=test_split,
                 use_pretrained=use_pretrained,
+                pretraining_source=pretraining_source,
+                ssl_checkpoint_path=ssl_checkpoint_path,
                 saved_split=saved_split,
                 crop_mode=crop_mode,
                 training_input_policy=training_input_policy,
@@ -2461,10 +2726,13 @@ class ModelManager:
         test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_records))), shuffle=False)
 
         # 모델 초기화
-        if use_pretrained and architecture in {"vit", "swin", "convnext_tiny", "efficientnet_v2_s", "dinov2", "dual_input_concat", *DENSENET_VARIANTS}:
-            model = self.build_model_pretrained(architecture).to(device)
-        else:
-            model = self.build_model(architecture).to(device)
+        model, resolved_pretraining_source, ssl_metadata = self.build_model_for_training(
+            architecture,
+            pretraining_source=pretraining_source,
+            use_pretrained=use_pretrained,
+            ssl_checkpoint_path=ssl_checkpoint_path,
+        )
+        model = model.to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
@@ -2559,10 +2827,32 @@ class ModelManager:
             threshold=decision_threshold,
         )
         val_metrics["n_samples"] = len(val_outputs["true_labels"])
-        test_metrics = (
-            self._evaluate_paired_loader(model, test_loader, device, threshold=decision_threshold)
+        val_prediction_rows = (
+            self._image_prediction_rows_from_records(val_records)
             if self.is_dual_input_architecture(architecture)
-            else self._evaluate_loader(model, test_loader, device, threshold=decision_threshold)
+            else self._image_prediction_rows_from_records(val_records)
+        )
+        val_predictions = self._build_prediction_records(
+            val_prediction_rows,
+            [float(value) for value in val_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
+        test_outputs = (
+            self._collect_paired_loader_outputs(model, test_loader, device)
+            if self.is_dual_input_architecture(architecture)
+            else self._collect_loader_outputs(model, test_loader, device)
+        )
+        test_metrics = self.classification_metrics(
+            [int(value) for value in test_outputs["true_labels"]],
+            [],
+            [float(value) for value in test_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
+        )
+        test_metrics["n_samples"] = len(test_outputs["true_labels"])
+        test_predictions = self._build_prediction_records(
+            self._image_prediction_rows_from_records(test_records),
+            [float(value) for value in test_outputs["positive_probabilities"]],
+            threshold=decision_threshold,
         )
         torch.save(
             {
@@ -2593,7 +2883,10 @@ class ModelManager:
             "n_val_patients": len(val_patient_ids),
             "n_test_patients": len(test_patient_ids),
             "best_val_acc": round(best_val_acc, 4),
-            "use_pretrained": use_pretrained,
+            "use_pretrained": resolved_pretraining_source != "scratch",
+            "pretraining_source": resolved_pretraining_source,
+            "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
+            "ssl_checkpoint": ssl_metadata,
             "history": history,
             "patient_split": patient_split,
             "decision_threshold": decision_threshold,
@@ -2601,6 +2894,8 @@ class ModelManager:
             "threshold_selection_metrics": threshold_selection["selection_metrics"],
             "val_metrics": val_metrics,
             "test_metrics": test_metrics,
+            "val_predictions": val_predictions,
+            "test_predictions": test_predictions,
             "case_aggregation": normalized_case_aggregation,
             "bag_level": False,
         }
@@ -2617,6 +2912,8 @@ class ModelManager:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | Path | None = None,
         case_aggregation: str | None = None,
         progress_callback: Any = None,
     ) -> dict[str, Any]:
@@ -2673,6 +2970,8 @@ class ModelManager:
                 val_split=val_split,
                 test_split=fold["test_split"],
                 use_pretrained=use_pretrained,
+                pretraining_source=pretraining_source,
+                ssl_checkpoint_path=ssl_checkpoint_path,
                 saved_split=fold,
                 case_aggregation=case_aggregation,
                 progress_callback=fold_progress_callback,
@@ -2712,7 +3011,9 @@ class ModelManager:
             "num_folds": num_folds,
             "epochs": epochs,
             "val_split": float(val_split),
-            "use_pretrained": use_pretrained,
+            "use_pretrained": bool(self.normalize_training_pretraining_source(pretraining_source, use_pretrained=use_pretrained) != "scratch"),
+            "pretraining_source": self.normalize_training_pretraining_source(pretraining_source, use_pretrained=use_pretrained),
+            "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
             "fold_results": fold_results,
             "aggregate_metrics": aggregate_metrics,
             "total_patients": len(patient_ids),

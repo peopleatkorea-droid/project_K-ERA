@@ -24,6 +24,7 @@ import {
   type SiteActivityResponse,
   type SiteJobRecord,
   type SiteValidationRunRecord,
+  type SslPretrainingResponse,
   type StorageSettingsRecord,
 } from "../../lib/api";
 import { type DashboardCasePreview } from "./dashboard-section";
@@ -36,6 +37,7 @@ export type WorkspaceSection =
   | "requests"
   | "training"
   | "cross_validation"
+  | "ssl"
   | "registry"
   | "management"
   | "federation";
@@ -320,6 +322,9 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [benchmarkJob, setBenchmarkJob] = useState<SiteJobRecord | null>(null);
   const [crossValidationBusy, setCrossValidationBusy] = useState(false);
   const [crossValidationJob, setCrossValidationJob] = useState<SiteJobRecord | null>(null);
+  const [sslBusy, setSslBusy] = useState(false);
+  const [sslJob, setSslJob] = useState<SiteJobRecord | null>(null);
+  const [sslResult, setSslResult] = useState<SslPretrainingResponse | null>(null);
   const [siteValidationBusy, setSiteValidationBusy] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<AiClinicEmbeddingStatusResponse | null>(null);
   const [embeddingStatusBusy, setEmbeddingStatusBusy] = useState(false);
@@ -365,6 +370,22 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     batch_size: 16,
     val_split: 0.2,
     use_pretrained: true,
+  });
+  const [sslForm, setSslForm] = useState({
+    archive_base_dir: "",
+    architecture: "convnext_tiny",
+    init_mode: "imagenet" as "imagenet" | "random",
+    method: "byol" as "byol",
+    execution_mode: "auto" as "auto" | "cpu" | "gpu",
+    image_size: 224,
+    batch_size: 24,
+    epochs: 10,
+    learning_rate: 1e-4,
+    weight_decay: 1e-4,
+    num_workers: 8,
+    min_patient_quality: "medium" as "low" | "medium" | "high",
+    include_review_rows: false,
+    use_amp: true,
   });
 
   const canAggregate = user.role === "admin";
@@ -436,6 +457,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const benchmarkPercent = Math.max(0, Math.min(100, Math.round(benchmarkProgress?.percent ?? 0)));
   const crossValidationProgress = crossValidationJob?.result?.progress ?? null;
   const crossValidationPercent = Math.max(0, Math.min(100, Math.round(crossValidationProgress?.percent ?? 0)));
+  const sslProgress = sslJob?.result?.progress ?? null;
+  const sslPercent = Math.max(0, Math.min(100, Math.round(sslProgress?.percent ?? 0)));
   const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
     setToastState((current) => {
       const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
@@ -479,6 +502,18 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
         return pick(locale, "Model failed", "모델 실패");
       case "training_fold":
         return pick(locale, "Training fold", "fold 학습");
+      case "scanning_archive":
+        return pick(locale, "Scanning archive", "원본 스캔");
+      case "writing_manifest":
+        return pick(locale, "Writing manifest", "manifest 생성");
+      case "starting_ssl":
+        return pick(locale, "Starting SSL", "SSL 시작");
+      case "training_ssl":
+        return pick(locale, "SSL training", "SSL 학습");
+      case "saving_checkpoint":
+        return pick(locale, "Saving checkpoint", "체크포인트 저장");
+      case "saving_encoder":
+        return pick(locale, "Saving encoder", "인코더 저장");
       case "registering_component":
         return pick(locale, "Registering model", "모델 등록");
       case "selecting_ensemble":
@@ -615,6 +650,12 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setCrossValidationBusy,
     crossValidationJob,
     setCrossValidationJob,
+    sslBusy,
+    setSslBusy,
+    sslJob,
+    setSslJob,
+    sslResult,
+    setSslResult,
     siteValidationBusy,
     setSiteValidationBusy,
     embeddingStatus,
@@ -653,6 +694,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setInitialForm,
     crossValidationForm,
     setCrossValidationForm,
+    sslForm,
+    setSslForm,
     canAggregate,
     canManagePlatform,
     canManageStorageRoot,
@@ -680,6 +723,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     benchmarkPercent,
     crossValidationProgress,
     crossValidationPercent,
+    sslProgress,
+    sslPercent,
     formatTrainingStage,
     formatEmbeddingStage,
     toggleRocValidationSelection,

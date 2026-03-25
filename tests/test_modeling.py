@@ -61,6 +61,38 @@ class ModelManagerTests(unittest.TestCase):
         self.assertIn("calibration", metrics)
         self.assertIsInstance(metrics["calibration"]["bins"], list)
 
+    def test_build_prediction_records_include_sample_identity_and_probability(self):
+        manager = ModelManager()
+        rows = manager._image_prediction_rows_from_records(
+            [
+                {
+                    "patient_id": "P-001",
+                    "visit_date": "Initial",
+                    "culture_category": "bacterial",
+                    "source_image_path": "raw/a.jpg",
+                    "image_path": "roi/a_crop.png",
+                    "view": "white",
+                },
+                {
+                    "patient_id": "P-002",
+                    "visit_date": "FU #1",
+                    "culture_category": "fungal",
+                    "source_image_path": "raw/b.jpg",
+                    "image_path": "roi/b_crop.png",
+                    "view": "fluorescein",
+                },
+            ]
+        )
+        predictions = manager._build_prediction_records(rows, [0.2, 0.9], threshold=0.5)
+
+        self.assertEqual(len(predictions), 2)
+        self.assertEqual(predictions[0]["sample_kind"], "image")
+        self.assertEqual(predictions[0]["sample_key"], "image::P-001::Initial::raw/a.jpg")
+        self.assertEqual(predictions[0]["predicted_label"], "bacterial")
+        self.assertAlmostEqual(predictions[1]["positive_probability"], 0.9)
+        self.assertEqual(predictions[1]["predicted_label"], "fungal")
+        self.assertTrue(predictions[1]["is_correct"])
+
     def test_normalize_case_aggregation_respects_attention_mil_architecture(self):
         manager = ModelManager()
         self.assertEqual(manager.normalize_case_aggregation("attention_mil", "dinov2_mil"), "attention_mil")

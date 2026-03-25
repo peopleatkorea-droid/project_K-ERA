@@ -91,8 +91,13 @@ export async function request<T>(path: string, init: RequestInit = {}, token?: s
   return requestFromUrl<T>(buildApiUrl(path), init, token, "Local API server is unavailable.");
 }
 
-export async function requestSameOrigin<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
-  return requestFromUrl<T>(path, init, token, "Web API server is unavailable.");
+export async function requestSameOrigin<T>(
+  path: string,
+  init: RequestInit = {},
+  token?: string,
+  unavailableMessage = "Web API server is unavailable.",
+): Promise<T> {
+  return requestFromUrl<T>(path, init, token, unavailableMessage);
 }
 
 export async function requestBlob(

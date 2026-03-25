@@ -135,4 +135,13 @@ describe("home page site metadata helpers", () => {
       section: "management",
     });
   });
+
+  it("accepts an explicit ssl operations section", () => {
+    window.history.replaceState(null, "", "/?workspace=operations&section=ssl");
+
+    expect(parseOperationsLaunchFromSearch()).toEqual({
+      mode: "operations",
+      section: "ssl",
+    });
+  });
 });

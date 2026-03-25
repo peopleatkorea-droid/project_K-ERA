@@ -1,15 +1,14 @@
-from __future__ import annotations
-
 import mimetypes
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
 
+from kera_research.api.models import LesionBoxRequest, RepresentativeImageRequest
 from kera_research.api.routes.case_shared import (
     ImagePreviewBatchRequest,
     MedsamArtifactBackfillRequest,
@@ -48,9 +47,6 @@ def build_case_images_router(support: Any) -> APIRouter:
     lesion_preview_jobs_lock = support.lesion_preview_jobs_lock
     max_image_bytes = support.max_image_bytes
     InvalidImageUploadError = support.InvalidImageUploadError
-
-    RepresentativeImageRequest = support.RepresentativeImageRequest
-    LesionBoxRequest = support.LesionBoxRequest
 
     @router.get("/api/sites/{site_id}/medsam-artifacts/status")
     def get_medsam_artifact_status(
@@ -231,37 +227,38 @@ def build_case_images_router(support: Any) -> APIRouter:
     @router.post("/api/sites/{site_id}/images/representative")
     def set_representative_image(
         site_id: str,
-        payload: RepresentativeImageRequest,
+        payload: dict[str, Any] = Body(...),
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
+        parsed = RepresentativeImageRequest.model_validate(payload)
         site_store = require_site_access(cp, user, site_id)
-        visit_images = site_store.list_images_for_visit(payload.patient_id, payload.visit_date)
+        visit_images = site_store.list_images_for_visit(parsed.patient_id, parsed.visit_date)
         if not visit_images:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No images found for this visit.")
         require_visit_image_write_access(
             site_store,
             user,
-            patient_id=payload.patient_id,
-            visit_date=payload.visit_date,
+            patient_id=parsed.patient_id,
+            visit_date=parsed.visit_date,
         )
-        if payload.representative_image_id not in {image["image_id"] for image in visit_images}:
+        if parsed.representative_image_id not in {image["image_id"] for image in visit_images}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Representative image is not part of this visit.")
         site_store.update_representative_flags(
             {
-                image["image_id"]: image["image_id"] == payload.representative_image_id
+                image["image_id"]: image["image_id"] == parsed.representative_image_id
                 for image in visit_images
             }
         )
         queue_case_embedding_refresh(
             cp,
             site_store,
-            patient_id=payload.patient_id,
-            visit_date=payload.visit_date,
+            patient_id=parsed.patient_id,
+            visit_date=parsed.visit_date,
             trigger="representative_change",
         )
         return {
-            "images": site_store.list_images_for_visit(payload.patient_id, payload.visit_date),
+            "images": site_store.list_images_for_visit(parsed.patient_id, parsed.visit_date),
         }
 
     @router.post("/api/sites/{site_id}/images/previews")
@@ -370,10 +367,11 @@ def build_case_images_router(support: Any) -> APIRouter:
     def update_lesion_box(
         site_id: str,
         image_id: str,
-        payload: LesionBoxRequest,
+        payload: dict[str, Any] = Body(...),
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
+        parsed = LesionBoxRequest.model_validate(payload)
         site_store = require_site_access(cp, user, site_id)
         image = site_store.get_image(image_id)
         if image is None:
@@ -384,10 +382,10 @@ def build_case_images_router(support: Any) -> APIRouter:
             detail="Only the creator or a site admin can modify this image.",
         )
         lesion_prompt_box = {
-            "x0": min(max(float(payload.x0), 0.0), 1.0),
-            "y0": min(max(float(payload.y0), 0.0), 1.0),
-            "x1": min(max(float(payload.x1), 0.0), 1.0),
-            "y1": min(max(float(payload.y1), 0.0), 1.0),
+            "x0": min(max(float(parsed.x0), 0.0), 1.0),
+            "y0": min(max(float(parsed.y0), 0.0), 1.0),
+            "x1": min(max(float(parsed.x1), 0.0), 1.0),
+            "y1": min(max(float(parsed.y1), 0.0), 1.0),
         }
         if lesion_prompt_box["x1"] <= lesion_prompt_box["x0"] or lesion_prompt_box["y1"] <= lesion_prompt_box["y0"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lesion box coordinates are invalid.")

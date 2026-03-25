@@ -44,6 +44,7 @@ function buildProps(
     onCancelBenchmark: vi.fn(),
     onCancelInitialTraining: vi.fn(),
     onExportSelectedReport: vi.fn(),
+    onRefreshBenchmarkStatus: vi.fn(),
     onRunBenchmark: vi.fn(),
     onRunInitialTraining: vi.fn(),
     onResumeBenchmark: vi.fn(),
@@ -141,11 +142,281 @@ describe("TrainingSection", () => {
     expect(screen.getByText("Current phase: Phase 1 · Main benchmark")).toBeInTheDocument();
     expect(screen.getByText("remaining")).toBeInTheDocument();
     expect(screen.getByText(/Estimated remaining time:/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Refresh status" }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Stop benchmark" })).toBeInTheDocument();
     expect(settingsPanel).not.toBeNull();
     expect(within(settingsPanel as HTMLElement).getByText("GPU")).toBeInTheDocument();
     expect(within(settingsPanel as HTMLElement).getByText("0.0003")).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it("refreshes benchmark status and renders benchmark test metrics in the summary table", () => {
+    const onRefreshBenchmarkStatus = vi.fn();
+
+    render(
+      <TrainingSection
+        {...buildProps({
+          onRefreshBenchmarkStatus,
+          benchmarkJob: {
+            job_id: "job-3",
+            job_type: "initial_training_benchmark",
+            site_id: "HTTP_SITE",
+            status: "completed",
+            payload: {
+              architectures: ["efficientnet_v2_s", "dual_input_concat"],
+            },
+            result: {
+              response: {
+                best_architecture: "dual_input_concat",
+                results: [],
+                failures: [],
+              },
+            },
+            created_at: "2026-03-15T00:00:00Z",
+          },
+          benchmarkResult: {
+            best_architecture: "dual_input_concat",
+            results: [
+              {
+                architecture: "dual_input_concat",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.7732,
+                  test_metrics: {
+                    accuracy: 0.6,
+                    AUROC: 0.6896,
+                    balanced_accuracy: 0.5651,
+                  },
+                },
+                model_version: {
+                  version_name: "dual-input-v1",
+                },
+              },
+              {
+                architecture: "efficientnet_v2_s",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.6186,
+                  test_metrics: {
+                    accuracy: 0.7384,
+                    AUROC: 0.8093,
+                    balanced_accuracy: 0.7303,
+                  },
+                },
+                model_version: {
+                  version_name: "effnet-v1",
+                },
+              },
+            ],
+            failures: [],
+          },
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Refresh status" })[0]);
+    expect(onRefreshBenchmarkStatus).toHaveBeenCalledTimes(1);
+
+    expect(screen.getByText("8-model staged training summary")).toBeInTheDocument();
+    expect(screen.getByText("balanced acc")).toBeInTheDocument();
+    expect(screen.getAllByText("best test").length).toBeGreaterThan(0);
+    expect(screen.getByText("effnet-v1")).toBeInTheDocument();
+    expect(screen.getByText("dual-input-v1")).toBeInTheDocument();
+    expect(screen.getByText("0.809")).toBeInTheDocument();
+  });
+
+  it("opens the paper-ready benchmark figures panel from the benchmark summary", () => {
+    render(
+      <TrainingSection
+        {...buildProps({
+          benchmarkResult: {
+            best_architecture: "dual_input_concat",
+            results: [
+              {
+                architecture: "efficientnet_v2_s",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.6186,
+                  test_predictions: [
+                    {
+                      sample_key: "image::P-001::Initial::raw/a.jpg",
+                      sample_kind: "image",
+                      patient_id: "P-001",
+                      visit_date: "Initial",
+                      true_label: "bacterial",
+                      true_label_index: 0,
+                      predicted_label: "bacterial",
+                      predicted_label_index: 0,
+                      positive_probability: 0.21,
+                      is_correct: true,
+                    },
+                    {
+                      sample_key: "image::P-002::FU #1::raw/b.jpg",
+                      sample_kind: "image",
+                      patient_id: "P-002",
+                      visit_date: "FU #1",
+                      true_label: "fungal",
+                      true_label_index: 1,
+                      predicted_label: "fungal",
+                      predicted_label_index: 1,
+                      positive_probability: 0.89,
+                      is_correct: true,
+                    },
+                  ],
+                  test_metrics: {
+                    accuracy: 0.7384,
+                    AUROC: 0.8093,
+                    balanced_accuracy: 0.7303,
+                    F1: 0.7411,
+                    roc_curve: { fpr: [0, 0.1, 1], tpr: [0, 0.82, 1], thresholds: [1, 0.6, 0] },
+                    confusion_matrix: { labels: ["Bacterial", "Fungal"], matrix: [[9, 2], [3, 12]] },
+                  },
+                },
+                model_version: {
+                  version_name: "effnet-v1",
+                },
+              },
+              {
+                architecture: "convnext_tiny",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.5771,
+                  test_predictions: [
+                    {
+                      sample_key: "image::P-001::Initial::raw/a.jpg",
+                      sample_kind: "image",
+                      patient_id: "P-001",
+                      visit_date: "Initial",
+                      true_label: "bacterial",
+                      true_label_index: 0,
+                      predicted_label: "bacterial",
+                      predicted_label_index: 0,
+                      positive_probability: 0.34,
+                      is_correct: true,
+                    },
+                    {
+                      sample_key: "image::P-002::FU #1::raw/b.jpg",
+                      sample_kind: "image",
+                      patient_id: "P-002",
+                      visit_date: "FU #1",
+                      true_label: "fungal",
+                      true_label_index: 1,
+                      predicted_label: "fungal",
+                      predicted_label_index: 1,
+                      positive_probability: 0.77,
+                      is_correct: true,
+                    },
+                  ],
+                  test_metrics: {
+                    accuracy: 0.6621,
+                    AUROC: 0.8031,
+                    balanced_accuracy: 0.6412,
+                    F1: 0.6499,
+                    roc_curve: { fpr: [0, 0.16, 1], tpr: [0, 0.75, 1], thresholds: [1, 0.55, 0] },
+                    confusion_matrix: { labels: ["Bacterial", "Fungal"], matrix: [[8, 3], [5, 10]] },
+                  },
+                },
+                model_version: {
+                  version_name: "convnext-v1",
+                },
+              },
+            ],
+            failures: [],
+          },
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Paper figures" })[0]);
+    expect(screen.getByRole("dialog", { name: "Paper-ready benchmark figures" })).toBeInTheDocument();
+    expect(screen.getByText("Figure 1 · ROC curve")).toBeInTheDocument();
+    expect(screen.getByText("Figure export")).toBeInTheDocument();
+    expect(screen.getByText("Ensemble confusion matrix")).toBeInTheDocument();
+    expect(screen.getByText("Benchmark summary table")).toBeInTheDocument();
+  });
+
+  it("shows the paper figures launcher in the top action bar when the latest benchmark only exists on benchmarkJob.response", () => {
+    render(
+      <TrainingSection
+        {...buildProps({
+          benchmarkJob: {
+            job_id: "job-4",
+            job_type: "initial_training_benchmark",
+            site_id: "HTTP_SITE",
+            status: "completed",
+            payload: {
+              architectures: ["efficientnet_v2_s"],
+            },
+            result: {
+              response: {
+                best_architecture: "efficientnet_v2_s",
+                results: [
+                  {
+                    architecture: "efficientnet_v2_s",
+                    status: "completed",
+                    result: {
+                      best_val_acc: 0.6186,
+                      test_metrics: {
+                        accuracy: 0.7384,
+                        AUROC: 0.8093,
+                        balanced_accuracy: 0.7303,
+                        roc_curve: { fpr: [0, 0.1, 1], tpr: [0, 0.82, 1], thresholds: [1, 0.6, 0] },
+                        confusion_matrix: { labels: ["Bacterial", "Fungal"], matrix: [[9, 2], [3, 12]] },
+                      },
+                    },
+                    model_version: {
+                      version_name: "effnet-v1",
+                    },
+                  },
+                ],
+                failures: [],
+              },
+            },
+            created_at: "2026-03-15T00:00:00Z",
+          },
+        })}
+      />
+    );
+
+    expect(screen.getByText("The latest 8-model benchmark summary is available. Open the paper-figure panel here.")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Paper figures" }).length).toBeGreaterThan(0);
+    expect(screen.getByText("8-model staged training summary")).toBeInTheDocument();
+  });
+
+  it("shows refresh status in the benchmark summary even without an active benchmark job", () => {
+    const onRefreshBenchmarkStatus = vi.fn();
+
+    render(
+      <TrainingSection
+        {...buildProps({
+          onRefreshBenchmarkStatus,
+          benchmarkResult: {
+            best_architecture: "efficientnet_v2_s",
+            results: [
+              {
+                architecture: "efficientnet_v2_s",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.6186,
+                  test_metrics: {
+                    accuracy: 0.7384,
+                    AUROC: 0.8093,
+                    balanced_accuracy: 0.7303,
+                  },
+                },
+                model_version: {
+                  version_name: "effnet-v1",
+                },
+              },
+            ],
+            failures: [],
+          },
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Refresh status" })[0]);
+    expect(onRefreshBenchmarkStatus).toHaveBeenCalledTimes(1);
   });
 
   it("shows resume when a cancelled benchmark has remaining architectures", () => {

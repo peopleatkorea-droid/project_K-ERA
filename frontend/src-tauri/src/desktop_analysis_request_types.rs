@@ -55,6 +55,15 @@ struct SiteJobCommandRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct SiteJobListCommandRequest {
+    site_id: String,
+    token: String,
+    job_type: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CasePreviewCommandRequest {
     site_id: String,
     token: String,
@@ -120,6 +129,7 @@ struct LocalApiJsonCommandRequest {
     token: Option<String>,
     query: Option<Vec<LocalApiQueryParam>>,
     body: Option<JsonValue>,
+    control_plane_owner: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,6 +256,26 @@ struct CrossValidationCommandRequest {
     batch_size: Option<i64>,
     val_split: Option<f64>,
     use_pretrained: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SSLPretrainingCommandRequest {
+    site_id: String,
+    token: String,
+    archive_base_dir: Option<String>,
+    architecture: Option<String>,
+    init_mode: Option<String>,
+    method: Option<String>,
+    execution_mode: Option<String>,
+    image_size: Option<i64>,
+    batch_size: Option<i64>,
+    epochs: Option<i64>,
+    learning_rate: Option<f64>,
+    weight_decay: Option<f64>,
+    num_workers: Option<i64>,
+    min_patient_quality: Option<String>,
+    include_review_rows: Option<bool>,
+    use_amp: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,12 +1,21 @@
 import { startTransition, useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 
+import { AdminWorkspace, type WorkspaceSection } from "../components/admin-workspace";
 import { CaseWorkspace } from "../components/case-workspace";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Field } from "../components/ui/field";
 import { SectionHeader } from "../components/ui/section-header";
-import { downloadManifest, fetchSiteSummary, type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
+import {
+  downloadManifest,
+  fetchSiteSummary,
+  fetchSiteSummaryCounts,
+  mergeSiteSummaryCounts,
+  type AuthUser,
+  type SiteRecord,
+  type SiteSummary,
+} from "../lib/api";
 import { prewarmPatientListPage } from "../lib/cases";
 import {
   clearDesktopSession,
@@ -29,14 +38,20 @@ import {
   type DesktopAppConfigState,
   type DesktopAppConfigValues,
 } from "../lib/desktop-app-config";
-import { ensureDesktopLocalRuntimeReady } from "../lib/desktop-diagnostics";
-import { stopDesktopLocalRuntime } from "../lib/desktop-diagnostics";
+import { describeDesktopGoogleLoginError } from "../lib/desktop-auth-errors";
+import { ensureDesktopLocalBackendReady, stopDesktopLocalRuntime } from "../lib/desktop-diagnostics";
 import { authenticateWithDesktopGoogle } from "../lib/desktop-google-auth";
+import {
+  probeDesktopControlPlaneStatus,
+  type DesktopControlPlaneProbe,
+} from "../lib/desktop-control-plane-status";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
+import { prewarmDesktopWorker } from "../lib/desktop-runtime-prewarm";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import { DesktopLandingScreen } from "./desktop-landing";
 
 type ConfigFormState = DesktopAppConfigValues;
+type DesktopWorkspaceMode = "canvas" | "operations";
 
 function createEmptyConfigForm(): ConfigFormState {
   return {
@@ -61,6 +76,8 @@ function DesktopShellApp() {
   const [summary, setSummary] = useState<SiteSummary | null>(null);
   const [config, setConfig] = useState<DesktopAppConfigState | null>(null);
   const [configForm, setConfigForm] = useState<ConfigFormState>(createEmptyConfigForm);
+  const [workspaceMode, setWorkspaceMode] = useState<DesktopWorkspaceMode>("canvas");
+  const [operationsSection, setOperationsSection] = useState<WorkspaceSection>("management");
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [adminForm, setAdminForm] = useState({ username: "", password: "" });
@@ -70,6 +87,8 @@ function DesktopShellApp() {
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [controlPlaneStatus, setControlPlaneStatus] = useState<DesktopControlPlaneProbe | null>(null);
+  const [controlPlaneStatusBusy, setControlPlaneStatusBusy] = useState(false);
 
   const copy = {
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
@@ -171,7 +190,7 @@ function DesktopShellApp() {
       setConfig(nextConfig);
       setConfigForm(nextConfig.values);
       if (autoStart && nextConfig.setup_ready) {
-        await ensureDesktopLocalRuntimeReady();
+        await ensureDesktopLocalBackendReady();
       }
     } catch (nextError) {
       setRuntimeError(describeError(nextError, copy.runtimeFailed));
@@ -251,22 +270,70 @@ function DesktopShellApp() {
   }, [token, user]);
 
   useEffect(() => {
+    if (!token || !user) {
+      setControlPlaneStatus(null);
+      setControlPlaneStatusBusy(false);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setControlPlaneStatusBusy(true);
+    void probeDesktopControlPlaneStatus(controller.signal)
+      .then((nextStatus) => {
+        if (!cancelled) {
+          setControlPlaneStatus(nextStatus);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setControlPlaneStatusBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [token, user, workspaceMode]);
+
+  useEffect(() => {
+    if (!token || !user || user.approval_status !== "approved" || workspaceMode !== "operations") {
+      return;
+    }
+    void prewarmDesktopWorker().catch((nextError) => {
+      console.warn("[kera-desktop-worker-prewarm]", nextError);
+    });
+  }, [token, user, workspaceMode]);
+
+  useEffect(() => {
     if (!token || !selectedSiteId || !user || user.approval_status !== "approved") {
       setSummary(null);
       return;
     }
     let cancelled = false;
-    void fetchSiteSummary(selectedSiteId, token)
-      .then((nextSummary) => {
+
+    async function loadSiteSummary() {
+      try {
+        const nextCounts = await fetchSiteSummaryCounts(selectedSiteId, token);
+        if (!cancelled) {
+          setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
+        }
+      } catch {
+        // Counts are an optimization; fall back to the full summary request.
+      }
+
+      try {
+        const nextSummary = await fetchSiteSummary(selectedSiteId, token);
         if (!cancelled) {
           setSummary(nextSummary);
         }
-      })
-      .catch((nextError) => {
+      } catch (nextError) {
         if (!cancelled) {
           setError(describeError(nextError, copy.loginFailed));
         }
-      });
+      }
+    }
+
+    void loadSiteSummary();
     return () => {
       cancelled = true;
     };
@@ -284,7 +351,7 @@ function DesktopShellApp() {
       setToken(auth.access_token);
     } catch (nextError) {
       console.error("[kera-desktop-google-login]", nextError);
-      setError(describeError(nextError, copy.loginFailed));
+      setError(describeDesktopGoogleLoginError(locale, nextError, copy.loginFailed));
     } finally {
       setAuthBusy(false);
     }
@@ -381,10 +448,29 @@ function DesktopShellApp() {
     if (!token) {
       return;
     }
+    try {
+      const nextCounts = await fetchSiteSummaryCounts(siteId, token);
+      startTransition(() => {
+        setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
+      });
+    } catch {
+      // Explicit refresh still falls back to the full summary if the quick path is unavailable.
+    }
     const nextSummary = await fetchSiteSummary(siteId, token);
     startTransition(() => {
       setSummary(nextSummary);
     });
+  }
+
+  async function refreshApprovedSites(currentToken: string) {
+    const nextSites = await desktopFetchApprovedSites(currentToken);
+    setSites(nextSites);
+    setSelectedSiteId((current) =>
+      current && nextSites.some((item) => item.site_id === current) ? current : (nextSites[0]?.site_id ?? null),
+    );
+    if (user) {
+      void saveDesktopSessionCache({ token: currentToken, user, sites: nextSites });
+    }
   }
 
   function handleLogout() {
@@ -395,6 +481,8 @@ function DesktopShellApp() {
     setSites([]);
     setSelectedSiteId(null);
     setSummary(null);
+    setWorkspaceMode("canvas");
+    setOperationsSection("management");
     setWorkspaceSettingsOpen(false);
     setAdminLoginOpen(false);
     setAdminForm({ username: "", password: "" });
@@ -403,6 +491,32 @@ function DesktopShellApp() {
 
   const screenError = error ?? runtimeError;
   const approvedWorkspaceSession = token && user && user.approval_status === "approved";
+  const canOpenOperations = Boolean(approvedWorkspaceSession && user && ["admin", "site_admin"].includes(user.role));
+
+  if (approvedWorkspaceSession && workspaceMode === "operations" && canOpenOperations && !workspaceSettingsOpen) {
+    return (
+      <AdminWorkspace
+        token={token}
+        user={user}
+        sites={sites}
+        sitesBusy={bootstrapBusy && sites.length === 0}
+        selectedSiteId={selectedSiteId}
+        summary={summary}
+        initialSection={operationsSection}
+        controlPlaneStatus={controlPlaneStatus}
+        controlPlaneStatusBusy={controlPlaneStatusBusy}
+        onSelectSite={setSelectedSiteId}
+        onOpenCanvas={() => setWorkspaceMode("canvas")}
+        onLogout={handleLogout}
+        onRefreshSites={async () => {
+          await refreshApprovedSites(token);
+        }}
+        onSiteDataChanged={handleRefreshSite}
+        theme={resolvedTheme}
+        onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+      />
+    );
+  }
 
   if (approvedWorkspaceSession && !workspaceSettingsOpen) {
     return (
@@ -412,12 +526,17 @@ function DesktopShellApp() {
         sites={sites}
         selectedSiteId={selectedSiteId}
         summary={summary}
-        canOpenOperations={false}
+        canOpenOperations={canOpenOperations}
         theme={resolvedTheme}
+        controlPlaneStatus={controlPlaneStatus}
+        controlPlaneStatusBusy={controlPlaneStatusBusy}
         onSelectSite={setSelectedSiteId}
         onExportManifest={() => void handleExportManifest()}
         onLogout={handleLogout}
-        onOpenOperations={() => undefined}
+        onOpenOperations={(section) => {
+          setOperationsSection(section ?? "management");
+          setWorkspaceMode("operations");
+        }}
         onOpenDesktopSettings={() => setWorkspaceSettingsOpen(true)}
         onSiteDataChanged={handleRefreshSite}
         onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}

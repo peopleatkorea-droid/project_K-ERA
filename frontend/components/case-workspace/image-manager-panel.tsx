@@ -11,10 +11,7 @@ import {
   canvasFooterClass,
   canvasFooterCopyClass,
   canvasFooterTitleClass,
-  canvasPropertyCardClass,
   canvasPropertyGridClass,
-  canvasPropertyLabelClass,
-  canvasPropertyValueClass,
   canvasSidebarItemClass,
   imageGridClass,
   imagePreviewCoverClass,
@@ -62,8 +59,6 @@ type Props = {
 type ImageGridProps = {
   locale: Locale;
   images: DraftImage[];
-  viewLabel: string;
-  storageLabel: string;
   draftLesionPromptBoxes: LesionBoxMap;
   onPointerDown: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerMove: (imageId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -72,11 +67,16 @@ type ImageGridProps = {
   onSetRepresentative: (draftId: string) => void;
 };
 
+const compactSummaryPropertyClass =
+  "flex min-w-0 items-center justify-between gap-3 rounded-[18px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.82))] px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.03)] dark:bg-white/4";
+const compactSummaryLabelClass = "shrink-0 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-muted";
+const compactSummaryValueClass = "min-w-0 truncate text-sm font-medium leading-6 text-ink text-right";
+
 function SummaryProperty({ label, value }: { label: string; value: string }) {
   return (
-    <div className={canvasPropertyCardClass}>
-      <span className={canvasPropertyLabelClass}>{label}</span>
-      <span className={canvasPropertyValueClass}>{value}</span>
+    <div className={compactSummaryPropertyClass}>
+      <span className={compactSummaryLabelClass}>{label}</span>
+      <span className={compactSummaryValueClass}>{value}</span>
     </div>
   );
 }
@@ -84,8 +84,6 @@ function SummaryProperty({ label, value }: { label: string; value: string }) {
 function ImageGrid({
   locale,
   images,
-  viewLabel,
-  storageLabel,
   draftLesionPromptBoxes,
   onPointerDown,
   onPointerMove,
@@ -101,8 +99,8 @@ function ImageGrid({
     <div className={imageGridClass(images.length === 1)}>
       {images.map((image) => {
         return (
-          <Card key={image.draft_id} as="article" variant="interactive" className="grid gap-4 overflow-hidden rounded-[20px] p-4">
-            <div className="relative overflow-hidden rounded-[18px] border border-border/70 bg-surface-muted/55">
+          <Card key={image.draft_id} as="article" variant="interactive" className="grid gap-2 overflow-hidden rounded-[18px] p-2.5">
+            <div className="relative overflow-hidden rounded-[16px] border border-border/70 bg-surface-muted/55">
               <img
                 src={image.preview_url}
                 alt={image.file.name}
@@ -114,36 +112,22 @@ function ImageGrid({
               />
             </div>
 
-            <div className="grid gap-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <strong className="block text-sm font-semibold text-ink [overflow-wrap:anywhere]" title={image.file.name}>
-                    {image.file.name}
-                  </strong>
-                  <span className="mt-1 block text-xs text-muted">{storageLabel}</span>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    className={`${togglePillClass(image.is_representative, true)} whitespace-nowrap px-3`}
+                    type="button"
+                    onClick={() => onSetRepresentative(image.draft_id)}
+                  >
+                    {image.is_representative
+                      ? pick(locale, "Representative", "대표 이미지")
+                      : pick(locale, "Mark representative", "대표로 지정")}
+                  </button>
                 </div>
-                <Button size="sm" variant="ghost" type="button" onClick={() => onRemove(image.draft_id)}>
+                <Button size="sm" variant="ghost" type="button" className="min-h-9 shrink-0 px-3.5" onClick={() => onRemove(image.draft_id)}>
                   {pick(locale, "Remove", "제거")}
                 </Button>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  className={togglePillClass(image.is_representative)}
-                  type="button"
-                  onClick={() => onSetRepresentative(image.draft_id)}
-                >
-                  {image.is_representative
-                    ? pick(locale, "Representative", "대표 이미지")
-                    : pick(locale, "Mark representative", "대표로 지정")}
-                </button>
-                <span className="inline-flex min-h-8 items-center rounded-full border border-border/70 bg-white/55 px-3 text-[0.76rem] font-medium text-muted dark:bg-white/4">
-                  {viewLabel}
-                </span>
-              </div>
-
-              <div className={canvasSidebarItemClass}>
-                {pick(locale, "This image will upload with the case.", "이 이미지는 케이스와 함께 업로드됩니다.")}
               </div>
             </div>
           </Card>
@@ -159,8 +143,6 @@ type ImageBucketProps = {
   uploadLabel: string;
   dropTitle: string;
   dropBody: string;
-  viewLabel: string;
-  storageLabel: string;
   view: "white" | "fluorescein";
   images: DraftImage[];
   inputRef: RefObject<HTMLInputElement | null>;
@@ -180,8 +162,6 @@ function ImageBucket({
   uploadLabel,
   dropTitle,
   dropBody,
-  viewLabel,
-  storageLabel,
   view,
   images,
   inputRef,
@@ -195,8 +175,8 @@ function ImageBucket({
   setRepresentativeImage,
 }: ImageBucketProps) {
   return (
-    <Card as="section" variant="nested" className="grid content-start gap-4 rounded-[22px] border border-border/70 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <Card as="section" variant="nested" className="grid content-start gap-2 rounded-[22px] border border-border/70 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="grid gap-1">
           <h4 className="m-0 text-[1.08rem] font-semibold tracking-[-0.03em] text-ink">{title}</h4>
           <p className="m-0 text-sm leading-6 text-muted">{`${images.length} ${pick(locale, "images", "이미지")}`}</p>
@@ -207,7 +187,7 @@ function ImageBucket({
       </div>
 
       <div
-        className="group cursor-pointer rounded-[24px] border border-dashed border-brand/22 bg-brand-soft/65 p-5 transition hover:border-brand/36 hover:bg-brand-soft/82"
+        className="group cursor-pointer rounded-[22px] border border-dashed border-brand/22 bg-brand-soft/65 p-3 transition hover:border-brand/36 hover:bg-brand-soft/82"
         onClick={() => openFilePicker(view)}
         onDragOver={(event) => {
           event.preventDefault();
@@ -237,8 +217,6 @@ function ImageBucket({
       <ImageGrid
         locale={locale}
         images={images}
-        viewLabel={viewLabel}
-        storageLabel={storageLabel}
         draftLesionPromptBoxes={draftLesionPromptBoxes}
         onPointerDown={handleDraftLesionPointerDown}
         onPointerMove={handleDraftLesionPointerMove}
@@ -280,12 +258,15 @@ export function ImageManagerPanel({
   return (
     <CanvasBlock
       eyebrow={pick(locale, "Images", "이미지")}
-      title={pick(locale, "Build the image board before submission", "제출 전에 이미지 보드를 먼저 완성합니다")}
-      summary={pick(
-        locale,
-        "Upload at any time. Intake completion now stabilizes submission, not image entry, so the board stays fluid while you work.",
-        "이미지는 언제든 올릴 수 있습니다. 이제 intake 완료는 업로드를 막지 않고 제출만 안정화하므로 흐름이 더 자연스럽게 유지됩니다."
-      )}
+      title={
+        <span className="inline-flex items-center gap-2">
+          <span>{pick(locale, "Build the image", "제출 전에 이미지")}</span>
+          <span role="img" aria-label={pick(locale, "Image board", "이미지 보드")}>
+            🖼️
+          </span>
+          <span>{pick(locale, "board before submission", "보드를 먼저 완성합니다")}</span>
+        </span>
+      }
       statusLabel={
         readyToSubmit
           ? pick(locale, "Ready to submit", "제출 준비됨")
@@ -302,15 +283,13 @@ export function ImageManagerPanel({
 
       <div className={canvasSidebarItemClass}>{imageSummary}</div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-3 xl:grid-cols-2">
         <ImageBucket
           locale={locale}
           title={pick(locale, "White (Slit) lane", "White (Slit) 레인")}
           uploadLabel={pick(locale, "Add files", "파일 추가")}
           dropTitle={pick(locale, "Drop White (Slit) photos here", "White (Slit) 사진을 여기에 놓으세요")}
-          dropBody={pick(locale, "Files stay local until this case is saved.", "이 파일들은 케이스를 저장하기 전까지 로컬에만 머뭅니다.")}
-          viewLabel={pick(locale, "White", "White")}
-          storageLabel={pick(locale, "Draft lane: White", "초안 레인: White")}
+          dropBody={pick(locale, "Files stay local.", "이 파일들은 로컬에만 머뭅니다.")}
           view="white"
           images={whiteDraftImages}
           inputRef={whiteFileInputRef}
@@ -329,9 +308,7 @@ export function ImageManagerPanel({
           title={pick(locale, "Fluorescein lane", "Fluorescein 레인")}
           uploadLabel={pick(locale, "Add files", "파일 추가")}
           dropTitle={pick(locale, "Drop Fluorescein photos here", "Fluorescein 사진을 여기에 놓으세요")}
-          dropBody={pick(locale, "Files stay local until this case is saved.", "이 파일들은 케이스를 저장하기 전까지 로컬에만 머뭅니다.")}
-          viewLabel={pick(locale, "Fluorescein", "Fluorescein")}
-          storageLabel={pick(locale, "Draft lane: Fluorescein", "초안 레인: Fluorescein")}
+          dropBody={pick(locale, "Files stay local.", "이 파일들은 로컬에만 머뭅니다.")}
           view="fluorescein"
           images={fluoresceinDraftImages}
           inputRef={fluoresceinFileInputRef}

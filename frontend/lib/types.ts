@@ -386,6 +386,11 @@ export type SiteSummary = {
   };
 };
 
+export type SiteSummaryCounts = Pick<
+  SiteSummary,
+  "site_id" | "n_patients" | "n_visits" | "n_images" | "n_active_visits"
+>;
+
 export type CaseValidationSummary = {
   validation_id: string;
   project_id: string;
@@ -1243,6 +1248,55 @@ export type AggregationRecord = {
   created_at?: string | null;
 };
 
+export type InitialTrainingPredictionRecord = {
+  sample_key: string;
+  sample_kind: "image" | "visit" | string;
+  patient_id: string;
+  visit_date: string;
+  true_label: string;
+  true_label_index: number;
+  predicted_label: string;
+  predicted_label_index: number;
+  positive_probability: number;
+  is_correct: boolean;
+  source_image_path?: string | null;
+  prepared_image_path?: string | null;
+  cornea_image_path?: string | null;
+  lesion_image_path?: string | null;
+  source_image_paths?: string[];
+  prepared_image_paths?: string[];
+  view?: string | null;
+  views?: string[];
+};
+
+export type InitialTrainingCalibrationRecord = {
+  n_bins?: number | null;
+  bins?: Array<{
+    bin_start?: number | null;
+    bin_end?: number | null;
+    count?: number | null;
+    mean_confidence?: number | null;
+    positive_rate?: number | null;
+  }> | null;
+};
+
+export type InitialTrainingMetricsRecord = {
+  AUROC?: number | null;
+  accuracy?: number | null;
+  sensitivity?: number | null;
+  specificity?: number | null;
+  balanced_accuracy?: number | null;
+  F1?: number | null;
+  brier_score?: number | null;
+  ece?: number | null;
+  decision_threshold?: number | null;
+  n_samples?: number | null;
+  confusion_matrix?: ConfusionMatrixRecord | null;
+  roc_curve?: RocCurveRecord | null;
+  calibration?: InitialTrainingCalibrationRecord | null;
+  [key: string]: unknown;
+};
+
 export type InitialTrainingResult = {
   training_id: string;
   version_name: string;
@@ -1260,8 +1314,10 @@ export type InitialTrainingResult = {
   use_pretrained: boolean;
   patient_split?: Record<string, unknown>;
   history?: Array<Record<string, unknown>>;
-  val_metrics?: Record<string, number | null>;
-  test_metrics?: Record<string, number | null>;
+  val_metrics?: InitialTrainingMetricsRecord | null;
+  test_metrics?: InitialTrainingMetricsRecord | null;
+  val_predictions?: InitialTrainingPredictionRecord[] | null;
+  test_predictions?: InitialTrainingPredictionRecord[] | null;
   model_version?: ModelVersionRecord;
   crop_mode?: "automated" | "manual" | "both" | "paired";
   case_aggregation?: string | null;
@@ -1307,6 +1363,10 @@ export type TrainingJobProgress = {
   message?: string | null;
   percent?: number | null;
   architecture?: string | null;
+  init_mode?: string | null;
+  method?: string | null;
+  archive_base_dir?: string | null;
+  run_id?: string | null;
   architecture_index?: number | null;
   architecture_count?: number | null;
   crop_mode?: "automated" | "manual" | "both" | string | null;
@@ -1318,11 +1378,66 @@ export type TrainingJobProgress = {
   num_folds?: number | null;
   epoch?: number | null;
   epochs?: number | null;
+  current_step_in_epoch?: number | null;
+  steps_per_epoch?: number | null;
+  global_step?: number | null;
   train_loss?: number | null;
   val_acc?: number | null;
+  last_loss?: number | null;
+  batch_size?: number | null;
+  learning_rate?: number | null;
+  records_count?: number | null;
+  manifest_total_images?: number | null;
+  manifest_clean_images?: number | null;
+  manifest_anomaly_images?: number | null;
+  clean_manifest_path?: string | null;
+  anomaly_manifest_path?: string | null;
+  manifest_summary_path?: string | null;
+  output_dir?: string | null;
+  checkpoint_path?: string | null;
+  encoder_latest_path?: string | null;
+  summary_path?: string | null;
   completed_architectures?: string[] | null;
   remaining_architectures?: string[] | null;
   failed_architectures?: string[] | null;
+};
+
+export type SslPretrainingManifestRecord = {
+  base_dir?: string | null;
+  generated_at?: string | null;
+  total_supported_images?: number | null;
+  clean_images?: number | null;
+  anomaly_images?: number | null;
+  extension_counts?: Record<string, number> | null;
+  patient_quality_counts?: Record<string, number> | null;
+  anomaly_reason_counts?: Record<string, number> | null;
+  capture_year_counts?: Record<string, number> | null;
+  clean_manifest_path?: string | null;
+  anomaly_manifest_path?: string | null;
+  summary_path?: string | null;
+};
+
+export type SslPretrainingTrainingSummary = {
+  status: string;
+  config: Record<string, unknown>;
+  device: string;
+  records_count: number;
+  history: Array<Record<string, unknown>>;
+  checkpoint_path: string;
+  encoder_latest_path: string;
+  log_path: string;
+  summary_path: string;
+};
+
+export type SslPretrainingResponse = {
+  site_id: string;
+  execution_device: string;
+  run: {
+    run_id: string;
+    archive_base_dir: string;
+    manifest: SslPretrainingManifestRecord;
+    training: SslPretrainingTrainingSummary;
+  };
 };
 
 export type SiteJobRecord = {
@@ -1342,7 +1457,13 @@ export type SiteJobRecord = {
   finished_at?: string | null;
   result?: {
     progress?: TrainingJobProgress | null;
-    response?: InitialTrainingResponse | InitialTrainingBenchmarkResponse | CrossValidationRunResponse | SiteValidationRunResponse | null;
+    response?:
+      | InitialTrainingResponse
+      | InitialTrainingBenchmarkResponse
+      | CrossValidationRunResponse
+      | SiteValidationRunResponse
+      | SslPretrainingResponse
+      | null;
     error?: string | null;
   } | null;
   created_at: string;
@@ -1362,6 +1483,12 @@ export type InitialTrainingBenchmarkJobResponse = {
 };
 
 export type CrossValidationJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type SslPretrainingJobResponse = {
   site_id: string;
   execution_device: string;
   job: SiteJobRecord;

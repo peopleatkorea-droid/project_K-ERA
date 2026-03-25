@@ -892,13 +892,16 @@ describe("CaseWorkspace integration", () => {
 
     await openNewCaseCanvas();
 
-    expect(screen.queryByText("Build the image board before submission")).not.toBeInTheDocument();
+    expect(screen.queryByText("Build the image")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save to hospital" })).not.toBeInTheDocument();
 
     completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
 
-    expect(await screen.findByText("Build the image board before submission")).toBeInTheDocument();
+    expect(await screen.findByText("Build the image")).toBeInTheDocument();
+    expect(screen.getByText("🖼️")).toBeInTheDocument();
+    expect(screen.getByText("board before submission")).toBeInTheDocument();
+    expect(screen.getByLabelText("Image board")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save to hospital" })).toBeInTheDocument();
     expect(screen.queryByText("Lesion boxes")).not.toBeInTheDocument();
   });
@@ -978,6 +981,51 @@ describe("CaseWorkspace integration", () => {
     expect(within(hospitalSection).getByText("2 linked")).toBeInTheDocument();
   });
 
+  it("shows the latest autosaved draft in the hospital rail and opens it from list view", async () => {
+    seedDraft();
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
+    await screen.findByText("Patient list");
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    expect(within(hospitalSection).getByText("Latest autosave")).toBeInTheDocument();
+
+    fireEvent.click(within(hospitalSection).getByRole("button", { name: /KERA-2026-001/i }));
+
+    await screen.findByRole("button", { name: "Lock intake" });
+    expect(screen.getByLabelText("Patient ID")).toHaveValue("KERA-2026-001");
+  });
+
+  it("hides the latest autosaved draft from the hospital rail once intake is locked", async () => {
+    seedDraft();
+    renderWorkspace();
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    expect(await within(hospitalSection).findByText("Latest autosave")).toBeInTheDocument();
+
+    fireEvent.click(within(hospitalSection).getByRole("button", { name: /KERA-2026-001/i }));
+    await screen.findByRole("button", { name: "Lock intake" });
+
+    fireEvent.change(screen.getByLabelText("Age"), {
+      target: { value: "65" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+
+    await waitFor(() => {
+      expect(within(hospitalSection).queryByText("Latest autosave")).not.toBeInTheDocument();
+      expect(within(hospitalSection).queryByText("KERA-2026-001")).not.toBeInTheDocument();
+    });
+  });
+
   it("requires both registry confirmations before joining", async () => {
     const onSiteDataChanged = vi.fn(async () => undefined);
     renderWorkspace(onSiteDataChanged, {
@@ -1051,7 +1099,7 @@ describe("CaseWorkspace integration", () => {
     });
   });
 
-  it("restores draft images after the workspace is reopened", async () => {
+  it("restores draft images after the workspace is reopened until a fresh new case is requested", async () => {
     const { container, unmount } = renderWorkspace();
 
     await openNewCaseCanvas();
@@ -1071,14 +1119,18 @@ describe("CaseWorkspace integration", () => {
     expect(
       (
         await screen.findAllByText("Recovered the last saved draft for this hospital, including local images.")
-      ).length
+    ).length
     ).toBeGreaterThan(0);
 
     fireEvent.click(await screen.findByRole("button", { name: /New case/i }));
-    await screen.findByText("Build the image board before submission");
+    await screen.findByRole("button", { name: "Lock intake" });
 
-    expect(screen.getAllByText(/KERA-2026-001/).length).toBeGreaterThan(0);
-    expect(screen.getByText(file.name)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Patient ID")).toHaveValue("");
+      expect(screen.queryByAltText(file.name)).not.toBeInTheDocument();
+      expect(screen.queryByText("Build the image")).not.toBeInTheDocument();
+      expect(window.localStorage.getItem("kera_workspace_draft:user_researcher:SITE_A")).toBeNull();
+    });
   });
 
   it("highlights selected predisposing factors without showing a duplicate sidebar card", async () => {
@@ -1334,7 +1386,8 @@ describe("CaseWorkspace integration", () => {
         "test-token",
         expect.objectContaining({
           patient_id: "KERA-2026-001",
-          visit_date: "Initial",
+          visit_date: "FU #1",
+          is_initial_visit: false,
         }),
       );
     });
@@ -1874,6 +1927,75 @@ describe("CaseWorkspace integration", () => {
     expect(screen.getByAltText("KERA-2026-001-case_3")).toBeInTheDocument();
     expect(screen.queryByAltText("KERA-2026-001-case_4")).not.toBeInTheDocument();
     expect(screen.getByText("+1")).toBeInTheDocument();
+  });
+
+  it("clears the patient search and reloads the full list when list view is clicked", async () => {
+    apiMocks.fetchPatientListPage.mockImplementation(async (_siteId, _token, options = {}) => {
+      const search = String(options.search ?? "").trim().toLowerCase();
+      const baseRow = {
+        patient_id: "KERA-2026-001",
+        latest_case: {
+          case_id: "case_1",
+          patient_id: "KERA-2026-001",
+          chart_alias: "",
+          local_case_code: "",
+          culture_category: "bacterial",
+          culture_species: "Staphylococcus aureus",
+          additional_organisms: [],
+          visit_date: "Initial",
+          actual_visit_date: null,
+          created_by_user_id: "user_researcher",
+          created_at: "2026-03-15T00:00:00Z",
+          latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+          image_count: 1,
+          representative_image_id: "image_1",
+          representative_view: "white",
+          age: 0,
+          sex: "female",
+          visit_status: "active",
+          is_initial_visit: true,
+          smear_result: "not done",
+          polymicrobial: false,
+        },
+        case_count: 1,
+        organism_summary: "Staphylococcus aureus",
+        representative_thumbnails: [],
+      };
+      const items = search === "candida" ? [] : [baseRow];
+      return {
+        items,
+        page: 1,
+        page_size: 25,
+        total_count: items.length,
+        total_pages: 1,
+      };
+    });
+
+    renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: /List view/i }));
+
+    const searchInput = screen.getByPlaceholderText("Search patient or organism");
+    fireEvent.change(searchInput, { target: { value: "Candida" } });
+
+    await waitFor(() => {
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ search: "Candida" }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /List view/i }));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search patient or organism")).toHaveValue("");
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ search: "" }),
+      );
+    });
   });
 
   it("shows patient timeline images even when image records only match by visit date", async () => {

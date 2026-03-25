@@ -66,11 +66,12 @@ describe("cases desktop wiring", () => {
     desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(false);
   });
 
-  it("uses the desktop local API JSON bridge for site summary and lesion box writes", async () => {
+  it("uses the desktop local API JSON bridge for staged site summary and lesion box writes", async () => {
     desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(true);
     desktopLocalApiMocks.requestDesktopLocalApiJson.mockResolvedValue({});
 
     const mod = await import("./cases");
+    await mod.fetchSiteSummaryCounts("SITE_A", "desktop-token");
     await mod.fetchSiteSummary("SITE_A", "desktop-token");
     await mod.updateImageLesionBox("SITE_A", "image_1", "desktop-token", {
       x0: 0.1,
@@ -82,11 +83,16 @@ describe("cases desktop wiring", () => {
 
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
       1,
-      "/api/sites/SITE_A/summary",
+      "/api/sites/SITE_A/summary/counts",
       "desktop-token",
     );
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
       2,
+      "/api/sites/SITE_A/summary",
+      "desktop-token",
+    );
+    expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
+      3,
       "/api/sites/SITE_A/images/image_1/lesion-box",
       "desktop-token",
       {
@@ -100,7 +106,7 @@ describe("cases desktop wiring", () => {
       },
     );
     expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
-      3,
+      4,
       "/api/sites/SITE_A/images/image_1/lesion-box",
       "desktop-token",
       {
@@ -108,6 +114,51 @@ describe("cases desktop wiring", () => {
       },
     );
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("merges staged summary counts without dropping same-site details", async () => {
+    const mod = await import("./cases");
+
+    expect(
+      mod.mergeSiteSummaryCounts(
+        {
+          site_id: "SITE_A",
+          n_patients: 1,
+          n_visits: 2,
+          n_images: 3,
+          n_active_visits: 1,
+          n_validation_runs: 4,
+          latest_validation: { validation_id: "val_1" },
+          research_registry: {
+            site_enabled: true,
+            user_enrolled: true,
+            included_cases: 7,
+            excluded_cases: 1,
+          },
+        },
+        {
+          site_id: "SITE_A",
+          n_patients: 50,
+          n_visits: 133,
+          n_images: 408,
+          n_active_visits: 19,
+        },
+      ),
+    ).toMatchObject({
+      site_id: "SITE_A",
+      n_patients: 50,
+      n_visits: 133,
+      n_images: 408,
+      n_active_visits: 19,
+      n_validation_runs: 4,
+      latest_validation: { validation_id: "val_1" },
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 7,
+        excluded_cases: 1,
+      },
+    });
   });
 
   it("uses the desktop local API bridges for medsam and bulk import flows", async () => {

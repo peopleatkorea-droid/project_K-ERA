@@ -531,6 +531,12 @@ async function reviewMainAccessRequestRecord(
     }
     const canonicalRole = mapLegacyRoleToMembershipRole(FIXED_RESEARCHER_ROLE);
     await sql`
+      delete from site_memberships
+      where user_id = ${current.user_id}
+        and status = 'approved'
+        and site_id <> ${targetSiteId}
+    `;
+    await sql`
       insert into site_memberships (
         membership_id,
         user_id,

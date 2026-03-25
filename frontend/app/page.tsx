@@ -814,10 +814,10 @@ export default function HomePage() {
         locale,
         approvedButUnassigned
           ? "Your account is approved, but no hospital is linked yet. Choose the hospital you need before entering the case workspace."
-          : "Choose the hospital you want next. Existing access stays active until the new request is reviewed.",
+          : "Choose the hospital you want next. When this request is approved, your current hospital access will be replaced with the new one.",
         approvedButUnassigned
           ? "계정은 승인되었지만 아직 연결된 병원이 없습니다. 케이스 워크스페이스에 들어가기 전에 필요한 병원을 선택하세요."
-          : "다음에 사용할 병원을 선택하세요. 새 요청이 검토될 때까지 기존 접근 권한은 유지됩니다.",
+          : "다음에 사용할 병원을 선택하세요. 이 요청이 승인되면 현재 병원 접근 권한은 새 병원으로 교체됩니다.",
       )
     : copy.signedInAs(user?.full_name ?? "", user?.username ?? "");
   const accessRequestStatusBody = approved
@@ -825,10 +825,10 @@ export default function HomePage() {
         locale,
         approvedButUnassigned
           ? "Hospital access is required before case authoring, uploads, and review can open."
-          : "A hospital change request does not revoke your current access immediately. Review and reassignment stay audited.",
+          : "Only one hospital can stay linked to this account. Approval switches the workspace to the newly assigned hospital.",
         approvedButUnassigned
           ? "병원 접근이 연결되기 전에는 케이스 작성, 업로드, 검토를 열 수 없습니다."
-          : "병원 변경 요청은 현재 접근 권한을 즉시 제거하지 않습니다. 검토와 재배정은 감사 가능하게 유지됩니다.",
+          : "이 계정에는 병원 1곳만 연결할 수 있습니다. 승인되면 워크스페이스가 새로 배정된 병원으로 전환됩니다.",
       )
     : copy.approvedBody;
 

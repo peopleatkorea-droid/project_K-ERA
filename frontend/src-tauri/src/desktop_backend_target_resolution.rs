@@ -11,6 +11,9 @@ pub(super) fn desktop_backend_root_candidates(
     values: &HashMap<String, String>,
 ) -> Vec<DesktopPathCandidate> {
     let mut candidates = Vec::new();
+    if !desktop_packaged_mode() {
+        push_unique_path_candidate(&mut candidates, project_root(), "repo_root");
+    }
     if let Some(value) = configured_or_process_env_value("KERA_DESKTOP_BACKEND_ROOT", values) {
         push_unique_path_candidate(
             &mut candidates,
@@ -50,9 +53,6 @@ pub(super) fn desktop_backend_root_candidates(
         desktop_app_local_data_dir().join("backend"),
         "app_local/backend",
     );
-    if !desktop_packaged_mode() {
-        push_unique_path_candidate(&mut candidates, project_root(), "repo_root");
-    }
     candidates
 }
 

@@ -15,6 +15,21 @@ pub(super) fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, S
     if get_patient(&conn, &site_id, &normalized_patient_id)?.is_none() {
         return Err(format!("Patient {normalized_patient_id} does not exist."));
     }
+    if normalized_visit_date == "Initial" {
+        let existing_visit_count: i64 = conn
+            .query_row(
+                "select count(*) from visits where site_id = ? and patient_id = ?",
+                params![&site_id, &normalized_patient_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if existing_visit_count > 0 {
+            return Err(
+                "Existing patients can only receive follow-up visits. Use a FU #N label."
+                    .to_string(),
+            );
+        }
+    }
     if get_visit(
         &conn,
         &site_id,

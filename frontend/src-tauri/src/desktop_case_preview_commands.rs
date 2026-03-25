@@ -4,6 +4,11 @@ pub(super) fn fetch_site_job(payload: SiteJobCommandRequest) -> Result<JsonValue
 }
 
 #[tauri::command]
+pub(super) fn list_site_jobs(payload: SiteJobListCommandRequest) -> Result<JsonValue, String> {
+    list_site_jobs_command(payload)
+}
+
+#[tauri::command]
 pub(super) fn start_site_job_event_stream(
     app: AppHandle,
     payload: SiteJobCommandRequest,
@@ -165,7 +170,7 @@ pub(super) fn start_live_lesion_preview_event_stream(
 }
 
 #[tauri::command]
-pub(super) fn fetch_image_semantic_prompt_scores(
+pub(super) async fn fetch_image_semantic_prompt_scores(
     payload: SemanticPromptCommandRequest,
 ) -> Result<JsonValue, String> {
     let site_id = payload.site_id.trim().to_string();
@@ -173,54 +178,58 @@ pub(super) fn fetch_image_semantic_prompt_scores(
     if site_id.is_empty() || image_id.is_empty() {
         return Err("site_id and image_id are required.".to_string());
     }
-    let request_payload = json!({
-        "site_id": site_id.clone(),
-        "token": payload.token,
-        "image_id": image_id,
-        "top_k": payload.top_k.unwrap_or(3),
-        "input_mode": payload
-            .input_mode
-            .unwrap_or_else(|| "source".to_string()),
-    });
-    if ml_sidecar_should_be_used() {
-        return request_ml_sidecar_json("fetch_image_semantic_prompt_scores", request_payload);
-    }
-    request_local_api_json(
-        HttpMethod::GET,
-        &format!(
-            "/api/sites/{}/images/{}/semantic-prompts",
+    tauri::async_runtime::spawn_blocking(move || {
+        let request_payload = json!({
+            "site_id": site_id.clone(),
+            "token": payload.token,
+            "image_id": image_id,
+            "top_k": payload.top_k.unwrap_or(3),
+            "input_mode": payload
+                .input_mode
+                .unwrap_or_else(|| "source".to_string()),
+        });
+        if ml_sidecar_should_be_used() {
+            return request_ml_sidecar_json("fetch_image_semantic_prompt_scores", request_payload);
+        }
+        request_local_api_json(
+            HttpMethod::GET,
+            &format!(
+                "/api/sites/{}/images/{}/semantic-prompts",
+                request_payload
+                    .get("site_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+                request_payload
+                    .get("image_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+            ),
             request_payload
-                .get("site_id")
+                .get("token")
                 .and_then(|value| value.as_str())
                 .unwrap_or(""),
-            request_payload
-                .get("image_id")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-        ),
-        request_payload
-            .get("token")
-            .and_then(|value| value.as_str())
-            .unwrap_or(""),
-        vec![
-            (
-                "top_k",
-                request_payload
-                    .get("top_k")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(3)
-                    .to_string(),
-            ),
-            (
-                "input_mode",
-                request_payload
-                    .get("input_mode")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("source")
-                    .to_string(),
-            ),
-        ],
-        None,
-    )
+            vec![
+                (
+                    "top_k",
+                    request_payload
+                        .get("top_k")
+                        .and_then(|value| value.as_i64())
+                        .unwrap_or(3)
+                        .to_string(),
+                ),
+                (
+                    "input_mode",
+                    request_payload
+                        .get("input_mode")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("source")
+                        .to_string(),
+                ),
+            ],
+            None,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 

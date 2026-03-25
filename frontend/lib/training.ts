@@ -6,6 +6,7 @@ import {
   runAnalysisCaseValidation as runCaseValidationRuntime,
   runAnalysisCaseValidationCompare as runCaseValidationCompareRuntime,
 } from "./analysis-runtime";
+import { ensureDesktopLocalWorkerReady } from "./desktop-diagnostics";
 import { hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
 import type {
   AiClinicEmbeddingStatusResponse,
@@ -18,6 +19,7 @@ import type {
   InitialTrainingBenchmarkJobResponse,
   InitialTrainingJobResponse,
   ModelVersionRecord,
+  SslPretrainingJobResponse,
   SiteJobRecord,
   SiteValidationJobResponse,
   SiteValidationRunRecord,
@@ -26,6 +28,35 @@ import type {
 
 function canUseDesktopTrainingTransport() {
   return hasDesktopRuntime();
+}
+
+function extractDesktopWorkerErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+  ) {
+    return String((error as { message: string }).message);
+  }
+  return "The desktop worker is unavailable.";
+}
+
+async function ensureDesktopTrainingWorker(failurePrefix: string) {
+  if (!canUseDesktopTrainingTransport()) {
+    return;
+  }
+  try {
+    await ensureDesktopLocalWorkerReady();
+  } catch (error) {
+    throw new Error(`${failurePrefix}: ${extractDesktopWorkerErrorMessage(error)}`);
+  }
 }
 
 export async function fetchSiteValidations(
@@ -164,6 +195,7 @@ export async function backfillAiClinicEmbeddings(
   },
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("AI Clinic embedding backfill is unavailable");
     return invokeDesktop<EmbeddingBackfillJobResponse>("backfill_ai_clinic_embeddings", {
       payload: {
         site_id: siteId,
@@ -233,6 +265,7 @@ export async function runSiteValidation(
   } = {},
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Site validation is unavailable");
     return invokeDesktop<SiteValidationJobResponse>("run_site_validation", {
       payload: {
         site_id: siteId,
@@ -274,6 +307,7 @@ export async function runInitialTraining(
   } = {},
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Initial training is unavailable");
     return invokeDesktop<InitialTrainingJobResponse>("run_initial_training", {
       payload: {
         site_id: siteId,
@@ -323,6 +357,7 @@ export async function runInitialTrainingBenchmark(
   },
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Initial training is unavailable");
     return invokeDesktop<InitialTrainingBenchmarkJobResponse>("run_initial_training_benchmark", {
       payload: {
         site_id: siteId,
@@ -362,6 +397,7 @@ export async function resumeInitialTrainingBenchmark(
   },
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Initial training is unavailable");
     return invokeDesktop<InitialTrainingBenchmarkJobResponse>("resume_initial_training_benchmark", {
       payload: {
         site_id: siteId,
@@ -382,6 +418,40 @@ export async function resumeInitialTrainingBenchmark(
 
 export async function fetchSiteJob(siteId: string, jobId: string, token: string) {
   return fetchSiteJobRuntime(siteId, jobId, token);
+}
+
+export async function fetchSiteJobs(
+  siteId: string,
+  token: string,
+  options: {
+    job_type?: string;
+    status?: string;
+    limit?: number;
+  } = {},
+) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<SiteJobRecord[]>("list_site_jobs", {
+      payload: {
+        site_id: siteId,
+        token,
+        job_type: options.job_type,
+        status: options.status,
+        limit: options.limit,
+      },
+    });
+  }
+  const params = new URLSearchParams();
+  if (options.job_type) {
+    params.set("job_type", options.job_type);
+  }
+  if (options.status) {
+    params.set("status", options.status);
+  }
+  if (typeof options.limit === "number") {
+    params.set("limit", String(options.limit));
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<SiteJobRecord[]>(`/api/sites/${siteId}/jobs${suffix}`, {}, token);
 }
 
 export async function cancelSiteJob(siteId: string, jobId: string, token: string) {
@@ -432,6 +502,7 @@ export async function runCrossValidation(
   } = {},
 ) {
   if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Cross-validation is unavailable");
     return invokeDesktop<CrossValidationJobResponse>("run_cross_validation", {
       payload: {
         site_id: siteId,
@@ -455,6 +526,61 @@ export async function runCrossValidation(
         batch_size: 16,
         val_split: 0.2,
         use_pretrained: true,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function runSslPretraining(
+  siteId: string,
+  token: string,
+  payload: {
+    archive_base_dir: string;
+    architecture?: string;
+    init_mode?: "imagenet" | "random";
+    method?: "byol";
+    execution_mode?: "auto" | "cpu" | "gpu";
+    image_size?: number;
+    batch_size?: number;
+    epochs?: number;
+    learning_rate?: number;
+    weight_decay?: number;
+    num_workers?: number;
+    min_patient_quality?: "low" | "medium" | "high";
+    include_review_rows?: boolean;
+    use_amp?: boolean;
+  },
+) {
+  if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("SSL pretraining is unavailable");
+    return invokeDesktop<SslPretrainingJobResponse>("run_ssl_pretraining", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  return request<SslPretrainingJobResponse>(
+    `/api/sites/${siteId}/training/ssl`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        architecture: "convnext_tiny",
+        init_mode: "imagenet",
+        method: "byol",
+        execution_mode: "auto",
+        image_size: 224,
+        batch_size: 24,
+        epochs: 10,
+        learning_rate: 1e-4,
+        weight_decay: 1e-4,
+        num_workers: 8,
+        min_patient_quality: "medium",
+        include_review_rows: false,
+        use_amp: true,
         ...payload,
       }),
     },

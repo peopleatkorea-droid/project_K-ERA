@@ -7,6 +7,8 @@ type EnglishLandingViewProps = {
   googleLoginLabel: string;
   connectingLabel: string;
   googleLaunchPulse: boolean;
+  adminRecoveryLinkLabel: string;
+  adminLaunchLinks: Array<{ label: string; href: string }>;
   publicSites: SiteRecord[];
   onGoogleLaunch: () => void;
   onLocaleChange: (locale: "ko") => void;

@@ -16,6 +16,7 @@ import {
   runBulkImport,
   runSiteValidation,
 } from "../../lib/api";
+import { prewarmDesktopMlBackend } from "../../lib/desktop-runtime-prewarm";
 import { waitForSiteJobSettlement } from "../../lib/site-job-runtime";
 import { getDefaultRocSelection, useAdminWorkspaceState } from "./use-admin-workspace-state";
 
@@ -127,6 +128,13 @@ export function useAdminWorkspaceDashboardController({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (section !== "dashboard" || !selectedSiteId) {
+      return;
+    }
+    void prewarmDesktopMlBackend().catch(() => undefined);
+  }, [section, selectedSiteId]);
 
   useEffect(() => {
     if (!overview || section !== "dashboard") {

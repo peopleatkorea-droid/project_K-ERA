@@ -164,7 +164,7 @@ pub(super) fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus
         if runtime.child.is_none() {
             if local_backend_port_is_occupied(&base_url) {
                 return Err(format!(
-                    "Another local server is already listening at {base_url}, but it is not exposing the required K-ERA desktop routes. Stop the conflicting server and try again."
+                    "Another local server is already listening at {base_url}, but it is not responding to the K-ERA local backend health endpoint. Stop the conflicting server and try again."
                 ));
             }
             let spawned = spawn_local_backend_process(&base_url)?;

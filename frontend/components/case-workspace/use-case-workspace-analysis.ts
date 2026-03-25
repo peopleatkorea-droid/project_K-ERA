@@ -34,6 +34,7 @@ import {
   LiveLesionPreviewTimeoutError,
   waitForLiveLesionPreviewSettlement,
 } from "../../lib/live-lesion-preview-runtime";
+import { prewarmDesktopMlBackend } from "../../lib/desktop-runtime-prewarm";
 import type {
   AiClinicPreviewResponse,
   LesionBoxMap,
@@ -214,6 +215,13 @@ export function useCaseWorkspaceAnalysis({
   const selectedCaseImagesRef = useRef(selectedCaseImages);
   selectedCaseImagesRef.current = selectedCaseImages;
   const caseImagesKey = `${selectedCase?.case_id ?? ""}:${selectedCaseImages.map((i) => i.image_id).join(",")}`;
+
+  useEffect(() => {
+    if (!selectedSiteId || !selectedCase) {
+      return;
+    }
+    void prewarmDesktopMlBackend().catch(() => undefined);
+  }, [selectedSiteId, selectedCase?.case_id]);
 
   const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
   const lesionBoxChangedImageIds = selectedCaseImages

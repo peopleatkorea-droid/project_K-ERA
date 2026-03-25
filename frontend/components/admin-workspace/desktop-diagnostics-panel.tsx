@@ -63,6 +63,13 @@ function formatWorkerState(
   return process.running ? pick(locale, "Running", "실행 중") : pick(locale, "Stopped", "중지");
 }
 
+function formatCapabilityState(locale: Locale, value: boolean | null | undefined) {
+  if (value == null) {
+    return pick(locale, "Unavailable", "사용 불가");
+  }
+  return value ? pick(locale, "Present", "존재") : pick(locale, "Missing", "없음");
+}
+
 function renderProcessDetails(
   locale: Locale,
   process:
@@ -220,6 +227,12 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
         </div>
       ) : null}
 
+      {snapshot?.backendCapabilitiesError ? (
+        <div className="rounded-[16px] border border-amber-300/40 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-[rgb(120,74,31)] dark:border-amber-200/20 dark:bg-[rgba(120,74,31,0.16)] dark:text-[rgba(255,232,204,0.92)]">
+          {snapshot.backendCapabilitiesError}
+        </div>
+      ) : null}
+
       <div className="grid gap-4 xl:grid-cols-3">
         <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
           <SectionHeader
@@ -299,6 +312,28 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
             <div className="font-mono text-[0.78rem] text-ink break-all">{controlPlane?.node_id || "n/a"}</div>
           </div>
         </div>
+      </Card>
+
+      <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
+        <SectionHeader
+          title={pick(locale, "Desktop capability checks", "Desktop capability 확인")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "These checks stay in diagnostics only and do not block desktop startup.",
+            "이 확인은 진단 전용이며 데스크톱 시작을 막지 않습니다.",
+          )}
+        />
+        <MetricGrid columns={2}>
+          <MetricItem
+            value={formatCapabilityState(locale, snapshot?.backendCapabilities?.desktopAuthRoutes)}
+            label={pick(locale, "Desktop auth routes", "Desktop auth route")}
+          />
+          <MetricItem
+            value={formatCapabilityState(locale, snapshot?.backendCapabilities?.selfCheckRoute)}
+            label={pick(locale, "Self-check route", "Self-check route")}
+          />
+        </MetricGrid>
       </Card>
     </Card>
   );

@@ -183,10 +183,17 @@ describe("analysis-runtime desktop routing", () => {
     expect(apiCoreMocks.requestBlob).not.toHaveBeenCalled();
   });
 
-  it("uses the desktop lesion artifact path resolver when a preview URL is requested", async () => {
+  it("uses the desktop lesion artifact reader when a preview URL is requested", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({
-      path: "C:/artifacts/lesion_mask.png",
+      bytes: [107, 101, 114, 97],
+      media_type: "image/png",
+    });
+    const originalCreateObjectURL = (URL as typeof URL & { createObjectURL?: (obj: Blob | MediaSource) => string }).createObjectURL;
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: vi.fn(() => "blob:lesion-preview"),
     });
 
     const mod = await import("./analysis-runtime");
@@ -199,7 +206,7 @@ describe("analysis-runtime desktop routing", () => {
       "desktop-token",
     );
 
-    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("resolve_case_lesion_preview_artifact_path", {
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("read_case_lesion_preview_artifact", {
       payload: {
         site_id: "39100103",
         patient_id: "17452298",
@@ -208,7 +215,16 @@ describe("analysis-runtime desktop routing", () => {
         artifact_kind: "lesion_mask",
       },
     });
-    expect(url).toBe("C:/artifacts/lesion_mask.png");
+    expect(url).toBe("blob:lesion-preview");
+    if (originalCreateObjectURL) {
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        writable: true,
+        value: originalCreateObjectURL,
+      });
+    } else {
+      Reflect.deleteProperty(URL, "createObjectURL");
+    }
   });
 
   it("uses the desktop stored lesion preview reader when the desktop runtime is available", async () => {

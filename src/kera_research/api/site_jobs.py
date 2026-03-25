@@ -236,3 +236,54 @@ def start_cross_validation(
         "execution_device": execution_device,
         "job": site_store.get_job(job["job_id"]) or job,
     }
+
+
+def start_ssl_pretraining(
+    site_store: Any,
+    *,
+    site_id: str,
+    payload: Any,
+    execution_device: str,
+    queue_name_for_job_type: Callable[[str], str],
+) -> dict[str, Any]:
+    job = site_store.enqueue_job(
+        "ssl_pretraining",
+        {
+            "archive_base_dir": str(payload.archive_base_dir),
+            "architecture": payload.architecture,
+            "init_mode": payload.init_mode,
+            "method": payload.method,
+            "execution_mode": payload.execution_mode,
+            "execution_device": execution_device,
+            "image_size": int(payload.image_size),
+            "batch_size": int(payload.batch_size),
+            "epochs": int(payload.epochs),
+            "learning_rate": float(payload.learning_rate),
+            "weight_decay": float(payload.weight_decay),
+            "num_workers": int(payload.num_workers),
+            "min_patient_quality": payload.min_patient_quality,
+            "include_review_rows": bool(payload.include_review_rows),
+            "use_amp": bool(payload.use_amp),
+        },
+        queue_name=queue_name_for_job_type("ssl_pretraining"),
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "queued",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "SSL pretraining job queued.",
+                "percent": 0,
+                "architecture": payload.architecture,
+                "init_mode": payload.init_mode,
+                "method": payload.method,
+                "archive_base_dir": str(payload.archive_base_dir),
+            }
+        },
+    )
+    return {
+        "site_id": site_id,
+        "execution_device": execution_device,
+        "job": site_store.get_job(job["job_id"]) or job,
+    }

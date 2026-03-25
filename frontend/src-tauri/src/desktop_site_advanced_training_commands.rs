@@ -109,6 +109,68 @@ pub(super) fn run_cross_validation(payload: CrossValidationCommandRequest) -> Re
 }
 
 #[tauri::command]
+pub(super) fn run_ssl_pretraining(payload: SSLPretrainingCommandRequest) -> Result<JsonValue, String> {
+    let site_id = payload.site_id.trim().to_string();
+    if site_id.is_empty() {
+        return Err("site_id is required.".to_string());
+    }
+    let archive_base_dir = payload
+        .archive_base_dir
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if archive_base_dir.is_empty() {
+        return Err("archive_base_dir is required.".to_string());
+    }
+    let request_payload = json!({
+        "site_id": site_id.clone(),
+        "token": payload.token,
+        "archive_base_dir": archive_base_dir,
+        "architecture": payload.architecture.unwrap_or_else(|| "convnext_tiny".to_string()),
+        "init_mode": payload.init_mode.unwrap_or_else(|| "imagenet".to_string()),
+        "method": payload.method.unwrap_or_else(|| "byol".to_string()),
+        "execution_mode": payload.execution_mode.unwrap_or_else(|| "auto".to_string()),
+        "image_size": payload.image_size.unwrap_or(224),
+        "batch_size": payload.batch_size.unwrap_or(24),
+        "epochs": payload.epochs.unwrap_or(10),
+        "learning_rate": payload.learning_rate.unwrap_or(1e-4),
+        "weight_decay": payload.weight_decay.unwrap_or(1e-4),
+        "num_workers": payload.num_workers.unwrap_or(8),
+        "min_patient_quality": payload.min_patient_quality.unwrap_or_else(|| "medium".to_string()),
+        "include_review_rows": payload.include_review_rows.unwrap_or(false),
+        "use_amp": payload.use_amp.unwrap_or(true),
+    });
+    if ml_sidecar_should_be_used() {
+        return request_ml_sidecar_json("run_ssl_pretraining", request_payload);
+    }
+    request_local_api_json(
+        HttpMethod::POST,
+        &format!("/api/sites/{site_id}/training/ssl"),
+        request_payload
+            .get("token")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+        Vec::new(),
+        Some(json!({
+            "archive_base_dir": request_payload.get("archive_base_dir").cloned().unwrap_or(JsonValue::Null),
+            "architecture": request_payload.get("architecture").cloned().unwrap_or(JsonValue::Null),
+            "init_mode": request_payload.get("init_mode").cloned().unwrap_or(JsonValue::Null),
+            "method": request_payload.get("method").cloned().unwrap_or(JsonValue::Null),
+            "execution_mode": request_payload.get("execution_mode").cloned().unwrap_or(JsonValue::Null),
+            "image_size": request_payload.get("image_size").cloned().unwrap_or(JsonValue::Null),
+            "batch_size": request_payload.get("batch_size").cloned().unwrap_or(JsonValue::Null),
+            "epochs": request_payload.get("epochs").cloned().unwrap_or(JsonValue::Null),
+            "learning_rate": request_payload.get("learning_rate").cloned().unwrap_or(JsonValue::Null),
+            "weight_decay": request_payload.get("weight_decay").cloned().unwrap_or(JsonValue::Null),
+            "num_workers": request_payload.get("num_workers").cloned().unwrap_or(JsonValue::Null),
+            "min_patient_quality": request_payload.get("min_patient_quality").cloned().unwrap_or(JsonValue::Null),
+            "include_review_rows": request_payload.get("include_review_rows").cloned().unwrap_or(JsonValue::Null),
+            "use_amp": request_payload.get("use_amp").cloned().unwrap_or(JsonValue::Null),
+        })),
+    )
+}
+
+#[tauri::command]
 pub(super) fn fetch_ai_clinic_embedding_status(
     payload: AiClinicEmbeddingStatusCommandRequest,
 ) -> Result<JsonValue, String> {

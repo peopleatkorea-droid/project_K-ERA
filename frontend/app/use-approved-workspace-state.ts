@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { canUseDesktopLocalApiTransport } from "../lib/desktop-local-api";
-import { fetchSiteSummary, fetchSites, type AuthUser, type SiteRecord, type SiteSummary } from "../lib/api";
+import {
+  fetchSiteSummary,
+  fetchSiteSummaryCounts,
+  fetchSites,
+  mergeSiteSummaryCounts,
+  type AuthUser,
+  type SiteRecord,
+  type SiteSummary,
+} from "../lib/api";
 import {
   cacheSiteRecords,
   mergeSiteRecordMetadata,
@@ -46,10 +54,12 @@ export function useApprovedWorkspaceState({
   const [summary, setSummary] = useState<SiteSummary | null>(null);
   const [siteBusy, setSiteBusy] = useState(false);
   const [siteError, setSiteError] = useState<string | null>(null);
+  const siteSummaryCountsLoadedSiteIdRef = useRef<string | null>(null);
   const siteSummaryLoadedSiteIdRef = useRef<string | null>(null);
   const siteSummaryRequestSiteIdRef = useRef<string | null>(null);
 
   const clearSiteSummaryTracking = useCallback(() => {
+    siteSummaryCountsLoadedSiteIdRef.current = null;
     siteSummaryLoadedSiteIdRef.current = null;
     siteSummaryRequestSiteIdRef.current = null;
   }, []);
@@ -79,7 +89,15 @@ export function useApprovedWorkspaceState({
   );
 
   const refreshSiteData = useCallback(async (siteId: string, currentToken: string) => {
+    try {
+      const nextCounts = await fetchSiteSummaryCounts(siteId, currentToken);
+      siteSummaryCountsLoadedSiteIdRef.current = String(nextCounts.site_id ?? siteId);
+      setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
+    } catch {
+      // Keep the refresh path resilient when the quick endpoint is unavailable.
+    }
     const nextSummary = await fetchSiteSummary(siteId, currentToken);
+    siteSummaryCountsLoadedSiteIdRef.current = String(nextSummary.site_id ?? siteId);
     siteSummaryLoadedSiteIdRef.current = String(nextSummary.site_id ?? siteId);
     setSummary(nextSummary);
     setSiteError(null);
@@ -122,7 +140,6 @@ export function useApprovedWorkspaceState({
       !selectedSiteId ||
       !approved ||
       bootstrapBusy ||
-      summary?.site_id === selectedSiteId ||
       siteSummaryLoadedSiteIdRef.current === selectedSiteId ||
       siteSummaryRequestSiteIdRef.current === selectedSiteId
     ) {
@@ -141,8 +158,19 @@ export function useApprovedWorkspaceState({
         setSiteError(null);
       }
       try {
+        try {
+          const nextCounts = await fetchSiteSummaryCounts(currentSiteId, currentToken);
+          if (!cancelled) {
+            siteSummaryCountsLoadedSiteIdRef.current = String(nextCounts.site_id ?? currentSiteId);
+            setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
+          }
+        } catch {
+          // Fall through to the full summary request.
+        }
+
         const nextSummary = await fetchSiteSummary(currentSiteId, currentToken);
         if (!cancelled) {
+          siteSummaryCountsLoadedSiteIdRef.current = String(nextSummary.site_id ?? currentSiteId);
           siteSummaryLoadedSiteIdRef.current = String(nextSummary.site_id ?? currentSiteId);
           setSummary(nextSummary);
           setSiteError(null);
@@ -171,7 +199,7 @@ export function useApprovedWorkspaceState({
         siteSummaryRequestSiteIdRef.current = null;
       }
     };
-  }, [approved, bootstrapBusy, describeError, failedLoadSiteData, selectedSiteId, summary?.site_id, token, workspaceDataPlaneReady]);
+  }, [approved, bootstrapBusy, describeError, failedLoadSiteData, selectedSiteId, token, workspaceDataPlaneReady]);
 
   return {
     applyApprovedWorkspaceState,

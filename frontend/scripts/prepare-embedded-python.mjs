@@ -556,6 +556,21 @@ async function validateEmbeddedPythonRuntime(runtimePythonPath) {
   runPython(runtimePythonPath, backendImport, { env: backendEnv });
 }
 
+async function canReuseEmbeddedPythonRuntime(pythonInfo) {
+  const runtimePythonPath = path.join(runtimeDir, "python.exe");
+  if (!existsSync(runtimePythonPath)) {
+    return false;
+  }
+  try {
+    await validateEmbeddedPythonRuntime(runtimePythonPath);
+    return true;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    log(`cached runtime validation failed; rebuilding embedded runtime.\n${detail}`);
+    return false;
+  }
+}
+
 async function syncBundledRuntimeArchive(runtimePythonPath) {
   log(`syncing bundled runtime archive to ${runtimeArchivePath}`);
   await fs.mkdir(runtimeBundleRoot, { recursive: true });
@@ -597,12 +612,14 @@ async function main() {
   const existingManifest = await loadManifest();
   const force = normalizeBoolean(process.env.KERA_DESKTOP_FORCE_EMBED_PYTHON);
 
-  if (!force && existingManifest?.signature === signature && existsSync(path.join(runtimeDir, "python.exe"))) {
-    if (!existsSync(runtimeArchivePath)) {
-      await syncBundledRuntimeArchive(pythonInfo.venvPythonPath);
+  if (!force && existingManifest?.signature === signature) {
+    if (await canReuseEmbeddedPythonRuntime(pythonInfo)) {
+      if (!existsSync(runtimeArchivePath)) {
+        await syncBundledRuntimeArchive(pythonInfo.venvPythonPath);
+      }
+      log(`reusing cached runtime at ${runtimeDir}`);
+      return;
     }
-    log(`reusing cached runtime at ${runtimeDir}`);
-    return;
   }
 
   await prepareEmbeddedPythonRuntime(pythonInfo);

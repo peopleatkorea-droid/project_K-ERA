@@ -17,6 +17,10 @@ const desktopIpcMocks = vi.hoisted(() => ({
   invokeDesktop: vi.fn(),
 }));
 
+const desktopDiagnosticsMocks = vi.hoisted(() => ({
+  ensureDesktopLocalWorkerReady: vi.fn(),
+}));
+
 vi.mock("./api-core", () => ({
   request: apiCoreMocks.request,
 }));
@@ -34,11 +38,16 @@ vi.mock("./desktop-ipc", () => ({
   invokeDesktop: desktopIpcMocks.invokeDesktop,
 }));
 
+vi.mock("./desktop-diagnostics", () => ({
+  ensureDesktopLocalWorkerReady: desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady,
+}));
+
 describe("training desktop routing", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.resetModules();
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(false);
+    desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady.mockResolvedValue({ running: true });
   });
 
   it("uses the desktop site validations reader when the desktop runtime is available", async () => {
@@ -81,6 +90,7 @@ describe("training desktop routing", () => {
     const mod = await import("./training");
     await mod.runSiteValidation("SITE_A", "desktop-token", { model_version_id: "model_1" });
 
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
     expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_site_validation", {
       payload: {
         site_id: "SITE_A",
@@ -98,6 +108,7 @@ describe("training desktop routing", () => {
     const mod = await import("./training");
     await mod.runInitialTraining("SITE_A", "desktop-token", { architecture: "convnext_tiny" });
 
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
     expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_initial_training", {
       payload: {
         site_id: "SITE_A",
@@ -140,6 +151,7 @@ describe("training desktop routing", () => {
         model_version_id: "model_1",
       },
     });
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
     expect(desktopIpcMocks.invokeDesktop).toHaveBeenNthCalledWith(2, "backfill_ai_clinic_embeddings", {
       payload: {
         site_id: "SITE_A",
@@ -149,6 +161,64 @@ describe("training desktop routing", () => {
       },
     });
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop SSL runner when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_ssl_1" } });
+
+    const mod = await import("./training");
+    await mod.runSslPretraining("SITE_A", "desktop-token", {
+      archive_base_dir: "E:\\전안부 사진",
+      architecture: "convnext_tiny",
+      execution_mode: "gpu",
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_ssl_pretraining", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        archive_base_dir: "E:\\전안부 사진",
+        architecture: "convnext_tiny",
+        execution_mode: "gpu",
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop site jobs reader when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue([]);
+
+    const mod = await import("./training");
+    await mod.fetchSiteJobs("SITE_A", "desktop-token", {
+      job_type: "initial_training_benchmark",
+      limit: 1,
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("list_site_jobs", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        job_type: "initial_training_benchmark",
+        status: undefined,
+        limit: 1,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a contextual error when the desktop worker is unavailable", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady.mockRejectedValue(new Error("Desktop-managed local worker exited."));
+
+    const mod = await import("./training");
+
+    await expect(mod.runCrossValidation("SITE_A", "desktop-token")).rejects.toThrow(
+      "Cross-validation is unavailable: Desktop-managed local worker exited.",
+    );
+    expect(desktopIpcMocks.invokeDesktop).not.toHaveBeenCalled();
   });
 
   it("uses the desktop AI Clinic similar-cases runner when the desktop runtime is available", async () => {

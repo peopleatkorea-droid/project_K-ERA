@@ -6,7 +6,7 @@ const SITE_RECORD_CACHE_KEY = "kera_cached_site_records_v1";
 export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 export const CLIENT_BOOTSTRAP_TIMING_LOGS = process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
 
-export type OperationsSection = "management" | "dashboard" | "training" | "cross_validation";
+export type OperationsSection = "management" | "dashboard" | "training" | "cross_validation" | "ssl";
 export type WorkspaceMode = "canvas" | "operations";
 
 export type LaunchTarget = { mode: WorkspaceMode; section: OperationsSection };
@@ -39,7 +39,7 @@ export function parseOperationsLaunchFromSearch(): LaunchTarget | null {
     return null;
   }
   const section = params.get("section");
-  if (section === "management" || section === "training" || section === "cross_validation" || section === "dashboard") {
+  if (section === "management" || section === "training" || section === "cross_validation" || section === "dashboard" || section === "ssl") {
     return { mode: "operations", section };
   }
   return { mode: "operations", section: "management" };

@@ -8,6 +8,11 @@ import { Button } from "../ui/button";
 import { CanvasBlock } from "../ui/canvas-block";
 import { Field } from "../ui/field";
 import {
+  canvasBlockClass,
+  canvasBlockEyebrowClass,
+  canvasBlockStatusClass,
+  canvasBlockSummaryClass,
+  canvasBlockTitleClass,
   canvasFooterBodyClass,
   canvasFooterClass,
   canvasFooterCopyClass,
@@ -24,8 +29,6 @@ import {
   organismChipRowClass,
   organismChipStaticClass,
   predisposingFactorPillClass,
-  selectedCaseChipClass,
-  selectedCaseChipStripClass,
   supportFieldClass,
   supportHintClass,
   supportLabelClass,
@@ -53,6 +56,7 @@ type DraftState = {
 type Props = {
   locale: Locale;
   draft: DraftState;
+  draftStatusLabel?: string;
   notAvailableLabel: string;
   sexOptions: string[];
   contactLensOptions: string[];
@@ -99,10 +103,17 @@ const compactPatientFieldClassName =
 const compactPatientLabelClassName = "text-[0.78rem] font-semibold text-muted whitespace-nowrap";
 const compactPatientControlClassName =
   "min-h-11 w-full rounded-[12px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,250,252,0.88))] px-3.5 py-2 text-sm text-ink shadow-[inset_0_1px_0_rgba(255,255,255,0.55),0_6px_16px_rgba(15,23,42,0.03)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/4";
+const lockedSummaryBarClass =
+  "grid gap-0 border-t border-border/70 pt-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1.2fr)] md:divide-x md:divide-border/60";
+const lockedSummaryItemClass =
+  "grid min-w-0 gap-0.5 py-1 md:px-4 md:first:pl-0 md:last:pr-0";
+const lockedSummaryValueClass =
+  "min-w-0 truncate text-sm font-semibold leading-5 tracking-[-0.02em] text-ink";
 
 export function PatientVisitForm({
   locale,
   draft,
+  draftStatusLabel,
   notAvailableLabel,
   sexOptions,
   contactLensOptions,
@@ -166,6 +177,11 @@ export function PatientVisitForm({
   ]
     .filter(Boolean)
     .join(" · ");
+  const followUpMatch = String(patientIdLookup?.latest_visit_date ?? "").trim().match(/^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i);
+  const nextFollowUpReference =
+    patientIdLookup?.exists && (patientIdLookup.visit_count ?? 0) > 0
+      ? `FU #${String(followUpMatch ? (Number(followUpMatch[1]) || 0) + 1 : 1)}`
+      : null;
   const patientIdFeedback = patientIdLookupBusy
     ? pick(locale, "Checking for an existing patient record in this hospital...", "이 병원에 같은 환자 ID가 있는지 확인하는 중입니다...")
     : patientIdLookupError
@@ -173,8 +189,8 @@ export function PatientVisitForm({
       : patientIdLookup?.exists
         ? pick(
             locale,
-            `Existing patient record found. Saving will continue under the same patient.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`,
-            `기존 환자 기록이 있습니다. 저장하면 같은 환자 아래에 이어집니다.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`
+            `Existing patient record found. Saving will continue under the same patient${nextFollowUpReference ? ` as ${nextFollowUpReference}` : ""}.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`,
+            `기존 환자 기록이 있습니다. 저장하면 같은 환자 아래의 ${nextFollowUpReference ?? "재진"}으로 이어집니다.${patientIdLookupSummary ? ` ${patientIdLookupSummary}` : ""}`
           )
         : "";
   const patientIdFeedbackClassName = patientIdLookupError
@@ -185,34 +201,52 @@ export function PatientVisitForm({
 
   if (draft.intake_completed) {
     return (
-      <CanvasBlock
-        eyebrow={pick(locale, "Intake summary", "입력 요약")}
-        title={pick(locale, "Case intake locked and ready for image work", "케이스 입력이 고정되었고 이미지 작업 준비가 되었습니다")}
-        summary={pick(
-          locale,
-          "Review the saved structure below or reopen editing if the case context needs to change before submission.",
-          "아래 요약을 검토하고, 제출 전에 수정이 필요하면 편집 모드로 다시 여세요."
-        )}
-        statusLabel={pick(locale, "Locked", "고정됨")}
-        statusTone="complete"
-        aside={
-          <Button size="sm" variant="ghost" type="button" onClick={() => setDraft((current) => ({ ...current, intake_completed: false }))}>
-            {pick(locale, "Edit", "Edit")}
-          </Button>
-        }
-      >
-        <div className={selectedCaseChipStripClass}>
-          <div className={selectedCaseChipClass}>
+      <section className={`${canvasBlockClass(false)} gap-3`}>
+        <div className="grid gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-1.5">
+              <div className="flex flex-wrap items-center gap-8">
+                <div className={canvasBlockEyebrowClass}>{pick(locale, "Intake summary", "입력 요약")}</div>
+                <span className="text-[0.82rem] font-medium text-muted">
+                  {draftStatusLabel ?? pick(locale, "Draft saved", "초안 저장")}
+                </span>
+              </div>
+              <h3 className={canvasBlockTitleClass}>{pick(locale, "Case intake locked and ready for image work", "케이스 입력이 고정되었고 이미지 작업 준비가 되었습니다")}</h3>
+              <p className={canvasBlockSummaryClass}>
+                {pick(
+                  locale,
+                  "Review the saved structure below or reopen editing if the case context needs to change before submission.",
+                  "아래 요약을 검토하고, 제출 전에 수정이 필요하면 편집 모드로 다시 여세요."
+                )}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <span className={canvasBlockStatusClass("complete")}>{pick(locale, "Locked", "고정됨")}</span>
+              <Button size="sm" variant="ghost" type="button" onClick={() => setDraft((current) => ({ ...current, intake_completed: false }))}>
+                {pick(locale, "Edit", "Edit")}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className={lockedSummaryBarClass}>
+          <div className={lockedSummaryItemClass}>
             <span className={canvasPropertyLabelClass}>{pick(locale, "Patient", "환자")}</span>
-            <span className={canvasPropertyValueClass}>{lockedPatientSummary}</span>
+            <span className={lockedSummaryValueClass} title={lockedPatientSummary}>
+              {lockedPatientSummary}
+            </span>
           </div>
-          <div className={selectedCaseChipClass}>
+          <div className={lockedSummaryItemClass}>
             <span className={canvasPropertyLabelClass}>{pick(locale, "Visit", "방문")}</span>
-            <span className={canvasPropertyValueClass}>{lockedVisitSummary}</span>
+            <span className={lockedSummaryValueClass} title={lockedVisitSummary}>
+              {lockedVisitSummary}
+            </span>
           </div>
-          <div className={selectedCaseChipClass}>
+          <div className={lockedSummaryItemClass}>
             <span className={canvasPropertyLabelClass}>{pick(locale, "Organism", "원인균")}</span>
-            <span className={canvasPropertyValueClass}>{lockedOrganismSummary}</span>
+            <span className={lockedSummaryValueClass} title={lockedOrganismSummary}>
+              {lockedOrganismSummary}
+            </span>
           </div>
         </div>
         {draft.additional_organisms.length > 0 ? (
@@ -227,7 +261,7 @@ export function PatientVisitForm({
             ))}
           </div>
         ) : null}
-      </CanvasBlock>
+      </section>
     );
   }
 
@@ -249,7 +283,7 @@ export function PatientVisitForm({
                 className={compactPatientControlClassName}
                 value={draft.patient_id}
                 onChange={(event) => setDraft((current) => ({ ...current, patient_id: event.target.value }))}
-                placeholder="17635992"
+                placeholder="12345678"
                 spellCheck={false}
               />
             </label>

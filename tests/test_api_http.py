@@ -2835,6 +2835,49 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(len(visit_payload["additional_organisms"]), 1)
         self.assertEqual(visit_payload["additional_organisms"][0]["culture_species"], "Fusarium")
 
+    def test_existing_patients_can_only_create_follow_up_visits_http(self):
+        self.site_store.create_patient(
+            patient_id="HTTP-003",
+            sex="female",
+            age=58,
+            created_by_user_id="user_researcher",
+        )
+        self.site_store.create_visit(
+            patient_id="HTTP-003",
+            visit_date="Initial",
+            actual_visit_date=None,
+            culture_confirmed=True,
+            culture_category="bacterial",
+            culture_species="Staphylococcus aureus",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=[],
+            other_history="",
+            visit_status="active",
+            is_initial_visit=True,
+            created_by_user_id="user_researcher",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Existing patients can only receive follow-up visits. Use a FU #N label.",
+        ):
+            self.site_store.create_visit(
+                patient_id="HTTP-003",
+                visit_date="Initial",
+                actual_visit_date=None,
+                culture_confirmed=True,
+                culture_category="bacterial",
+                culture_species="Staphylococcus aureus",
+                additional_organisms=[],
+                contact_lens_use="none",
+                predisposing_factor=[],
+                other_history="",
+                visit_status="active",
+                is_initial_visit=True,
+                created_by_user_id="user_researcher",
+            )
+
     def test_training_registry_and_aggregation_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token)
@@ -3234,6 +3277,42 @@ class ApiHttpTests(unittest.TestCase):
         refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
         self.assertEqual(refreshed_user["role"], "researcher")
         self.assertIn(self.site_id, refreshed_user["site_ids"] or [])
+
+    def test_access_request_review_replaces_existing_hospital_http(self):
+        replacement_site_id = f"HTTP_{self.app_module.make_id('site')[-6:].upper()}"
+        project_id = self.cp.list_projects()[0]["project_id"]
+        self.cp.create_site(project_id, replacement_site_id, "Replacement Site", "Replacement Hospital")
+
+        researcher_token = self._token_for_username("http_researcher")
+        access_response = self.client.post(
+            "/api/auth/request-access",
+            headers={"Authorization": f"Bearer {researcher_token}"},
+            json={
+                "requested_site_id": replacement_site_id,
+                "requested_role": "researcher",
+                "message": "Move me to the replacement hospital",
+            },
+        )
+        self.assertEqual(access_response.status_code, 200, access_response.text)
+        access_payload = access_response.json()
+        self.assertEqual(access_payload["request"]["status"], "pending")
+        self.assertEqual(access_payload["user"]["site_ids"], [self.site_id])
+
+        reviewed_request = self.cp.review_access_request(
+            request_id=access_payload["request"]["request_id"],
+            reviewer_user_id="user_admin",
+            decision="approved",
+            assigned_role="researcher",
+            assigned_site_id=replacement_site_id,
+            reviewer_notes="replace the current hospital",
+        )
+        self.assertEqual(reviewed_request["status"], "approved")
+        self.assertEqual(reviewed_request["requested_site_id"], replacement_site_id)
+
+        refreshed_user = self.cp.get_user_by_id(self.researcher["user_id"])
+        self.assertEqual(refreshed_user["role"], "researcher")
+        self.assertEqual(refreshed_user["site_ids"], [replacement_site_id])
+        self.assertNotIn(self.site_id, refreshed_user["site_ids"] or [])
 
     def test_public_institution_search_and_access_request_http(self):
         self.cp.upsert_institutions(

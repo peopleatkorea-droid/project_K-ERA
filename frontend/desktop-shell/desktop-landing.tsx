@@ -91,21 +91,8 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
           "Password sign-in for admin and site admin",
           "admin 및 site admin 비밀번호 로그인",
         )}
-        adminRecoveryLinkLabel={pick(locale, "Open operator password sign-in", "운영 계정 비밀번호 로그인 열기")}
-        adminLaunchLinks={[
-          {
-            label: pick(locale, "Admin training", "관리자 학습"),
-            href: `${PUBLIC_SITE_ROOT}/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining`,
-          },
-          {
-            label: pick(locale, "Admin cross-validation", "관리자 교차 검증"),
-            href: `${PUBLIC_SITE_ROOT}/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dcross_validation`,
-          },
-          {
-            label: pick(locale, "Admin hospital validation", "관리자 병원 검증"),
-            href: `${PUBLIC_SITE_ROOT}/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard`,
-          },
-        ]}
+        adminRecoveryLinkLabel={pick(locale, "Operations", "운영")}
+        adminLaunchLinks={[]}
         publicSites={publicSites}
       />
     </div>

@@ -12,6 +12,7 @@ function renderBoard(
       locale="en"
       commonLoading="Loading..."
       commonNotAvailable="n/a"
+      selectedVisitLabel="Initial"
       panelBusy={false}
       selectedCaseImageCountHint={0}
       selectedCaseImages={[]}
@@ -49,6 +50,15 @@ function renderBoard(
 }
 
 describe("SavedCaseImageBoard", () => {
+  it("shows the selected visit label before the saved images header", () => {
+    renderBoard({
+      selectedVisitLabel: "FU #1",
+    });
+
+    expect(screen.getByText("FU #1")).toBeInTheDocument();
+    expect(screen.getByText("Saved images")).toBeInTheDocument();
+  });
+
   it("toggles the lesion mask overlay from the header control", () => {
     const handleToggleLiveLesionMask = vi.fn();
 
@@ -73,6 +83,7 @@ describe("SavedCaseImageBoard", () => {
         locale="en"
         commonLoading="Loading..."
         commonNotAvailable="n/a"
+        selectedVisitLabel="Initial"
         panelBusy={false}
         selectedCaseImageCountHint={0}
         selectedCaseImages={[]}

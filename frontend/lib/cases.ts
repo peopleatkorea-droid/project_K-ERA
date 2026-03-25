@@ -57,6 +57,7 @@ import type {
   SemanticPromptReviewResponse,
   SiteActivityResponse,
   SiteSummary,
+  SiteSummaryCounts,
   VisitRecord,
 } from "./types";
 
@@ -73,6 +74,30 @@ export async function fetchSiteSummary(siteId: string, token: string) {
     return requestDesktopLocalApiJson<SiteSummary>(`/api/sites/${siteId}/summary`, token);
   }
   return request<SiteSummary>(`/api/sites/${siteId}/summary`, {}, token);
+}
+
+export async function fetchSiteSummaryCounts(siteId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<SiteSummaryCounts>(`/api/sites/${siteId}/summary/counts`, token);
+  }
+  return request<SiteSummaryCounts>(`/api/sites/${siteId}/summary/counts`, {}, token);
+}
+
+export function mergeSiteSummaryCounts(
+  currentSummary: SiteSummary | null,
+  counts: SiteSummaryCounts,
+): SiteSummary {
+  const preserveExistingDetails = currentSummary?.site_id === counts.site_id;
+  return {
+    site_id: counts.site_id,
+    n_patients: counts.n_patients,
+    n_visits: counts.n_visits,
+    n_images: counts.n_images,
+    n_active_visits: counts.n_active_visits,
+    n_validation_runs: preserveExistingDetails ? currentSummary?.n_validation_runs ?? 0 : 0,
+    latest_validation: preserveExistingDetails ? currentSummary?.latest_validation ?? null : null,
+    research_registry: preserveExistingDetails ? currentSummary?.research_registry : undefined,
+  };
 }
 
 export async function fetchSiteActivity(siteId: string, token: string, signal?: AbortSignal) {

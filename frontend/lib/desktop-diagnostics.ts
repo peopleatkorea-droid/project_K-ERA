@@ -62,6 +62,11 @@ export type DesktopNodeStatus = {
   current_release?: Record<string, unknown> | null;
 };
 
+export type DesktopBackendCapabilities = {
+  desktopAuthRoutes: boolean | null;
+  selfCheckRoute: boolean | null;
+};
+
 export type DesktopDiagnosticsSnapshot = {
   runtime: "desktop" | "web";
   localBackend: DesktopManagedProcessStatus | null;
@@ -69,6 +74,8 @@ export type DesktopDiagnosticsSnapshot = {
   mlBackend: DesktopMlBackendStatus | null;
   nodeStatus: DesktopNodeStatus | null;
   nodeStatusError: string | null;
+  backendCapabilities?: DesktopBackendCapabilities | null;
+  backendCapabilitiesError?: string | null;
 };
 
 export type DesktopDiagnosticsBundleResponse = {
@@ -83,6 +90,8 @@ function webSnapshot(): DesktopDiagnosticsSnapshot {
     mlBackend: null,
     nodeStatus: null,
     nodeStatusError: null,
+    backendCapabilities: null,
+    backendCapabilitiesError: null,
   };
 }
 
@@ -122,7 +131,10 @@ export async function ensureDesktopLocalRuntimeReady(signal?: AbortSignal) {
 }
 
 export async function ensureDesktopLocalBackendReady(signal?: AbortSignal) {
-  return ensureDesktopLocalRuntimeReady(signal);
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopManagedProcessStatus>("ensure_local_backend", {}, signal);
 }
 
 export async function stopDesktopLocalRuntime(signal?: AbortSignal) {
@@ -133,16 +145,50 @@ export async function stopDesktopLocalRuntime(signal?: AbortSignal) {
 }
 
 export async function stopDesktopLocalBackend(signal?: AbortSignal) {
-  return stopDesktopLocalRuntime(signal);
-}
-
-export async function fetchDesktopNodeStatus(signal?: AbortSignal) {
   if (!hasDesktopRuntime()) {
     return null;
   }
-  return requestDesktopLocalApiJson<DesktopNodeStatus>("/api/control-plane/node/status", "", {
+  return invokeDesktop<DesktopManagedProcessStatus>("stop_local_backend", {}, signal);
+}
+
+type DesktopNodeStatusOptions = {
+  signal?: AbortSignal;
+  forceRefresh?: boolean;
+};
+
+export async function fetchDesktopNodeStatus(
+  signalOrOptions?: AbortSignal | DesktopNodeStatusOptions,
+) {
+  const requestSignal =
+    signalOrOptions instanceof AbortSignal ? signalOrOptions : signalOrOptions?.signal;
+  const forceRefresh =
+    signalOrOptions instanceof AbortSignal ? false : Boolean(signalOrOptions?.forceRefresh);
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  const suffix = forceRefresh ? "?refresh=true" : "";
+  return requestDesktopLocalApiJson<DesktopNodeStatus>(`/api/control-plane/node/status${suffix}`, "", {
+    signal: requestSignal,
+  });
+}
+
+type DesktopOpenApiDocument = {
+  paths?: Record<string, unknown> | null;
+};
+
+export async function fetchDesktopBackendCapabilities(signal?: AbortSignal): Promise<DesktopBackendCapabilities | null> {
+  if (!hasDesktopRuntime()) {
+    return null;
+  }
+  const document = await requestDesktopLocalApiJson<DesktopOpenApiDocument>("/openapi.json", "", {
     signal,
   });
+  const paths = document?.paths ?? {};
+  const hasPath = (path: string) => Object.prototype.hasOwnProperty.call(paths, path);
+  return {
+    desktopAuthRoutes: hasPath("/api/auth/desktop/start") && hasPath("/api/auth/desktop/exchange"),
+    selfCheckRoute: hasPath("/api/desktop/self-check"),
+  };
 }
 
 async function fetchDesktopRuntimeSnapshotInternal(signal?: AbortSignal): Promise<DesktopDiagnosticsSnapshot> {
@@ -175,11 +221,13 @@ export async function fetchDesktopDiagnosticsSnapshot(signal?: AbortSignal): Pro
     return webSnapshot();
   }
 
-  const [runtimeSnapshot, nodeStatusResult] = await Promise.all([
+  const [runtimeSnapshot, nodeStatusResult, backendCapabilitiesResult] = await Promise.all([
     fetchDesktopRuntimeSnapshotInternal(signal),
     Promise.allSettled([fetchDesktopNodeStatus(signal)]),
+    Promise.allSettled([fetchDesktopBackendCapabilities(signal)]),
   ]);
   const nodeStatus = nodeStatusResult[0];
+  const backendCapabilities = backendCapabilitiesResult[0];
 
   return {
     ...runtimeSnapshot,
@@ -189,6 +237,13 @@ export async function fetchDesktopDiagnosticsSnapshot(signal?: AbortSignal): Pro
         ? nodeStatus.reason instanceof Error
           ? nodeStatus.reason.message
           : String(nodeStatus.reason)
+        : null,
+    backendCapabilities: backendCapabilities.status === "fulfilled" ? backendCapabilities.value : null,
+    backendCapabilitiesError:
+      backendCapabilities.status === "rejected"
+        ? backendCapabilities.reason instanceof Error
+          ? backendCapabilities.reason.message
+          : String(backendCapabilities.reason)
         : null,
   };
 }

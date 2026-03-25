@@ -108,12 +108,25 @@ export function PatientListBoard({
 }: PatientListBoardProps) {
   const [localSearch, setLocalSearch] = useState(caseSearch);
   const deferredSearch = useDeferredValue(localSearch);
+  const suppressOutboundSearchSyncRef = useRef(false);
 
   useEffect(() => {
-    setLocalSearch((current) => (current === caseSearch ? current : caseSearch));
+    setLocalSearch((current) => {
+      if (current === caseSearch) {
+        return current;
+      }
+      suppressOutboundSearchSyncRef.current = true;
+      return caseSearch;
+    });
   }, [caseSearch]);
 
   useEffect(() => {
+    if (suppressOutboundSearchSyncRef.current) {
+      if (deferredSearch === caseSearch) {
+        suppressOutboundSearchSyncRef.current = false;
+      }
+      return;
+    }
     if (deferredSearch !== caseSearch) {
       onSearchChange(deferredSearch);
     }
@@ -415,7 +428,7 @@ export function PatientListBoard({
               <div className={emptySurfaceClass}>{pick(locale, "No saved patients match this search yet.", "검색 조건에 맞는 저장된 환자가 아직 없습니다.")}</div>
             ) : null}
             {shouldWindowPatients ? (
-              <div ref={patientListScrollRef} className="max-h-[min(68vh,920px)] overflow-y-auto pr-1">
+              <div ref={patientListScrollRef} className="max-h-[min(68vh,920px)] overflow-y-auto px-1 py-2">
                 <div
                   className="relative"
                   style={{

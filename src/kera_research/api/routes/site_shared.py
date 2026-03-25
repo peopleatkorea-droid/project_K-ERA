@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -26,7 +24,7 @@ def assert_site_access_only(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this site.")
 
 
-def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
+def build_site_summary_counts(site_store: SiteStore, site_id: str) -> dict[str, int | str]:
     stats = site_store.site_summary_stats()
     return {
         "site_id": site_id,
@@ -34,6 +32,20 @@ def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
         "n_visits": stats["n_visits"],
         "n_images": stats["n_images"],
         "n_active_visits": stats["n_active_visits"],
+    }
+
+
+def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
+    stats = site_store.site_summary_stats()
+    summary = {
+        "site_id": site_id,
+        "n_patients": stats["n_patients"],
+        "n_visits": stats["n_visits"],
+        "n_images": stats["n_images"],
+        "n_active_visits": stats["n_active_visits"],
+    }
+    return {
+        **summary,
         "n_validation_runs": 0,
         "latest_validation": None,
         "research_registry": {

@@ -62,8 +62,8 @@ export function RequestsSection({
         titleAs="h3"
         description={pick(
           locale,
-          "Researcher requests are auto-approved when the selected hospital already exists. Only unmapped institution requests stay in the manual review queue.",
-          "선택한 기관이 이미 K-ERA site에 연결되어 있으면 researcher 요청은 자동 승인됩니다. 아직 매핑되지 않은 기관 요청만 수동 검토 대기열에 남습니다.",
+          "First hospital access can auto-approve when the selected hospital already exists. Change requests from users who already have a hospital stay in the manual review queue because approval replaces the current hospital.",
+          "선택한 기관이 이미 K-ERA site에 연결되어 있으면 첫 병원 접근은 자동 승인될 수 있습니다. 이미 병원이 연결된 사용자의 변경 요청은 승인 시 기존 병원을 교체하므로 수동 검토 대기열에 남습니다.",
         )}
         aside={
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -123,8 +123,8 @@ export function RequestsSection({
             titleAs="h4"
             description={pick(
               locale,
-              "These requests were approved immediately because the requested hospital already mapped to an active K-ERA site.",
-              "이 요청들은 선택한 기관이 이미 활성 K-ERA site에 연결되어 있어서 즉시 승인되었습니다.",
+              "These requests were approved immediately because the requester did not have a linked hospital yet and the requested hospital already mapped to an active K-ERA site.",
+              "이 요청들은 요청자에게 아직 연결된 병원이 없었고, 선택한 기관이 이미 활성 K-ERA site에 연결되어 있어서 즉시 승인되었습니다.",
             )}
           />
           {autoApprovedRequests.map((request) => (

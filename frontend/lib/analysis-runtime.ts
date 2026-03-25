@@ -487,13 +487,15 @@ export async function fetchAnalysisCaseLesionPreviewArtifactUrl(
   token: string,
 ) {
   if (canUseDesktopAnalysisTransport()) {
-    return resolveDesktopArtifactUrl("resolve_case_lesion_preview_artifact_path", {
-      site_id: siteId,
-      patient_id: patientId,
-      visit_date: visitDate,
-      image_id: imageId,
-      artifact_kind: artifactKind,
-    });
+    const blob = await fetchAnalysisCaseLesionPreviewArtifactBlob(
+      siteId,
+      patientId,
+      visitDate,
+      imageId,
+      artifactKind,
+      token,
+    );
+    return URL.createObjectURL(blob);
   }
   const blob = await fetchAnalysisCaseLesionPreviewArtifactBlob(siteId, patientId, visitDate, imageId, artifactKind, token);
   return URL.createObjectURL(blob);

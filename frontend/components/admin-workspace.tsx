@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
+import { DesktopControlPlaneStatusBadge } from "./ui/desktop-control-plane-status-badge";
 import { MetricGrid, MetricItem } from "./ui/metric-grid";
 import { SectionHeader } from "./ui/section-header";
 import {
@@ -31,12 +32,14 @@ import { ImportsSection } from "./admin-workspace/imports-section";
 import { ManagementSection } from "./admin-workspace/management-section";
 import { RequestsSection } from "./admin-workspace/requests-section";
 import { RegistrySection } from "./admin-workspace/registry-section";
+import { SslSection } from "./admin-workspace/ssl-section";
 import { TrainingSection } from "./admin-workspace/training-section";
 import { getFoldConfusionMatrix, useAdminWorkspaceState } from "./admin-workspace/use-admin-workspace-state";
 import { useAdminWorkspaceController } from "./admin-workspace/use-admin-workspace-controller";
 import { LocaleToggle, pick, translateRole } from "../lib/i18n";
 import { type AuthUser, type SiteSummary } from "../lib/api";
 import { cn } from "../lib/cn";
+import { type DesktopControlPlaneProbe } from "../lib/desktop-control-plane-status";
 import { filterVisibleSites, getSiteDisplayName, type SiteDisplayRecord } from "../lib/site-labels";
 
 export type WorkspaceSection =
@@ -45,6 +48,7 @@ export type WorkspaceSection =
   | "requests"
   | "training"
   | "cross_validation"
+  | "ssl"
   | "registry"
   | "management"
   | "federation";
@@ -58,6 +62,8 @@ type AdminWorkspaceProps = {
   summary: SiteSummary | null;
   theme: "dark" | "light";
   initialSection?: WorkspaceSection;
+  controlPlaneStatus?: DesktopControlPlaneProbe | null;
+  controlPlaneStatusBusy?: boolean;
   onSelectSite: (siteId: string) => void;
   onOpenCanvas: () => void;
   onLogout: () => void;
@@ -129,6 +135,8 @@ export function AdminWorkspace({
   summary,
   theme,
   initialSection,
+  controlPlaneStatus = null,
+  controlPlaneStatusBusy = false,
   onSelectSite,
   onOpenCanvas,
   onLogout,
@@ -291,6 +299,13 @@ export function AdminWorkspace({
     benchmarkPercent,
     crossValidationProgress,
     crossValidationPercent,
+    sslBusy,
+    sslJob,
+    sslResult,
+    sslForm,
+    setSslForm,
+    sslProgress,
+    sslPercent,
     formatTrainingStage,
     formatEmbeddingStage,
     toggleRocValidationSelection,
@@ -305,7 +320,12 @@ export function AdminWorkspace({
     handleBenchmarkTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleRefreshBenchmarkStatus,
     handleCrossValidation,
+    handlePickSslArchiveDirectory,
+    handleRunSslPretraining,
+    handleCancelSslPretraining,
+    handleRefreshSslStatus,
     handleSiteValidation,
     handleRefreshEmbeddingStatus,
     handleEmbeddingBackfill,
@@ -314,6 +334,7 @@ export function AdminWorkspace({
     handleAggregation,
     handleAggregationAllReady,
     handleDeleteModelVersion,
+    handleActivateLocalModelVersion,
     handlePublishModelVersion,
     handleModelUpdateReview,
     handlePublishModelUpdate,
@@ -462,6 +483,7 @@ export function AdminWorkspace({
               ["requests", pick(locale, "Access requests", "?묎렐 ?붿껌")],
               ["training", pick(locale, "Initial training", "珥덇린 ?숈뒿")],
               ["cross_validation", pick(locale, "Cross-validation", "교차 검증")],
+              ["ssl", pick(locale, "SSL pretraining", "SSL 사전학습")],
               ["registry", pick(locale, "Model registry", "모델 레지스트리")],
               ["management", pick(locale, "Management", "관리")],
               ...(canAggregate ? [["federation", pick(locale, "Federation", "?고빀?숈뒿")]] : []),
@@ -569,6 +591,7 @@ export function AdminWorkspace({
           )}
           aside={
             <div className="flex flex-wrap items-center justify-end gap-3">
+              <DesktopControlPlaneStatusBadge locale={locale} status={controlPlaneStatus} busy={controlPlaneStatusBusy} />
               <div className="relative" ref={alertsPanelRef}>
                 <Button
                   type="button"
@@ -668,6 +691,9 @@ export function AdminWorkspace({
             </Button>
             <Button variant="ghost" type="button" onClick={() => setSection("cross_validation")}>
               {pick(locale, "Cross-validation", "교차 검증")}
+            </Button>
+            <Button variant="ghost" type="button" onClick={() => setSection("ssl")}>
+              {pick(locale, "SSL pretraining", "SSL 사전학습")}
             </Button>
             <Button variant="ghost" type="button" onClick={() => setSection("dashboard")}>
               {pick(locale, "Hospital validation", "병원 검증")}
@@ -781,6 +807,7 @@ export function AdminWorkspace({
               onExportSelectedReport={() => void handleExportCrossValidationReport()}
               onCancelBenchmark={() => void handleCancelBenchmarkTraining()}
               onCancelInitialTraining={() => void handleCancelInitialTraining()}
+              onRefreshBenchmarkStatus={() => void handleRefreshBenchmarkStatus()}
               onRunBenchmark={() => void handleBenchmarkTraining()}
               onRunInitialTraining={() => void handleInitialTraining()}
               onResumeBenchmark={() => void handleResumeBenchmarkTraining()}
@@ -809,6 +836,27 @@ export function AdminWorkspace({
               onRunCrossValidation={() => void handleCrossValidation()}
             />
           ) : null}
+          {section === "ssl" ? (
+            <SslSection
+              locale={locale}
+              notAvailableLabel={common.notAvailable}
+              selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
+              sslForm={sslForm}
+              sslBusy={sslBusy}
+              sslJob={sslJob}
+              sslProgress={sslProgress}
+              sslPercent={sslPercent}
+              sslResult={sslResult}
+              setSslForm={setSslForm}
+              formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
+              formatTrainingStage={formatTrainingStage}
+              onPickArchiveDirectory={() => void handlePickSslArchiveDirectory()}
+              onRunSslPretraining={() => void handleRunSslPretraining()}
+              onCancelSslPretraining={() => void handleCancelSslPretraining()}
+              onRefreshSslStatus={() => void handleRefreshSslStatus()}
+            />
+          ) : null}
           {section === "registry" ? (
             <RegistrySection
               locale={locale}
@@ -832,6 +880,7 @@ export function AdminWorkspace({
               formatQualityRecommendation={(recommendation) => formatQualityRecommendation(locale, recommendation)}
               translateQualityFlag={(flag) => translateQualityFlag(locale, flag)}
               onDeleteModelVersion={(version) => void handleDeleteModelVersion(version)}
+              onActivateLocalModelVersion={(version) => void handleActivateLocalModelVersion(version)}
               onPublishModelVersion={(version) => void handlePublishModelVersion(version)}
               onModelUpdateReview={(decision) => void handleModelUpdateReview(decision)}
               onPublishModelUpdate={() => void handlePublishModelUpdate()}
@@ -899,7 +948,3 @@ export function AdminWorkspace({
     </main>
   );
 }
-
-
-
-

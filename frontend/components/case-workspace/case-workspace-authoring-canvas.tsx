@@ -43,18 +43,18 @@ export function CaseWorkspaceAuthoringCanvas({
 }: CaseWorkspaceAuthoringCanvasProps) {
   return (
     <article className={canvasDocumentClass}>
-      <section className={canvasHeaderClass}>
-        <div className={canvasHeaderGlowClass} />
-        <div className={canvasHeaderContentClass}>
-          <div className="grid gap-3">
-            <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
-              <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>
-              <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
-              <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
+      {!intakeCompleted ? (
+        <section className={canvasHeaderClass}>
+          <div className={canvasHeaderGlowClass} />
+          <div className={canvasHeaderContentClass}>
+            <div className="grid gap-3">
+              <div className={`${canvasHeaderMetaRowClass} min-w-0 flex-nowrap overflow-x-auto pb-1`}>
+                <span className={canvasHeaderMetaChipClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>
+                <span className={canvasHeaderMetaChipClass}>{draftStatusLabel}</span>
+                <span className={canvasHeaderMetaChipClass}>{resolvedVisitReferenceLabel}</span>
+              </div>
             </div>
-          </div>
 
-          {!intakeCompleted ? (
             <div className={canvasSummaryGridClass}>
               <div className={canvasSummaryCardClass}>
                 <span className={canvasSummaryLabelClass}>{pick(locale, "Patient", "환자")}</span>
@@ -69,9 +69,9 @@ export function CaseWorkspaceAuthoringCanvas({
                 <strong className={canvasSummaryValueClass}>{organismSummary}</strong>
               </div>
             </div>
-          ) : null}
-        </div>
-      </section>
+          </div>
+        </section>
+      ) : null}
 
       {patientVisitForm}
       {imageManagerPanel ?? null}

@@ -271,7 +271,7 @@ export function panelImageOverlayFallbackClass(ready = false) {
 export const panelImageAnnotationSurfaceClass = "m-4 mb-2.5";
 export const panelImageAnnotationActionsClass = "flex flex-wrap gap-2 px-4 pb-2.5";
 export const panelImageAnnotationMetaClass = "flex flex-wrap items-center gap-2 px-4 pb-2.5";
-export const savedImageActionBarClass = "flex flex-wrap items-center gap-2.5";
+export const savedImageActionBarClass = "flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1";
 export const savedImageMetricGridClass = "gap-3";
 export const previewItemMetricGridClass = "mb-1";
 
@@ -331,7 +331,7 @@ export const completeIntakeButtonClass = "shadow-[0_10px_24px_rgba(20,184,166,0.
 export const organismAddButtonClass = "min-w-[144px] justify-center";
 
 export function imageGridClass(single = false) {
-  return cn("mt-4 grid gap-4 md:grid-cols-2", single && "md:grid-cols-1");
+  return cn("mt-2 grid gap-2 md:grid-cols-2", single && "md:grid-cols-1");
 }
 export const draftLesionSurfaceClass =
   "cursor-crosshair select-none touch-none relative aspect-[4/3] overflow-hidden rounded-[12px] border border-border bg-surface-elevated";

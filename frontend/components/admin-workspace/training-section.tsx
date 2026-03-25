@@ -7,6 +7,7 @@ import { Card } from "../ui/card";
 import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
+import { TrainingPaperFigures } from "./training-paper-figures";
 import { docSectionLabelClass, docSiteBadgeClass, trainingProgressSettingsClass } from "../ui/workspace-patterns";
 import type { CrossValidationReport, InitialTrainingBenchmarkResponse, InitialTrainingResponse, SiteJobRecord } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
@@ -118,6 +119,7 @@ type Props = {
   onExportSelectedReport: () => void;
   onCancelBenchmark: () => void;
   onCancelInitialTraining: () => void;
+  onRefreshBenchmarkStatus: () => void;
   onRunBenchmark: () => void;
   onRunInitialTraining: () => void;
   onResumeBenchmark: () => void;
@@ -205,17 +207,46 @@ function getRemainingBenchmarkArchitectures(job: SiteJobRecord | null): string[]
   return payloadArchitectures.filter((architecture) => !completedSet.has(architecture));
 }
 
+function resolveArchitectureLabel(architecture: string | null | undefined) {
+  const normalized = String(architecture || "").trim();
+  return (TRAINING_ARCHITECTURE_LABELS.get(normalized) ?? normalized) || "n/a";
+}
+
+function benchmarkEntryMetric(
+  entry: InitialTrainingBenchmarkResponse["results"][number],
+  metricName: string,
+): number | null {
+  const rawValue = entry.result?.test_metrics?.[metricName];
+  return typeof rawValue === "number" ? rawValue : null;
+}
+
+function compareBenchmarkEntries(
+  left: InitialTrainingBenchmarkResponse["results"][number],
+  right: InitialTrainingBenchmarkResponse["results"][number],
+) {
+  return (
+    (benchmarkEntryMetric(right, "balanced_accuracy") ?? -1) - (benchmarkEntryMetric(left, "balanced_accuracy") ?? -1) ||
+    (benchmarkEntryMetric(right, "AUROC") ?? -1) - (benchmarkEntryMetric(left, "AUROC") ?? -1) ||
+    ((right.result?.best_val_acc ?? -1) - (left.result?.best_val_acc ?? -1))
+  );
+}
+
 function SummaryGrid({
   items,
+  compact = false,
 }: {
   items: Array<{ label: string; value: string }>;
+  compact?: boolean;
 }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className={compact ? "grid gap-2 sm:grid-cols-2 xl:grid-cols-6" : "grid gap-3 sm:grid-cols-2 xl:grid-cols-5"}>
       {items.map((item) => (
-        <div key={`${item.label}-${item.value}`} className="rounded-[18px] border border-border bg-surface px-4 py-3">
-          <strong className="block text-sm font-semibold text-ink">{item.label}</strong>
-          <span className="mt-1 block text-sm leading-6 text-muted">{item.value}</span>
+        <div
+          key={`${item.label}-${item.value}`}
+          className={`${compact && item.value.length > 20 ? "sm:col-span-2 xl:col-span-2 " : ""}rounded-[18px] border border-border bg-surface ${compact ? "px-3 py-2.5" : "px-4 py-3"}`}
+        >
+          <strong className={`block font-semibold text-ink ${compact ? "text-[0.72rem] tracking-[0.04em]" : "text-sm"}`}>{item.label}</strong>
+          <span className={`mt-1 block break-words text-muted ${compact ? "text-sm leading-5" : "text-sm leading-6"}`}>{item.value}</span>
         </div>
       ))}
     </div>
@@ -246,6 +277,7 @@ export function TrainingSection({
   onExportSelectedReport,
   onCancelBenchmark,
   onCancelInitialTraining,
+  onRefreshBenchmarkStatus,
   onRunBenchmark,
   onRunInitialTraining,
   onResumeBenchmark,
@@ -380,6 +412,9 @@ export function TrainingSection({
             : pick(locale, "reuse", "재사용"),
     },
   ];
+  const resolvedBenchmarkResult =
+    benchmarkResult ??
+    (isBenchmarkResponse(benchmarkJob?.result?.response) ? benchmarkJob.result.response : null);
   const benchmarkSummaryItems = [
     { label: pick(locale, "Site", "병원"), value: selectedSiteLabel ?? notAvailableLabel },
     { label: pick(locale, "Execution", "실행"), value: initialForm.execution_mode.toUpperCase() },
@@ -396,6 +431,8 @@ export function TrainingSection({
     { label: pick(locale, "Init", "초기화"), value: initialForm.use_pretrained ? pick(locale, "pretrained", "사전학습") : pick(locale, "scratch", "처음부터") },
     { label: pick(locale, "Split", "분할"), value: initialForm.regenerate_split ? pick(locale, "regenerate", "재생성") : pick(locale, "reuse", "재사용") },
   ];
+  const benchmarkSortedResults = resolvedBenchmarkResult ? [...resolvedBenchmarkResult.results].sort(compareBenchmarkEntries) : [];
+  const benchmarkBestTestEntry = benchmarkSortedResults[0] ?? null;
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -411,10 +448,37 @@ export function TrainingSection({
         aside={<span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "Select a hospital", "병원 선택")}</span>}
       />
 
-      <div className="flex justify-end">
-        <Button type="button" variant="ghost" size="sm" disabled={crossValidationExportBusy || !selectedReport} onClick={onExportSelectedReport}>
-          {crossValidationExportBusy ? pick(locale, "Exporting...", "내보내는 중...") : pick(locale, "Export selected report", "선택 리포트 내보내기")}
-        </Button>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-border bg-surface-muted/70 px-4 py-3">
+        <div className="text-sm leading-6 text-muted">
+          {resolvedBenchmarkResult
+            ? pick(
+                locale,
+                "The latest 8-model benchmark summary is available. Open the paper-figure panel here.",
+                "최근 8종 benchmark 요약이 준비되어 있습니다. 여기서 바로 논문용 패널을 열 수 있습니다."
+              )
+            : pick(
+                locale,
+                "If the latest benchmark summary is missing, refresh status first.",
+                "최근 benchmark 요약이 안 보이면 먼저 상태 새로 고침을 누르세요."
+              )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="ghost" size="sm" disabled={crossValidationExportBusy || !selectedReport} onClick={onExportSelectedReport}>
+            {crossValidationExportBusy ? pick(locale, "Exporting...", "내보내는 중...") : pick(locale, "Export selected report", "선택 리포트 내보내기")}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onRefreshBenchmarkStatus}>
+            {benchmarkBusy ? pick(locale, "Refreshing...", "새로 고치는 중...") : pick(locale, "Refresh status", "상태 새로 고침")}
+          </Button>
+          {resolvedBenchmarkResult ? (
+            <TrainingPaperFigures
+              locale={locale}
+              benchmarkResult={resolvedBenchmarkResult}
+              selectedSiteLabel={selectedSiteLabel}
+              notAvailableLabel={notAvailableLabel}
+              formatMetric={formatMetric}
+            />
+          ) : null}
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-4">
@@ -599,30 +663,44 @@ export function TrainingSection({
 
       {benchmarkConfirmOpen ? (
         <div
-          className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+          className="fixed inset-0 z-80 overflow-y-auto bg-black/45 p-4 backdrop-blur-sm md:p-6"
           role="dialog"
           aria-modal="true"
           aria-label={pick(locale, `${BENCHMARK_MODEL_COUNT}-model staged training confirmation`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 확인`)}
         >
-          <Card as="div" variant="panel" className="w-full max-w-4xl grid gap-5 p-6">
-            <SectionHeader
-              title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model staged initial training`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 확인`)}
-              titleAs="h4"
-              description={pick(locale, "One queued job, three staged phases.", "하나의 작업으로 3단계 순차 실행합니다.")}
-            />
-            <p className="m-0 text-sm leading-6 text-muted">
-              {pick(
-                locale,
-                `The current runtime settings will be applied across all three phases, with dual-input concat forced to paired cornea + lesion crops.`,
-                `현재 실행 설정은 3단계 전체에 적용되며, dual-input concat은 각막 + 병변 paired crop으로 강제됩니다.`
-              )}
-            </p>
-            <SummaryGrid items={benchmarkSummaryItems} />
-            <div className="grid gap-3" aria-label={pick(locale, "Benchmark phases", "benchmark 단계")}>
+          <Card as="div" variant="panel" className="mx-auto my-4 grid w-full max-w-[min(94vw,1480px)] gap-4 p-5 md:p-6">
+            <div className="grid gap-3">
+              <SectionHeader
+                title={pick(locale, `Confirm ${BENCHMARK_MODEL_COUNT}-model staged initial training`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 확인`)}
+                titleAs="h4"
+                description={pick(locale, "One queued job, three staged phases.", "하나의 작업으로 3단계 순차 실행합니다.")}
+              />
+              <p className="m-0 text-sm leading-6 text-muted">
+                {pick(
+                  locale,
+                  `The current runtime settings will be applied across all three phases, with dual-input concat forced to paired cornea + lesion crops.`,
+                  `현재 실행 설정은 3단계 전체에 적용되며, dual-input concat은 각막 + 병변 paired crop으로 강제됩니다.`
+                )}
+              </p>
+            </div>
+            <div className="grid gap-4">
+              <SummaryGrid items={benchmarkSummaryItems} compact />
+              <div className="rounded-[18px] border border-border bg-surface-muted/55 px-4 py-3">
+                <div className="mb-2 text-sm font-semibold text-ink">{pick(locale, "Models to train", "학습 대상 모델")}</div>
+                <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Models to train", "학습 대상 모델")}>
+                  {benchmarkModelLabels.map((label) => (
+                    <span key={`confirm-${label}`} className={docSiteBadgeClass}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-3 xl:grid-cols-3" aria-label={pick(locale, "Benchmark phases", "benchmark 단계")}>
               {benchmarkPhaseGroups.map((phase) => (
                 <div key={`confirm-${phase.key}`} className="rounded-[18px] border border-border bg-surface-muted/60 px-4 py-3">
                   <div className="text-sm font-semibold text-ink">{phase.titleLabel}</div>
-                  <p className="mb-3 mt-1 text-sm leading-6 text-muted">{phase.descriptionLabel}</p>
+                  <p className="mb-2 mt-1 text-sm leading-6 text-muted">{phase.descriptionLabel}</p>
                   <div className="flex flex-wrap gap-2">
                     {phase.labels.map((label) => (
                       <span key={`confirm-${phase.key}-${label}`} className={docSiteBadgeClass}>
@@ -633,14 +711,7 @@ export function TrainingSection({
                 </div>
               ))}
             </div>
-            <div className="flex flex-wrap gap-2" aria-label={pick(locale, "Models to train", "학습 대상 모델")}>
-              {benchmarkModelLabels.map((label) => (
-                <span key={`confirm-${label}`} className={docSiteBadgeClass}>
-                  {label}
-                </span>
-              ))}
-            </div>
-            <div className="flex flex-wrap justify-end gap-3">
+            <div className="flex flex-wrap justify-end gap-3 border-t border-border/70 pt-1">
               <Button type="button" variant="ghost" onClick={() => setBenchmarkConfirmOpen(false)}>
                 {pick(locale, "Cancel", "취소")}
               </Button>
@@ -767,8 +838,12 @@ export function TrainingSection({
           <p className="m-0 text-sm leading-6 text-muted">
             {pick(locale, "Estimated remaining time", "예상 남은 시간")}: {benchmarkEtaLabel}
           </p>
-          {benchmarkActive || canResumeBenchmark ? (
-            <div className="flex flex-wrap justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onRefreshBenchmarkStatus}>
+              {benchmarkBusy ? pick(locale, "Refreshing...", "새로 고치는 중...") : pick(locale, "Refresh status", "상태 새로 고침")}
+            </Button>
+            {benchmarkActive || canResumeBenchmark ? (
+              <>
               {benchmarkActive ? (
                 <Button
                   type="button"
@@ -791,8 +866,9 @@ export function TrainingSection({
                   )}
                 </Button>
               ) : null}
-            </div>
-          ) : null}
+              </>
+            ) : null}
+          </div>
           <div className={trainingProgressSettingsClass} data-testid="training-progress-settings">
             <SectionHeader
               title={pick(locale, "Run settings", "실행 설정")}
@@ -813,33 +889,77 @@ export function TrainingSection({
         </Card>
       ) : null}
 
-      {benchmarkResult ? (
+      {resolvedBenchmarkResult ? (
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
             title={pick(locale, `${BENCHMARK_MODEL_COUNT}-model staged training summary`, `${BENCHMARK_MODEL_COUNT}종 단계형 초기 학습 요약`)}
             titleAs="h4"
-            aside={<span className={docSiteBadgeClass}>{benchmarkResult.best_architecture ?? notAvailableLabel}</span>}
+            aside={<span className={docSiteBadgeClass}>{resolvedBenchmarkResult.best_architecture ?? notAvailableLabel}</span>}
           />
-          <div className="grid gap-2">
-            <div className="grid gap-3 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm font-medium text-muted md:grid-cols-4">
-              <span>{pick(locale, "architecture", "아키텍처")}</span>
-              <span>{pick(locale, "status", "상태")}</span>
-              <span>{pick(locale, "best val acc", "최고 검증 정확도")}</span>
-              <span>{pick(locale, "version", "버전")}</span>
-            </div>
-            {benchmarkResult.results.map((entry) => (
-              <div key={entry.architecture} className="grid gap-3 rounded-[18px] border border-border bg-surface-muted/80 px-4 py-3 text-sm md:grid-cols-4">
-                <span>{entry.architecture}</span>
-                <span>{entry.status}</span>
-                <span>{formatMetric(entry.result?.best_val_acc, notAvailableLabel)}</span>
-                <span>{entry.model_version?.version_name ?? notAvailableLabel}</span>
+          <MetricGrid columns={4}>
+            <MetricItem value={resolvedBenchmarkResult.results.length} label={pick(locale, "completed", "완료 모델")} />
+            <MetricItem value={resolvedBenchmarkResult.failures.length} label={pick(locale, "failed", "실패 모델")} />
+            <MetricItem value={resolveArchitectureLabel(resolvedBenchmarkResult.best_architecture)} label={pick(locale, "best val", "val 최고")} />
+            <MetricItem value={resolveArchitectureLabel(benchmarkBestTestEntry?.architecture)} label={pick(locale, "best test", "test 최고")} />
+          </MetricGrid>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onRefreshBenchmarkStatus}>
+              {benchmarkBusy ? pick(locale, "Refreshing...", "새로 고치는 중...") : pick(locale, "Refresh status", "상태 새로 고침")}
+            </Button>
+            <TrainingPaperFigures
+              locale={locale}
+              benchmarkResult={resolvedBenchmarkResult}
+              selectedSiteLabel={selectedSiteLabel}
+              notAvailableLabel={notAvailableLabel}
+              formatMetric={formatMetric}
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <div className="grid min-w-[980px] gap-2">
+              <div className="grid gap-3 rounded-[18px] border border-border bg-surface px-4 py-3 text-sm font-medium text-muted md:grid-cols-[1.35fr_0.8fr_0.9fr_0.9fr_0.9fr_1fr_1.6fr]">
+                <span>{pick(locale, "architecture", "아키텍처")}</span>
+                <span>{pick(locale, "status", "상태")}</span>
+                <span>{pick(locale, "best val acc", "최고 검증 정확도")}</span>
+                <span>{pick(locale, "test acc", "테스트 정확도")}</span>
+                <span>AUROC</span>
+                <span>{pick(locale, "balanced acc", "균형 정확도")}</span>
+                <span>{pick(locale, "version", "버전")}</span>
               </div>
-            ))}
-            {benchmarkResult.failures.map((entry) => (
-              <div key={`failed-${entry.architecture}`} className="grid gap-3 rounded-[18px] border border-danger/20 bg-danger/5 px-4 py-3 text-sm md:grid-cols-4">
-                <span>{entry.architecture}</span>
+              {benchmarkSortedResults.map((entry) => {
+                const isValBest = entry.architecture === resolvedBenchmarkResult.best_architecture;
+                const isTestBest = entry.architecture === benchmarkBestTestEntry?.architecture;
+                return (
+                  <div
+                    key={entry.architecture}
+                    className={`grid gap-3 rounded-[18px] border px-4 py-3 text-sm md:grid-cols-[1.35fr_0.8fr_0.9fr_0.9fr_0.9fr_1fr_1.6fr] ${
+                      isValBest || isTestBest
+                        ? "border-brand/20 bg-brand-soft/40"
+                        : "border-border bg-surface-muted/80"
+                    }`}
+                  >
+                    <div className="grid gap-1">
+                      <span className="font-medium text-ink">{resolveArchitectureLabel(entry.architecture)}</span>
+                      <div className="flex flex-wrap gap-2">
+                        {isValBest ? <span className={docSiteBadgeClass}>{pick(locale, "best val", "val 최고")}</span> : null}
+                        {isTestBest ? <span className={docSiteBadgeClass}>{pick(locale, "best test", "test 최고")}</span> : null}
+                      </div>
+                    </div>
+                    <span>{entry.status}</span>
+                    <span>{formatMetric(entry.result?.best_val_acc, notAvailableLabel)}</span>
+                    <span>{formatMetric(benchmarkEntryMetric(entry, "accuracy"), notAvailableLabel)}</span>
+                    <span>{formatMetric(benchmarkEntryMetric(entry, "AUROC"), notAvailableLabel)}</span>
+                    <span>{formatMetric(benchmarkEntryMetric(entry, "balanced_accuracy"), notAvailableLabel)}</span>
+                    <span className="break-words">{entry.model_version?.version_name ?? notAvailableLabel}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid gap-2">
+            {resolvedBenchmarkResult.failures.map((entry) => (
+              <div key={`failed-${entry.architecture}`} className="grid gap-3 rounded-[18px] border border-danger/20 bg-danger/5 px-4 py-3 text-sm md:grid-cols-[1fr_0.8fr_3fr]">
+                <span>{resolveArchitectureLabel(entry.architecture)}</span>
                 <span>{entry.status}</span>
-                <span>{notAvailableLabel}</span>
                 <span>{entry.error}</span>
               </div>
             ))}

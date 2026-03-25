@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 
 import { pick, type Locale } from "../../lib/i18n";
 import {
+  activateLocalModelVersion,
   autoPublishModelUpdate,
   autoPublishModelVersion,
   deleteModelVersion,
@@ -31,6 +32,8 @@ type RegistryControllerCopy = {
   batchAggregationPartialFailed: (count: number, detail: string) => string;
   modelDeleted: (name: string) => string;
   modelDeleteFailed: string;
+  modelActivated: (name: string) => string;
+  modelActivateFailed: string;
   modelPublishPrompt: (name: string) => string;
   modelPublishConfirmCurrent: (name: string) => string;
   modelPublished: (name: string) => string;
@@ -299,6 +302,19 @@ export function useAdminWorkspaceRegistryController({
     }
   }
 
+  async function handleActivateLocalModelVersion(version: ModelVersionRecord) {
+    setPublishingModelVersionId(version.version_id);
+    try {
+      await activateLocalModelVersion(version.version_id, token);
+      await refreshWorkspace();
+      setToast({ tone: "success", message: copy.modelActivated(version.version_name) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.modelActivateFailed) });
+    } finally {
+      setPublishingModelVersionId(null);
+    }
+  }
+
   async function handlePublishModelVersion(version: ModelVersionRecord) {
     const setCurrent = window.confirm(copy.modelPublishConfirmCurrent(version.version_name));
     setPublishingModelVersionId(version.version_id);
@@ -376,6 +392,7 @@ export function useAdminWorkspaceRegistryController({
     handleAggregation,
     handleAggregationAllReady,
     handleDeleteModelVersion,
+    handleActivateLocalModelVersion,
     handlePublishModelVersion,
     handleModelUpdateReview,
     handlePublishModelUpdate,

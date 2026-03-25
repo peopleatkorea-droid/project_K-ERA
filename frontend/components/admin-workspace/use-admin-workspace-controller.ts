@@ -506,6 +506,8 @@ export function useAdminWorkspaceController({
     updatePublishFailed: pick(locale, "Unable to publish the update artifact.", "업데이트 아티팩트 발행에 실패했습니다."),
     modelDeleted: (name: string) => pick(locale, `Deleted ${name}.`, `${name} 모델을 삭제했습니다.`),
     modelDeleteFailed: pick(locale, "Unable to delete the model.", "모델 삭제에 실패했습니다."),
+    modelActivated: (name: string) => pick(locale, `Activated ${name} as current.`, `${name} 모델을 현재 모델로 설정했습니다.`),
+    modelActivateFailed: pick(locale, "Unable to activate the model locally.", "로컬 모델 활성화에 실패했습니다."),
     modelPublishPrompt: (name: string) =>
       pick(
         locale,
@@ -984,6 +986,8 @@ export function useAdminWorkspaceController({
       ]);
     } else if (section === "cross_validation") {
       await trainingController.loadCrossValidationSectionData();
+    } else if (section === "ssl") {
+      await trainingController.loadSslSectionData();
     }
     if (siteScoped && selectedSiteId) {
       await onSiteDataChanged(selectedSiteId);
@@ -1851,7 +1855,12 @@ export function useAdminWorkspaceController({
     handleBenchmarkTraining: trainingController.handleBenchmarkTraining,
     handleCancelBenchmarkTraining: trainingController.handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining: trainingController.handleResumeBenchmarkTraining,
+    handleRefreshBenchmarkStatus: trainingController.handleRefreshBenchmarkStatus,
     handleCrossValidation: trainingController.handleCrossValidation,
+    handlePickSslArchiveDirectory: trainingController.handlePickSslArchiveDirectory,
+    handleRunSslPretraining: trainingController.handleRunSslPretraining,
+    handleCancelSslPretraining: trainingController.handleCancelSslPretraining,
+    handleRefreshSslStatus: trainingController.handleRefreshSslStatus,
     handleSiteValidation: dashboardController.handleSiteValidation,
     handleRefreshEmbeddingStatus: dashboardController.handleRefreshEmbeddingStatus,
     handleEmbeddingBackfill: dashboardController.handleEmbeddingBackfill,
@@ -1860,6 +1869,7 @@ export function useAdminWorkspaceController({
     handleAggregation: registryController.handleAggregation,
     handleAggregationAllReady: registryController.handleAggregationAllReady,
     handleDeleteModelVersion: registryController.handleDeleteModelVersion,
+    handleActivateLocalModelVersion: registryController.handleActivateLocalModelVersion,
     handlePublishModelVersion: registryController.handlePublishModelVersion,
     handleModelUpdateReview: registryController.handleModelUpdateReview,
     handlePublishModelUpdate: registryController.handlePublishModelUpdate,

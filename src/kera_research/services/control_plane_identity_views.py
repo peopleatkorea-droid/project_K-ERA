@@ -463,9 +463,7 @@ class ControlPlaneIdentityFacade:
                 raise ValueError(f"Unknown user_id: {request_row['user_id']}")
 
             if decision_value == "approved":
-                next_site_ids = _normalize_site_ids(user_row["site_ids"])
-                if site_id and site_id not in next_site_ids:
-                    next_site_ids.append(site_id)
+                next_site_ids = [site_id] if site_id else []
                 conn.execute(update(users).where(users.c.user_id == request_row["user_id"]).values(role=role_value, site_ids=next_site_ids))
 
         reviewed = self.list_access_requests(user_id=request_row["user_id"])

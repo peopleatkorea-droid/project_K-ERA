@@ -33,6 +33,7 @@ type Props = {
   formatQualityRecommendation: (recommendation: string | null | undefined) => string;
   translateQualityFlag: (flag: string) => string;
   onDeleteModelVersion: (version: ModelVersionRecord) => void;
+  onActivateLocalModelVersion: (version: ModelVersionRecord) => void;
   onPublishModelVersion: (version: ModelVersionRecord) => void;
   onModelUpdateReview: (decision: "approved" | "rejected") => void;
   onPublishModelUpdate: () => void;
@@ -81,6 +82,7 @@ export function RegistrySection({
   formatQualityRecommendation,
   translateQualityFlag,
   onDeleteModelVersion,
+  onActivateLocalModelVersion,
   onPublishModelVersion,
   onModelUpdateReview,
   onPublishModelUpdate,
@@ -158,6 +160,19 @@ export function RegistrySection({
                     ) : null}
                     {canManagePlatform ? (
                       <div className="flex flex-wrap justify-end gap-2">
+                        {!item.is_current && item.model_path ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={publishingModelVersionId === item.version_id}
+                            onClick={() => onActivateLocalModelVersion(item)}
+                          >
+                            {publishingModelVersionId === item.version_id
+                              ? pick(locale, "Activating...", "활성화 중...")
+                              : pick(locale, "Set current", "현재 모델로 설정")}
+                          </Button>
+                        ) : null}
                         {item.distribution_status === "pending_upload" ? (
                           <Button
                             type="button"

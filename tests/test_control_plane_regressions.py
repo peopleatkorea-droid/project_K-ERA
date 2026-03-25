@@ -776,5 +776,40 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(Path(str(stored_image["image_path"])).resolve(), canonical_path.resolve())
 
 
+class ApiRouteBodyBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        artifact_dir = root / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.app_module = reload_app_module(
+            root / "control_plane.db",
+            control_plane_artifact_dir=artifact_dir,
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def test_case_image_mutation_routes_bind_payloads_from_request_body(self) -> None:
+        app = self.app_module.app
+        representative_route = next(
+            route
+            for route in app.routes
+            if getattr(route, "path", "") == "/api/sites/{site_id}/images/representative"
+            and "POST" in getattr(route, "methods", set())
+        )
+        lesion_box_route = next(
+            route
+            for route in app.routes
+            if getattr(route, "path", "") == "/api/sites/{site_id}/images/{image_id}/lesion-box"
+            and "PATCH" in getattr(route, "methods", set())
+        )
+
+        self.assertEqual([param.name for param in representative_route.dependant.body_params], ["payload"])
+        self.assertEqual(representative_route.dependant.query_params, [])
+        self.assertEqual([param.name for param in lesion_box_route.dependant.body_params], ["payload"])
+        self.assertEqual(lesion_box_route.dependant.query_params, [])
+
+
 if __name__ == "__main__":
     unittest.main()

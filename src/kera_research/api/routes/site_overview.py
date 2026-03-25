@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 import os
 import time
@@ -17,6 +15,7 @@ from kera_research.api.routes.site_shared import (
     ResearchRegistrySettingsRequest,
     assert_site_access_only,
     build_local_summary,
+    build_site_summary_counts,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,7 +68,7 @@ def build_site_overview_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
         authorization: str | None = Header(default=None),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
-    ) -> dict[str, Any]:
+        ) -> dict[str, Any]:
         started_at = time.perf_counter()
         site_store = require_site_access(cp, user, site_id)
         stats_started_at = time.perf_counter()
@@ -123,6 +122,15 @@ def build_site_overview_router(support: Any) -> APIRouter:
                 "excluded_cases": stats["n_excluded_visits"],
             },
         }
+
+    @router.get("/api/sites/{site_id}/summary/counts")
+    def site_summary_counts(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        site_store = require_site_access(cp, user, site_id)
+        return build_site_summary_counts(site_store, site_id)
 
     @router.get("/api/sites/{site_id}/research-registry/settings")
     def get_research_registry_settings(

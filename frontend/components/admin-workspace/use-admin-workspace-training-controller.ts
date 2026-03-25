@@ -5,12 +5,16 @@ import { useEffect } from "react";
 import { pick, type Locale } from "../../lib/i18n";
 import {
   cancelSiteJob,
+  fetchSiteJob,
+  fetchSiteJobs,
   fetchCrossValidationReports,
   runCrossValidation,
   runInitialTraining,
   runInitialTrainingBenchmark,
+  runSslPretraining,
   resumeInitialTrainingBenchmark,
 } from "../../lib/api";
+import { pickDesktopDirectory } from "../../lib/desktop-app-config";
 import { waitForSiteJobSettlement } from "../../lib/site-job-runtime";
 import { useAdminWorkspaceState } from "./use-admin-workspace-state";
 
@@ -74,7 +78,10 @@ export function useAdminWorkspaceTrainingController({
     initialForm,
     initialJob,
     benchmarkJob,
+    benchmarkResult,
     crossValidationForm,
+    sslForm,
+    sslJob,
     setToast,
     setInitialBusy,
     setInitialJob,
@@ -86,6 +93,10 @@ export function useAdminWorkspaceTrainingController({
     setCrossValidationJob,
     setCrossValidationReports,
     setSelectedReportId,
+    setSslBusy,
+    setSslForm,
+    setSslJob,
+    setSslResult,
     selectedReport,
     setCrossValidationExportBusy,
   } = state;
@@ -99,6 +110,56 @@ export function useAdminWorkspaceTrainingController({
     const nextCrossValidationReports = await fetchCrossValidationReports(selectedSiteId, token);
     setCrossValidationReports(nextCrossValidationReports);
     setSelectedReportId((current) => current ?? nextCrossValidationReports[0]?.cross_validation_id ?? null);
+  }
+
+  async function loadLatestBenchmarkJob() {
+    if (!selectedSiteId) {
+      return null;
+    }
+    const jobs = await fetchSiteJobs(selectedSiteId, token, {
+      job_type: "initial_training_benchmark",
+      limit: 1,
+    });
+    const latestJob = jobs[0] ?? null;
+    if (!latestJob) {
+      return null;
+    }
+    setBenchmarkJob(latestJob);
+    const result = latestJob.result?.response;
+    if (isBenchmarkResponse(result)) {
+      setBenchmarkResult(result);
+    }
+    return latestJob;
+  }
+
+  function isSslResponse(response: unknown): response is { run: { run_id: string } } {
+    return Boolean(
+      response &&
+        typeof response === "object" &&
+        "run" in response &&
+        (response as { run?: unknown }).run &&
+        typeof (response as { run?: { run_id?: unknown } }).run?.run_id === "string",
+    );
+  }
+
+  async function loadSslSectionData() {
+    if (!selectedSiteId) {
+      setSslJob(null);
+      setSslResult(null);
+      return null;
+    }
+    const jobs = await fetchSiteJobs(selectedSiteId, token, {
+      job_type: "ssl_pretraining",
+      limit: 1,
+    });
+    const latestJob = jobs[0] ?? null;
+    setSslJob(latestJob);
+    if (isSslResponse(latestJob?.result?.response)) {
+      setSslResult(latestJob.result.response);
+    } else {
+      setSslResult(null);
+    }
+    return latestJob;
   }
 
   useEffect(() => {
@@ -139,6 +200,48 @@ export function useAdminWorkspaceTrainingController({
     setToast,
     token,
   ]);
+
+  useEffect(() => {
+    if (section !== "training" || !selectedSiteId || benchmarkJob || benchmarkResult) {
+      return;
+    }
+    let cancelled = false;
+    async function hydrateLatestBenchmark() {
+      try {
+        const latestJob = await loadLatestBenchmarkJob();
+        if (cancelled || !latestJob) {
+          return;
+        }
+      } catch {
+        // Keep this silent; the operator can explicitly press refresh status.
+      }
+    }
+    void hydrateLatestBenchmark();
+    return () => {
+      cancelled = true;
+    };
+  }, [benchmarkJob, benchmarkResult, section, selectedSiteId, token]);
+
+  useEffect(() => {
+    if (section !== "ssl") {
+      return;
+    }
+    let cancelled = false;
+    async function hydrateLatestSslJob() {
+      try {
+        const latestJob = await loadSslSectionData();
+        if (cancelled || !latestJob) {
+          return;
+        }
+      } catch {
+        // Keep this quiet so the operator can explicitly refresh if needed.
+      }
+    }
+    void hydrateLatestSslJob();
+    return () => {
+      cancelled = true;
+    };
+  }, [section, selectedSiteId, token]);
 
   async function handleInitialTraining() {
     if (!selectedSiteId) {
@@ -343,6 +446,40 @@ export function useAdminWorkspaceTrainingController({
     }
   }
 
+  async function handleRefreshBenchmarkStatus() {
+    if (!selectedSiteId) {
+      return;
+    }
+    setBenchmarkBusy(true);
+    try {
+      if (!benchmarkJob) {
+        const latestJob = await loadLatestBenchmarkJob();
+        if (!latestJob) {
+          await refreshWorkspace(true);
+        } else if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
+          await refreshWorkspace(true);
+        }
+        return;
+      }
+      const latestJob = await fetchSiteJob(selectedSiteId, benchmarkJob.job_id, token);
+      setBenchmarkJob(latestJob);
+      const result = latestJob.result?.response;
+      if (isBenchmarkResponse(result)) {
+        setBenchmarkResult(result);
+      }
+      if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
+        await refreshWorkspace(true);
+      }
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to refresh benchmark status.", "benchmark 상태를 새로 고치지 못했습니다.")),
+      });
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  }
+
   async function handleCrossValidation() {
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForCrossValidation });
@@ -383,6 +520,117 @@ export function useAdminWorkspaceTrainingController({
     }
   }
 
+  async function handlePickSslArchiveDirectory() {
+    try {
+      const selectedPath = await pickDesktopDirectory({
+        title: pick(locale, "Select SSL archive folder", "SSL 원본 폴더 선택"),
+        defaultPath: sslForm.archive_base_dir.trim() || undefined,
+      });
+      if (!selectedPath) {
+        return;
+      }
+      setSslForm((current) => ({ ...current, archive_base_dir: selectedPath }));
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to open the folder picker.", "폴더 선택기를 열지 못했습니다.")),
+      });
+    }
+  }
+
+  async function handleRunSslPretraining() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: pick(locale, "Select a hospital before starting SSL pretraining.", "SSL 학습을 시작하려면 병원을 선택하세요.") });
+      return;
+    }
+    if (!sslForm.archive_base_dir.trim()) {
+      setToast({ tone: "error", message: pick(locale, "Select an SSL archive folder first.", "먼저 SSL 원본 폴더를 선택하세요.") });
+      return;
+    }
+    setSslBusy(true);
+    setSslJob(null);
+    setSslResult(null);
+    try {
+      const started = await runSslPretraining(selectedSiteId, token, {
+        ...sslForm,
+      });
+      setSslJob(started.job);
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setSslJob,
+      });
+      if (latestJob.status === "cancelled") {
+        setToast({ tone: "success", message: pick(locale, "SSL pretraining was cancelled.", "SSL 학습이 중단되었습니다.") });
+        return;
+      }
+      if (latestJob.status === "failed") {
+        throw new Error(latestJob.result?.error || pick(locale, "SSL pretraining failed.", "SSL 학습에 실패했습니다."));
+      }
+      const result = latestJob.result?.response;
+      if (!isSslResponse(result)) {
+        throw new Error(pick(locale, "SSL pretraining finished without a saved result.", "SSL 학습이 끝났지만 저장된 결과가 없습니다."));
+      }
+      setSslResult(result);
+      setToast({
+        tone: "success",
+        message: pick(locale, `SSL pretraining completed for ${sslForm.architecture}.`, `${sslForm.architecture} SSL 학습이 완료되었습니다.`),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "SSL pretraining failed.", "SSL 학습에 실패했습니다.")),
+      });
+    } finally {
+      setSslBusy(false);
+    }
+  }
+
+  async function handleCancelSslPretraining() {
+    if (!selectedSiteId || !sslJob) {
+      return;
+    }
+    try {
+      const job = await cancelSiteJob(selectedSiteId, sslJob.job_id, token);
+      setSslJob(job);
+      setToast({ tone: "success", message: copy.cancellationRequested });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to stop SSL pretraining.", "SSL 학습을 중단하지 못했습니다.")),
+      });
+    }
+  }
+
+  async function handleRefreshSslStatus() {
+    if (!selectedSiteId) {
+      return;
+    }
+    setSslBusy(true);
+    try {
+      if (!sslJob) {
+        await loadSslSectionData();
+        return;
+      }
+      const latestJob = await fetchSiteJob(selectedSiteId, sslJob.job_id, token);
+      setSslJob(latestJob);
+      if (isSslResponse(latestJob.result?.response)) {
+        setSslResult(latestJob.result.response);
+      } else {
+        setSslResult(null);
+      }
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to refresh SSL status.", "SSL 상태를 새로 고치지 못했습니다.")),
+      });
+    } finally {
+      setSslBusy(false);
+    }
+  }
+
   async function handleExportCrossValidationReport() {
     if (!selectedReport) {
       setToast({
@@ -416,12 +664,18 @@ export function useAdminWorkspaceTrainingController({
 
   return {
     loadCrossValidationSectionData,
+    loadSslSectionData,
     handleInitialTraining,
     handleBenchmarkTraining,
     handleCancelInitialTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleRefreshBenchmarkStatus,
     handleCrossValidation,
+    handlePickSslArchiveDirectory,
+    handleRunSslPretraining,
+    handleCancelSslPretraining,
+    handleRefreshSslStatus,
     handleExportCrossValidationReport,
   };
 }

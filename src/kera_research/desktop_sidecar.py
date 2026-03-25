@@ -40,11 +40,13 @@ from kera_research.api.site_jobs import (
     start_initial_training,
     start_initial_training_benchmark,
     start_site_validation,
+    start_ssl_pretraining,
 )
 from kera_research.config import MODEL_DIR
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.image_artifact_status import sync_image_artifact_cache
+from kera_research.services.ssl_pretraining import SUPPORTED_SSL_ARCHITECTURES
 
 _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
@@ -734,6 +736,22 @@ def _fetch_site_job(params: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
+def _list_site_jobs(params: dict[str, Any]) -> list[dict[str, Any]]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_store = _require_site_access(cp, user, str(params.get("site_id") or "").strip())
+    jobs = site_store.list_jobs(status=str(params.get("status") or "").strip() or None)
+    normalized_job_type = str(params.get("job_type") or "").strip()
+    if normalized_job_type:
+        jobs = [job for job in jobs if str(job.get("job_type") or "").strip() == normalized_job_type]
+    limit = params.get("limit")
+    normalized_limit = max(1, min(int(limit or 0), 100)) if limit else None
+    if normalized_limit is not None:
+        jobs = jobs[:normalized_limit]
+    return jobs
+
+
 def _fetch_site_validations(params: dict[str, Any]) -> list[dict[str, Any]]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -999,6 +1017,51 @@ def _run_cross_validation(params: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _run_ssl_pretraining(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    archive_base_dir = str(params.get("archive_base_dir") or "").strip()
+    if not archive_base_dir:
+        raise HTTPException(status_code=400, detail="archive_base_dir is required.")
+    architecture = str(params.get("architecture") or "convnext_tiny").strip().lower() or "convnext_tiny"
+    if architecture not in SUPPORTED_SSL_ARCHITECTURES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"SSL pretraining supports only these architectures: {', '.join(SUPPORTED_SSL_ARCHITECTURES)}",
+        )
+    execution_device = resolve_execution_device_or_raise(
+        resolve_execution_device=_resolve_execution_device,
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        unavailable_label="SSL pretraining",
+    )
+    payload = SimpleNamespace(
+        archive_base_dir=archive_base_dir,
+        architecture=architecture,
+        init_mode=str(params.get("init_mode") or "imagenet"),
+        method=str(params.get("method") or "byol"),
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        image_size=int(params.get("image_size") or 224),
+        batch_size=int(params.get("batch_size") or 24),
+        epochs=int(params.get("epochs") or 10),
+        learning_rate=float(params.get("learning_rate") or 1e-4),
+        weight_decay=float(params.get("weight_decay") or 1e-4),
+        num_workers=int(params.get("num_workers") or 8),
+        min_patient_quality=str(params.get("min_patient_quality") or "medium"),
+        include_review_rows=bool(params.get("include_review_rows", False)),
+        use_amp=bool(params.get("use_amp", True)),
+    )
+    return start_ssl_pretraining(
+        site_store,
+        site_id=site_id,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=_queue_name_for_job_type,
+    )
+
+
 def _fetch_ai_clinic_embedding_status(params: dict[str, Any]) -> dict[str, Any]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -1074,6 +1137,7 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fetch_live_lesion_preview_job": _fetch_live_lesion_preview_job,
     "fetch_image_semantic_prompt_scores": _fetch_image_semantic_prompt_scores,
     "fetch_site_job": _fetch_site_job,
+    "list_site_jobs": _list_site_jobs,
     "fetch_site_validations": _fetch_site_validations,
     "fetch_validation_cases": _fetch_validation_cases,
     "fetch_site_model_versions": _fetch_site_model_versions,
@@ -1084,6 +1148,7 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "cancel_site_job": _cancel_site_job,
     "fetch_cross_validation_reports": _fetch_cross_validation_reports,
     "run_cross_validation": _run_cross_validation,
+    "run_ssl_pretraining": _run_ssl_pretraining,
     "fetch_ai_clinic_embedding_status": _fetch_ai_clinic_embedding_status,
     "backfill_ai_clinic_embeddings": _backfill_ai_clinic_embeddings,
 }

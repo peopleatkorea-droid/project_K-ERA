@@ -92,6 +92,7 @@ export async function requestDesktopLocalApiJson<T>(
     method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     query?: URLSearchParams | Record<string, QueryValue>;
     body?: unknown;
+    controlPlaneOwner?: "local" | "remote";
     signal?: AbortSignal;
   } = {},
 ) {
@@ -105,6 +106,7 @@ export async function requestDesktopLocalApiJson<T>(
         token,
         query: normalizeQuery(options.query),
         body: options.body ?? null,
+        control_plane_owner: options.controlPlaneOwner ?? null,
       },
     },
     options.signal,

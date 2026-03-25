@@ -6,60 +6,27 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+from kera_research.services.biomedclip_runtime import BIOMEDCLIP_MODEL_ID, ensure_biomedclip_runtime
 
-BIOMEDCLIP_MODEL_ID = "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 DINOv2_MODEL_ID = "facebook/dinov2-base"
 
 
 class BiomedClipTextRetriever:
     def __init__(self) -> None:
-        self._model: Any | None = None
-        self._preprocess: Any | None = None
-        self._tokenizer: Any | None = None
-        self._device: str | None = None
         self._image_cache: dict[str, np.ndarray] = {}
         self._text_cache: dict[str, np.ndarray] = {}
 
-    def _resolve_runtime_device(self, requested_device: str) -> str:
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover - runtime dependency guard
-            raise RuntimeError("BiomedCLIP retrieval requires PyTorch.") from exc
+    def _ensure_loaded(self, requested_device: str) -> tuple[Any, Any, Any, Any, str]:
+        runtime = ensure_biomedclip_runtime(requested_device)
+        return runtime.torch, runtime.model, runtime.preprocess, runtime.tokenizer, runtime.device
 
-        normalized = str(requested_device or "cpu").strip().lower()
-        if normalized.startswith("cuda") and torch.cuda.is_available():
-            return normalized
-        if normalized == "gpu" and torch.cuda.is_available():
-            return "cuda:0"
-        if normalized == "auto" and torch.cuda.is_available():
-            return "cuda:0"
-        return "cpu"
-
-    def _ensure_loaded(self, requested_device: str) -> tuple[Any, Any, Any, Any]:
-        try:
-            import open_clip
-            import torch
-        except ImportError as exc:  # pragma: no cover - runtime dependency guard
-            raise RuntimeError(
-                "BiomedCLIP retrieval requires open_clip_torch and transformers to be installed."
-            ) from exc
-
-        device = self._resolve_runtime_device(requested_device)
-        if self._model is None or self._preprocess is None or self._tokenizer is None or self._device != device:
-            model, preprocess = open_clip.create_model_from_pretrained(BIOMEDCLIP_MODEL_ID)
-            tokenizer = open_clip.get_tokenizer(BIOMEDCLIP_MODEL_ID)
-            model = model.to(device)
-            model.eval()
-            self._model = model
-            self._preprocess = preprocess
-            self._tokenizer = tokenizer
-            self._device = device
-        return torch, self._model, self._preprocess, self._tokenizer
+    def warmup(self, requested_device: str = "auto") -> None:
+        self._ensure_loaded(requested_device)
 
     def encode_images(self, image_paths: list[str | Path], requested_device: str) -> np.ndarray:
         if not image_paths:
             raise ValueError("At least one image is required for BiomedCLIP retrieval.")
-        torch, model, preprocess, _tokenizer = self._ensure_loaded(requested_device)
+        torch, model, preprocess, _tokenizer, device = self._ensure_loaded(requested_device)
 
         results: list[np.ndarray | None] = [None] * len(image_paths)
         uncached_indices: list[int] = []
@@ -72,7 +39,7 @@ class BiomedClipTextRetriever:
                 uncached_tensors.append(preprocess(Image.open(image_path).convert("RGB")))
                 uncached_indices.append(i)
         if uncached_tensors:
-            batch = torch.stack(uncached_tensors).to(self._device)
+            batch = torch.stack(uncached_tensors).to(device)
             with torch.no_grad():
                 features = model.encode_image(batch)
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
@@ -85,7 +52,7 @@ class BiomedClipTextRetriever:
     def encode_texts(self, texts: list[str], requested_device: str) -> np.ndarray:
         if not texts:
             raise ValueError("At least one text is required for BiomedCLIP retrieval.")
-        torch, model, _preprocess, tokenizer = self._ensure_loaded(requested_device)
+        torch, model, _preprocess, tokenizer, device = self._ensure_loaded(requested_device)
 
         results: list[np.ndarray | None] = [None] * len(texts)
         uncached_indices: list[int] = []
@@ -99,7 +66,7 @@ class BiomedClipTextRetriever:
                 uncached_indices.append(i)
                 uncached_texts_batch.append(text)
         if uncached_texts_batch:
-            tokens = tokenizer(uncached_texts_batch).to(self._device)
+            tokens = tokenizer(uncached_texts_batch).to(device)
             with torch.no_grad():
                 features = model.encode_text(tokens)
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)

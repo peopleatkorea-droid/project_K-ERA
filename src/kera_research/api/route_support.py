@@ -103,6 +103,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             ResumeBenchmarkRequest=deps["ResumeBenchmarkRequest"],
             EmbeddingBackfillRequest=deps["EmbeddingBackfillRequest"],
             CrossValidationRunRequest=deps["CrossValidationRunRequest"],
+            SSLPretrainingRunRequest=deps["SSLPretrainingRunRequest"],
         ),
         cases=SimpleNamespace(
             get_control_plane=deps["get_control_plane"],

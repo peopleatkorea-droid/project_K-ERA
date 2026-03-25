@@ -176,6 +176,23 @@ class CrossValidationRunRequest(BaseModel):
     use_pretrained: bool = True
 
 
+class SSLPretrainingRunRequest(BaseModel):
+    archive_base_dir: str
+    architecture: str = "convnext_tiny"
+    init_mode: Literal["imagenet", "random"] = "imagenet"
+    method: Literal["byol"] = "byol"
+    execution_mode: str = "auto"
+    image_size: int = 224
+    batch_size: int = 24
+    epochs: int = 10
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-4
+    num_workers: int = 8
+    min_patient_quality: Literal["low", "medium", "high"] = "medium"
+    include_review_rows: bool = False
+    use_amp: bool = True
+
+
 class CaseValidationCompareRequest(BaseModel):
     patient_id: str
     visit_date: str

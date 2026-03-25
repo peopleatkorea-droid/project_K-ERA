@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-03-22 ~ 2026-03-24
+
+### Tauri 데스크탑 앱 대규모 모듈화 (v0.6 → v0.69)
+
+- 기존 `main.rs` 모놀리식 구조에서 **100개 이상의 Rust 모듈**로 분리했습니다.
+  - 케이스 처리: `desktop_case_queries`, `desktop_case_mutations`, `desktop_case_preview_commands`, `desktop_case_ai_clinic_run_commands` 등
+  - 환자/방문 관리: `desktop_patient_board_commands`, `desktop_patient_visit_mutations`, `desktop_visit_create/update/delete_mutation`
+  - 사이트/학습: `desktop_site_training_commands`, `desktop_site_validation_commands`, `desktop_site_activity_*` (리더보드 포함)
+  - 로컬 런타임: `desktop_local_runtime_orchestration`, `desktop_bundled_runtime`, `desktop_ml_sidecar_runtime`
+  - 로컬 API 브릿지: `desktop_local_api_bridge`, `desktop_local_api_json_bridge`, `desktop_local_api_multipart_bridge`
+
+### 데스크탑 전용 인증 시스템 구축
+
+- `frontend/desktop-shell/main.tsx` — Google OAuth, 로컬 로그인, 세션 캐싱을 통합한 데스크탑 셸 앱 신규 작성
+- `desktop-shell/desktop-landing.tsx` — 데스크탑 전용 랜딩 화면 추가
+- Next.js API 라우트 신규 추가:
+  - `auth/desktop/start` — Google OAuth 시작
+  - `auth/desktop/exchange` — 토큰 교환
+  - `auth/desktop/status` — 인증 상태 확인
+- `src/kera_research/services/local_api_jwt.py` — 데스크탑 로컬 API 전용 JWT 발급 서비스
+- `src/kera_research/services/local_api_secret.py` — 로컬 API 시크릿 관리
+- `admin-login/page.tsx` — 데스크탑 환경 관리자 로그인 UI 업데이트
+
+### Python 백엔드 라우터 대규모 분리 (리팩토링)
+
+기존 거대한 단일 파일들을 역할별로 분리했습니다.
+
+| 기존 파일 | 분리된 파일 |
+|-----------|-------------|
+| `admin.py` (900줄) | `admin_access.py`, `admin_management.py`, `admin_registry.py`, `admin_shared.py` |
+| `cases.py` (1700줄) | `case_analysis.py`, `case_images.py`, `case_records.py`, `case_shared.py` |
+| `sites.py` (800줄) | `site_training.py`, `site_imports.py`, `site_overview.py`, `site_shared.py` |
+
+- `src/kera_research/api/models.py` — Pydantic 요청 모델 통합
+- `src/kera_research/api/routes/desktop.py` — 데스크탑 전용 엔드포인트 (`/api/desktop/self-check`, `/api/control-plane/node/*`)
+- `src/kera_research/api/control_plane_sync.py` — control plane 동기화 루프
+
+### Federation Salt 시스템 추가
+
+- `src/kera_research/federation_salt.py` — 다기관 연합 환경에서 케이스/환자/별칭 참조값을 기관별로 솔팅하는 서비스
+  - `FederationSaltValues` (case_reference_salt, patient_reference_salt, public_alias_salt) 관리
+  - `docs/federation-salt-migration.md` 마이그레이션 가이드 문서 추가
+
+### 데스크탑 CPU/GPU 패키지 빌드 분리
+
+- `frontend/scripts/run-desktop-profile-command.mjs` — `cpu` / `gpu` 두 가지 패키징 프로파일 지원
+- `frontend/scripts/run-tauri-build.mjs` — 패키지드 런타임 빌드 스크립트
+- GitHub Actions 워크플로 신규 추가:
+  - `.github/workflows/desktop-release.yml` — 버전 태그(`v*`) 기반 자동 릴리즈 빌드 (Windows)
+  - `.github/workflows/desktop-verify.yml` — PR 시 데스크탑 빌드 검증
+  - 서명 키 미포함 여부 자동 검사 포함
+- `docs/desktop-installed-smoke.md` — 설치 후 smoke test 가이드 문서 추가
+- `docs/tauri-packaged-runtime-layout.md` — 패키지드 런타임 레이아웃 문서 추가
+
+### 랜딩 페이지 개선
+
+- `frontend/components/public/landing-google-cta.tsx` — 재사용 가능한 Google 로그인 CTA 컴포넌트 분리
+- 랜딩 페이지 이미지 자산 추가 (`desktop-dist/landing/` — CTA, 제주, medSAM, 워크플로 등 12종)
+- 랜딩 영어/한국어 뷰 업데이트
+
+### 성능 최적화 (v0.61 ~ v0.64)
+
+- SQLite N+1 쿼리 수정, CTE 범위 최적화, 인덱스 추가
+- 케이스 목록 로드 시 critical path에서 stat/preview 호출 제거
+- 이미지 로드 병렬화 적용
+
+### 검증
+
+- `frontend`: `npx tsc --noEmit`
+- `frontend`: `npx vitest run`
+- Vercel 배포 및 auth 연동 확인 (v0.65 ~ v0.684)
+
 ## 2026-03-19
 
 ### 예측 post-mortem 피드백 루프 추가

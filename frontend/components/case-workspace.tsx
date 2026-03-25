@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   startTransition,
@@ -27,7 +27,7 @@ import { MedsamArtifactBacklogPanel } from "./case-workspace/medsam-artifact-bac
 import { PatientVisitForm } from "./case-workspace/patient-visit-form";
 import { PatientListBoard } from "./case-workspace/patient-list-board";
 import { SavedCaseImageBoard } from "./case-workspace/saved-case-image-board";
-import { SavedCaseOverview } from "./case-workspace/saved-case-overview";
+import { SavedCaseOverview, SavedCaseSidebar } from "./case-workspace/saved-case-overview";
 import { SavedCasePreviewPanels } from "./case-workspace/saved-case-preview-panels";
 import type {
   AiClinicPreviewResponse,
@@ -51,6 +51,7 @@ import { ValidationPanel } from "./case-workspace/validation-panel";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { SectionHeader } from "./ui/section-header";
+import { DesktopControlPlaneStatusBadge } from "./ui/desktop-control-plane-status-badge";
 import {
   canvasDocumentClass,
   canvasHeaderClass,
@@ -133,6 +134,7 @@ import {
 } from "./ui/workspace-patterns";
 import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
 import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
+import { type DesktopControlPlaneProbe } from "../lib/desktop-control-plane-status";
 import { formatPublicAlias } from "../lib/public-alias";
 import {
   type CaseHistoryResponse,
@@ -226,17 +228,24 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Staphylococcus epidermidis",
     "Staphylococcus hominis",
     "Coagulase-negative Staphylococcus",
+    "Other Staphylococcus species",
     "Streptococcus pneumoniae",
     "Streptococcus viridans group",
+    "Other Streptococcus species",
     "Enterococcus faecalis",
+    "Gemella species",
     "Pseudomonas aeruginosa",
     "Moraxella",
     "Corynebacterium",
+    "Rothia",
     "Serratia marcescens",
     "Bacillus",
+    "Other Gram-positive rods",
+    "Other Gram-negative rods",
     "Haemophilus influenzae",
     "Klebsiella pneumoniae",
     "Enterobacter",
+    "Citrobacter",
     "Burkholderia",
     "Achromobacter",
     "Nocardia",
@@ -259,6 +268,7 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Paecilomyces",
     "Exserohilum",
     "Cladosporium",
+    "Beauveria bassiana",
     "Other",
   ],
 };
@@ -347,6 +357,8 @@ type CaseWorkspaceProps = {
   summary: SiteSummary | null;
   canOpenOperations: boolean;
   theme: "dark" | "light";
+  controlPlaneStatus?: DesktopControlPlaneProbe | null;
+  controlPlaneStatusBusy?: boolean;
   onSelectSite: (siteId: string) => void;
   onExportManifest: () => void;
   onLogout: () => void;
@@ -680,6 +692,27 @@ function buildVisitReference(draft: DraftState): string {
   return `FU #${String(Number(draft.follow_up_number) || 1)}`;
 }
 
+function followUpReferenceFromPatientLookup(patientLookup: PatientIdLookupResponse | null): string | null {
+  if (!patientLookup?.exists || Number(patientLookup.visit_count || 0) <= 0) {
+    return null;
+  }
+  const latestVisitDate = String(patientLookup.latest_visit_date ?? "").trim();
+  const followUpMatch = latestVisitDate.match(FOLLOW_UP_VISIT_PATTERN);
+  const nextFollowUpNumber = followUpMatch ? Number(followUpMatch[1]) || 1 : 1;
+  return `FU #${String(nextFollowUpNumber + (followUpMatch ? 1 : 0))}`;
+}
+
+function resolveDraftVisitReference(
+  draft: DraftState,
+  patientLookup: PatientIdLookupResponse | null
+): string {
+  const requestedVisitReference = buildVisitReference(draft);
+  if (!/^initial$/i.test(requestedVisitReference)) {
+    return requestedVisitReference;
+  }
+  return followUpReferenceFromPatientLookup(patientLookup) ?? requestedVisitReference;
+}
+
 const FOLLOW_UP_VISIT_PATTERN = /^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i;
 
 function displayVisitReference(locale: "en" | "ko", visitReference: string): string {
@@ -789,6 +822,8 @@ export function CaseWorkspace({
   summary,
   canOpenOperations,
   theme,
+  controlPlaneStatus = null,
+  controlPlaneStatusBusy = false,
   onSelectSite,
   onExportManifest,
   onLogout,
@@ -1658,15 +1693,6 @@ export function CaseWorkspace({
       setToast({ tone: "error", message: copy.selectSiteForCase });
       return;
     }
-    setEditingCaseContext(null);
-    if (hasDraftContent(draft) || draftImages.length > 0) {
-      setRailView("cases");
-      setPanelOpen(true);
-      setSelectedCase(null);
-      setSelectedCaseImages([]);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
     resetDraft();
     setPanelOpen(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1675,6 +1701,20 @@ export function CaseWorkspace({
   function handlePatientListSearchChange(value: string) {
     setCaseSearch(value);
     setPatientListPage(1);
+  }
+
+  function handleOpenPatientList() {
+    setCaseSearch("");
+    setPatientListPage(1);
+    setRailView("patients");
+  }
+
+  function handleOpenLatestAutosavedDraft() {
+    setSelectedCase(null);
+    setSelectedCaseImages([]);
+    setPanelOpen(true);
+    setRailView("cases");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function handlePatientScopeChange(nextValue: boolean) {
@@ -2389,11 +2429,12 @@ export function CaseWorkspace({
   }
 
   async function handleSaveCase() {
-    const nextVisitReference = buildVisitReference(draft);
+    const requestedVisitReference = buildVisitReference(draft);
     const patientId = draft.patient_id.trim();
     const editingSourceCase = editingCaseContext;
     const matchingPatientLookup =
       patientIdLookup && patientIdLookup.requested_patient_id.trim() === patientId ? patientIdLookup : null;
+    const nextVisitReference = resolveDraftVisitReference(draft, editingSourceCase ? null : matchingPatientLookup);
     const patientPayload = {
       sex: draft.sex,
       age: Number(draft.age || 0),
@@ -2570,26 +2611,46 @@ export function CaseWorkspace({
         }
       }
 
+      const createVisitReference =
+        matchingPatientLookup?.exists &&
+        Number(matchingPatientLookup.visit_count || 0) > 0 &&
+        /^initial$/i.test(requestedVisitReference)
+          ? await nextAvailableFollowUpReference()
+          : nextVisitReference;
+      const existingPatientFollowUpOnly =
+        matchingPatientLookup?.exists &&
+        Number(matchingPatientLookup.visit_count || 0) > 0;
+
       try {
-        await createVisit(selectedSiteId, token, visitPayload(nextVisitReference));
-        await uploadDraftImagesToVisit(nextVisitReference);
-        await finalizeSavedCase(nextVisitReference);
+        await createVisit(selectedSiteId, token, visitPayload(createVisitReference));
+        await uploadDraftImagesToVisit(createVisitReference);
+        await finalizeSavedCase(createVisitReference);
       } catch (nextError) {
         if (!isAlreadyExistsError(nextError)) {
           throw nextError;
         }
+        if (existingPatientFollowUpOnly) {
+          const alternateVisitReference = await nextAvailableFollowUpReference();
+          if (alternateVisitReference === createVisitReference) {
+            throw nextError;
+          }
+          await createVisit(selectedSiteId, token, visitPayload(alternateVisitReference));
+          await uploadDraftImagesToVisit(alternateVisitReference);
+          await finalizeSavedCase(alternateVisitReference);
+          return;
+        }
         const overwriteConfirmed = window.confirm(
           pick(
             locale,
-            `Visit ${patientId} / ${displayVisitReference(locale, nextVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
-            `諛⑸Ц ${patientId} / ${displayVisitReference(locale, nextVisitReference)}媛 ?대? 議댁옱?⑸땲??\n\n?뺤씤???꾨Ⅴ硫???뼱?곌퀬, 痍⑥냼瑜??꾨Ⅴ硫??ㅻⅨ 耳?댁뒪濡???ν빀?덈떎.`
+            `Visit ${patientId} / ${displayVisitReference(locale, createVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
+            `諛⑸Ц ${patientId} / ${displayVisitReference(locale, createVisitReference)}媛 ?대? 議댁옱?⑸땲??\n\n?뺤씤???꾨Ⅴ硫???뼱?곌퀬, 痍⑥냼瑜??꾨Ⅴ硫??ㅻⅨ 耳?댁뒪濡???ν빀?덈떎.`
           )
         );
         if (overwriteConfirmed) {
-          await updateVisit(selectedSiteId, token, patientId, nextVisitReference, visitPayload(nextVisitReference));
-          await deleteVisitImages(selectedSiteId, token, patientId, nextVisitReference);
-          await uploadDraftImagesToVisit(nextVisitReference);
-          await finalizeSavedCase(nextVisitReference);
+          await updateVisit(selectedSiteId, token, patientId, createVisitReference, visitPayload(createVisitReference));
+          await deleteVisitImages(selectedSiteId, token, patientId, createVisitReference);
+          await uploadDraftImagesToVisit(createVisitReference);
+          await finalizeSavedCase(createVisitReference);
         } else {
           const alternateVisitReference = await nextAvailableFollowUpReference();
           const saveAlternateConfirmed = window.confirm(
@@ -2938,8 +2999,18 @@ export function CaseWorkspace({
     ? copy.draftAutosaved(new Date(draftSavedAt).toLocaleTimeString(localeTag, { hour: "2-digit", minute: "2-digit" }))
     : copy.draftUnsaved;
   const intakeOrganisms = listOrganisms(draft.culture_category, draft.culture_species, draft.additional_organisms);
-  const resolvedVisitReference = buildVisitReference(draft);
+  const matchingDraftPatientLookup =
+    patientIdLookup && patientIdLookup.requested_patient_id.trim() === draft.patient_id.trim() ? patientIdLookup : null;
+  const resolvedVisitReference = resolveDraftVisitReference(draft, editingCaseContext ? null : matchingDraftPatientLookup);
   const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
+  const latestAutosavedDraft =
+    draftSavedAt && !draft.intake_completed
+      ? {
+          patientId: draft.patient_id.trim() || pick(locale, "Untitled draft", "임시 케이스"),
+          visitLabel: resolvedVisitReferenceLabel,
+          savedLabel: draftStatusLabel,
+        }
+      : null;
   const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
   const draftRepresentativeCount = draftImages.filter((image) => image.is_representative).length;
   const draftChecklist = [
@@ -3120,7 +3191,17 @@ export function CaseWorkspace({
           );
   const showSecondaryPanel = !desktopFastMode && railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
   const showPatientListSidebar = railView === "patients";
-  const mainLayoutClass = showSecondaryPanel || showPatientListSidebar ? workspaceCenterClass : "grid gap-6";
+  const selectedCaseLayoutClass =
+    selectedCase && showSecondaryPanel
+      ? "grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px_360px] xl:items-start"
+      : selectedCase
+        ? "grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start"
+        : null;
+  const mainLayoutClass = selectedCase
+    ? selectedCaseLayoutClass ?? "grid gap-6"
+    : showSecondaryPanel || showPatientListSidebar
+      ? workspaceCenterClass
+      : "grid gap-6";
 
   return (
     <CaseWorkspaceShell
@@ -3151,8 +3232,10 @@ export function CaseWorkspace({
         canRunValidation={canRunValidation}
         commonNotAvailable={common.notAvailable}
         formatDateTime={(value) => formatDateTime(value, localeTag, common.notAvailable)}
+        latestAutosavedDraft={latestAutosavedDraft}
         onStartNewCase={startNewCaseDraft}
-        onOpenPatientList={() => setRailView("patients")}
+        onOpenPatientList={handleOpenPatientList}
+        onOpenLatestAutosavedDraft={handleOpenLatestAutosavedDraft}
         onSelectSite={onSelectSite}
         onRunSiteValidation={() => void handleRunSiteValidation()}
       />
@@ -3167,8 +3250,11 @@ export function CaseWorkspace({
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
+            <DesktopControlPlaneStatusBadge locale={locale} status={controlPlaneStatus} busy={controlPlaneStatusBusy} />
             {selectedSiteLabel ? <span className={docSiteBadgeClass}>{selectedSiteLabel}</span> : null}
-            <span className={workspaceUserBadgeClass}>{translateRole(locale, user.role)}</span>
+            {!canOpenOperations ? (
+              <span className={workspaceUserBadgeClass}>{translateRole(locale, user.role)}</span>
+            ) : null}
             <div className="relative" ref={alertsPanelRef}>
               <Button
                 type="button"
@@ -3256,7 +3342,7 @@ export function CaseWorkspace({
             ) : null}
             {canOpenOperations ? (
               <Button variant="ghost" type="button" onClick={() => onOpenOperations()}>
-                {pick(locale, "Operations", "?댁쁺 ?붾㈃")}
+                {pick(locale, "Admin", "관리자")}
               </Button>
             ) : null}
             {onOpenDesktopSettings ? (
@@ -3340,108 +3426,122 @@ export function CaseWorkspace({
               </aside>
             </>
           ) : selectedCase ? (
-          <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
-            <SavedCaseOverview
-              locale={locale}
-              localeTag={localeTag}
-              commonLoading={common.loading}
-              commonNotAvailable={common.notAvailable}
-              selectedCase={selectedCase}
-              selectedPatientCases={selectedPatientCases}
-              panelBusy={panelBusy}
-              patientVisitGalleryBusy={patientVisitGalleryBusy}
-              patientVisitGallery={patientVisitGallery}
-              editDraftBusy={editDraftBusy}
-              pick={pick}
-              translateOption={translateOption}
-              displayVisitReference={displayVisitReference}
-              formatDateTime={formatDateTime}
-              organismSummaryLabel={organismSummaryLabel}
-              onStartEditDraft={startEditDraftFromSelectedCase}
-              onStartFollowUpDraft={startFollowUpDraftFromSelectedCase}
-              onToggleFavorite={toggleFavoriteCase}
-              onOpenSavedCase={openSavedCase}
-              onDeleteSavedCase={handleDeleteSavedCase}
-              isFavoriteCase={isFavoriteCase}
-              caseTitle={formatCaseTitle(selectedCase)}
-            />
-
-            <SavedCaseImageBoard
-              locale={locale}
-              commonLoading={common.loading}
-              commonNotAvailable={common.notAvailable}
-              siteId={selectedSiteId ?? ""}
-              token={token}
-              panelBusy={panelBusy}
-              selectedCaseImageCountHint={selectedCase.image_count}
-              selectedCaseImages={selectedCaseImages}
-              liveLesionMaskEnabled={liveLesionCropEnabled}
-              semanticPromptInputMode={semanticPromptInputMode}
-              semanticPromptInputOptions={semanticPromptInputOptions}
-              semanticPromptBusyImageId={semanticPromptBusyImageId}
-              semanticPromptReviews={semanticPromptReviews}
-              semanticPromptErrors={semanticPromptErrors}
-              semanticPromptOpenImageIds={semanticPromptOpenImageIds}
-              liveLesionPreviews={liveLesionPreviews}
-              savedImageRoiCropUrls={savedImageRoiCropUrls}
-              savedImageRoiCropBusy={savedImageRoiCropBusy}
-              savedImageLesionCropUrls={savedImageLesionCropUrls}
-              savedImageLesionCropBusy={savedImageLesionCropBusy}
-              lesionPromptDrafts={lesionPromptDrafts}
-              lesionPromptSaved={lesionPromptSaved}
-              lesionBoxBusyImageId={lesionBoxBusyImageId}
-              representativeBusyImageId={representativeBusyImageId}
-              pick={pick}
-              translateOption={translateOption}
-              formatSemanticScore={formatSemanticScore}
-              onToggleLiveLesionMask={() => setLiveLesionCropEnabled((current) => !current)}
-              onSemanticPromptInputModeChange={setSemanticPromptInputMode}
-              onSetSavedRepresentative={handleSetSavedRepresentative}
-              onReviewSemanticPrompts={handleReviewSemanticPrompts}
-              onLesionPointerDown={handleLesionPointerDown}
-              onLesionPointerMove={handleLesionPointerMove}
-              onFinishLesionPointer={finishLesionPointer}
-            />
-
-            {analysisSectionMounted ? (
-              <>
-                <SavedCasePreviewPanels
+            <>
+              <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
+                <SavedCaseOverview
                   locale={locale}
+                  localeTag={localeTag}
                   commonLoading={common.loading}
-                  canRunRoiPreview={canRunRoiPreview}
-                  selectedCaseImageCount={selectedCaseImages.length}
-                  hasAnySavedLesionBox={hasAnySavedLesionBox}
-                  roiPreviewBusy={roiPreviewBusy}
-                  lesionPreviewBusy={lesionPreviewBusy}
-                  roiPreviewItems={roiPreviewItems}
-                  lesionPreviewItems={lesionPreviewItems}
+                  commonNotAvailable={common.notAvailable}
+                  selectedCase={selectedCase}
+                  selectedPatientCases={selectedPatientCases}
+                  panelBusy={panelBusy}
+                  patientVisitGalleryBusy={patientVisitGalleryBusy}
+                  patientVisitGallery={patientVisitGallery}
                   pick={pick}
                   translateOption={translateOption}
-                  onRunRoiPreview={handleRunRoiPreview}
-                  onRunLesionPreview={handleRunLesionPreview}
+                  displayVisitReference={displayVisitReference}
+                  formatDateTime={formatDateTime}
+                  organismSummaryLabel={organismSummaryLabel}
+                  editDraftBusy={editDraftBusy}
+                  onStartEditDraft={startEditDraftFromSelectedCase}
+                  onStartFollowUpDraft={startFollowUpDraftFromSelectedCase}
+                  onToggleFavorite={toggleFavoriteCase}
+                  onOpenSavedCase={openSavedCase}
+                  onDeleteSavedCase={handleDeleteSavedCase}
+                  isFavoriteCase={isFavoriteCase}
+                  caseTitle={formatCaseTitle(selectedCase)}
                 />
 
-                <section className={docSectionClass}>
-                  <SectionHeader
-                    className={docSectionHeadClass}
-                    eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Validation and AI Clinic", "寃利?諛?AI Clinic")}</div>}
-                    title={pick(locale, "Validation, artifacts, and retrieval support", "검증, 아티팩트, 검색 지원")}
-                    titleAs="h4"
-                    description={pick(
-                      locale,
-                      "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
-                      "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??"
-                    )}
-                    aside={<span className={docSiteBadgeClass}>{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>}
-                  />
-                  <div className={panelStackClass}>
-                    {validationPanelContent}
-                    {aiClinicPanelContent}
-                  </div>
-                </section>
-              </>
-            ) : null}
-          </section>
+                <SavedCaseImageBoard
+                  locale={locale}
+                  commonLoading={common.loading}
+                  commonNotAvailable={common.notAvailable}
+                  selectedVisitLabel={displayVisitReference(locale, selectedCase.visit_date)}
+                  siteId={selectedSiteId ?? ""}
+                  token={token}
+                  panelBusy={panelBusy}
+                  selectedCaseImageCountHint={selectedCase.image_count}
+                  selectedCaseImages={selectedCaseImages}
+                  liveLesionMaskEnabled={liveLesionCropEnabled}
+                  semanticPromptInputMode={semanticPromptInputMode}
+                  semanticPromptInputOptions={semanticPromptInputOptions}
+                  semanticPromptBusyImageId={semanticPromptBusyImageId}
+                  semanticPromptReviews={semanticPromptReviews}
+                  semanticPromptErrors={semanticPromptErrors}
+                  semanticPromptOpenImageIds={semanticPromptOpenImageIds}
+                  liveLesionPreviews={liveLesionPreviews}
+                  savedImageRoiCropUrls={savedImageRoiCropUrls}
+                  savedImageRoiCropBusy={savedImageRoiCropBusy}
+                  savedImageLesionCropUrls={savedImageLesionCropUrls}
+                  savedImageLesionCropBusy={savedImageLesionCropBusy}
+                  lesionPromptDrafts={lesionPromptDrafts}
+                  lesionPromptSaved={lesionPromptSaved}
+                  lesionBoxBusyImageId={lesionBoxBusyImageId}
+                  representativeBusyImageId={representativeBusyImageId}
+                  pick={pick}
+                  translateOption={translateOption}
+                  formatSemanticScore={formatSemanticScore}
+                  onToggleLiveLesionMask={() => setLiveLesionCropEnabled((current) => !current)}
+                  onSemanticPromptInputModeChange={setSemanticPromptInputMode}
+                  onSetSavedRepresentative={handleSetSavedRepresentative}
+                  onReviewSemanticPrompts={handleReviewSemanticPrompts}
+                  onLesionPointerDown={handleLesionPointerDown}
+                  onLesionPointerMove={handleLesionPointerMove}
+                  onFinishLesionPointer={finishLesionPointer}
+                />
+
+                {analysisSectionMounted ? (
+                  <>
+                    <SavedCasePreviewPanels
+                      locale={locale}
+                      commonLoading={common.loading}
+                      canRunRoiPreview={canRunRoiPreview}
+                      selectedCaseImageCount={selectedCaseImages.length}
+                      hasAnySavedLesionBox={hasAnySavedLesionBox}
+                      roiPreviewBusy={roiPreviewBusy}
+                      lesionPreviewBusy={lesionPreviewBusy}
+                      roiPreviewItems={roiPreviewItems}
+                      lesionPreviewItems={lesionPreviewItems}
+                      pick={pick}
+                      translateOption={translateOption}
+                      onRunRoiPreview={handleRunRoiPreview}
+                      onRunLesionPreview={handleRunLesionPreview}
+                    />
+
+                    <section className={docSectionClass}>
+                      <SectionHeader
+                        className={docSectionHeadClass}
+                        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Validation and AI Clinic", "寃利?諛?AI Clinic")}</div>}
+                        title={pick(locale, "Validation, artifacts, and retrieval support", "검증, 아티팩트, 검색 지원")}
+                        titleAs="h4"
+                        description={pick(
+                          locale,
+                          "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
+                          "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??"
+                        )}
+                        aside={<span className={docSiteBadgeClass}>{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>}
+                      />
+                      <div className={panelStackClass}>
+                        {validationPanelContent}
+                        {aiClinicPanelContent}
+                      </div>
+                    </section>
+                  </>
+                ) : null}
+              </section>
+
+              <SavedCaseSidebar
+                locale={locale}
+                pick={pick}
+                selectedCaseImageCount={Math.max(selectedCaseImages.length, Number(selectedCase.image_count ?? 0))}
+                hasRepresentativeImage={
+                  Boolean(selectedCase.representative_image_id) ||
+                  selectedCaseImages.some((image) => image.is_representative)
+                }
+                hasAnySavedLesionBox={hasAnySavedLesionBox}
+              />
+            </>
           ) : !selectedSiteId ? (
             <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
               <SectionHeader
@@ -3487,6 +3587,7 @@ export function CaseWorkspace({
                 <PatientVisitForm
                   locale={locale}
                   draft={draft}
+                  draftStatusLabel={draftStatusLabel}
                   notAvailableLabel={common.notAvailable}
                   sexOptions={SEX_OPTIONS}
                   contactLensOptions={CONTACT_LENS_OPTIONS}

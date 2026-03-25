@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +122,15 @@ def build_admin_registry_router(support: Any) -> APIRouter:
             version_id=version_id,
             set_current=payload.set_current,
         )
+
+    @router.post("/api/admin/model-versions/{version_id}/activate-local")
+    def activate_local_model_version(
+        version_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        return registry_orchestrator.activate_local_model_version(cp, version_id=version_id)
 
     @router.get("/api/admin/model-updates")
     def list_model_updates(

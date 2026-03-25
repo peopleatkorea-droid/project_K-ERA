@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,7 +12,9 @@ from kera_research.api.site_jobs import (
     start_initial_training,
     start_initial_training_benchmark,
     start_site_validation,
+    start_ssl_pretraining,
 )
+from kera_research.services.ssl_pretraining import SUPPORTED_SSL_ARCHITECTURES
 from kera_research.services.data_plane import SiteStore
 
 
@@ -47,6 +47,7 @@ def build_site_training_router(support: Any) -> APIRouter:
     ResumeBenchmarkRequest = support.ResumeBenchmarkRequest
     EmbeddingBackfillRequest = support.EmbeddingBackfillRequest
     CrossValidationRunRequest = support.CrossValidationRunRequest
+    SSLPretrainingRunRequest = support.SSLPretrainingRunRequest
 
     @router.get("/api/sites/{site_id}/validations")
     def list_site_validations(
@@ -257,6 +258,26 @@ def build_site_training_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
         return job
 
+    @router.get("/api/sites/{site_id}/jobs")
+    def list_site_jobs(
+        site_id: str,
+        job_type: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> list[dict[str, Any]]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        jobs = site_store.list_jobs(status=status)
+        normalized_job_type = str(job_type or "").strip()
+        if normalized_job_type:
+          jobs = [job for job in jobs if str(job.get("job_type") or "").strip() == normalized_job_type]
+        normalized_limit = max(1, min(int(limit or 0), 100)) if limit else None
+        if normalized_limit is not None:
+            jobs = jobs[:normalized_limit]
+        return jobs
+
     @router.post("/api/sites/{site_id}/jobs/{job_id}/cancel")
     def cancel_site_job(
         site_id: str,
@@ -373,6 +394,35 @@ def build_site_training_router(support: Any) -> APIRouter:
             queue_name_for_job_type=queue_name_for_job_type,
             model_dir=model_dir,
             make_id=make_id,
+        )
+
+    @router.post("/api/sites/{site_id}/training/ssl")
+    def run_ssl_pretraining(
+        site_id: str,
+        payload: SSLPretrainingRunRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        if payload.architecture not in SUPPORTED_SSL_ARCHITECTURES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"SSL pretraining supports only these architectures: {', '.join(SUPPORTED_SSL_ARCHITECTURES)}",
+            )
+        if not str(payload.archive_base_dir or "").strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="archive_base_dir is required.")
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="SSL pretraining",
+        )
+        return start_ssl_pretraining(
+            site_store,
+            site_id=site_id,
+            payload=payload,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
         )
 
     return router

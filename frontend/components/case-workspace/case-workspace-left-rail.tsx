@@ -59,8 +59,14 @@ type CaseWorkspaceLeftRailProps = {
   canRunValidation: boolean;
   commonNotAvailable: string;
   formatDateTime: (value: string | null | undefined) => string;
+  latestAutosavedDraft: {
+    patientId: string;
+    visitLabel: string;
+    savedLabel: string;
+  } | null;
   onStartNewCase: () => void;
   onOpenPatientList: () => void;
+  onOpenLatestAutosavedDraft: () => void;
   onSelectSite: (siteId: string) => void;
   onRunSiteValidation: () => void;
 };
@@ -87,8 +93,10 @@ export function CaseWorkspaceLeftRail({
   canRunValidation,
   commonNotAvailable,
   formatDateTime,
+  latestAutosavedDraft,
   onStartNewCase,
   onOpenPatientList,
+  onOpenLatestAutosavedDraft,
   onSelectSite,
   onRunSiteValidation,
 }: CaseWorkspaceLeftRailProps) {
@@ -162,6 +170,20 @@ export function CaseWorkspaceLeftRail({
               <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
             </div>
           </MetricGrid>
+        ) : null}
+        {latestAutosavedDraft ? (
+          <div className="grid gap-2">
+            <span className={railLabelClass}>{pick(locale, "Latest autosave", "마지막 자동 저장")}</span>
+            <button
+              type="button"
+              className={railSiteButtonClass(isAuthoringCanvas)}
+              onClick={onOpenLatestAutosavedDraft}
+            >
+              <strong>{latestAutosavedDraft.patientId}</strong>
+              <span className="text-sm text-muted">{latestAutosavedDraft.visitLabel}</span>
+              <span className="text-[0.78rem] leading-5 text-muted">{latestAutosavedDraft.savedLabel}</span>
+            </button>
+          </div>
         ) : null}
       </Card>
 

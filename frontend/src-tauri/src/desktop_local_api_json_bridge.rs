@@ -4,6 +4,7 @@ pub(super) fn request_local_api_json_owned(
     token: &str,
     query: Vec<(String, String)>,
     body: Option<JsonValue>,
+    control_plane_owner: Option<String>,
 ) -> Result<JsonValue, String> {
     let path = path.trim();
     if path.is_empty() {
@@ -25,6 +26,13 @@ pub(super) fn request_local_api_json_owned(
     let normalized_token = token.trim();
     if !normalized_token.is_empty() {
         request = request.bearer_auth(normalized_token);
+    }
+    let normalized_owner = control_plane_owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(owner) = normalized_owner {
+        request = request.header("x-kera-control-plane-owner", owner);
     }
     if !query.is_empty() {
         request = request.query(&query);
@@ -61,5 +69,6 @@ pub(super) fn request_local_api_json(
             .map(|(name, value)| (name.to_string(), value))
             .collect(),
         body,
+        None,
     )
 }

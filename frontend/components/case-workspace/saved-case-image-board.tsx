@@ -51,6 +51,7 @@ type SavedCaseImageBoardProps = {
   locale: Locale;
   commonLoading: string;
   commonNotAvailable: string;
+  selectedVisitLabel: string;
   siteId: string;
   token: string;
   panelBusy: boolean;
@@ -231,6 +232,7 @@ export function SavedCaseImageBoard({
   locale,
   commonLoading,
   commonNotAvailable,
+  selectedVisitLabel,
   siteId,
   token,
   panelBusy,
@@ -319,6 +321,7 @@ export function SavedCaseImageBoard({
     <section className={docSectionClass}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
+          {selectedVisitLabel.trim() ? <span className={docSiteBadgeClass}>{selectedVisitLabel}</span> : null}
           <div className={docSectionLabelClass}>{pick(locale, "Saved images", "저장 이미지")}</div>
           <button
             type="button"
@@ -454,7 +457,7 @@ export function SavedCaseImageBoard({
                         ? pick(locale, "Mask ready", "Mask 준비됨")
                         : draftBox
                           ? pick(locale, "Box ready", "Box 준비됨")
-                          : pick(locale, "Draw box for MedSAM", "MedSAM용 박스 그리기");
+                          : pick(locale, "Draw box", "박스 그리기");
             const unavailableCopy = roiCropModeActive
               ? pick(locale, "Cornea crop unavailable", "각막 crop이 없습니다")
               : lesionCropModeActive
@@ -545,49 +548,54 @@ export function SavedCaseImageBoard({
                   <div className={panelImageFallbackClass}>{unavailableCopy}</div>
                 )}
 
-                <div className="flex flex-wrap gap-2 text-[0.78rem] text-muted">
-                  <SavedImageSupportChip label="Q" value={image.quality_scores?.quality_score} />
-                  {image.quality_scores?.view_score != null && image.quality_scores.view_score < LOW_VIEW_SCORE_THRESHOLD ? (
-                    <span className={savedImageWarningChipClass}>
-                      {pick(locale, "Check view", "뷰 확인 필요")}
-                    </span>
-                  ) : null}
-                  {livePreview?.status === "failed" && livePreview.error ? (
+                <div className="grid gap-2">
+                  <div className={savedImageActionBarClass}>
+                    <SavedImageSupportChip label="Q" value={image.quality_scores?.quality_score} />
+                    {image.quality_scores?.view_score != null && image.quality_scores.view_score < LOW_VIEW_SCORE_THRESHOLD ? (
+                      <span className={`${savedImageWarningChipClass} shrink-0`}>
+                        {pick(locale, "Check view", "뷰 확인 필요")}
+                      </span>
+                    ) : null}
+                    <Button
+                      className={`${image.is_representative ? savedCaseActionButtonClass(true) : "px-4"} shrink-0`}
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void onSetSavedRepresentative(image.image_id)}
+                      disabled={representativeBusyImageId === image.image_id || image.is_representative}
+                    >
+                      {representativeBusyImageId === image.image_id
+                        ? commonLoading
+                        : image.is_representative
+                          ? pick(locale, "Representative", "대표")
+                          : pick(locale, "Set representative", "대표로 지정")}
+                    </Button>
+                  </div>
+                  <div className="flex">
+                    <Button
+                      className="shrink-0"
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void onReviewSemanticPrompts(image.image_id)}
+                      disabled={semanticPromptBusyImageId === image.image_id}
+                    >
+                      {semanticPromptBusyImageId === image.image_id
+                        ? commonLoading
+                        : promptReviewOpen
+                          ? pick(locale, "Hide BiomedCLIP analysis", "BiomedCLIP 분석 숨기기")
+                          : pick(locale, "Run BiomedCLIP analysis", "BiomedCLIP 분석")}
+                    </Button>
+                  </div>
+                </div>
+
+                {livePreview?.status === "failed" && livePreview.error ? (
+                  <div className="text-[0.78rem]">
                     <span className="rounded-[8px] border border-danger/30 bg-danger/8 px-3 py-1.5 text-danger">
                       {livePreview.error}
                     </span>
-                  ) : null}
-                </div>
-
-                <div className={savedImageActionBarClass}>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void onReviewSemanticPrompts(image.image_id)}
-                    disabled={semanticPromptBusyImageId === image.image_id}
-                  >
-                    {semanticPromptBusyImageId === image.image_id
-                      ? commonLoading
-                      : promptReviewOpen
-                        ? pick(locale, "Hide BiomedCLIP analysis", "BiomedCLIP 분석 숨기기")
-                        : pick(locale, "Run BiomedCLIP analysis", "BiomedCLIP 분석")}
-                  </Button>
-                  <Button
-                    className={image.is_representative ? savedCaseActionButtonClass(true) : "px-4"}
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => void onSetSavedRepresentative(image.image_id)}
-                    disabled={representativeBusyImageId === image.image_id || image.is_representative}
-                  >
-                    {representativeBusyImageId === image.image_id
-                      ? commonLoading
-                      : image.is_representative
-                        ? pick(locale, "Representative", "대표")
-                        : pick(locale, "Set representative", "대표로 지정")}
-                  </Button>
-                </div>
+                  </div>
+                ) : null}
 
                 {promptReviewOpen ? (
                   <SemanticPromptReviewPanel

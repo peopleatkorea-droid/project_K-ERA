@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import inspect
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from kera_research.config import MODEL_DIR
@@ -10,6 +11,8 @@ from kera_research.domain import make_id
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.pipeline import ResearchWorkflowService
+from kera_research.services.ssl_archive import scan_ssl_archive, write_ssl_archive_outputs
+from kera_research.services.ssl_pretraining import SSLTrainingConfig, run_ssl_pretraining_with_progress
 
 WorkflowFactory = Callable[[ControlPlaneStore], Any]
 
@@ -17,6 +20,7 @@ QUEUE_BY_JOB_TYPE = {
     "initial_training": "training",
     "initial_training_benchmark": "training",
     "cross_validation": "training",
+    "ssl_pretraining": "training",
     "site_validation": "validation",
 }
 
@@ -300,6 +304,108 @@ class SiteJobWorker:
             "report": report,
         }
 
+    def _handle_ssl_pretraining(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        archive_base_dir = Path(str(payload.get("archive_base_dir") or "")).expanduser()
+        if not str(archive_base_dir).strip():
+            raise ValueError("archive_base_dir is required.")
+        if not archive_base_dir.exists():
+            raise FileNotFoundError(f"Archive directory does not exist: {archive_base_dir}")
+        if not archive_base_dir.is_dir():
+            raise NotADirectoryError(f"Archive directory is not a directory: {archive_base_dir}")
+
+        run_id = make_id("ssl")
+        run_root = site_store.artifact_dir / "ssl_pretraining" / run_id
+        manifest_dir = run_root / "manifest"
+        training_dir = run_root / "training"
+
+        self._raise_if_cancel_requested(site_store, job["job_id"], "SSL pretraining cancelled.")
+        self._update_progress(
+            site_store,
+            job["job_id"],
+            {
+                "stage": "scanning_archive",
+                "message": "Scanning the SSL image archive.",
+                "percent": 2,
+                "run_id": run_id,
+                "archive_base_dir": str(archive_base_dir.resolve()),
+                "output_dir": str(training_dir),
+            },
+        )
+
+        clean_rows, anomaly_rows, manifest_summary = scan_ssl_archive(archive_base_dir)
+        manifest_paths = write_ssl_archive_outputs(manifest_dir, clean_rows, anomaly_rows, manifest_summary)
+
+        progress_context = {
+            "run_id": run_id,
+            "archive_base_dir": str(archive_base_dir.resolve()),
+            "manifest_total_images": int(manifest_summary.get("total_supported_images") or 0),
+            "manifest_clean_images": int(manifest_summary.get("clean_images") or 0),
+            "manifest_anomaly_images": int(manifest_summary.get("anomaly_images") or 0),
+            "clean_manifest_path": manifest_paths["clean_manifest_path"],
+            "anomaly_manifest_path": manifest_paths["anomaly_manifest_path"],
+            "manifest_summary_path": manifest_paths["summary_path"],
+            "output_dir": str(training_dir),
+        }
+        self._update_progress(
+            site_store,
+            job["job_id"],
+            {
+                "stage": "writing_manifest",
+                "message": "Generated SSL manifests and prepared the training run.",
+                "percent": 8,
+                "architecture": str(payload.get("architecture") or "convnext_tiny"),
+                "init_mode": str(payload.get("init_mode") or "imagenet"),
+                "method": str(payload.get("method") or "byol"),
+                **progress_context,
+            },
+        )
+
+        def update_progress(progress_payload: dict[str, Any]) -> None:
+            self._update_progress(
+                site_store,
+                job["job_id"],
+                {
+                    **progress_context,
+                    **progress_payload,
+                },
+            )
+
+        training_summary = run_ssl_pretraining_with_progress(
+            SSLTrainingConfig(
+                manifest_path=manifest_paths["clean_manifest_path"],
+                output_dir=str(training_dir),
+                architecture=str(payload.get("architecture") or "convnext_tiny"),
+                init_mode=str(payload.get("init_mode") or "imagenet"),
+                method=str(payload.get("method") or "byol"),
+                image_size=int(payload.get("image_size") or 224),
+                batch_size=int(payload.get("batch_size") or 24),
+                epochs=int(payload.get("epochs") or 10),
+                learning_rate=float(payload.get("learning_rate") or 1e-4),
+                weight_decay=float(payload.get("weight_decay") or 1e-4),
+                num_workers=int(payload.get("num_workers") or 8),
+                device=str(payload.get("execution_device") or "auto"),
+                min_patient_quality=str(payload.get("min_patient_quality") or "medium"),
+                include_review_rows=bool(payload.get("include_review_rows", False)),
+                use_amp=bool(payload.get("use_amp", True)),
+                save_every=1,
+            ),
+            progress_callback=update_progress,
+        )
+        return {
+            "site_id": site_store.site_id,
+            "execution_device": str(payload["execution_device"]),
+            "run": {
+                "run_id": run_id,
+                "archive_base_dir": progress_context["archive_base_dir"],
+                "manifest": {
+                    **manifest_summary,
+                    **manifest_paths,
+                },
+                "training": training_summary,
+            },
+        }
+
     def _handle_site_validation(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job.get("payload") or {})
         workflow = self._workflow_service()
@@ -349,6 +455,8 @@ class SiteJobWorker:
             return self._handle_initial_training_benchmark(site_store, job)
         if job_type == "cross_validation":
             return self._handle_cross_validation(site_store, job)
+        if job_type == "ssl_pretraining":
+            return self._handle_ssl_pretraining(site_store, job)
         if job_type == "site_validation":
             return self._handle_site_validation(site_store, job)
         raise ValueError(f"Unsupported queued job type: {job_type}")
@@ -366,7 +474,11 @@ class SiteJobWorker:
         site_store = SiteStore(str(job["site_id"]))
         try:
             response = self._dispatch_job(site_store, job)
+            current_job = site_store.get_job(job["job_id"]) or job
+            existing_result = dict(current_job.get("result") or {})
+            existing_progress = dict(existing_result.get("progress") or {})
             final_progress = {
+                **existing_progress,
                 "stage": "completed",
                 "message": f"{job['job_type']} completed.",
                 "percent": 100,
@@ -375,6 +487,7 @@ class SiteJobWorker:
                 job["job_id"],
                 "completed",
                 {
+                    **existing_result,
                     "progress": final_progress,
                     "response": response,
                 },

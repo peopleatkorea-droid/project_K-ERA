@@ -195,6 +195,7 @@ const apiErrorExact = {
   ko: {
     "Invalid token.": "유효하지 않은 토큰입니다.",
     "Local API server is unavailable.": "로컬 API 서버에 연결할 수 없습니다. FastAPI 서버가 실행 중인지 확인해 주세요.",
+    "Control-plane server is unavailable.": "운영 허브 서버에 연결할 수 없습니다.",
     "Local development admin login is disabled.": "로컬 개발용 관리자 로그인이 비활성화되어 있습니다.",
     "Google authentication is not configured on the server.": "서버에 Google 인증이 설정되지 않았습니다.",
     "Google token verification failed.": "Google 토큰 검증에 실패했습니다.",
@@ -318,6 +319,7 @@ const apiErrorPatterns: Record<Locale, ApiErrorPattern[]> = {
     { pattern: /^Site validation is unavailable: (.+)$/, render: (detail: string) => `병원 검증을 실행할 수 없습니다: ${detail}` },
     { pattern: /^Initial training is unavailable: (.+)$/, render: (detail: string) => `초기 학습을 실행할 수 없습니다: ${detail}` },
     { pattern: /^Cross-validation is unavailable: (.+)$/, render: (detail: string) => `교차 검증을 실행할 수 없습니다: ${detail}` },
+    { pattern: /^AI Clinic embedding backfill is unavailable: (.+)$/, render: (detail: string) => `AI Clinic embedding backfill을 실행할 수 없습니다: ${detail}` },
     { pattern: /^Case validation is unavailable: (.+)$/, render: (detail: string) => `케이스 검증을 실행할 수 없습니다: ${detail}` },
     { pattern: /^Case contribution is unavailable: (.+)$/, render: (detail: string) => `케이스 기여를 실행할 수 없습니다: ${detail}` },
     { pattern: /^ROI preview is unavailable: (.+)$/, render: (detail: string) => `각막 crop 미리보기를 실행할 수 없습니다: ${detail}` },
@@ -368,6 +370,10 @@ const apiErrorPatterns: Record<Locale, ApiErrorPattern[]> = {
     { pattern: /^Patient (.+) already exists\.$/, render: (patientId: string) => `환자 ${patientId}는 이미 존재합니다.` },
     { pattern: /^Patient (.+) does not exist\.$/, render: (patientId: string) => `환자 ${patientId}가 존재하지 않습니다.` },
     { pattern: /^Visit (.+) \/ (.+) already exists\.$/, render: (patientId: string, visitDate: string) => `방문 ${patientId} / ${visitDate}는 이미 존재합니다.` },
+    {
+      pattern: /^Existing patients can only receive follow-up visits\. Use a FU #N label\.$/,
+      render: () => "기존 환자는 재진만 추가할 수 있습니다. FU #N 형식으로 저장하세요.",
+    },
     { pattern: /^Site (.+) already exists\.$/, render: (siteCode: string) => `병원 ${siteCode}는 이미 존재합니다.` },
     { pattern: /^No images found for patient (.+) \/ (.+)\.$/, render: (patientId: string, visitDate: string) => `환자 ${patientId} / ${visitDate}에 대한 이미지가 없습니다.` },
     { pattern: /^At least 4 patients are required \(current: (\d+)\)\.$/, render: (count: string) => `최소 4명의 환자가 필요합니다 (현재 ${count}명).` },

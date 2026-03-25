@@ -5,8 +5,9 @@ pub(super) async fn request_local_json(payload: LocalApiJsonCommandRequest) -> R
     let token = payload.token.unwrap_or_default();
     let query = normalize_local_api_query(payload.query);
     let body = payload.body;
+    let control_plane_owner = payload.control_plane_owner;
     tauri::async_runtime::spawn_blocking(move || {
-        request_local_api_json_owned(method, &path, &token, query, body)
+        request_local_api_json_owned(method, &path, &token, query, body, control_plane_owner)
     })
     .await
     .map_err(|error| error.to_string())?

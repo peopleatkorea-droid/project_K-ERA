@@ -94,6 +94,8 @@ export function LandingV4(props: LandingV4Props) {
             googleLoginLabel={props.googleLoginLabel}
             connectingLabel={props.connectingLabel}
             googleLaunchPulse={props.googleLaunchPulse}
+            adminRecoveryLinkLabel={props.adminRecoveryLinkLabel}
+            adminLaunchLinks={props.adminLaunchLinks}
             publicSites={props.publicSites}
             onGoogleLaunch={props.onGoogleLaunch}
             onLocaleChange={(locale) => setLocale(locale)}
@@ -104,6 +106,8 @@ export function LandingV4(props: LandingV4Props) {
             googleLoginLabel={props.googleLoginLabel}
             connectingLabel={props.connectingLabel}
             googleLaunchPulse={props.googleLaunchPulse}
+            adminRecoveryLinkLabel={props.adminRecoveryLinkLabel}
+            adminLaunchLinks={props.adminLaunchLinks}
             publicSites={props.publicSites}
             onGoogleLaunch={props.onGoogleLaunch}
             onLocaleChange={(locale) => setLocale(locale)}

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Any
 
@@ -41,9 +39,12 @@ def build_desktop_router(support: Any) -> APIRouter:
         return desktop_self_check(cp)
 
     @router.get("/api/control-plane/node/status")
-    def local_control_plane_node_status(cp=Depends(get_control_plane)) -> dict[str, Any]:
+    def local_control_plane_node_status(
+        refresh: bool = False,
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
         cp.reload_remote_control_plane_credentials()
-        bootstrap = cp.remote_bootstrap_state()
+        bootstrap = cp.remote_bootstrap_state(force_refresh=bool(refresh))
         current_release = cp.current_global_model()
         credential_status = node_credentials_status()
         return {

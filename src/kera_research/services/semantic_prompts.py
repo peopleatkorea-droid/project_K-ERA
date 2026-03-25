@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageOps
+from kera_research.services.biomedclip_runtime import BIOMEDCLIP_MODEL_ID, ensure_biomedclip_runtime
 
 
 @dataclass(frozen=True)
@@ -137,45 +138,19 @@ def _dictionary_name_for_view(view: str) -> str:
 
 
 class SemanticPromptScoringService:
-    MODEL_ID = "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    MODEL_ID = BIOMEDCLIP_MODEL_ID
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._client: dict[str, Any] | None = None
 
-    def _resolve_device(self, torch_module: Any) -> str:
-        override = os.getenv("KERA_BIOMEDCLIP_DEVICE", "").strip().lower()
-        if override in {"cpu", "cuda"}:
-            if override == "cuda" and not torch_module.cuda.is_available():
-                return "cpu"
-            return override
-        return "cuda" if torch_module.cuda.is_available() else "cpu"
-
     def _load_client(self) -> dict[str, Any]:
-        try:
-            import open_clip
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "BiomedCLIP dependencies are not installed. Run pip install -r requirements.txt after updating the environment."
-            ) from exc
-
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("PyTorch is required for BiomedCLIP scoring.") from exc
-
-        device = self._resolve_device(torch)
-        try:
-            if hasattr(open_clip, "create_model_from_pretrained"):
-                model, preprocess = open_clip.create_model_from_pretrained(self.MODEL_ID, device=device)
-            else:  # pragma: no cover - compatibility branch
-                model, _, preprocess = open_clip.create_model_and_transforms(self.MODEL_ID)
-                model = model.to(device)
-            tokenizer = open_clip.get_tokenizer(self.MODEL_ID)
-        except Exception as exc:  # pragma: no cover - runtime dependency / model download
-            raise RuntimeError(f"Unable to load BiomedCLIP model '{self.MODEL_ID}': {exc}") from exc
-
-        model.eval()
+        runtime = ensure_biomedclip_runtime(os.getenv("KERA_BIOMEDCLIP_DEVICE") or "auto")
+        torch = runtime.torch
+        model = runtime.model
+        preprocess = runtime.preprocess
+        tokenizer = runtime.tokenizer
+        device = runtime.device
         prompt_features: dict[str, dict[str, Any]] = {}
         with torch.no_grad():
             for dictionary_name, layers in _PROMPT_DICTIONARIES.items():
@@ -200,12 +175,17 @@ class SemanticPromptScoringService:
         }
 
     def _ensure_client(self) -> dict[str, Any]:
-        if self._client is not None:
+        runtime = ensure_biomedclip_runtime(os.getenv("KERA_BIOMEDCLIP_DEVICE") or "auto")
+        if self._client is not None and self._client.get("device") == runtime.device:
             return self._client
         with self._lock:
-            if self._client is None:
+            runtime = ensure_biomedclip_runtime(os.getenv("KERA_BIOMEDCLIP_DEVICE") or "auto")
+            if self._client is None or self._client.get("device") != runtime.device:
                 self._client = self._load_client()
         return self._client
+
+    def warmup(self) -> None:
+        self._ensure_client()
 
     def score_image(self, image_path: str | Path, *, view: str, top_k: int = 3) -> dict[str, Any]:
         client = self._ensure_client()

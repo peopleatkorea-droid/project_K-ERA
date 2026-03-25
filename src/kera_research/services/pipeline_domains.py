@@ -502,6 +502,8 @@ class ResearchTrainingWorkflow:
         val_split: float = 0.2,
         test_split: float = 0.2,
         use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | None = None,
         case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         regenerate_split: bool = False,
@@ -516,6 +518,10 @@ class ResearchTrainingWorkflow:
         normalized_crop_mode = service._normalize_crop_mode(crop_mode)
         self._validate_architecture_crop_mode(architecture, normalized_crop_mode)
         normalized_case_aggregation = service.model_manager.normalize_case_aggregation(case_aggregation, architecture)
+        normalized_pretraining_source = service.model_manager.normalize_training_pretraining_source(
+            pretraining_source,
+            use_pretrained=use_pretrained,
+        )
         training_modes = ["automated", "manual"] if normalized_crop_mode == "both" else [normalized_crop_mode]
 
         def emit_progress(**payload: Any) -> None:
@@ -592,6 +598,8 @@ class ResearchTrainingWorkflow:
                 val_split=val_split,
                 test_split=test_split,
                 use_pretrained=use_pretrained,
+                pretraining_source=normalized_pretraining_source,
+                ssl_checkpoint_path=ssl_checkpoint_path,
                 saved_split=shared_patient_split,
                 crop_mode=component_crop_mode,
                 case_aggregation=normalized_case_aggregation,
@@ -678,7 +686,9 @@ class ResearchTrainingWorkflow:
                     "batch_size": int(batch_size),
                     "val_split": float(val_split),
                     "test_split": float(test_split),
-                    "use_pretrained": bool(use_pretrained),
+                    "use_pretrained": bool(normalized_pretraining_source != "scratch"),
+                    "pretraining_source": normalized_pretraining_source,
+                    "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
                     "case_aggregation": normalized_case_aggregation,
                     "regenerate_split": bool(regenerate_split),
                     "seed": 42,
@@ -806,7 +816,9 @@ class ResearchTrainingWorkflow:
                 "batch_size": int(batch_size),
                 "val_split": float(val_split),
                 "test_split": float(test_split),
-                "use_pretrained": bool(use_pretrained),
+                "use_pretrained": bool(normalized_pretraining_source != "scratch"),
+                "pretraining_source": normalized_pretraining_source,
+                "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
                 "case_aggregation": normalized_case_aggregation,
                 "regenerate_split": bool(regenerate_split),
                 "seed": 42,
@@ -837,6 +849,8 @@ class ResearchTrainingWorkflow:
         batch_size: int = 16,
         val_split: float = 0.2,
         use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | None = None,
         case_aggregation: str = "mean",
         use_medsam_crops: bool = True,
         progress_callback: Any = None,
@@ -850,6 +864,10 @@ class ResearchTrainingWorkflow:
         normalized_crop_mode = service._normalize_crop_mode(crop_mode)
         self._validate_architecture_crop_mode(architecture, normalized_crop_mode)
         normalized_case_aggregation = service.model_manager.normalize_case_aggregation(case_aggregation, architecture)
+        normalized_pretraining_source = service.model_manager.normalize_training_pretraining_source(
+            pretraining_source,
+            use_pretrained=use_pretrained,
+        )
         if normalized_crop_mode == "both":
             raise ValueError("Cross-validation currently supports automated, manual, or paired crop mode, not both.")
 
@@ -923,6 +941,8 @@ class ResearchTrainingWorkflow:
             batch_size=batch_size,
             val_split=val_split,
             use_pretrained=use_pretrained,
+            pretraining_source=normalized_pretraining_source,
+            ssl_checkpoint_path=ssl_checkpoint_path,
             case_aggregation=normalized_case_aggregation,
             progress_callback=on_cross_validation_progress,
         )
@@ -952,7 +972,9 @@ class ResearchTrainingWorkflow:
                 "learning_rate": float(learning_rate),
                 "batch_size": int(batch_size),
                 "val_split": float(val_split),
-                "use_pretrained": bool(use_pretrained),
+                "use_pretrained": bool(normalized_pretraining_source != "scratch"),
+                "pretraining_source": normalized_pretraining_source,
+                "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
                 "case_aggregation": normalized_case_aggregation,
                 "seed": 42,
             },

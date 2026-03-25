@@ -114,6 +114,35 @@ class AdminRegistryOrchestrator:
         )
         return {"model_version": published}
 
+    def activate_local_model_version(
+        self,
+        cp: Any,
+        *,
+        version_id: str,
+    ) -> dict[str, Any]:
+        existing = next((item for item in cp.list_model_versions() if item.get("version_id") == version_id), None)
+        if existing is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model version.")
+
+        local_model_path = str(existing.get("model_path") or "").strip()
+        if not local_model_path or not Path(local_model_path).exists():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Local model artifact is missing; cannot activate this version.",
+            )
+
+        activated = cp.ensure_model_version(
+            {
+                **existing,
+                "version_id": version_id,
+                "publish_required": False,
+                "distribution_status": str(existing.get("distribution_status") or "local_only"),
+                "ready": True,
+                "is_current": True,
+            }
+        )
+        return {"model_version": activated}
+
     def review_model_update(
         self,
         cp: Any,

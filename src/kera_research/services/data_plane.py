@@ -848,6 +848,16 @@ class SiteStore:
         normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
         if not self.get_patient(normalized_patient_id):
             raise ValueError(f"Patient {normalized_patient_id} does not exist.")
+        if normalized_visit_date == "Initial":
+            visit_count_query = (
+                select(func.count())
+                .select_from(db_visits)
+                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
+            )
+            with DATA_PLANE_ENGINE.begin() as conn:
+                existing_visit_count = int(conn.execute(visit_count_query).scalar() or 0)
+            if existing_visit_count > 0:
+                raise ValueError("Existing patients can only receive follow-up visits. Use a FU #N label.")
         if not culture_confirmed:
             raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_visit(normalized_patient_id, normalized_visit_date):

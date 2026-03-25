@@ -20,12 +20,47 @@ import type {
 } from "./types";
 import { filterVisibleSites } from "./site-labels";
 
+const LOCAL_CONTROL_PLANE_OWNER = "local" as const;
+
+type DesktopAdminJsonOptions = {
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  query?: URLSearchParams | Record<string, string | number | boolean | null | undefined>;
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+function requestDesktopLocalAdminJson<T>(
+  path: string,
+  token: string,
+  options: DesktopAdminJsonOptions = {},
+) {
+  return requestDesktopLocalApiJson<T>(path, token, {
+    ...options,
+    controlPlaneOwner: LOCAL_CONTROL_PLANE_OWNER,
+  });
+}
+
+function emptyInstitutionDirectoryStatus(): InstitutionDirectorySyncResponse {
+  return {
+    source: "hira",
+    institutions_synced: 0,
+    total_count: 0,
+    synced_at: null,
+  };
+}
+
 export async function fetchAccessRequests(token: string, statusFilter = "pending") {
   const suffix = statusFilter ? `?status_filter=${encodeURIComponent(statusFilter)}` : "";
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<AccessRequestRecord[]>(`/api/admin/access-requests${suffix}`, token);
+  }
   return requestMainControlPlane<AccessRequestRecord[]>(`/admin/access-requests${suffix}`, {}, token);
 }
 
 export async function fetchAdminOverview(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<AdminOverviewResponse>("/api/admin/overview", token);
+  }
   return requestMainControlPlane<AdminOverviewResponse>("/admin/overview", {}, token);
 }
 
@@ -43,11 +78,71 @@ export async function fetchAdminWorkspaceBootstrap(
   if (options.scope && options.scope !== "full") {
     params.set("scope", options.scope);
   }
-  const suffix = params.size ? `?${params.toString()}` : "";
-  return requestMainControlPlane<AdminWorkspaceBootstrapResponse>(`/admin/workspace-bootstrap${suffix}`, {}, token);
+  if (!canUseDesktopLocalApiTransport()) {
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return requestMainControlPlane<AdminWorkspaceBootstrapResponse>(`/admin/workspace-bootstrap${suffix}`, {}, token);
+  }
+  const scope = options.scope === "initial" ? "initial" : "full";
+  if (scope === "initial") {
+    const [overview, projects, managedSites] = await Promise.all([
+      fetchAdminOverview(token),
+      fetchProjects(token),
+      fetchAdminSites(token),
+    ]);
+    return {
+      overview,
+      pending_requests: [],
+      approved_requests: [],
+      model_versions: [],
+      model_updates: [],
+      aggregations: [],
+      projects,
+      managed_sites: managedSites,
+      managed_users: [],
+      institution_sync_status: emptyInstitutionDirectoryStatus(),
+    };
+  }
+  const [
+    overview,
+    pendingRequests,
+    approvedRequests,
+    modelVersions,
+    modelUpdates,
+    aggregations,
+    projects,
+    managedSites,
+    managedUsers,
+    institutionSyncStatus,
+  ] = await Promise.all([
+    fetchAdminOverview(token),
+    fetchAccessRequests(token, "pending"),
+    fetchAccessRequests(token, "approved"),
+    fetchModelVersions(token),
+    fetchModelUpdates(token, { site_id: options.site_id }),
+    fetchAggregations(token).catch(() => []),
+    fetchProjects(token),
+    fetchAdminSites(token),
+    fetchUsers(token).catch(() => []),
+    fetchInstitutionDirectoryStatus(token).catch(() => emptyInstitutionDirectoryStatus()),
+  ]);
+  return {
+    overview,
+    pending_requests: pendingRequests,
+    approved_requests: approvedRequests,
+    model_versions: modelVersions,
+    model_updates: modelUpdates,
+    aggregations,
+    projects,
+    managed_sites: managedSites,
+    managed_users: managedUsers,
+    institution_sync_status: institutionSyncStatus,
+  };
 }
 
 export async function fetchInstitutionDirectoryStatus(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<InstitutionDirectorySyncResponse>("/api/admin/institutions/status", token);
+  }
   return requestMainControlPlane<InstitutionDirectorySyncResponse>("/admin/institutions/status", {}, token);
 }
 
@@ -66,6 +161,11 @@ export async function syncInstitutionDirectory(
     params.set("max_pages", String(payload.max_pages));
   }
   const suffix = params.size ? `?${params.toString()}` : "";
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<InstitutionDirectorySyncResponse>(`/api/admin/institutions/sync${suffix}`, token, {
+      method: "POST",
+    });
+  }
   return requestMainControlPlane<InstitutionDirectorySyncResponse>(`/admin/institutions/sync${suffix}`, { method: "POST" }, token);
 }
 
@@ -111,10 +211,26 @@ export async function updateStorageSettings(
 }
 
 export async function fetchProjects(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ProjectRecord[]>("/api/admin/projects", token);
+  }
   return requestMainControlPlane<ProjectRecord[]>("/admin/projects", {}, token);
 }
 
 export async function createProject(token: string, payload: { name: string; description?: string }) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ProjectRecord>(
+      "/api/admin/projects",
+      token,
+      {
+        method: "POST",
+        body: {
+          description: "",
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<ProjectRecord>(
     "/admin/projects",
     {
@@ -130,6 +246,11 @@ export async function createProject(token: string, payload: { name: string; desc
 
 export async function fetchAdminSites(token: string, projectId?: string) {
   const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  if (canUseDesktopLocalApiTransport()) {
+    return filterVisibleSites(
+      await requestDesktopLocalAdminJson<ManagedSiteRecord[]>(`/api/admin/sites${suffix}`, token),
+    );
+  }
   return filterVisibleSites(await requestMainControlPlane<ManagedSiteRecord[]>(`/admin/sites${suffix}`, {}, token));
 }
 
@@ -144,6 +265,20 @@ export async function createAdminSite(
     research_registry_enabled?: boolean;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ManagedSiteRecord>(
+      "/api/admin/sites",
+      token,
+      {
+        method: "POST",
+        body: {
+          hospital_name: "",
+          research_registry_enabled: true,
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<ManagedSiteRecord>(
     "/admin/sites",
     {
@@ -168,6 +303,20 @@ export async function updateAdminSite(
     research_registry_enabled?: boolean;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ManagedSiteRecord>(
+      `/api/admin/sites/${siteId}`,
+      token,
+      {
+        method: "PATCH",
+        body: {
+          hospital_name: "",
+          research_registry_enabled: true,
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<ManagedSiteRecord>(
     `/admin/sites/${siteId}`,
     {
@@ -269,6 +418,9 @@ export async function updateResearchRegistrySettings(
 }
 
 export async function fetchUsers(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ManagedUserRecord[]>("/api/admin/users", token);
+  }
   return requestMainControlPlane<ManagedUserRecord[]>("/admin/users", {}, token);
 }
 
@@ -283,6 +435,21 @@ export async function upsertManagedUser(
     site_ids?: string[];
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ManagedUserRecord>(
+      "/api/admin/users",
+      token,
+      {
+        method: "POST",
+        body: {
+          full_name: "",
+          password: "",
+          site_ids: [],
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<ManagedUserRecord>(
     "/admin/users",
     {
@@ -314,6 +481,16 @@ export async function reviewAccessRequest(
     reviewer_notes?: string;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ request: AccessRequestRecord; created_site?: ManagedSiteRecord | null }>(
+      `/api/admin/access-requests/${requestId}/review`,
+      token,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  }
   return requestMainControlPlane<{ request: AccessRequestRecord; created_site?: ManagedSiteRecord | null }>(
     `/admin/access-requests/${requestId}/review`,
     {
@@ -325,13 +502,38 @@ export async function reviewAccessRequest(
 }
 
 export async function fetchModelVersions(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ModelVersionRecord[]>("/api/admin/model-versions", token);
+  }
   return requestMainControlPlane<ModelVersionRecord[]>("/admin/model-versions", {}, token);
 }
 
 export async function deleteModelVersion(versionId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ model_version: ModelVersionRecord }>(`/api/admin/model-versions/${versionId}`, token, {
+      method: "DELETE",
+    });
+  }
   return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
     `/admin/model-versions/${versionId}`,
     { method: "DELETE" },
+    token,
+  );
+}
+
+export async function activateLocalModelVersion(versionId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ model_version: ModelVersionRecord }>(
+      `/api/admin/model-versions/${versionId}/activate-local`,
+      token,
+      {
+        method: "POST",
+      },
+    );
+  }
+  return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
+    `/admin/model-versions/${versionId}/activate-local`,
+    { method: "POST" },
     token,
   );
 }
@@ -344,6 +546,19 @@ export async function publishModelVersion(
     set_current?: boolean;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ model_version: ModelVersionRecord }>(
+      `/api/admin/model-versions/${versionId}/publish`,
+      token,
+      {
+        method: "POST",
+        body: {
+          set_current: false,
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
     `/admin/model-versions/${versionId}/publish`,
     {
@@ -364,6 +579,19 @@ export async function autoPublishModelVersion(
     set_current?: boolean;
   } = {},
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ model_version: ModelVersionRecord }>(
+      `/api/admin/model-versions/${versionId}/auto-publish`,
+      token,
+      {
+        method: "POST",
+        body: {
+          set_current: false,
+          ...payload,
+        },
+      },
+    );
+  }
   return requestMainControlPlane<{ model_version: ModelVersionRecord }>(
     `/admin/model-versions/${versionId}/auto-publish`,
     {
@@ -392,6 +620,11 @@ export async function fetchModelUpdates(
     params.set("status_filter", options.status_filter);
   }
   const suffix = params.size ? `?${params.toString()}` : "";
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ModelUpdateRecord[]>("/api/admin/model-updates", token, {
+      query: params,
+    });
+  }
   return requestMainControlPlane<ModelUpdateRecord[]>(`/admin/model-updates${suffix}`, {}, token);
 }
 
@@ -403,6 +636,12 @@ export async function reviewModelUpdate(
     reviewer_notes?: string;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ update: ModelUpdateRecord }>(`/api/admin/model-updates/${updateId}/review`, token, {
+      method: "POST",
+      body: payload,
+    });
+  }
   return requestMainControlPlane<{ update: ModelUpdateRecord }>(
     `/admin/model-updates/${updateId}/review`,
     {
@@ -420,6 +659,12 @@ export async function publishModelUpdate(
     download_url: string;
   },
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ update: ModelUpdateRecord }>(`/api/admin/model-updates/${updateId}/publish`, token, {
+      method: "POST",
+      body: payload,
+    });
+  }
   return requestMainControlPlane<{ update: ModelUpdateRecord }>(
     `/admin/model-updates/${updateId}/publish`,
     {
@@ -431,6 +676,12 @@ export async function publishModelUpdate(
 }
 
 export async function autoPublishModelUpdate(updateId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ update: ModelUpdateRecord }>(`/api/admin/model-updates/${updateId}/auto-publish`, token, {
+      method: "POST",
+      body: {},
+    });
+  }
   return requestMainControlPlane<{ update: ModelUpdateRecord }>(
     `/admin/model-updates/${updateId}/auto-publish`,
     {
@@ -442,6 +693,9 @@ export async function autoPublishModelUpdate(updateId: string, token: string) {
 }
 
 export async function fetchAggregations(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<AggregationRecord[]>("/api/admin/aggregations", token);
+  }
   return requestMainControlPlane<AggregationRecord[]>("/admin/aggregations", {}, token);
 }
 
@@ -459,6 +713,15 @@ export async function runFederatedAggregation(
     new_version_name?: string;
   } = {},
 ) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<AggregationRunResponse>("/api/admin/aggregations/run", token, {
+      method: "POST",
+      body: {
+        update_ids: [],
+        ...payload,
+      },
+    });
+  }
   return requestMainControlPlane<AggregationRunResponse>(
     "/admin/aggregations/run",
     {
