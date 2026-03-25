@@ -847,6 +847,8 @@ def _run_initial_training(params: dict[str, Any]) -> dict[str, Any]:
         val_split=float(params.get("val_split") or 0.2),
         test_split=float(params.get("test_split") or 0.2),
         use_pretrained=bool(params.get("use_pretrained", True)),
+        pretraining_source=str(params.get("pretraining_source") or "").strip() or None,
+        ssl_checkpoint_path=str(params.get("ssl_checkpoint_path") or "").strip() or None,
         regenerate_split=bool(params.get("regenerate_split", False)),
     )
     return start_initial_training(
@@ -887,6 +889,9 @@ def _run_initial_training_benchmark(params: dict[str, Any]) -> dict[str, Any]:
         val_split=float(params.get("val_split") or 0.2),
         test_split=float(params.get("test_split") or 0.2),
         use_pretrained=bool(params.get("use_pretrained", True)),
+        pretraining_source=str(params.get("pretraining_source") or "").strip() or None,
+        ssl_checkpoint_path=str(params.get("ssl_checkpoint_path") or "").strip() or None,
+        benchmark_suite_key=str(params.get("benchmark_suite_key") or "").strip() or None,
         regenerate_split=bool(params.get("regenerate_split", False)),
     )
     return start_initial_training_benchmark(
@@ -949,6 +954,9 @@ def _resume_initial_training_benchmark(params: dict[str, Any]) -> dict[str, Any]
         val_split=float(source_payload.get("val_split") or 0.2),
         test_split=float(source_payload.get("test_split") or 0.2),
         use_pretrained=bool(source_payload.get("use_pretrained", True)),
+        pretraining_source=str(source_payload.get("pretraining_source") or "").strip() or None,
+        ssl_checkpoint_path=str(source_payload.get("ssl_checkpoint_path") or "").strip() or None,
+        benchmark_suite_key=str(source_payload.get("benchmark_suite_key") or "").strip() or None,
         regenerate_split=False,
     )
     return start_initial_training_benchmark(

@@ -27,6 +27,12 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "dinov2", label: "DINOv2" },
   { value: "dinov2_mil", label: "DINOv2 Attention MIL" },
   { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
+  { value: "lesion_guided_fusion__efficientnet_v2_s", label: "LGF EfficientNetV2-S" },
+  { value: "lesion_guided_fusion__densenet121", label: "LGF DenseNet121" },
+  { value: "lesion_guided_fusion__convnext_tiny", label: "LGF ConvNeXt-Tiny" },
+  { value: "lesion_guided_fusion__vit", label: "LGF ViT" },
+  { value: "lesion_guided_fusion__swin", label: "LGF Swin" },
+  { value: "lesion_guided_fusion__dinov2", label: "LGF DINOv2" },
 ];
 
 const TRAINING_ARCHITECTURE_LABELS = new Map(TRAINING_ARCHITECTURE_OPTIONS.map((option) => [option.value, option.label]));

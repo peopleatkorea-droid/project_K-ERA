@@ -233,6 +233,9 @@ def build_site_training_router(support: Any) -> APIRouter:
             val_split=float(source_payload.get("val_split") or 0.2),
             test_split=float(source_payload.get("test_split") or 0.2),
             use_pretrained=bool(source_payload.get("use_pretrained", True)),
+            pretraining_source=str(source_payload.get("pretraining_source") or "").strip() or None,
+            ssl_checkpoint_path=str(source_payload.get("ssl_checkpoint_path") or "").strip() or None,
+            benchmark_suite_key=str(source_payload.get("benchmark_suite_key") or "").strip() or None,
             regenerate_split=False,
         )
         return start_initial_training_benchmark(

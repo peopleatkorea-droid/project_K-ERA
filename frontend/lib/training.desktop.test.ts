@@ -119,6 +119,34 @@ describe("training desktop routing", () => {
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });
 
+  it("passes SSL benchmark metadata through the desktop benchmark runner", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_bench_1" } });
+
+    const mod = await import("./training");
+    await mod.runInitialTrainingBenchmark("SITE_A", "desktop-token", {
+      architectures: ["lesion_guided_fusion__efficientnet_v2_s", "lesion_guided_fusion__dinov2"],
+      execution_mode: "gpu",
+      crop_mode: "paired",
+      pretraining_source: "ssl",
+      benchmark_suite_key: "lesion_guided_ssl_6",
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_initial_training_benchmark", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        architectures: ["lesion_guided_fusion__efficientnet_v2_s", "lesion_guided_fusion__dinov2"],
+        execution_mode: "gpu",
+        crop_mode: "paired",
+        pretraining_source: "ssl",
+        benchmark_suite_key: "lesion_guided_ssl_6",
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
   it("uses the desktop job cancel command when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({ job_id: "job_1", status: "cancelling" });

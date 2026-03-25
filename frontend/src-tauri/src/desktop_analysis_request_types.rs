@@ -201,6 +201,8 @@ struct InitialTrainingCommandRequest {
     val_split: Option<f64>,
     test_split: Option<f64>,
     use_pretrained: Option<bool>,
+    pretraining_source: Option<String>,
+    ssl_checkpoint_path: Option<String>,
     regenerate_split: Option<bool>,
 }
 
@@ -218,6 +220,9 @@ struct InitialTrainingBenchmarkCommandRequest {
     val_split: Option<f64>,
     test_split: Option<f64>,
     use_pretrained: Option<bool>,
+    pretraining_source: Option<String>,
+    ssl_checkpoint_path: Option<String>,
+    benchmark_suite_key: Option<String>,
     regenerate_split: Option<bool>,
 }
 
@@ -293,4 +298,3 @@ struct EmbeddingBackfillCommandRequest {
     model_version_id: Option<String>,
     force_refresh: Option<bool>,
 }
-

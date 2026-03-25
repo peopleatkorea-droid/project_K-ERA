@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import inspect
 import time
@@ -7,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kera_research.config import MODEL_DIR
-from kera_research.domain import make_id
+from kera_research.domain import is_dual_input_training_architecture, make_id
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.pipeline import ResearchWorkflowService
@@ -32,7 +33,7 @@ def queue_name_for_job_type(job_type: str) -> str:
 def benchmark_crop_mode_for_architecture(base_crop_mode: str, architecture: str) -> str:
     normalized_crop_mode = str(base_crop_mode or "automated").strip().lower() or "automated"
     normalized_architecture = str(architecture or "").strip().lower()
-    if normalized_architecture == "dual_input_concat":
+    if is_dual_input_training_architecture(normalized_architecture):
         return "paired"
     if normalized_crop_mode == "paired":
         return "automated"
@@ -104,10 +105,43 @@ class SiteJobWorker:
             raise ValueError("No ready model version is available.")
         return model_version
 
+    def _resolve_ssl_checkpoint_path(self, site_store: SiteStore, architecture: str) -> str:
+        workflow = self._workflow_service()
+        expected_backbone = workflow.model_manager.ssl_backbone_architecture_for_model(architecture)
+        runs_root = site_store.artifact_dir / "ssl_pretraining"
+        if not runs_root.exists():
+            raise FileNotFoundError(f"SSL pretraining directory does not exist: {runs_root}")
+        run_directories = sorted(
+            (item for item in runs_root.iterdir() if item.is_dir()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for run_dir in run_directories:
+            summary_path = run_dir / "training" / "training_summary.json"
+            if not summary_path.exists():
+                continue
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            config = summary.get("config") if isinstance(summary.get("config"), dict) else {}
+            checkpoint_architecture = str(config.get("architecture") or summary.get("architecture") or "").strip().lower()
+            encoder_latest_path = Path(str(summary.get("encoder_latest_path") or "")).expanduser()
+            if checkpoint_architecture != expected_backbone or not encoder_latest_path.exists():
+                continue
+            return str(encoder_latest_path.resolve())
+        raise FileNotFoundError(
+            f"No SSL encoder checkpoint was found for {expected_backbone} under {runs_root}."
+        )
+
     def _handle_initial_training(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job.get("payload") or {})
         workflow = self._workflow_service()
         output_model_path = str(payload.get("output_model_path") or (MODEL_DIR / f"global_{payload['architecture']}_{make_id('init')[:8]}.pth"))
+        pretraining_source = str(payload.get("pretraining_source") or "").strip().lower() or None
+        ssl_checkpoint_path = str(payload.get("ssl_checkpoint_path") or "").strip() or None
+        if pretraining_source == "ssl" and not ssl_checkpoint_path:
+            ssl_checkpoint_path = self._resolve_ssl_checkpoint_path(site_store, str(payload["architecture"]))
         self._raise_if_cancel_requested(site_store, job["job_id"], "Initial training cancelled.")
 
         def update_progress(progress_payload: dict[str, Any]) -> None:
@@ -126,6 +160,8 @@ class SiteJobWorker:
             val_split=float(payload.get("val_split") or 0.2),
             test_split=float(payload.get("test_split") or 0.2),
             use_pretrained=bool(payload.get("use_pretrained", True)),
+            pretraining_source=pretraining_source,
+            ssl_checkpoint_path=ssl_checkpoint_path,
             case_aggregation=str(payload.get("case_aggregation") or "mean"),
             use_medsam_crops=True,
             regenerate_split=bool(payload.get("regenerate_split", False)),
@@ -145,6 +181,7 @@ class SiteJobWorker:
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         requested_crop_mode = str(payload.get("crop_mode") or "automated")
+        pretraining_source = str(payload.get("pretraining_source") or "").strip().lower() or None
         self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
 
         def build_partial_response() -> dict[str, Any]:
@@ -164,6 +201,7 @@ class SiteJobWorker:
                 "failures": failures,
                 "completed_architectures": completed_architectures,
                 "remaining_architectures": remaining_architectures,
+                "benchmark_suite_key": str(payload.get("benchmark_suite_key") or "").strip() or None,
                 "best_architecture": best_entry.get("architecture") if best_entry else None,
                 "best_model_version": best_entry.get("model_version") if best_entry else None,
             }
@@ -172,6 +210,9 @@ class SiteJobWorker:
             self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
             crop_mode = benchmark_crop_mode_for_architecture(requested_crop_mode, architecture)
             output_model_path = str(MODEL_DIR / f"global_{architecture}_{make_id('bench')[:8]}.pth")
+            ssl_checkpoint_path = str(payload.get("ssl_checkpoint_path") or "").strip() or None
+            if pretraining_source == "ssl" and not ssl_checkpoint_path:
+                ssl_checkpoint_path = self._resolve_ssl_checkpoint_path(site_store, architecture)
 
             def update_progress(progress_payload: dict[str, Any]) -> None:
                 self._raise_if_cancel_requested(site_store, job["job_id"], "Benchmark training cancelled.")
@@ -207,6 +248,8 @@ class SiteJobWorker:
                     val_split=float(payload.get("val_split") or 0.2),
                     test_split=float(payload.get("test_split") or 0.2),
                     use_pretrained=bool(payload.get("use_pretrained", True)),
+                    pretraining_source=pretraining_source,
+                    ssl_checkpoint_path=ssl_checkpoint_path,
                     case_aggregation=str(payload.get("case_aggregation") or "mean"),
                     use_medsam_crops=True,
                     regenerate_split=bool(payload.get("regenerate_split", False)) if architecture_index == 1 else False,
@@ -232,6 +275,7 @@ class SiteJobWorker:
                         "architecture_index": architecture_index,
                         "architecture_count": len(architectures),
                         "crop_mode": crop_mode,
+                        "pretraining_source": pretraining_source,
                         "case_aggregation": str(payload.get("case_aggregation") or "mean"),
                         "completed_architectures": partial_response["completed_architectures"],
                         "remaining_architectures": partial_response["remaining_architectures"],
@@ -260,6 +304,7 @@ class SiteJobWorker:
                         "architecture_index": architecture_index,
                         "architecture_count": len(architectures),
                         "crop_mode": crop_mode,
+                        "pretraining_source": pretraining_source,
                         "case_aggregation": str(payload.get("case_aggregation") or "mean"),
                         "completed_architectures": partial_response["completed_architectures"],
                         "remaining_architectures": partial_response["remaining_architectures"],

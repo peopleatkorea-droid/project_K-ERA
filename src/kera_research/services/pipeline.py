@@ -339,6 +339,7 @@ class ResearchWorkflowService:
                         model_version,
                         str(record.get("cornea_image_path") or record["image_path"]),
                         str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                        str(record.get("lesion_mask_path") or ""),
                         execution_device,
                     )
                     for record in prepared_records
@@ -725,6 +726,7 @@ class ResearchWorkflowService:
                     model_version,
                     str(record.get("cornea_image_path") or record["image_path"]),
                     str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                    str(record.get("lesion_mask_path") or ""),
                     execution_device,
                 )
                 for record in prepared_records
@@ -1191,6 +1193,7 @@ class ResearchWorkflowService:
                         model_reference,
                         cornea_image_path=cornea_input_path,
                         lesion_image_path=lesion_input_path,
+                        lesion_mask_path=str(prepared_artifact.get("lesion_mask_path") or ""),
                         device=execution_device,
                         cornea_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_cornea_gradcam.png",
                         lesion_output_path=site_store.gradcam_dir / f"{artifact_name}_{crop_mode}_lesion_gradcam.png",
@@ -1272,6 +1275,7 @@ class ResearchWorkflowService:
                         model_version,
                         str(record.get("cornea_image_path") or record["image_path"]),
                         str(record.get("lesion_image_path") or record.get("lesion_crop_path") or ""),
+                        str(record.get("lesion_mask_path") or ""),
                         execution_device,
                     )
                     for record in prepared_records

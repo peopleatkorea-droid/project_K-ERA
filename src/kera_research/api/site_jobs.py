@@ -115,6 +115,8 @@ def start_initial_training(
             "val_split": float(payload.val_split),
             "test_split": float(payload.test_split),
             "use_pretrained": bool(payload.use_pretrained),
+            "pretraining_source": getattr(payload, "pretraining_source", None),
+            "ssl_checkpoint_path": getattr(payload, "ssl_checkpoint_path", None),
             "regenerate_split": bool(payload.regenerate_split),
             "output_model_path": str(output_path),
         },
@@ -130,6 +132,7 @@ def start_initial_training(
                 "percent": 0,
                 "crop_mode": payload.crop_mode,
                 "case_aggregation": payload.case_aggregation,
+                "pretraining_source": getattr(payload, "pretraining_source", None),
             }
         },
     )
@@ -163,6 +166,9 @@ def start_initial_training_benchmark(
             "val_split": float(payload.val_split),
             "test_split": float(payload.test_split),
             "use_pretrained": bool(payload.use_pretrained),
+            "pretraining_source": getattr(payload, "pretraining_source", None),
+            "ssl_checkpoint_path": getattr(payload, "ssl_checkpoint_path", None),
+            "benchmark_suite_key": getattr(payload, "benchmark_suite_key", None),
             "regenerate_split": bool(payload.regenerate_split),
         },
         queue_name=queue_name_for_job_type("initial_training_benchmark"),
@@ -177,6 +183,7 @@ def start_initial_training_benchmark(
                 "percent": 0,
                 "crop_mode": payload.crop_mode,
                 "case_aggregation": payload.case_aggregation,
+                "pretraining_source": getattr(payload, "pretraining_source", None),
                 "architecture_count": len(architectures),
             }
         },

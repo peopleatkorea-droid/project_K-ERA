@@ -130,6 +130,8 @@ class InitialTrainingRequest(BaseModel):
     val_split: float = 0.2
     test_split: float = 0.2
     use_pretrained: bool = True
+    pretraining_source: Literal["imagenet", "scratch", "ssl"] | None = None
+    ssl_checkpoint_path: str | None = None
     regenerate_split: bool = False
 
 
@@ -155,6 +157,9 @@ class InitialTrainingBenchmarkRequest(BaseModel):
     val_split: float = 0.2
     test_split: float = 0.2
     use_pretrained: bool = True
+    pretraining_source: Literal["imagenet", "scratch", "ssl"] | None = None
+    ssl_checkpoint_path: str | None = None
+    benchmark_suite_key: str | None = None
     regenerate_split: bool = False
 
 

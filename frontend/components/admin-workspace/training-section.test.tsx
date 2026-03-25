@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TrainingSection } from "./training-section";
 
 function buildProps(
-  overrides: Partial<ComponentProps<typeof TrainingSection>> = {}
+  overrides: Record<string, unknown> = {}
 ): ComponentProps<typeof TrainingSection> {
   return {
     locale: "en",
@@ -46,16 +46,18 @@ function buildProps(
     onExportSelectedReport: vi.fn(),
     onRefreshBenchmarkStatus: vi.fn(),
     onRunBenchmark: vi.fn(),
+    onRunLesionGuidedBenchmark: vi.fn(),
     onRunInitialTraining: vi.fn(),
     onResumeBenchmark: vi.fn(),
     ...overrides,
-  };
+  } as ComponentProps<typeof TrainingSection>;
 }
 
 describe("TrainingSection", () => {
   it("updates the initial training form and triggers training actions", () => {
     const setInitialForm = vi.fn();
     const onRunBenchmark = vi.fn();
+    const onRunLesionGuidedBenchmark = vi.fn();
     const onRunInitialTraining = vi.fn();
 
     render(
@@ -63,6 +65,7 @@ describe("TrainingSection", () => {
         {...buildProps({
           setInitialForm,
           onRunBenchmark,
+          onRunLesionGuidedBenchmark,
           onRunInitialTraining,
         })}
       />
@@ -78,9 +81,13 @@ describe("TrainingSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run 8-model staged initial training" }));
     expect(screen.getByRole("dialog", { name: "8-model staged training confirmation" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Start 8-model staged training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run LGF + SSL 6-model training" }));
+    expect(screen.getByRole("dialog", { name: "LGF + SSL 6-model training confirmation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start LGF + SSL 6-model training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);
+    expect(onRunLesionGuidedBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunInitialTraining).toHaveBeenCalledTimes(1);
   });
 
@@ -217,7 +224,7 @@ describe("TrainingSection", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Refresh status" })[0]);
     expect(onRefreshBenchmarkStatus).toHaveBeenCalledTimes(1);
 
-    expect(screen.getByText("8-model staged training summary")).toBeInTheDocument();
+    expect(screen.getByText("Benchmark training summary")).toBeInTheDocument();
     expect(screen.getByText("balanced acc")).toBeInTheDocument();
     expect(screen.getAllByText("best test").length).toBeGreaterThan(0);
     expect(screen.getByText("effnet-v1")).toBeInTheDocument();
@@ -378,9 +385,9 @@ describe("TrainingSection", () => {
       />
     );
 
-    expect(screen.getByText("The latest 8-model benchmark summary is available. Open the paper-figure panel here.")).toBeInTheDocument();
+    expect(screen.getByText("The latest benchmark summary is available. Open the paper-figure panel here.")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Paper figures" }).length).toBeGreaterThan(0);
-    expect(screen.getByText("8-model staged training summary")).toBeInTheDocument();
+    expect(screen.getByText("Benchmark training summary")).toBeInTheDocument();
   });
 
   it("shows refresh status in the benchmark summary even without an active benchmark job", () => {
@@ -451,7 +458,7 @@ describe("TrainingSection", () => {
     expect(onResumeBenchmark).toHaveBeenCalledTimes(1);
   });
 
-  it("locks crop mode to paired fusion and keeps the 8-model benchmark available", () => {
+  it("locks crop mode to paired fusion and keeps the benchmark suites available", () => {
     const setInitialForm = vi.fn();
 
     render(
@@ -471,7 +478,7 @@ describe("TrainingSection", () => {
     expect(cropSelect.value).toBe("paired");
     expect(cropSelect).toBeDisabled();
     expect(screen.getByRole("button", { name: "Run 8-model staged initial training" })).toBeEnabled();
-    expect(screen.getByText(/always uses paired cornea \+ lesion crops/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run LGF + SSL 6-model training" })).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("Architecture"), { target: { value: "dual_input_concat" } });
     const updater = setInitialForm.mock.calls.at(-1)?.[0];

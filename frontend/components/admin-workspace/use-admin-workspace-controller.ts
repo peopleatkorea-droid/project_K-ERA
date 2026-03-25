@@ -71,6 +71,14 @@ const BENCHMARK_ARCHITECTURES = [
   "dinov2_mil",
   "dual_input_concat",
 ];
+const LESION_GUIDED_SSL_BENCHMARK_ARCHITECTURES = [
+  "lesion_guided_fusion__efficientnet_v2_s",
+  "lesion_guided_fusion__densenet121",
+  "lesion_guided_fusion__convnext_tiny",
+  "lesion_guided_fusion__vit",
+  "lesion_guided_fusion__swin",
+  "lesion_guided_fusion__dinov2",
+];
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
@@ -579,6 +587,7 @@ export function useAdminWorkspaceController({
     selectedSiteId,
     locale,
     benchmarkArchitectures: BENCHMARK_ARCHITECTURES,
+    lesionGuidedBenchmarkArchitectures: LESION_GUIDED_SSL_BENCHMARK_ARCHITECTURES,
     copy: {
       selectSiteForInitial: copy.selectSiteForInitial,
       registeredVersion: copy.registeredVersion,
@@ -621,6 +630,8 @@ export function useAdminWorkspaceController({
       modelPublishConfirmCurrent: copy.modelPublishConfirmCurrent,
       modelPublished: copy.modelPublished,
       modelPublishFailed: copy.modelPublishFailed,
+      modelActivated: copy.modelActivated,
+      modelActivateFailed: copy.modelActivateFailed,
       updateReviewed: copy.updateReviewed,
       updatePublishPrompt: copy.updatePublishPrompt,
       updatePublished: copy.updatePublished,
@@ -1853,6 +1864,7 @@ export function useAdminWorkspaceController({
     handleInitialTraining: trainingController.handleInitialTraining,
     handleCancelInitialTraining: trainingController.handleCancelInitialTraining,
     handleBenchmarkTraining: trainingController.handleBenchmarkTraining,
+    handleLesionGuidedBenchmarkTraining: trainingController.handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining: trainingController.handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining: trainingController.handleResumeBenchmarkTraining,
     handleRefreshBenchmarkStatus: trainingController.handleRefreshBenchmarkStatus,

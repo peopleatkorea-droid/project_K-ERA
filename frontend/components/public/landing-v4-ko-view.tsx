@@ -119,7 +119,15 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
     alt: string;
   } | null>(null);
 
-  const hospitals = props.publicSites.slice(0, 5).map((site) => ({ label: getSiteDisplayName(site), active: true }));
+  const hospitals = props.publicSites.slice(0, 5).map((site) => {
+    const label = getSiteDisplayName(site);
+
+    if (label === "제주대학교병원" || label === "제주대병원") {
+      return { label: "다음 참여 기관을 기다립니다", active: false };
+    }
+
+    return { label, active: true };
+  });
 
   useEffect(() => {
     const html = document.documentElement;

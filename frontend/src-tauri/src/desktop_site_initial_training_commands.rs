@@ -17,6 +17,8 @@ pub(super) fn run_initial_training(payload: InitialTrainingCommandRequest) -> Re
         "val_split": payload.val_split.unwrap_or(0.2),
         "test_split": payload.test_split.unwrap_or(0.2),
         "use_pretrained": payload.use_pretrained.unwrap_or(true),
+        "pretraining_source": payload.pretraining_source,
+        "ssl_checkpoint_path": payload.ssl_checkpoint_path,
         "regenerate_split": payload.regenerate_split.unwrap_or(false),
     });
     if ml_sidecar_should_be_used() {
@@ -41,6 +43,8 @@ pub(super) fn run_initial_training(payload: InitialTrainingCommandRequest) -> Re
             "val_split": request_payload.get("val_split").cloned().unwrap_or(JsonValue::Null),
             "test_split": request_payload.get("test_split").cloned().unwrap_or(JsonValue::Null),
             "use_pretrained": request_payload.get("use_pretrained").cloned().unwrap_or(JsonValue::Null),
+            "pretraining_source": request_payload.get("pretraining_source").cloned().unwrap_or(JsonValue::Null),
+            "ssl_checkpoint_path": request_payload.get("ssl_checkpoint_path").cloned().unwrap_or(JsonValue::Null),
             "regenerate_split": request_payload.get("regenerate_split").cloned().unwrap_or(JsonValue::Null),
         })),
     )
@@ -67,6 +71,9 @@ pub(super) fn run_initial_training_benchmark(
         "val_split": payload.val_split.unwrap_or(0.2),
         "test_split": payload.test_split.unwrap_or(0.2),
         "use_pretrained": payload.use_pretrained.unwrap_or(true),
+        "pretraining_source": payload.pretraining_source,
+        "ssl_checkpoint_path": payload.ssl_checkpoint_path,
+        "benchmark_suite_key": payload.benchmark_suite_key,
         "regenerate_split": payload.regenerate_split.unwrap_or(false),
     });
     if ml_sidecar_should_be_used() {
@@ -91,6 +98,9 @@ pub(super) fn run_initial_training_benchmark(
             "val_split": request_payload.get("val_split").cloned().unwrap_or(JsonValue::Null),
             "test_split": request_payload.get("test_split").cloned().unwrap_or(JsonValue::Null),
             "use_pretrained": request_payload.get("use_pretrained").cloned().unwrap_or(JsonValue::Null),
+            "pretraining_source": request_payload.get("pretraining_source").cloned().unwrap_or(JsonValue::Null),
+            "ssl_checkpoint_path": request_payload.get("ssl_checkpoint_path").cloned().unwrap_or(JsonValue::Null),
+            "benchmark_suite_key": request_payload.get("benchmark_suite_key").cloned().unwrap_or(JsonValue::Null),
             "regenerate_split": request_payload.get("regenerate_split").cloned().unwrap_or(JsonValue::Null),
         })),
     )

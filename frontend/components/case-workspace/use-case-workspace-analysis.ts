@@ -1,6 +1,13 @@
 ﻿"use client";
 
-import { type PointerEvent as ReactPointerEvent, type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  type Dispatch,
+  type SetStateAction,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   clearImageLesionBox,
@@ -61,7 +68,9 @@ type ValidationArtifactKind =
   | "medsam_mask"
   | "lesion_crop"
   | "lesion_mask";
-type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
+type ValidationArtifactPreviews = Partial<
+  Record<ValidationArtifactKind, string | null>
+>;
 type ModelCompareItem = CaseValidationCompareResponse["comparisons"][number];
 type SuccessfulModelCompareItem = ModelCompareItem & {
   summary: NonNullable<ModelCompareItem["summary"]>;
@@ -99,7 +108,9 @@ type Args = {
   toNormalizedBox: (value: unknown) => NormalizedBox | null;
   normalizeBox: (box: NormalizedBox) => NormalizedBox;
   clamp01: (value: number) => number;
-  executionModeFromDevice: (device: string | undefined) => "auto" | "cpu" | "gpu";
+  executionModeFromDevice: (
+    device: string | undefined,
+  ) => "auto" | "cpu" | "gpu";
   describeError: (error: unknown, fallback: string) => string;
   setToast: Dispatch<SetStateAction<ToastState>>;
   setPanelOpen: Dispatch<SetStateAction<boolean>>;
@@ -107,8 +118,14 @@ type Args = {
   setSelectedCase: Dispatch<SetStateAction<CaseSummaryRecord | null>>;
   setSelectedCaseImages: Dispatch<SetStateAction<SavedImagePreview[]>>;
   setCaseHistory: Dispatch<SetStateAction<CaseHistoryResponse | null>>;
-  setContributionResult: Dispatch<SetStateAction<CaseContributionResponse | null>>;
-  loadCaseHistory: (siteId: string, patientId: string, visitDate: string) => Promise<void>;
+  setContributionResult: Dispatch<
+    SetStateAction<CaseContributionResponse | null>
+  >;
+  loadCaseHistory: (
+    siteId: string,
+    patientId: string,
+    visitDate: string,
+  ) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onValidationCompleted?: (args: {
@@ -127,7 +144,10 @@ function revokeUrls(urls: string[]) {
   }
 }
 
-function areNormalizedBoxesEqual(left: NormalizedBox | null | undefined, right: NormalizedBox | null | undefined): boolean {
+function areNormalizedBoxesEqual(
+  left: NormalizedBox | null | undefined,
+  right: NormalizedBox | null | undefined,
+): boolean {
   if (!left || !right) {
     return left == null && right == null;
   }
@@ -169,34 +189,60 @@ export function useCaseWorkspaceAnalysis({
   onArtifactsChanged,
 }: Args) {
   const AI_CLINIC_LITE_RETRIEVAL_BACKEND = "classifier";
+  const maxCompareSelections = 8;
   const [validationBusy, setValidationBusy] = useState(false);
-  const [validationResult, setValidationResult] = useState<CaseValidationResponse | null>(null);
+  const [validationResult, setValidationResult] =
+    useState<CaseValidationResponse | null>(null);
   const [modelCompareBusy, setModelCompareBusy] = useState(false);
-  const [modelCompareResult, setModelCompareResult] = useState<CaseValidationCompareResponse | null>(null);
-  const [validationArtifacts, setValidationArtifacts] = useState<ValidationArtifactPreviews>({});
+  const [modelCompareResult, setModelCompareResult] =
+    useState<CaseValidationCompareResponse | null>(null);
+  const [validationArtifacts, setValidationArtifacts] =
+    useState<ValidationArtifactPreviews>({});
   const [aiClinicBusy, setAiClinicBusy] = useState(false);
   const [aiClinicExpandedBusy, setAiClinicExpandedBusy] = useState(false);
   const [aiClinicPreviewBusy, setAiClinicPreviewBusy] = useState(false);
-  const [aiClinicResult, setAiClinicResult] = useState<AiClinicPreviewResponse | null>(null);
+  const [aiClinicResult, setAiClinicResult] =
+    useState<AiClinicPreviewResponse | null>(null);
   const [roiPreviewBusy, setRoiPreviewBusy] = useState(false);
   const [roiPreviewItems, setRoiPreviewItems] = useState<RoiPreviewCard[]>([]);
   const [lesionPreviewBusy, setLesionPreviewBusy] = useState(false);
-  const [lesionPreviewItems, setLesionPreviewItems] = useState<LesionPreviewCard[]>([]);
-  const [semanticPromptBusyImageId, setSemanticPromptBusyImageId] = useState<string | null>(null);
-  const [semanticPromptReviews, setSemanticPromptReviews] = useState<SemanticPromptReviewMap>({});
-  const [semanticPromptErrors, setSemanticPromptErrors] = useState<SemanticPromptErrorMap>({});
-  const [semanticPromptOpenImageIds, setSemanticPromptOpenImageIds] = useState<string[]>([]);
-  const [semanticPromptInputMode, setSemanticPromptInputMode] = useState<SemanticPromptInputMode>("source");
+  const [lesionPreviewItems, setLesionPreviewItems] = useState<
+    LesionPreviewCard[]
+  >([]);
+  const [semanticPromptBusyImageId, setSemanticPromptBusyImageId] = useState<
+    string | null
+  >(null);
+  const [semanticPromptReviews, setSemanticPromptReviews] =
+    useState<SemanticPromptReviewMap>({});
+  const [semanticPromptErrors, setSemanticPromptErrors] =
+    useState<SemanticPromptErrorMap>({});
+  const [semanticPromptOpenImageIds, setSemanticPromptOpenImageIds] = useState<
+    string[]
+  >([]);
+  const [semanticPromptInputMode, setSemanticPromptInputMode] =
+    useState<SemanticPromptInputMode>("source");
   const [liveLesionCropEnabled, setLiveLesionCropEnabled] = useState(true);
-  const [liveLesionPreviews, setLiveLesionPreviews] = useState<LiveLesionPreviewMap>({});
-  const [savedImageRoiCropUrls, setSavedImageRoiCropUrls] = useState<Record<string, string | null>>({});
+  const [liveLesionPreviews, setLiveLesionPreviews] =
+    useState<LiveLesionPreviewMap>({});
+  const [savedImageRoiCropUrls, setSavedImageRoiCropUrls] = useState<
+    Record<string, string | null>
+  >({});
   const [savedImageRoiCropBusy, setSavedImageRoiCropBusy] = useState(false);
-  const [savedImageLesionCropUrls, setSavedImageLesionCropUrls] = useState<Record<string, string | null>>({});
-  const [savedImageLesionCropBusy, setSavedImageLesionCropBusy] = useState(false);
-  const [lesionPromptDrafts, setLesionPromptDrafts] = useState<LesionBoxMap>({});
+  const [savedImageLesionCropUrls, setSavedImageLesionCropUrls] = useState<
+    Record<string, string | null>
+  >({});
+  const [savedImageLesionCropBusy, setSavedImageLesionCropBusy] =
+    useState(false);
+  const [lesionPromptDrafts, setLesionPromptDrafts] = useState<LesionBoxMap>(
+    {},
+  );
   const [lesionPromptSaved, setLesionPromptSaved] = useState<LesionBoxMap>({});
-  const [lesionBoxBusyImageId, setLesionBoxBusyImageId] = useState<string | null>(null);
-  const [representativeBusyImageId, setRepresentativeBusyImageId] = useState<string | null>(null);
+  const [lesionBoxBusyImageId, setLesionBoxBusyImageId] = useState<
+    string | null
+  >(null);
+  const [representativeBusyImageId, setRepresentativeBusyImageId] = useState<
+    string | null
+  >(null);
 
   const validationArtifactUrlsRef = useRef<string[]>([]);
   const aiClinicPreviewUrlsRef = useRef<string[]>([]);
@@ -209,7 +255,12 @@ export function useCaseWorkspaceAnalysis({
   const savedImageLesionCropUrlsRef = useRef<string[]>([]);
   const liveLesionPreviewRequestRef = useRef<Record<string, number>>({});
   const liveLesionPreviewsRef = useRef<LiveLesionPreviewMap>({});
-  const lesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
+  const lesionDrawStateRef = useRef<{
+    imageId: string;
+    pointerId: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const selectedCaseImagesRef = useRef(selectedCaseImages);
   selectedCaseImagesRef.current = selectedCaseImages;
   const caseImagesKey = `${selectedCase?.case_id ?? ""}:${selectedCaseImages.map((i) => i.image_id).join(",")}`;
@@ -221,18 +272,29 @@ export function useCaseWorkspaceAnalysis({
     void prewarmDesktopMlBackend().catch(() => undefined);
   }, [selectedSiteId, selectedCase?.case_id]);
 
-  const representativeSavedImage = selectedCaseImages.find((image) => image.is_representative) ?? null;
+  const representativeSavedImage =
+    selectedCaseImages.find((image) => image.is_representative) ?? null;
   const lesionBoxChangedImageIds = selectedCaseImages
     .map((image) => image.image_id)
-    .filter((imageId) => !areNormalizedBoxesEqual(lesionPromptDrafts[imageId] ?? null, lesionPromptSaved[imageId] ?? null));
-  const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some((value) => value);
+    .filter(
+      (imageId) =>
+        !areNormalizedBoxesEqual(
+          lesionPromptDrafts[imageId] ?? null,
+          lesionPromptSaved[imageId] ?? null,
+        ),
+    );
+  const hasAnySavedLesionBox = Object.values(lesionPromptSaved).some(
+    (value) => value,
+  );
 
   function normalizeSelectedCompareModelVersionIds() {
     return Array.from(
       new Set(
-        selectedCompareModelVersionIds.map((item) => String(item).trim()).filter((item) => item.length > 0)
-      )
-    );
+        selectedCompareModelVersionIds
+          .map((item) => String(item).trim())
+          .filter((item) => item.length > 0),
+      ),
+    ).slice(0, maxCompareSelections);
   }
 
   function clearValidationArtifacts() {
@@ -329,7 +391,8 @@ export function useCaseWorkspaceAnalysis({
   ): Promise<ValidationArtifactPreviews> {
     const nextArtifacts: ValidationArtifactPreviews = {};
     const hasBranchAwareGradcam =
-      result.artifact_availability.gradcam_cornea || result.artifact_availability.gradcam_lesion;
+      result.artifact_availability.gradcam_cornea ||
+      result.artifact_availability.gradcam_lesion;
     const artifactKinds: ValidationArtifactKind[] = [
       "roi_crop",
       ...(hasBranchAwareGradcam ? [] : ["gradcam" as const]),
@@ -365,7 +428,7 @@ export function useCaseWorkspaceAnalysis({
           patientId,
           visitDate,
           artifactKind,
-          token
+          token,
         );
         if (url) {
           validationArtifactUrlsRef.current.push(url);
@@ -386,11 +449,12 @@ export function useCaseWorkspaceAnalysis({
   ): string | null {
     const successfulComparisons = compareResult.comparisons.filter(
       (item): item is SuccessfulModelCompareItem =>
-        Boolean(item.summary && !item.error && item.model_version?.version_id)
+        Boolean(item.summary && !item.error && item.model_version?.version_id),
     );
     for (const requestedId of requestedModelVersionIds) {
       const match = successfulComparisons.find(
-        (item) => String(item.model_version.version_id || "").trim() === requestedId
+        (item) =>
+          String(item.model_version.version_id || "").trim() === requestedId,
       );
       if (match?.model_version.version_id) {
         return String(match.model_version.version_id).trim();
@@ -399,7 +463,9 @@ export function useCaseWorkspaceAnalysis({
     const normalizedFallback = String(fallbackModelVersionId || "").trim();
     if (normalizedFallback) {
       const match = successfulComparisons.find(
-        (item) => String(item.model_version.version_id || "").trim() === normalizedFallback
+        (item) =>
+          String(item.model_version.version_id || "").trim() ===
+          normalizedFallback,
       );
       if (match?.model_version.version_id) {
         return String(match.model_version.version_id).trim();
@@ -420,15 +486,24 @@ export function useCaseWorkspaceAnalysis({
       patient_id: args.patientId,
       visit_date: args.visitDate,
       execution_mode: args.executionMode,
-      model_version_id: args.modelVersionId ? String(args.modelVersionId).trim() : undefined,
+      model_version_id: args.modelVersionId
+        ? String(args.modelVersionId).trim()
+        : undefined,
     });
-    const nextArtifacts = await resolveValidationArtifacts(result, args.patientId, args.visitDate);
+    const nextArtifacts = await resolveValidationArtifacts(
+      result,
+      args.patientId,
+      args.visitDate,
+    );
     setValidationArtifacts(nextArtifacts);
     setValidationResult(result);
     return result;
   }
 
-  function aiClinicSimilarCaseKey(item: { patient_id: string; visit_date: string }) {
+  function aiClinicSimilarCaseKey(item: {
+    patient_id: string;
+    visit_date: string;
+  }) {
     return `${String(item.patient_id)}::${String(item.visit_date)}`;
   }
 
@@ -437,7 +512,9 @@ export function useCaseWorkspaceAnalysis({
     previousResult: AiClinicPreviewResponse | null,
   ): AiClinicPreviewResponse {
     const previewByCaseKey = new Map(
-      (previousResult?.similar_cases ?? []).map((item) => [aiClinicSimilarCaseKey(item), item.preview_url] as const)
+      (previousResult?.similar_cases ?? []).map(
+        (item) => [aiClinicSimilarCaseKey(item), item.preview_url] as const,
+      ),
     );
     return {
       ...result,
@@ -455,7 +532,9 @@ export function useCaseWorkspaceAnalysis({
     if (!selectedSiteId) {
       return;
     }
-    const casesNeedingPreview = cases.filter((item) => item.representative_image_id && !item.preview_url);
+    const casesNeedingPreview = cases.filter(
+      (item) => item.representative_image_id && !item.preview_url,
+    );
     if (casesNeedingPreview.length === 0) {
       if (aiClinicPreviewRequestRef.current === previewRequestId) {
         setAiClinicPreviewBusy(false);
@@ -472,9 +551,14 @@ export function useCaseWorkspaceAnalysis({
             return item;
           }
           try {
-            const previewUrl = await fetchImagePreviewUrl(selectedSiteId, item.representative_image_id, token, {
-              maxSide: 384,
-            });
+            const previewUrl = await fetchImagePreviewUrl(
+              selectedSiteId,
+              item.representative_image_id,
+              token,
+              {
+                maxSide: 384,
+              },
+            );
             if (previewUrl) {
               nextUrls.push(previewUrl);
             }
@@ -488,7 +572,7 @@ export function useCaseWorkspaceAnalysis({
               preview_url: null,
             };
           }
-        })
+        }),
       );
       if (aiClinicPreviewRequestRef.current !== previewRequestId) {
         revokeUrls(nextUrls);
@@ -546,7 +630,10 @@ export function useCaseWorkspaceAnalysis({
 
   useEffect(() => {
     const nextBoxes = Object.fromEntries(
-      selectedCaseImages.map((image) => [image.image_id, toNormalizedBox(image.lesion_prompt_box)])
+      selectedCaseImages.map((image) => [
+        image.image_id,
+        toNormalizedBox(image.lesion_prompt_box),
+      ]),
     );
     setLesionPromptSaved(nextBoxes);
     setLesionPromptDrafts(nextBoxes);
@@ -575,24 +662,23 @@ export function useCaseWorkspaceAnalysis({
       const boxedImages = Array.from(
         new Map(
           visibleImages
-            .filter((image) => Boolean(toNormalizedBox(image.lesion_prompt_box)))
-            .map((image) => [image.image_id, image] as const)
-        ).values()
+            .filter((image) =>
+              Boolean(toNormalizedBox(image.lesion_prompt_box)),
+            )
+            .map((image) => [image.image_id, image] as const),
+        ).values(),
       );
       if (boxedImages.length === 0) {
         return;
       }
 
-      const boxedImagesByCase = boxedImages.reduce(
-        (groups, image) => {
-          const key = `${image.patient_id}::${image.visit_date}`;
-          const current = groups.get(key) ?? [];
-          current.push(image);
-          groups.set(key, current);
-          return groups;
-        },
-        new Map<string, SavedImagePreview[]>()
-      );
+      const boxedImagesByCase = boxedImages.reduce((groups, image) => {
+        const key = `${image.patient_id}::${image.visit_date}`;
+        const current = groups.get(key) ?? [];
+        current.push(image);
+        groups.set(key, current);
+        return groups;
+      }, new Map<string, SavedImagePreview[]>());
 
       for (const [caseKey, caseImages] of boxedImagesByCase.entries()) {
         const separatorIndex = caseKey.indexOf("::");
@@ -603,7 +689,12 @@ export function useCaseWorkspaceAnalysis({
         const visitDate = caseKey.slice(separatorIndex + 2);
 
         try {
-          const previews = await fetchStoredCaseLesionPreview(selectedSiteId, patientId, visitDate, token);
+          const previews = await fetchStoredCaseLesionPreview(
+            selectedSiteId,
+            patientId,
+            visitDate,
+            token,
+          );
           if (cancelled) {
             return;
           }
@@ -611,13 +702,16 @@ export function useCaseWorkspaceAnalysis({
           const previewByImageId = new Map(
             previews
               .filter((item) => item.image_id)
-              .map((item) => [String(item.image_id), item] as const)
+              .map((item) => [String(item.image_id), item] as const),
           );
 
           for (const image of caseImages) {
             const preview = previewByImageId.get(image.image_id);
             const existing = liveLesionPreviewsRef.current[image.image_id];
-            if (!preview?.has_lesion_mask || (existing?.status === "done" && existing.lesion_mask_url)) {
+            if (
+              !preview?.has_lesion_mask ||
+              (existing?.status === "done" && existing.lesion_mask_url)
+            ) {
               continue;
             }
 
@@ -629,7 +723,7 @@ export function useCaseWorkspaceAnalysis({
                 visitDate,
                 image.image_id,
                 "lesion_mask",
-                token
+                token,
               );
               if (lesionMaskUrl) {
                 nextUrls.push(lesionMaskUrl);
@@ -644,7 +738,7 @@ export function useCaseWorkspaceAnalysis({
                     visitDate,
                     image.image_id,
                     "lesion_crop",
-                    token
+                    token,
                   );
                   if (lesionCropUrl) {
                     nextUrls.push(lesionCropUrl);
@@ -659,7 +753,9 @@ export function useCaseWorkspaceAnalysis({
                 return;
               }
 
-              revokeUrls(liveLesionPreviewUrlsRef.current[image.image_id] ?? []);
+              revokeUrls(
+                liveLesionPreviewUrlsRef.current[image.image_id] ?? [],
+              );
               liveLesionPreviewUrlsRef.current[image.image_id] = nextUrls;
               setLiveLesionPreviews((current) => ({
                 ...current,
@@ -667,8 +763,10 @@ export function useCaseWorkspaceAnalysis({
                   job_id: current[image.image_id]?.job_id ?? null,
                   status: "done",
                   error: null,
-                  backend: preview.backend ?? current[image.image_id]?.backend ?? null,
-                  prompt_signature: current[image.image_id]?.prompt_signature ?? null,
+                  backend:
+                    preview.backend ?? current[image.image_id]?.backend ?? null,
+                  prompt_signature:
+                    current[image.image_id]?.prompt_signature ?? null,
                   lesion_mask_url: lesionMaskUrl,
                   lesion_crop_url: lesionCropUrl,
                 },
@@ -716,12 +814,21 @@ export function useCaseWorkspaceAnalysis({
   }, [selectedCase, selectedSiteId]);
 
   useEffect(() => {
-    if (semanticPromptInputMode !== "roi_crop" || !selectedSiteId || !selectedCase || selectedCaseImages.length === 0) {
+    if (
+      semanticPromptInputMode !== "roi_crop" ||
+      !selectedSiteId ||
+      !selectedCase ||
+      selectedCaseImages.length === 0
+    ) {
       return;
     }
 
     const unresolvedImages = selectedCaseImages.filter(
-      (image) => !Object.prototype.hasOwnProperty.call(savedImageRoiCropUrls, image.image_id)
+      (image) =>
+        !Object.prototype.hasOwnProperty.call(
+          savedImageRoiCropUrls,
+          image.image_id,
+        ),
     );
     if (unresolvedImages.length === 0) {
       return;
@@ -736,7 +843,7 @@ export function useCaseWorkspaceAnalysis({
           selectedSiteId,
           selectedCase.patient_id,
           selectedCase.visit_date,
-          token
+          token,
         );
         if (cancelled) {
           return;
@@ -745,7 +852,7 @@ export function useCaseWorkspaceAnalysis({
         const previewByImageId = new Map(
           previews
             .filter((item) => item.image_id)
-            .map((item) => [String(item.image_id), item] as const)
+            .map((item) => [String(item.image_id), item] as const),
         );
 
         setSelectedCaseImages((current) =>
@@ -759,7 +866,7 @@ export function useCaseWorkspaceAnalysis({
               has_roi_crop: preview.has_roi_crop,
               has_medsam_mask: preview.has_medsam_mask,
             };
-          })
+          }),
         );
 
         const entries = await Promise.all(
@@ -775,21 +882,27 @@ export function useCaseWorkspaceAnalysis({
                 selectedCase.visit_date,
                 image.image_id,
                 "roi_crop",
-                token
+                token,
               );
               return [image.image_id, url] as const;
             } catch {
               return [image.image_id, null] as const;
             }
-          })
+          }),
         );
 
         if (cancelled) {
-          revokeUrls(entries.map(([, url]) => url).filter((url): url is string => Boolean(url)));
+          revokeUrls(
+            entries
+              .map(([, url]) => url)
+              .filter((url): url is string => Boolean(url)),
+          );
           return;
         }
 
-        const nextUrls = entries.map(([, url]) => url).filter((url): url is string => Boolean(url));
+        const nextUrls = entries
+          .map(([, url]) => url)
+          .filter((url): url is string => Boolean(url));
         savedImageRoiCropUrlsRef.current.push(...nextUrls);
         setSavedImageRoiCropUrls((current) => ({
           ...current,
@@ -799,7 +912,14 @@ export function useCaseWorkspaceAnalysis({
         if (!cancelled) {
           setToast({
             tone: "error",
-            message: describeError(nextError, pick(locale, "Cornea crop preview failed.", "각막 crop 생성에 실패했습니다.")),
+            message: describeError(
+              nextError,
+              pick(
+                locale,
+                "Cornea crop preview failed.",
+                "각막 crop 생성에 실패했습니다.",
+              ),
+            ),
           });
         }
       } finally {
@@ -822,32 +942,47 @@ export function useCaseWorkspaceAnalysis({
   ]);
 
   useEffect(() => {
-    if (semanticPromptInputMode !== "lesion_crop" || !selectedSiteId || !selectedCase || selectedCaseImages.length === 0) {
+    if (
+      semanticPromptInputMode !== "lesion_crop" ||
+      !selectedSiteId ||
+      !selectedCase ||
+      selectedCaseImages.length === 0
+    ) {
       return;
     }
 
     const unresolvedImages = selectedCaseImages.filter(
       (image) =>
         !liveLesionPreviews[image.image_id]?.lesion_crop_url &&
-        !Object.prototype.hasOwnProperty.call(savedImageLesionCropUrls, image.image_id)
+        !Object.prototype.hasOwnProperty.call(
+          savedImageLesionCropUrls,
+          image.image_id,
+        ),
     );
     if (unresolvedImages.length === 0) {
       return;
     }
 
-    const hasAnySavedLesionBox = selectedCaseImages.some((image) => typeof image.lesion_prompt_box === "object" && image.lesion_prompt_box !== null);
+    const hasAnySavedLesionBox = selectedCaseImages.some(
+      (image) =>
+        typeof image.lesion_prompt_box === "object" &&
+        image.lesion_prompt_box !== null,
+    );
     let cancelled = false;
     setSavedImageLesionCropBusy(true);
 
     void (async () => {
       try {
-        let previewByImageId = new Map<string, Awaited<ReturnType<typeof fetchCaseLesionPreview>>[number]>();
+        let previewByImageId = new Map<
+          string,
+          Awaited<ReturnType<typeof fetchCaseLesionPreview>>[number]
+        >();
         if (hasAnySavedLesionBox) {
           const previews = await fetchCaseLesionPreview(
             selectedSiteId,
             selectedCase.patient_id,
             selectedCase.visit_date,
-            token
+            token,
           );
           if (cancelled) {
             return;
@@ -856,7 +991,7 @@ export function useCaseWorkspaceAnalysis({
           previewByImageId = new Map(
             previews
               .filter((item) => item.image_id)
-              .map((item) => [String(item.image_id), item] as const)
+              .map((item) => [String(item.image_id), item] as const),
           );
 
           setSelectedCaseImages((current) =>
@@ -870,14 +1005,15 @@ export function useCaseWorkspaceAnalysis({
                 has_lesion_crop: preview.has_lesion_crop,
                 has_lesion_mask: preview.has_lesion_mask,
               };
-            })
+            }),
           );
         }
 
         const entries = await Promise.all(
           unresolvedImages.map(async (image) => {
             const preview = previewByImageId.get(image.image_id);
-            const canResolveCrop = preview?.has_lesion_crop ?? Boolean(image.has_lesion_crop);
+            const canResolveCrop =
+              preview?.has_lesion_crop ?? Boolean(image.has_lesion_crop);
             if (!canResolveCrop) {
               return [image.image_id, null] as const;
             }
@@ -888,21 +1024,27 @@ export function useCaseWorkspaceAnalysis({
                 selectedCase.visit_date,
                 image.image_id,
                 "lesion_crop",
-                token
+                token,
               );
               return [image.image_id, url] as const;
             } catch {
               return [image.image_id, null] as const;
             }
-          })
+          }),
         );
 
         if (cancelled) {
-          revokeUrls(entries.map(([, url]) => url).filter((url): url is string => Boolean(url)));
+          revokeUrls(
+            entries
+              .map(([, url]) => url)
+              .filter((url): url is string => Boolean(url)),
+          );
           return;
         }
 
-        const nextUrls = entries.map(([, url]) => url).filter((url): url is string => Boolean(url));
+        const nextUrls = entries
+          .map(([, url]) => url)
+          .filter((url): url is string => Boolean(url));
         savedImageLesionCropUrlsRef.current.push(...nextUrls);
         setSavedImageLesionCropUrls((current) => ({
           ...current,
@@ -912,7 +1054,14 @@ export function useCaseWorkspaceAnalysis({
         if (!cancelled) {
           setToast({
             tone: "error",
-            message: describeError(nextError, pick(locale, "Lesion crop preview failed.", "병변 crop 생성에 실패했습니다.")),
+            message: describeError(
+              nextError,
+              pick(
+                locale,
+                "Lesion crop preview failed.",
+                "병변 crop 생성에 실패했습니다.",
+              ),
+            ),
           });
         }
       } finally {
@@ -935,8 +1084,15 @@ export function useCaseWorkspaceAnalysis({
     token,
   ]);
 
-  async function hydrateLiveLesionPreview(imageId: string, job: LiveLesionPreviewJobResponse, requestVersion: number) {
-    if (!selectedSiteId || liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+  async function hydrateLiveLesionPreview(
+    imageId: string,
+    job: LiveLesionPreviewJobResponse,
+    requestVersion: number,
+  ) {
+    if (
+      !selectedSiteId ||
+      liveLesionPreviewRequestRef.current[imageId] !== requestVersion
+    ) {
       return;
     }
 
@@ -952,7 +1108,7 @@ export function useCaseWorkspaceAnalysis({
           job.visit_date,
           imageId,
           "lesion_mask",
-          token
+          token,
         );
         if (lesionMaskUrl) {
           nextUrls.push(lesionMaskUrl);
@@ -970,7 +1126,7 @@ export function useCaseWorkspaceAnalysis({
           job.visit_date,
           imageId,
           "lesion_crop",
-          token
+          token,
         );
         if (lesionCropUrl) {
           nextUrls.push(lesionCropUrl);
@@ -1001,7 +1157,11 @@ export function useCaseWorkspaceAnalysis({
     }));
   }
 
-  async function pollLiveLesionPreview(imageId: string, jobId: string, requestVersion: number) {
+  async function pollLiveLesionPreview(
+    imageId: string,
+    jobId: string,
+    requestVersion: number,
+  ) {
     if (!selectedSiteId) {
       return;
     }
@@ -1012,7 +1172,9 @@ export function useCaseWorkspaceAnalysis({
         jobId,
         token,
         shouldContinue() {
-          return liveLesionPreviewRequestRef.current[imageId] === requestVersion;
+          return (
+            liveLesionPreviewRequestRef.current[imageId] === requestVersion
+          );
         },
         onRunning(job) {
           setLiveLesionPreviews((current) => ({
@@ -1034,34 +1196,13 @@ export function useCaseWorkspaceAnalysis({
           }));
         },
       });
-      if (!job || liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+      if (
+        !job ||
+        liveLesionPreviewRequestRef.current[imageId] !== requestVersion
+      ) {
         return;
       }
       if (job.status === "failed") {
-          setLiveLesionPreviews((current) => ({
-            ...current,
-            [imageId]: {
-              ...(current[imageId] ?? {
-                lesion_mask_url: null,
-                lesion_crop_url: null,
-              }),
-              job_id: job.job_id,
-              status: "failed",
-              error: job.error ?? pick(locale, "Live MedSAM preview failed.", "?ㅼ떆媛?MedSAM 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎."),
-              backend: job.backend ?? null,
-              prompt_signature: job.prompt_signature ?? null,
-              lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
-              lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
-            },
-          }));
-          return;
-        }
-        await hydrateLiveLesionPreview(imageId, job, requestVersion);
-        return;
-      } catch (nextError) {
-        if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
-          return;
-        }
         setLiveLesionPreviews((current) => ({
           ...current,
           [imageId]: {
@@ -1069,27 +1210,65 @@ export function useCaseWorkspaceAnalysis({
               lesion_mask_url: null,
               lesion_crop_url: null,
             }),
-            job_id: jobId,
+            job_id: job.job_id,
             status: "failed",
-            error: describeError(
-              nextError,
-              pick(locale, "Unable to check live MedSAM preview status.", "?ㅼ떆媛?MedSAM ?곹깭瑜??뺤씤?섏? 紐삵뻽?듬땲??")
-            ),
-            backend: current[imageId]?.backend ?? null,
-            prompt_signature: current[imageId]?.prompt_signature ?? null,
+            error:
+              job.error ??
+              pick(
+                locale,
+                "Live MedSAM preview failed.",
+                "?ㅼ떆媛?MedSAM 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎.",
+              ),
+            backend: job.backend ?? null,
+            prompt_signature: job.prompt_signature ?? null,
             lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
             lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
           },
         }));
         return;
       }
+      await hydrateLiveLesionPreview(imageId, job, requestVersion);
+      return;
+    } catch (nextError) {
+      if (liveLesionPreviewRequestRef.current[imageId] !== requestVersion) {
+        return;
+      }
+      setLiveLesionPreviews((current) => ({
+        ...current,
+        [imageId]: {
+          ...(current[imageId] ?? {
+            lesion_mask_url: null,
+            lesion_crop_url: null,
+          }),
+          job_id: jobId,
+          status: "failed",
+          error: describeError(
+            nextError,
+            pick(
+              locale,
+              "Unable to check live MedSAM preview status.",
+              "?ㅼ떆媛?MedSAM ?곹깭瑜??뺤씤?섏? 紐삵뻽?듬땲??",
+            ),
+          ),
+          backend: current[imageId]?.backend ?? null,
+          prompt_signature: current[imageId]?.prompt_signature ?? null,
+          lesion_mask_url: current[imageId]?.lesion_mask_url ?? null,
+          lesion_crop_url: current[imageId]?.lesion_crop_url ?? null,
+        },
+      }));
+      return;
     }
+  }
 
-  async function triggerLiveLesionPreview(imageId: string, options: { quiet?: boolean } = {}) {
+  async function triggerLiveLesionPreview(
+    imageId: string,
+    options: { quiet?: boolean } = {},
+  ) {
     if (!liveLesionCropEnabled || !selectedSiteId) {
       return;
     }
-    const requestVersion = (liveLesionPreviewRequestRef.current[imageId] ?? 0) + 1;
+    const requestVersion =
+      (liveLesionPreviewRequestRef.current[imageId] ?? 0) + 1;
     liveLesionPreviewRequestRef.current[imageId] = requestVersion;
     revokeUrls(liveLesionPreviewUrlsRef.current[imageId] ?? []);
     liveLesionPreviewUrlsRef.current[imageId] = [];
@@ -1138,7 +1317,11 @@ export function useCaseWorkspaceAnalysis({
       }
       const message = describeError(
         nextError,
-        pick(locale, "Unable to start live MedSAM preview.", "?ㅼ떆媛?MedSAM 誘몃━蹂닿린瑜??쒖옉?섏? 紐삵뻽?듬땲??")
+        pick(
+          locale,
+          "Unable to start live MedSAM preview.",
+          "?ㅼ떆媛?MedSAM 誘몃━蹂닿린瑜??쒖옉?섏? 紐삵뻽?듬땲??",
+        ),
       );
       setLiveLesionPreviews((current) => ({
         ...current,
@@ -1162,26 +1345,55 @@ export function useCaseWorkspaceAnalysis({
     }
   }
 
-  async function persistLesionPromptBox(imageId: string, nextBox: NormalizedBox) {
+  async function persistLesionPromptBox(
+    imageId: string,
+    nextBox: NormalizedBox,
+  ) {
     if (!selectedSiteId) {
-      throw new Error(pick(locale, "Select a hospital first.", "癒쇱? 蹂묒썝???좏깮??二쇱꽭??"));
+      throw new Error(
+        pick(
+          locale,
+          "Select a hospital first.",
+          "癒쇱? 蹂묒썝???좏깮??二쇱꽭??",
+        ),
+      );
     }
     setLesionBoxBusyImageId(imageId);
     try {
       const normalized = normalizeBox(nextBox);
-      if (normalized.x1 - normalized.x0 < 0.01 || normalized.y1 - normalized.y0 < 0.01) {
-        throw new Error(pick(locale, "Lesion box is too small.", "蹂묐? 諛뺤뒪媛 ?덈Т ?묒뒿?덈떎."));
+      if (
+        normalized.x1 - normalized.x0 < 0.01 ||
+        normalized.y1 - normalized.y0 < 0.01
+      ) {
+        throw new Error(
+          pick(
+            locale,
+            "Lesion box is too small.",
+            "蹂묐? 諛뺤뒪媛 ?덈Т ?묒뒿?덈떎.",
+          ),
+        );
       }
-      const updatedImage = await updateImageLesionBox(selectedSiteId, imageId, token, normalized);
+      const updatedImage = await updateImageLesionBox(
+        selectedSiteId,
+        imageId,
+        token,
+        normalized,
+      );
       setSelectedCaseImages((current) =>
         current.map((image) =>
           image.image_id === updatedImage.image_id
             ? { ...image, ...updatedImage, preview_url: image.preview_url }
-            : image
-        )
+            : image,
+        ),
       );
-      setLesionPromptSaved((current) => ({ ...current, [imageId]: normalized }));
-      setLesionPromptDrafts((current) => ({ ...current, [imageId]: normalized }));
+      setLesionPromptSaved((current) => ({
+        ...current,
+        [imageId]: normalized,
+      }));
+      setLesionPromptDrafts((current) => ({
+        ...current,
+        [imageId]: normalized,
+      }));
       if (liveLesionCropEnabled) {
         void triggerLiveLesionPreview(imageId, { quiet: true });
       }
@@ -1193,17 +1405,27 @@ export function useCaseWorkspaceAnalysis({
 
   async function clearSavedLesionPromptBox(imageId: string) {
     if (!selectedSiteId) {
-      throw new Error(pick(locale, "Select a hospital first.", "癒쇱? 蹂묒썝???좏깮??二쇱꽭??"));
+      throw new Error(
+        pick(
+          locale,
+          "Select a hospital first.",
+          "癒쇱? 蹂묒썝???좏깮??二쇱꽭??",
+        ),
+      );
     }
     setLesionBoxBusyImageId(imageId);
     try {
-      const updatedImage = await clearImageLesionBox(selectedSiteId, imageId, token);
+      const updatedImage = await clearImageLesionBox(
+        selectedSiteId,
+        imageId,
+        token,
+      );
       setSelectedCaseImages((current) =>
         current.map((image) =>
           image.image_id === updatedImage.image_id
             ? { ...image, ...updatedImage, preview_url: image.preview_url }
-            : image
-        )
+            : image,
+        ),
       );
       setLesionPromptSaved((current) => ({ ...current, [imageId]: null }));
       setLesionPromptDrafts((current) => ({ ...current, [imageId]: null }));
@@ -1213,7 +1435,12 @@ export function useCaseWorkspaceAnalysis({
     }
   }
 
-  function updateLesionDraftFromPointer(imageId: string, clientX: number, clientY: number, element: HTMLDivElement) {
+  function updateLesionDraftFromPointer(
+    imageId: string,
+    clientX: number,
+    clientY: number,
+    element: HTMLDivElement,
+  ) {
     const drawState = lesionDrawStateRef.current;
     if (!drawState || drawState.imageId !== imageId) {
       return;
@@ -1241,7 +1468,10 @@ export function useCaseWorkspaceAnalysis({
     });
   }
 
-  function handleLesionPointerDown(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  function handleLesionPointerDown(
+    imageId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     event.preventDefault();
     const element = event.currentTarget;
     const rect = element.getBoundingClientRect();
@@ -1264,19 +1494,34 @@ export function useCaseWorkspaceAnalysis({
     element.setPointerCapture(event.pointerId);
   }
 
-  function handleLesionPointerMove(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  function handleLesionPointerMove(
+    imageId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     if (
       lesionDrawStateRef.current?.pointerId !== event.pointerId ||
       lesionDrawStateRef.current?.imageId !== imageId
     ) {
       return;
     }
-    updateLesionDraftFromPointer(imageId, event.clientX, event.clientY, event.currentTarget);
+    updateLesionDraftFromPointer(
+      imageId,
+      event.clientX,
+      event.clientY,
+      event.currentTarget,
+    );
   }
 
-  async function finishLesionPointer(imageId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  async function finishLesionPointer(
+    imageId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     const drawState = lesionDrawStateRef.current;
-    if (!drawState || drawState.pointerId !== event.pointerId || drawState.imageId !== imageId) {
+    if (
+      !drawState ||
+      drawState.pointerId !== event.pointerId ||
+      drawState.imageId !== imageId
+    ) {
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1294,10 +1539,20 @@ export function useCaseWorkspaceAnalysis({
       try {
         await clearSavedLesionPromptBox(imageId);
       } catch (nextError) {
-        setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
+        setLesionPromptDrafts((current) => ({
+          ...current,
+          [imageId]: lesionPromptSaved[imageId] ?? null,
+        }));
         setToast({
           tone: "error",
-          message: describeError(nextError, pick(locale, "Unable to clear lesion box.", "蹂묐? 諛뺤뒪瑜?吏?곗? 紐삵뻽?듬땲??")),
+          message: describeError(
+            nextError,
+            pick(
+              locale,
+              "Unable to clear lesion box.",
+              "蹂묐? 諛뺤뒪瑜?吏?곗? 紐삵뻽?듬땲??",
+            ),
+          ),
         });
       }
       return;
@@ -1305,10 +1560,20 @@ export function useCaseWorkspaceAnalysis({
     try {
       await persistLesionPromptBox(imageId, draftBox);
     } catch (nextError) {
-      setLesionPromptDrafts((current) => ({ ...current, [imageId]: lesionPromptSaved[imageId] ?? null }));
+      setLesionPromptDrafts((current) => ({
+        ...current,
+        [imageId]: lesionPromptSaved[imageId] ?? null,
+      }));
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to auto-save lesion box.", "蹂묐? 諛뺤뒪瑜??먮룞 ??ν븯吏 紐삵뻽?듬땲??")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Unable to auto-save lesion box.",
+            "蹂묐? 諛뺤뒪瑜??먮룞 ??ν븯吏 紐삵뻽?듬땲??",
+          ),
+        ),
       });
     }
   }
@@ -1326,15 +1591,25 @@ export function useCaseWorkspaceAnalysis({
     if (!selectedSiteId || !selectedCase) {
       setToast({
         tone: "error",
-        message: pick(locale, "Select a saved case before running lesion preview.", "蹂묐? crop 誘몃━蹂닿린瑜??ㅽ뻾?섎젮硫????耳?댁뒪瑜??좏깮??二쇱꽭??"),
+        message: pick(
+          locale,
+          "Select a saved case before running lesion preview.",
+          "蹂묐? crop 誘몃━蹂닿린瑜??ㅽ뻾?섎젮硫????耳?댁뒪瑜??좏깮??二쇱꽭??",
+        ),
       });
       return;
     }
-    const hasAnyDraftBox = Object.values(lesionPromptDrafts).some((value) => value);
+    const hasAnyDraftBox = Object.values(lesionPromptDrafts).some(
+      (value) => value,
+    );
     if (!hasAnyDraftBox && !hasAnySavedLesionBox) {
       setToast({
         tone: "error",
-        message: pick(locale, "Draw and save at least one lesion box first.", "蹂묐? 諛뺤뒪瑜??섎굹 ?댁긽 洹몃┛ ????ν빐 二쇱꽭??"),
+        message: pick(
+          locale,
+          "Draw and save at least one lesion box first.",
+          "蹂묐? 諛뺤뒪瑜??섎굹 ?댁긽 洹몃┛ ????ν빐 二쇱꽭??",
+        ),
       });
       return;
     }
@@ -1350,7 +1625,7 @@ export function useCaseWorkspaceAnalysis({
         selectedSiteId,
         selectedCase.patient_id,
         selectedCase.visit_date,
-        token
+        token,
       );
       const nextItems = await Promise.all(
         previews.map(async (item) => {
@@ -1362,7 +1637,12 @@ export function useCaseWorkspaceAnalysis({
           };
           if (item.image_id) {
             try {
-              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
+              const sourceUrl = await fetchImagePreviewUrl(
+                selectedSiteId,
+                item.image_id,
+                token,
+                { maxSide: 640 },
+              );
               if (sourceUrl) {
                 lesionPreviewUrlsRef.current.push(sourceUrl);
               }
@@ -1378,7 +1658,7 @@ export function useCaseWorkspaceAnalysis({
                   selectedCase.visit_date,
                   item.image_id,
                   "lesion_crop",
-                  token
+                  token,
                 );
                 if (cropUrl) {
                   lesionPreviewUrlsRef.current.push(cropUrl);
@@ -1396,7 +1676,7 @@ export function useCaseWorkspaceAnalysis({
                   selectedCase.visit_date,
                   item.image_id,
                   "lesion_mask",
-                  token
+                  token,
                 );
                 if (maskUrl) {
                   lesionPreviewUrlsRef.current.push(maskUrl);
@@ -1408,7 +1688,7 @@ export function useCaseWorkspaceAnalysis({
             }
           }
           return nextCard;
-        })
+        }),
       );
       setLesionPreviewItems(nextItems);
       onArtifactsChanged?.();
@@ -1417,13 +1697,20 @@ export function useCaseWorkspaceAnalysis({
         message: pick(
           locale,
           `Lesion preview generated for ${selectedCase.patient_id} / ${selectedCase.visit_date}.`,
-          `${selectedCase.patient_id} / ${selectedCase.visit_date} 蹂묐? crop 誘몃━蹂닿린瑜??앹꽦?덉뒿?덈떎.`
+          `${selectedCase.patient_id} / ${selectedCase.visit_date} 蹂묐? crop 誘몃━蹂닿린瑜??앹꽦?덉뒿?덈떎.`,
         ),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Lesion preview failed.", "蹂묐? crop 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎.")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Lesion preview failed.",
+            "蹂묐? crop 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎.",
+          ),
+        ),
       });
     } finally {
       setLesionPreviewBusy(false);
@@ -1435,7 +1722,9 @@ export function useCaseWorkspaceAnalysis({
       setToast({ tone: "error", message: copy.selectSiteForCase });
       return;
     }
-    const targetImage = selectedCaseImages.find((image) => image.image_id === imageId);
+    const targetImage = selectedCaseImages.find(
+      (image) => image.image_id === imageId,
+    );
     if (!targetImage || targetImage.is_representative) {
       return;
     }
@@ -1451,14 +1740,18 @@ export function useCaseWorkspaceAnalysis({
         current.map((image) => ({
           ...image,
           is_representative: image.image_id === imageId,
-        }))
+        })),
       );
-      const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
+      const nextCases = await fetchCases(selectedSiteId, token, {
+        mine: showOnlyMine,
+      });
       setCases(nextCases);
       const refreshedCase =
         nextCases.find((item) => item.case_id === selectedCase.case_id) ??
         nextCases.find(
-          (item) => item.patient_id === selectedCase.patient_id && item.visit_date === selectedCase.visit_date
+          (item) =>
+            item.patient_id === selectedCase.patient_id &&
+            item.visit_date === selectedCase.visit_date,
         ) ??
         null;
       setSelectedCase(refreshedCase);
@@ -1481,8 +1774,13 @@ export function useCaseWorkspaceAnalysis({
       setToast({ tone: "error", message: copy.selectSiteForCase });
       return;
     }
-    if (semanticPromptOpenImageIds.includes(imageId) && semanticPromptReviews[imageId]) {
-      setSemanticPromptOpenImageIds((current) => current.filter((item) => item !== imageId));
+    if (
+      semanticPromptOpenImageIds.includes(imageId) &&
+      semanticPromptReviews[imageId]
+    ) {
+      setSemanticPromptOpenImageIds((current) =>
+        current.filter((item) => item !== imageId),
+      );
       return;
     }
     if (semanticPromptReviews[imageId]) {
@@ -1491,7 +1789,9 @@ export function useCaseWorkspaceAnalysis({
         delete next[imageId];
         return next;
       });
-      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+      setSemanticPromptOpenImageIds((current) =>
+        current.includes(imageId) ? current : [...current, imageId],
+      );
       return;
     }
 
@@ -1502,26 +1802,41 @@ export function useCaseWorkspaceAnalysis({
       return next;
     });
     try {
-      const review = await fetchImageSemanticPromptScores(selectedSiteId, imageId, token, {
-        top_k: 3,
-        input_mode: "source",
-      });
+      const review = await fetchImageSemanticPromptScores(
+        selectedSiteId,
+        imageId,
+        token,
+        {
+          top_k: 3,
+          input_mode: "source",
+        },
+      );
       setSemanticPromptReviews((current) => ({
         ...current,
         [imageId]: review,
       }));
-      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+      setSemanticPromptOpenImageIds((current) =>
+        current.includes(imageId) ? current : [...current, imageId],
+      );
     } catch (nextError) {
-      const fallback = pick(locale, "BiomedCLIP analysis failed.", "BiomedCLIP 遺꾩꽍 ?ㅽ뻾???ㅽ뙣?덉뒿?덈떎.");
+      const fallback = pick(
+        locale,
+        "BiomedCLIP analysis failed.",
+        "BiomedCLIP 遺꾩꽍 ?ㅽ뻾???ㅽ뙣?덉뒿?덈떎.",
+      );
       const message = describeError(nextError, fallback);
       setSemanticPromptErrors((current) => ({
         ...current,
         [imageId]: message,
       }));
-      setSemanticPromptOpenImageIds((current) => (current.includes(imageId) ? current : [...current, imageId]));
+      setSemanticPromptOpenImageIds((current) =>
+        current.includes(imageId) ? current : [...current, imageId],
+      );
       setToast({ tone: "error", message });
     } finally {
-      setSemanticPromptBusyImageId((current) => (current === imageId ? null : current));
+      setSemanticPromptBusyImageId((current) =>
+        current === imageId ? null : current,
+      );
     }
   }
 
@@ -1539,7 +1854,7 @@ export function useCaseWorkspaceAnalysis({
         selectedSiteId,
         selectedCase.patient_id,
         selectedCase.visit_date,
-        token
+        token,
       );
       const nextItems = await Promise.all(
         previews.map(async (item) => {
@@ -1551,7 +1866,12 @@ export function useCaseWorkspaceAnalysis({
           };
           if (item.image_id) {
             try {
-              const sourceUrl = await fetchImagePreviewUrl(selectedSiteId, item.image_id, token, { maxSide: 640 });
+              const sourceUrl = await fetchImagePreviewUrl(
+                selectedSiteId,
+                item.image_id,
+                token,
+                { maxSide: 640 },
+              );
               if (sourceUrl) {
                 roiPreviewUrlsRef.current.push(sourceUrl);
               }
@@ -1567,7 +1887,7 @@ export function useCaseWorkspaceAnalysis({
                   selectedCase.visit_date,
                   item.image_id,
                   "roi_crop",
-                  token
+                  token,
                 );
                 if (roiUrl) {
                   roiPreviewUrlsRef.current.push(roiUrl);
@@ -1585,7 +1905,7 @@ export function useCaseWorkspaceAnalysis({
                   selectedCase.visit_date,
                   item.image_id,
                   "medsam_mask",
-                  token
+                  token,
                 );
                 if (maskUrl) {
                   roiPreviewUrlsRef.current.push(maskUrl);
@@ -1597,13 +1917,16 @@ export function useCaseWorkspaceAnalysis({
             }
           }
           return nextCard;
-        })
+        }),
       );
       setRoiPreviewItems(nextItems);
       onArtifactsChanged?.();
       setToast({
         tone: "success",
-        message: copy.roiPreviewGenerated(selectedCase.patient_id, selectedCase.visit_date),
+        message: copy.roiPreviewGenerated(
+          selectedCase.patient_id,
+          selectedCase.visit_date,
+        ),
       });
     } catch (nextError) {
       setToast({
@@ -1622,8 +1945,11 @@ export function useCaseWorkspaceAnalysis({
     }
 
     const requestedModelVersionIds = normalizeSelectedCompareModelVersionIds();
-    const previousValidationModelVersionId = String(validationResult?.model_version.version_id || "").trim() || null;
-    const previousExecutionMode = executionModeFromDevice(validationResult?.execution_device);
+    const previousValidationModelVersionId =
+      String(validationResult?.model_version.version_id || "").trim() || null;
+    const previousExecutionMode = executionModeFromDevice(
+      validationResult?.execution_device,
+    );
 
     setValidationBusy(true);
     setModelCompareBusy(requestedModelVersionIds.length > 0);
@@ -1637,12 +1963,16 @@ export function useCaseWorkspaceAnalysis({
       let autoCompareCount = 0;
 
       if (requestedModelVersionIds.length > 0) {
-        const compareResult = await runCaseValidationCompare(selectedSiteId, token, {
-          patient_id: selectedCase.patient_id,
-          visit_date: selectedCase.visit_date,
-          model_version_ids: requestedModelVersionIds,
-          execution_mode: previousExecutionMode,
-        });
+        const compareResult = await runCaseValidationCompare(
+          selectedSiteId,
+          token,
+          {
+            patient_id: selectedCase.patient_id,
+            visit_date: selectedCase.visit_date,
+            model_version_ids: requestedModelVersionIds,
+            execution_mode: previousExecutionMode,
+          },
+        );
         setModelCompareResult(compareResult);
         autoCompareCount = compareResult.comparisons.length;
 
@@ -1656,8 +1986,8 @@ export function useCaseWorkspaceAnalysis({
             pick(
               locale,
               "No selected model completed successfully for anchor validation.",
-              "anchor validation을 진행할 수 있는 모델이 없습니다."
-            )
+              "anchor validation을 진행할 수 있는 모델이 없습니다.",
+            ),
           );
         }
 
@@ -1665,7 +1995,9 @@ export function useCaseWorkspaceAnalysis({
           patientId: selectedCase.patient_id,
           visitDate: selectedCase.visit_date,
           modelVersionId: anchorModelVersionId,
-          executionMode: executionModeFromDevice(compareResult.execution_device),
+          executionMode: executionModeFromDevice(
+            compareResult.execution_device,
+          ),
         });
       } else {
         result = await runAnchorValidation({
@@ -1677,7 +2009,11 @@ export function useCaseWorkspaceAnalysis({
       }
 
       await onSiteDataChanged(selectedSiteId);
-      await loadCaseHistory(selectedSiteId, selectedCase.patient_id, selectedCase.visit_date);
+      await loadCaseHistory(
+        selectedSiteId,
+        selectedCase.patient_id,
+        selectedCase.visit_date,
+      );
       await loadSiteActivity(selectedSiteId);
       await onValidationCompleted?.({
         siteId: selectedSiteId,
@@ -1692,9 +2028,12 @@ export function useCaseWorkspaceAnalysis({
             ? pick(
                 locale,
                 `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}-model analysis refreshed.`,
-                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}媛?紐⑤뜽 遺꾩꽍???④퍡 媛깆떊?덉뒿?덈떎.`
+                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}媛?紐⑤뜽 遺꾩꽍???④퍡 媛깆떊?덉뒿?덈떎.`,
               )
-            : copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date),
+            : copy.validationSaved(
+                selectedCase.patient_id,
+                selectedCase.visit_date,
+              ),
       });
     } catch (nextError) {
       setToast({
@@ -1716,7 +2055,11 @@ export function useCaseWorkspaceAnalysis({
     if (requestedModelVersionIds.length === 0) {
       setToast({
         tone: "error",
-        message: pick(locale, "Select at least one model version for comparison.", "鍮꾧탳??紐⑤뜽 踰꾩쟾???섎굹 ?댁긽 ?좏깮??二쇱꽭??"),
+        message: pick(
+          locale,
+          "Select at least one model version for comparison.",
+          "鍮꾧탳??紐⑤뜽 踰꾩쟾???섎굹 ?댁긽 ?좏깮??二쇱꽭??",
+        ),
       });
       return;
     }
@@ -1729,17 +2072,30 @@ export function useCaseWorkspaceAnalysis({
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
         model_version_ids: requestedModelVersionIds,
-        execution_mode: executionModeFromDevice(validationResult?.execution_device),
+        execution_mode: executionModeFromDevice(
+          validationResult?.execution_device,
+        ),
       });
       setModelCompareResult(result);
       setToast({
         tone: "success",
-        message: pick(locale, `Compared ${result.comparisons.length} model(s).`, `${result.comparisons.length}媛?紐⑤뜽 鍮꾧탳瑜??꾨즺?덉뒿?덈떎.`),
+        message: pick(
+          locale,
+          `Compared ${result.comparisons.length} model(s).`,
+          `${result.comparisons.length}媛?紐⑤뜽 鍮꾧탳瑜??꾨즺?덉뒿?덈떎.`,
+        ),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to compare models for this case.", "??耳?댁뒪??紐⑤뜽 鍮꾧탳瑜??ㅽ뻾?????놁뒿?덈떎.")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Unable to compare models for this case.",
+            "??耳?댁뒪??紐⑤뜽 鍮꾧탳瑜??ㅽ뻾?????놁뒿?덈떎.",
+          ),
+        ),
       });
     } finally {
       setModelCompareBusy(false);
@@ -1764,7 +2120,9 @@ export function useCaseWorkspaceAnalysis({
       const result = await runCaseAiClinicSimilarCases(selectedSiteId, token, {
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
-        execution_mode: executionModeFromDevice(validationResult.execution_device),
+        execution_mode: executionModeFromDevice(
+          validationResult.execution_device,
+        ),
         model_version_id: validationResult.model_version.version_id,
         top_k: 3,
         retrieval_backend: AI_CLINIC_LITE_RETRIEVAL_BACKEND,
@@ -1779,7 +2137,10 @@ export function useCaseWorkspaceAnalysis({
         tone: "success",
         message: copy.aiClinicReady(nextResult.similar_cases.length),
       });
-      void hydrateAiClinicSimilarCasePreviews(nextResult.similar_cases, previewRequestId);
+      void hydrateAiClinicSimilarCasePreviews(
+        nextResult.similar_cases,
+        previewRequestId,
+      );
     } catch (nextError) {
       if (aiClinicRequestRef.current === requestId) {
         setToast({
@@ -1817,7 +2178,9 @@ export function useCaseWorkspaceAnalysis({
       const result = await runCaseAiClinic(selectedSiteId, token, {
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
-        execution_mode: executionModeFromDevice(validationResult.execution_device),
+        execution_mode: executionModeFromDevice(
+          validationResult.execution_device,
+        ),
         model_version_id: validationResult.model_version.version_id,
         top_k: 3,
         retrieval_backend: AI_CLINIC_LITE_RETRIEVAL_BACKEND,
@@ -1825,11 +2188,17 @@ export function useCaseWorkspaceAnalysis({
       if (aiClinicRequestRef.current !== requestId) {
         return;
       }
-      const nextResult = withAiClinicSimilarCasePreviews(result, previousResult);
+      const nextResult = withAiClinicSimilarCasePreviews(
+        result,
+        previousResult,
+      );
       const previewRequestId = aiClinicPreviewRequestRef.current + 1;
       aiClinicPreviewRequestRef.current = previewRequestId;
       setAiClinicResult(nextResult);
-      void hydrateAiClinicSimilarCasePreviews(nextResult.similar_cases, previewRequestId);
+      void hydrateAiClinicSimilarCasePreviews(
+        nextResult.similar_cases,
+        previewRequestId,
+      );
       setToast({
         tone: "success",
         message: copy.aiClinicExpandedReady,

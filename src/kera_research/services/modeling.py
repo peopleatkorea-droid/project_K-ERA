@@ -15,8 +15,19 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from kera_research.config import DEFAULT_GLOBAL_MODELS
-from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.domain import (
+    DENSENET_VARIANTS,
+    INDEX_TO_LABEL,
+    LABEL_TO_INDEX,
+    LESION_GUIDED_FUSION_ARCHITECTURES,
+    is_dual_input_training_architecture,
+    is_lesion_guided_fusion_architecture,
+    lesion_guided_fusion_backbone,
+    make_id,
+    utc_now,
+)
 from kera_research.services.model_artifacts import ModelArtifactStore
+from kera_research.services.lesion_guided_fusion import LesionGuidedFusionKeratitis
 from kera_research.services.retrieval import DINOv2_MODEL_ID
 
 try:
@@ -59,7 +70,7 @@ IMAGENET_CHANNEL_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_CHANNEL_STD = (0.229, 0.224, 0.225)
 DEFAULT_CASE_AGGREGATION = "mean"
 CASE_AGGREGATIONS = ("mean", "logit_mean", "quality_weighted_mean", "attention_mil")
-DUAL_INPUT_ARCHITECTURES = ("dual_input_concat",)
+DUAL_INPUT_ARCHITECTURES = ("dual_input_concat", *LESION_GUIDED_FUSION_ARCHITECTURES)
 TRAINING_PRETRAINING_SOURCES = ("scratch", "imagenet", "ssl")
 SSL_BACKBONE_ARCHITECTURE_BY_MODEL = {
     "densenet121": "densenet121",
@@ -80,7 +91,15 @@ IMAGENET_PRETRAINED_ARCHITECTURES = {
     "dinov2_mil",
     "dual_input_concat",
     *DENSENET_VARIANTS,
+    *LESION_GUIDED_FUSION_ARCHITECTURES,
 }
+
+
+def _ssl_backbone_architecture_for_model_name(architecture: str | None) -> str | None:
+    normalized = str(architecture or "").strip().lower()
+    if is_lesion_guided_fusion_architecture(normalized):
+        return lesion_guided_fusion_backbone(normalized)
+    return SSL_BACKBONE_ARCHITECTURE_BY_MODEL.get(normalized)
 
 
 def _legacy_preprocess_metadata(image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
@@ -153,6 +172,17 @@ def _load_image_tensor(
     array = np.asarray(resized, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(array.transpose(2, 0, 1)).unsqueeze(0)
     return image, tensor
+
+
+def _load_mask_tensor(
+    mask_path: str | Path,
+    image_size: int = DEFAULT_IMAGE_SIZE,
+) -> torch.Tensor:
+    require_torch()
+    mask = Image.open(mask_path).convert("L")
+    resized = mask.resize((image_size, image_size))
+    array = np.asarray(resized, dtype=np.float32) / 255.0
+    return torch.from_numpy(array).unsqueeze(0)
 
 
 if nn is not None:
@@ -478,14 +508,25 @@ if nn is not None:
                 self._cam_active_branch = None
             return outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
 
-        def forward_features(self, cornea_inputs: torch.Tensor, lesion_inputs: torch.Tensor) -> torch.Tensor:
+        def forward_features(
+            self,
+            cornea_inputs: torch.Tensor,
+            lesion_inputs: torch.Tensor,
+            lesion_masks: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            del lesion_masks
             cornea_features = self.encode(cornea_inputs, branch_name="cornea")
             lesion_features = self.encode(lesion_inputs, branch_name="lesion")
             fused_features = torch.cat([cornea_features, lesion_features], dim=1)
             return self.fusion_projection(fused_features)
 
-        def forward(self, cornea_inputs: torch.Tensor, lesion_inputs: torch.Tensor) -> torch.Tensor:
-            return self.classifier(self.forward_features(cornea_inputs, lesion_inputs))
+        def forward(
+            self,
+            cornea_inputs: torch.Tensor,
+            lesion_inputs: torch.Tensor,
+            lesion_masks: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            return self.classifier(self.forward_features(cornea_inputs, lesion_inputs, lesion_masks))
 
 
     class AttentionMILPool(nn.Module):
@@ -704,6 +745,55 @@ def _augment_tensor(tensor: torch.Tensor, *, view: str | None = None) -> torch.T
     return tensor
 
 
+def _augment_cornea_tensor_and_mask(
+    cornea_tensor: torch.Tensor,
+    mask_tensor: torch.Tensor,
+    *,
+    view: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    normalized_view = _normalize_view(view)
+    if random.random() < 0.5:
+        cornea_tensor = torch.flip(cornea_tensor, dims=[2])
+        mask_tensor = torch.flip(mask_tensor, dims=[2])
+    if random.random() < 0.8:
+        angle = math.radians(random.uniform(-7.0 if normalized_view == "slit" else 10.0, 7.0 if normalized_view == "slit" else 10.0))
+        scale = random.uniform(0.95, 1.05)
+        translate_x = random.uniform(-0.05, 0.05)
+        translate_y = random.uniform(-0.05, 0.05)
+        theta = cornea_tensor.new_tensor(
+            [
+                [scale * math.cos(angle), -scale * math.sin(angle), translate_x],
+                [scale * math.sin(angle), scale * math.cos(angle), translate_y],
+            ]
+        )
+        image_grid = F.affine_grid(theta.unsqueeze(0), size=(1, *cornea_tensor.shape), align_corners=False)
+        cornea_tensor = F.grid_sample(
+            cornea_tensor.unsqueeze(0),
+            image_grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
+        ).squeeze(0)
+        mask_grid = F.affine_grid(theta.unsqueeze(0), size=(1, *mask_tensor.shape), align_corners=False)
+        mask_tensor = F.grid_sample(
+            mask_tensor.unsqueeze(0),
+            mask_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=False,
+        ).squeeze(0)
+    cornea_tensor = _adjust_color_by_view(cornea_tensor, normalized_view)
+    if random.random() < 0.18:
+        cornea_tensor = _apply_box_blur(cornea_tensor)
+    if normalized_view != "fluorescein" and random.random() < 0.16:
+        cornea_tensor = _apply_specular_glare(cornea_tensor, intensity_scale=1.15 if normalized_view == "slit" else 1.0)
+    if random.random() < 0.22:
+        noise_scale = 0.018 if normalized_view == "fluorescein" else 0.024
+        cornea_tensor = torch.clamp(cornea_tensor + torch.randn_like(cornea_tensor) * noise_scale, 0.0, 1.0)
+    mask_tensor = torch.clamp(mask_tensor, 0.0, 1.0)
+    return cornea_tensor, mask_tensor
+
+
 class ManifestImageDataset(Dataset):
     def __init__(
         self,
@@ -767,6 +857,48 @@ class PairedCropDataset(Dataset):
         lesion_tensor = _apply_preprocess_to_tensor(lesion_tensor, self.preprocess_metadata)
         label_value = LABEL_TO_INDEX[str(record["culture_category"])]
         return cornea_tensor, lesion_tensor, torch.tensor(label_value, dtype=torch.long)
+
+
+class LesionGuidedFusionDataset(Dataset):
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.records = list(records)
+        self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        record = self.records[index]
+        image_size = _preprocess_image_size(self.preprocess_metadata)
+        cornea_path = str(record.get("cornea_image_path") or record.get("roi_crop_path") or record.get("image_path") or "")
+        lesion_path = str(record.get("lesion_image_path") or record.get("lesion_crop_path") or "")
+        lesion_mask_path = str(record.get("lesion_mask_path") or "")
+        if not cornea_path or not lesion_path or not lesion_mask_path:
+            raise ValueError("Lesion-guided fusion requires cornea crop, lesion crop, and lesion mask inputs.")
+
+        _, cornea_tensor = _load_image_tensor(cornea_path, image_size=image_size)
+        _, lesion_tensor = _load_image_tensor(lesion_path, image_size=image_size)
+        lesion_mask_tensor = _load_mask_tensor(lesion_mask_path, image_size=image_size)
+        cornea_tensor = cornea_tensor.squeeze(0)
+        lesion_tensor = lesion_tensor.squeeze(0)
+        if self.augment:
+            cornea_tensor, lesion_mask_tensor = _augment_cornea_tensor_and_mask(
+                cornea_tensor,
+                lesion_mask_tensor,
+                view=record.get("view"),
+            )
+            lesion_tensor = _augment_tensor(lesion_tensor, view=record.get("view"))
+        cornea_tensor = _apply_preprocess_to_tensor(cornea_tensor, self.preprocess_metadata)
+        lesion_tensor = _apply_preprocess_to_tensor(lesion_tensor, self.preprocess_metadata)
+        label_value = LABEL_TO_INDEX[str(record["culture_category"])]
+        return cornea_tensor, lesion_tensor, lesion_mask_tensor, torch.tensor(label_value, dtype=torch.long)
 
 
 def _group_records_by_visit(records: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -854,8 +986,7 @@ class ModelManager:
         self._model_cache: dict[tuple[str, str], nn.Module] = {}
 
     def is_dual_input_architecture(self, architecture: str | None) -> bool:
-        normalized = str(architecture or "").strip().lower()
-        return normalized in DUAL_INPUT_ARCHITECTURES
+        return is_dual_input_training_architecture(architecture)
 
     def supports_gradcam(self, architecture: str | None) -> bool:
         normalized = str(architecture or "").strip().lower()
@@ -870,7 +1001,7 @@ class ModelManager:
             "dinov2",
             "dinov2_mil",
             "dual_input_concat",
-        }
+        } or is_lesion_guided_fusion_architecture(normalized)
 
     def preprocess_metadata(self, image_size: int = DEFAULT_IMAGE_SIZE) -> dict[str, Any]:
         return _imagenet_preprocess_metadata(image_size=image_size)
@@ -956,6 +1087,9 @@ class ModelManager:
             metadata["bag_level"] = bool(bag_level)
         if training_input_policy is not None:
             metadata["training_input_policy"] = str(training_input_policy)
+        if is_lesion_guided_fusion_architecture(architecture):
+            metadata["architecture_family"] = "lesion_guided_fusion"
+            metadata["backbone"] = lesion_guided_fusion_backbone(architecture)
         return metadata
 
     def _checkpoint_metadata(self, checkpoint: Any) -> dict[str, Any]:
@@ -1039,6 +1173,8 @@ class ModelManager:
 
     def build_model(self, architecture: str) -> nn.Module:
         require_torch()
+        if is_lesion_guided_fusion_architecture(architecture):
+            return LesionGuidedFusionKeratitis(architecture, num_classes=DEFAULT_NUM_CLASSES, init_mode="random")
         if architecture == "cnn":
             return TinyKeratitisCNN()
         if architecture == "vit":
@@ -1239,6 +1375,7 @@ class ModelManager:
         model_reference: dict[str, Any],
         cornea_image_path: str | Path,
         lesion_image_path: str | Path,
+        lesion_mask_path: str | Path | None,
         device: str,
     ) -> Prediction:
         require_torch()
@@ -1247,10 +1384,16 @@ class ModelManager:
         _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
         cornea_tensor = cornea_tensor.to(device)
         lesion_tensor = lesion_tensor.to(device)
+        lesion_mask_tensor = None
+        if lesion_mask_path:
+            lesion_mask_tensor = _load_mask_tensor(
+                lesion_mask_path,
+                image_size=_preprocess_image_size(preprocess_metadata),
+            ).unsqueeze(0).to(device)
         model.eval()
         with torch.no_grad():
-            logits = model(cornea_tensor, lesion_tensor)
-            probabilities = torch.softmax(logits, dim=1).squeeze(0)
+            logits = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
+        probabilities = torch.softmax(logits, dim=1).squeeze(0)
         pred_index = int(torch.argmax(probabilities).item())
         return Prediction(
             predicted_label=INDEX_TO_LABEL[pred_index],
@@ -1300,6 +1443,7 @@ class ModelManager:
         model_reference: dict[str, Any],
         cornea_image_path: str | Path,
         lesion_image_path: str | Path,
+        lesion_mask_path: str | Path | None,
         device: str,
     ) -> np.ndarray:
         require_torch()
@@ -1310,9 +1454,15 @@ class ModelManager:
         _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
         cornea_tensor = cornea_tensor.to(device)
         lesion_tensor = lesion_tensor.to(device)
+        lesion_mask_tensor = None
+        if lesion_mask_path:
+            lesion_mask_tensor = _load_mask_tensor(
+                lesion_mask_path,
+                image_size=_preprocess_image_size(preprocess_metadata),
+            ).unsqueeze(0).to(device)
         model.eval()
         with torch.no_grad():
-            fused_features = model.forward_features(cornea_tensor, lesion_tensor)
+            fused_features = model.forward_features(cornea_tensor, lesion_tensor, lesion_mask_tensor)
         embedding = fused_features[0].detach().cpu().numpy().astype(np.float32)
         return embedding
 
@@ -1363,6 +1513,7 @@ class ModelManager:
         *,
         cornea_image_path: str | Path,
         lesion_image_path: str | Path,
+        lesion_mask_path: str | Path | None,
         device: str,
         cornea_output_path: str | Path,
         lesion_output_path: str | Path,
@@ -1378,6 +1529,7 @@ class ModelManager:
             preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
             cornea_image_path=cornea_image_path,
             lesion_image_path=lesion_image_path,
+            lesion_mask_path=lesion_mask_path,
             device=device,
             cornea_output_path=cornea_output_path,
             lesion_output_path=lesion_output_path,
@@ -1404,6 +1556,8 @@ class ModelManager:
             return model.classifier
         if architecture == "dual_input_concat":
             return model.classifier
+        if is_lesion_guided_fusion_architecture(architecture):
+            return model.classifier
         if architecture in DENSENET_VARIANTS:
             return model.classifier
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -1425,6 +1579,8 @@ class ModelManager:
             return self._dinov2_gradcam_projection(model, "DINOv2 MIL")
         if architecture == "dual_input_concat":
             return self._dinov2_gradcam_projection(model, "Dual-input DINOv2")
+        if is_lesion_guided_fusion_architecture(architecture):
+            return model.backbone_adapter.gradcam_target_layer
         if architecture in DENSENET_VARIANTS:
             return model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -1540,6 +1696,7 @@ class ModelManager:
         preprocess_metadata: dict[str, Any] | None,
         cornea_image_path: str | Path,
         lesion_image_path: str | Path,
+        lesion_mask_path: str | Path | None,
         device: str,
         cornea_output_path: str | Path,
         lesion_output_path: str | Path,
@@ -1556,6 +1713,12 @@ class ModelManager:
         lesion_original, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
         cornea_tensor = cornea_tensor.to(device)
         lesion_tensor = lesion_tensor.to(device)
+        lesion_mask_tensor = None
+        if lesion_mask_path:
+            lesion_mask_tensor = _load_mask_tensor(
+                lesion_mask_path,
+                image_size=_preprocess_image_size(preprocess_metadata),
+            ).unsqueeze(0).to(device)
         model.eval()
 
         branch_activations: dict[str, torch.Tensor] = {}
@@ -1569,7 +1732,7 @@ class ModelManager:
             branch_activations[branch_name] = output
 
         forward_handle = target_layer.register_forward_hook(forward_hook)
-        scores = model(cornea_tensor, lesion_tensor)
+        scores = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
         if target_class is None:
             target_class = int(torch.argmax(scores, dim=1).item())
         model.zero_grad()
@@ -1658,9 +1821,10 @@ class ModelManager:
         architecture = base_model_reference.get("architecture", "densenet121")
         preprocess_metadata = self.resolve_preprocess_metadata(base_model_reference)
         if self.is_dual_input_architecture(architecture):
-            dataset = PairedCropDataset(
-                records,
-                preprocess_metadata=preprocess_metadata,
+            dataset = (
+                LesionGuidedFusionDataset(records, preprocess_metadata=preprocess_metadata)
+                if is_lesion_guided_fusion_architecture(architecture)
+                else PairedCropDataset(records, preprocess_metadata=preprocess_metadata)
             )
         else:
             dataset = ManifestImageDataset(
@@ -1682,12 +1846,18 @@ class ModelManager:
         for _ in range(max(1, epochs)):
             batch_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
-                for cornea_inputs, lesion_inputs, batch_labels in loader:
+                for batch in loader:
+                    if len(batch) == 4:
+                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+                        lesion_masks = lesion_masks.to(device)
+                    else:
+                        cornea_inputs, lesion_inputs, batch_labels = batch
+                        lesion_masks = None
                     cornea_inputs = cornea_inputs.to(device)
                     lesion_inputs = lesion_inputs.to(device)
                     batch_labels = batch_labels.to(device)
                     optimizer.zero_grad()
-                    logits = model(cornea_inputs, lesion_inputs)
+                    logits = model(cornea_inputs, lesion_inputs, lesion_masks)
                     loss = loss_fn(logits, batch_labels)
                     loss.backward()
                     optimizer.step()
@@ -1733,6 +1903,13 @@ class ModelManager:
         }
 
     def _freeze_backbone(self, model: nn.Module, architecture: str) -> None:
+        if is_lesion_guided_fusion_architecture(architecture):
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for module in (model.lesion_projection, model.channel_gate, model.spatial_attention, model.fusion_projection, model.classifier):
+                for parameter in module.parameters():
+                    parameter.requires_grad = True
+            return
         if architecture == "cnn":
             for parameter in model.features.parameters():
                 parameter.requires_grad = False
@@ -1792,6 +1969,8 @@ class ModelManager:
     def build_model_pretrained(self, architecture: str, num_classes: int = 2) -> nn.Module:
         """ImageNet pretrained 가중치로 학습용 backbone을 초기화합니다."""
         require_torch()
+        if is_lesion_guided_fusion_architecture(architecture):
+            return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if not _TORCHVISION_AVAILABLE:
             if architecture not in {"dinov2", "dinov2_mil", "dual_input_concat"}:
                 raise RuntimeError("torchvision is required. Run: pip install torchvision")
@@ -1867,17 +2046,22 @@ class ModelManager:
         return normalized
 
     def supports_imagenet_pretraining(self, architecture: str) -> bool:
-        return str(architecture or "").strip().lower() in IMAGENET_PRETRAINED_ARCHITECTURES
+        normalized = str(architecture or "").strip().lower()
+        return normalized in IMAGENET_PRETRAINED_ARCHITECTURES or is_lesion_guided_fusion_architecture(normalized)
 
     def ssl_backbone_architecture_for_model(self, architecture: str) -> str:
-        normalized = str(architecture or "").strip().lower()
-        resolved = SSL_BACKBONE_ARCHITECTURE_BY_MODEL.get(normalized)
+        resolved = _ssl_backbone_architecture_for_model_name(architecture)
         if not resolved:
             raise ValueError(f"SSL initialization is not supported for architecture: {architecture}.")
         return resolved
 
     def _ssl_target_module(self, model: nn.Module, architecture: str) -> nn.Module:
         normalized = str(architecture or "").strip().lower()
+        if is_lesion_guided_fusion_architecture(normalized):
+            backbone = getattr(model, "backbone", None)
+            if backbone is None:
+                raise ValueError(f"{architecture} does not expose a backbone module for SSL initialization.")
+            return backbone
         if normalized in DENSENET_VARIANTS:
             return getattr(model, "model", model)
         if normalized == "convnext_tiny":
@@ -1893,6 +2077,8 @@ class ModelManager:
 
     def _allowed_missing_ssl_keys(self, architecture: str) -> tuple[str, ...]:
         normalized = str(architecture or "").strip().lower()
+        if is_lesion_guided_fusion_architecture(normalized):
+            return ()
         if normalized in DENSENET_VARIANTS:
             return ("classifier.",)
         if normalized == "convnext_tiny":
@@ -2249,11 +2435,17 @@ class ModelManager:
         true_labels: list[int] = []
         positive_probabilities: list[float] = []
         with torch.no_grad():
-            for cornea_inputs, lesion_inputs, batch_labels in loader:
+            for batch in loader:
+                if len(batch) == 4:
+                    cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+                    lesion_masks = lesion_masks.to(device)
+                else:
+                    cornea_inputs, lesion_inputs, batch_labels = batch
+                    lesion_masks = None
                 cornea_inputs = cornea_inputs.to(device)
                 lesion_inputs = lesion_inputs.to(device)
                 batch_labels = batch_labels.to(device)
-                logits = model(cornea_inputs, lesion_inputs)
+                logits = model(cornea_inputs, lesion_inputs, lesion_masks)
                 probabilities = torch.softmax(logits, dim=1)
                 true_labels.extend(int(value) for value in batch_labels.tolist())
                 positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
@@ -2713,9 +2905,10 @@ class ModelManager:
 
         preprocess_metadata = self.preprocess_metadata()
         if self.is_dual_input_architecture(architecture):
-            train_ds = PairedCropDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
-            val_ds = PairedCropDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
-            test_ds = PairedCropDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+            dataset_cls = LesionGuidedFusionDataset if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
+            train_ds = dataset_cls(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+            val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+            test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
         else:
             train_ds = ManifestImageDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
             val_ds = ManifestImageDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
@@ -2755,12 +2948,18 @@ class ModelManager:
             model.train()
             train_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
-                for cornea_inputs, lesion_inputs, batch_labels in train_loader:
+                for batch in train_loader:
+                    if len(batch) == 4:
+                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+                        lesion_masks = lesion_masks.to(device)
+                    else:
+                        cornea_inputs, lesion_inputs, batch_labels = batch
+                        lesion_masks = None
                     cornea_inputs = cornea_inputs.to(device)
                     lesion_inputs = lesion_inputs.to(device)
                     batch_labels = batch_labels.to(device)
                     optimizer.zero_grad()
-                    loss = loss_fn(model(cornea_inputs, lesion_inputs), batch_labels)
+                    loss = loss_fn(model(cornea_inputs, lesion_inputs, lesion_masks), batch_labels)
                     loss.backward()
                     optimizer.step()
                     train_losses.append(float(loss.item()))
@@ -2781,11 +2980,17 @@ class ModelManager:
             total = 0
             with torch.no_grad():
                 if self.is_dual_input_architecture(architecture):
-                    for cornea_inputs, lesion_inputs, batch_labels in val_loader:
+                    for batch in val_loader:
+                        if len(batch) == 4:
+                            cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+                            lesion_masks = lesion_masks.to(device)
+                        else:
+                            cornea_inputs, lesion_inputs, batch_labels = batch
+                            lesion_masks = None
                         cornea_inputs = cornea_inputs.to(device)
                         lesion_inputs = lesion_inputs.to(device)
                         batch_labels = batch_labels.to(device)
-                        preds = torch.argmax(model(cornea_inputs, lesion_inputs), dim=1)
+                        preds = torch.argmax(model(cornea_inputs, lesion_inputs, lesion_masks), dim=1)
                         correct += int((preds == batch_labels).sum().item())
                         total += len(batch_labels)
                 else:

@@ -7,6 +7,7 @@ frontend/.next/
 frontend/.next_broken/
 frontend/out/
 frontend/.desktop-runtime/
+frontend/.desktop-runtime-bundle/
 frontend/desktop-installed-smoke/
 frontend/desktop-package-variants/
 frontend/desktop-dist/assets/

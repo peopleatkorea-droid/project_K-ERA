@@ -42,6 +42,7 @@ type UseAdminWorkspaceTrainingControllerOptions = {
   selectedSiteId: string | null;
   locale: Locale;
   benchmarkArchitectures: string[];
+  lesionGuidedBenchmarkArchitectures: string[];
   copy: TrainingControllerCopy;
   describeError: (nextError: unknown, fallback: string) => string;
   refreshWorkspace: (siteScoped?: boolean) => Promise<void>;
@@ -64,6 +65,7 @@ export function useAdminWorkspaceTrainingController({
   selectedSiteId,
   locale,
   benchmarkArchitectures,
+  lesionGuidedBenchmarkArchitectures,
   copy,
   describeError,
   refreshWorkspace,
@@ -285,7 +287,21 @@ export function useAdminWorkspaceTrainingController({
     }
   }
 
-  async function handleBenchmarkTraining() {
+  async function runBenchmarkSuite({
+    architectures,
+    benchmarkSuiteKey,
+    cropMode,
+    pretrainingSource,
+    usePretrained,
+    runLabel,
+  }: {
+    architectures: string[];
+    benchmarkSuiteKey: string;
+    cropMode: "automated" | "manual" | "both" | "paired";
+    pretrainingSource?: "imagenet" | "scratch" | "ssl";
+    usePretrained: boolean;
+    runLabel: string;
+  }) {
     if (!selectedSiteId) {
       setToast({ tone: "error", message: copy.selectSiteForInitial });
       return;
@@ -294,16 +310,18 @@ export function useAdminWorkspaceTrainingController({
     setBenchmarkJob(null);
     try {
       const started = await runInitialTrainingBenchmark(selectedSiteId, token, {
-        architectures: benchmarkArchitectures,
+        architectures,
         execution_mode: initialForm.execution_mode,
-        crop_mode: initialForm.crop_mode === "paired" ? "automated" : initialForm.crop_mode,
+        crop_mode: cropMode,
         case_aggregation: initialForm.case_aggregation,
         epochs: initialForm.epochs,
         learning_rate: initialForm.learning_rate,
         batch_size: initialForm.batch_size,
         val_split: initialForm.val_split,
         test_split: initialForm.test_split,
-        use_pretrained: initialForm.use_pretrained,
+        use_pretrained: usePretrained,
+        pretraining_source: pretrainingSource,
+        benchmark_suite_key: benchmarkSuiteKey,
         regenerate_split: initialForm.regenerate_split,
       });
       setBenchmarkJob(started.job);
@@ -324,50 +342,52 @@ export function useAdminWorkspaceTrainingController({
         return;
       }
       if (latestJob.status === "failed") {
-        throw new Error(
-          latestJob.result?.error ||
-            pick(
-              locale,
-              `${benchmarkArchitectures.length}-model staged initial training failed.`,
-              `${benchmarkArchitectures.length}개 단계 초기 학습이 실패했습니다.`,
-            ),
-        );
+        throw new Error(latestJob.result?.error || `${runLabel} failed.`);
       }
       if (!isBenchmarkResponse(result)) {
-        throw new Error(
-          pick(
-            locale,
-            `${benchmarkArchitectures.length}-model staged initial-training result is missing.`,
-            `${benchmarkArchitectures.length}개 단계 초기 학습 결과가 없습니다.`,
-          ),
-        );
+        throw new Error(`${runLabel} result is missing.`);
       }
       setBenchmarkResult(result);
       await refreshWorkspace(true);
       setSection("registry");
       setToast({
         tone: "success",
-        message: pick(
-          locale,
-          `${benchmarkArchitectures.length}-model staged initial training completed for ${result.results.length} architecture(s).`,
-          `${result.results.length}개 아키텍처에 대한 ${benchmarkArchitectures.length}개 단계 초기 학습이 완료되었습니다.`,
-        ),
+        message: pick(locale, `${runLabel} completed for ${result.results.length} architecture(s).`, `${runLabel}이 ${result.results.length}개 아키텍처에 대해 완료되었습니다.`),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(
-          nextError,
-          pick(
-            locale,
-            `${benchmarkArchitectures.length}-model staged initial training failed.`,
-            `${benchmarkArchitectures.length}개 단계 초기 학습이 실패했습니다.`,
-          ),
-        ),
+        message: describeError(nextError, `${runLabel} failed.`),
       });
     } finally {
       setBenchmarkBusy(false);
     }
+  }
+
+  async function handleBenchmarkTraining() {
+    await runBenchmarkSuite({
+      architectures: benchmarkArchitectures,
+      benchmarkSuiteKey: "baseline_8",
+      cropMode: initialForm.crop_mode === "paired" ? "automated" : initialForm.crop_mode,
+      pretrainingSource: undefined,
+      usePretrained: initialForm.use_pretrained,
+      runLabel: pick(locale, `${benchmarkArchitectures.length}-model staged initial training`, `${benchmarkArchitectures.length}개 단계형 초기 학습`),
+    });
+  }
+
+  async function handleLesionGuidedBenchmarkTraining() {
+    await runBenchmarkSuite({
+      architectures: lesionGuidedBenchmarkArchitectures,
+      benchmarkSuiteKey: "lesion_guided_ssl_6",
+      cropMode: "paired",
+      pretrainingSource: "ssl",
+      usePretrained: true,
+      runLabel: pick(
+        locale,
+        `${lesionGuidedBenchmarkArchitectures.length}-model lesion-guided fusion + SSL training`,
+        `${lesionGuidedBenchmarkArchitectures.length}개 lesion-guided fusion + SSL 학습`,
+      ),
+    });
   }
 
   async function handleCancelInitialTraining() {
@@ -683,6 +703,7 @@ export function useAdminWorkspaceTrainingController({
     loadSslSectionData,
     handleInitialTraining,
     handleBenchmarkTraining,
+    handleLesionGuidedBenchmarkTraining,
     handleCancelInitialTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,

@@ -318,6 +318,7 @@ export function AdminWorkspace({
     handleInitialTraining,
     handleCancelInitialTraining,
     handleBenchmarkTraining,
+    handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
     handleRefreshBenchmarkStatus,
@@ -809,6 +810,7 @@ export function AdminWorkspace({
               onCancelInitialTraining={() => void handleCancelInitialTraining()}
               onRefreshBenchmarkStatus={() => void handleRefreshBenchmarkStatus()}
               onRunBenchmark={() => void handleBenchmarkTraining()}
+              onRunLesionGuidedBenchmark={() => void handleLesionGuidedBenchmarkTraining()}
               onRunInitialTraining={() => void handleInitialTraining()}
               onResumeBenchmark={() => void handleResumeBenchmarkTraining()}
             />

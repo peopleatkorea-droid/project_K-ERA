@@ -471,9 +471,9 @@ class ResearchTrainingWorkflow:
     def _validate_architecture_crop_mode(self, architecture: str, crop_mode: str) -> None:
         is_dual_input = self.service.model_manager.is_dual_input_architecture(architecture)
         if is_dual_input and crop_mode != "paired":
-            raise ValueError("Dual-input concat fusion requires paired crop mode.")
+            raise ValueError("Dual-input fusion architectures require paired crop mode.")
         if crop_mode == "paired" and not is_dual_input:
-            raise ValueError("Paired crop mode is currently reserved for dual-input concat fusion.")
+            raise ValueError("Paired crop mode is currently reserved for dual-input fusion architectures.")
 
     def _training_input_policy_for_crop_mode(self, crop_mode: str) -> str:
         if crop_mode == "manual":

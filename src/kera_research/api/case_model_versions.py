@@ -4,6 +4,8 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from kera_research.domain import is_dual_input_training_architecture
+
 
 def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
     if model_version.get("ensemble_mode") == "weighted_average":
@@ -14,7 +16,7 @@ def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
     crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
     if crop_mode in {"automated", "manual", "both", "paired"}:
         return crop_mode
-    if str(model_version.get("architecture") or "").strip().lower() == "dual_input_concat":
+    if is_dual_input_training_architecture(str(model_version.get("architecture") or "").strip().lower()):
         return "paired"
     return "automated" if model_version.get("requires_medsam_crop", False) else "raw"
 

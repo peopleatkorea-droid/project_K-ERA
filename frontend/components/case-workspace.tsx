@@ -13,7 +13,15 @@ import {
   useState,
 } from "react";
 
-import { LocaleToggle, pick, translateApiError, translateOption, translateRole, useI18n, type Locale } from "../lib/i18n";
+import {
+  LocaleToggle,
+  pick,
+  translateApiError,
+  translateOption,
+  translateRole,
+  useI18n,
+  type Locale,
+} from "../lib/i18n";
 import { AiClinicPanel } from "./case-workspace/ai-clinic-panel";
 import { AiClinicResult } from "./case-workspace/ai-clinic-result";
 import { CaseWorkspaceAuthoringCanvas } from "./case-workspace/case-workspace-authoring-canvas";
@@ -27,7 +35,10 @@ import { MedsamArtifactBacklogPanel } from "./case-workspace/medsam-artifact-bac
 import { PatientVisitForm } from "./case-workspace/patient-visit-form";
 import { PatientListBoard } from "./case-workspace/patient-list-board";
 import { SavedCaseImageBoard } from "./case-workspace/saved-case-image-board";
-import { SavedCaseOverview, SavedCaseSidebar } from "./case-workspace/saved-case-overview";
+import {
+  SavedCaseOverview,
+  SavedCaseSidebar,
+} from "./case-workspace/saved-case-overview";
 import { SavedCasePreviewPanels } from "./case-workspace/saved-case-preview-panels";
 import type {
   AiClinicPreviewResponse,
@@ -133,7 +144,10 @@ import {
   workspaceToastClass,
 } from "./ui/workspace-patterns";
 import { filterVisibleSites, getSiteDisplayName } from "../lib/site-labels";
-import { canUseDesktopTransport, prefetchDesktopVisitImages } from "../lib/desktop-transport";
+import {
+  canUseDesktopTransport,
+  prefetchDesktopVisitImages,
+} from "../lib/desktop-transport";
 import { type DesktopControlPlaneProbe } from "../lib/desktop-control-plane-status";
 import { formatPublicAlias } from "../lib/public-alias";
 import {
@@ -180,7 +194,6 @@ import {
   type MedsamArtifactStatusSummary,
   type ModelVersionRecord,
   type PatientIdLookupResponse,
-
   type SemanticPromptInputMode,
   type SiteRecord,
   type SiteSummary,
@@ -217,7 +230,7 @@ const PREDISPOSING_FACTOR_OPTIONS = [
   "unknown",
 ];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
-const MODEL_COMPARE_ARCHITECTURES = ["vit", "swin", "dinov2", "dinov2_mil", "convnext_tiny", "densenet121", "efficientnet_v2_s"];
+const MAX_MODEL_COMPARE_SELECTIONS = 8;
 const PATIENT_LIST_PAGE_SIZE = 25;
 const WORKSPACE_TIMING_LOGS =
   process.env.NEXT_PUBLIC_KERA_WORKSPACE_TIMING_LOGS === "1" ||
@@ -297,7 +310,9 @@ type ValidationArtifactKind =
   | "lesion_crop"
   | "lesion_mask";
 
-type ValidationArtifactPreviews = Partial<Record<ValidationArtifactKind, string | null>>;
+type ValidationArtifactPreviews = Partial<
+  Record<ValidationArtifactKind, string | null>
+>;
 
 type DraftState = {
   patient_id: string;
@@ -362,7 +377,9 @@ type CaseWorkspaceProps = {
   onSelectSite: (siteId: string) => void;
   onExportManifest: () => void;
   onLogout: () => void;
-  onOpenOperations: (section?: "management" | "dashboard" | "training" | "cross_validation") => void;
+  onOpenOperations: (
+    section?: "management" | "dashboard" | "training" | "cross_validation",
+  ) => void;
   onOpenHospitalAccessRequest?: () => void;
   onOpenDesktopSettings?: () => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
@@ -380,7 +397,7 @@ const WORKSPACE_HISTORY_KEY = "__keraWorkspace";
 
 function buildWorkspaceHistoryEntry(
   railView: "cases" | "patients",
-  selectedCaseId: string | null
+  selectedCaseId: string | null,
 ): WorkspaceHistoryEntry {
   return {
     scope: "case-workspace",
@@ -390,7 +407,9 @@ function buildWorkspaceHistoryEntry(
   };
 }
 
-function readWorkspaceHistoryEntry(state: unknown): WorkspaceHistoryEntry | null {
+function readWorkspaceHistoryEntry(
+  state: unknown,
+): WorkspaceHistoryEntry | null {
   if (!state || typeof state !== "object") {
     return null;
   }
@@ -421,11 +440,20 @@ function readWorkspaceHistoryEntry(state: unknown): WorkspaceHistoryEntry | null
   };
 }
 
-function isSameWorkspaceHistoryEntry(left: WorkspaceHistoryEntry | null, right: WorkspaceHistoryEntry | null): boolean {
-  return left?.rail_view === right?.rail_view && left?.selected_case_id === right?.selected_case_id;
+function isSameWorkspaceHistoryEntry(
+  left: WorkspaceHistoryEntry | null,
+  right: WorkspaceHistoryEntry | null,
+): boolean {
+  return (
+    left?.rail_view === right?.rail_view &&
+    left?.selected_case_id === right?.selected_case_id
+  );
 }
 
-function writeWorkspaceHistoryEntry(entry: WorkspaceHistoryEntry, mode: "push" | "replace") {
+function writeWorkspaceHistoryEntry(
+  entry: WorkspaceHistoryEntry,
+  mode: "push" | "replace",
+) {
   if (typeof window === "undefined") {
     return;
   }
@@ -502,14 +530,16 @@ function toNormalizedBox(value: unknown): NormalizedBox | null {
   return null;
 }
 
-function organismKey(organism: Pick<OrganismRecord, "culture_category" | "culture_species">): string {
+function organismKey(
+  organism: Pick<OrganismRecord, "culture_category" | "culture_species">,
+): string {
   return `${organism.culture_category.trim().toLowerCase()}::${organism.culture_species.trim().toLowerCase()}`;
 }
 
 function normalizeAdditionalOrganisms(
   primaryCategory: string,
   primarySpecies: string,
-  organisms: OrganismRecord[] | undefined
+  organisms: OrganismRecord[] | undefined,
 ): OrganismRecord[] {
   const primaryKey = organismKey({
     culture_category: primaryCategory,
@@ -518,7 +548,9 @@ function normalizeAdditionalOrganisms(
   const seen = new Set<string>([primaryKey]);
   const normalized: OrganismRecord[] = [];
   for (const organism of organisms ?? []) {
-    const culture_category = String(organism?.culture_category ?? "").trim().toLowerCase();
+    const culture_category = String(organism?.culture_category ?? "")
+      .trim()
+      .toLowerCase();
     const culture_species = String(organism?.culture_species ?? "").trim();
     if (!culture_category || !culture_species) {
       continue;
@@ -536,18 +568,26 @@ function normalizeAdditionalOrganisms(
 function listOrganisms(
   cultureCategory: string,
   cultureSpecies: string,
-  additionalOrganisms: OrganismRecord[] | undefined
+  additionalOrganisms: OrganismRecord[] | undefined,
 ): OrganismRecord[] {
   const primarySpecies = cultureSpecies.trim();
   if (!primarySpecies) {
-    return normalizeAdditionalOrganisms(cultureCategory, cultureSpecies, additionalOrganisms);
+    return normalizeAdditionalOrganisms(
+      cultureCategory,
+      cultureSpecies,
+      additionalOrganisms,
+    );
   }
   return [
     {
       culture_category: cultureCategory.trim().toLowerCase(),
       culture_species: primarySpecies,
     },
-    ...normalizeAdditionalOrganisms(cultureCategory, cultureSpecies, additionalOrganisms),
+    ...normalizeAdditionalOrganisms(
+      cultureCategory,
+      cultureSpecies,
+      additionalOrganisms,
+    ),
   ];
 }
 
@@ -555,44 +595,60 @@ function organismSummaryLabel(
   cultureCategory: string,
   cultureSpecies: string,
   additionalOrganisms: OrganismRecord[] | undefined,
-  maxVisibleSpecies = 1
+  maxVisibleSpecies = 1,
 ): string {
-  const organisms = listOrganisms(cultureCategory, cultureSpecies, additionalOrganisms);
+  const organisms = listOrganisms(
+    cultureCategory,
+    cultureSpecies,
+    additionalOrganisms,
+  );
   if (!organisms.length) {
     return "";
   }
   if (organisms.length <= maxVisibleSpecies) {
     return organisms.map((organism) => organism.culture_species).join(" / ");
   }
-  const visible = organisms.slice(0, Math.max(1, maxVisibleSpecies)).map((organism) => organism.culture_species).join(" / ");
+  const visible = organisms
+    .slice(0, Math.max(1, maxVisibleSpecies))
+    .map((organism) => organism.culture_species)
+    .join(" / ");
   return `${visible} + ${organisms.length - Math.max(1, maxVisibleSpecies)}`;
 }
 
 function organismDetailLabel(
   cultureCategory: string,
   cultureSpecies: string,
-  additionalOrganisms: OrganismRecord[] | undefined
+  additionalOrganisms: OrganismRecord[] | undefined,
 ): string {
   return listOrganisms(cultureCategory, cultureSpecies, additionalOrganisms)
     .map((organism) => organism.culture_species)
     .join(" / ");
 }
 
-function formatProbability(value: number | null | undefined, emptyLabel = "n/a"): string {
+function formatProbability(
+  value: number | null | undefined,
+  emptyLabel = "n/a",
+): string {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return emptyLabel;
   }
   return `${Math.round(value * 100)}%`;
 }
 
-function formatSemanticScore(value: number | null | undefined, emptyLabel = "n/a"): string {
+function formatSemanticScore(
+  value: number | null | undefined,
+  emptyLabel = "n/a",
+): string {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return emptyLabel;
   }
   return value.toFixed(3);
 }
 
-function formatImageQualityScore(value: number | null | undefined, emptyLabel = "n/a"): string {
+function formatImageQualityScore(
+  value: number | null | undefined,
+  emptyLabel = "n/a",
+): string {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return emptyLabel;
   }
@@ -620,21 +676,66 @@ function formatAiClinicMetadataField(locale: Locale, field: string): string {
   }
 }
 
-function defaultModelCompareSelection(modelVersions: ModelVersionRecord[]): string[] {
-  const selected: string[] = [];
-  const sorted = [...modelVersions].reverse();
-  for (const architecture of MODEL_COMPARE_ARCHITECTURES) {
-    const match = sorted.find(
-      (item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture
-    );
-    if (match?.version_id) {
-      selected.push(match.version_id);
-    }
-  }
-  return Array.from(new Set(selected));
+function modelVersionCreatedAtTimestamp(
+  value: string | null | undefined,
+): number {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function predictedClassConfidence(predictedLabel: string | null | undefined, probability: number | null | undefined): number | null {
+function isSelectableCompareModelVersion(
+  modelVersion: ModelVersionRecord,
+): boolean {
+  const versionId = String(modelVersion.version_id || "").trim();
+  const normalizedStage = String(modelVersion.stage || "")
+    .trim()
+    .toLowerCase();
+  return (
+    versionId.length > 0 &&
+    modelVersion.ready !== false &&
+    normalizedStage !== "analysis"
+  );
+}
+
+function sortCompareModelVersions(
+  modelVersions: ModelVersionRecord[],
+): ModelVersionRecord[] {
+  return [...modelVersions].sort(
+    (left, right) =>
+      modelVersionCreatedAtTimestamp(right.created_at) -
+      modelVersionCreatedAtTimestamp(left.created_at),
+  );
+}
+
+function defaultModelCompareSelection(
+  modelVersions: ModelVersionRecord[],
+): string[] {
+  const selected: string[] = [];
+  const seenArchitectures = new Set<string>();
+  for (const modelVersion of sortCompareModelVersions(modelVersions)) {
+    if (!isSelectableCompareModelVersion(modelVersion)) {
+      continue;
+    }
+    const architecture =
+      String(modelVersion.architecture || "")
+        .trim()
+        .toLowerCase() || modelVersion.version_id;
+    if (seenArchitectures.has(architecture)) {
+      continue;
+    }
+    seenArchitectures.add(architecture);
+    selected.push(modelVersion.version_id);
+    if (selected.length >= MAX_MODEL_COMPARE_SELECTIONS) {
+      break;
+    }
+  }
+  return selected;
+}
+
+function predictedClassConfidence(
+  predictedLabel: string | null | undefined,
+  probability: number | null | undefined,
+): number | null {
   if (typeof probability !== "number" || Number.isNaN(probability)) {
     return null;
   }
@@ -644,7 +745,11 @@ function predictedClassConfidence(predictedLabel: string | null | undefined, pro
   return probability;
 }
 
-function formatDateTime(value: string | null | undefined, localeTag: string, emptyLabel: string): string {
+function formatDateTime(
+  value: string | null | undefined,
+  localeTag: string,
+  emptyLabel: string,
+): string {
   if (!value) {
     return emptyLabel;
   }
@@ -692,7 +797,9 @@ function buildVisitReference(draft: DraftState): string {
   return `FU #${String(Number(draft.follow_up_number) || 1)}`;
 }
 
-function followUpReferenceFromPatientLookup(patientLookup: PatientIdLookupResponse | null): string | null {
+function followUpReferenceFromPatientLookup(
+  patientLookup: PatientIdLookupResponse | null,
+): string | null {
   if (!patientLookup?.exists || Number(patientLookup.visit_count || 0) <= 0) {
     return null;
   }
@@ -704,18 +811,23 @@ function followUpReferenceFromPatientLookup(patientLookup: PatientIdLookupRespon
 
 function resolveDraftVisitReference(
   draft: DraftState,
-  patientLookup: PatientIdLookupResponse | null
+  patientLookup: PatientIdLookupResponse | null,
 ): string {
   const requestedVisitReference = buildVisitReference(draft);
   if (!/^initial$/i.test(requestedVisitReference)) {
     return requestedVisitReference;
   }
-  return followUpReferenceFromPatientLookup(patientLookup) ?? requestedVisitReference;
+  return (
+    followUpReferenceFromPatientLookup(patientLookup) ?? requestedVisitReference
+  );
 }
 
 const FOLLOW_UP_VISIT_PATTERN = /^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$/i;
 
-function displayVisitReference(locale: "en" | "ko", visitReference: string): string {
+function displayVisitReference(
+  locale: "en" | "ko",
+  visitReference: string,
+): string {
   const normalized = String(visitReference ?? "").trim();
   if (!normalized) {
     return normalized;
@@ -735,7 +847,7 @@ function normalizeRecoveredDraft(draft: DraftState): DraftState {
   const normalizedAdditionalOrganisms = normalizeAdditionalOrganisms(
     draft.culture_category,
     draft.culture_species,
-    draft.additional_organisms
+    draft.additional_organisms,
   );
   const visitReference = String(recoveredDraft.visit_date ?? "").trim();
   const followUpMatch = visitReference.match(FOLLOW_UP_VISIT_PATTERN);
@@ -759,7 +871,8 @@ function normalizeRecoveredDraft(draft: DraftState): DraftState {
     ...draft,
     additional_organisms: normalizedAdditionalOrganisms,
     actual_visit_date:
-      String(recoveredDraft.actual_visit_date ?? "").trim() || String(recoveredDraft.visit_date ?? "").trim(),
+      String(recoveredDraft.actual_visit_date ?? "").trim() ||
+      String(recoveredDraft.visit_date ?? "").trim(),
     follow_up_number: draft.follow_up_number || "1",
     is_initial_visit: draft.is_initial_visit ?? true,
     intake_completed: Boolean(draft.intake_completed),
@@ -788,7 +901,9 @@ function hasDraftContent(draft: DraftState): boolean {
   );
 }
 
-function executionModeFromDevice(device: string | undefined): "auto" | "cpu" | "gpu" {
+function executionModeFromDevice(
+  device: string | undefined,
+): "auto" | "cpu" | "gpu" {
   if (device === "cuda") {
     return "gpu";
   }
@@ -799,7 +914,9 @@ function executionModeFromDevice(device: string | undefined): "auto" | "cpu" | "
 }
 
 function visitPhaseCopy(locale: "en" | "ko", isInitialVisit: boolean): string {
-  return isInitialVisit ? pick(locale, "Initial", "초진") : pick(locale, "Follow-up", "재진");
+  return isInitialVisit
+    ? pick(locale, "Initial", "초진")
+    : pick(locale, "Follow-up", "재진");
 }
 
 function computeNextFollowUpNumber(visits: VisitRecord[]): number {
@@ -837,17 +954,25 @@ export function CaseWorkspace({
   const visibleSites = filterVisibleSites(sites);
   const describeError = useCallback(
     (nextError: unknown, fallback: string) =>
-      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+      nextError instanceof Error
+        ? translateApiError(locale, nextError.message)
+        : fallback,
     [locale],
   );
-  const selectedSiteRecord = visibleSites.find((site) => site.site_id === selectedSiteId) ?? null;
-  const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedSiteRecord, selectedSiteId) : null;
+  const selectedSiteRecord =
+    visibleSites.find((site) => site.site_id === selectedSiteId) ?? null;
+  const selectedSiteLabel = selectedSiteId
+    ? getSiteDisplayName(selectedSiteRecord, selectedSiteId)
+    : null;
   const isAlreadyExistsError = (nextError: unknown) => {
     if (!(nextError instanceof Error)) {
       return false;
     }
     const rawMessage = nextError.message.toLowerCase();
-    const translatedMessage = translateApiError(locale, nextError.message).toLowerCase();
+    const translatedMessage = translateApiError(
+      locale,
+      nextError.message,
+    ).toLowerCase();
     return (
       rawMessage.includes("already exists") ||
       rawMessage.includes("이미 존재") ||
@@ -857,17 +982,30 @@ export function CaseWorkspace({
   };
   const [saveBusy, setSaveBusy] = useState(false);
   const [editDraftBusy, setEditDraftBusy] = useState(false);
-  const [editingCaseContext, setEditingCaseContext] = useState<{ patient_id: string; visit_date: string } | null>(null);
+  const [editingCaseContext, setEditingCaseContext] = useState<{
+    patient_id: string;
+    visit_date: string;
+  } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [railView, setRailView] = useState<"cases" | "patients">("patients");
   const [contributionBusy, setContributionBusy] = useState(false);
   const [researchRegistryBusy, setResearchRegistryBusy] = useState(false);
-  const [researchRegistryModalOpen, setResearchRegistryModalOpen] = useState(false);
-  const [pendingResearchRegistryAutoInclude, setPendingResearchRegistryAutoInclude] = useState(false);
-  const [researchRegistryExplanationConfirmed, setResearchRegistryExplanationConfirmed] = useState(false);
-  const [researchRegistryUsageConsented, setResearchRegistryUsageConsented] = useState(false);
-  const [contributionResult, setContributionResult] = useState<CaseContributionResponse | null>(null);
-  const [completionState, setCompletionState] = useState<CompletionState | null>(null);
+  const [researchRegistryModalOpen, setResearchRegistryModalOpen] =
+    useState(false);
+  const [
+    pendingResearchRegistryAutoInclude,
+    setPendingResearchRegistryAutoInclude,
+  ] = useState(false);
+  const [
+    researchRegistryExplanationConfirmed,
+    setResearchRegistryExplanationConfirmed,
+  ] = useState(false);
+  const [researchRegistryUsageConsented, setResearchRegistryUsageConsented] =
+    useState(false);
+  const [contributionResult, setContributionResult] =
+    useState<CaseContributionResponse | null>(null);
+  const [completionState, setCompletionState] =
+    useState<CompletionState | null>(null);
   const [caseSearch, setCaseSearch] = useState("");
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [patientListPage, setPatientListPage] = useState(1);
@@ -875,16 +1013,28 @@ export function CaseWorkspace({
   const [patientListTotalCount, setPatientListTotalCount] = useState(0);
   const [patientListTotalPages, setPatientListTotalPages] = useState(1);
   const [patientListLoading, setPatientListLoading] = useState(false);
-  const [patientIdLookup, setPatientIdLookup] = useState<PatientIdLookupResponse | null>(null);
+  const [patientIdLookup, setPatientIdLookup] =
+    useState<PatientIdLookupResponse | null>(null);
   const [patientIdLookupBusy, setPatientIdLookupBusy] = useState(false);
-  const [patientIdLookupError, setPatientIdLookupError] = useState<string | null>(null);
-  const [medsamArtifactPanelEnabled, setMedsamArtifactPanelEnabled] = useState(false);
-  const [medsamArtifactStatus, setMedsamArtifactStatus] = useState<MedsamArtifactStatusSummary | null>(null);
-  const [medsamArtifactStatusBusy, setMedsamArtifactStatusBusy] = useState(false);
-  const [medsamArtifactBackfillBusy, setMedsamArtifactBackfillBusy] = useState(false);
-  const [medsamArtifactActiveStatus, setMedsamArtifactActiveStatus] = useState<MedsamArtifactStatusKey | null>(null);
-  const [medsamArtifactScope, setMedsamArtifactScope] = useState<"patient" | "visit" | "image">("visit");
-  const [medsamArtifactItems, setMedsamArtifactItems] = useState<MedsamArtifactItemsResponse["items"]>([]);
+  const [patientIdLookupError, setPatientIdLookupError] = useState<
+    string | null
+  >(null);
+  const [medsamArtifactPanelEnabled, setMedsamArtifactPanelEnabled] =
+    useState(false);
+  const [medsamArtifactStatus, setMedsamArtifactStatus] =
+    useState<MedsamArtifactStatusSummary | null>(null);
+  const [medsamArtifactStatusBusy, setMedsamArtifactStatusBusy] =
+    useState(false);
+  const [medsamArtifactBackfillBusy, setMedsamArtifactBackfillBusy] =
+    useState(false);
+  const [medsamArtifactActiveStatus, setMedsamArtifactActiveStatus] =
+    useState<MedsamArtifactStatusKey | null>(null);
+  const [medsamArtifactScope, setMedsamArtifactScope] = useState<
+    "patient" | "visit" | "image"
+  >("visit");
+  const [medsamArtifactItems, setMedsamArtifactItems] = useState<
+    MedsamArtifactItemsResponse["items"]
+  >([]);
   const [medsamArtifactItemsBusy, setMedsamArtifactItemsBusy] = useState(false);
   const [medsamArtifactPage, setMedsamArtifactPage] = useState(1);
   const [medsamArtifactTotalCount, setMedsamArtifactTotalCount] = useState(0);
@@ -897,7 +1047,12 @@ export function CaseWorkspace({
   const fluoresceinFileInputRef = useRef<HTMLInputElement | null>(null);
   const alertsPanelRef = useRef<HTMLDivElement | null>(null);
   const railListSectionRef = useRef<HTMLElement | null>(null);
-  const draftLesionDrawStateRef = useRef<{ imageId: string; pointerId: number; x: number; y: number } | null>(null);
+  const draftLesionDrawStateRef = useRef<{
+    imageId: string;
+    pointerId: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const workspaceHistoryRef = useRef<WorkspaceHistoryEntry | null>(null);
   const workspacePopNavigationRef = useRef(false);
   const workspaceOpenedAtRef = useRef<number | null>(null);
@@ -906,28 +1061,36 @@ export function CaseWorkspace({
   const caseOpenStartedAtRef = useRef<number | null>(null);
   const caseOpenCaseIdRef = useRef<string | null>(null);
   const caseImagesLoggedCaseIdRef = useRef<string | null>(null);
-  const patientListThumbs = useMemo(() => buildPatientListThumbMap(patientListRows), [patientListRows]);
+  const patientListThumbs = useMemo(
+    () => buildPatientListThumbMap(patientListRows),
+    [patientListRows],
+  );
   const desktopFastMode = canUseDesktopTransport();
-  const researchRegistryJoinReady = researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
-  const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
-    setToastState((current) => {
-      const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
-      if (resolved) {
-        setToastHistory((existing) =>
-          [
-            {
-              id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-              tone: resolved.tone,
-              message: resolved.message,
-              created_at: new Date().toISOString(),
-            },
-            ...existing,
-          ].slice(0, 8)
-        );
-      }
-      return resolved;
-    });
-  }, []);
+  const researchRegistryJoinReady =
+    researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
+  const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>(
+    (nextValue) => {
+      setToastState((current) => {
+        const resolved =
+          typeof nextValue === "function" ? nextValue(current) : nextValue;
+        if (resolved) {
+          setToastHistory((existing) =>
+            [
+              {
+                id: `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                tone: resolved.tone,
+                message: resolved.message,
+                created_at: new Date().toISOString(),
+              },
+              ...existing,
+            ].slice(0, 8),
+          );
+        }
+        return resolved;
+      });
+    },
+    [],
+  );
   const invalidateCaseWorkspaceImageCaches = useCallback(() => {
     invalidateDesktopCaseWorkspaceCaches();
     setCaseImageCacheVersion((current) => current + 1);
@@ -977,84 +1140,305 @@ export function CaseWorkspace({
     };
   }, [alertsPanelOpen]);
   const copy = {
-    recoveredDraft: pick(locale, "Recovered the last saved draft properties for this hospital. Re-attach image files before saving.", "??蹂묒썝??留덉?留?珥덉븞 ?띿꽦??蹂듦뎄?덉뒿?덈떎. ??????대?吏 ?뚯씪? ?ㅼ떆 泥⑤???二쇱꽭??"),
+    recoveredDraft: pick(
+      locale,
+      "Recovered the last saved draft properties for this hospital. Re-attach image files before saving.",
+      "??蹂묒썝??留덉?留?珥덉븞 ?띿꽦??蹂듦뎄?덉뒿?덈떎. ??????대?吏 ?뚯씪? ?ㅼ떆 泥⑤???二쇱꽭??",
+    ),
     recoveredDraftWithAssets: pick(
       locale,
       "Recovered the last saved draft for this hospital, including local images.",
-      "이 병원의 마지막 초안을 로컬 이미지까지 포함해 복구했습니다."
+      "이 병원의 마지막 초안을 로컬 이미지까지 포함해 복구했습니다.",
     ),
-    unableLoadRecentCases: pick(locale, "Unable to load recent cases.", "理쒓렐 耳?댁뒪瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
-    unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "蹂묒썝 ?쒕룞??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
-    unableLoadSiteValidationHistory: pick(locale, "Unable to load hospital validation history.", "蹂묒썝 寃利??대젰??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
-    unableLoadCaseHistory: pick(locale, "Unable to load case history.", "耳?댁뒪 ?대젰??遺덈윭?ㅼ? 紐삵뻽?듬땲??"),
-    selectSavedCaseForRoi: pick(locale, "Select a saved case before running cornea preview.", "媛곷쭑 crop 誘몃━蹂닿린瑜??ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??"),
+    unableLoadRecentCases: pick(
+      locale,
+      "Unable to load recent cases.",
+      "理쒓렐 耳?댁뒪瑜?遺덈윭?ㅼ? 紐삵뻽?듬땲??",
+    ),
+    unableLoadSiteActivity: pick(
+      locale,
+      "Unable to load hospital activity.",
+      "蹂묒썝 ?쒕룞??遺덈윭?ㅼ? 紐삵뻽?듬땲??",
+    ),
+    unableLoadSiteValidationHistory: pick(
+      locale,
+      "Unable to load hospital validation history.",
+      "蹂묒썝 寃利??대젰??遺덈윭?ㅼ? 紐삵뻽?듬땲??",
+    ),
+    unableLoadCaseHistory: pick(
+      locale,
+      "Unable to load case history.",
+      "耳?댁뒪 ?대젰??遺덈윭?ㅼ? 紐삵뻽?듬땲??",
+    ),
+    selectSavedCaseForRoi: pick(
+      locale,
+      "Select a saved case before running cornea preview.",
+      "媛곷쭑 crop 誘몃━蹂닿린瑜??ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??",
+    ),
     roiPreviewGenerated: (patientId: string, visitDate: string) =>
-      pick(locale, `Cornea preview generated for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 媛곷쭑 crop 誘몃━蹂닿린瑜??앹꽦?덉뒿?덈떎.`),
-    roiPreviewFailed: pick(locale, "Cornea preview failed.", "媛곷쭑 crop 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎."),
-    selectSiteForValidation: pick(locale, "Select a hospital before running hospital validation.", "蹂묒썝 寃利앹쓣 ?ㅽ뻾?섎젮硫?蹂묒썝???좏깮?섏꽭??"),
+      pick(
+        locale,
+        `Cornea preview generated for ${patientId} / ${visitDate}.`,
+        `${patientId} / ${visitDate} 媛곷쭑 crop 誘몃━蹂닿린瑜??앹꽦?덉뒿?덈떎.`,
+      ),
+    roiPreviewFailed: pick(
+      locale,
+      "Cornea preview failed.",
+      "媛곷쭑 crop 誘몃━蹂닿린???ㅽ뙣?덉뒿?덈떎.",
+    ),
+    selectSiteForValidation: pick(
+      locale,
+      "Select a hospital before running hospital validation.",
+      "蹂묒썝 寃利앹쓣 ?ㅽ뻾?섎젮硫?蹂묒썝???좏깮?섏꽭??",
+    ),
     siteValidationSaved: (validationId: string) =>
-      pick(locale, `Hospital validation saved as ${validationId}.`, `蹂묒썝 寃利앹씠 ${validationId}濡???λ릺?덉뒿?덈떎.`),
-    siteValidationFailed: pick(locale, "Hospital validation failed.", "蹂묒썝 寃利앹뿉 ?ㅽ뙣?덉뒿?덈떎."),
-    selectSavedCaseForValidation: pick(locale, "Select a saved case before running validation.", "寃利앹쓣 ?ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??"),
+      pick(
+        locale,
+        `Hospital validation saved as ${validationId}.`,
+        `蹂묒썝 寃利앹씠 ${validationId}濡???λ릺?덉뒿?덈떎.`,
+      ),
+    siteValidationFailed: pick(
+      locale,
+      "Hospital validation failed.",
+      "蹂묒썝 寃利앹뿉 ?ㅽ뙣?덉뒿?덈떎.",
+    ),
+    selectSavedCaseForValidation: pick(
+      locale,
+      "Select a saved case before running validation.",
+      "寃利앹쓣 ?ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??",
+    ),
     validationSaved: (patientId: string, visitDate: string) =>
-      pick(locale, `Validation saved for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 寃利앹씠 ??λ릺?덉뒿?덈떎.`),
-    validationFailed: pick(locale, "Validation failed.", "寃利앹뿉 ?ㅽ뙣?덉뒿?덈떎."),
-    selectValidationBeforeAiClinic: pick(locale, "Run validation before opening AI Clinic retrieval.", "AI Clinic 寃?됱쓣 ?닿린 ?꾩뿉 癒쇱? 寃利앹쓣 ?ㅽ뻾?섏꽭??"),
+      pick(
+        locale,
+        `Validation saved for ${patientId} / ${visitDate}.`,
+        `${patientId} / ${visitDate} 寃利앹씠 ??λ릺?덉뒿?덈떎.`,
+      ),
+    validationFailed: pick(
+      locale,
+      "Validation failed.",
+      "寃利앹뿉 ?ㅽ뙣?덉뒿?덈떎.",
+    ),
+    selectValidationBeforeAiClinic: pick(
+      locale,
+      "Run validation before opening AI Clinic retrieval.",
+      "AI Clinic 寃?됱쓣 ?닿린 ?꾩뿉 癒쇱? 寃利앹쓣 ?ㅽ뻾?섏꽭??",
+    ),
     aiClinicReady: (count: number) =>
-      pick(locale, `AI Clinic found ${count} similar patient case(s).`, `AI Clinic???좎궗 ?섏옄 耳?댁뒪 ${count}嫄댁쓣 李얠븯?듬땲??`),
-    aiClinicExpandedReady: pick(locale, "AI Clinic evidence and workflow are ready.", "AI Clinic 근거와 workflow가 준비되었습니다."),
-    aiClinicFailed: pick(locale, "AI Clinic retrieval failed.", "AI Clinic 寃?됱뿉 ?ㅽ뙣?덉뒿?덈떎."),
-    aiClinicExpandFirst: pick(locale, "Load similar-patient retrieval before expanding AI Clinic.", "AI Clinic 확장 전에 먼저 유사 환자 검색을 불러오세요."),
-    aiClinicTextUnavailable: pick(locale, "BiomedCLIP text retrieval is currently unavailable in this runtime.", "?꾩옱 ?ㅽ뻾 ?섍꼍?먯꽌??BiomedCLIP ?띿뒪??寃?됱쓣 ?ъ슜?????놁뒿?덈떎."),
-    selectSavedCaseForContribution: pick(locale, "Select a saved case before contributing.", "湲곗뿬瑜??ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??"),
-    activeOnly: pick(locale, "Only active visits are enabled for contribution under the current policy.", "?꾩옱 ?뺤콉?먯꽌??active 諛⑸Ц留?湲곗뿬?????덉뒿?덈떎."),
+      pick(
+        locale,
+        `AI Clinic found ${count} similar patient case(s).`,
+        `AI Clinic???좎궗 ?섏옄 耳?댁뒪 ${count}嫄댁쓣 李얠븯?듬땲??`,
+      ),
+    aiClinicExpandedReady: pick(
+      locale,
+      "AI Clinic evidence and workflow are ready.",
+      "AI Clinic 근거와 workflow가 준비되었습니다.",
+    ),
+    aiClinicFailed: pick(
+      locale,
+      "AI Clinic retrieval failed.",
+      "AI Clinic 寃?됱뿉 ?ㅽ뙣?덉뒿?덈떎.",
+    ),
+    aiClinicExpandFirst: pick(
+      locale,
+      "Load similar-patient retrieval before expanding AI Clinic.",
+      "AI Clinic 확장 전에 먼저 유사 환자 검색을 불러오세요.",
+    ),
+    aiClinicTextUnavailable: pick(
+      locale,
+      "BiomedCLIP text retrieval is currently unavailable in this runtime.",
+      "?꾩옱 ?ㅽ뻾 ?섍꼍?먯꽌??BiomedCLIP ?띿뒪??寃?됱쓣 ?ъ슜?????놁뒿?덈떎.",
+    ),
+    selectSavedCaseForContribution: pick(
+      locale,
+      "Select a saved case before contributing.",
+      "湲곗뿬瑜??ㅽ뻾?섎젮硫???λ맂 耳?댁뒪瑜??좏깮?섏꽭??",
+    ),
+    activeOnly: pick(
+      locale,
+      "Only active visits are enabled for contribution under the current policy.",
+      "?꾩옱 ?뺤콉?먯꽌??active 諛⑸Ц留?湲곗뿬?????덉뒿?덈떎.",
+    ),
     contributionQueued: (patientId: string, visitDate: string) =>
-      pick(locale, `Contribution queued for ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 湲곗뿬媛 ?湲곗뿴???깅줉?섏뿀?듬땲??`),
-    contributionFailed: pick(locale, "Contribution failed.", "湲곗뿬???ㅽ뙣?덉뒿?덈떎."),
-    selectSiteForCase: pick(locale, "Select a hospital before creating a case.", "耳?댁뒪瑜??앹꽦?섎젮硫?蹂묒썝???좏깮?섏꽭??"),
-    patientIdRequired: pick(locale, "Patient ID is required.", "?섏옄 ID???꾩닔?낅땲??"),
-    visitDateRequired: pick(locale, "Visit reference is required.", "諛⑸Ц 湲곗?媛믪? ?꾩닔?낅땲??"),
-    cultureSpeciesRequired: pick(locale, "Select the primary organism.", "???洹좎쥌???좏깮?섏꽭??"),
-    imageRequired: pick(locale, "Add at least one slit-lamp image to save this case.", "耳?댁뒪瑜???ν븯?ㅻ㈃ ?멸레???대?吏瑜??섎굹 ?댁긽 異붽??섏꽭??"),
-    patientCreationFailed: pick(locale, "Patient creation failed.", "?섏옄 ?앹꽦???ㅽ뙣?덉뒿?덈떎."),
+      pick(
+        locale,
+        `Contribution queued for ${patientId} / ${visitDate}.`,
+        `${patientId} / ${visitDate} 湲곗뿬媛 ?湲곗뿴???깅줉?섏뿀?듬땲??`,
+      ),
+    contributionFailed: pick(
+      locale,
+      "Contribution failed.",
+      "湲곗뿬???ㅽ뙣?덉뒿?덈떎.",
+    ),
+    selectSiteForCase: pick(
+      locale,
+      "Select a hospital before creating a case.",
+      "耳?댁뒪瑜??앹꽦?섎젮硫?蹂묒썝???좏깮?섏꽭??",
+    ),
+    patientIdRequired: pick(
+      locale,
+      "Patient ID is required.",
+      "?섏옄 ID???꾩닔?낅땲??",
+    ),
+    visitDateRequired: pick(
+      locale,
+      "Visit reference is required.",
+      "諛⑸Ц 湲곗?媛믪? ?꾩닔?낅땲??",
+    ),
+    cultureSpeciesRequired: pick(
+      locale,
+      "Select the primary organism.",
+      "???洹좎쥌???좏깮?섏꽭??",
+    ),
+    imageRequired: pick(
+      locale,
+      "Add at least one slit-lamp image to save this case.",
+      "耳?댁뒪瑜???ν븯?ㅻ㈃ ?멸레???대?吏瑜??섎굹 ?댁긽 異붽??섏꽭??",
+    ),
+    patientCreationFailed: pick(
+      locale,
+      "Patient creation failed.",
+      "?섏옄 ?앹꽦???ㅽ뙣?덉뒿?덈떎.",
+    ),
     caseSaved: (patientId: string, visitDate: string, siteLabel: string) =>
-      pick(locale, `Case ${patientId} / ${visitDate} saved to ${siteLabel}.`, `${patientId} / ${visitDate} 케이스가 ${siteLabel}에 저장되었습니다.`),
-    caseSaveFailed: pick(locale, "Case save failed.", "耳?댁뒪 ??μ뿉 ?ㅽ뙣?덉뒿?덈떎."),
-    organismAdded: pick(locale, "Organism added to this visit.", "??諛⑸Ц??洹좎쥌??異붽??덉뒿?덈떎."),
-    organismDuplicate: pick(locale, "That organism is already attached to this visit.", "?대? ??諛⑸Ц??異붽???洹좎쥌?낅땲??"),
-    intakeComplete: pick(locale, "Core case intake is marked complete.", "湲곕낯 耳?댁뒪 ?낅젰???꾨즺濡??쒖떆?덉뒿?덈떎."),
-    intakeStepRequired: pick(locale, "Complete the intake section before saving this case.", "케이스 저장 전에 intake 섹션을 먼저 완료해 주세요."),
-    intakeOrganismRequired: pick(locale, "Select the primary organism first.", "먼저 대표 균종을 선택해 주세요."),
-    draftAutosaved: (time: string) => pick(locale, `Draft autosaved ${time}`, `${time}에 초안 자동 저장`),
-    draftUnsaved: pick(locale, "Draft changes live only in this tab", "초안 변경 내용은 현재 탭에만 유지됩니다."),
+      pick(
+        locale,
+        `Case ${patientId} / ${visitDate} saved to ${siteLabel}.`,
+        `${patientId} / ${visitDate} 케이스가 ${siteLabel}에 저장되었습니다.`,
+      ),
+    caseSaveFailed: pick(
+      locale,
+      "Case save failed.",
+      "耳?댁뒪 ??μ뿉 ?ㅽ뙣?덉뒿?덈떎.",
+    ),
+    organismAdded: pick(
+      locale,
+      "Organism added to this visit.",
+      "??諛⑸Ц??洹좎쥌??異붽??덉뒿?덈떎.",
+    ),
+    organismDuplicate: pick(
+      locale,
+      "That organism is already attached to this visit.",
+      "?대? ??諛⑸Ц??異붽???洹좎쥌?낅땲??",
+    ),
+    intakeComplete: pick(
+      locale,
+      "Core case intake is marked complete.",
+      "湲곕낯 耳?댁뒪 ?낅젰???꾨즺濡??쒖떆?덉뒿?덈떎.",
+    ),
+    intakeStepRequired: pick(
+      locale,
+      "Complete the intake section before saving this case.",
+      "케이스 저장 전에 intake 섹션을 먼저 완료해 주세요.",
+    ),
+    intakeOrganismRequired: pick(
+      locale,
+      "Select the primary organism first.",
+      "먼저 대표 균종을 선택해 주세요.",
+    ),
+    draftAutosaved: (time: string) =>
+      pick(locale, `Draft autosaved ${time}`, `${time}에 초안 자동 저장`),
+    draftUnsaved: pick(
+      locale,
+      "Draft changes live only in this tab",
+      "초안 변경 내용은 현재 탭에만 유지됩니다.",
+    ),
     recentAlerts: pick(locale, "Recent alerts", "최근 알림"),
-    recentAlertsCopy: pick(locale, "Transient toasts stay here for this session.", "짧게 사라지는 토스트도 현재 세션에서는 여기 남겨둡니다."),
-    noAlertsYet: pick(locale, "No alerts yet in this session.", "현재 세션에는 아직 알림이 없습니다."),
+    recentAlertsCopy: pick(
+      locale,
+      "Transient toasts stay here for this session.",
+      "짧게 사라지는 토스트도 현재 세션에서는 여기 남겨둡니다.",
+    ),
+    noAlertsYet: pick(
+      locale,
+      "No alerts yet in this session.",
+      "현재 세션에는 아직 알림이 없습니다.",
+    ),
     clearAlerts: pick(locale, "Clear alerts", "알림 비우기"),
     alertsKept: pick(locale, "kept", "보관"),
-    patientIdLookupFailed: pick(locale, "Unable to verify duplicate patient IDs right now.", "현재는 중복 환자 ID를 확인할 수 없습니다."),
-    unableLoadPatientList: pick(locale, "Unable to load the patient list.", "환자 목록을 불러오지 못했습니다."),
+    patientIdLookupFailed: pick(
+      locale,
+      "Unable to verify duplicate patient IDs right now.",
+      "현재는 중복 환자 ID를 확인할 수 없습니다.",
+    ),
+    unableLoadPatientList: pick(
+      locale,
+      "Unable to load the patient list.",
+      "환자 목록을 불러오지 못했습니다.",
+    ),
     patients: pick(locale, "patients", "?섏옄"),
     savedCases: pick(locale, "saved cases", "??λ맂 耳?댁뒪"),
-    loadingSavedCases: pick(locale, "Loading saved cases...", "??λ맂 耳?댁뒪瑜?遺덈윭?ㅻ뒗 以?.."),
-    noSavedCases: pick(locale, "No saved cases for this hospital yet.", "??蹂묒썝?먮뒗 ?꾩쭅 ??λ맂 耳?댁뒪媛 ?놁뒿?덈떎."),
+    loadingSavedCases: pick(
+      locale,
+      "Loading saved cases...",
+      "??λ맂 耳?댁뒪瑜?遺덈윭?ㅻ뒗 以?..",
+    ),
+    noSavedCases: pick(
+      locale,
+      "No saved cases for this hospital yet.",
+      "??蹂묒썝?먮뒗 ?꾩쭅 ??λ맂 耳?댁뒪媛 ?놁뒿?덈떎.",
+    ),
     allRecords: pick(locale, "All records", "?꾩껜"),
     myPatientsOnly: pick(locale, "My patients", "???섏옄"),
     patientScopeAll: (count: number) =>
-      pick(locale, `Showing all hospital patients (${count}).`, `蹂묒썝 ?꾩껜 ?섏옄 ${count}紐낆쓣 ?쒖떆?⑸땲??`),
+      pick(
+        locale,
+        `Showing all hospital patients (${count}).`,
+        `蹂묒썝 ?꾩껜 ?섏옄 ${count}紐낆쓣 ?쒖떆?⑸땲??`,
+      ),
     patientScopeMine: (count: number) =>
-      pick(locale, `Showing only patients registered by you (${count}).`, `?닿? ?깅줉???섏옄 ${count}紐낅쭔 ?쒖떆?⑸땲??`),
-    favoriteAdded: pick(locale, "Case added to favorites.", "耳?댁뒪瑜?利먭꺼李얘린??異붽??덉뒿?덈떎."),
-    favoriteRemoved: pick(locale, "Case removed from favorites.", "耳?댁뒪 利먭꺼李얘린瑜??댁젣?덉뒿?덈떎."),
+      pick(
+        locale,
+        `Showing only patients registered by you (${count}).`,
+        `?닿? ?깅줉???섏옄 ${count}紐낅쭔 ?쒖떆?⑸땲??`,
+      ),
+    favoriteAdded: pick(
+      locale,
+      "Case added to favorites.",
+      "耳?댁뒪瑜?利먭꺼李얘린??異붽??덉뒿?덈떎.",
+    ),
+    favoriteRemoved: pick(
+      locale,
+      "Case removed from favorites.",
+      "耳?댁뒪 利먭꺼李얘린瑜??댁젣?덉뒿?덈떎.",
+    ),
     visitDeleted: (patientId: string, visitDate: string) =>
-      pick(locale, `Deleted ${patientId} / ${visitDate}.`, `${patientId} / ${visitDate} 諛⑸Ц????젣?덉뒿?덈떎.`),
+      pick(
+        locale,
+        `Deleted ${patientId} / ${visitDate}.`,
+        `${patientId} / ${visitDate} 諛⑸Ц????젣?덉뒿?덈떎.`,
+      ),
     patientDeleted: (patientId: string) =>
-      pick(locale, `Deleted patient ${patientId}.`, `${patientId} ?섏옄瑜???젣?덉뒿?덈떎.`),
-    deleteVisitFailed: pick(locale, "Unable to delete the visit.", "諛⑸Ц ??젣???ㅽ뙣?덉뒿?덈떎."),
-    representativeUpdated: pick(locale, "Representative image updated.", "????대?吏瑜?蹂寃쏀뻽?듬땲??"),
-    representativeUpdateFailed: pick(locale, "Unable to update the representative image.", "????대?吏 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎."),
-    listViewHeaderCopy: pick(locale, "Browse saved patients and open the latest case.", "????섏옄瑜?蹂닿퀬 理쒖떊 耳?댁뒪瑜??쎈땲??"),
-    caseAuthoringHeaderCopy: pick(locale, "Create, review, and contribute cases from this workspace.", "???묒뾽怨듦컙?먯꽌 利앸? ?묒꽦, 寃?? 湲곗뿬瑜?吏꾪뻾?????덉뒿?덈떎."),
+      pick(
+        locale,
+        `Deleted patient ${patientId}.`,
+        `${patientId} ?섏옄瑜???젣?덉뒿?덈떎.`,
+      ),
+    deleteVisitFailed: pick(
+      locale,
+      "Unable to delete the visit.",
+      "諛⑸Ц ??젣???ㅽ뙣?덉뒿?덈떎.",
+    ),
+    representativeUpdated: pick(
+      locale,
+      "Representative image updated.",
+      "????대?吏瑜?蹂寃쏀뻽?듬땲??",
+    ),
+    representativeUpdateFailed: pick(
+      locale,
+      "Unable to update the representative image.",
+      "????대?吏 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎.",
+    ),
+    listViewHeaderCopy: pick(
+      locale,
+      "Browse saved patients and open the latest case.",
+      "????섏옄瑜?蹂닿퀬 理쒖떊 耳?댁뒪瑜??쎈땲??",
+    ),
+    caseAuthoringHeaderCopy: pick(
+      locale,
+      "Create, review, and contribute cases from this workspace.",
+      "???묒뾽怨듦컙?먯꽌 利앸? ?묒꽦, 寃?? 湲곗뿬瑜?吏꾪뻾?????덉뒿?덈떎.",
+    ),
   };
   const semanticPromptInputOptions: SemanticPromptInputOption[] = [
     { value: "source", label: pick(locale, "Whole image", "?먮낯 ?대?吏") },
@@ -1135,13 +1519,25 @@ export function CaseWorkspace({
     setToast,
   });
   const onArtifactsChanged = useCallback(() => {
-    if (!medsamArtifactPanelEnabled || !medsamArtifactStatus || !selectedSiteId) {
+    if (
+      !medsamArtifactPanelEnabled ||
+      !medsamArtifactStatus ||
+      !selectedSiteId
+    ) {
       return;
     }
-    void fetchMedsamArtifactStatus(selectedSiteId, token, { mine: showOnlyMine })
+    void fetchMedsamArtifactStatus(selectedSiteId, token, {
+      mine: showOnlyMine,
+    })
       .then((nextStatus) => setMedsamArtifactStatus(nextStatus))
       .catch(() => {});
-  }, [medsamArtifactPanelEnabled, medsamArtifactStatus, selectedSiteId, token, showOnlyMine]);
+  }, [
+    medsamArtifactPanelEnabled,
+    medsamArtifactStatus,
+    selectedSiteId,
+    token,
+    showOnlyMine,
+  ]);
   useEffect(() => {
     setMedsamArtifactStatus(null);
     setMedsamArtifactStatusBusy(false);
@@ -1230,7 +1626,10 @@ export function CaseWorkspace({
       if (!registry?.site_enabled) {
         return;
       }
-      if (validatedCase.research_registry_status === "excluded" || validatedCase.research_registry_status === "included") {
+      if (
+        validatedCase.research_registry_status === "excluded" ||
+        validatedCase.research_registry_status === "included"
+      ) {
         return;
       }
       if (!registry.user_enrolled) {
@@ -1241,7 +1640,7 @@ export function CaseWorkspace({
         await includeCaseInResearchRegistry(
           validatedCase.patient_id,
           validatedCase.visit_date,
-          "validation_auto_include"
+          "validation_auto_include",
         );
       } catch {
         // Leave the validation result visible even if registry auto-inclusion fails.
@@ -1259,8 +1658,12 @@ export function CaseWorkspace({
     }
   }, [hasSavedCase]);
 
-  const whiteDraftImages = draftImages.filter((image) => image.view === "white");
-  const fluoresceinDraftImages = draftImages.filter((image) => image.view === "fluorescein");
+  const whiteDraftImages = draftImages.filter(
+    (image) => image.view === "white",
+  );
+  const fluoresceinDraftImages = draftImages.filter(
+    (image) => image.view === "fluorescein",
+  );
 
   useEffect(() => {
     invalidateCaseWorkspaceImageCaches();
@@ -1285,7 +1688,12 @@ export function CaseWorkspace({
   }, [desktopFastMode, selectedSiteId]);
 
   useEffect(() => {
-    if (!desktopFastMode || !WORKSPACE_TIMING_LOGS || !selectedSiteId || !selectedSiteLabel) {
+    if (
+      !desktopFastMode ||
+      !WORKSPACE_TIMING_LOGS ||
+      !selectedSiteId ||
+      !selectedSiteLabel
+    ) {
       return;
     }
     if (siteLabelLoggedRef.current === selectedSiteId) {
@@ -1320,7 +1728,9 @@ export function CaseWorkspace({
     setPatientIdLookupBusy(true);
     setPatientIdLookupError(null);
 
-    void fetchPatientIdLookup(selectedSiteId, token, deferredDraftPatientId, { signal: controller.signal })
+    void fetchPatientIdLookup(selectedSiteId, token, deferredDraftPatientId, {
+      signal: controller.signal,
+    })
       .then((result) => {
         if (!cancelled) {
           setPatientIdLookup(result);
@@ -1331,7 +1741,9 @@ export function CaseWorkspace({
           return;
         }
         setPatientIdLookup(null);
-        setPatientIdLookupError(describeError(nextError, copy.patientIdLookupFailed));
+        setPatientIdLookupError(
+          describeError(nextError, copy.patientIdLookupFailed),
+        );
       })
       .finally(() => {
         if (!cancelled) {
@@ -1343,7 +1755,13 @@ export function CaseWorkspace({
       cancelled = true;
       controller.abort();
     };
-  }, [copy.patientIdLookupFailed, deferredDraftPatientId, describeError, selectedSiteId, token]);
+  }, [
+    copy.patientIdLookupFailed,
+    deferredDraftPatientId,
+    describeError,
+    selectedSiteId,
+    token,
+  ]);
 
   useEffect(() => {
     if (!toast) {
@@ -1373,8 +1791,10 @@ export function CaseWorkspace({
       setRailView(historyEntry.rail_view);
       setSelectedCase(
         historyEntry.selected_case_id
-          ? cases.find((item) => item.case_id === historyEntry.selected_case_id) ?? null
-          : null
+          ? (cases.find(
+              (item) => item.case_id === historyEntry.selected_case_id,
+            ) ?? null)
+          : null,
       );
       if (!historyEntry.selected_case_id) {
         setSelectedCaseImages([]);
@@ -1393,7 +1813,10 @@ export function CaseWorkspace({
       return;
     }
 
-    const nextEntry = buildWorkspaceHistoryEntry(railView, selectedCase?.case_id ?? null);
+    const nextEntry = buildWorkspaceHistoryEntry(
+      railView,
+      selectedCase?.case_id ?? null,
+    );
     const browserEntry = readWorkspaceHistoryEntry(window.history.state);
 
     if (workspacePopNavigationRef.current) {
@@ -1411,7 +1834,10 @@ export function CaseWorkspace({
         return;
       }
       if (nextEntry.selected_case_id) {
-        const backstopEntry = buildWorkspaceHistoryEntry("patients", nextEntry.selected_case_id);
+        const backstopEntry = buildWorkspaceHistoryEntry(
+          "patients",
+          nextEntry.selected_case_id,
+        );
         if (!isSameWorkspaceHistoryEntry(browserEntry, backstopEntry)) {
           writeWorkspaceHistoryEntry(backstopEntry, "replace");
         }
@@ -1429,8 +1855,15 @@ export function CaseWorkspace({
       return;
     }
 
-    if (nextEntry.selected_case_id && workspaceHistoryRef.current.rail_view === "cases" && !workspaceHistoryRef.current.selected_case_id) {
-      const backstopEntry = buildWorkspaceHistoryEntry("patients", nextEntry.selected_case_id);
+    if (
+      nextEntry.selected_case_id &&
+      workspaceHistoryRef.current.rail_view === "cases" &&
+      !workspaceHistoryRef.current.selected_case_id
+    ) {
+      const backstopEntry = buildWorkspaceHistoryEntry(
+        "patients",
+        nextEntry.selected_case_id,
+      );
       if (!isSameWorkspaceHistoryEntry(browserEntry, backstopEntry)) {
         writeWorkspaceHistoryEntry(backstopEntry, "replace");
       }
@@ -1444,13 +1877,18 @@ export function CaseWorkspace({
     if (railView !== "patients") {
       return;
     }
-    railListSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    railListSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
   }, [railView]);
 
   function replaceDraftImagesAndBoxes(nextImages: DraftImage[]) {
     const nextIds = new Set(nextImages.map((image) => image.draft_id));
     setDraftLesionPromptBoxes((current) =>
-      Object.fromEntries(Object.entries(current).filter(([draftId]) => nextIds.has(draftId)))
+      Object.fromEntries(
+        Object.entries(current).filter(([draftId]) => nextIds.has(draftId)),
+      ),
     );
     replaceDraftImages(nextImages);
   }
@@ -1469,8 +1907,12 @@ export function CaseWorkspace({
     setSelectedCaseImages([]);
     setPanelOpen(true);
     setRailView("cases");
-    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(FOLLOW_UP_VISIT_PATTERN);
-    const fallbackFollowUpNumber = String((selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1);
+    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(
+      FOLLOW_UP_VISIT_PATTERN,
+    );
+    const fallbackFollowUpNumber = String(
+      (selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1,
+    );
 
     const applyFallbackDraft = (followUpNumber: string) => {
       setDraft((current) => ({
@@ -1479,16 +1921,20 @@ export function CaseWorkspace({
         sex: selectedCase.sex || current.sex,
         age: String(selectedCase.age ?? current.age),
         chart_alias: selectedCase.chart_alias ?? current.chart_alias,
-        local_case_code: selectedCase.local_case_code ?? current.local_case_code,
+        local_case_code:
+          selectedCase.local_case_code ?? current.local_case_code,
         actual_visit_date: "",
-        culture_category: selectedCase.culture_category || current.culture_category,
-        culture_species: selectedCase.culture_species || current.culture_species,
+        culture_category:
+          selectedCase.culture_category || current.culture_category,
+        culture_species:
+          selectedCase.culture_species || current.culture_species,
         additional_organisms: normalizeAdditionalOrganisms(
           selectedCase.culture_category,
           selectedCase.culture_species,
-          selectedCase.additional_organisms
+          selectedCase.additional_organisms,
         ),
-        contact_lens_use: selectedCase.contact_lens_use || current.contact_lens_use,
+        contact_lens_use:
+          selectedCase.contact_lens_use || current.contact_lens_use,
         visit_status: selectedCase.visit_status || current.visit_status,
         is_initial_visit: false,
         follow_up_number: followUpNumber,
@@ -1499,7 +1945,8 @@ export function CaseWorkspace({
         culture_species:
           selectedCase.additional_organisms?.[0]?.culture_species ||
           selectedCase.culture_species ||
-          (CULTURE_SPECIES[selectedCase.culture_category || "bacterial"]?.[0] ?? ""),
+          (CULTURE_SPECIES[selectedCase.culture_category || "bacterial"]?.[0] ??
+            ""),
       });
       setShowAdditionalOrganismForm(false);
     };
@@ -1510,9 +1957,16 @@ export function CaseWorkspace({
     }
 
     try {
-      const visits = await fetchVisits(selectedSiteId, token, selectedCase.patient_id);
+      const visits = await fetchVisits(
+        selectedSiteId,
+        token,
+        selectedCase.patient_id,
+      );
       const nextFollowUpNumber = String(computeNextFollowUpNumber(visits));
-      const latestVisit = [...visits].sort((left, right) => visitTimestamp(right) - visitTimestamp(left))[0] ?? null;
+      const latestVisit =
+        [...visits].sort(
+          (left, right) => visitTimestamp(right) - visitTimestamp(left),
+        )[0] ?? null;
       if (!latestVisit) {
         applyFallbackDraft(nextFollowUpNumber);
         return;
@@ -1523,30 +1977,52 @@ export function CaseWorkspace({
         sex: selectedCase.sex || current.sex,
         age: String(selectedCase.age ?? current.age),
         chart_alias: selectedCase.chart_alias ?? current.chart_alias,
-        local_case_code: selectedCase.local_case_code ?? current.local_case_code,
+        local_case_code:
+          selectedCase.local_case_code ?? current.local_case_code,
         actual_visit_date: "",
-        culture_category: latestVisit.culture_category || selectedCase.culture_category || current.culture_category,
-        culture_species: latestVisit.culture_species || selectedCase.culture_species || current.culture_species,
+        culture_category:
+          latestVisit.culture_category ||
+          selectedCase.culture_category ||
+          current.culture_category,
+        culture_species:
+          latestVisit.culture_species ||
+          selectedCase.culture_species ||
+          current.culture_species,
         additional_organisms: normalizeAdditionalOrganisms(
           latestVisit.culture_category || selectedCase.culture_category,
           latestVisit.culture_species || selectedCase.culture_species,
-          latestVisit.additional_organisms ?? selectedCase.additional_organisms
+          latestVisit.additional_organisms ?? selectedCase.additional_organisms,
         ),
-        contact_lens_use: latestVisit.contact_lens_use || selectedCase.contact_lens_use || current.contact_lens_use,
-        visit_status: latestVisit.visit_status || selectedCase.visit_status || current.visit_status,
+        contact_lens_use:
+          latestVisit.contact_lens_use ||
+          selectedCase.contact_lens_use ||
+          current.contact_lens_use,
+        visit_status:
+          latestVisit.visit_status ||
+          selectedCase.visit_status ||
+          current.visit_status,
         is_initial_visit: false,
         follow_up_number: nextFollowUpNumber,
-        predisposing_factor: latestVisit.predisposing_factor ?? current.predisposing_factor,
+        predisposing_factor:
+          latestVisit.predisposing_factor ?? current.predisposing_factor,
         other_history: latestVisit.other_history ?? current.other_history,
         intake_completed: true,
       }));
       setPendingOrganism({
-        culture_category: latestVisit.culture_category || selectedCase.culture_category || "bacterial",
+        culture_category:
+          latestVisit.culture_category ||
+          selectedCase.culture_category ||
+          "bacterial",
         culture_species:
           latestVisit.additional_organisms?.[0]?.culture_species ||
           latestVisit.culture_species ||
           selectedCase.culture_species ||
-          (CULTURE_SPECIES[latestVisit.culture_category || selectedCase.culture_category || "bacterial"]?.[0] ?? ""),
+          (CULTURE_SPECIES[
+            latestVisit.culture_category ||
+              selectedCase.culture_category ||
+              "bacterial"
+          ]?.[0] ??
+            ""),
       });
       setShowAdditionalOrganismForm(false);
     } catch (nextError) {
@@ -1555,7 +2031,11 @@ export function CaseWorkspace({
         tone: "error",
         message: describeError(
           nextError,
-          pick(locale, "Unable to prepare the next follow-up draft for this patient.", "???섏옄???ㅼ쓬 ?ъ쭊 珥덉븞??以鍮꾪븯吏 紐삵뻽?듬땲??")
+          pick(
+            locale,
+            "Unable to prepare the next follow-up draft for this patient.",
+            "???섏옄???ㅼ쓬 ?ъ쭊 珥덉븞??以鍮꾪븯吏 紐삵뻽?듬땲??",
+          ),
         ),
       });
     }
@@ -1575,14 +2055,25 @@ export function CaseWorkspace({
 
       if (selectedSiteId) {
         const [savedImages, savedVisits] = await Promise.all([
-          fetchImages(selectedSiteId, token, caseToEdit.patient_id, caseToEdit.visit_date),
+          fetchImages(
+            selectedSiteId,
+            token,
+            caseToEdit.patient_id,
+            caseToEdit.visit_date,
+          ),
           fetchVisits(selectedSiteId, token, caseToEdit.patient_id),
         ]);
         selectedVisit =
-          savedVisits.find((visit) => visit.visit_date === caseToEdit.visit_date) ?? null;
+          savedVisits.find(
+            (visit) => visit.visit_date === caseToEdit.visit_date,
+          ) ?? null;
         nextDraftImages = await Promise.all(
           savedImages.map(async (image) => {
-            const blob = await fetchImageBlob(selectedSiteId, image.image_id, token);
+            const blob = await fetchImageBlob(
+              selectedSiteId,
+              image.image_id,
+              token,
+            );
             const mediaType = blob.type || "image/jpeg";
             const extension =
               mediaType === "image/png"
@@ -1594,10 +2085,13 @@ export function CaseWorkspace({
                     : mediaType === "image/tiff"
                       ? "tiff"
                       : "jpg";
-            const file = new File([blob], `${image.image_id}.${extension}`, { type: mediaType });
+            const file = new File([blob], `${image.image_id}.${extension}`, {
+              type: mediaType,
+            });
             const draftId = createDraftId();
             nextDraftBoxes[draftId] =
-              image.lesion_prompt_box && typeof image.lesion_prompt_box === "object"
+              image.lesion_prompt_box &&
+              typeof image.lesion_prompt_box === "object"
                 ? normalizeBox(image.lesion_prompt_box)
                 : null;
             return {
@@ -1607,7 +2101,7 @@ export function CaseWorkspace({
               view: image.view,
               is_representative: image.is_representative,
             };
-          })
+          }),
         );
       }
 
@@ -1631,21 +2125,34 @@ export function CaseWorkspace({
         chart_alias: caseToEdit.chart_alias ?? current.chart_alias,
         local_case_code: caseToEdit.local_case_code ?? current.local_case_code,
         actual_visit_date: caseToEdit.actual_visit_date?.trim() || "",
-        culture_category: caseToEdit.culture_category || current.culture_category,
+        culture_category:
+          caseToEdit.culture_category || current.culture_category,
         culture_species: caseToEdit.culture_species || current.culture_species,
         additional_organisms: normalizeAdditionalOrganisms(
           caseToEdit.culture_category,
           caseToEdit.culture_species,
-          selectedVisit?.additional_organisms ?? caseToEdit.additional_organisms
+          selectedVisit?.additional_organisms ??
+            caseToEdit.additional_organisms,
         ),
-        contact_lens_use: selectedVisit?.contact_lens_use || caseToEdit.contact_lens_use || current.contact_lens_use,
-        visit_status: selectedVisit?.visit_status || caseToEdit.visit_status || current.visit_status,
+        contact_lens_use:
+          selectedVisit?.contact_lens_use ||
+          caseToEdit.contact_lens_use ||
+          current.contact_lens_use,
+        visit_status:
+          selectedVisit?.visit_status ||
+          caseToEdit.visit_status ||
+          current.visit_status,
         is_initial_visit: /^initial$/i.test(caseToEdit.visit_date),
         follow_up_number: (() => {
-          const followUpMatch = String(caseToEdit.visit_date ?? "").match(FOLLOW_UP_VISIT_PATTERN);
-          return followUpMatch ? String(Number(followUpMatch[1]) || 1) : current.follow_up_number;
+          const followUpMatch = String(caseToEdit.visit_date ?? "").match(
+            FOLLOW_UP_VISIT_PATTERN,
+          );
+          return followUpMatch
+            ? String(Number(followUpMatch[1]) || 1)
+            : current.follow_up_number;
         })(),
-        predisposing_factor: selectedVisit?.predisposing_factor ?? current.predisposing_factor,
+        predisposing_factor:
+          selectedVisit?.predisposing_factor ?? current.predisposing_factor,
         other_history: selectedVisit?.other_history ?? current.other_history,
         intake_completed: false,
       }));
@@ -1654,7 +2161,8 @@ export function CaseWorkspace({
         culture_species:
           caseToEdit.additional_organisms?.[0]?.culture_species ||
           caseToEdit.culture_species ||
-          (CULTURE_SPECIES[caseToEdit.culture_category || "bacterial"]?.[0] ?? ""),
+          (CULTURE_SPECIES[caseToEdit.culture_category || "bacterial"]?.[0] ??
+            ""),
       });
       setShowAdditionalOrganismForm(false);
     } catch (nextError) {
@@ -1662,7 +2170,11 @@ export function CaseWorkspace({
         tone: "error",
         message: describeError(
           nextError,
-          pick(locale, "Unable to open this saved case in edit mode.", "?????耳?댁뒪瑜??섏젙 紐⑤뱶濡??댁? 紐삵뻽?듬땲??")
+          pick(
+            locale,
+            "Unable to open this saved case in edit mode.",
+            "?????耳?댁뒪瑜??섏젙 紐⑤뱶濡??댁? 紐삵뻽?듬땲??",
+          ),
         ),
       });
     } finally {
@@ -1754,15 +2266,26 @@ export function CaseWorkspace({
     }
     setMedsamArtifactStatusBusy(true);
     try {
-      const nextStatus = await fetchMedsamArtifactStatus(selectedSiteId, token, {
-        mine: showOnlyMine,
-        refresh,
-      });
+      const nextStatus = await fetchMedsamArtifactStatus(
+        selectedSiteId,
+        token,
+        {
+          mine: showOnlyMine,
+          refresh,
+        },
+      );
       setMedsamArtifactStatus(nextStatus);
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to load artifact backlog.", "아티팩트 백로그를 불러오지 못했습니다.")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Unable to load artifact backlog.",
+            "아티팩트 백로그를 불러오지 못했습니다.",
+          ),
+        ),
       });
     } finally {
       setMedsamArtifactStatusBusy(false);
@@ -1789,7 +2312,9 @@ export function CaseWorkspace({
     setMedsamArtifactTotalPages(1);
   }
 
-  function handleMedsamArtifactScopeChange(scope: "patient" | "visit" | "image") {
+  function handleMedsamArtifactScopeChange(
+    scope: "patient" | "visit" | "image",
+  ) {
     setMedsamArtifactScope(scope);
     setMedsamArtifactPage(1);
   }
@@ -1811,12 +2336,23 @@ export function CaseWorkspace({
       await handleRefreshMedsamArtifactStatus(true);
       setToast({
         tone: "success",
-        message: pick(locale, "MedSAM artifact backfill started in the background.", "MedSAM 아티팩트 백필이 백그라운드에서 시작되었습니다."),
+        message: pick(
+          locale,
+          "MedSAM artifact backfill started in the background.",
+          "MedSAM 아티팩트 백필이 백그라운드에서 시작되었습니다.",
+        ),
       });
     } catch (nextError) {
       setToast({
         tone: "error",
-        message: describeError(nextError, pick(locale, "Unable to start MedSAM artifact backfill.", "MedSAM 아티팩트 백필을 시작하지 못했습니다.")),
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Unable to start MedSAM artifact backfill.",
+            "MedSAM 아티팩트 백필을 시작하지 못했습니다.",
+          ),
+        ),
       });
     } finally {
       setMedsamArtifactBackfillBusy(false);
@@ -1830,7 +2366,9 @@ export function CaseWorkspace({
   function toggleFavoriteCase(caseId: string) {
     setFavoriteCaseIds((current) => {
       const exists = current.includes(caseId);
-      const next = exists ? current.filter((item) => item !== caseId) : [...current, caseId];
+      const next = exists
+        ? current.filter((item) => item !== caseId)
+        : [...current, caseId];
       setToast({
         tone: "success",
         message: exists ? copy.favoriteRemoved : copy.favoriteAdded,
@@ -1839,7 +2377,10 @@ export function CaseWorkspace({
     });
   }
 
-  function openSavedCase(caseRecord: CaseSummaryRecord, nextView: "cases" | "patients" = "cases") {
+  function openSavedCase(
+    caseRecord: CaseSummaryRecord,
+    nextView: "cases" | "patients" = "cases",
+  ) {
     if (desktopFastMode) {
       caseOpenStartedAtRef.current = performance.now();
       caseOpenCaseIdRef.current = caseRecord.case_id;
@@ -1865,7 +2406,12 @@ export function CaseWorkspace({
   }
 
   useEffect(() => {
-    if (!desktopFastMode || !WORKSPACE_TIMING_LOGS || !selectedCase || panelBusy) {
+    if (
+      !desktopFastMode ||
+      !WORKSPACE_TIMING_LOGS ||
+      !selectedCase ||
+      panelBusy
+    ) {
       return;
     }
     if (caseOpenCaseIdRef.current !== selectedCase.case_id) {
@@ -1891,23 +2437,29 @@ export function CaseWorkspace({
     patientId: string,
     visitDate: string,
     updates: {
-      research_registry_status: "analysis_only" | "candidate" | "included" | "excluded";
+      research_registry_status:
+        | "analysis_only"
+        | "candidate"
+        | "included"
+        | "excluded";
       research_registry_updated_at?: string | null;
       research_registry_updated_by?: string | null;
       research_registry_source?: string | null;
-    }
+    },
   ) {
     setCases((current) =>
       current.map((item) =>
         item.patient_id === patientId && item.visit_date === visitDate
           ? { ...item, ...updates }
-          : item
-      )
+          : item,
+      ),
     );
     setSelectedCase((current) =>
-      current && current.patient_id === patientId && current.visit_date === visitDate
+      current &&
+      current.patient_id === patientId &&
+      current.visit_date === visitDate
         ? { ...current, ...updates }
-        : current
+        : current,
     );
   }
 
@@ -1915,7 +2467,7 @@ export function CaseWorkspace({
     patientId: string,
     visitDate: string,
     source: string,
-    successMessage?: string
+    successMessage?: string,
   ) {
     if (!selectedSiteId) {
       return;
@@ -1937,7 +2489,7 @@ export function CaseWorkspace({
     patientId: string,
     visitDate: string,
     source: string,
-    successMessage?: string
+    successMessage?: string,
   ) {
     if (!selectedSiteId) {
       return;
@@ -1959,26 +2511,36 @@ export function CaseWorkspace({
     if (!selectedSiteId) {
       return;
     }
-    const samePatientCases = cases.filter((item) => item.patient_id === caseRecord.patient_id);
-    const confirmMessage = samePatientCases.length <= 1
-      ? pick(
-          locale,
-          `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?\n\nThis is the only visit for the patient, so the patient record will also be removed.`,
-          `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 諛⑸Ц????젣?좉퉴??\n\n???섏옄??留덉?留?諛⑸Ц?대씪 ?섏옄 湲곕줉???④퍡 ??젣?⑸땲??`
-        )
-      : pick(
-          locale,
-          `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?`,
-          `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 諛⑸Ц????젣?좉퉴??`
-        );
+    const samePatientCases = cases.filter(
+      (item) => item.patient_id === caseRecord.patient_id,
+    );
+    const confirmMessage =
+      samePatientCases.length <= 1
+        ? pick(
+            locale,
+            `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?\n\nThis is the only visit for the patient, so the patient record will also be removed.`,
+            `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 諛⑸Ц????젣?좉퉴??\n\n???섏옄??留덉?留?諛⑸Ц?대씪 ?섏옄 湲곕줉???④퍡 ??젣?⑸땲??`,
+          )
+        : pick(
+            locale,
+            `Delete ${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)}?`,
+            `${caseRecord.patient_id} / ${displayVisitReference(locale, caseRecord.visit_date)} 諛⑸Ц????젣?좉퉴??`,
+          );
     if (!window.confirm(confirmMessage)) {
       return;
     }
 
     try {
-      const deleted = await deleteVisit(selectedSiteId, token, caseRecord.patient_id, caseRecord.visit_date);
+      const deleted = await deleteVisit(
+        selectedSiteId,
+        token,
+        caseRecord.patient_id,
+        caseRecord.visit_date,
+      );
       invalidateCaseWorkspaceImageCaches();
-      const nextCases = await fetchCases(selectedSiteId, token, { mine: showOnlyMine });
+      const nextCases = await fetchCases(selectedSiteId, token, {
+        mine: showOnlyMine,
+      });
       setCases(nextCases);
 
       if (deleted.deleted_patient) {
@@ -1987,20 +2549,37 @@ export function CaseWorkspace({
         setPatientVisitGallery({});
         resetAnalysisState();
         setRailView("patients");
-        setToast({ tone: "success", message: copy.patientDeleted(caseRecord.patient_id) });
+        setToast({
+          tone: "success",
+          message: copy.patientDeleted(caseRecord.patient_id),
+        });
         return;
       }
 
       const preservedCurrentCase =
         selectedCase && selectedCase.case_id !== caseRecord.case_id
-          ? nextCases.find((item) => item.case_id === selectedCase.case_id) ?? null
+          ? (nextCases.find((item) => item.case_id === selectedCase.case_id) ??
+            null)
           : null;
-      const remainingSamePatientCase = nextCases
-        .filter((item) => item.patient_id === caseRecord.patient_id)
-        .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))[0] ?? null;
-      const nextSelectedCase = preservedCurrentCase ?? remainingSamePatientCase ?? nextCases[0] ?? null;
+      const remainingSamePatientCase =
+        nextCases
+          .filter((item) => item.patient_id === caseRecord.patient_id)
+          .sort(
+            (left, right) => caseTimestamp(right) - caseTimestamp(left),
+          )[0] ?? null;
+      const nextSelectedCase =
+        preservedCurrentCase ??
+        remainingSamePatientCase ??
+        nextCases[0] ??
+        null;
       setSelectedCase(nextSelectedCase);
-      setToast({ tone: "success", message: copy.visitDeleted(caseRecord.patient_id, caseRecord.visit_date) });
+      setToast({
+        tone: "success",
+        message: copy.visitDeleted(
+          caseRecord.patient_id,
+          caseRecord.visit_date,
+        ),
+      });
     } catch (nextError) {
       setToast({
         tone: "error",
@@ -2009,7 +2588,10 @@ export function CaseWorkspace({
     }
   }
 
-  function updatePrimaryOrganism(cultureCategory: string, cultureSpecies: string) {
+  function updatePrimaryOrganism(
+    cultureCategory: string,
+    cultureSpecies: string,
+  ) {
     setDraft((current) => ({
       ...current,
       culture_category: cultureCategory.trim().toLowerCase(),
@@ -2017,7 +2599,7 @@ export function CaseWorkspace({
       additional_organisms: normalizeAdditionalOrganisms(
         cultureCategory,
         cultureSpecies,
-        current.additional_organisms
+        current.additional_organisms,
       ),
     }));
   }
@@ -2033,9 +2615,13 @@ export function CaseWorkspace({
     const currentOrganisms = listOrganisms(
       draft.culture_category,
       draft.culture_species,
-      draft.additional_organisms
+      draft.additional_organisms,
     );
-    if (currentOrganisms.some((organism) => organismKey(organism) === organismKey(nextOrganism))) {
+    if (
+      currentOrganisms.some(
+        (organism) => organismKey(organism) === organismKey(nextOrganism),
+      )
+    ) {
       setToast({
         tone: "error",
         message: copy.organismDuplicate,
@@ -2044,10 +2630,7 @@ export function CaseWorkspace({
     }
     setDraft((current) => ({
       ...current,
-      additional_organisms: [
-        ...current.additional_organisms,
-        nextOrganism,
-      ],
+      additional_organisms: [...current.additional_organisms, nextOrganism],
     }));
     setToast({
       tone: "success",
@@ -2072,7 +2655,7 @@ export function CaseWorkspace({
     setDraft((current) => ({
       ...current,
       additional_organisms: current.additional_organisms.filter(
-        (organism) => organismKey(organism) !== organismKey(organismToRemove)
+        (organism) => organismKey(organism) !== organismKey(organismToRemove),
       ),
     }));
   }
@@ -2095,7 +2678,9 @@ export function CaseWorkspace({
     setSelectedCaseImages([]);
     setDraftImages((current) => {
       const next = [...current];
-      const hasRepresentative = current.some((image) => image.is_representative);
+      const hasRepresentative = current.some(
+        (image) => image.is_representative,
+      );
       for (const file of files) {
         next.push({
           draft_id: createDraftId(),
@@ -2114,7 +2699,10 @@ export function CaseWorkspace({
 
   function removeDraftImage(draftId: string) {
     const remaining = draftImages.filter((image) => image.draft_id !== draftId);
-    if (remaining.length > 0 && !remaining.some((image) => image.is_representative)) {
+    if (
+      remaining.length > 0 &&
+      !remaining.some((image) => image.is_representative)
+    ) {
       remaining[0] = { ...remaining[0], is_representative: true };
     }
     replaceDraftImagesAndBoxes(remaining);
@@ -2125,11 +2713,16 @@ export function CaseWorkspace({
       current.map((image) => ({
         ...image,
         is_representative: image.draft_id === draftId,
-      }))
+      })),
     );
   }
 
-  function updateDraftLesionBoxFromPointer(draftId: string, clientX: number, clientY: number, element: HTMLDivElement) {
+  function updateDraftLesionBoxFromPointer(
+    draftId: string,
+    clientX: number,
+    clientY: number,
+    element: HTMLDivElement,
+  ) {
     const drawState = draftLesionDrawStateRef.current;
     if (!drawState || drawState.imageId !== draftId) {
       return;
@@ -2151,7 +2744,10 @@ export function CaseWorkspace({
     }));
   }
 
-  function handleDraftLesionPointerDown(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  function handleDraftLesionPointerDown(
+    draftId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     event.preventDefault();
     const element = event.currentTarget;
     const rect = element.getBoundingClientRect();
@@ -2173,19 +2769,34 @@ export function CaseWorkspace({
     element.setPointerCapture(event.pointerId);
   }
 
-  function handleDraftLesionPointerMove(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  function handleDraftLesionPointerMove(
+    draftId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     if (
       draftLesionDrawStateRef.current?.pointerId !== event.pointerId ||
       draftLesionDrawStateRef.current?.imageId !== draftId
     ) {
       return;
     }
-    updateDraftLesionBoxFromPointer(draftId, event.clientX, event.clientY, event.currentTarget);
+    updateDraftLesionBoxFromPointer(
+      draftId,
+      event.clientX,
+      event.clientY,
+      event.currentTarget,
+    );
   }
 
-  function finishDraftLesionPointer(draftId: string, event: ReactPointerEvent<HTMLDivElement>) {
+  function finishDraftLesionPointer(
+    draftId: string,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     const drawState = draftLesionDrawStateRef.current;
-    if (!drawState || drawState.pointerId !== event.pointerId || drawState.imageId !== draftId) {
+    if (
+      !drawState ||
+      drawState.pointerId !== event.pointerId ||
+      drawState.imageId !== draftId
+    ) {
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
@@ -2199,7 +2810,10 @@ export function CaseWorkspace({
     });
     setDraftLesionPromptBoxes((current) => ({
       ...current,
-      [draftId]: nextBox.x1 - nextBox.x0 < 0.01 || nextBox.y1 - nextBox.y0 < 0.01 ? null : nextBox,
+      [draftId]:
+        nextBox.x1 - nextBox.x0 < 0.01 || nextBox.y1 - nextBox.y0 < 0.01
+          ? null
+          : nextBox,
     }));
     draftLesionDrawStateRef.current = null;
   }
@@ -2230,7 +2844,11 @@ export function CaseWorkspace({
         token,
         initialJob: started.job,
         isActive(status) {
-          return ["queued", "running"].includes(String(status || "").trim().toLowerCase());
+          return ["queued", "running"].includes(
+            String(status || "")
+              .trim()
+              .toLowerCase(),
+          );
         },
       });
       if (latestJob.status === "failed") {
@@ -2273,9 +2891,13 @@ export function CaseWorkspace({
     setContributionBusy(true);
     setPanelOpen(true);
     try {
-      const requestedContributionModelIds = selectedCompareModelVersionIds.length > 0 ? selectedCompareModelVersionIds : undefined;
+      const requestedContributionModelIds =
+        selectedCompareModelVersionIds.length > 0
+          ? selectedCompareModelVersionIds
+          : undefined;
       const contributionModelVersionId =
-        requestedContributionModelIds && requestedContributionModelIds.length > 0
+        requestedContributionModelIds &&
+        requestedContributionModelIds.length > 0
           ? undefined
           : validationResult?.model_version.ensemble_mode === "weighted_average"
             ? undefined
@@ -2283,13 +2905,20 @@ export function CaseWorkspace({
       const result = await runCaseContribution(selectedSiteId, token, {
         patient_id: selectedCase.patient_id,
         visit_date: selectedCase.visit_date,
-        execution_mode: executionModeFromDevice(validationResult?.execution_device),
+        execution_mode: executionModeFromDevice(
+          validationResult?.execution_device,
+        ),
         model_version_id: contributionModelVersionId,
         model_version_ids: requestedContributionModelIds,
       });
       setContributionResult(result);
       await onSiteDataChanged(selectedSiteId);
-      await loadCaseHistory(selectedSiteId, selectedCase.patient_id, selectedCase.visit_date, { forceRefresh: true });
+      await loadCaseHistory(
+        selectedSiteId,
+        selectedCase.patient_id,
+        selectedCase.visit_date,
+        { forceRefresh: true },
+      );
       await loadSiteActivity(selectedSiteId);
       setCompletionState({
         kind: "contributed",
@@ -2311,15 +2940,18 @@ export function CaseWorkspace({
             ? pick(
                 locale,
                 `${result.update_count} updates were queued, with ${result.failures.length} model(s) failing.`,
-                `${result.update_count}개 업데이트를 올렸고, ${result.failures.length}개 모델은 실패했습니다.`
+                `${result.update_count}개 업데이트를 올렸고, ${result.failures.length}개 모델은 실패했습니다.`,
               )
             : result.update_count > 1
               ? pick(
                   locale,
                   `${result.update_count} contribution updates were queued for ${selectedCase.patient_id} / ${selectedCase.visit_date}.`,
-                  `${selectedCase.patient_id} / ${selectedCase.visit_date}에 대해 ${result.update_count}개 기여 업데이트를 대기열에 올렸습니다.`
+                  `${selectedCase.patient_id} / ${selectedCase.visit_date}에 대해 ${result.update_count}개 기여 업데이트를 대기열에 올렸습니다.`,
                 )
-              : copy.contributionQueued(selectedCase.patient_id, selectedCase.visit_date),
+              : copy.contributionQueued(
+                  selectedCase.patient_id,
+                  selectedCase.visit_date,
+                ),
       });
     } catch (nextError) {
       setToast({
@@ -2348,7 +2980,7 @@ export function CaseWorkspace({
         message: pick(
           locale,
           "Joined the research registry. Future eligible analyses can now flow into the dataset.",
-          "연구 레지스트리에 가입했습니다. 이제 적격 분석 케이스가 데이터셋 흐름에 포함될 수 있습니다."
+          "연구 레지스트리에 가입했습니다. 이제 적격 분석 케이스가 데이터셋 흐름에 포함될 수 있습니다.",
         ),
       });
       if (shouldAutoInclude && selectedCase) {
@@ -2359,8 +2991,8 @@ export function CaseWorkspace({
           pick(
             locale,
             "This case was included in the research registry after validation.",
-            "이 케이스는 검증 후 연구 레지스트리에 포함되었습니다."
-          )
+            "이 케이스는 검증 후 연구 레지스트리에 포함되었습니다.",
+          ),
         );
       }
     } catch (nextError) {
@@ -2368,7 +3000,11 @@ export function CaseWorkspace({
         tone: "error",
         message: describeError(
           nextError,
-          pick(locale, "Unable to join the research registry.", "연구 레지스트리에 가입할 수 없습니다.")
+          pick(
+            locale,
+            "Unable to join the research registry.",
+            "연구 레지스트리에 가입할 수 없습니다.",
+          ),
         ),
       });
     } finally {
@@ -2387,14 +3023,22 @@ export function CaseWorkspace({
         selectedCase.patient_id,
         selectedCase.visit_date,
         "manual_include",
-        pick(locale, "This case is now included in the research registry.", "이 케이스가 연구 레지스트리에 포함되었습니다.")
+        pick(
+          locale,
+          "This case is now included in the research registry.",
+          "이 케이스가 연구 레지스트리에 포함되었습니다.",
+        ),
       );
     } catch (nextError) {
       setToast({
         tone: "error",
         message: describeError(
           nextError,
-          pick(locale, "Unable to include this case in the registry.", "이 케이스를 레지스트리에 포함할 수 없습니다.")
+          pick(
+            locale,
+            "Unable to include this case in the registry.",
+            "이 케이스를 레지스트리에 포함할 수 없습니다.",
+          ),
         ),
       });
     } finally {
@@ -2412,14 +3056,22 @@ export function CaseWorkspace({
         selectedCase.patient_id,
         selectedCase.visit_date,
         "manual_exclude",
-        pick(locale, "This case was excluded from the research registry.", "이 케이스를 연구 레지스트리에서 제외했습니다.")
+        pick(
+          locale,
+          "This case was excluded from the research registry.",
+          "이 케이스를 연구 레지스트리에서 제외했습니다.",
+        ),
       );
     } catch (nextError) {
       setToast({
         tone: "error",
         message: describeError(
           nextError,
-          pick(locale, "Unable to exclude this case from the registry.", "이 케이스를 레지스트리에서 제외할 수 없습니다.")
+          pick(
+            locale,
+            "Unable to exclude this case from the registry.",
+            "이 케이스를 레지스트리에서 제외할 수 없습니다.",
+          ),
         ),
       });
     } finally {
@@ -2432,8 +3084,14 @@ export function CaseWorkspace({
     const patientId = draft.patient_id.trim();
     const editingSourceCase = editingCaseContext;
     const matchingPatientLookup =
-      patientIdLookup && patientIdLookup.requested_patient_id.trim() === patientId ? patientIdLookup : null;
-    const nextVisitReference = resolveDraftVisitReference(draft, editingSourceCase ? null : matchingPatientLookup);
+      patientIdLookup &&
+      patientIdLookup.requested_patient_id.trim() === patientId
+        ? patientIdLookup
+        : null;
+    const nextVisitReference = resolveDraftVisitReference(
+      draft,
+      editingSourceCase ? null : matchingPatientLookup,
+    );
     const patientPayload = {
       sex: draft.sex,
       age: Number(draft.age || 0),
@@ -2449,7 +3107,7 @@ export function CaseWorkspace({
       additional_organisms: normalizeAdditionalOrganisms(
         draft.culture_category,
         draft.culture_species,
-        draft.additional_organisms
+        draft.additional_organisms,
       ),
       contact_lens_use: draft.contact_lens_use,
       predisposing_factor: draft.predisposing_factor,
@@ -2489,12 +3147,17 @@ export function CaseWorkspace({
         setPatientListPage(nextPatientList.page);
       });
       const createdCase = nextCases.find(
-        (item) => item.patient_id === patientId && item.visit_date === visitReference
+        (item) =>
+          item.patient_id === patientId && item.visit_date === visitReference,
       );
       await loadSiteActivity(selectedSiteId!);
       setToast({
         tone: "success",
-        message: copy.caseSaved(patientId, visitReference, selectedSiteLabel ?? selectedSiteId!),
+        message: copy.caseSaved(
+          patientId,
+          visitReference,
+          selectedSiteLabel ?? selectedSiteId!,
+        ),
       });
       clearDraftStorage(selectedSiteId!);
       resetDraft();
@@ -2545,7 +3208,12 @@ export function CaseWorkspace({
       const ensureAndSyncPatient = async () => {
         try {
           if (matchingPatientLookup?.exists) {
-            await updatePatient(selectedSiteId, token, patientId, patientPayload);
+            await updatePatient(
+              selectedSiteId,
+              token,
+              patientId,
+              patientPayload,
+            );
             return;
           }
           await createPatient(selectedSiteId, token, {
@@ -2565,9 +3233,14 @@ export function CaseWorkspace({
           token,
           editingSourceCase?.patient_id ?? patientId,
           editingSourceCase?.visit_date ?? visitReference,
-          visitPayload(visitReference)
+          visitPayload(visitReference),
         );
-        await deleteVisitImages(selectedSiteId, token, patientId, visitReference);
+        await deleteVisitImages(
+          selectedSiteId,
+          token,
+          patientId,
+          visitReference,
+        );
         await uploadDraftImagesToVisit(visitReference);
         await finalizeSavedCase(visitReference);
       };
@@ -2586,20 +3259,26 @@ export function CaseWorkspace({
             pick(
               locale,
               `Visit ${patientId} / ${displayVisitReference(locale, nextVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
-              `방문 ${patientId} / ${displayVisitReference(locale, nextVisitReference)}가 이미 존재합니다.\n\n확인을 누르면 덮어쓰고, 취소를 누르면 다른 케이스로 저장합니다.`
-            )
+              `방문 ${patientId} / ${displayVisitReference(locale, nextVisitReference)}가 이미 존재합니다.\n\n확인을 누르면 덮어쓰고, 취소를 누르면 다른 케이스로 저장합니다.`,
+            ),
           );
           if (overwriteConfirmed) {
-            await deleteVisit(selectedSiteId, token, patientId, nextVisitReference);
+            await deleteVisit(
+              selectedSiteId,
+              token,
+              patientId,
+              nextVisitReference,
+            );
             await overwriteEditedVisit(nextVisitReference);
           } else {
-            const alternateVisitReference = await nextAvailableFollowUpReference();
+            const alternateVisitReference =
+              await nextAvailableFollowUpReference();
             const saveAlternateConfirmed = window.confirm(
               pick(
                 locale,
                 `Save this case as ${displayVisitReference(locale, alternateVisitReference)} instead?`,
-                `이 케이스를 ${displayVisitReference(locale, alternateVisitReference)}로 저장할까요?`
-              )
+                `이 케이스를 ${displayVisitReference(locale, alternateVisitReference)}로 저장할까요?`,
+              ),
             );
             if (!saveAlternateConfirmed) {
               return;
@@ -2621,7 +3300,11 @@ export function CaseWorkspace({
         Number(matchingPatientLookup.visit_count || 0) > 0;
 
       try {
-        await createVisit(selectedSiteId, token, visitPayload(createVisitReference));
+        await createVisit(
+          selectedSiteId,
+          token,
+          visitPayload(createVisitReference),
+        );
         await uploadDraftImagesToVisit(createVisitReference);
         await finalizeSavedCase(createVisitReference);
       } catch (nextError) {
@@ -2629,11 +3312,16 @@ export function CaseWorkspace({
           throw nextError;
         }
         if (existingPatientFollowUpOnly) {
-          const alternateVisitReference = await nextAvailableFollowUpReference();
+          const alternateVisitReference =
+            await nextAvailableFollowUpReference();
           if (alternateVisitReference === createVisitReference) {
             throw nextError;
           }
-          await createVisit(selectedSiteId, token, visitPayload(alternateVisitReference));
+          await createVisit(
+            selectedSiteId,
+            token,
+            visitPayload(alternateVisitReference),
+          );
           await uploadDraftImagesToVisit(alternateVisitReference);
           await finalizeSavedCase(alternateVisitReference);
           return;
@@ -2642,27 +3330,43 @@ export function CaseWorkspace({
           pick(
             locale,
             `Visit ${patientId} / ${displayVisitReference(locale, createVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
-            `諛⑸Ц ${patientId} / ${displayVisitReference(locale, createVisitReference)}媛 ?대? 議댁옱?⑸땲??\n\n?뺤씤???꾨Ⅴ硫???뼱?곌퀬, 痍⑥냼瑜??꾨Ⅴ硫??ㅻⅨ 耳?댁뒪濡???ν빀?덈떎.`
-          )
+            `諛⑸Ц ${patientId} / ${displayVisitReference(locale, createVisitReference)}媛 ?대? 議댁옱?⑸땲??\n\n?뺤씤???꾨Ⅴ硫???뼱?곌퀬, 痍⑥냼瑜??꾨Ⅴ硫??ㅻⅨ 耳?댁뒪濡???ν빀?덈떎.`,
+          ),
         );
         if (overwriteConfirmed) {
-          await updateVisit(selectedSiteId, token, patientId, createVisitReference, visitPayload(createVisitReference));
-          await deleteVisitImages(selectedSiteId, token, patientId, createVisitReference);
+          await updateVisit(
+            selectedSiteId,
+            token,
+            patientId,
+            createVisitReference,
+            visitPayload(createVisitReference),
+          );
+          await deleteVisitImages(
+            selectedSiteId,
+            token,
+            patientId,
+            createVisitReference,
+          );
           await uploadDraftImagesToVisit(createVisitReference);
           await finalizeSavedCase(createVisitReference);
         } else {
-          const alternateVisitReference = await nextAvailableFollowUpReference();
+          const alternateVisitReference =
+            await nextAvailableFollowUpReference();
           const saveAlternateConfirmed = window.confirm(
             pick(
               locale,
               `Save this case as ${displayVisitReference(locale, alternateVisitReference)} instead?`,
-              `??耳?댁뒪瑜?${displayVisitReference(locale, alternateVisitReference)}濡???ν븷源뚯슂?`
-            )
+              `??耳?댁뒪瑜?${displayVisitReference(locale, alternateVisitReference)}濡???ν븷源뚯슂?`,
+            ),
           );
           if (!saveAlternateConfirmed) {
             return;
           }
-          await createVisit(selectedSiteId, token, visitPayload(alternateVisitReference));
+          await createVisit(
+            selectedSiteId,
+            token,
+            visitPayload(alternateVisitReference),
+          );
           await uploadDraftImagesToVisit(alternateVisitReference);
           await finalizeSavedCase(alternateVisitReference);
         }
@@ -2734,9 +3438,15 @@ export function CaseWorkspace({
           setPatientListRows(response.items);
           setPatientListTotalCount(response.total_count);
           setPatientListTotalPages(Math.max(1, response.total_pages || 1));
-          setPatientListPage((current) => (current === response.page ? current : response.page));
+          setPatientListPage((current) =>
+            current === response.page ? current : response.page,
+          );
         });
-        if (desktopFastMode && WORKSPACE_TIMING_LOGS && patientListLoggedSiteIdRef.current !== currentSiteId) {
+        if (
+          desktopFastMode &&
+          WORKSPACE_TIMING_LOGS &&
+          patientListLoggedSiteIdRef.current !== currentSiteId
+        ) {
           patientListLoggedSiteIdRef.current = currentSiteId;
           const startedAt = workspaceOpenedAtRef.current ?? performance.now();
           console.info("[kera-fast-path] patient-list-ready", {
@@ -2749,7 +3459,11 @@ export function CaseWorkspace({
         if (typeof window !== "undefined") {
           prefetchTimerId = window.setTimeout(() => {
             response.items.slice(0, 6).forEach((row) => {
-              prefetchDesktopVisitImages(currentSiteId, row.latest_case.patient_id, row.latest_case.visit_date);
+              prefetchDesktopVisitImages(
+                currentSiteId,
+                row.latest_case.patient_id,
+                row.latest_case.visit_date,
+              );
             });
           }, 0);
         }
@@ -2783,10 +3497,25 @@ export function CaseWorkspace({
       }
       controller.abort();
     };
-  }, [selectedSiteId, token, showOnlyMine, patientListPage, normalizedPatientListSearch, railView, describeError, copy.unableLoadPatientList, setToast]);
+  }, [
+    selectedSiteId,
+    token,
+    showOnlyMine,
+    patientListPage,
+    normalizedPatientListSearch,
+    railView,
+    describeError,
+    copy.unableLoadPatientList,
+    setToast,
+  ]);
 
   useEffect(() => {
-    if (!selectedSiteId || railView !== "patients" || !medsamArtifactPanelEnabled || !medsamArtifactActiveStatus) {
+    if (
+      !selectedSiteId ||
+      railView !== "patients" ||
+      !medsamArtifactPanelEnabled ||
+      !medsamArtifactActiveStatus
+    ) {
       setMedsamArtifactItems([]);
       setMedsamArtifactTotalCount(0);
       setMedsamArtifactTotalPages(1);
@@ -2796,8 +3525,12 @@ export function CaseWorkspace({
     let cancelled = false;
     const controller = new AbortController();
     setMedsamArtifactItemsBusy(true);
-    const activeJob = medsamArtifactStatus?.active_job as { status?: string } | null;
-    const refreshArtifacts = ["queued", "running"].includes(String(activeJob?.status || "").toLowerCase());
+    const activeJob = medsamArtifactStatus?.active_job as {
+      status?: string;
+    } | null;
+    const refreshArtifacts = ["queued", "running"].includes(
+      String(activeJob?.status || "").toLowerCase(),
+    );
     void fetchMedsamArtifactItems(selectedSiteId, token, {
       scope: medsamArtifactScope,
       status_key: medsamArtifactActiveStatus,
@@ -2814,7 +3547,9 @@ export function CaseWorkspace({
         setMedsamArtifactItems(response.items);
         setMedsamArtifactTotalCount(Math.max(0, response.total_count || 0));
         setMedsamArtifactTotalPages(Math.max(1, response.total_pages || 1));
-        setMedsamArtifactPage((current) => (current === response.page ? current : response.page));
+        setMedsamArtifactPage((current) =>
+          current === response.page ? current : response.page,
+        );
       })
       .catch((nextError) => {
         if (isAbortError(nextError)) {
@@ -2826,7 +3561,14 @@ export function CaseWorkspace({
           setMedsamArtifactTotalPages(1);
           setToast({
             tone: "error",
-            message: describeError(nextError, pick(locale, "Unable to load artifact backlog items.", "아티팩트 백로그 항목을 불러오지 못했습니다.")),
+            message: describeError(
+              nextError,
+              pick(
+                locale,
+                "Unable to load artifact backlog items.",
+                "아티팩트 백로그 항목을 불러오지 못했습니다.",
+              ),
+            ),
           });
         }
       })
@@ -2855,11 +3597,22 @@ export function CaseWorkspace({
   ]);
 
   useEffect(() => {
-    if (!medsamArtifactPanelEnabled || !selectedSiteId || railView !== "patients") {
+    if (
+      !medsamArtifactPanelEnabled ||
+      !selectedSiteId ||
+      railView !== "patients"
+    ) {
       return;
     }
-    const activeJob = medsamArtifactStatus?.active_job as { status?: string } | null;
-    if (!activeJob || !["queued", "running"].includes(String(activeJob.status || "").toLowerCase())) {
+    const activeJob = medsamArtifactStatus?.active_job as {
+      status?: string;
+    } | null;
+    if (
+      !activeJob ||
+      !["queued", "running"].includes(
+        String(activeJob.status || "").toLowerCase(),
+      )
+    ) {
       return;
     }
     const intervalId = window.setInterval(() => {
@@ -2875,9 +3628,19 @@ export function CaseWorkspace({
         });
     }, 4000);
     return () => window.clearInterval(intervalId);
-  }, [medsamArtifactPanelEnabled, selectedSiteId, token, showOnlyMine, railView, medsamArtifactStatus]);
+  }, [
+    medsamArtifactPanelEnabled,
+    selectedSiteId,
+    token,
+    showOnlyMine,
+    railView,
+    medsamArtifactStatus,
+  ]);
 
-  const safePage = Math.min(Math.max(1, patientListPage), patientListTotalPages);
+  const safePage = Math.min(
+    Math.max(1, patientListPage),
+    patientListTotalPages,
+  );
 
   const selectedPatientCases = selectedCase
     ? [...cases]
@@ -2898,13 +3661,23 @@ export function CaseWorkspace({
       page_size: PATIENT_LIST_PAGE_SIZE,
       search: normalizedPatientListSearch,
     });
-  }, [normalizedPatientListSearch, railView, selectedSiteId, showOnlyMine, token]);
+  }, [
+    normalizedPatientListSearch,
+    railView,
+    selectedSiteId,
+    showOnlyMine,
+    token,
+  ]);
 
   useEffect(() => {
     if (canUseDesktopTransport()) {
       return;
     }
-    if (!selectedSiteId || railView !== "patients" || patientListRows.length === 0) {
+    if (
+      !selectedSiteId ||
+      railView !== "patients" ||
+      patientListRows.length === 0
+    ) {
       return;
     }
     if (patientListPage >= patientListTotalPages) {
@@ -2916,16 +3689,29 @@ export function CaseWorkspace({
       page_size: PATIENT_LIST_PAGE_SIZE,
       search: normalizedPatientListSearch,
     });
-  }, [normalizedPatientListSearch, patientListPage, patientListRows, patientListTotalPages, railView, selectedSiteId, showOnlyMine, token]);
+  }, [
+    normalizedPatientListSearch,
+    patientListPage,
+    patientListRows,
+    patientListTotalPages,
+    railView,
+    selectedSiteId,
+    showOnlyMine,
+    token,
+  ]);
 
   const speciesOptions = CULTURE_SPECIES[draft.culture_category] ?? [];
-  const pendingSpeciesOptions = CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
-  const canRunValidation = ["admin", "site_admin", "researcher"].includes(user.role);
+  const pendingSpeciesOptions =
+    CULTURE_SPECIES[pendingOrganism.culture_category] ?? [];
+  const canRunValidation = ["admin", "site_admin", "researcher"].includes(
+    user.role,
+  );
   const isAuthoringCanvas = railView !== "patients" && !selectedCase;
   const newCaseModeActive = isAuthoringCanvas;
   const listModeActive = railView === "patients" || Boolean(selectedCase);
   const canRunRoiPreview = canRunValidation;
-  const canRunAiClinic = canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
+  const canRunAiClinic =
+    canRunValidation && Boolean(validationResult) && Boolean(selectedCase);
 
   useEffect(() => {
     if (canUseDesktopTransport()) {
@@ -2948,7 +3734,12 @@ export function CaseWorkspace({
     if (canUseDesktopTransport()) {
       return;
     }
-    if (!selectedSiteId || railView === "patients" || !selectedCase || !canRunValidation) {
+    if (
+      !selectedSiteId ||
+      railView === "patients" ||
+      !selectedCase ||
+      !canRunValidation
+    ) {
       return;
     }
     const controller = new AbortController();
@@ -2956,25 +3747,35 @@ export function CaseWorkspace({
     return () => {
       controller.abort();
     };
-  }, [canRunValidation, ensureSiteModelVersionsLoaded, railView, selectedCase, selectedSiteId]);
+  }, [
+    canRunValidation,
+    ensureSiteModelVersionsLoaded,
+    railView,
+    selectedCase,
+    selectedSiteId,
+  ]);
 
   const compareModelCandidates = useMemo(
     () =>
-      MODEL_COMPARE_ARCHITECTURES.map((architecture) =>
-        [...siteModelVersions]
-          .reverse()
-          .find((item) => item.ready !== false && String(item.architecture || "").trim().toLowerCase() === architecture)
-      ).filter((item): item is ModelVersionRecord => Boolean(item?.version_id)),
+      sortCompareModelVersions(
+        siteModelVersions.filter(isSelectableCompareModelVersion),
+      ),
     [siteModelVersions],
   );
   const canContributeSelectedCase =
-    canRunValidation && Boolean(selectedCase) && selectedCase?.visit_status === "active";
-  const researchRegistryEnabled = Boolean(summary?.research_registry?.site_enabled);
-  const researchRegistryUserEnrolled = Boolean(summary?.research_registry?.user_enrolled);
+    canRunValidation &&
+    Boolean(selectedCase) &&
+    selectedCase?.visit_status === "active";
+  const researchRegistryEnabled = Boolean(
+    summary?.research_registry?.site_enabled,
+  );
+  const researchRegistryUserEnrolled = Boolean(
+    summary?.research_registry?.user_enrolled,
+  );
   const latestSiteValidation = siteValidationRuns[0] ?? null;
   const validationPredictedConfidence = predictedClassConfidence(
     validationResult?.summary.predicted_label,
-    validationResult?.summary.prediction_probability
+    validationResult?.summary.prediction_probability,
   );
   const validationConfidence = confidencePercent(validationPredictedConfidence);
   const validationConfidenceTone = confidenceTone(validationConfidence);
@@ -2990,28 +3791,53 @@ export function CaseWorkspace({
       locale={locale}
       completion={selectedCompletion}
       hospitalValidationCount={summary?.n_validation_runs ?? 0}
-      formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
+      formatDateTime={(value, emptyLabel = common.notAvailable) =>
+        formatDateTime(value, localeTag, emptyLabel)
+      }
       notAvailableLabel={common.notAvailable}
     />
   ) : null;
   const draftStatusLabel = draftSavedAt
-    ? copy.draftAutosaved(new Date(draftSavedAt).toLocaleTimeString(localeTag, { hour: "2-digit", minute: "2-digit" }))
+    ? copy.draftAutosaved(
+        new Date(draftSavedAt).toLocaleTimeString(localeTag, {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      )
     : copy.draftUnsaved;
-  const intakeOrganisms = listOrganisms(draft.culture_category, draft.culture_species, draft.additional_organisms);
+  const intakeOrganisms = listOrganisms(
+    draft.culture_category,
+    draft.culture_species,
+    draft.additional_organisms,
+  );
   const matchingDraftPatientLookup =
-    patientIdLookup && patientIdLookup.requested_patient_id.trim() === draft.patient_id.trim() ? patientIdLookup : null;
-  const resolvedVisitReference = resolveDraftVisitReference(draft, editingCaseContext ? null : matchingDraftPatientLookup);
-  const resolvedVisitReferenceLabel = displayVisitReference(locale, resolvedVisitReference);
+    patientIdLookup &&
+    patientIdLookup.requested_patient_id.trim() === draft.patient_id.trim()
+      ? patientIdLookup
+      : null;
+  const resolvedVisitReference = resolveDraftVisitReference(
+    draft,
+    editingCaseContext ? null : matchingDraftPatientLookup,
+  );
+  const resolvedVisitReferenceLabel = displayVisitReference(
+    locale,
+    resolvedVisitReference,
+  );
   const latestAutosavedDraft =
     draftSavedAt && !draft.intake_completed
       ? {
-          patientId: draft.patient_id.trim() || pick(locale, "Untitled draft", "임시 케이스"),
+          patientId:
+            draft.patient_id.trim() ||
+            pick(locale, "Untitled draft", "임시 케이스"),
           visitLabel: resolvedVisitReferenceLabel,
           savedLabel: draftStatusLabel,
         }
       : null;
-  const actualVisitDateLabel = draft.actual_visit_date.trim() || common.notAvailable;
-  const draftRepresentativeCount = draftImages.filter((image) => image.is_representative).length;
+  const actualVisitDateLabel =
+    draft.actual_visit_date.trim() || common.notAvailable;
+  const draftRepresentativeCount = draftImages.filter(
+    (image) => image.is_representative,
+  ).length;
   const draftChecklist = [
     Boolean(draft.patient_id.trim() && draft.age.trim()),
     Boolean(draft.visit_status && draft.contact_lens_use),
@@ -3019,34 +3845,106 @@ export function CaseWorkspace({
     draftImages.length > 0,
   ];
   const draftCompletionCount = draftChecklist.filter(Boolean).length;
-  const draftCompletionPercent = Math.round((draftCompletionCount / draftChecklist.length) * 100);
+  const draftCompletionPercent = Math.round(
+    (draftCompletionCount / draftChecklist.length) * 100,
+  );
   const draftPendingItems: string[] = [];
   if (!selectedSiteId) {
-    draftPendingItems.push(pick(locale, "Select a hospital workspace.", "병원 워크스페이스를 선택하세요."));
+    draftPendingItems.push(
+      pick(
+        locale,
+        "Select a hospital workspace.",
+        "병원 워크스페이스를 선택하세요.",
+      ),
+    );
   }
   if (!draft.patient_id.trim()) {
-    draftPendingItems.push(pick(locale, "Add a patient identifier.", "환자 식별자를 입력하세요."));
+    draftPendingItems.push(
+      pick(locale, "Add a patient identifier.", "환자 식별자를 입력하세요."),
+    );
   }
   if (!draft.culture_species.trim()) {
-    draftPendingItems.push(pick(locale, "Choose the primary organism.", "기본 원인균을 선택하세요."));
+    draftPendingItems.push(
+      pick(locale, "Choose the primary organism.", "기본 원인균을 선택하세요."),
+    );
   }
   if (!draft.intake_completed) {
-    draftPendingItems.push(pick(locale, "Complete the intake to unlock submission.", "제출을 열려면 intake를 완료하세요."));
+    draftPendingItems.push(
+      pick(
+        locale,
+        "Complete the intake to unlock submission.",
+        "제출을 열려면 intake를 완료하세요.",
+      ),
+    );
   }
   if (draftImages.length === 0) {
-    draftPendingItems.push(pick(locale, "Add at least one image to the board.", "이미지를 한 장 이상 보드에 추가하세요."));
+    draftPendingItems.push(
+      pick(
+        locale,
+        "Add at least one image to the board.",
+        "이미지를 한 장 이상 보드에 추가하세요.",
+      ),
+    );
   }
   if (draftImages.length > 0 && draftRepresentativeCount === 0) {
-    draftPendingItems.push(pick(locale, "Mark one representative image.", "대표 이미지를 한 장 지정하세요."));
-  }
-  const handleRunValidationStable = useCallback(() => void handleRunValidation(), [handleRunValidation]);
-  const handleRunModelCompareStable = useCallback(() => void handleRunModelCompare(), [handleRunModelCompare]);
-  const handleToggleModelVersion = useCallback(
-    (versionId: string, checked: boolean) =>
-      setSelectedCompareModelVersionIds((current) =>
-        checked ? [...current, versionId] : current.filter((item) => item !== versionId)
+    draftPendingItems.push(
+      pick(
+        locale,
+        "Mark one representative image.",
+        "대표 이미지를 한 장 지정하세요.",
       ),
-    [],
+    );
+  }
+  const handleRunValidationStable = useCallback(
+    () => void handleRunValidation(),
+    [handleRunValidation],
+  );
+  const handleRunModelCompareStable = useCallback(
+    () => void handleRunModelCompare(),
+    [handleRunModelCompare],
+  );
+  const handleToggleModelVersion = useCallback(
+    (versionId: string, checked: boolean) => {
+      const normalizedVersionId = String(versionId || "").trim();
+      if (!normalizedVersionId) {
+        return;
+      }
+      const current = Array.from(
+        new Set(
+          selectedCompareModelVersionIds
+            .map((item) => String(item).trim())
+            .filter((item) => item.length > 0),
+        ),
+      );
+      if (!checked) {
+        setSelectedCompareModelVersionIds(
+          current.filter((item) => item !== normalizedVersionId),
+        );
+        return;
+      }
+      if (current.includes(normalizedVersionId)) {
+        return;
+      }
+      if (current.length >= MAX_MODEL_COMPARE_SELECTIONS) {
+        setToast({
+          tone: "error",
+          message: pick(
+            locale,
+            `You can compare up to ${MAX_MODEL_COMPARE_SELECTIONS} models at once.`,
+            `한 번에 최대 ${MAX_MODEL_COMPARE_SELECTIONS}개 모델까지 비교할 수 있습니다.`,
+          ),
+        });
+        return;
+      }
+      setSelectedCompareModelVersionIds([...current, normalizedVersionId]);
+    },
+    [
+      locale,
+      pick,
+      selectedCompareModelVersionIds,
+      setToast,
+      setSelectedCompareModelVersionIds,
+    ],
   );
   const artifactContent = useMemo(
     () => (
@@ -3118,8 +4016,14 @@ export function CaseWorkspace({
       formatProbability,
     ],
   );
-  const handleRunAiClinicStable = useCallback(() => void handleRunAiClinic(), [handleRunAiClinic]);
-  const handleExpandAiClinicStable = useCallback(() => void handleExpandAiClinic(), [handleExpandAiClinic]);
+  const handleRunAiClinicStable = useCallback(
+    () => void handleRunAiClinic(),
+    [handleRunAiClinic],
+  );
+  const handleExpandAiClinicStable = useCallback(
+    () => void handleExpandAiClinic(),
+    [handleExpandAiClinic],
+  );
   const displayVisitReferenceForLocale = useCallback(
     (visitReference: string) => displayVisitReference(locale, visitReference),
     [locale],
@@ -3128,7 +4032,10 @@ export function CaseWorkspace({
     (field: string) => formatAiClinicMetadataField(locale, field),
     [locale],
   );
-  const canExpandAiClinic = canRunAiClinic && aiClinicResult !== null && aiClinicResult.analysis_stage !== "expanded";
+  const canExpandAiClinic =
+    canRunAiClinic &&
+    aiClinicResult !== null &&
+    aiClinicResult.analysis_stage !== "expanded";
   const aiClinicPanelContent = useMemo(
     () => (
       <AiClinicPanel
@@ -3161,11 +4068,21 @@ export function CaseWorkspace({
       </AiClinicPanel>
     ),
     [
-      locale, validationResult, aiClinicBusy, aiClinicExpandedBusy, canRunAiClinic, canExpandAiClinic,
-      handleRunAiClinicStable, handleExpandAiClinicStable,
-      modelCompareResult, aiClinicResult, aiClinicPreviewBusy,
-      common.notAvailable, copy.aiClinicTextUnavailable,
-      displayVisitReferenceForLocale, formatAiClinicMetadataFieldForLocale,
+      locale,
+      validationResult,
+      aiClinicBusy,
+      aiClinicExpandedBusy,
+      canRunAiClinic,
+      canExpandAiClinic,
+      handleRunAiClinicStable,
+      handleExpandAiClinicStable,
+      modelCompareResult,
+      aiClinicResult,
+      aiClinicPreviewBusy,
+      common.notAvailable,
+      copy.aiClinicTextUnavailable,
+      displayVisitReferenceForLocale,
+      formatAiClinicMetadataFieldForLocale,
     ],
   );
   const mainHeaderTitle =
@@ -3181,14 +4098,17 @@ export function CaseWorkspace({
         ? pick(
             locale,
             "Review the saved visit, validation context, and contribution history in one place.",
-            "저장된 방문, 검증 맥락, 기여 이력을 한 곳에서 검토합니다."
+            "저장된 방문, 검증 맥락, 기여 이력을 한 곳에서 검토합니다.",
           )
         : pick(
             locale,
             "Capture intake, images, and submission for one case.",
-            "한 케이스의 intake, 이미지, 제출 상태를 정리합니다."
+            "한 케이스의 intake, 이미지, 제출 상태를 정리합니다.",
           );
-  const showSecondaryPanel = !desktopFastMode && railView !== "patients" && (isAuthoringCanvas || Boolean(selectedCase));
+  const showSecondaryPanel =
+    !desktopFastMode &&
+    railView !== "patients" &&
+    (isAuthoringCanvas || Boolean(selectedCase));
   const showPatientListSidebar = railView === "patients";
   const selectedCaseLayoutClass =
     selectedCase && showSecondaryPanel
@@ -3197,7 +4117,7 @@ export function CaseWorkspace({
         ? "grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start"
         : null;
   const mainLayoutClass = selectedCase
-    ? selectedCaseLayoutClass ?? "grid gap-6"
+    ? (selectedCaseLayoutClass ?? "grid gap-6")
     : showSecondaryPanel || showPatientListSidebar
       ? workspaceCenterClass
       : "grid gap-6";
@@ -3230,7 +4150,9 @@ export function CaseWorkspace({
         siteValidationBusy={siteValidationBusy}
         canRunValidation={canRunValidation}
         commonNotAvailable={common.notAvailable}
-        formatDateTime={(value) => formatDateTime(value, localeTag, common.notAvailable)}
+        formatDateTime={(value) =>
+          formatDateTime(value, localeTag, common.notAvailable)
+        }
         latestAutosavedDraft={latestAutosavedDraft}
         onStartNewCase={startNewCaseDraft}
         onOpenPatientList={handleOpenPatientList}
@@ -3242,17 +4164,27 @@ export function CaseWorkspace({
       <section className={workspaceMainClass}>
         <header className={workspaceHeaderClass}>
           <div>
-            <div className={workspaceKickerClass}>{pick(locale, "Research document", "?곌뎄 臾몄꽌")}</div>
+            <div className={workspaceKickerClass}>
+              {pick(locale, "Research document", "?곌뎄 臾몄꽌")}
+            </div>
             <div className={workspaceTitleRowClass}>
               <h2>{mainHeaderTitle}</h2>
               <span className={workspaceTitleCopyClass}>{mainHeaderCopy}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
-            <DesktopControlPlaneStatusBadge locale={locale} status={controlPlaneStatus} busy={controlPlaneStatusBusy} />
-            {selectedSiteLabel ? <span className={docSiteBadgeClass}>{selectedSiteLabel}</span> : null}
+            <DesktopControlPlaneStatusBadge
+              locale={locale}
+              status={controlPlaneStatus}
+              busy={controlPlaneStatusBusy}
+            />
+            {selectedSiteLabel ? (
+              <span className={docSiteBadgeClass}>{selectedSiteLabel}</span>
+            ) : null}
             {!canOpenOperations ? (
-              <span className={workspaceUserBadgeClass}>{translateRole(locale, user.role)}</span>
+              <span className={workspaceUserBadgeClass}>
+                {translateRole(locale, user.role)}
+              </span>
             ) : null}
             <div className="relative" ref={alertsPanelRef}>
               <Button
@@ -3288,12 +4220,24 @@ export function CaseWorkspace({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="grid gap-1">
-                      <strong className="text-sm font-semibold text-ink">{copy.recentAlerts}</strong>
-                      <p className="m-0 text-sm leading-6 text-muted">{copy.recentAlertsCopy}</p>
+                      <strong className="text-sm font-semibold text-ink">
+                        {copy.recentAlerts}
+                      </strong>
+                      <p className="m-0 text-sm leading-6 text-muted">
+                        {copy.recentAlertsCopy}
+                      </p>
                     </div>
                     <div className="grid gap-2 justify-items-end">
-                      <span className={docSiteBadgeClass}>{`${toastHistory.length} ${copy.alertsKept}`}</span>
-                      <Button type="button" size="sm" variant="ghost" onClick={clearToastHistory} disabled={toastHistory.length === 0}>
+                      <span
+                        className={docSiteBadgeClass}
+                      >{`${toastHistory.length} ${copy.alertsKept}`}</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={clearToastHistory}
+                        disabled={toastHistory.length === 0}
+                      >
                         {copy.clearAlerts}
                       </Button>
                     </div>
@@ -3310,12 +4254,19 @@ export function CaseWorkspace({
                           }`}
                         >
                           <div className="flex items-center justify-between gap-3">
-                            <strong>{entry.tone === "success" ? common.saved : common.actionNeeded}</strong>
+                            <strong>
+                              {entry.tone === "success"
+                                ? common.saved
+                                : common.actionNeeded}
+                            </strong>
                             <span className="text-[0.72rem] text-muted">
-                              {new Date(entry.created_at).toLocaleTimeString(localeTag, {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
+                              {new Date(entry.created_at).toLocaleTimeString(
+                                localeTag,
+                                {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                },
+                              )}
                             </span>
                           </div>
                           <span>{entry.message}</span>
@@ -3330,30 +4281,54 @@ export function CaseWorkspace({
             </div>
             <LocaleToggle />
             <Button variant="ghost" type="button" onClick={onToggleTheme}>
-              {theme === "dark" ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶") : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}
+              {theme === "dark"
+                ? pick(locale, "Light mode", "?쇱씠??紐⑤뱶")
+                : pick(locale, "Dark mode", "?ㅽ겕 紐⑤뱶")}
             </Button>
             {onOpenHospitalAccessRequest ? (
-              <Button variant="ghost" type="button" onClick={onOpenHospitalAccessRequest}>
+              <Button
+                variant="ghost"
+                type="button"
+                onClick={onOpenHospitalAccessRequest}
+              >
                 {selectedSiteId
                   ? pick(locale, "Request hospital change", "병원 변경 요청")
                   : pick(locale, "Request hospital access", "병원 접근 요청")}
               </Button>
             ) : null}
             {canOpenOperations ? (
-              <Button variant="ghost" type="button" onClick={() => onOpenOperations()}>
+              <Button
+                variant="ghost"
+                type="button"
+                onClick={() => onOpenOperations()}
+              >
                 {pick(locale, "Admin", "관리자")}
               </Button>
             ) : null}
             {onOpenDesktopSettings ? (
-              <Button variant="ghost" type="button" onClick={onOpenDesktopSettings}>
+              <Button
+                variant="ghost"
+                type="button"
+                onClick={onOpenDesktopSettings}
+              >
                 {pick(locale, "Desktop settings", "데스크톱 설정")}
               </Button>
             ) : null}
-            <Button variant="ghost" type="button" onClick={onExportManifest} disabled={!selectedSiteId}>
+            <Button
+              variant="ghost"
+              type="button"
+              onClick={onExportManifest}
+              disabled={!selectedSiteId}
+            >
               {pick(locale, "Export manifest", "留ㅻ땲?섏뒪???대낫?닿린")}
             </Button>
-            <Button className={completeIntakeButtonClass} type="button" variant="primary" onClick={onLogout}>
-                {pick(locale, "Log out", "濡쒓렇?꾩썐")}
+            <Button
+              className={completeIntakeButtonClass}
+              type="button"
+              variant="primary"
+              onClick={onLogout}
+            >
+              {pick(locale, "Log out", "濡쒓렇?꾩썐")}
             </Button>
           </div>
         </header>
@@ -3390,7 +4365,11 @@ export function CaseWorkspace({
                   onOpenSavedCase={openSavedCase}
                   onPrefetchCase={(caseRecord) => {
                     if (selectedSiteId) {
-                      prefetchDesktopVisitImages(selectedSiteId, caseRecord.patient_id, caseRecord.visit_date);
+                      prefetchDesktopVisitImages(
+                        selectedSiteId,
+                        caseRecord.patient_id,
+                        caseRecord.visit_date,
+                      );
                     }
                   }}
                   medsamArtifactActiveStatus={medsamArtifactActiveStatus}
@@ -3400,12 +4379,16 @@ export function CaseWorkspace({
                   medsamArtifactPage={medsamArtifactPage}
                   medsamArtifactTotalCount={medsamArtifactTotalCount}
                   medsamArtifactTotalPages={medsamArtifactTotalPages}
-                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
+                  onCloseMedsamArtifactBacklog={
+                    handleCloseMedsamArtifactBacklog
+                  }
                   onMedsamArtifactScopeChange={handleMedsamArtifactScopeChange}
                   onMedsamArtifactPageChange={handleMedsamArtifactPageChange}
                 />
               </div>
-              <aside className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}>
+              <aside
+                className={`${workspacePanelClass} order-1 xl:order-2 xl:self-start`}
+              >
                 <MedsamArtifactBacklogPanel
                   locale={locale}
                   pick={pick}
@@ -3415,18 +4398,30 @@ export function CaseWorkspace({
                   medsamArtifactBackfillBusy={medsamArtifactBackfillBusy}
                   medsamArtifactActiveStatus={medsamArtifactActiveStatus}
                   canBackfillMedsamArtifacts={canRunValidation}
-                  onEnableMedsamArtifactPanel={() => void handleEnableMedsamArtifactPanel()}
-                  onDisableMedsamArtifactPanel={handleDisableMedsamArtifactPanel}
-                  onRefreshMedsamArtifactStatus={() => void handleRefreshMedsamArtifactStatus(true)}
+                  onEnableMedsamArtifactPanel={() =>
+                    void handleEnableMedsamArtifactPanel()
+                  }
+                  onDisableMedsamArtifactPanel={
+                    handleDisableMedsamArtifactPanel
+                  }
+                  onRefreshMedsamArtifactStatus={() =>
+                    void handleRefreshMedsamArtifactStatus(true)
+                  }
                   onOpenMedsamArtifactBacklog={handleOpenMedsamArtifactBacklog}
-                  onCloseMedsamArtifactBacklog={handleCloseMedsamArtifactBacklog}
-                  onBackfillMedsamArtifacts={() => void handleBackfillMedsamArtifacts()}
+                  onCloseMedsamArtifactBacklog={
+                    handleCloseMedsamArtifactBacklog
+                  }
+                  onBackfillMedsamArtifacts={() =>
+                    void handleBackfillMedsamArtifacts()
+                  }
                 />
               </aside>
             </>
           ) : selectedCase ? (
             <>
-              <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
+              <section
+                className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}
+              >
                 <SavedCaseOverview
                   locale={locale}
                   localeTag={localeTag}
@@ -3456,7 +4451,10 @@ export function CaseWorkspace({
                   locale={locale}
                   commonLoading={common.loading}
                   commonNotAvailable={common.notAvailable}
-                  selectedVisitLabel={displayVisitReference(locale, selectedCase.visit_date)}
+                  selectedVisitLabel={displayVisitReference(
+                    locale,
+                    selectedCase.visit_date,
+                  )}
                   siteId={selectedSiteId ?? ""}
                   token={token}
                   panelBusy={panelBusy}
@@ -3481,7 +4479,9 @@ export function CaseWorkspace({
                   pick={pick}
                   translateOption={translateOption}
                   formatSemanticScore={formatSemanticScore}
-                  onToggleLiveLesionMask={() => setLiveLesionCropEnabled((current) => !current)}
+                  onToggleLiveLesionMask={() =>
+                    setLiveLesionCropEnabled((current) => !current)
+                  }
                   onSemanticPromptInputModeChange={setSemanticPromptInputMode}
                   onSetSavedRepresentative={handleSetSavedRepresentative}
                   onReviewSemanticPrompts={handleReviewSemanticPrompts}
@@ -3511,15 +4511,31 @@ export function CaseWorkspace({
                     <section className={docSectionClass}>
                       <SectionHeader
                         className={docSectionHeadClass}
-                        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Validation and AI Clinic", "寃利?諛?AI Clinic")}</div>}
-                        title={pick(locale, "Validation, artifacts, and retrieval support", "검증, 아티팩트, 검색 지원")}
+                        eyebrow={
+                          <div className={docSectionLabelClass}>
+                            {pick(
+                              locale,
+                              "Validation and AI Clinic",
+                              "寃利?諛?AI Clinic",
+                            )}
+                          </div>
+                        }
+                        title={pick(
+                          locale,
+                          "Validation, artifacts, and retrieval support",
+                          "검증, 아티팩트, 검색 지원",
+                        )}
                         titleAs="h4"
                         description={pick(
                           locale,
                           "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
-                          "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??"
+                          "紐⑤뜽 寃利? ?꾪떚?⑺듃, ?좎궗 ?섏옄 寃?? differential support瑜??볦? ?덉씠?꾩썐?먯꽌 ?뺤씤?⑸땲??",
                         )}
-                        aside={<span className={docSiteBadgeClass}>{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>}
+                        aside={
+                          <span
+                            className={docSiteBadgeClass}
+                          >{`${selectedCaseImages.length} ${pick(locale, "images", "?대?吏")}`}</span>
+                        }
                       />
                       <div className={panelStackClass}>
                         {validationPanelContent}
@@ -3533,7 +4549,10 @@ export function CaseWorkspace({
               <SavedCaseSidebar
                 locale={locale}
                 pick={pick}
-                selectedCaseImageCount={Math.max(selectedCaseImages.length, Number(selectedCase.image_count ?? 0))}
+                selectedCaseImageCount={Math.max(
+                  selectedCaseImages.length,
+                  Number(selectedCase.image_count ?? 0),
+                )}
                 hasRepresentativeImage={
                   Boolean(selectedCase.representative_image_id) ||
                   selectedCaseImages.some((image) => image.is_representative)
@@ -3545,8 +4564,16 @@ export function CaseWorkspace({
             <section className={`${docSurfaceClass} gap-4 p-5 lg:gap-5 lg:p-5`}>
               <SectionHeader
                 className={docSectionHeadClass}
-                eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Hospital access", "병원 접근")}</div>}
-                title={pick(locale, "Choose or request a hospital before creating a case", "케이스 생성 전에 병원을 선택하거나 요청하세요")}
+                eyebrow={
+                  <div className={docSectionLabelClass}>
+                    {pick(locale, "Hospital access", "병원 접근")}
+                  </div>
+                }
+                title={pick(
+                  locale,
+                  "Choose or request a hospital before creating a case",
+                  "케이스 생성 전에 병원을 선택하거나 요청하세요",
+                )}
                 titleAs="h4"
                 description={pick(
                   locale,
@@ -3555,7 +4582,11 @@ export function CaseWorkspace({
                 )}
                 aside={
                   onOpenHospitalAccessRequest ? (
-                    <Button type="button" variant="ghost" onClick={onOpenHospitalAccessRequest}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={onOpenHospitalAccessRequest}
+                    >
                       {pick(locale, "Open hospital request", "병원 요청 열기")}
                     </Button>
                   ) : null
@@ -3576,11 +4607,18 @@ export function CaseWorkspace({
               draftStatusLabel={draftStatusLabel}
               resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
               intakeCompleted={draft.intake_completed}
-              patientSummaryLabel={draft.patient_id.trim() || pick(locale, "Waiting for patient ID", "환자 ID 대기 중")}
+              patientSummaryLabel={
+                draft.patient_id.trim() ||
+                pick(locale, "Waiting for patient ID", "환자 ID 대기 중")
+              }
               visitSummaryLabel={`${resolvedVisitReferenceLabel} · ${translateOption(locale, "visitStatus", draft.visit_status)}`}
               organismSummary={
-                organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 1) ||
-                pick(locale, "Choose primary organism", "기본 원인균 선택")
+                organismSummaryLabel(
+                  draft.culture_category,
+                  draft.culture_species,
+                  draft.additional_organisms,
+                  1,
+                ) || pick(locale, "Choose primary organism", "기본 원인균 선택")
               }
               patientVisitForm={
                 <PatientVisitForm
@@ -3601,7 +4639,12 @@ export function CaseWorkspace({
                   patientIdLookup={patientIdLookup}
                   patientIdLookupBusy={patientIdLookupBusy}
                   patientIdLookupError={patientIdLookupError}
-                  primaryOrganismSummary={organismSummaryLabel(draft.culture_category, draft.culture_species, draft.additional_organisms, 2)}
+                  primaryOrganismSummary={organismSummaryLabel(
+                    draft.culture_category,
+                    draft.culture_species,
+                    draft.additional_organisms,
+                    2,
+                  )}
                   resolvedVisitReferenceLabel={resolvedVisitReferenceLabel}
                   actualVisitDateLabel={actualVisitDateLabel}
                   setDraft={setDraft}
@@ -3657,13 +4700,27 @@ export function CaseWorkspace({
                     researchRegistryBusy={researchRegistryBusy}
                     contributionBusy={contributionBusy}
                     contributionResult={contributionResult}
-                    currentUserPublicAlias={user.public_alias ?? contributionResult?.stats.user_public_alias ?? null}
-                    contributionLeaderboard={siteActivity?.contribution_leaderboard ?? contributionResult?.stats.leaderboard ?? null}
+                    currentUserPublicAlias={
+                      user.public_alias ??
+                      contributionResult?.stats.user_public_alias ??
+                      null
+                    }
+                    contributionLeaderboard={
+                      siteActivity?.contribution_leaderboard ??
+                      contributionResult?.stats.leaderboard ??
+                      null
+                    }
                     historyBusy={historyBusy}
                     caseHistory={caseHistory}
-                    onJoinResearchRegistry={() => openResearchRegistryModal(false)}
-                    onIncludeResearchCase={() => void handleIncludeResearchCase()}
-                    onExcludeResearchCase={() => void handleExcludeResearchCase()}
+                    onJoinResearchRegistry={() =>
+                      openResearchRegistryModal(false)
+                    }
+                    onIncludeResearchCase={() =>
+                      void handleIncludeResearchCase()
+                    }
+                    onExcludeResearchCase={() =>
+                      void handleExcludeResearchCase()
+                    }
                     onContributeCase={() => void handleContributeCase()}
                     completionContent={completionContent}
                     formatProbability={formatProbability}
@@ -3685,16 +4742,32 @@ export function CaseWorkspace({
       </section>
 
       {researchRegistryModalOpen ? (
-        <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm" role="dialog" aria-modal="true">
-          <Card as="section" variant="panel" className="grid max-w-[560px] gap-4 p-6">
+        <div
+          className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <Card
+            as="section"
+            variant="panel"
+            className="grid max-w-[560px] gap-4 p-6"
+          >
             <SectionHeader
-              eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Research registry", "연구 레지스트리")}</div>}
-              title={pick(locale, "Join once, then keep contribution automatic", "한 번 가입하고 자동 기여 흐름 사용")}
+              eyebrow={
+                <div className={docSectionLabelClass}>
+                  {pick(locale, "Research registry", "연구 레지스트리")}
+                </div>
+              }
+              title={pick(
+                locale,
+                "Join once, then keep contribution automatic",
+                "한 번 가입하고 자동 기여 흐름 사용",
+              )}
               titleAs="h3"
               description={pick(
                 locale,
                 "K-ERA keeps AI validation free. If you join the registry, de-identified cases from this site can be included for model improvement and multi-center research, with per-case opt-out remaining available.",
-                "K-ERA는 AI 검증을 무료로 유지합니다. 레지스트리에 가입하면 이 기관의 비식별 케이스가 모델 개선과 다기관 연구에 포함될 수 있고, 각 케이스는 이후에도 개별 제외할 수 있습니다."
+                "K-ERA는 AI 검증을 무료로 유지합니다. 레지스트리에 가입하면 이 기관의 비식별 케이스가 모델 개선과 다기관 연구에 포함될 수 있고, 각 케이스는 이후에도 개별 제외할 수 있습니다.",
               )}
             />
             <Card as="div" variant="nested" className="grid gap-2 p-4">
@@ -3702,14 +4775,14 @@ export function CaseWorkspace({
                 {pick(
                   locale,
                   "Original data ownership remains with the contributing institution. This step only enables research-registry participation for your account at the current site.",
-                  "원본 데이터의 권리는 기여 기관에 남아 있습니다. 이 단계는 현재 병원에서 이 계정의 연구 레지스트리 참여만 활성화합니다."
+                  "원본 데이터의 권리는 기여 기관에 남아 있습니다. 이 단계는 현재 병원에서 이 계정의 연구 레지스트리 참여만 활성화합니다.",
                 )}
               </p>
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
                   "You can still exclude any case later from the case-side registry panel.",
-                  "이후에도 케이스별 레지스트리 패널에서 언제든 개별 제외할 수 있습니다."
+                  "이후에도 케이스별 레지스트리 패널에서 언제든 개별 제외할 수 있습니다.",
                 )}
               </p>
             </Card>
@@ -3721,21 +4794,25 @@ export function CaseWorkspace({
                     className="mt-1 h-4 w-4 shrink-0"
                     checked={researchRegistryExplanationConfirmed}
                     disabled={researchRegistryBusy}
-                    onChange={(event) => setResearchRegistryExplanationConfirmed(event.target.checked)}
+                    onChange={(event) =>
+                      setResearchRegistryExplanationConfirmed(
+                        event.target.checked,
+                      )
+                    }
                   />
                   <div className="grid gap-1">
                     <span className="font-semibold">
                       {pick(
                         locale,
                         "Acknowledge the registry explanation: pseudonymization, central storage scope, local source retention, and per-case exclusion remain available.",
-                        "설명 확인: 가명처리, 중앙 저장 범위, 원본 로컬 보관, 케이스별 제외 가능"
+                        "설명 확인: 가명처리, 중앙 저장 범위, 원본 로컬 보관, 케이스별 제외 가능",
                       )}
                     </span>
                     <span className="text-[0.82rem] leading-6 text-muted">
                       {pick(
                         locale,
                         "I understand that the central registry receives de-identified research data only, while the source images and records remain at the contributing institution.",
-                        "중앙 레지스트리에는 비식별 연구데이터만 올라가고, 원본 이미지와 원자료는 기여 기관 내부에 보관된다는 점을 확인합니다."
+                        "중앙 레지스트리에는 비식별 연구데이터만 올라가고, 원본 이미지와 원자료는 기여 기관 내부에 보관된다는 점을 확인합니다.",
                       )}
                     </span>
                   </div>
@@ -3748,21 +4825,23 @@ export function CaseWorkspace({
                     className="mt-1 h-4 w-4 shrink-0"
                     checked={researchRegistryUsageConsented}
                     disabled={researchRegistryBusy}
-                    onChange={(event) => setResearchRegistryUsageConsented(event.target.checked)}
+                    onChange={(event) =>
+                      setResearchRegistryUsageConsented(event.target.checked)
+                    }
                   />
                   <div className="grid gap-1">
                     <span className="font-semibold">
                       {pick(
                         locale,
                         "Consent to registry use: allow registry inclusion plus model validation or improvement research use.",
-                        "활용 동의: registry 포함 및 모델 검증/개선 연구 활용 동의"
+                        "활용 동의: registry 포함 및 모델 검증/개선 연구 활용 동의",
                       )}
                     </span>
                     <span className="text-[0.82rem] leading-6 text-muted">
                       {pick(
                         locale,
                         "I consent to eligible cases from this site being included in the registry flow and used for model validation or improvement studies, while keeping per-case opt-out available.",
-                        "이 병원의 적격 케이스가 레지스트리 흐름에 포함되고 모델 검증·개선 연구에 활용되는 데 동의하며, 이후에도 케이스별 제외가 가능함을 이해합니다."
+                        "이 병원의 적격 케이스가 레지스트리 흐름에 포함되고 모델 검증·개선 연구에 활용되는 데 동의하며, 이후에도 케이스별 제외가 가능함을 이해합니다.",
                       )}
                     </span>
                   </div>
@@ -3770,7 +4849,11 @@ export function CaseWorkspace({
               </label>
             </div>
             <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={closeResearchRegistryModal}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={closeResearchRegistryModal}
+              >
                 {pick(locale, "Continue without joining", "가입 없이 계속")}
               </Button>
               <Button
@@ -3786,13 +4869,13 @@ export function CaseWorkspace({
           </Card>
         </div>
       ) : null}
-
     </CaseWorkspaceShell>
   );
 }
 
 function caseTimestamp(caseRecord: CaseSummaryRecord): number {
-  const rawValue = caseRecord.latest_image_uploaded_at ?? caseRecord.created_at ?? "";
+  const rawValue =
+    caseRecord.latest_image_uploaded_at ?? caseRecord.created_at ?? "";
   const parsed = new Date(rawValue);
   if (Number.isNaN(parsed.getTime())) {
     return 0;
@@ -3800,8 +4883,12 @@ function caseTimestamp(caseRecord: CaseSummaryRecord): number {
   return parsed.getTime();
 }
 
-function buildPatientListThumbMap(rows: PatientListRow[]): Record<string, PatientListThumbnail[]> {
-  return Object.fromEntries(rows.map((row) => [row.patient_id, row.representative_thumbnails]));
+function buildPatientListThumbMap(
+  rows: PatientListRow[],
+): Record<string, PatientListThumbnail[]> {
+  return Object.fromEntries(
+    rows.map((row) => [row.patient_id, row.representative_thumbnails]),
+  );
 }
 
 function visitTimestamp(visitRecord: VisitRecord): number {

@@ -303,6 +303,8 @@ export async function runInitialTraining(
     val_split?: number;
     test_split?: number;
     use_pretrained?: boolean;
+    pretraining_source?: "imagenet" | "scratch" | "ssl";
+    ssl_checkpoint_path?: string;
     regenerate_split?: boolean;
   } = {},
 ) {
@@ -331,6 +333,8 @@ export async function runInitialTraining(
         val_split: 0.2,
         test_split: 0.2,
         use_pretrained: true,
+        pretraining_source: undefined,
+        ssl_checkpoint_path: undefined,
         regenerate_split: false,
         ...payload,
       }),
@@ -353,6 +357,9 @@ export async function runInitialTrainingBenchmark(
     val_split?: number;
     test_split?: number;
     use_pretrained?: boolean;
+    pretraining_source?: "imagenet" | "scratch" | "ssl";
+    ssl_checkpoint_path?: string;
+    benchmark_suite_key?: string;
     regenerate_split?: boolean;
   },
 ) {
@@ -380,6 +387,9 @@ export async function runInitialTrainingBenchmark(
         val_split: 0.2,
         test_split: 0.2,
         use_pretrained: true,
+        pretraining_source: undefined,
+        ssl_checkpoint_path: undefined,
+        benchmark_suite_key: undefined,
         regenerate_split: false,
         ...payload,
       }),

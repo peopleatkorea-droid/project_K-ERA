@@ -28,7 +28,14 @@ VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 DENSENET_VARIANTS = ["densenet121"]
-TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"]
+BASE_TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"]
+LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX = "lesion_guided_fusion__"
+LESION_GUIDED_FUSION_BACKBONES = ["efficientnet_v2_s", "densenet121", "convnext_tiny", "vit", "swin", "dinov2"]
+LESION_GUIDED_FUSION_ARCHITECTURES = [
+    f"{LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX}{backbone}"
+    for backbone in LESION_GUIDED_FUSION_BACKBONES
+]
+TRAINING_ARCHITECTURES = [*BASE_TRAINING_ARCHITECTURES, *LESION_GUIDED_FUSION_ARCHITECTURES]
 MODEL_ARCHITECTURES = list(dict.fromkeys(TRAINING_ARCHITECTURES))
 
 CULTURE_SPECIES = {
@@ -113,6 +120,24 @@ _PATIENT_LOCAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _VISIT_INITIAL_PATTERN = re.compile(r"^(?:initial|initial visit|초진)$", re.IGNORECASE)
 _VISIT_FOLLOW_UP_PATTERN = re.compile(r"^(?:F[\s/]*U|U)[-\s_#]*0*(\d+)$", re.IGNORECASE)
 _ACTUAL_VISIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def is_lesion_guided_fusion_architecture(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized.startswith(LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX)
+
+
+def lesion_guided_fusion_backbone(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not is_lesion_guided_fusion_architecture(normalized):
+        return None
+    backbone = normalized[len(LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX) :].strip()
+    return backbone or None
+
+
+def is_dual_input_training_architecture(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized == "dual_input_concat" or is_lesion_guided_fusion_architecture(normalized)
 
 
 def make_id(prefix: str) -> str:

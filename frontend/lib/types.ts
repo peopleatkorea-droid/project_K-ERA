@@ -1346,6 +1346,7 @@ export type InitialTrainingBenchmarkResponse = {
   site_id: string;
   execution_device: string;
   architectures: string[];
+  benchmark_suite_key?: string | null;
   results: InitialTrainingBenchmarkEntry[];
   failures: Array<{
     architecture: string;
@@ -1369,8 +1370,10 @@ export type TrainingJobProgress = {
   run_id?: string | null;
   architecture_index?: number | null;
   architecture_count?: number | null;
+  benchmark_suite_key?: string | null;
   crop_mode?: "automated" | "manual" | "both" | string | null;
   case_aggregation?: string | null;
+  pretraining_source?: string | null;
   component_crop_mode?: "automated" | "manual" | string | null;
   component_index?: number | null;
   component_count?: number | null;
