@@ -25,6 +25,7 @@ const apiMocks = vi.hoisted(() => ({
   createVisit: vi.fn(),
   updateVisit: vi.fn(),
   deleteVisitImages: vi.fn(),
+  setRepresentativeImage: vi.fn(),
   uploadImage: vi.fn(),
   updateImageLesionBox: vi.fn(),
   fetchCases: vi.fn(),
@@ -71,6 +72,7 @@ vi.mock("../lib/api", async () => {
     createVisit: apiMocks.createVisit,
     updateVisit: apiMocks.updateVisit,
     deleteVisitImages: apiMocks.deleteVisitImages,
+    setRepresentativeImage: apiMocks.setRepresentativeImage,
     uploadImage: apiMocks.uploadImage,
     updateImageLesionBox: apiMocks.updateImageLesionBox,
     fetchCases: apiMocks.fetchCases,
@@ -145,6 +147,7 @@ describe("CaseWorkspace integration", () => {
       visit_date: "Initial",
     });
     apiMocks.deleteVisitImages.mockResolvedValue(undefined);
+    apiMocks.setRepresentativeImage.mockResolvedValue(undefined);
     apiMocks.uploadImage.mockResolvedValue({
       image_id: "image_1",
       patient_id: "KERA-2026-001",
@@ -2116,6 +2119,103 @@ describe("CaseWorkspace integration", () => {
     const previewImages = await screen.findAllByAltText("image_1");
     expect(previewImages.some((image) => image.getAttribute("src")?.includes("/content/image_1"))).toBe(true);
     expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+  });
+
+  it("keeps saved previews visible when switching the representative image", async () => {
+    let currentCases = [
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_researcher",
+        created_at: "2026-03-15T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+        image_count: 2,
+        representative_image_id: "image_1",
+        representative_view: "white",
+        age: 0,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: true,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+    ];
+    apiMocks.fetchCases.mockImplementation(async () => currentCases);
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_2",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_2.png",
+        view: "fluorescein",
+        is_representative: false,
+        content_url: "/content/image_2",
+        preview_url: "/preview/image_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
+    apiMocks.setRepresentativeImage.mockImplementation(async () => {
+      currentCases = [
+        {
+          ...currentCases[0],
+          representative_image_id: "image_2",
+          representative_view: "fluorescein",
+        },
+      ];
+    });
+
+    renderWorkspace();
+    await openSavedCase();
+
+    const initialImage1Previews = await screen.findAllByAltText("image_1");
+    const initialImage2Previews = await screen.findAllByAltText("image_2");
+    expect(initialImage1Previews.some((image) => image.getAttribute("src")?.includes("/preview/image_1"))).toBe(true);
+    expect(initialImage2Previews.some((image) => image.getAttribute("src")?.includes("/preview/image_2"))).toBe(true);
+    expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set representative" }));
+
+    await waitFor(() => {
+      expect(apiMocks.setRepresentativeImage).toHaveBeenCalledWith("SITE_A", "test-token", {
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        representative_image_id: "image_2",
+      });
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchCases).toHaveBeenCalledTimes(2);
+    });
+    expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
+
+    const updatedImage2Preview = (await screen.findAllByAltText("image_2"))[0];
+    expect(updatedImage2Preview).toHaveAttribute("src", expect.stringContaining("/preview/image_2"));
+    const image2Card = updatedImage2Preview.closest("section");
+    expect(image2Card).not.toBeNull();
+    expect(within(image2Card!).getByText("Representative image")).toBeInTheDocument();
   });
 
   it("shows the MedSAM backlog cards and starts background backfill from list view", async () => {

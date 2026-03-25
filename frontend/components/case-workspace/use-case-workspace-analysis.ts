@@ -111,7 +111,6 @@ type Args = {
   loadCaseHistory: (siteId: string, patientId: string, visitDate: string) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
   onSiteDataChanged: (siteId: string) => Promise<void>;
-  onSavedImageDataChanged?: () => void;
   onValidationCompleted?: (args: {
     siteId: string;
     selectedCase: CaseSummaryRecord;
@@ -166,7 +165,6 @@ export function useCaseWorkspaceAnalysis({
   loadCaseHistory,
   loadSiteActivity,
   onSiteDataChanged,
-  onSavedImageDataChanged,
   onValidationCompleted,
   onArtifactsChanged,
 }: Args) {
@@ -1449,7 +1447,6 @@ export function useCaseWorkspaceAnalysis({
         visit_date: selectedCase.visit_date,
         representative_image_id: imageId,
       });
-      onSavedImageDataChanged?.();
       setSelectedCaseImages((current) =>
         current.map((image) => ({
           ...image,

@@ -54,7 +54,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run an overnight SSL + downstream benchmark plan sequentially.",
     )
-    parser.add_argument("--archive-base-dir", type=Path, default=Path(r"E:\전안부 사진"))
+    parser.add_argument("--archive-base-dir", type=Path, default=Path(r"C:\전안부 사진"))
     parser.add_argument("--site-id", default="", help="Site ID for downstream benchmark. Default: auto-detect largest non-empty site.")
     parser.add_argument("--device", default="cuda", choices=["auto", "cuda", "cpu"])
     parser.add_argument("--plan-root", type=Path, default=None)
@@ -72,7 +72,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ssl-architectures",
         nargs="+",
-        default=["densenet121", "swin", "vit", "dinov2", "efficientnet_v2_s"],
+        default=["efficientnet_v2_s", "densenet121", "swin", "vit", "dinov2"],
         choices=list(SUPPORTED_SSL_ARCHITECTURES),
     )
     parser.add_argument("--ssl-init-mode", default="imagenet", choices=["imagenet", "random"])

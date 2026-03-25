@@ -1224,7 +1224,6 @@ export function CaseWorkspace({
     loadCaseHistory,
     loadSiteActivity,
     onSiteDataChanged,
-    onSavedImageDataChanged: invalidateCaseWorkspaceImageCaches,
     onArtifactsChanged,
     onValidationCompleted: async ({ siteId, selectedCase: validatedCase }) => {
       const registry = summary?.research_registry;

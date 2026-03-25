@@ -452,12 +452,28 @@ export function useAdminWorkspaceTrainingController({
     }
     setBenchmarkBusy(true);
     try {
+      const refreshWorkspaceBestEffort = async () => {
+        try {
+          await refreshWorkspace(true);
+        } catch {
+          // The benchmark summary/paper figures should still become available
+          // even if a broader workspace refresh fails.
+        }
+      };
       if (!benchmarkJob) {
-        const latestJob = await loadLatestBenchmarkJob();
+        let latestJob;
+        try {
+          latestJob = await loadLatestBenchmarkJob();
+        } catch {
+          // If the job list cannot be fetched (e.g. backend not yet ready),
+          // still attempt a workspace refresh so other panel data stays current.
+          await refreshWorkspaceBestEffort();
+          return;
+        }
         if (!latestJob) {
-          await refreshWorkspace(true);
+          await refreshWorkspaceBestEffort();
         } else if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
-          await refreshWorkspace(true);
+          await refreshWorkspaceBestEffort();
         }
         return;
       }
@@ -468,7 +484,7 @@ export function useAdminWorkspaceTrainingController({
         setBenchmarkResult(result);
       }
       if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
-        await refreshWorkspace(true);
+        await refreshWorkspaceBestEffort();
       }
     } catch (nextError) {
       setToast({

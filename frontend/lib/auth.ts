@@ -1,4 +1,5 @@
 import { persistMainAppToken, requestMainControlPlane } from "./main-control-plane-client";
+import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "./desktop-local-api";
 import type { DesktopGoogleAuthExchangePayload, DesktopGoogleAuthStartResponse } from "./desktop-google-auth";
 import type {
   AccessRequestRecord,
@@ -11,6 +12,10 @@ import type {
   SiteRecord,
 } from "./types";
 import { filterVisibleSites } from "./site-labels";
+
+function requestDesktopPublicJson<T>(path: string) {
+  return requestDesktopLocalApiJson<T>(path, "");
+}
 
 export async function login(username: string, password: string): Promise<AuthResponse> {
   return requestMainControlPlane<AuthResponse>("/auth/login", {
@@ -66,6 +71,9 @@ export async function fetchSites(token: string) {
 }
 
 export async function fetchPublicSites() {
+  if (canUseDesktopLocalApiTransport()) {
+    return filterVisibleSites(await requestDesktopPublicJson<SiteRecord[]>("/api/public/sites"));
+  }
   return filterVisibleSites(await requestMainControlPlane<SiteRecord[]>("/public/sites"));
 }
 
@@ -84,10 +92,16 @@ export async function searchPublicInstitutions(
     params.set("sggu_code", options.sggu_code);
   }
   params.set("limit", String(options?.limit ?? 12));
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopPublicJson<PublicInstitutionRecord[]>(`/api/public/institutions/search?${params.toString()}`);
+  }
   return requestMainControlPlane<PublicInstitutionRecord[]>(`/public/institutions/search?${params.toString()}`);
 }
 
 export async function fetchPublicStatistics() {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopPublicJson<PublicStatistics>("/api/public/statistics");
+  }
   return requestMainControlPlane<PublicStatistics>("/public/statistics");
 }
 
