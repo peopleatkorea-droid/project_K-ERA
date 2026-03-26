@@ -242,6 +242,12 @@ struct CancelSiteJobCommandRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct SiteBenchmarkCommandRequest {
+    site_id: String,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CrossValidationReportsCommandRequest {
     site_id: String,
     token: String,

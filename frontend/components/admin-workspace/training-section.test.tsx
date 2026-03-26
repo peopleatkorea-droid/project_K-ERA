@@ -46,9 +46,11 @@ function buildProps(
     onExportSelectedReport: vi.fn(),
     onRefreshBenchmarkStatus: vi.fn(),
     onRunBenchmark: vi.fn(),
+    onRunLesionGuidedInitBenchmark: vi.fn(),
     onRunLesionGuidedBenchmark: vi.fn(),
     onRunInitialTraining: vi.fn(),
     onResumeBenchmark: vi.fn(),
+    onClearBenchmarkHistory: vi.fn(),
     ...overrides,
   } as ComponentProps<typeof TrainingSection>;
 }
@@ -57,6 +59,7 @@ describe("TrainingSection", () => {
   it("updates the initial training form and triggers training actions", () => {
     const setInitialForm = vi.fn();
     const onRunBenchmark = vi.fn();
+    const onRunLesionGuidedInitBenchmark = vi.fn();
     const onRunLesionGuidedBenchmark = vi.fn();
     const onRunInitialTraining = vi.fn();
 
@@ -65,6 +68,7 @@ describe("TrainingSection", () => {
         {...buildProps({
           setInitialForm,
           onRunBenchmark,
+          onRunLesionGuidedInitBenchmark,
           onRunLesionGuidedBenchmark,
           onRunInitialTraining,
         })}
@@ -81,12 +85,16 @@ describe("TrainingSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run 8-model staged initial training" }));
     expect(screen.getByRole("dialog", { name: "8-model staged training confirmation" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Start 8-model staged training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run LGF 6-model training" }));
+    expect(screen.getByRole("dialog", { name: "LGF 6-model training confirmation" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start LGF 6-model training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run LGF + SSL 6-model training" }));
     expect(screen.getByRole("dialog", { name: "LGF + SSL 6-model training confirmation" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Start LGF + SSL 6-model training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);
+    expect(onRunLesionGuidedInitBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunLesionGuidedBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunInitialTraining).toHaveBeenCalledTimes(1);
   });
@@ -103,8 +111,9 @@ describe("TrainingSection", () => {
             site_id: "HTTP_SITE",
             status: "running",
             payload: {
-              architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"],
+              architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "swin_mil", "lesion_guided_fusion__swin"],
               execution_mode: "gpu",
+              execution_device: "cuda",
               crop_mode: "both",
               case_aggregation: "quality_weighted_mean",
               epochs: 20,
@@ -153,8 +162,79 @@ describe("TrainingSection", () => {
     expect(screen.getByRole("button", { name: "Stop benchmark" })).toBeInTheDocument();
     expect(settingsPanel).not.toBeNull();
     expect(within(settingsPanel as HTMLElement).getByText("GPU")).toBeInTheDocument();
+    expect(within(settingsPanel as HTMLElement).getByText("GPU (CUDA)")).toBeInTheDocument();
+    expect(screen.getAllByText("GPU (CUDA)").length).toBeGreaterThan(0);
     expect(within(settingsPanel as HTMLElement).getByText("0.0003")).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it("deletes benchmark records from the benchmark cards", () => {
+    const onClearBenchmarkHistory = vi.fn();
+
+    render(
+      <TrainingSection
+        {...buildProps({
+          onClearBenchmarkHistory,
+          benchmarkJob: {
+            job_id: "job-clear",
+            job_type: "initial_training_benchmark",
+            site_id: "HTTP_SITE",
+            status: "cancelled",
+            payload: {
+              architectures: ["efficientnet_v2_s"],
+            },
+            result: {
+              response: {
+                best_architecture: "efficientnet_v2_s",
+                results: [
+                  {
+                    architecture: "efficientnet_v2_s",
+                    status: "completed",
+                    result: {
+                      best_val_acc: 0.6186,
+                      test_metrics: {
+                        accuracy: 0.7384,
+                        AUROC: 0.8093,
+                        balanced_accuracy: 0.7303,
+                      },
+                    },
+                    model_version: {
+                      version_name: "effnet-v1",
+                    },
+                  },
+                ],
+                failures: [],
+              },
+            },
+            created_at: "2026-03-15T00:00:00Z",
+          },
+          benchmarkResult: {
+            best_architecture: "efficientnet_v2_s",
+            results: [
+              {
+                architecture: "efficientnet_v2_s",
+                status: "completed",
+                result: {
+                  best_val_acc: 0.6186,
+                  test_metrics: {
+                    accuracy: 0.7384,
+                    AUROC: 0.8093,
+                    balanced_accuracy: 0.7303,
+                  },
+                },
+                model_version: {
+                  version_name: "effnet-v1",
+                },
+              },
+            ],
+            failures: [],
+          },
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete benchmark records" })[0]);
+    expect(onClearBenchmarkHistory).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes benchmark status and renders benchmark test metrics in the summary table", () => {
@@ -478,6 +558,7 @@ describe("TrainingSection", () => {
     expect(cropSelect.value).toBe("paired");
     expect(cropSelect).toBeDisabled();
     expect(screen.getByRole("button", { name: "Run 8-model staged initial training" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run LGF 6-model training" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Run LGF + SSL 6-model training" })).toBeEnabled();
 
     fireEvent.change(screen.getByLabelText("Architecture"), { target: { value: "dual_input_concat" } });

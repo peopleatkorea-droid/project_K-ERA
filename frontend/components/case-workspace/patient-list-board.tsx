@@ -3,6 +3,7 @@
 import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
+import { searchAnalysisImagesByText, type ImageTextSearchResult } from "../../lib/analysis-runtime";
 import type { CaseSummaryRecord, MedsamArtifactListItem, MedsamArtifactStatusKey } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
@@ -31,6 +32,8 @@ type PatientListBoardProps = {
   locale: Locale;
   localeTag: string;
   commonNotAvailable: string;
+  siteId: string | null;
+  token: string;
   selectedSiteLabel: string | null;
   selectedPatientId: string | null | undefined;
   patientListRows: PatientListRow[];
@@ -53,6 +56,7 @@ type PatientListBoardProps = {
   onShowOnlyMineChange: (nextValue: boolean) => void;
   onPageChange: (page: number) => void;
   onOpenSavedCase: (caseRecord: CaseSummaryRecord, nextView: "cases" | "patients") => void;
+  onOpenImageTextSearchResult?: (patientId: string, visitDate: string) => void | Promise<void>;
   onPrefetchCase?: (caseRecord: CaseSummaryRecord) => void;
   medsamArtifactActiveStatus: MedsamArtifactStatusKey | null;
   medsamArtifactScope: "patient" | "visit" | "image";
@@ -72,6 +76,8 @@ export function PatientListBoard({
   locale,
   localeTag,
   commonNotAvailable,
+  siteId,
+  token,
   selectedSiteLabel,
   selectedPatientId,
   patientListRows,
@@ -94,6 +100,7 @@ export function PatientListBoard({
   onShowOnlyMineChange,
   onPageChange,
   onOpenSavedCase,
+  onOpenImageTextSearchResult,
   onPrefetchCase,
   medsamArtifactActiveStatus,
   medsamArtifactScope,
@@ -107,8 +114,13 @@ export function PatientListBoard({
   onMedsamArtifactPageChange,
 }: PatientListBoardProps) {
   const [localSearch, setLocalSearch] = useState(caseSearch);
+  const [imageTextSearchQuery, setImageTextSearchQuery] = useState("");
+  const [imageTextSearchBusy, setImageTextSearchBusy] = useState(false);
+  const [imageTextSearchResults, setImageTextSearchResults] = useState<ImageTextSearchResult[] | null>(null);
+  const [imageTextSearchError, setImageTextSearchError] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(localSearch);
   const suppressOutboundSearchSyncRef = useRef(false);
+  const imageTextSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setLocalSearch((current) => {
@@ -192,6 +204,32 @@ export function PatientListBoard({
     estimateSize: () => 156,
     overscan: 6,
   });
+
+  async function handleImageTextSearch(event: React.FormEvent) {
+    event.preventDefault();
+    const query = imageTextSearchQuery.trim();
+    if (!query || !siteId) {
+      return;
+    }
+    setImageTextSearchBusy(true);
+    setImageTextSearchError(null);
+    setImageTextSearchResults(null);
+    try {
+      const response = await searchAnalysisImagesByText(siteId, query, token);
+      setImageTextSearchResults(response.results);
+    } catch {
+      setImageTextSearchError(pick(locale, "Search failed. Please try again.", "검색 실패. 다시 시도해 주세요."));
+    } finally {
+      setImageTextSearchBusy(false);
+    }
+  }
+
+  function handleClearImageTextSearch() {
+    setImageTextSearchQuery("");
+    setImageTextSearchResults(null);
+    setImageTextSearchError(null);
+    imageTextSearchInputRef.current?.focus();
+  }
 
   function renderArtifactRow(item: MedsamArtifactListItem) {
     const caseSummary = item.case_summary ?? null;
@@ -399,16 +437,98 @@ export function PatientListBoard({
             </Button>
           </div>
         ) : (
-          <input
-            className={`${listBoardSearchClass} min-h-10 min-w-[220px] flex-1 rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.84))] px-4 text-sm text-ink shadow-[0_8px_20px_rgba(15,23,42,0.04)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] md:ml-auto md:max-w-[320px] dark:bg-white/4`}
-            value={localSearch}
-            onChange={(event) => setLocalSearch(event.target.value)}
-            placeholder={pick(locale, "Search patient or organism", "환자 / 균종 검색")}
-          />
+          <div className="flex min-w-[260px] flex-1 flex-col gap-2 md:ml-auto md:max-w-[420px]">
+            <input
+              className={`${listBoardSearchClass} min-h-10 min-w-[220px] flex-1 rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.84))] px-4 text-sm text-ink shadow-[0_8px_20px_rgba(15,23,42,0.04)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4`}
+              value={localSearch}
+              onChange={(event) => setLocalSearch(event.target.value)}
+              placeholder={pick(locale, "Search patient or organism", "환자 / 균종 검색")}
+            />
+            <form onSubmit={(event) => void handleImageTextSearch(event)} className="flex gap-2">
+              <input
+                ref={imageTextSearchInputRef}
+                className={`${listBoardSearchClass} min-h-10 min-w-0 flex-1 rounded-[14px] border border-border/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.84))] px-4 text-sm text-ink shadow-[0_8px_20px_rgba(15,23,42,0.04)] outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4`}
+                value={imageTextSearchQuery}
+                onChange={(event) => setImageTextSearchQuery(event.target.value)}
+                placeholder={pick(locale, "Search images by description (e.g. hypopyon, feathery border)…", "이미지 설명으로 검색 (예: hypopyon, 각막 혼탁)…")}
+                disabled={imageTextSearchBusy || !siteId}
+              />
+              <Button
+                type="submit"
+                size="sm"
+                variant="ghost"
+                disabled={imageTextSearchBusy || !siteId || !imageTextSearchQuery.trim()}
+              >
+                {imageTextSearchBusy ? pick(locale, "Searching...", "검색 중...") : pick(locale, "Search", "검색")}
+              </Button>
+              {imageTextSearchResults !== null ? (
+                <Button type="button" size="sm" variant="ghost" onClick={handleClearImageTextSearch}>
+                  {pick(locale, "Clear", "초기화")}
+                </Button>
+              ) : null}
+            </form>
+          </div>
         )}
       </div>
       {activeArtifactFilter ? (
         <p className="m-0 pb-1 text-sm leading-6 text-muted">{activeArtifactFilter.description}</p>
+      ) : null}
+      {!activeArtifactFilter && imageTextSearchError ? (
+        <div className={emptySurfaceClass}>{imageTextSearchError}</div>
+      ) : null}
+      {!activeArtifactFilter && imageTextSearchResults !== null ? (
+        <section className={docSectionClass}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-[0.82rem] font-semibold text-muted">
+              {pick(locale, `${imageTextSearchResults.length} results for`, `"${imageTextSearchQuery}" 검색 결과`)} &ldquo;{imageTextSearchQuery}&rdquo;
+            </div>
+            <span className={docSiteBadgeClass}>
+              {pick(locale, `${imageTextSearchResults.length} images`, `${imageTextSearchResults.length} 이미지`)}
+            </span>
+          </div>
+          {imageTextSearchResults.length > 0 ? (
+            <div className={listBoardStackClass}>
+              {imageTextSearchResults.map((result) => (
+                <button
+                  key={`image-text-search-${result.image_id}`}
+                  type="button"
+                  className={patientListRowClass(false)}
+                  onClick={() => void onOpenImageTextSearchResult?.(result.patient_id, result.visit_date)}
+                  disabled={!onOpenImageTextSearchResult}
+                >
+                  <div className="flex items-start gap-3">
+                    {result.preview_url ? (
+                      <img
+                        src={result.preview_url}
+                        alt={result.image_id}
+                        className="h-16 w-16 shrink-0 rounded-[12px] border border-border/70 object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="grid h-16 w-16 shrink-0 place-items-center rounded-[12px] border border-border/70 bg-surface-muted/60 text-[0.72rem] text-muted">
+                        {pick(locale, "No preview", "미리보기 없음")}
+                      </div>
+                    )}
+                    <div className={patientListRowMainClass}>
+                      <div className={patientListRowChipsClass}>
+                        <span className={patientListChipClass(true)}>{result.patient_id}</span>
+                        <span className={patientListChipClass()}>{displayVisitReference(locale, result.visit_date)}</span>
+                        <span className={patientListChipClass()}>{translateOption(locale, "view", result.view)}</span>
+                      </div>
+                      <div className={patientListRowMetaClass}>
+                        <span>{result.image_id}</span>
+                        <span>{pick(locale, `score ${result.score.toFixed(2)}`, `score ${result.score.toFixed(2)}`)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className={emptySurfaceClass}>{pick(locale, "No matching images found.", "일치하는 이미지가 없습니다.")}</div>
+          )}
+        </section>
       ) : null}
       <section className={`${docSectionClass} grid gap-3`}>
         {activeArtifactFilter ? (

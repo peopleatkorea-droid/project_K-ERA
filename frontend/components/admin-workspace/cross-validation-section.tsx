@@ -19,8 +19,10 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "efficientnet_v2_s", label: "EfficientNetV2-S" },
   { value: "dinov2", label: "DINOv2" },
   { value: "dinov2_mil", label: "DINOv2 Attention MIL" },
+  { value: "swin_mil", label: "Swin Attention MIL" },
   { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
 ];
+const ATTENTION_MIL_ARCHITECTURES = new Set(["dinov2_mil", "swin_mil"]);
 const CASE_AGGREGATION_OPTIONS = [
   { value: "mean", label: "Mean" },
   { value: "logit_mean", label: "Logit mean" },
@@ -116,7 +118,9 @@ export function CrossValidationSection({
 }: Props) {
   const isDualInputArchitecture = crossValidationForm.architecture === "dual_input_concat";
   const effectiveCropMode = isDualInputArchitecture ? "paired" : crossValidationForm.crop_mode;
-  const effectiveCaseAggregation = crossValidationForm.architecture === "dinov2_mil" ? "attention_mil" : crossValidationForm.case_aggregation;
+  const effectiveCaseAggregation = ATTENTION_MIL_ARCHITECTURES.has(crossValidationForm.architecture)
+    ? "attention_mil"
+    : crossValidationForm.case_aggregation;
   const progressState = crossValidationProgress as
     | {
         stage?: string;
@@ -201,7 +205,7 @@ export function CrossValidationSection({
         <Field label={pick(locale, "Visit aggregation", "Visit 집계 방식")}>
           <select
             value={effectiveCaseAggregation}
-            disabled={crossValidationForm.architecture === "dinov2_mil"}
+            disabled={ATTENTION_MIL_ARCHITECTURES.has(crossValidationForm.architecture)}
             onChange={(event) =>
               setCrossValidationForm((current) => ({
                 ...current,

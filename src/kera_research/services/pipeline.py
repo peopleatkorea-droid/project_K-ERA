@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, is_attention_mil_architecture, make_id, utc_now
 from kera_research.services.ai_clinic_advisor import AiClinicWorkflowAdvisor
 from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
@@ -711,7 +711,7 @@ class ResearchWorkflowService:
         prepared_records = self._prepare_records_for_model(site_store, case_records, crop_mode=crop_mode)
         if not prepared_records:
             raise ValueError("No prepared records are available for AI Clinic retrieval.")
-        if str(model_version.get("architecture") or "") == "dinov2_mil" and hasattr(model, "forward_features"):
+        if is_attention_mil_architecture(str(model_version.get("architecture") or "")) and hasattr(model, "forward_features"):
             if torch is None:
                 raise RuntimeError("PyTorch is required for DINOv2 MIL embeddings.")
             bag_inputs, bag_mask = self._prepare_bag_inputs(model, model_version, prepared_records, execution_device)
@@ -1668,6 +1668,12 @@ class ResearchWorkflowService:
         use_medsam_crops: bool = True,
         regenerate_split: bool = False,
         progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
     ) -> dict[str, Any]:
         return self.training_workflow.run_initial_training(
             site_store,
@@ -1687,6 +1693,58 @@ class ResearchWorkflowService:
             use_medsam_crops=use_medsam_crops,
             regenerate_split=regenerate_split,
             progress_callback=progress_callback,
+            fine_tuning_mode=fine_tuning_mode,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            warmup_epochs=warmup_epochs,
+            early_stop_patience=early_stop_patience,
+            partial_unfreeze_blocks=partial_unfreeze_blocks,
+        )
+
+    def run_full_dataset_refit(
+        self,
+        site_store: SiteStore,
+        architecture: str,
+        output_model_path: str,
+        execution_device: str,
+        crop_mode: str = "automated",
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | None = None,
+        case_aggregation: str = "mean",
+        use_medsam_crops: bool = True,
+        progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
+    ) -> dict[str, Any]:
+        return self.training_workflow.run_full_dataset_refit(
+            site_store,
+            architecture,
+            output_model_path,
+            execution_device,
+            crop_mode=crop_mode,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            use_pretrained=use_pretrained,
+            pretraining_source=pretraining_source,
+            ssl_checkpoint_path=ssl_checkpoint_path,
+            case_aggregation=case_aggregation,
+            use_medsam_crops=use_medsam_crops,
+            progress_callback=progress_callback,
+            fine_tuning_mode=fine_tuning_mode,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            warmup_epochs=warmup_epochs,
+            early_stop_patience=early_stop_patience,
+            partial_unfreeze_blocks=partial_unfreeze_blocks,
         )
 
     def run_cross_validation(

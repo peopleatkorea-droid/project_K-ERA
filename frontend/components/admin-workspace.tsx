@@ -318,9 +318,11 @@ export function AdminWorkspace({
     handleInitialTraining,
     handleCancelInitialTraining,
     handleBenchmarkTraining,
+    handleLesionGuidedInitialBenchmarkTraining,
     handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus,
     handleCrossValidation,
     handlePickSslArchiveDirectory,
@@ -351,6 +353,7 @@ export function AdminWorkspace({
     handleRecoverSelectedSiteMetadata,
     handleResetUserForm,
     handleSaveUser,
+    handleDeleteUser,
   } = useAdminWorkspaceController({
     state,
     token,
@@ -807,9 +810,11 @@ export function AdminWorkspace({
               formatTrainingStage={formatTrainingStage}
               onExportSelectedReport={() => void handleExportCrossValidationReport()}
               onCancelBenchmark={() => void handleCancelBenchmarkTraining()}
+              onClearBenchmarkHistory={() => void handleClearBenchmarkHistory()}
               onCancelInitialTraining={() => void handleCancelInitialTraining()}
               onRefreshBenchmarkStatus={() => void handleRefreshBenchmarkStatus()}
               onRunBenchmark={() => void handleBenchmarkTraining()}
+              onRunLesionGuidedInitBenchmark={() => void handleLesionGuidedInitialBenchmarkTraining()}
               onRunLesionGuidedBenchmark={() => void handleLesionGuidedBenchmarkTraining()}
               onRunInitialTraining={() => void handleInitialTraining()}
               onResumeBenchmark={() => void handleResumeBenchmarkTraining()}
@@ -927,6 +932,7 @@ export function AdminWorkspace({
               onSaveSite={() => void handleSaveSite()}
               onResetUserForm={() => handleResetUserForm()}
               onSaveUser={() => void handleSaveUser()}
+              onDeleteUser={(userId, username) => void handleDeleteUser(userId, username)}
             />
           ) : null}
           {section === "federation" && canAggregate ? (

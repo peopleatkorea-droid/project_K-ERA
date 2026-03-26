@@ -16,6 +16,7 @@ import { DesktopDiagnosticsPanel } from "./desktop-diagnostics-panel";
 import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
+  user_id?: string;
   username: string;
   full_name: string;
   password: string;
@@ -61,6 +62,7 @@ type Props = {
   onSaveSite: () => void;
   onResetUserForm: () => void;
   onSaveUser: () => void;
+  onDeleteUser: (userId: string, username: string) => void;
 };
 
 const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
@@ -147,18 +149,6 @@ function UserAccessRow({
   );
 }
 
-function normalizeSiteCode(value: string) {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 32);
-}
-
-function suggestedSiteCodeFromInstitution(institution: PublicInstitutionRecord): string {
-  return HIRA_SITE_ID_PATTERN.test(institution.institution_id) ? institution.institution_id : "";
-}
-
 function siteHiraCode(site: ManagedSiteRecord, notAvailableLabel: string): string {
   if (HIRA_SITE_ID_PATTERN.test(site.site_id)) {
     return site.site_id;
@@ -178,9 +168,6 @@ function linkedInstitutionHiraCode(
   editingSiteId: string | null,
   managedSites: ManagedSiteRecord[],
 ): string | null {
-  if (HIRA_SITE_ID_PATTERN.test(siteForm.site_code)) {
-    return siteForm.site_code;
-  }
   if (HIRA_SITE_ID_PATTERN.test(String(siteForm.source_institution_id ?? ""))) {
     return String(siteForm.source_institution_id);
   }
@@ -272,6 +259,7 @@ export function ManagementSection({
   onSaveSite,
   onResetUserForm,
   onSaveUser,
+  onDeleteUser,
 }: Props) {
   const hospitalHasData = Boolean(summary && (summary.n_patients > 0 || summary.n_visits > 0 || summary.n_images > 0));
   const visibleManagedSites = filterVisibleSites(managedSites);
@@ -299,8 +287,7 @@ export function ManagementSection({
   const institutionSearchResetKeyRef = useRef(0);
   const normalizedInstitutionQuery = institutionQuery.trim();
   const linkedHiraCode = linkedInstitutionHiraCode(siteForm, editingSiteId, visibleManagedSites);
-  const linkedInstitutionLabel =
-    siteForm.source_institution_name || siteForm.hospital_name || siteForm.display_name || "HIRA";
+  const linkedInstitutionLabel = siteForm.source_institution_name || siteForm.hospital_name || "HIRA";
   const linkedInstitutionSummary = [linkedInstitutionLabel, linkedHiraCode ? `HIRA ${linkedHiraCode}` : null]
     .filter(Boolean)
     .join(" - ");
@@ -323,12 +310,27 @@ export function ManagementSection({
       normalizeStoragePath(selectedSiteCurrentStorageRoot) !== normalizeStoragePath(inheritedSelectedSiteStorageRoot)
   );
 
+  const [userInstitutionQuery, setUserInstitutionQuery] = useState("");
+  const [userInstitutionResults, setUserInstitutionResults] = useState<PublicInstitutionRecord[]>([]);
+  const [userInstitutionSearchBusy, setUserInstitutionSearchBusy] = useState(false);
+  const [userInstitutionSearchError, setUserInstitutionSearchError] = useState<string | null>(null);
+  const deferredUserInstitutionQuery = useDeferredValue(userInstitutionQuery);
+  const userInstitutionSearchResetKeyRef = useRef(0);
+
   function resetInstitutionSearch() {
     institutionSearchResetKeyRef.current += 1;
     setInstitutionQuery("");
     setInstitutionResults([]);
     setInstitutionSearchBusy(false);
     setInstitutionSearchError(null);
+  }
+
+  function resetUserInstitutionSearch() {
+    userInstitutionSearchResetKeyRef.current += 1;
+    setUserInstitutionQuery("");
+    setUserInstitutionResults([]);
+    setUserInstitutionSearchBusy(false);
+    setUserInstitutionSearchError(null);
   }
 
   useEffect(() => {
@@ -373,6 +375,43 @@ export function ManagementSection({
       cancelled = true;
     };
   }, [canManagePlatform, deferredInstitutionQuery, locale]);
+
+  useEffect(() => {
+    const query = deferredUserInstitutionQuery.trim();
+    if (query.length < 2) {
+      setUserInstitutionResults([]);
+      setUserInstitutionSearchBusy(false);
+      setUserInstitutionSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    const searchResetKey = userInstitutionSearchResetKeyRef.current;
+    setUserInstitutionSearchBusy(true);
+    setUserInstitutionSearchError(null);
+    void searchPublicInstitutions(query, { limit: 8 })
+      .then((items) => {
+        if (!cancelled && searchResetKey === userInstitutionSearchResetKeyRef.current) {
+          setUserInstitutionResults(items);
+        }
+      })
+      .catch((nextError) => {
+        if (!cancelled && searchResetKey === userInstitutionSearchResetKeyRef.current) {
+          setUserInstitutionSearchError(
+            nextError instanceof Error
+              ? translateApiError(locale, nextError.message)
+              : pick(locale, "Unable to search institutions.", "기관 검색에 실패했습니다."),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled && searchResetKey === userInstitutionSearchResetKeyRef.current) {
+          setUserInstitutionSearchBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deferredUserInstitutionQuery, locale]);
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -677,8 +716,8 @@ export function ManagementSection({
                   editingSiteId
                     ? pick(
                         locale,
-                        `Editing ${siteForm.hospital_name || siteForm.display_name || editingSiteId}`,
-                        `${siteForm.hospital_name || siteForm.display_name || editingSiteId} 수정 중`,
+                        `Editing ${siteForm.hospital_name || editingSiteId}`,
+                        `${siteForm.hospital_name || editingSiteId} 수정 중`,
                       )
                     : pick(locale, "Registering a new hospital", "새 병원 등록")
                 }
@@ -765,14 +804,10 @@ export function ManagementSection({
                                   type="button"
                                   variant="ghost"
                                   onClick={() => {
-                                    const suggestedCode = suggestedSiteCodeFromInstitution(institution);
-                                    const fallbackCode = normalizeSiteCode(institution.name || institution.institution_id);
                                     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || "";
                                     setSiteForm((current) => ({
                                       ...current,
                                       project_id: current.project_id || effectiveProjectId,
-                                      site_code: current.site_code || suggestedCode || fallbackCode,
-                                      display_name: current.display_name,
                                       hospital_name: institution.name,
                                       source_institution_id: institution.institution_id,
                                       source_institution_name: institution.name,
@@ -796,34 +831,18 @@ export function ManagementSection({
                   )
                 ) : null}
               </Card>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field
-                  label={pick(locale, "Alias (optional)", "별칭 (선택)")}
-                  hint={pick(
-                    locale,
-                    "Use a short internal label such as JNUH only if your team needs one.",
-                    "팀에서 필요할 때만 JNUH 같은 짧은 내부 별칭을 사용하세요.",
-                  )}
-                >
-                  <input
-                    value={siteForm.display_name}
-                    onChange={(event) => setSiteForm((current) => ({ ...current, display_name: event.target.value }))}
-                    placeholder={pick(locale, "e.g. JNUH", "예: JNUH")}
-                  />
-                </Field>
-                <Field
-                  label={pick(locale, "Hospital", "병원명")}
-                  hint={pick(
-                    locale,
-                    "This is filled automatically from the selected HIRA institution and stays read-only.",
-                    "선택한 HIRA 기관명을 자동으로 채우며, 이 값은 수정할 수 없습니다.",
-                  )}
-                >
-                  <div className="rounded-[var(--radius-md)] border border-border bg-white/55 px-3.5 py-3 text-sm font-semibold text-ink dark:bg-white/4">
-                    {siteForm.hospital_name || pick(locale, "Select a HIRA institution first.", "먼저 HIRA 기관을 선택하세요.")}
-                  </div>
-                </Field>
-              </div>
+              <Field
+                label={pick(locale, "Hospital", "병원명")}
+                hint={pick(
+                  locale,
+                  "This is filled automatically from the selected HIRA institution and stays read-only.",
+                  "선택한 HIRA 기관명을 자동으로 채우며, 이 값은 수정할 수 없습니다.",
+                )}
+              >
+                <div className="rounded-[var(--radius-md)] border border-border bg-white/55 px-3.5 py-3 text-sm font-semibold text-ink dark:bg-white/4">
+                  {siteForm.hospital_name || pick(locale, "Select a HIRA institution first.", "먼저 HIRA 기관을 선택하세요.")}
+                </div>
+              </Field>
               <Field
                 as="div"
                 label={pick(locale, "Linked HIRA institution", "연결된 HIRA 기관")}
@@ -852,6 +871,7 @@ export function ManagementSection({
                         onClick={() =>
                           setSiteForm((current) => ({
                             ...current,
+                            hospital_name: "",
                             source_institution_id: undefined,
                             source_institution_name: undefined,
                             source_institution_address: undefined,
@@ -963,15 +983,17 @@ export function ManagementSection({
                     key={managedUser.user_id}
                     locale={locale}
                     managedUser={managedUser}
-                    onClick={() =>
+                    onClick={() => {
+                      resetUserInstitutionSearch();
                       setUserForm({
+                        user_id: managedUser.user_id,
                         username: managedUser.username,
                         full_name: managedUser.full_name,
                         password: "",
                         role: managedUser.role,
                         site_ids: filterVisibleSiteIds(managedUser.site_ids ?? []),
-                      })
-                    }
+                      });
+                    }}
                   />
                 ))}
                 </div>
@@ -1023,10 +1045,66 @@ export function ManagementSection({
                 ))}
               </select>
             </Field>
+            <Field
+              label={pick(locale, "Search hospital (HIRA)", "병원 검색 (HIRA)")}
+              hint={pick(locale, "Search and click to add a hospital to the accessible list.", "병원을 검색하고 클릭하면 접근 가능 목록에 추가됩니다.")}
+            >
+              <input
+                value={userInstitutionQuery}
+                onChange={(event) => setUserInstitutionQuery(event.target.value)}
+                placeholder={pick(locale, "Hospital name or HIRA code...", "병원명 또는 HIRA 코드...")}
+              />
+            </Field>
+            {userInstitutionSearchBusy && (
+              <div className="text-sm text-muted">{pick(locale, "Searching...", "검색 중...")}</div>
+            )}
+            {userInstitutionSearchError && (
+              <div className="text-sm text-error">{userInstitutionSearchError}</div>
+            )}
+            {userInstitutionResults.length > 0 && (
+              <div className="grid gap-1">
+                {userInstitutionResults.map((institution) => {
+                  const matchedSite = visibleManagedSites.find(
+                    (site) =>
+                      site.site_id === institution.institution_id ||
+                      String(site.source_institution_id ?? "") === institution.institution_id,
+                  );
+                  const isAlreadyAdded = matchedSite ? userForm.site_ids.includes(matchedSite.site_id) : false;
+                  return (
+                    <button
+                      key={institution.institution_id}
+                      type="button"
+                      disabled={!matchedSite || isAlreadyAdded}
+                      className="grid min-w-0 gap-0.5 rounded-[var(--radius-md)] border border-border/80 bg-white/60 px-3 py-2 text-left text-sm transition hover:border-ink/15 hover:bg-white/80 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/4 dark:hover:bg-white/7"
+                      onClick={() => {
+                        if (!matchedSite || isAlreadyAdded) return;
+                        setUserForm((current) => ({
+                          ...current,
+                          site_ids: [...current.site_ids, matchedSite.site_id],
+                        }));
+                        resetUserInstitutionSearch();
+                      }}
+                    >
+                      <span className="font-medium text-ink">{institution.name}</span>
+                      <span className="text-[0.75rem] text-muted">
+                        {[`HIRA ${institution.institution_id}`, institution.address].filter(Boolean).join(" · ")}
+                        {!matchedSite && ` · ${pick(locale, "Not registered", "미등록")}`}
+                        {isAlreadyAdded && ` · ${pick(locale, "Already added", "이미 추가됨")}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={onResetUserForm}>
+              <Button type="button" variant="ghost" onClick={() => { onResetUserForm(); resetUserInstitutionSearch(); }}>
                 {pick(locale, "Reset", "초기화")}
               </Button>
+              {userForm.user_id && (
+                <Button type="button" variant="danger" onClick={() => onDeleteUser(userForm.user_id!, userForm.username)}>
+                  {pick(locale, "Delete user", "사용자 삭제")}
+                </Button>
+              )}
               <Button type="button" variant="primary" onClick={onSaveUser}>
                 {pick(locale, "Save user", "사용자 저장")}
               </Button>

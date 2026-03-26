@@ -4,6 +4,7 @@ import { jwtVerify, SignJWT } from "jose";
 import { NextRequest } from "next/server";
 import type { Row } from "postgres";
 
+import { normalizeEffectiveApprovalStatus, normalizeSiteIds } from "../auth-access-state";
 import type { AuthResponse, AuthState, AuthUser } from "../types";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import {
@@ -47,7 +48,7 @@ export function trimText(value: unknown): string {
 
 export function normalizeSiteIdPreservingCase(value: string): string {
   const trimmed = value.trim();
-  return trimmed || makeControlPlaneId("site");
+  return trimmed || makeControlPlaneId("site").slice(0, "site_".length + 10);
 }
 
 export function normalizeStringArray(value: unknown): string[] {
@@ -200,16 +201,22 @@ export async function readMainAppTokenClaims(request: NextRequest): Promise<Main
         audience: localApiJwtAudience(),
         issuer: localApiJwtIssuer(),
       });
+      const role = typeof verified.payload.role === "string" ? verified.payload.role : null;
+      const siteIds = normalizeStringArray(verified.payload.site_ids);
       return {
         sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
         username: typeof verified.payload.username === "string" ? verified.payload.username : null,
         full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
         public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
-        role: typeof verified.payload.role === "string" ? verified.payload.role : null,
-        site_ids: normalizeStringArray(verified.payload.site_ids),
+        role,
+        site_ids: siteIds,
         approval_status:
           typeof verified.payload.approval_status === "string"
-            ? (verified.payload.approval_status as AuthState)
+            ? normalizeEffectiveApprovalStatus({
+                role,
+                site_ids: siteIds,
+                approval_status: verified.payload.approval_status,
+              })
             : null,
         registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
       };
@@ -223,16 +230,22 @@ export async function readMainAppTokenClaims(request: NextRequest): Promise<Main
       const verified = await jwtVerify(token, new TextEncoder().encode(sharedSecret), {
         algorithms: ["HS256"],
       });
+      const role = typeof verified.payload.role === "string" ? verified.payload.role : null;
+      const siteIds = normalizeStringArray(verified.payload.site_ids);
       return {
         sub: typeof verified.payload.sub === "string" ? verified.payload.sub : null,
         username: typeof verified.payload.username === "string" ? verified.payload.username : null,
         full_name: typeof verified.payload.full_name === "string" ? verified.payload.full_name : null,
         public_alias: typeof verified.payload.public_alias === "string" ? verified.payload.public_alias : null,
-        role: typeof verified.payload.role === "string" ? verified.payload.role : null,
-        site_ids: normalizeStringArray(verified.payload.site_ids),
+        role,
+        site_ids: siteIds,
         approval_status:
           typeof verified.payload.approval_status === "string"
-            ? (verified.payload.approval_status as AuthState)
+            ? normalizeEffectiveApprovalStatus({
+                role,
+                site_ids: siteIds,
+                approval_status: verified.payload.approval_status,
+              })
             : null,
         registry_consents: normalizeRegistryConsents(verified.payload.registry_consents),
       };
@@ -247,6 +260,16 @@ export async function readMainAppTokenClaims(request: NextRequest): Promise<Main
 }
 
 export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthResponse> {
+  const normalizedSiteIds = normalizeSiteIds(user.site_ids);
+  const normalizedUser: AuthUser = {
+    ...user,
+    site_ids: normalizedSiteIds,
+    approval_status: normalizeEffectiveApprovalStatus({
+      role: user.role,
+      site_ids: normalizedSiteIds,
+      approval_status: user.approval_status,
+    }),
+  };
   const privateKey = localApiJwtPrivateKey();
   if (privateKey) {
     const protectedHeader: { alg: "RS256"; kid?: string } = { alg: "RS256" };
@@ -255,14 +278,14 @@ export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthRespon
       protectedHeader.kid = keyId;
     }
     const token = await new SignJWT({
-      sub: user.user_id,
-      username: user.username,
-      full_name: user.full_name,
-      public_alias: user.public_alias ?? null,
-      role: user.role,
-      site_ids: user.site_ids ?? [],
-      approval_status: user.approval_status,
-      registry_consents: normalizeRegistryConsents(user.registry_consents),
+      sub: normalizedUser.user_id,
+      username: normalizedUser.username,
+      full_name: normalizedUser.full_name,
+      public_alias: normalizedUser.public_alias ?? null,
+      role: normalizedUser.role,
+      site_ids: normalizedUser.site_ids ?? [],
+      approval_status: normalizedUser.approval_status,
+      registry_consents: normalizeRegistryConsents(normalizedUser.registry_consents),
     })
       .setProtectedHeader(protectedHeader)
       .setIssuer(localApiJwtIssuer())
@@ -271,10 +294,10 @@ export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthRespon
       .setExpirationTime(`${LOCAL_TOKEN_TTL_HOURS}h`)
       .sign(privateKey);
     return {
-      auth_state: user.approval_status,
+      auth_state: normalizedUser.approval_status,
       access_token: token,
       token_type: "bearer",
-      user,
+      user: normalizedUser,
     };
   }
 
@@ -283,23 +306,23 @@ export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthRespon
     throw new Error("KERA_LOCAL_API_JWT_PRIVATE_KEY_B64 is not available to mint control-plane access tokens.");
   }
   const token = await new SignJWT({
-    sub: user.user_id,
-    username: user.username,
-    full_name: user.full_name,
-    public_alias: user.public_alias ?? null,
-    role: user.role,
-    site_ids: user.site_ids ?? [],
-    approval_status: user.approval_status,
-    registry_consents: normalizeRegistryConsents(user.registry_consents),
+    sub: normalizedUser.user_id,
+    username: normalizedUser.username,
+    full_name: normalizedUser.full_name,
+    public_alias: normalizedUser.public_alias ?? null,
+    role: normalizedUser.role,
+    site_ids: normalizedUser.site_ids ?? [],
+    approval_status: normalizedUser.approval_status,
+    registry_consents: normalizeRegistryConsents(normalizedUser.registry_consents),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${LOCAL_TOKEN_TTL_HOURS}h`)
     .sign(new TextEncoder().encode(sharedSecret));
   return {
-    auth_state: user.approval_status,
+    auth_state: normalizedUser.approval_status,
     access_token: token,
     token_type: "bearer",
-    user,
+    user: normalizedUser,
   };
 }

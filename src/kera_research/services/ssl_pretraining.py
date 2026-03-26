@@ -25,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 IMAGENET_CHANNEL_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_CHANNEL_STD = (0.229, 0.224, 0.225)
 SUPPORTED_SSL_ARCHITECTURES = ("densenet121", "convnext_tiny", "swin", "vit", "dinov2", "efficientnet_v2_s")
+SSL_AUGMENT_PRESETS = ("default", "weak_ocular")
 
 
 def seed_everything(seed: int) -> None:
@@ -107,31 +108,62 @@ class AddGaussianNoise:
 
 
 class AnteriorSegmentSSLViewTransform:
-    def __init__(self, image_size: int) -> None:
-        jitter = transforms.ColorJitter(
-            brightness=0.16,
-            contrast=0.16,
-            saturation=0.08,
-            hue=0.02,
-        )
+    def __init__(self, image_size: int, *, preset: str = "default") -> None:
+        normalized_preset = str(preset or "default").strip().lower() or "default"
+        if normalized_preset not in SSL_AUGMENT_PRESETS:
+            raise ValueError(
+                f"Unsupported SSL augment preset: {preset}. Supported: {', '.join(SSL_AUGMENT_PRESETS)}"
+            )
+
+        if normalized_preset == "weak_ocular":
+            crop_scale = (0.88, 1.0)
+            crop_ratio = (0.95, 1.05)
+            horizontal_flip_p = 0.15
+            rotation_degrees = 4
+            jitter = transforms.ColorJitter(
+                brightness=0.06,
+                contrast=0.06,
+                saturation=0.03,
+                hue=0.0,
+            )
+            jitter_probability = 0.35
+            blur_probability = 0.04
+            noise_std = 0.01
+            noise_probability = 0.08
+        else:
+            crop_scale = (0.72, 1.0)
+            crop_ratio = (0.9, 1.1)
+            horizontal_flip_p = 0.5
+            rotation_degrees = 10
+            jitter = transforms.ColorJitter(
+                brightness=0.16,
+                contrast=0.16,
+                saturation=0.08,
+                hue=0.02,
+            )
+            jitter_probability = 0.75
+            blur_probability = 0.15
+            noise_std = 0.018
+            noise_probability = 0.18
+
         self.transform = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
                     size=image_size,
-                    scale=(0.72, 1.0),
-                    ratio=(0.9, 1.1),
+                    scale=crop_scale,
+                    ratio=crop_ratio,
                     interpolation=InterpolationMode.BICUBIC,
                 ),
-                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomHorizontalFlip(p=horizontal_flip_p),
                 transforms.RandomRotation(
-                    degrees=10,
+                    degrees=rotation_degrees,
                     interpolation=InterpolationMode.BILINEAR,
                     fill=0,
                 ),
-                transforms.RandomApply([jitter], p=0.75),
-                transforms.RandomApply([transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 1.5))], p=0.15),
+                transforms.RandomApply([jitter], p=jitter_probability),
+                transforms.RandomApply([transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 1.5))], p=blur_probability),
                 transforms.ToTensor(),
-                AddGaussianNoise(std=0.018, p=0.18),
+                AddGaussianNoise(std=noise_std, p=noise_probability),
                 transforms.Normalize(IMAGENET_CHANNEL_MEAN, IMAGENET_CHANNEL_STD),
             ]
         )
@@ -141,9 +173,9 @@ class AnteriorSegmentSSLViewTransform:
 
 
 class SSLArchiveDataset(Dataset):
-    def __init__(self, records: list[dict[str, Any]], image_size: int) -> None:
+    def __init__(self, records: list[dict[str, Any]], image_size: int, *, augment_preset: str = "default") -> None:
         self.records = list(records)
-        self.transform = AnteriorSegmentSSLViewTransform(image_size=image_size)
+        self.transform = AnteriorSegmentSSLViewTransform(image_size=image_size, preset=augment_preset)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -387,6 +419,7 @@ class SSLTrainingConfig:
     save_every: int = 1
     base_momentum: float = 0.99
     resume_checkpoint: str | None = None
+    augment_preset: str = "default"
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -488,7 +521,7 @@ def run_ssl_pretraining_with_progress(
         max_images=config.max_images,
         seed=config.seed,
     )
-    dataset = SSLArchiveDataset(records, image_size=config.image_size)
+    dataset = SSLArchiveDataset(records, image_size=config.image_size, augment_preset=config.augment_preset)
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,

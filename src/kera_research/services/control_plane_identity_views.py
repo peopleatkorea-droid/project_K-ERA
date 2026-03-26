@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from kera_research.config import PUBLIC_ALIAS_SALT
 from kera_research.db import CONTROL_PLANE_ENGINE, access_requests, users
@@ -225,6 +225,10 @@ class ControlPlaneIdentityFacade:
                 if alias:
                     aliases[str(record["user_id"])] = alias
         return aliases
+
+    def delete_user(self, user_id: str) -> None:
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(delete(users).where(users.c.user_id == user_id))
 
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         normalized_site_ids = _normalize_site_ids(user_record.get("site_ids"))

@@ -1,3 +1,19 @@
+fn orphan_local_backend_process_fragments(backend: &DesktopBackendTarget) -> Vec<String> {
+    let mut fragments = vec![
+        "-m".to_string(),
+        "uvicorn".to_string(),
+        backend.backend_module.clone(),
+    ];
+    for python_path in local_backend_python_candidates() {
+        fragments.push(python_path);
+    }
+    fragments
+}
+
+fn terminate_orphan_local_backend_processes(backend: &DesktopBackendTarget) -> Result<Vec<u32>, String> {
+    terminate_windows_processes_matching_all_fragments(&orphan_local_backend_process_fragments(backend))
+}
+
 fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, String> {
     let parsed = HttpUrl::parse(base_url)
         .map_err(|error| format!("Invalid local backend base URL: {error}"))?;
@@ -15,9 +31,10 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
     ensure_storage_bundle_dirs(&storage_dir)?;
     let _ = write_storage_state_dir(&storage_dir);
     let (stdout_log_path, stderr_log_path) = local_backend_log_paths()?;
+    let python_preflight = ensure_desktop_runtime_readiness_for_backend()?;
     let mut errors = Vec::new();
 
-    for python_path in local_backend_python_candidates() {
+    for python_path in [python_preflight.candidate_path.clone()] {
         let stdout_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -63,9 +80,11 @@ fn spawn_local_backend_process(base_url: &str) -> Result<SpawnedLocalBackend, St
 
         match command.spawn() {
             Ok(child) => {
+                register_managed_process("backend", child.id(), Some(&python_path))?;
                 return Ok(SpawnedLocalBackend {
                     child,
                     python_path,
+                    python_preflight: python_preflight.clone(),
                     launch_command,
                     stdout_log_path: stdout_log_path.to_string_lossy().to_string(),
                     stderr_log_path: stderr_log_path.to_string_lossy().to_string(),
@@ -99,7 +118,10 @@ fn sync_local_backend_runtime(runtime: &mut LocalBackendRuntime) {
         }
     }
     if let Some(error) = cleared_error {
+        let pid = runtime.child.as_ref().map(Child::id);
         runtime.child = None;
+        let _ = unregister_managed_process(pid);
+        runtime.python_preflight = None;
         runtime.launched_by_desktop = false;
         runtime.last_error = Some(error);
     }
@@ -126,6 +148,7 @@ fn local_backend_status_snapshot(
         launched_by_desktop: runtime.launched_by_desktop,
         pid: runtime.child.as_ref().map(Child::id),
         python_path: runtime.python_path.clone(),
+        python_preflight: runtime.python_preflight.clone(),
         launch_command: runtime.launch_command.clone(),
         stdout_log_path: runtime.stdout_log_path.clone(),
         stderr_log_path: runtime.stderr_log_path.clone(),
@@ -146,15 +169,38 @@ pub(super) fn get_local_backend_status_internal() -> Result<LocalBackendStatus, 
 
 pub(super) fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus, String> {
     let base_url = local_node_api_base_url();
-    if local_backend_is_healthy(&base_url) {
-        return get_local_backend_status_internal();
-    }
     if !local_backend_should_be_managed(&base_url) {
+        if local_backend_is_healthy(&base_url) {
+            return get_local_backend_status_internal();
+        }
         return Err(format!(
             "Local backend is unavailable at {base_url}. Start the local node manually or set KERA_DESKTOP_LOCAL_BACKEND_MODE=managed."
         ));
     }
-    ensure_desktop_runtime_readiness_for_backend()?;
+    let python_preflight = ensure_desktop_runtime_readiness_for_backend()?;
+    let values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&values)?;
+
+    {
+        let mut runtime = local_backend_state()
+            .lock()
+            .map_err(|_| "Failed to access desktop local backend state.".to_string())?;
+        sync_local_backend_runtime(&mut runtime);
+        if runtime.child.is_none() && local_backend_is_healthy(&base_url) {
+            let mut terminated = cleanup_registered_managed_processes("backend")?;
+            terminated.extend(terminate_orphan_local_backend_processes(&backend)?);
+            if !terminated.is_empty() {
+                runtime.last_error = Some(format!(
+                    "Restarted {} stale desktop-managed local backend process(es).",
+                    terminated.len()
+                ));
+            }
+        }
+    }
+
+    if local_backend_is_healthy(&base_url) {
+        return get_local_backend_status_internal();
+    }
 
     {
         let mut runtime = local_backend_state()
@@ -170,12 +216,15 @@ pub(super) fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus
             let spawned = spawn_local_backend_process(&base_url)?;
             runtime.child = Some(spawned.child);
             runtime.python_path = Some(spawned.python_path);
+            runtime.python_preflight = Some(spawned.python_preflight);
             runtime.launch_command = Some(spawned.launch_command);
             runtime.stdout_log_path = Some(spawned.stdout_log_path);
             runtime.stderr_log_path = Some(spawned.stderr_log_path);
             runtime.last_started_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
             runtime.last_error = None;
             runtime.launched_by_desktop = true;
+        } else {
+            runtime.python_preflight = Some(python_preflight.clone());
         }
     }
 
@@ -185,10 +234,12 @@ pub(super) fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus
             .map_err(|_| "Failed to access desktop local backend state.".to_string())?;
         sync_local_backend_runtime(&mut runtime);
         if let Some(mut child) = runtime.child.take() {
+            let _ = unregister_managed_process(Some(child.id()));
             let _ = child.kill();
             let _ = child.wait();
         }
         runtime.launched_by_desktop = false;
+        runtime.python_preflight = None;
         runtime.last_error = Some(error.clone());
         return Err(error);
     }
@@ -197,16 +248,22 @@ pub(super) fn ensure_local_backend_ready_internal() -> Result<LocalBackendStatus
 }
 
 pub(super) fn stop_local_backend_internal() -> Result<LocalBackendStatus, String> {
+    let values = resolved_env_values();
+    let backend = resolve_desktop_backend_target(&values)?;
     {
         let mut runtime = local_backend_state()
             .lock()
             .map_err(|_| "Failed to access desktop local backend state.".to_string())?;
         sync_local_backend_runtime(&mut runtime);
         if let Some(mut child) = runtime.child.take() {
+            let _ = unregister_managed_process(Some(child.id()));
             let _ = child.kill();
             let _ = child.wait();
         }
         runtime.launched_by_desktop = false;
+        runtime.python_preflight = None;
     }
+    let _ = cleanup_registered_managed_processes("backend");
+    let _ = terminate_orphan_local_backend_processes(&backend);
     get_local_backend_status_internal()
 }

@@ -17,8 +17,6 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       project_id?: string;
-      site_code?: string;
-      display_name?: string;
       hospital_name?: string;
       source_institution_id?: string | null;
       research_registry_enabled?: boolean;

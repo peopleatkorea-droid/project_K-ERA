@@ -85,6 +85,7 @@ pub(super) fn apply_runtime_env_to_command(command: &mut Command, python_path_en
     command
         .env("KERA_SKIP_LOCAL_ENV_FILE", "1")
         .env("KERA_LLM_RELAY_ONLY", "1")
+        .env("KERA_RUNTIME_OWNER", desktop_runtime_owner())
         .env("KERA_STORAGE_STATE_FILE", storage_state_file_path())
         .env("KERA_SEGMENTATION_BACKEND", "medsam")
         .env("SEGMENTATION_BACKEND", "medsam")
@@ -102,11 +103,26 @@ pub(super) fn apply_runtime_env_to_command(command: &mut Command, python_path_en
         "SEGMENTATION_CHECKPOINT",
         "MEDSAM_SCRIPT",
         "MEDSAM_CHECKPOINT",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONEXECUTABLE",
+        "PYTHONUSERBASE",
+        "PYTHONNOUSERSITE",
+        "VIRTUAL_ENV",
+        "__PYVENV_LAUNCHER__",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
+        "CONDA_PROMPT_MODIFIER",
+        "PYENV_VERSION",
+        "UV_PROJECT_ENVIRONMENT",
     ] {
         command.env_remove(key);
     }
     if let Some(value) = python_path_with_entries(python_path_entries) {
         command.env("PYTHONPATH", value);
+    } else {
+        command.env_remove("PYTHONPATH");
     }
 }
 

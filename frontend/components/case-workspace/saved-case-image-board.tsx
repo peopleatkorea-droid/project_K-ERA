@@ -1,9 +1,8 @@
 "use client";
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import type { SemanticPromptInputMode, SemanticPromptReviewResponse } from "../../lib/api";
-import { searchAnalysisImagesByText, type ImageTextSearchResult } from "../../lib/analysis-runtime";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -52,8 +51,6 @@ type SavedCaseImageBoardProps = {
   commonLoading: string;
   commonNotAvailable: string;
   selectedVisitLabel: string;
-  siteId: string;
-  token: string;
   panelBusy: boolean;
   selectedCaseImageCountHint: number;
   selectedCaseImages: SavedImagePreview[];
@@ -233,8 +230,6 @@ export function SavedCaseImageBoard({
   commonLoading,
   commonNotAvailable,
   selectedVisitLabel,
-  siteId,
-  token,
   panelBusy,
   selectedCaseImageCountHint,
   selectedCaseImages,
@@ -265,36 +260,6 @@ export function SavedCaseImageBoard({
   onLesionPointerMove,
   onFinishLesionPointer,
 }: SavedCaseImageBoardProps) {
-  const [textSearchQuery, setTextSearchQuery] = useState("");
-  const [textSearchBusy, setTextSearchBusy] = useState(false);
-  const [textSearchResults, setTextSearchResults] = useState<ImageTextSearchResult[] | null>(null);
-  const [textSearchError, setTextSearchError] = useState<string | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  async function handleTextSearch(event: React.FormEvent) {
-    event.preventDefault();
-    const query = textSearchQuery.trim();
-    if (!query) return;
-    setTextSearchBusy(true);
-    setTextSearchError(null);
-    setTextSearchResults(null);
-    try {
-      const response = await searchAnalysisImagesByText(siteId, query, token);
-      setTextSearchResults(response.results);
-    } catch {
-      setTextSearchError(pick(locale, "Search failed. Please try again.", "검색 실패. 다시 시도해 주세요."));
-    } finally {
-      setTextSearchBusy(false);
-    }
-  }
-
-  function handleClearSearch() {
-    setTextSearchQuery("");
-    setTextSearchResults(null);
-    setTextSearchError(null);
-    searchInputRef.current?.focus();
-  }
-
   const loadingCardCount = Math.max(1, Math.min(selectedCaseImageCountHint || selectedCaseImages.length || 1, 3));
   const sourceModeActive = semanticPromptInputMode === "source";
   const roiCropModeActive = semanticPromptInputMode === "roi_crop";
@@ -351,64 +316,6 @@ export function SavedCaseImageBoard({
         </span>
       </div>
       <p className="m-0 text-sm leading-6 text-muted">{boardHelpCopy}</p>
-
-      <form onSubmit={(e) => void handleTextSearch(e)} className="flex gap-2">
-        <input
-          ref={searchInputRef}
-          type="text"
-          value={textSearchQuery}
-          onChange={(e) => setTextSearchQuery(e.target.value)}
-          placeholder={pick(locale, "Search images by description (e.g. hypopyon, feathery border)…", "이미지 설명으로 검색 (예: hypopyon, 각막 혼탁)…")}
-          className="min-h-9 flex-1 rounded-[10px] border border-border bg-white/60 px-3 text-[0.85rem] text-ink outline-none transition duration-150 ease-out placeholder:text-muted focus:border-brand/25 focus:ring-4 focus:ring-[rgba(48,88,255,0.12)] dark:bg-white/4"
-          disabled={textSearchBusy}
-        />
-        <Button type="submit" size="sm" variant="ghost" disabled={textSearchBusy || !textSearchQuery.trim()}>
-          {textSearchBusy ? commonLoading : pick(locale, "Search", "검색")}
-        </Button>
-        {textSearchResults !== null ? (
-          <Button type="button" size="sm" variant="ghost" onClick={handleClearSearch}>
-            {pick(locale, "Clear", "초기화")}
-          </Button>
-        ) : null}
-      </form>
-
-      {textSearchError ? (
-        <div className={emptySurfaceClass}>{textSearchError}</div>
-      ) : textSearchResults !== null ? (
-        <Card as="div" variant="nested" className="grid gap-3 p-4">
-          <div className="text-[0.82rem] font-semibold text-muted">
-            {pick(locale, `${textSearchResults.length} results for`, `"${textSearchQuery}" 검색 결과`)} &ldquo;{textSearchQuery}&rdquo;
-          </div>
-          {textSearchResults.length > 0 ? (
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {textSearchResults.map((result) => (
-                <Card key={result.image_id} as="div" variant="panel" className="grid gap-2 p-3">
-                  <div className="flex items-center justify-between gap-2 text-[0.82rem]">
-                    <span className="font-semibold text-ink">{result.patient_id}</span>
-                    <span className={docSiteBadgeClass}>{result.visit_date}</span>
-                  </div>
-                  {result.preview_url ? (
-                    <img
-                      src={result.preview_url}
-                      alt={result.image_id}
-                      className="block max-h-[200px] w-auto max-w-full rounded-[10px] border border-border/60 object-contain"
-                      loading="lazy"
-                    />
-                  ) : null}
-                  <div className="flex items-center justify-between gap-2 text-[0.78rem] text-muted">
-                    <span>{result.view}</span>
-                    <span className={savedImageSupportChipClass}>score {result.score.toFixed(2)}</span>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <div className="text-[0.85rem] text-muted">
-              {pick(locale, "No matching images found.", "일치하는 이미지가 없습니다.")}
-            </div>
-          )}
-        </Card>
-      ) : null}
 
       {selectedCaseImages.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

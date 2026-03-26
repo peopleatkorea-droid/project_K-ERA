@@ -20,6 +20,7 @@ from kera_research.domain import (
     INDEX_TO_LABEL,
     LABEL_TO_INDEX,
     LESION_GUIDED_FUSION_ARCHITECTURES,
+    is_attention_mil_architecture,
     is_dual_input_training_architecture,
     is_lesion_guided_fusion_architecture,
     lesion_guided_fusion_backbone,
@@ -72,6 +73,7 @@ DEFAULT_CASE_AGGREGATION = "mean"
 CASE_AGGREGATIONS = ("mean", "logit_mean", "quality_weighted_mean", "attention_mil")
 DUAL_INPUT_ARCHITECTURES = ("dual_input_concat", *LESION_GUIDED_FUSION_ARCHITECTURES)
 TRAINING_PRETRAINING_SOURCES = ("scratch", "imagenet", "ssl")
+TRAINING_FINE_TUNING_MODES = ("full", "linear_probe", "partial")
 SSL_BACKBONE_ARCHITECTURE_BY_MODEL = {
     "densenet121": "densenet121",
     "convnext_tiny": "convnext_tiny",
@@ -80,6 +82,7 @@ SSL_BACKBONE_ARCHITECTURE_BY_MODEL = {
     "swin": "swin",
     "dinov2": "dinov2",
     "dinov2_mil": "dinov2",
+    "swin_mil": "swin",
     "dual_input_concat": "dinov2",
 }
 IMAGENET_PRETRAINED_ARCHITECTURES = {
@@ -89,6 +92,7 @@ IMAGENET_PRETRAINED_ARCHITECTURES = {
     "efficientnet_v2_s",
     "dinov2",
     "dinov2_mil",
+    "swin_mil",
     "dual_input_concat",
     *DENSENET_VARIANTS,
     *LESION_GUIDED_FUSION_ARCHITECTURES,
@@ -390,6 +394,18 @@ if nn is not None:
             x = self.stage3(x)
             x = self.pool(x).flatten(1)
             return self.head(x)
+
+
+    def _encode_swin_backbone(backbone: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+        features = backbone.features(inputs)
+        features = backbone.norm(features)
+        permute = getattr(backbone, "permute", None)
+        if callable(permute):
+            features = permute(features)
+        else:
+            features = features.permute(0, 3, 1, 2).contiguous()
+        features = backbone.avgpool(features)
+        return torch.flatten(features, 1)
     class DenseNetKeratitis(nn.Module):
         """Wrapper for torchvision DenseNet variants (121/169/201).
 
@@ -610,6 +626,70 @@ if nn is not None:
                 return logits, attention
             return logits
 
+
+    class SwinAttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+        ) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError("torchvision is required for Swin Attention MIL. Run: pip install torchvision")
+
+            if pretrained:
+                from torchvision.models import Swin_T_Weights
+
+                backbone = _torchvision_models.swin_t(weights=Swin_T_Weights.IMAGENET1K_V1)
+            else:
+                backbone = _torchvision_models.swin_t(weights=None)
+
+            self.backbone = backbone
+            self.hidden_size = int(backbone.head.in_features)
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def encode_instances(self, inputs: torch.Tensor) -> torch.Tensor:
+            if inputs.ndim == 4:
+                batch_size = inputs.shape[0]
+                features = _encode_swin_backbone(self.backbone, inputs)
+                return features.view(batch_size, 1, -1)
+            if inputs.ndim != 5:
+                raise ValueError(f"SwinAttentionMIL expects a 4D or 5D tensor, got shape {tuple(inputs.shape)}.")
+            batch_size, bag_size, channels, height, width = inputs.shape
+            flattened = inputs.view(batch_size * bag_size, channels, height, width)
+            features = _encode_swin_backbone(self.backbone, flattened)
+            return features.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
 else:  # pragma: no cover - dependency guard
     class TinyKeratitisCNN:  # type: ignore[override]
         pass
@@ -630,6 +710,9 @@ else:  # pragma: no cover - dependency guard
         pass
 
     class Dinov2AttentionMIL:  # type: ignore[override]
+        pass
+
+    class SwinAttentionMIL:  # type: ignore[override]
         pass
 
     class DualInputConcatKeratitis:  # type: ignore[override]
@@ -1000,6 +1083,7 @@ class ModelManager:
             "efficientnet_v2_s",
             "dinov2",
             "dinov2_mil",
+            "swin_mil",
             "dual_input_concat",
         } or is_lesion_guided_fusion_architecture(normalized)
 
@@ -1151,7 +1235,7 @@ class ModelManager:
         if not case_aggregation:
             case_aggregation = self.normalize_case_aggregation(None, architecture)
         bag_level_value = template.get("bag_level")
-        bag_level = bool(bag_level_value) if bag_level_value is not None else architecture == "dinov2_mil"
+        bag_level = bool(bag_level_value) if bag_level_value is not None else is_attention_mil_architecture(architecture)
         training_input_policy = str(template.get("training_input_policy") or "").strip()
         if not training_input_policy:
             if crop_mode == "manual":
@@ -1204,6 +1288,8 @@ class ModelManager:
             return Dinov2Keratitis(pretrained=False)
         if architecture == "dinov2_mil":
             return Dinov2AttentionMIL(pretrained=False)
+        if architecture == "swin_mil":
+            return SwinAttentionMIL(pretrained=False)
         if architecture == "dual_input_concat":
             return DualInputConcatKeratitis(pretrained=False)
         if architecture in DENSENET_VARIANTS:
@@ -1552,7 +1638,7 @@ class ModelManager:
             return model.classifier[-1]
         if architecture == "dinov2":
             return model.classifier
-        if architecture == "dinov2_mil":
+        if is_attention_mil_architecture(architecture):
             return model.classifier
         if architecture == "dual_input_concat":
             return model.classifier
@@ -1577,6 +1663,8 @@ class ModelManager:
             return self._dinov2_gradcam_projection(model, "DINOv2")
         if architecture == "dinov2_mil":
             return self._dinov2_gradcam_projection(model, "DINOv2 MIL")
+        if architecture == "swin_mil":
+            return model.backbone.features[-1]
         if architecture == "dual_input_concat":
             return self._dinov2_gradcam_projection(model, "Dual-input DINOv2")
         if is_lesion_guided_fusion_architecture(architecture):
@@ -1885,7 +1973,7 @@ class ModelManager:
                     artifact_type="model",
                     crop_mode=str(base_model_reference.get("crop_mode") or ""),
                     case_aggregation=str(base_model_reference.get("case_aggregation") or self.normalize_case_aggregation(None, architecture)),
-                    bag_level=bool(base_model_reference.get("bag_level", architecture == "dinov2_mil")),
+                    bag_level=bool(base_model_reference.get("bag_level", is_attention_mil_architecture(architecture))),
                     training_input_policy=str(base_model_reference.get("training_input_policy") or ""),
                     preprocess_metadata=preprocess_metadata,
                 ),
@@ -1944,7 +2032,7 @@ class ModelManager:
             for parameter in model.classifier.parameters():
                 parameter.requires_grad = True
             return
-        if architecture == "dinov2_mil":
+        if is_attention_mil_architecture(architecture):
             for parameter in model.parameters():
                 parameter.requires_grad = False
             for module in (model.attention_pool, model.classifier):
@@ -1972,7 +2060,7 @@ class ModelManager:
         if is_lesion_guided_fusion_architecture(architecture):
             return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if not _TORCHVISION_AVAILABLE:
-            if architecture not in {"dinov2", "dinov2_mil", "dual_input_concat"}:
+            if architecture not in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
                 raise RuntimeError("torchvision is required. Run: pip install torchvision")
         if architecture == "vit":
             from torchvision.models import ViT_B_16_Weights
@@ -2023,6 +2111,8 @@ class ModelManager:
             return Dinov2Keratitis(num_classes=num_classes, pretrained=True)
         if architecture == "dinov2_mil":
             return Dinov2AttentionMIL(num_classes=num_classes, pretrained=True)
+        if architecture == "swin_mil":
+            return SwinAttentionMIL(num_classes=num_classes, pretrained=True)
         if architecture == "dual_input_concat":
             return DualInputConcatKeratitis(num_classes=num_classes, pretrained=True)
         raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
@@ -2044,6 +2134,207 @@ class ModelManager:
                 f"Supported: {', '.join(TRAINING_PRETRAINING_SOURCES)}"
             )
         return normalized
+
+    def normalize_fine_tuning_mode(self, fine_tuning_mode: str | None) -> str:
+        normalized = str(fine_tuning_mode or "full").strip().lower() or "full"
+        if normalized not in TRAINING_FINE_TUNING_MODES:
+            raise ValueError(
+                f"Unsupported fine-tuning mode: {fine_tuning_mode}. "
+                f"Supported: {', '.join(TRAINING_FINE_TUNING_MODES)}"
+            )
+        return normalized
+
+    def _head_modules(self, model: nn.Module, architecture: str) -> list[nn.Module]:
+        if is_lesion_guided_fusion_architecture(architecture):
+            return [model.lesion_projection, model.channel_gate, model.spatial_attention, model.fusion_projection, model.classifier]
+        if architecture == "cnn":
+            return [model.classifier]
+        if architecture == "vit":
+            return [model.heads]
+        if architecture == "swin":
+            return [model.head]
+        if architecture == "convnext_tiny":
+            return [model.classifier]
+        if architecture == "efficientnet_v2_s":
+            return [model.classifier]
+        if architecture == "dinov2":
+            return [model.classifier]
+        if is_attention_mil_architecture(architecture):
+            return [model.attention_pool, model.classifier]
+        if architecture == "dual_input_concat":
+            return [model.fusion_projection, model.classifier]
+        if architecture in DENSENET_VARIANTS:
+            return [model.classifier]
+        raise ValueError(f"Unsupported architecture: {architecture}")
+
+    def _freeze_all_parameters(self, model: nn.Module) -> None:
+        for parameter in model.parameters():
+            parameter.requires_grad = False
+
+    def _unfreeze_module_parameters(self, module: nn.Module) -> None:
+        for parameter in module.parameters():
+            parameter.requires_grad = True
+
+    def _unfreeze_last_children(self, module: nn.Module, count: int) -> None:
+        children = [child for child in module.children()]
+        if not children:
+            self._unfreeze_module_parameters(module)
+            return
+        for child in children[-max(1, count):]:
+            self._unfreeze_module_parameters(child)
+
+    def _enable_partial_backbone(self, model: nn.Module, architecture: str, *, unfreeze_last_blocks: int) -> None:
+        block_count = max(1, int(unfreeze_last_blocks))
+        normalized = str(architecture or "").strip().lower()
+
+        if normalized == "vit":
+            layers = getattr(model.encoder, "layers", None)
+            if layers is None:
+                raise ValueError("ViT encoder layers are not available for partial fine-tuning.")
+            for layer in list(layers.children())[-block_count:]:
+                self._unfreeze_module_parameters(layer)
+            return
+
+        if normalized == "swin":
+            self._unfreeze_last_children(model.features, block_count)
+            if hasattr(model, "norm"):
+                self._unfreeze_module_parameters(model.norm)
+            return
+
+        if normalized == "convnext_tiny":
+            self._unfreeze_last_children(model.features, block_count)
+            return
+
+        if normalized == "efficientnet_v2_s":
+            self._unfreeze_last_children(model.features, block_count)
+            return
+
+        if normalized in DENSENET_VARIANTS:
+            self._unfreeze_last_children(model.features, block_count)
+            return
+
+        if normalized in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
+            if normalized == "swin_mil":
+                self._unfreeze_last_children(model.backbone.features, block_count)
+                if hasattr(model.backbone, "norm"):
+                    self._unfreeze_module_parameters(model.backbone.norm)
+                return
+            backbone = getattr(model, "backbone", None)
+            encoder = getattr(backbone, "encoder", None)
+            layers = getattr(encoder, "layer", None)
+            if layers is not None:
+                for layer in list(layers)[-block_count:]:
+                    self._unfreeze_module_parameters(layer)
+                return
+            if backbone is None:
+                raise ValueError(f"{architecture} does not expose a backbone for partial fine-tuning.")
+            self._unfreeze_last_children(backbone, block_count)
+            return
+
+        if normalized == "cnn":
+            self._unfreeze_last_children(model.features, block_count)
+            return
+
+        if is_lesion_guided_fusion_architecture(normalized):
+            backbone = getattr(model, "backbone", None)
+            if backbone is None:
+                raise ValueError(f"{architecture} does not expose a backbone for partial fine-tuning.")
+            self._unfreeze_last_children(backbone, block_count)
+            return
+
+        raise ValueError(f"Partial fine-tuning is not supported for architecture: {architecture}")
+
+    def _configure_fine_tuning(
+        self,
+        model: nn.Module,
+        architecture: str,
+        *,
+        fine_tuning_mode: str,
+        unfreeze_last_blocks: int,
+    ) -> None:
+        normalized_mode = self.normalize_fine_tuning_mode(fine_tuning_mode)
+        if normalized_mode == "full":
+            return
+        self._freeze_backbone(model, architecture)
+        if normalized_mode == "partial":
+            self._enable_partial_backbone(model, architecture, unfreeze_last_blocks=unfreeze_last_blocks)
+
+    def _build_training_optimizer(
+        self,
+        model: nn.Module,
+        architecture: str,
+        *,
+        learning_rate: float,
+        backbone_learning_rate: float | None,
+        head_learning_rate: float | None,
+        weight_decay: float = 1e-4,
+    ) -> torch.optim.Optimizer:
+        trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        if not trainable_parameters:
+            raise ValueError("No trainable parameters remain after applying the requested fine-tuning mode.")
+
+        head_parameter_ids = {
+            id(parameter)
+            for module in self._head_modules(model, architecture)
+            for parameter in module.parameters()
+            if parameter.requires_grad
+        }
+        head_parameters = [parameter for parameter in trainable_parameters if id(parameter) in head_parameter_ids]
+        backbone_parameters = [parameter for parameter in trainable_parameters if id(parameter) not in head_parameter_ids]
+        if not head_parameters or not backbone_parameters:
+            return torch.optim.Adam(
+                trainable_parameters,
+                lr=float(head_learning_rate or learning_rate),
+                weight_decay=weight_decay,
+            )
+
+        return torch.optim.Adam(
+            [
+                {
+                    "params": backbone_parameters,
+                    "lr": float(backbone_learning_rate or learning_rate),
+                },
+                {
+                    "params": head_parameters,
+                    "lr": float(head_learning_rate or learning_rate),
+                },
+            ],
+            weight_decay=weight_decay,
+        )
+
+    def _build_training_scheduler(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        epochs: int,
+        learning_rate: float,
+        warmup_epochs: int,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        safe_epochs = max(1, int(epochs))
+        safe_warmup_epochs = max(0, min(int(warmup_epochs), max(0, safe_epochs - 1)))
+        if safe_warmup_epochs <= 0:
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=safe_epochs,
+                eta_min=float(learning_rate) * 1e-2,
+            )
+
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.2,
+            end_factor=1.0,
+            total_iters=safe_warmup_epochs,
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, safe_epochs - safe_warmup_epochs),
+            eta_min=float(learning_rate) * 1e-2,
+        )
+        return torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[safe_warmup_epochs],
+        )
 
     def supports_imagenet_pretraining(self, architecture: str) -> bool:
         normalized = str(architecture or "").strip().lower()
@@ -2068,7 +2359,7 @@ class ModelManager:
             return getattr(model, "model", model)
         if normalized in {"vit", "swin", "efficientnet_v2_s"}:
             return model
-        if normalized in {"dinov2", "dinov2_mil", "dual_input_concat"}:
+        if normalized in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
             backbone = getattr(model, "backbone", None)
             if backbone is None:
                 raise ValueError(f"{architecture} does not expose a backbone module for SSL initialization.")
@@ -2086,6 +2377,8 @@ class ModelManager:
         if normalized == "vit":
             return ("heads.",)
         if normalized == "swin":
+            return ("head.",)
+        if normalized == "swin_mil":
             return ("head.",)
         if normalized == "efficientnet_v2_s":
             return ("classifier.",)
@@ -2185,7 +2478,7 @@ class ModelManager:
 
     def normalize_case_aggregation(self, value: str | None, architecture: str | None = None) -> str:
         normalized = str(value or "").strip().lower()
-        if architecture == "dinov2_mil":
+        if is_attention_mil_architecture(architecture):
             return "attention_mil"
         if normalized not in CASE_AGGREGATIONS or normalized == "attention_mil":
             return DEFAULT_CASE_AGGREGATION
@@ -2622,6 +2915,12 @@ class ModelManager:
         crop_mode: str | None,
         training_input_policy: str | None,
         progress_callback: Any,
+        fine_tuning_mode: str,
+        backbone_learning_rate: float | None,
+        head_learning_rate: float | None,
+        warmup_epochs: int,
+        early_stop_patience: int | None,
+        partial_unfreeze_blocks: int,
     ) -> dict[str, Any]:
         patient_to_records: dict[str, list[dict[str, Any]]] = {}
         patient_to_label: dict[str, str] = {}
@@ -2673,16 +2972,32 @@ class ModelManager:
             ssl_checkpoint_path=ssl_checkpoint_path,
         )
         model = model.to(device)
-        backbone_frozen = resolved_pretraining_source != "scratch"
-        if backbone_frozen:
-            self._freeze_backbone(model, architecture)
+        resolved_fine_tuning_mode = self.normalize_fine_tuning_mode(fine_tuning_mode)
+        if resolved_pretraining_source == "scratch" and resolved_fine_tuning_mode != "full":
+            raise ValueError("linear_probe/partial modes require pretrained or SSL-initialized weights.")
 
-        optimizer = torch.optim.Adam(
-            [param for param in model.parameters() if param.requires_grad],
-            lr=learning_rate,
+        self._configure_fine_tuning(
+            model,
+            architecture,
+            fine_tuning_mode=resolved_fine_tuning_mode,
+            unfreeze_last_blocks=partial_unfreeze_blocks,
+        )
+        backbone_frozen = resolved_fine_tuning_mode != "full"
+
+        optimizer = self._build_training_optimizer(
+            model,
+            architecture,
+            learning_rate=learning_rate,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
             weight_decay=1e-4,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        scheduler = self._build_training_scheduler(
+            optimizer,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            warmup_epochs=warmup_epochs,
+        )
         train_case_labels = [LABEL_TO_INDEX[str(visit_records[0]["culture_category"])] for visit_records in train_ds.visit_records]
         class_counts = np.bincount(train_case_labels, minlength=len(LABEL_TO_INDEX))
         class_weights = np.array(
@@ -2694,6 +3009,8 @@ class ModelManager:
         best_val_acc = -1.0
         best_state: dict[str, Any] = {}
         history: list[dict[str, Any]] = []
+        epochs_without_improvement = 0
+        stopped_early = False
 
         for epoch in range(1, epochs + 1):
             model.train()
@@ -2729,9 +3046,16 @@ class ModelManager:
             if val_acc >= best_val_acc:
                 best_val_acc = val_acc
                 best_state = {key: value.cpu().clone() for key, value in model.state_dict().items()}
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
             if progress_callback:
                 progress_callback(epoch, epochs, train_loss, val_acc)
+
+            if early_stop_patience is not None and epochs_without_improvement >= max(1, int(early_stop_patience)):
+                stopped_early = True
+                break
 
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -2814,6 +3138,14 @@ class ModelManager:
             "case_aggregation": "attention_mil",
             "bag_level": True,
             "backbone_frozen": backbone_frozen,
+            "fine_tuning_mode": resolved_fine_tuning_mode,
+            "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
+            "head_learning_rate": float(head_learning_rate) if head_learning_rate is not None else None,
+            "warmup_epochs": int(max(0, warmup_epochs)),
+            "early_stop_patience": int(early_stop_patience) if early_stop_patience is not None else None,
+            "stopped_early": bool(stopped_early),
+            "epochs_completed": len(history),
+            "partial_unfreeze_blocks": int(max(1, partial_unfreeze_blocks)),
         }
 
     def initial_train(
@@ -2835,6 +3167,12 @@ class ModelManager:
         case_aggregation: str | None = None,
         training_input_policy: str | None = None,
         progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
     ) -> dict[str, Any]:
         """처음부터 학습 가능한 backbone을 학습합니다 (ImageNet pretrained 권장).
 
@@ -2856,7 +3194,7 @@ class ModelManager:
 
         seed_everything(42)
         normalized_case_aggregation = self.normalize_case_aggregation(case_aggregation, architecture)
-        if architecture == "dinov2_mil":
+        if is_attention_mil_architecture(architecture):
             return self._initial_train_attention_mil(
                 records=records,
                 architecture=architecture,
@@ -2874,6 +3212,12 @@ class ModelManager:
                 crop_mode=crop_mode,
                 training_input_policy=training_input_policy,
                 progress_callback=progress_callback,
+                fine_tuning_mode=fine_tuning_mode,
+                backbone_learning_rate=backbone_learning_rate,
+                head_learning_rate=head_learning_rate,
+                warmup_epochs=warmup_epochs,
+                early_stop_patience=early_stop_patience,
+                partial_unfreeze_blocks=partial_unfreeze_blocks,
             )
 
         patient_to_records: dict[str, list[dict[str, Any]]] = {}
@@ -2926,9 +3270,30 @@ class ModelManager:
             ssl_checkpoint_path=ssl_checkpoint_path,
         )
         model = model.to(device)
+        resolved_fine_tuning_mode = self.normalize_fine_tuning_mode(fine_tuning_mode)
+        if resolved_pretraining_source == "scratch" and resolved_fine_tuning_mode != "full":
+            raise ValueError("linear_probe/partial modes require pretrained or SSL-initialized weights.")
+        self._configure_fine_tuning(
+            model,
+            architecture,
+            fine_tuning_mode=resolved_fine_tuning_mode,
+            unfreeze_last_blocks=partial_unfreeze_blocks,
+        )
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        optimizer = self._build_training_optimizer(
+            model,
+            architecture,
+            learning_rate=learning_rate,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            weight_decay=1e-4,
+        )
+        scheduler = self._build_training_scheduler(
+            optimizer,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            warmup_epochs=warmup_epochs,
+        )
         class_counts = np.bincount(
             [LABEL_TO_INDEX[item["culture_category"]] for item in train_records],
             minlength=len(LABEL_TO_INDEX),
@@ -2942,6 +3307,8 @@ class ModelManager:
         best_val_acc = 0.0
         best_state: dict[str, Any] = {}
         history: list[dict[str, Any]] = []
+        epochs_without_improvement = 0
+        stopped_early = False
 
         for epoch in range(1, epochs + 1):
             # Train
@@ -3008,9 +3375,16 @@ class ModelManager:
             if val_acc >= best_val_acc:
                 best_val_acc = val_acc
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
             if progress_callback:
                 progress_callback(epoch, epochs, train_loss, val_acc)
+
+            if early_stop_patience is not None and epochs_without_improvement >= max(1, int(early_stop_patience)):
+                stopped_early = True
+                break
 
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -3103,6 +3477,204 @@ class ModelManager:
             "test_predictions": test_predictions,
             "case_aggregation": normalized_case_aggregation,
             "bag_level": False,
+            "fine_tuning_mode": resolved_fine_tuning_mode,
+            "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
+            "head_learning_rate": float(head_learning_rate) if head_learning_rate is not None else None,
+            "warmup_epochs": int(max(0, warmup_epochs)),
+            "early_stop_patience": int(early_stop_patience) if early_stop_patience is not None else None,
+            "stopped_early": bool(stopped_early),
+            "epochs_completed": len(history),
+            "partial_unfreeze_blocks": int(max(1, partial_unfreeze_blocks)),
+        }
+
+    def refit_all_cases(
+        self,
+        records: list[dict[str, Any]],
+        architecture: str,
+        output_model_path: str | Path,
+        device: str,
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | Path | None = None,
+        crop_mode: str | None = None,
+        case_aggregation: str | None = None,
+        training_input_policy: str | None = None,
+        progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
+    ) -> dict[str, Any]:
+        require_torch()
+        if len(records) < 4:
+            raise ValueError(f"최소 4개 케이스가 필요합니다 (현재 {len(records)}개).")
+        if is_attention_mil_architecture(architecture):
+            raise ValueError("Full-dataset refit does not currently support attention MIL architectures.")
+
+        seed_everything(42)
+        normalized_case_aggregation = self.normalize_case_aggregation(case_aggregation, architecture)
+        unique_patient_ids = list(dict.fromkeys(str(record["patient_id"]) for record in records))
+        if len(unique_patient_ids) < 4:
+            raise ValueError(f"최소 4명의 환자가 필요합니다 (현재 {len(unique_patient_ids)}명).")
+
+        preprocess_metadata = self.preprocess_metadata()
+        if self.is_dual_input_architecture(architecture):
+            dataset_cls = LesionGuidedFusionDataset if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
+            train_ds = dataset_cls(records, augment=True, preprocess_metadata=preprocess_metadata)
+        else:
+            train_ds = ManifestImageDataset(records, augment=True, preprocess_metadata=preprocess_metadata)
+        bs = max(1, min(batch_size, len(records)))
+        train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True)
+
+        model, resolved_pretraining_source, ssl_metadata = self.build_model_for_training(
+            architecture,
+            pretraining_source=pretraining_source,
+            use_pretrained=use_pretrained,
+            ssl_checkpoint_path=ssl_checkpoint_path,
+        )
+        model = model.to(device)
+        resolved_fine_tuning_mode = self.normalize_fine_tuning_mode(fine_tuning_mode)
+        if resolved_pretraining_source == "scratch" and resolved_fine_tuning_mode != "full":
+            raise ValueError("linear_probe/partial modes require pretrained or SSL-initialized weights.")
+        self._configure_fine_tuning(
+            model,
+            architecture,
+            fine_tuning_mode=resolved_fine_tuning_mode,
+            unfreeze_last_blocks=partial_unfreeze_blocks,
+        )
+
+        optimizer = self._build_training_optimizer(
+            model,
+            architecture,
+            learning_rate=learning_rate,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            weight_decay=1e-4,
+        )
+        scheduler = self._build_training_scheduler(
+            optimizer,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            warmup_epochs=warmup_epochs,
+        )
+        class_counts = np.bincount(
+            [LABEL_TO_INDEX[item["culture_category"]] for item in records],
+            minlength=len(LABEL_TO_INDEX),
+        )
+        class_weights = np.array(
+            [0.0 if count == 0 else len(records) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+            dtype=np.float32,
+        )
+        loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
+
+        best_train_loss = math.inf
+        best_state: dict[str, Any] = {}
+        history: list[dict[str, Any]] = []
+        epochs_without_improvement = 0
+        stopped_early = False
+
+        for epoch in range(1, epochs + 1):
+            model.train()
+            train_losses: list[float] = []
+            if self.is_dual_input_architecture(architecture):
+                for batch in train_loader:
+                    if len(batch) == 4:
+                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+                        lesion_masks = lesion_masks.to(device)
+                    else:
+                        cornea_inputs, lesion_inputs, batch_labels = batch
+                        lesion_masks = None
+                    cornea_inputs = cornea_inputs.to(device)
+                    lesion_inputs = lesion_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    loss = loss_fn(model(cornea_inputs, lesion_inputs, lesion_masks), batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
+            else:
+                for batch_inputs, batch_labels in train_loader:
+                    batch_inputs = batch_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+                    optimizer.zero_grad()
+                    loss = loss_fn(model(batch_inputs), batch_labels)
+                    loss.backward()
+                    optimizer.step()
+                    train_losses.append(float(loss.item()))
+            scheduler.step()
+
+            train_loss = float(np.mean(train_losses)) if train_losses else math.nan
+            history.append({"epoch": epoch, "train_loss": train_loss})
+
+            if train_loss <= best_train_loss:
+                best_train_loss = train_loss
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
+            if progress_callback:
+                progress_callback(epoch, epochs, train_loss, None)
+
+            if early_stop_patience is not None and epochs_without_improvement >= max(1, int(early_stop_patience)):
+                stopped_early = True
+                break
+
+        output = Path(output_model_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        model.load_state_dict(best_state)
+        torch.save(
+            {
+                "architecture": architecture,
+                "state_dict": best_state,
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model",
+                    crop_mode=crop_mode,
+                    case_aggregation=normalized_case_aggregation,
+                    bag_level=False,
+                    training_input_policy=training_input_policy,
+                    preprocess_metadata=preprocess_metadata,
+                ),
+            },
+            output,
+        )
+
+        return {
+            "training_id": make_id("train"),
+            "output_model_path": str(output),
+            "architecture": architecture,
+            "epochs": epochs,
+            "n_train": len(records),
+            "n_train_patients": len(unique_patient_ids),
+            "best_train_loss": round(float(best_train_loss), 6) if math.isfinite(best_train_loss) else None,
+            "use_pretrained": resolved_pretraining_source != "scratch",
+            "pretraining_source": resolved_pretraining_source,
+            "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
+            "ssl_checkpoint": ssl_metadata,
+            "history": history,
+            "decision_threshold": 0.5,
+            "threshold_selection_metric": "default",
+            "threshold_selection_metrics": {
+                "selection_metric": "default",
+                "decision_threshold": 0.5,
+            },
+            "case_aggregation": normalized_case_aggregation,
+            "bag_level": False,
+            "refit_scope": "all_cases",
+            "fine_tuning_mode": resolved_fine_tuning_mode,
+            "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
+            "head_learning_rate": float(head_learning_rate) if head_learning_rate is not None else None,
+            "warmup_epochs": int(max(0, warmup_epochs)),
+            "early_stop_patience": int(early_stop_patience) if early_stop_patience is not None else None,
+            "stopped_early": bool(stopped_early),
+            "epochs_completed": len(history),
+            "partial_unfreeze_blocks": int(max(1, partial_unfreeze_blocks)),
         }
 
     def cross_validate(

@@ -22,6 +22,7 @@ fn desktop_runtime_contract_response(
             .unwrap_or_else(|| "missing".to_string()),
         backend_candidates: readiness.backend_candidates,
         python_candidates: readiness.python_candidates,
+        python_preflight: readiness.python_preflight,
         errors: readiness.errors,
         warnings: readiness.warnings,
     }

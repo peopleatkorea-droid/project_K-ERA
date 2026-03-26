@@ -335,7 +335,7 @@ export async function runInitialTraining(
         use_pretrained: true,
         pretraining_source: undefined,
         ssl_checkpoint_path: undefined,
-        regenerate_split: false,
+        regenerate_split: true,
         ...payload,
       }),
     },
@@ -390,7 +390,7 @@ export async function runInitialTrainingBenchmark(
         pretraining_source: undefined,
         ssl_checkpoint_path: undefined,
         benchmark_suite_key: undefined,
-        regenerate_split: false,
+        regenerate_split: true,
         ...payload,
       }),
     },
@@ -478,6 +478,24 @@ export async function cancelSiteJob(siteId: string, jobId: string, token: string
     `/api/sites/${siteId}/jobs/${jobId}/cancel`,
     {
       method: "POST",
+    },
+    token,
+  );
+}
+
+export async function clearInitialTrainingBenchmarkHistory(siteId: string, token: string) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<{ site_id: string; deleted_jobs: number }>("clear_initial_training_benchmark_history", {
+      payload: {
+        site_id: siteId,
+        token,
+      },
+    });
+  }
+  return request<{ site_id: string; deleted_jobs: number }>(
+    `/api/sites/${siteId}/training/initial/benchmark`,
+    {
+      method: "DELETE",
     },
     token,
   );

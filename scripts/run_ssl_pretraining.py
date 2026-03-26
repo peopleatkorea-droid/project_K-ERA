@@ -11,7 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from kera_research.services.ssl_pretraining import SSLTrainingConfig, run_ssl_pretraining
+from kera_research.services.ssl_pretraining import SSLTrainingConfig, SSL_AUGMENT_PRESETS, run_ssl_pretraining
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -43,6 +43,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Backbone initialization mode before SSL pretraining.",
     )
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--augment-preset", default="default", choices=list(SSL_AUGMENT_PRESETS))
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -90,6 +91,7 @@ def main() -> int:
         architecture=args.architecture,
         init_mode=args.init_mode,
         image_size=args.image_size,
+        augment_preset=args.augment_preset,
         batch_size=args.batch_size,
         epochs=args.epochs,
         learning_rate=args.learning_rate,

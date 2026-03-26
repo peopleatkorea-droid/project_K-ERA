@@ -110,7 +110,7 @@ const koFaqs = [
 ];
 
 const koSecondaryCtaClass =
-  "inline-block rounded-[8px] border border-[rgba(45,212,192,0.28)] bg-[#24aa9e] px-8 py-3 text-[0.9rem] font-medium tracking-[0.04em] text-[#081116] shadow-[0_10px_24px_rgba(9,13,24,0.32)] transition hover:-translate-y-0.5 hover:border-[rgba(45,212,192,0.38)] hover:bg-[#209d92] hover:shadow-[0_12px_28px_rgba(9,13,24,0.38)]";
+  "inline-block rounded-[8px] border border-[rgba(45,212,192,0.28)] bg-[#24aa9e] px-8 py-3 text-[0.9rem] font-medium tracking-[0.04em] text-[#081116] shadow-[0_10px_24px_rgba(9,13,24,0.32)] transition hover:-translate-y-0.5 hover:border-[rgba(45,212,192,0.38)] hover:bg-[#209d92] hover:shadow-[0_12px_28px_rgba(9,13,24,0.38)] active:scale-[0.97] active:translate-y-0";
 
 export function KoreanLandingView(props: KoreanLandingViewProps) {
   const [featurePreviewIndex, setFeaturePreviewIndex] = useState(0);
@@ -232,8 +232,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               className="landing-hero-fade flex flex-wrap justify-center gap-3.5"
               style={{ animationDelay: "0.21s" }}
             >
-              <LandingGoogleCta buttonClassName={koSecondaryCtaClass} onGoogleLaunch={props.onGoogleLaunch} slotClassName="rounded-[8px]">
-                연구 참여하기
+              <LandingGoogleCta
+                buttonClassName={koSecondaryCtaClass}
+                googleLaunchPulse={props.googleLaunchPulse}
+                onGoogleLaunch={props.onGoogleLaunch}
+                pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
+                slotClassName="rounded-[8px]"
+              >
+                {props.authBusy ? props.connectingLabel : "연구 참여하기"}
               </LandingGoogleCta>
               <a className="inline-block rounded-[8px] border border-[rgba(45,212,192,0.13)] px-7 py-3 text-[0.88rem] tracking-[0.04em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]" href="#features">
                 어떻게 작동하나요 →
@@ -580,8 +586,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             ))}
           </div>
           <div className="text-center">
-            <LandingGoogleCta buttonClassName={koSecondaryCtaClass} onGoogleLaunch={props.onGoogleLaunch} slotClassName="rounded-[8px]">
-              병원 참여 신청하기 →
+            <LandingGoogleCta
+              buttonClassName={koSecondaryCtaClass}
+              googleLaunchPulse={props.googleLaunchPulse}
+              onGoogleLaunch={props.onGoogleLaunch}
+              pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
+              slotClassName="rounded-[8px]"
+            >
+              {props.authBusy ? props.connectingLabel : "병원 참여 신청하기 →"}
             </LandingGoogleCta>
             <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">임상 안과의사라면 누구나 · Google 계정 1개로 시작</p>
           </div>

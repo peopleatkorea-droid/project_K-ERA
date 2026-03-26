@@ -4,6 +4,7 @@ pub(super) struct MlSidecarRuntime {
     stdout: Option<BufReader<ChildStdout>>,
     next_request_id: u64,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stderr_log_path: Option<String>,
     last_started_at: Option<String>,
@@ -19,6 +20,7 @@ impl Default for MlSidecarRuntime {
             stdout: None,
             next_request_id: 1,
             python_path: None,
+            python_preflight: None,
             launch_command: None,
             stderr_log_path: None,
             last_started_at: None,
@@ -33,6 +35,7 @@ struct SpawnedMlSidecar {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     python_path: String,
+    python_preflight: DesktopPythonRuntimePreflight,
     launch_command: Vec<String>,
     stderr_log_path: String,
 }
@@ -49,6 +52,7 @@ pub(super) struct MlSidecarStatus {
     launched_by_desktop: bool,
     pid: Option<u32>,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stdout_log_path: Option<String>,
     stderr_log_path: Option<String>,
@@ -72,9 +76,10 @@ fn spawn_ml_sidecar_process() -> Result<SpawnedMlSidecar, String> {
     let values = resolved_env_values();
     let backend = resolve_desktop_backend_target(&values)?;
     let stderr_log_path = ml_sidecar_stderr_log_path()?;
+    let python_preflight = ensure_desktop_runtime_readiness_for_sidecar()?;
     let mut errors = Vec::new();
 
-    for python_path in local_backend_python_candidates() {
+    for python_path in [python_preflight.candidate_path.clone()] {
         let stderr_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -99,6 +104,7 @@ fn spawn_ml_sidecar_process() -> Result<SpawnedMlSidecar, String> {
 
         match command.spawn() {
             Ok(mut child) => {
+                register_managed_process("ml_sidecar", child.id(), Some(&python_path))?;
                 let stdin = child
                     .stdin
                     .take()
@@ -112,6 +118,7 @@ fn spawn_ml_sidecar_process() -> Result<SpawnedMlSidecar, String> {
                     stdin,
                     stdout: BufReader::new(stdout),
                     python_path,
+                    python_preflight: python_preflight.clone(),
                     launch_command,
                     stderr_log_path: stderr_log_path.to_string_lossy().to_string(),
                 });
@@ -140,9 +147,12 @@ fn sync_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
         }
     }
     if let Some(error) = cleared_error {
+        let pid = runtime.child.as_ref().map(Child::id);
         runtime.child = None;
         runtime.stdin = None;
         runtime.stdout = None;
+        runtime.python_preflight = None;
+        let _ = unregister_managed_process(pid);
         runtime.launched_by_desktop = false;
         runtime.last_error = Some(error);
     }
@@ -150,11 +160,13 @@ fn sync_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
 
 fn stop_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
     if let Some(mut child) = runtime.child.take() {
+        let _ = unregister_managed_process(Some(child.id()));
         let _ = child.kill();
         let _ = child.wait();
     }
     runtime.stdin = None;
     runtime.stdout = None;
+    runtime.python_preflight = None;
     runtime.launched_by_desktop = false;
 }
 
@@ -175,6 +187,7 @@ fn ml_sidecar_status_snapshot(runtime: &MlSidecarRuntime, healthy: bool) -> MlSi
         launched_by_desktop: runtime.launched_by_desktop,
         pid: runtime.child.as_ref().map(Child::id),
         python_path: runtime.python_path.clone(),
+        python_preflight: runtime.python_preflight.clone(),
         launch_command: runtime.launch_command.clone(),
         stdout_log_path: None,
         stderr_log_path: runtime.stderr_log_path.clone(),

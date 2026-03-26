@@ -16,6 +16,15 @@ export type DesktopMlBackendStatus = {
   launched_by_desktop: boolean;
   pid?: number | null;
   python_path?: string | null;
+  python_preflight?: {
+    candidate_path: string;
+    candidate_source: string;
+    interpreter_path: string;
+    python_version?: string | null;
+    torch_version?: string | null;
+    cuda_available?: boolean | null;
+    gpu_name?: string | null;
+  } | null;
   launch_command?: string[] | null;
   stdout_log_path?: string | null;
   stderr_log_path?: string | null;

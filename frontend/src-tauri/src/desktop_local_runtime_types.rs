@@ -1,6 +1,18 @@
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(super) struct DesktopPythonRuntimePreflight {
+    pub(super) candidate_path: String,
+    pub(super) candidate_source: String,
+    pub(super) interpreter_path: String,
+    pub(super) python_version: Option<String>,
+    pub(super) torch_version: Option<String>,
+    pub(super) cuda_available: Option<bool>,
+    pub(super) gpu_name: Option<String>,
+}
+
 pub(super) struct LocalBackendRuntime {
     child: Option<Child>,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stdout_log_path: Option<String>,
     stderr_log_path: Option<String>,
@@ -12,6 +24,7 @@ pub(super) struct LocalBackendRuntime {
 pub(super) struct LocalWorkerRuntime {
     child: Option<Child>,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stdout_log_path: Option<String>,
     stderr_log_path: Option<String>,
@@ -25,6 +38,7 @@ impl Default for LocalBackendRuntime {
         Self {
             child: None,
             python_path: None,
+            python_preflight: None,
             launch_command: None,
             stdout_log_path: None,
             stderr_log_path: None,
@@ -38,6 +52,7 @@ impl Default for LocalBackendRuntime {
 struct SpawnedLocalBackend {
     child: Child,
     python_path: String,
+    python_preflight: DesktopPythonRuntimePreflight,
     launch_command: Vec<String>,
     stdout_log_path: String,
     stderr_log_path: String,
@@ -48,6 +63,7 @@ impl Default for LocalWorkerRuntime {
         Self {
             child: None,
             python_path: None,
+            python_preflight: None,
             launch_command: None,
             stdout_log_path: None,
             stderr_log_path: None,
@@ -61,6 +77,7 @@ impl Default for LocalWorkerRuntime {
 struct SpawnedLocalWorker {
     child: Child,
     python_path: String,
+    python_preflight: DesktopPythonRuntimePreflight,
     launch_command: Vec<String>,
     stdout_log_path: String,
     stderr_log_path: String,
@@ -78,6 +95,7 @@ pub(super) struct LocalBackendStatus {
     launched_by_desktop: bool,
     pid: Option<u32>,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stdout_log_path: Option<String>,
     stderr_log_path: Option<String>,
@@ -93,6 +111,7 @@ pub(super) struct LocalWorkerStatus {
     launched_by_desktop: bool,
     pid: Option<u32>,
     python_path: Option<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
     stdout_log_path: Option<String>,
     stderr_log_path: Option<String>,

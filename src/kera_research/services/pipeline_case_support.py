@@ -100,6 +100,14 @@ class ResearchCaseSupport:
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
+    def _source_image_is_readable(self, image_path: str) -> bool:
+        try:
+            with Image.open(image_path) as image:
+                image.verify()
+            return True
+        except (OSError, ValueError):
+            return False
+
     def _crop_metadata_dir(self, site_store: SiteStore, crop_mode: str) -> Path:
         return crop_metadata_dir(site_store, crop_mode)
 
@@ -260,12 +268,21 @@ class ResearchCaseSupport:
     ) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         normalized_crop_mode = self.service._normalize_crop_mode(crop_mode)
+        readable_records = [
+            record
+            for record in records
+            if self._source_image_is_readable(str(record.get("image_path") or "").strip())
+        ]
         if normalized_crop_mode in {"manual", "paired"}:
-            records = [record for record in records if isinstance(record.get("lesion_prompt_box"), dict)]
-            if not records:
+            readable_records = [
+                record for record in readable_records if isinstance(record.get("lesion_prompt_box"), dict)
+            ]
+            if not readable_records:
                 raise ValueError("This crop mode requires at least one saved lesion box.")
+        elif not readable_records:
+            raise ValueError("No readable source images are available for training.")
 
-        for record in records:
+        for record in readable_records:
             item = {**record, "source_image_path": record["image_path"]}
             if normalized_crop_mode == "automated":
                 roi = self._ensure_roi_crop(site_store, record["image_path"])

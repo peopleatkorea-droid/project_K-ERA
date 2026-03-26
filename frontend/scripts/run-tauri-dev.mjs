@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 
 const env = { ...process.env };
@@ -29,8 +30,18 @@ if (!env.CARGO_TARGET_DIR) {
 }
 const cargoTargetDir = path.resolve(env.CARGO_TARGET_DIR);
 const repoPythonSourceDir = path.resolve(process.cwd(), "..", "src");
+const repoRootDir = path.resolve(process.cwd(), "..");
 const runtimeCacheDir = path.resolve(process.cwd(), ".desktop-runtime", "python-runtime");
 const runtimeArchivePath = path.resolve(process.cwd(), ".desktop-runtime-bundle", "python-runtime.zip");
+const repoVenvPython = process.platform === "win32"
+  ? path.join(repoRootDir, ".venv", "Scripts", "python.exe")
+  : path.join(repoRootDir, ".venv", "bin", "python");
+const repoVenvBinDir = path.dirname(repoVenvPython);
+
+if (!fs.existsSync(repoVenvPython)) {
+  console.error(`K-ERA desktop dev requires the repository .venv interpreter, but it was not found: ${repoVenvPython}`);
+  process.exit(1);
+}
 
 if (!env.CARGO_BUILD_JOBS) {
   env.CARGO_BUILD_JOBS = String(Math.max(1, Math.min(os.cpus().length, 4)));
@@ -40,8 +51,10 @@ if (!env.KERA_DESKTOP_RUNTIME_MODE) {
   env.KERA_DESKTOP_RUNTIME_MODE = "dev";
 }
 
-if (!env.KERA_DESKTOP_LOCAL_BACKEND_PYTHON) {
-  env.KERA_DESKTOP_LOCAL_BACKEND_PYTHON = path.join(runtimeCacheDir, "python.exe");
+env.KERA_DESKTOP_LOCAL_BACKEND_PYTHON = repoVenvPython;
+
+if (!env.KERA_RUNTIME_OWNER) {
+  env.KERA_RUNTIME_OWNER = randomUUID();
 }
 
 if (!env.KERA_DESKTOP_BACKEND_ROOT) {
@@ -69,7 +82,7 @@ function cleanupDevProcesses() {
       "-Command",
       [
         "$ErrorActionPreference = 'SilentlyContinue'",
-        `$targets = @(${[cargoTargetDir, runtimeCacheDir].map((entry) => JSON.stringify(entry)).join(", ")})`,
+        `$targets = @(${[cargoTargetDir, runtimeCacheDir, repoVenvBinDir].map((entry) => JSON.stringify(entry)).join(", ")})`,
         "Get-CimInstance Win32_Process |",
         "  Where-Object {",
         "    $processPath = $_.ExecutablePath",

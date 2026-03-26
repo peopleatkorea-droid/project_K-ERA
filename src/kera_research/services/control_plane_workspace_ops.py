@@ -14,6 +14,8 @@ from kera_research.domain import make_id, utc_now
 from kera_research.services.data_plane import invalidate_site_storage_root_cache
 from kera_research.storage import read_json, write_json
 
+SOURCE_INSTITUTION_ID_UNSET = object()
+
 
 class ControlPlaneWorkspaceOps:
     def __init__(
@@ -79,36 +81,29 @@ class ControlPlaneWorkspaceOps:
     def create_site(
         self,
         project_id: str,
-        site_code: str,
-        display_name: str,
-        hospital_name: str,
+        site_code: str | None = None,
+        display_name: str | None = None,
+        hospital_name: str = "",
         source_institution_id: str | None = None,
         research_registry_enabled: bool = True,
     ) -> dict[str, Any]:
         normalized_source_institution_id = str(source_institution_id or "").strip() or None
-        normalized_site_code = site_code.strip()
-        if normalized_source_institution_id and self.site_id_pattern.fullmatch(normalized_source_institution_id):
-            normalized_site_code = normalized_source_institution_id
-        normalized_display_name = display_name.strip() or hospital_name.strip() or normalized_site_code
-        normalized_hospital_name = hospital_name.strip() or normalized_display_name
-        if not normalized_site_code:
-            raise ValueError("Site code is required.")
-        if not normalized_display_name:
-            raise ValueError("Site display name is required.")
+        requested_site_code = str(site_code or "").strip()
+        normalized_hospital_name = hospital_name.strip() or str(display_name or "").strip()
+        normalized_display_name = str(display_name or "").strip() or normalized_hospital_name
+        if not normalized_hospital_name:
+            raise ValueError("Site hospital name is required.")
         record = {
-            "site_id": normalized_site_code,
+            "site_id": "",
             "project_id": project_id,
             "display_name": normalized_display_name,
             "hospital_name": normalized_hospital_name,
             "source_institution_id": normalized_source_institution_id,
-            "local_storage_root": str(Path(self.store.instance_storage_root()) / normalized_site_code),
+            "local_storage_root": "",
             "research_registry_enabled": bool(research_registry_enabled),
             "created_at": utc_now(),
         }
         with CONTROL_PLANE_ENGINE.begin() as conn:
-            existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
-            if existing_site:
-                raise ValueError(f"Site {normalized_site_code} already exists.")
             if normalized_source_institution_id:
                 existing_institution_site = conn.execute(
                     select(sites.c.site_id).where(sites.c.source_institution_id == normalized_source_institution_id)
@@ -120,6 +115,22 @@ class ControlPlaneWorkspaceOps:
             project_row = conn.execute(select(projects).where(projects.c.project_id == project_id)).mappings().first()
             if project_row is None:
                 raise ValueError(f"Unknown project_id: {project_id}")
+            if requested_site_code:
+                normalized_site_code = requested_site_code
+                existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
+                if existing_site:
+                    raise ValueError(f"Site {normalized_site_code} already exists.")
+            else:
+                normalized_site_code = make_id("site")
+                for _ in range(10):
+                    existing_site = conn.execute(select(sites.c.site_id).where(sites.c.site_id == normalized_site_code)).first()
+                    if not existing_site:
+                        break
+                    normalized_site_code = make_id("site")
+                else:
+                    raise ValueError("Unable to allocate a site_id.")
+            record["site_id"] = normalized_site_code
+            record["local_storage_root"] = str(Path(self.store.instance_storage_root()) / normalized_site_code)
             conn.execute(sites.insert().values(**record))
             project_site_ids = list(project_row["site_ids"] or [])
             if normalized_site_code not in project_site_ids:
@@ -134,26 +145,44 @@ class ControlPlaneWorkspaceOps:
     def update_site_metadata(
         self,
         site_id: str,
-        display_name: str,
-        hospital_name: str,
+        display_name: str | None = None,
+        hospital_name: str = "",
+        source_institution_id: str | None | object = SOURCE_INSTITUTION_ID_UNSET,
         research_registry_enabled: bool | None = None,
     ) -> dict[str, Any]:
         normalized_site_id = site_id.strip()
-        normalized_display_name = display_name.strip()
         normalized_hospital_name = hospital_name.strip()
         if not normalized_site_id:
             raise ValueError("Site code is required.")
-        if not normalized_display_name:
-            raise ValueError("Site display name is required.")
 
         with CONTROL_PLANE_ENGINE.begin() as conn:
             existing_site = conn.execute(select(sites).where(sites.c.site_id == normalized_site_id)).mappings().first()
             if existing_site is None:
                 raise ValueError(f"Unknown site_id: {normalized_site_id}")
+            normalized_display_name = (
+                str(display_name or "").strip()
+                or normalized_hospital_name
+                or str(existing_site.get("hospital_name") or "").strip()
+                or str(existing_site.get("display_name") or "").strip()
+                or normalized_site_id
+            )
+            normalized_hospital_name = normalized_hospital_name or normalized_display_name
+            current_source_institution_id = str(existing_site.get("source_institution_id") or "").strip() or None
             values: dict[str, Any] = {
                 "display_name": normalized_display_name,
                 "hospital_name": normalized_hospital_name,
             }
+            if source_institution_id is not SOURCE_INSTITUTION_ID_UNSET:
+                normalized_source_institution_id = str(source_institution_id or "").strip() or None
+                if normalized_source_institution_id and normalized_source_institution_id != current_source_institution_id:
+                    existing_institution_site = conn.execute(
+                        select(sites.c.site_id).where(sites.c.source_institution_id == normalized_source_institution_id)
+                    ).first()
+                    if existing_institution_site and existing_institution_site.site_id != normalized_site_id:
+                        raise ValueError(
+                            f"Institution {normalized_source_institution_id} is already linked to site {existing_institution_site.site_id}."
+                        )
+                values["source_institution_id"] = normalized_source_institution_id
             if research_registry_enabled is not None:
                 values["research_registry_enabled"] = bool(research_registry_enabled)
             conn.execute(
@@ -166,6 +195,7 @@ class ControlPlaneWorkspaceOps:
             "site_id": normalized_site_id,
             "display_name": normalized_display_name,
             "hospital_name": normalized_hospital_name,
+            "source_institution_id": values.get("source_institution_id", current_source_institution_id),
             "research_registry_enabled": bool(research_registry_enabled) if research_registry_enabled is not None else True,
         }
 

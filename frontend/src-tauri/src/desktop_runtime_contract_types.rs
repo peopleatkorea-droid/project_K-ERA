@@ -24,6 +24,7 @@ pub(super) struct DesktopRuntimeContractResponse {
     pub(super) backend_source: String,
     pub(super) backend_candidates: Vec<String>,
     pub(super) python_candidates: Vec<String>,
+    pub(super) python_preflight: Option<DesktopPythonRuntimePreflight>,
     pub(super) errors: Vec<String>,
     pub(super) warnings: Vec<String>,
 }
@@ -32,6 +33,7 @@ pub(super) struct DesktopRuntimeContractResponse {
 struct DesktopRuntimeReadiness {
     backend_candidates: Vec<String>,
     python_candidates: Vec<String>,
+    python_preflight: Option<DesktopPythonRuntimePreflight>,
     errors: Vec<String>,
     warnings: Vec<String>,
 }

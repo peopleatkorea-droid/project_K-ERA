@@ -68,7 +68,7 @@ pub(super) fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, Stri
     if !ml_sidecar_should_be_used() {
         return get_ml_sidecar_status_internal();
     }
-    ensure_desktop_runtime_readiness_for_sidecar()?;
+    let python_preflight = ensure_desktop_runtime_readiness_for_sidecar()?;
     let mut runtime = ml_sidecar_state()
         .lock()
         .map_err(|_| "Failed to access desktop ML sidecar state.".to_string())?;
@@ -80,11 +80,13 @@ pub(super) fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, Stri
         needs_spawn = true;
     }
     if needs_spawn {
+        let _ = cleanup_registered_managed_processes("ml_sidecar");
         let spawned = spawn_ml_sidecar_process()?;
         runtime.child = Some(spawned.child);
         runtime.stdin = Some(spawned.stdin);
         runtime.stdout = Some(spawned.stdout);
         runtime.python_path = Some(spawned.python_path);
+        runtime.python_preflight = Some(spawned.python_preflight);
         runtime.launch_command = Some(spawned.launch_command);
         runtime.stderr_log_path = Some(spawned.stderr_log_path);
         runtime.last_started_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
@@ -95,6 +97,8 @@ pub(super) fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, Stri
             runtime.last_error = Some(error.clone());
             return Err(error);
         }
+    } else {
+        runtime.python_preflight = Some(python_preflight);
     }
     Ok(ml_sidecar_status_snapshot(&runtime, true))
 }

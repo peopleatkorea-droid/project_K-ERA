@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { pick, type Locale } from "../../lib/i18n";
 import {
   cancelSiteJob,
+  clearInitialTrainingBenchmarkHistory,
   fetchSiteJob,
   fetchSiteJobs,
   fetchCrossValidationReports,
@@ -256,6 +257,7 @@ export function useAdminWorkspaceTrainingController({
       const started = await runInitialTraining(selectedSiteId, token, {
         ...initialForm,
         case_aggregation: effectiveCaseAggregation(initialForm.architecture, initialForm.case_aggregation),
+        regenerate_split: true,
       });
       setInitialJob(started.job);
       const latestJob = await waitForSiteJobSettlement({
@@ -322,7 +324,7 @@ export function useAdminWorkspaceTrainingController({
         use_pretrained: usePretrained,
         pretraining_source: pretrainingSource,
         benchmark_suite_key: benchmarkSuiteKey,
-        regenerate_split: initialForm.regenerate_split,
+        regenerate_split: true,
       });
       setBenchmarkJob(started.job);
       const latestJob = await waitForSiteJobSettlement({
@@ -386,6 +388,21 @@ export function useAdminWorkspaceTrainingController({
         locale,
         `${lesionGuidedBenchmarkArchitectures.length}-model lesion-guided fusion + SSL training`,
         `${lesionGuidedBenchmarkArchitectures.length}개 lesion-guided fusion + SSL 학습`,
+      ),
+    });
+  }
+
+  async function handleLesionGuidedInitialBenchmarkTraining() {
+    await runBenchmarkSuite({
+      architectures: lesionGuidedBenchmarkArchitectures,
+      benchmarkSuiteKey: "lesion_guided_6",
+      cropMode: "paired",
+      pretrainingSource: undefined,
+      usePretrained: initialForm.use_pretrained,
+      runLabel: pick(
+        locale,
+        `${lesionGuidedBenchmarkArchitectures.length}-model lesion-guided fusion training`,
+        `${lesionGuidedBenchmarkArchitectures.length}개 lesion-guided fusion 학습`,
       ),
     });
   }
@@ -466,6 +483,41 @@ export function useAdminWorkspaceTrainingController({
     }
   }
 
+  async function handleClearBenchmarkHistory() {
+    if (!selectedSiteId) {
+      return;
+    }
+    if (benchmarkJob && isActiveJobStatus(benchmarkJob.status)) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Stop the active benchmark before deleting its records.", "실행 중인 benchmark를 먼저 중단한 뒤 기록을 삭제하세요."),
+      });
+      return;
+    }
+    setBenchmarkBusy(true);
+    try {
+      const response = await clearInitialTrainingBenchmarkHistory(selectedSiteId, token);
+      setBenchmarkJob(null);
+      setBenchmarkResult(null);
+      await refreshWorkspace(true).catch(() => undefined);
+      setToast({
+        tone: "success",
+        message: pick(
+          locale,
+          `Deleted ${response.deleted_jobs} benchmark record(s).`,
+          `benchmark 기록 ${response.deleted_jobs}개를 삭제했습니다.`,
+        ),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to delete benchmark records.", "benchmark 기록 삭제에 실패했습니다.")),
+      });
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  }
+
   async function handleRefreshBenchmarkStatus() {
     if (!selectedSiteId) {
       return;
@@ -491,20 +543,35 @@ export function useAdminWorkspaceTrainingController({
           return;
         }
         if (!latestJob) {
+          setBenchmarkJob(null);
+          setBenchmarkResult(null);
           await refreshWorkspaceBestEffort();
         } else if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
           await refreshWorkspaceBestEffort();
         }
         return;
       }
-      const latestJob = await fetchSiteJob(selectedSiteId, benchmarkJob.job_id, token);
-      setBenchmarkJob(latestJob);
-      const result = latestJob.result?.response;
-      if (isBenchmarkResponse(result)) {
-        setBenchmarkResult(result);
-      }
-      if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
-        await refreshWorkspaceBestEffort();
+      try {
+        const latestJob = await fetchSiteJob(selectedSiteId, benchmarkJob.job_id, token);
+        setBenchmarkJob(latestJob);
+        const result = latestJob.result?.response;
+        if (isBenchmarkResponse(result)) {
+          setBenchmarkResult(result);
+        }
+        if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
+          await refreshWorkspaceBestEffort();
+        }
+      } catch {
+        const latestJob = await loadLatestBenchmarkJob().catch(() => null);
+        if (!latestJob) {
+          setBenchmarkJob(null);
+          setBenchmarkResult(null);
+          await refreshWorkspaceBestEffort();
+          return;
+        }
+        if (String(latestJob.status || "").trim().toLowerCase() === "completed") {
+          await refreshWorkspaceBestEffort();
+        }
       }
     } catch (nextError) {
       setToast({
@@ -703,10 +770,12 @@ export function useAdminWorkspaceTrainingController({
     loadSslSectionData,
     handleInitialTraining,
     handleBenchmarkTraining,
+    handleLesionGuidedInitialBenchmarkTraining,
     handleLesionGuidedBenchmarkTraining,
     handleCancelInitialTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus,
     handleCrossValidation,
     handlePickSslArchiveDirectory,

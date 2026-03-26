@@ -33,11 +33,11 @@ describe("desktop-runtime-prewarm", () => {
 
   it("dedupes concurrent worker prewarm calls", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
-    let resolveWorker: (() => void) | null = null;
+    const resolveWorkerRef: { current: (() => void) | null } = { current: null };
     diagnosticsMocks.ensureDesktopLocalWorkerReady.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          resolveWorker = resolve;
+          resolveWorkerRef.current = resolve;
         }),
     );
 
@@ -46,17 +46,17 @@ describe("desktop-runtime-prewarm", () => {
     const second = mod.prewarmDesktopWorker();
 
     expect(diagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
-    resolveWorker?.();
+    resolveWorkerRef.current?.();
     await Promise.all([first, second]);
   });
 
   it("dedupes concurrent ML prewarm calls", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
-    let resolveMl: (() => void) | null = null;
+    const resolveMlRef: { current: (() => void) | null } = { current: null };
     sidecarMocks.ensureDesktopMlBackendReady.mockImplementation(
       () =>
         new Promise<void>((resolve) => {
-          resolveMl = resolve;
+          resolveMlRef.current = resolve;
         }),
     );
 
@@ -65,7 +65,7 @@ describe("desktop-runtime-prewarm", () => {
     const second = mod.prewarmDesktopMlBackend();
 
     expect(sidecarMocks.ensureDesktopMlBackendReady).toHaveBeenCalledTimes(1);
-    resolveMl?.();
+    resolveMlRef.current?.();
     await Promise.all([first, second]);
   });
 

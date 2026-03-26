@@ -1,4 +1,5 @@
 import type { AuthState, AuthUser, SiteRecord } from "../lib/api";
+import { normalizeEffectiveApprovalStatus } from "../lib/auth-access-state";
 import { isPlaceholderSiteLabel } from "../lib/site-labels";
 
 export const TOKEN_KEY = "kera_web_token";
@@ -95,7 +96,11 @@ export function readOptimisticUserFromToken(token: string): AuthUser | null {
     public_alias: typeof payload.public_alias === "string" && payload.public_alias.trim() ? payload.public_alias.trim() : null,
     role,
     site_ids: siteIds,
-    approval_status: approvalStatus as AuthState,
+    approval_status: normalizeEffectiveApprovalStatus({
+      role,
+      site_ids: siteIds,
+      approval_status: approvalStatus,
+    }) as AuthState,
     latest_access_request: null,
     registry_consents: registryConsents,
   };

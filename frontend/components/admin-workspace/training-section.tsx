@@ -29,11 +29,13 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "efficientnet_v2_s", label: "EfficientNetV2-S" },
   { value: "dinov2", label: "DINOv2" },
   { value: "dinov2_mil", label: "DINOv2 Attention MIL" },
+  { value: "swin_mil", label: "Swin Attention MIL" },
   { value: "dual_input_concat", label: "Dual-input Concat Fusion" },
   ...LESION_GUIDED_FUSION_ARCHITECTURE_OPTIONS,
 ];
 
 const TRAINING_ARCHITECTURE_LABELS = new Map(TRAINING_ARCHITECTURE_OPTIONS.map((option) => [option.value, option.label]));
+const ATTENTION_MIL_ARCHITECTURES = new Set(["dinov2_mil", "swin_mil"]);
 const BASELINE_BENCHMARK_PHASES = [
   {
     key: "main",
@@ -48,19 +50,19 @@ const BASELINE_BENCHMARK_PHASES = [
     key: "mil",
     title: { en: "Phase 2 · Visit-level extension", ko: "2단계 · visit-level 확장" },
     description: {
-      en: "DINOv2 Attention MIL runs separately so visit-level aggregation is interpreted on its own.",
-      ko: "visit-level 집계를 별도로 해석할 수 있도록 DINOv2 Attention MIL을 따로 실행합니다.",
+      en: "Swin Attention MIL runs separately so visit-level aggregation is interpreted on its own.",
+      ko: "visit-level 집계를 별도로 해석할 수 있도록 Swin Attention MIL을 따로 실행합니다.",
     },
-    architectures: ["dinov2_mil"],
+    architectures: ["swin_mil"],
   },
   {
     key: "fusion",
     title: { en: "Phase 3 · Paired-input extension", ko: "3단계 · paired-input 확장" },
     description: {
-      en: "Dual-input Concat Fusion runs last with forced paired cornea + lesion crops.",
-      ko: "Dual-input Concat Fusion은 각막 + 병변 paired crop을 강제로 적용해 마지막에 실행합니다.",
+      en: "LGF Swin runs last with forced paired cornea + lesion crops.",
+      ko: "LGF Swin은 각막 + 병변 paired crop을 강제로 적용해 마지막에 실행합니다.",
     },
-    architectures: ["dual_input_concat"],
+    architectures: ["lesion_guided_fusion__swin"],
   },
 ] as const;
 const BENCHMARK_SUITES = [
@@ -71,12 +73,12 @@ const BENCHMARK_SUITES = [
       ko: "8개 baseline 단계형 학습을 한 번에 실행",
     },
     description: {
-      en: "One queued job runs 6 single-image baselines first, then visit-level MIL, then paired-input fusion.",
-      ko: "하나의 queued job으로 6개 single-image baseline, visit-level MIL, paired-input fusion을 순차 실행합니다.",
+      en: "One queued job runs 6 single-image baselines first, then Swin-based visit-level MIL, then LGF Swin fusion.",
+      ko: "하나의 queued job으로 6개 single-image baseline, Swin 기반 visit-level MIL, LGF Swin fusion을 순차 실행합니다.",
     },
     confirmDescription: {
-      en: "The current runtime settings apply across all three phases, with dual-input concat forced to paired cornea + lesion crops.",
-      ko: "현재 runtime 설정을 3개 phase에 공통 적용하고, dual-input concat은 paired cornea + lesion crop으로 고정합니다.",
+      en: "The current runtime settings apply across all three phases, with LGF Swin forced to paired cornea + lesion crops.",
+      ko: "현재 runtime 설정을 3개 phase에 공통 적용하고, LGF Swin은 paired cornea + lesion crop으로 고정합니다.",
     },
     progressDescription: {
       en: "Progress shows the active phase, overall percent, current architecture, sequence, effective crop mode, and worker stage.",
@@ -90,8 +92,47 @@ const BENCHMARK_SUITES = [
     confirmLabel: { en: "8-model staged training confirmation", ko: "8개 단계형 학습 확인" },
     confirmTitle: { en: "Confirm 8-model staged initial training", ko: "8개 단계형 초기 학습 확인" },
     confirmStartLabel: { en: "Start 8-model staged training", ko: "8개 단계형 학습 시작" },
-    architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"],
+    architectures: ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "swin_mil", "lesion_guided_fusion__swin"],
     phases: BASELINE_BENCHMARK_PHASES,
+  },
+  {
+    key: "lesion_guided_6",
+    heading: {
+      en: "Run lesion-guided fusion 6-model set",
+      ko: "Lesion-guided fusion 6종 세트 실행",
+    },
+    description: {
+      en: "Shared paired cornea + lesion training with six lesion-guided fusion backbones using the current initialization setting.",
+      ko: "paired cornea + lesion 입력으로 lesion-guided fusion 6개 backbone을 현재 초기화 설정으로 순차 학습합니다.",
+    },
+    confirmDescription: {
+      en: "This suite always uses paired cornea + lesion crops. Initialization follows the current pretrained or scratch toggle.",
+      ko: "이 세트는 항상 paired cornea + lesion crop을 사용하고, 초기화는 현재 사전학습/처음부터 설정을 그대로 따릅니다.",
+    },
+    progressDescription: {
+      en: "Progress shows the current lesion-guided fusion backbone, overall percent, sequence, and worker stage.",
+      ko: "진행상황에는 현재 lesion-guided fusion backbone, 전체 percent, 순서, worker stage가 표시됩니다.",
+    },
+    waitingDescription: {
+      en: "Waiting for the lesion-guided fusion benchmark worker to report progress.",
+      ko: "lesion-guided fusion benchmark worker의 진행상황을 기다리는 중입니다.",
+    },
+    startLabel: { en: "Run LGF 6-model training", ko: "LGF 6종 학습 실행" },
+    confirmLabel: { en: "LGF 6-model training confirmation", ko: "LGF 6종 학습 확인" },
+    confirmTitle: { en: "Confirm LGF 6-model training", ko: "LGF 6종 학습 확인" },
+    confirmStartLabel: { en: "Start LGF 6-model training", ko: "LGF 6종 학습 시작" },
+    architectures: LESION_GUIDED_FUSION_ARCHITECTURE_OPTIONS.map((option) => option.value),
+    phases: [
+      {
+        key: "lgf",
+        title: { en: "Phase 1 · LGF backbones", ko: "1단계 · LGF backbone" },
+        description: {
+          en: "All six lesion-guided fusion backbones run sequentially with paired crops and the current initialization setting.",
+          ko: "6개 lesion-guided fusion backbone을 paired crop과 현재 초기화 설정으로 순차 실행합니다.",
+        },
+        architectures: LESION_GUIDED_FUSION_ARCHITECTURE_OPTIONS.map((option) => option.value),
+      },
+    ],
   },
   {
     key: "lesion_guided_ssl_6",
@@ -157,6 +198,7 @@ type InitialTrainingForm = {
 type BenchmarkJobPayload = Partial<{
   architectures: string[];
   execution_mode: "auto" | "cpu" | "gpu" | string;
+  execution_device: string;
   crop_mode: "automated" | "manual" | "both" | string;
   case_aggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil" | string;
   epochs: number;
@@ -194,9 +236,11 @@ type Props = {
   formatTrainingStage: (stage: string | null | undefined) => string;
   onExportSelectedReport: () => void;
   onCancelBenchmark: () => void;
+  onClearBenchmarkHistory: () => void;
   onCancelInitialTraining: () => void;
   onRefreshBenchmarkStatus: () => void;
   onRunBenchmark: () => void;
+  onRunLesionGuidedInitBenchmark: () => void;
   onRunLesionGuidedBenchmark: () => void;
   onRunInitialTraining: () => void;
   onResumeBenchmark: () => void;
@@ -285,6 +329,26 @@ function formatRemainingTime(seconds: number | null, locale: Locale, emptyLabel:
   return pick(locale, `${minutes} min`, `${minutes}분`);
 }
 
+function formatExecutionDeviceLabel(device: string | null | undefined, locale: Locale, emptyLabel: string): string {
+  const normalized = String(device || "").trim().toLowerCase();
+  if (!normalized) {
+    return emptyLabel;
+  }
+  if (normalized.startsWith("cuda")) {
+    return pick(locale, "GPU (CUDA)", "GPU (CUDA)");
+  }
+  if (normalized === "cpu") {
+    return "CPU";
+  }
+  if (normalized === "mps") {
+    return "MPS";
+  }
+  if (normalized === "auto") {
+    return pick(locale, "Auto", "자동");
+  }
+  return normalized.toUpperCase();
+}
+
 function isBenchmarkResponse(
   response: unknown,
 ): response is {
@@ -325,6 +389,15 @@ function resolveArchitectureLabel(architecture: string | null | undefined) {
   return (TRAINING_ARCHITECTURE_LABELS.get(normalized) ?? normalized) || "n/a";
 }
 
+function isLesionGuidedBenchmarkSuiteKey(key: string | null | undefined) {
+  const normalized = String(key || "").trim().toLowerCase();
+  return normalized === "lesion_guided_6" || normalized === "lesion_guided_ssl_6";
+}
+
+function isLesionGuidedSslBenchmarkSuiteKey(key: string | null | undefined) {
+  return String(key || "").trim().toLowerCase() === "lesion_guided_ssl_6";
+}
+
 function benchmarkEntryMetric(
   entry: InitialTrainingBenchmarkResponse["results"][number],
   metricName: string,
@@ -349,7 +422,7 @@ function resolveBenchmarkCropLabel(
   suite: BenchmarkSuiteDefinition | null,
   cropMode: string | null | undefined,
 ): string {
-  if (suite?.key === "lesion_guided_ssl_6") {
+  if (isLesionGuidedBenchmarkSuiteKey(suite?.key)) {
     return pick(locale, "Paired cornea + lesion", "Paired cornea + lesion");
   }
   const normalizedCropMode = String(cropMode || "").trim().toLowerCase() || "automated";
@@ -431,9 +504,11 @@ export function TrainingSection({
   formatTrainingStage,
   onExportSelectedReport,
   onCancelBenchmark,
+  onClearBenchmarkHistory,
   onCancelInitialTraining,
   onRefreshBenchmarkStatus,
   onRunBenchmark,
+  onRunLesionGuidedInitBenchmark,
   onRunLesionGuidedBenchmark,
   onRunInitialTraining,
   onResumeBenchmark,
@@ -461,11 +536,12 @@ export function TrainingSection({
     ) ??
     getBenchmarkSuiteByKey("baseline_8");
   const baselineBenchmarkSuite = getBenchmarkSuiteByKey("baseline_8");
-  const lesionGuidedBenchmarkSuite = getBenchmarkSuiteByKey("lesion_guided_ssl_6");
+  const lesionGuidedBenchmarkSuite = getBenchmarkSuiteByKey("lesion_guided_6");
+  const lesionGuidedSslBenchmarkSuite = getBenchmarkSuiteByKey("lesion_guided_ssl_6");
   const confirmBenchmarkSuite = getBenchmarkSuiteByKey(benchmarkConfirmSuiteKey);
   const isDualInputArchitecture = isDualInputArchitectureValue(initialForm.architecture);
   const effectiveCropMode = isDualInputArchitecture ? "paired" : initialForm.crop_mode;
-  const effectiveCaseAggregation = initialForm.architecture === "dinov2_mil" ? "attention_mil" : initialForm.case_aggregation;
+  const effectiveCaseAggregation = ATTENTION_MIL_ARCHITECTURES.has(initialForm.architecture) ? "attention_mil" : initialForm.case_aggregation;
   const benchmarkBaseCropMode = effectiveCropMode === "paired" ? "automated" : effectiveCropMode;
   const baselineBenchmarkCropLabel = resolveBenchmarkCropLabel(locale, baselineBenchmarkSuite, benchmarkBaseCropMode);
   const lesionGuidedBenchmarkCropLabel = resolveBenchmarkCropLabel(locale, lesionGuidedBenchmarkSuite, "paired");
@@ -486,9 +562,23 @@ export function TrainingSection({
       ? benchmarkRemainingArchitectures.length
       : benchmarkArchitectureIndex !== null && benchmarkArchitectureCount
         ? Math.max(benchmarkArchitectureCount - benchmarkArchitectureIndex, 0)
-      : null;
+        : null;
   const initialEtaLabel = formatRemainingTime(getEstimatedRemainingSeconds(initialJob, progressPercent), locale, notAvailableLabel);
   const benchmarkEtaLabel = formatRemainingTime(getEstimatedRemainingSeconds(benchmarkJob, benchmarkPercent), locale, notAvailableLabel);
+  const initialExecutionDevice = formatExecutionDeviceLabel(
+    typeof initialJob?.payload?.execution_device === "string"
+      ? initialJob.payload.execution_device
+      : initialResult?.execution_device,
+    locale,
+    notAvailableLabel,
+  );
+  const benchmarkExecutionDevice = formatExecutionDeviceLabel(
+    typeof benchmarkPayload.execution_device === "string"
+      ? benchmarkPayload.execution_device
+      : resolvedBenchmarkResult?.execution_device,
+    locale,
+    notAvailableLabel,
+  );
   const benchmarkActive = ["queued", "running", "cancelling"].includes(String(benchmarkJob?.status || "").trim().toLowerCase());
   const initialActive = ["queued", "running", "cancelling"].includes(String(initialJob?.status || "").trim().toLowerCase());
   const currentBenchmarkPhase = getBenchmarkPhase(activeBenchmarkSuite, (benchmarkProgress as { architecture?: string } | null)?.architecture ?? null);
@@ -504,6 +594,10 @@ export function TrainingSection({
         typeof benchmarkPayload.execution_mode === "string"
           ? benchmarkPayload.execution_mode.toUpperCase()
           : initialForm.execution_mode.toUpperCase(),
+    },
+    {
+      label: pick(locale, "Device", "실행 장치"),
+      value: benchmarkExecutionDevice,
     },
     {
       label: pick(locale, "Crop", "Crop"),
@@ -561,7 +655,7 @@ export function TrainingSection({
     {
       label: pick(locale, "Crop", "Crop"),
       value:
-        confirmBenchmarkSuite?.key === "lesion_guided_ssl_6"
+        isLesionGuidedBenchmarkSuiteKey(confirmBenchmarkSuite?.key)
           ? lesionGuidedBenchmarkCropLabel
           : baselineBenchmarkCropLabel,
     },
@@ -577,7 +671,7 @@ export function TrainingSection({
     {
       label: pick(locale, "Init", "초기화"),
       value:
-        confirmBenchmarkSuite?.key === "lesion_guided_ssl_6"
+        isLesionGuidedSslBenchmarkSuiteKey(confirmBenchmarkSuite?.key)
           ? resolveBenchmarkInitLabel(locale, "ssl", true)
           : resolveBenchmarkInitLabel(locale, undefined, initialForm.use_pretrained),
     },
@@ -684,7 +778,7 @@ export function TrainingSection({
         <Field label={pick(locale, "Visit aggregation", "Visit 집계 방식")}>
           <select
             value={effectiveCaseAggregation}
-            disabled={initialForm.architecture === "dinov2_mil"}
+            disabled={ATTENTION_MIL_ARCHITECTURES.has(initialForm.architecture)}
             onChange={(event) =>
               setInitialForm((current) => ({
                 ...current,
@@ -747,25 +841,26 @@ export function TrainingSection({
           {initialForm.use_pretrained ? pick(locale, "Pretrained init", "사전학습 초기화") : pick(locale, "Scratch init", "처음부터 학습")}
         </button>
         <button
-          className={`inline-flex min-h-10 items-center rounded-full border px-4 text-sm font-semibold transition ${
-            !initialForm.regenerate_split ? "border-brand/20 bg-brand-soft text-brand" : "border-border bg-surface text-muted"
-          }`}
+          className="inline-flex min-h-10 cursor-default items-center rounded-full border border-brand/20 bg-brand-soft px-4 text-sm font-semibold text-brand transition disabled:opacity-100"
           type="button"
-          onClick={() => setInitialForm((current) => ({ ...current, regenerate_split: !current.regenerate_split }))}
+          disabled
         >
-          {initialForm.regenerate_split ? pick(locale, "Regenerate split", "분할 재생성") : pick(locale, "Reuse split", "기존 분할 재사용")}
+          {pick(locale, "Always regenerate split", "항상 현재 데이터로 분할 재생성")}
         </button>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        {[baselineBenchmarkSuite, lesionGuidedBenchmarkSuite].filter((suite): suite is BenchmarkSuiteDefinition => Boolean(suite)).map((suite) => {
+        {[baselineBenchmarkSuite, lesionGuidedBenchmarkSuite, lesionGuidedSslBenchmarkSuite]
+          .filter((suite): suite is BenchmarkSuiteDefinition => Boolean(suite))
+          .map((suite) => {
           const phaseGroups = suite.phases.map((phase) => ({
             ...phase,
             titleLabel: pick(locale, phase.title.en, phase.title.ko),
             descriptionLabel: pick(locale, phase.description.en, phase.description.ko),
             labels: phase.architectures.map((architecture) => TRAINING_ARCHITECTURE_LABELS.get(architecture) ?? architecture),
           }));
-          const isLesionGuidedSuite = suite.key === "lesion_guided_ssl_6";
+          const isLesionGuidedSuite = isLesionGuidedBenchmarkSuiteKey(suite.key);
+          const isLesionGuidedSslSuite = isLesionGuidedSslBenchmarkSuiteKey(suite.key);
           return (
             <Card key={suite.key} as="section" variant="nested" className="grid gap-4 p-5">
               <SectionHeader title={pick(locale, suite.heading.en, suite.heading.ko)} titleAs="h4" description={pick(locale, suite.description.en, suite.description.ko)} />
@@ -797,7 +892,11 @@ export function TrainingSection({
                 <span>{isLesionGuidedSuite ? lesionGuidedBenchmarkCropLabel : baselineBenchmarkCropLabel}</span>
                 <br />
                 <strong className="block pt-2 text-ink">{pick(locale, "Initialization", "초기화")}</strong>
-                <span>{isLesionGuidedSuite ? resolveBenchmarkInitLabel(locale, "ssl", true) : resolveBenchmarkInitLabel(locale, undefined, initialForm.use_pretrained)}</span>
+                <span>
+                  {isLesionGuidedSslSuite
+                    ? resolveBenchmarkInitLabel(locale, "ssl", true)
+                    : resolveBenchmarkInitLabel(locale, undefined, initialForm.use_pretrained)}
+                </span>
               </div>
               <div className="flex justify-end">
                 <Button
@@ -872,6 +971,10 @@ export function TrainingSection({
                 onClick={() => {
                   const nextSuiteKey = confirmBenchmarkSuite.key;
                   setBenchmarkConfirmSuiteKey(null);
+                  if (nextSuiteKey === "lesion_guided_6") {
+                    onRunLesionGuidedInitBenchmark();
+                    return;
+                  }
                   if (nextSuiteKey === "lesion_guided_ssl_6") {
                     onRunLesionGuidedBenchmark();
                     return;
@@ -937,6 +1040,9 @@ export function TrainingSection({
             />
           </MetricGrid>
           <p className="m-0 text-sm leading-6 text-muted">
+            {pick(locale, "Execution device", "실행 장치")}: {initialExecutionDevice}
+          </p>
+          <p className="m-0 text-sm leading-6 text-muted">
             {pick(locale, "Estimated remaining time", "예상 남은 시간")}: {initialEtaLabel}
           </p>
           {initialActive ? (
@@ -995,12 +1101,20 @@ export function TrainingSection({
             <MetricItem value={benchmarkRemainingCount !== null ? String(benchmarkRemainingCount) : notAvailableLabel} label={pick(locale, "remaining", "남은 모델")} />
           </MetricGrid>
           <p className="m-0 text-sm leading-6 text-muted">
+            {pick(locale, "Execution device", "실행 장치")}: {benchmarkExecutionDevice}
+          </p>
+          <p className="m-0 text-sm leading-6 text-muted">
             {pick(locale, "Estimated remaining time", "예상 남은 시간")}: {benchmarkEtaLabel}
           </p>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onRefreshBenchmarkStatus}>
               {benchmarkBusy ? pick(locale, "Refreshing...", "새로 고치는 중...") : pick(locale, "Refresh status", "상태 새로 고침")}
             </Button>
+            {!benchmarkActive ? (
+              <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onClearBenchmarkHistory}>
+                {pick(locale, "Delete benchmark records", "benchmark 기록 삭제")}
+              </Button>
+            ) : null}
             {benchmarkActive || canResumeBenchmark ? (
               <>
               {benchmarkActive ? (
@@ -1064,6 +1178,9 @@ export function TrainingSection({
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy} onClick={onRefreshBenchmarkStatus}>
               {benchmarkBusy ? pick(locale, "Refreshing...", "새로 고치는 중...") : pick(locale, "Refresh status", "상태 새로 고침")}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" disabled={benchmarkBusy || benchmarkActive} onClick={onClearBenchmarkHistory}>
+              {pick(locale, "Delete benchmark records", "benchmark 기록 삭제")}
             </Button>
             <TrainingPaperFigures
               locale={locale}

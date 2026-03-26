@@ -980,6 +980,28 @@ def _cancel_site_job(params: dict[str, Any]) -> dict[str, Any]:
     return job
 
 
+def _clear_initial_training_benchmark_history(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    active_statuses = {"queued", "running", "cancelling"}
+    active_jobs = [
+        job
+        for job in site_store.list_jobs()
+        if str(job.get("job_type") or "") == "initial_training_benchmark"
+        and str(job.get("status") or "").strip().lower() in active_statuses
+    ]
+    if active_jobs:
+        raise HTTPException(status_code=409, detail="Stop the active benchmark job before deleting benchmark history.")
+    deleted_jobs = site_store.delete_jobs(job_type="initial_training_benchmark")
+    return {
+        "site_id": site_id,
+        "deleted_jobs": deleted_jobs,
+    }
+
+
 def _fetch_cross_validation_reports(params: dict[str, Any]) -> list[dict[str, Any]]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -1154,6 +1176,7 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "run_initial_training_benchmark": _run_initial_training_benchmark,
     "resume_initial_training_benchmark": _resume_initial_training_benchmark,
     "cancel_site_job": _cancel_site_job,
+    "clear_initial_training_benchmark_history": _clear_initial_training_benchmark_history,
     "fetch_cross_validation_reports": _fetch_cross_validation_reports,
     "run_cross_validation": _run_cross_validation,
     "run_ssl_pretraining": _run_ssl_pretraining,

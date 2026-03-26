@@ -28,7 +28,17 @@ VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 DENSENET_VARIANTS = ["densenet121"]
-BASE_TRAINING_ARCHITECTURES = ["densenet121", "convnext_tiny", "vit", "swin", "efficientnet_v2_s", "dinov2", "dinov2_mil", "dual_input_concat"]
+ATTENTION_MIL_ARCHITECTURES = ["dinov2_mil", "swin_mil"]
+BASE_TRAINING_ARCHITECTURES = [
+    "densenet121",
+    "convnext_tiny",
+    "vit",
+    "swin",
+    "efficientnet_v2_s",
+    "dinov2",
+    *ATTENTION_MIL_ARCHITECTURES,
+    "dual_input_concat",
+]
 LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX = "lesion_guided_fusion__"
 LESION_GUIDED_FUSION_BACKBONES = ["efficientnet_v2_s", "densenet121", "convnext_tiny", "vit", "swin", "dinov2"]
 LESION_GUIDED_FUSION_ARCHITECTURES = [
@@ -138,6 +148,11 @@ def lesion_guided_fusion_backbone(value: str | None) -> str | None:
 def is_dual_input_training_architecture(value: str | None) -> bool:
     normalized = str(value or "").strip().lower()
     return normalized == "dual_input_concat" or is_lesion_guided_fusion_architecture(normalized)
+
+
+def is_attention_mil_architecture(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in ATTENTION_MIL_ARCHITECTURES
 
 
 def make_id(prefix: str) -> str:

@@ -10,7 +10,6 @@ export async function PATCH(
   try {
     const { siteId } = await context.params;
     const body = (await request.json()) as {
-      display_name?: string;
       hospital_name?: string;
       source_institution_id?: string | null;
       research_registry_enabled?: boolean;

@@ -53,7 +53,10 @@ from kera_research.services.control_plane_registry_ops import ControlPlaneRegist
 from kera_research.services.control_plane_remote_state import ControlPlaneRemoteState
 from kera_research.services.control_plane_results import ControlPlaneResultsFacade
 from kera_research.services.control_plane_seeding import ControlPlaneSeedingFacade
-from kera_research.services.control_plane_workspace_ops import ControlPlaneWorkspaceOps
+from kera_research.services.control_plane_workspace_ops import (
+    SOURCE_INSTITUTION_ID_UNSET,
+    ControlPlaneWorkspaceOps,
+)
 from kera_research.services.control_plane_workspace_views import ControlPlaneWorkspaceFacade
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.storage import ensure_dir
@@ -656,6 +659,9 @@ class ControlPlaneStore:
     def list_users(self) -> list[dict[str, Any]]:
         return self.identity.list_users()
 
+    def delete_user(self, user_id: str) -> None:
+        return self.identity.delete_user(user_id)
+
     def upsert_user(self, user_record: dict[str, Any]) -> dict[str, Any]:
         return self.identity.upsert_user(user_record)
 
@@ -779,9 +785,9 @@ class ControlPlaneStore:
     def create_site(
         self,
         project_id: str,
-        site_code: str,
-        display_name: str,
-        hospital_name: str,
+        site_code: str | None = None,
+        display_name: str | None = None,
+        hospital_name: str = "",
         source_institution_id: str | None = None,
         research_registry_enabled: bool = True,
     ) -> dict[str, Any]:
@@ -797,14 +803,16 @@ class ControlPlaneStore:
     def update_site_metadata(
         self,
         site_id: str,
-        display_name: str,
-        hospital_name: str,
+        display_name: str | None = None,
+        hospital_name: str = "",
+        source_institution_id: str | None | object = SOURCE_INSTITUTION_ID_UNSET,
         research_registry_enabled: bool | None = None,
     ) -> dict[str, Any]:
         return self.workspace.update_site_metadata(
             site_id,
             display_name,
             hospital_name,
+            source_institution_id=source_institution_id,
             research_registry_enabled=research_registry_enabled,
         )
 

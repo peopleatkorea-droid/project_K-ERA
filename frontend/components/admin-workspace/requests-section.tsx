@@ -30,14 +30,6 @@ type Props = {
   onReview: (requestId: string, decision: "approved" | "rejected") => void;
 };
 
-function normalizeSiteCode(value: string) {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 32);
-}
-
 export function RequestsSection({
   locale,
   notAvailableLabel,
@@ -169,8 +161,6 @@ export function RequestsSection({
                 request.resolved_site_id ?? (requestedSiteAvailable ? request.requested_site_id : ""),
               create_site_if_missing: needsSiteCreation,
               project_id: defaultProjectId,
-              site_code: "",
-              display_name: "",
               hospital_name: requestedSiteLabel,
               research_registry_enabled: false,
               reviewer_notes: "",
@@ -180,7 +170,7 @@ export function RequestsSection({
               request.resolved_site_id ||
               (needsSiteCreation ? pick(locale, "Not mapped yet", "아직 매핑되지 않음") : notAvailableLabel);
             const approvalDisabled = draft.create_site_if_missing
-              ? !canManagePlatform || !draft.site_code.trim() || !draft.hospital_name.trim()
+              ? !canManagePlatform || !draft.hospital_name.trim()
               : !draft.assigned_site_id.trim();
 
             return (
@@ -302,55 +292,19 @@ export function RequestsSection({
 
                     {draft.create_site_if_missing ? (
                       <>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field
-                            label={pick(locale, "HIRA site ID", "HIRA 코드")}
-                            hint={pick(
-                              locale,
-                              "Use the canonical 8-digit HIRA code for the new site.",
-                              "새 site에는 8자리 HIRA 코드를 사용하세요.",
-                            )}
-                          >
-                            <input
-                              value={draft.site_code}
-                              onChange={(event) =>
-                                setReviewDrafts((current) => ({
-                                  ...current,
-                                  [request.request_id]: {
-                                    ...draft,
-                                    site_code: normalizeSiteCode(event.target.value),
-                                  },
-                                }))
-                              }
-                              placeholder="39100103"
-                            />
-                          </Field>
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <Field label={pick(locale, "Alias (optional)", "별칭 (선택)")}>
-                            <input
-                              value={draft.display_name}
-                              onChange={(event) =>
-                                setReviewDrafts((current) => ({
-                                  ...current,
-                                  [request.request_id]: { ...draft, display_name: event.target.value },
-                                }))
-                              }
-                            />
-                          </Field>
-                          <Field label={pick(locale, "Official hospital name", "공식 기관명")}>
-                            <input
-                              value={draft.hospital_name}
-                              onChange={(event) =>
-                                setReviewDrafts((current) => ({
-                                  ...current,
-                                  [request.request_id]: { ...draft, hospital_name: event.target.value },
-                                }))
-                              }
-                            />
-                          </Field>
-                        </div>
+                        <Field
+                          as="div"
+                          label={pick(locale, "Official hospital name", "공식 기관명")}
+                          hint={pick(
+                            locale,
+                            "The HIRA institution name is carried into the new K-ERA site automatically.",
+                            "선택된 HIRA 기관명이 새 K-ERA site의 공식 병원명으로 자동 저장됩니다.",
+                          )}
+                        >
+                          <div className="rounded-[var(--radius-md)] border border-border bg-white/55 px-3.5 py-3 text-sm font-semibold text-ink dark:bg-white/4">
+                            {draft.hospital_name || requestedSiteLabel || notAvailableLabel}
+                          </div>
+                        </Field>
 
                         <Field
                           as="div"

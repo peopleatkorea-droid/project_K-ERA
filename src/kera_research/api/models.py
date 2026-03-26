@@ -138,14 +138,14 @@ class InitialTrainingRequest(BaseModel):
 class InitialTrainingBenchmarkRequest(BaseModel):
     architectures: list[str] = Field(
         default_factory=lambda: [
+            "densenet121",
+            "convnext_tiny",
             "vit",
             "swin",
-            "dinov2",
-            "dinov2_mil",
-            "dual_input_concat",
-            "convnext_tiny",
-            "densenet121",
             "efficientnet_v2_s",
+            "dinov2",
+            "swin_mil",
+            "lesion_guided_fusion__swin",
         ]
     )
     execution_mode: str = "auto"
@@ -239,16 +239,17 @@ class ProjectCreateRequest(BaseModel):
 
 class SiteCreateRequest(BaseModel):
     project_id: str
-    site_code: str
-    display_name: str
+    site_code: str | None = None
+    display_name: str | None = None
     hospital_name: str = ""
     source_institution_id: str | None = None
     research_registry_enabled: bool = True
 
 
 class SiteUpdateRequest(BaseModel):
-    display_name: str
+    display_name: str | None = None
     hospital_name: str = ""
+    source_institution_id: str | None = None
     research_registry_enabled: bool = True
 
 

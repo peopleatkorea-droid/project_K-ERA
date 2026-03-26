@@ -3,6 +3,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from kera_research.api.models import (
+    LocalControlPlaneNodeCredentialsRequest,
+    LocalControlPlaneNodeRegisterRequest,
+    LocalControlPlaneSmokeRequest,
+)
+
 
 def build_desktop_router(support: Any) -> APIRouter:
     router = APIRouter()
@@ -21,10 +27,6 @@ def build_desktop_router(support: Any) -> APIRouter:
     make_id = support.make_id
     get_app_version = support.get_app_version
     RemoteControlPlaneClient = support.RemoteControlPlaneClient
-
-    LocalControlPlaneNodeCredentialsRequest = support.LocalControlPlaneNodeCredentialsRequest
-    LocalControlPlaneNodeRegisterRequest = support.LocalControlPlaneNodeRegisterRequest
-    LocalControlPlaneSmokeRequest = support.LocalControlPlaneSmokeRequest
 
     @router.get("/api/health")
     def health() -> dict[str, Any]:

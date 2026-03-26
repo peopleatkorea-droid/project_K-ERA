@@ -98,6 +98,12 @@ const enTechnology = [
   },
 ];
 
+const enPrimaryCtaClass =
+  "rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94] active:scale-[0.97] active:translate-y-0";
+
+const enNavCtaClass =
+  "rounded-[4px] bg-[#1a5fa8] px-5 py-2 text-[0.78rem] tracking-[0.03em] text-white transition hover:bg-[#144e94] active:scale-[0.97] active:translate-y-0";
+
 export function EnglishLandingView(props: EnglishLandingViewProps) {
   const institutions = [
     ...props.publicSites.slice(0, 1).map((site) => ({ label: getSiteDisplayName(site), active: true })),
@@ -146,7 +152,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           </a>
         </div>
         <LandingGoogleCta
-          buttonClassName="rounded-[4px] bg-[#1a5fa8] px-5 py-2 text-[0.78rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+          buttonClassName={enNavCtaClass}
           googleLaunchPulse={props.googleLaunchPulse}
           onGoogleLaunch={props.onGoogleLaunch}
           pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
@@ -172,8 +178,10 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
-                buttonClassName="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+                buttonClassName={enPrimaryCtaClass}
+                googleLaunchPulse={props.googleLaunchPulse}
                 onGoogleLaunch={props.onGoogleLaunch}
+                pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
                 slotClassName="rounded-[4px]"
               >
                 {props.authBusy ? props.connectingLabel : props.googleLoginLabel}
@@ -455,8 +463,10 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
             <LandingGoogleCta
-              buttonClassName="rounded-[4px] bg-[#1a5fa8] px-[22px] py-2.5 text-[0.82rem] tracking-[0.03em] text-white transition hover:bg-[#144e94]"
+              buttonClassName={enPrimaryCtaClass}
+              googleLaunchPulse={props.googleLaunchPulse}
               onGoogleLaunch={props.onGoogleLaunch}
+              pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
               slotClassName="rounded-[4px]"
             >
               {props.authBusy ? props.connectingLabel : "Join the K-ERA research network"}

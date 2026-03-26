@@ -114,19 +114,12 @@ def build_admin_access_router(support: Any) -> APIRouter:
             institution_id = str(access_request.get("requested_site_id") or "").strip()
             mapped_site = cp.get_site_by_source_institution_id(institution_id)
             if mapped_site is None:
-                if not payload.site_code or not payload.display_name:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="site_code and display_name are required to create a site from this request.",
-                    )
                 institution = cp.get_institution(institution_id)
                 fixed_project = resolve_fixed_project(cp, user.get("user_id"))
                 try:
                     created_site = cp.create_site(
-                        str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
-                        payload.site_code,
-                        payload.display_name,
-                        payload.hospital_name
+                        project_id=str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
+                        hospital_name=payload.hospital_name
                         or str(institution.get("name") if institution is not None else access_request.get("requested_site_label") or ""),
                         source_institution_id=institution_id,
                         research_registry_enabled=payload.research_registry_enabled,

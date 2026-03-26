@@ -3,6 +3,7 @@ import "server-only";
 import { NextRequest } from "next/server";
 import type { Row } from "postgres";
 
+import { normalizeEffectiveApprovalStatus } from "../auth-access-state";
 import type { AccessRequestRecord, AuthResponse, AuthState, AuthUser, ManagedUserRecord } from "../types";
 import type { ControlPlaneMembership, ControlPlaneUser } from "./types";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
@@ -575,14 +576,20 @@ export async function serializeManagedUserRecord(
 function fallbackUserFromClaims(claims: MainAppTokenClaims): AuthUser {
   const fallbackUserId = trimText(claims.sub) || makeControlPlaneId("user");
   const fallbackUsername = trimText(claims.username) || fallbackUserId;
+  const role = (trimText(claims.role) || "viewer") as AuthUser["role"];
+  const siteIds = normalizeStringArray(claims.site_ids);
   return {
     user_id: fallbackUserId,
     username: fallbackUsername,
     full_name: trimText(claims.full_name) || fallbackUsername,
     public_alias: trimText(claims.public_alias) || null,
-    role: (trimText(claims.role) || "viewer") as AuthUser["role"],
-    site_ids: normalizeStringArray(claims.site_ids),
-    approval_status: (claims.approval_status || "application_required") as AuthState,
+    role,
+    site_ids: siteIds,
+    approval_status: normalizeEffectiveApprovalStatus({
+      role,
+      site_ids: siteIds,
+      approval_status: claims.approval_status || "application_required",
+    }) as AuthState,
     latest_access_request: null,
     registry_consents: normalizeRegistryConsents(claims.registry_consents),
   };

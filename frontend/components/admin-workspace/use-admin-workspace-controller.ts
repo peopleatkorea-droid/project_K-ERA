@@ -68,8 +68,8 @@ const BENCHMARK_ARCHITECTURES = [
   "swin",
   "efficientnet_v2_s",
   "dinov2",
-  "dinov2_mil",
-  "dual_input_concat",
+  "swin_mil",
+  "lesion_guided_fusion__swin",
 ];
 const LESION_GUIDED_SSL_BENCHMARK_ARCHITECTURES = [
   "lesion_guided_fusion__efficientnet_v2_s",
@@ -79,7 +79,7 @@ const LESION_GUIDED_SSL_BENCHMARK_ARCHITECTURES = [
   "lesion_guided_fusion__swin",
   "lesion_guided_fusion__dinov2",
 ];
-const HIRA_SITE_ID_PATTERN = /^\d{8}$/;
+const ATTENTION_MIL_ARCHITECTURES = new Set(["dinov2_mil", "swin_mil"]);
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const DEFAULT_WORKSPACE_PROJECT_ID = "project_default";
 const DASHBOARD_VALIDATION_RUN_LIMIT = 24;
@@ -121,30 +121,7 @@ function effectiveCaseAggregation(
   architecture: string,
   caseAggregation: "mean" | "logit_mean" | "quality_weighted_mean" | "attention_mil",
 ) {
-  return architecture === "dinov2_mil" ? "attention_mil" : caseAggregation;
-}
-
-function sanitizeSiteCodeSegment(value: string): string {
-  return value
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 32);
-}
-
-function suggestedSiteCodeFromRequest(request: {
-  requested_site_label?: string;
-  requested_site_id: string;
-  requested_site_source?: string;
-}) {
-  if (request.requested_site_source === "institution_directory") {
-    return HIRA_SITE_ID_PATTERN.test(request.requested_site_id) ? request.requested_site_id : "";
-  }
-  const humanReadable = sanitizeSiteCodeSegment(request.requested_site_label ?? "");
-  if (humanReadable) {
-    return humanReadable;
-  }
-  return sanitizeSiteCodeSegment(request.requested_site_id);
+  return ATTENTION_MIL_ARCHITECTURES.has(architecture) ? "attention_mil" : caseAggregation;
 }
 
 function countAutoApprovedRequests(items: Array<{ reviewer_notes?: string | null }>) {
@@ -172,8 +149,6 @@ function createReviewDraft(
       (request.requested_site_source === "site" ? request.requested_site_id : ""),
     create_site_if_missing: shouldCreateSite,
     project_id: projectId,
-    site_code: suggestedSiteCodeFromRequest(request),
-    display_name: "",
     hospital_name: label,
     research_registry_enabled: false,
     reviewer_notes: "",
@@ -194,8 +169,6 @@ function mergeReviewDraft(
     ...existingDraft,
     assigned_site_id: existingDraft.assigned_site_id || defaultDraft.assigned_site_id,
     project_id: existingDraft.project_id || defaultDraft.project_id,
-    site_code: existingDraft.site_code || defaultDraft.site_code,
-    display_name: existingDraft.display_name || defaultDraft.display_name,
     hospital_name: existingDraft.hospital_name || defaultDraft.hospital_name,
     create_site_if_missing: defaultDraft.create_site_if_missing
       ? existingDraft.create_site_if_missing
@@ -574,6 +547,9 @@ export function useAdminWorkspaceController({
     assignSiteRequired: pick(locale, "Assign at least one hospital for non-admin users.", "관리자가 아닌 사용자는 최소 한 개 이상의 병원을 지정해야 합니다."),
     userSaved: pick(locale, "User settings saved.", "사용자 설정을 저장했습니다."),
     unableSaveUser: pick(locale, "Unable to save user.", "사용자 저장에 실패했습니다."),
+    deleteUserConfirm: (username: string) => pick(locale, `Delete user "${username}"? This cannot be undone.`, `"${username}" 사용자를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`),
+    userDeleted: (username: string) => pick(locale, `Deleted user "${username}".`, `"${username}" 사용자를 삭제했습니다.`),
+    unableDeleteUser: pick(locale, "Unable to delete user.", "사용자 삭제에 실패했습니다."),
     initialTrainingMissingResult: pick(locale, "Training finished without a result payload.", "학습이 끝났지만 결과를 받지 못했습니다."),
     crossValidationMissingResult: pick(locale, "Cross-validation finished without a report payload.", "교차 검증이 끝났지만 리포트를 받지 못했습니다."),
     selectSiteForEmbedding: pick(locale, "Select a hospital before checking embeddings.", "임베딩 상태를 확인하려면 먼저 병원을 선택하세요."),
@@ -709,6 +685,9 @@ export function useAdminWorkspaceController({
       userSaved: copy.userSaved,
       unableSaveUser: copy.unableSaveUser,
       unableLoadStorageSettings: copy.unableLoadStorageSettings,
+      deleteUserConfirm: copy.deleteUserConfirm,
+      userDeleted: copy.userDeleted,
+      unableDeleteUser: copy.unableDeleteUser,
     },
     describeError,
     refreshWorkspace,
@@ -1014,8 +993,6 @@ export function useAdminWorkspaceController({
         assigned_role: "researcher",
         assigned_site_id: draft?.assigned_site_id,
         create_site_if_missing: draft?.create_site_if_missing,
-        site_code: draft?.site_code,
-        display_name: draft?.display_name?.trim(),
         hospital_name: draft?.hospital_name,
         research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
@@ -1675,8 +1652,6 @@ export function useAdminWorkspaceController({
     setEditingSiteId(site.site_id);
     setSiteForm({
       project_id: site.project_id,
-      site_code: site.site_id,
-      display_name: site.site_alias ?? "",
       hospital_name: site.hospital_name ?? "",
       research_registry_enabled: site.research_registry_enabled ?? true,
       source_institution_id: site.source_institution_id ?? undefined,
@@ -1687,16 +1662,13 @@ export function useAdminWorkspaceController({
 
   async function handleCreateSite() {
     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || DEFAULT_WORKSPACE_PROJECT_ID;
-    const normalizedDisplayName = siteForm.display_name.trim();
-    if (!siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
+    if (!String(siteForm.source_institution_id ?? "").trim() || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
       const createdSite = await createAdminSite(token, {
         project_id: effectiveProjectId,
-        site_code: siteForm.site_code,
-        display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
         source_institution_id: siteForm.source_institution_id ?? null,
         research_registry_enabled: siteForm.research_registry_enabled,
@@ -1712,14 +1684,16 @@ export function useAdminWorkspaceController({
   }
 
   async function handleUpdateSite() {
-    const normalizedDisplayName = siteForm.display_name.trim();
-    if (!editingSiteId || !siteForm.hospital_name.trim()) {
+    if (!editingSiteId) {
       setToast({ tone: "error", message: copy.siteNameRequired });
+      return;
+    }
+    if (!String(siteForm.source_institution_id ?? "").trim() || !siteForm.hospital_name.trim()) {
+      setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
       const updatedSite = await updateAdminSite(editingSiteId, token, {
-        display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
         source_institution_id: siteForm.source_institution_id ?? null,
         research_registry_enabled: siteForm.research_registry_enabled,
@@ -1864,9 +1838,11 @@ export function useAdminWorkspaceController({
     handleInitialTraining: trainingController.handleInitialTraining,
     handleCancelInitialTraining: trainingController.handleCancelInitialTraining,
     handleBenchmarkTraining: trainingController.handleBenchmarkTraining,
+    handleLesionGuidedInitialBenchmarkTraining: trainingController.handleLesionGuidedInitialBenchmarkTraining,
     handleLesionGuidedBenchmarkTraining: trainingController.handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining: trainingController.handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining: trainingController.handleResumeBenchmarkTraining,
+    handleClearBenchmarkHistory: trainingController.handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus: trainingController.handleRefreshBenchmarkStatus,
     handleCrossValidation: trainingController.handleCrossValidation,
     handlePickSslArchiveDirectory: trainingController.handlePickSslArchiveDirectory,
@@ -1897,5 +1873,6 @@ export function useAdminWorkspaceController({
     handleRecoverSelectedSiteMetadata: managementController.handleRecoverSelectedSiteMetadata,
     handleResetUserForm: managementController.handleResetUserForm,
     handleSaveUser: managementController.handleSaveUser,
+    handleDeleteUser: managementController.handleDeleteUser,
   };
 }

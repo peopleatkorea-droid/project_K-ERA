@@ -258,16 +258,17 @@ def _local_control_plane_dev_auth_enabled() -> bool:
 
 
 def _create_access_token(user: dict[str, Any]) -> str:
+    normalized_user = _normalize_user_access_state(user)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS)
     payload = {
-        "sub": user["user_id"],
-        "username": user["username"],
-        "full_name": user.get("full_name", ""),
-        "public_alias": user.get("public_alias"),
-        "role": user.get("role", "viewer"),
-        "site_ids": user.get("site_ids"),
-        "approval_status": user.get("approval_status", "approved"),
-        "registry_consents": user.get("registry_consents") or {},
+        "sub": normalized_user["user_id"],
+        "username": normalized_user["username"],
+        "full_name": normalized_user.get("full_name", ""),
+        "public_alias": normalized_user.get("public_alias"),
+        "role": normalized_user.get("role", "viewer"),
+        "site_ids": normalized_user.get("site_ids"),
+        "approval_status": normalized_user.get("approval_status", "application_required"),
+        "registry_consents": normalized_user.get("registry_consents") or {},
         "exp": int(expires_at.timestamp()),
     }
     return jwt.encode(payload, API_SECRET, algorithm=API_ALGORITHM)
@@ -282,6 +283,20 @@ def _normalize_string_list(value: Any) -> list[str]:
         if normalized and normalized not in items:
             items.append(normalized)
     return items
+
+
+def _normalize_user_access_state(user: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(user)
+    normalized_site_ids = _normalize_string_list(normalized.get("site_ids"))
+    role = str(normalized.get("role") or "viewer").strip().lower()
+    approval_status = str(normalized.get("approval_status") or "application_required").strip() or "application_required"
+    if role == "admin":
+        approval_status = "approved"
+    elif approval_status == "approved" and not normalized_site_ids:
+        approval_status = "application_required"
+    normalized["site_ids"] = normalized_site_ids
+    normalized["approval_status"] = approval_status
+    return normalized
 
 
 def _decode_remote_control_plane_access_token(token: str) -> dict[str, Any] | None:
@@ -310,7 +325,7 @@ def _decode_remote_control_plane_access_token(token: str) -> dict[str, Any] | No
         return None
 
     registry_consents = user.get("registry_consents") if isinstance(user.get("registry_consents"), dict) else {}
-    return {
+    return _normalize_user_access_state({
         "sub": user_id,
         "username": username,
         "full_name": str(user.get("full_name") or username).strip(),
@@ -319,7 +334,7 @@ def _decode_remote_control_plane_access_token(token: str) -> dict[str, Any] | No
         "site_ids": _normalize_string_list(user.get("site_ids")),
         "approval_status": str(user.get("approval_status") or "application_required").strip() or "application_required",
         "registry_consents": registry_consents,
-    }
+    })
 
 
 def _decode_control_plane_access_token(token: str) -> dict[str, Any]:
@@ -446,7 +461,7 @@ def get_current_user(
     # Build the user dict directly from the signed JWT — no DB round trip needed.
     # The JWT already contains role, site_ids, and approval_status.
     # Token TTL is 2 hours, so stale permission windows are short.
-    return {
+    return _normalize_user_access_state({
         "user_id": token_payload["sub"],
         "username": token_payload.get("username", ""),
         "role": token_payload.get("role", "viewer"),
@@ -455,7 +470,7 @@ def get_current_user(
         "full_name": token_payload.get("full_name", ""),
         "public_alias": token_payload.get("public_alias"),
         "registry_consents": token_payload.get("registry_consents") or {},
-    }
+    })
 
 
 def get_approved_user(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
@@ -614,10 +629,10 @@ def _require_site_access(cp: ControlPlaneStore, user: dict[str, Any], site_id: s
 
 
 def _build_auth_response(cp: ControlPlaneStore, user: dict[str, Any]) -> dict[str, Any]:
-    normalized = cp.get_user_by_id(user["user_id"]) or user
+    normalized = _normalize_user_access_state(cp.get_user_by_id(user["user_id"]) or user)
     token = _create_access_token(normalized)
     return {
-        "auth_state": normalized.get("approval_status", "approved"),
+        "auth_state": normalized.get("approval_status", "application_required"),
         "access_token": token,
         "token_type": "bearer",
         "user": normalized,

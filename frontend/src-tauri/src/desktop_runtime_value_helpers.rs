@@ -53,13 +53,3 @@ pub(super) fn desktop_local_backend_mode() -> String {
         "managed".to_string()
     }
 }
-
-pub(super) fn python_command_available(command_name: &str) -> bool {
-    Command::new(command_name)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}

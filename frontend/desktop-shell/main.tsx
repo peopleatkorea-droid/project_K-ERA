@@ -309,11 +309,13 @@ function DesktopShellApp() {
       setSummary(null);
       return;
     }
+    const currentSiteId = selectedSiteId;
+    const currentToken = token;
     let cancelled = false;
 
     async function loadSiteSummary() {
       try {
-        const nextCounts = await fetchSiteSummaryCounts(selectedSiteId, token);
+        const nextCounts = await fetchSiteSummaryCounts(currentSiteId, currentToken);
         if (!cancelled) {
           setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
         }
@@ -322,7 +324,7 @@ function DesktopShellApp() {
       }
 
       try {
-        const nextSummary = await fetchSiteSummary(selectedSiteId, token);
+        const nextSummary = await fetchSiteSummary(currentSiteId, currentToken);
         if (!cancelled) {
           setSummary(nextSummary);
         }

@@ -23,6 +23,15 @@ export type DesktopRuntimeContractState = {
   backend_source: string;
   backend_candidates: string[];
   python_candidates: string[];
+  python_preflight?: {
+    candidate_path: string;
+    candidate_source: string;
+    interpreter_path: string;
+    python_version?: string | null;
+    torch_version?: string | null;
+    cuda_available?: boolean | null;
+    gpu_name?: string | null;
+  } | null;
   errors: string[];
   warnings: string[];
 };
@@ -71,6 +80,7 @@ function webFallback(): DesktopAppConfigState {
       backend_source: "web",
       backend_candidates: [],
       python_candidates: [],
+      python_preflight: null,
       errors: [],
       warnings: [],
     },

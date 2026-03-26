@@ -15,8 +15,6 @@ export async function POST(
       assigned_site_id?: string;
       create_site_if_missing?: boolean;
       project_id?: string;
-      site_code?: string;
-      display_name?: string;
       hospital_name?: string;
       research_registry_enabled?: boolean;
       reviewer_notes?: string;

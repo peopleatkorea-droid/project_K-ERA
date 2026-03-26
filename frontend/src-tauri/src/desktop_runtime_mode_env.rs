@@ -63,6 +63,21 @@ pub(super) fn desktop_packaged_mode() -> bool {
     desktop_runtime_mode() == DesktopRuntimeMode::Packaged
 }
 
+pub(super) fn initialize_desktop_runtime_owner() {
+    let owner = process_env_value("KERA_RUNTIME_OWNER")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let _ = DESKTOP_RUNTIME_OWNER.set(owner);
+}
+
+pub(super) fn desktop_runtime_owner() -> String {
+    DESKTOP_RUNTIME_OWNER
+        .get()
+        .cloned()
+        .or_else(|| process_env_value("KERA_RUNTIME_OWNER"))
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
 pub(super) fn project_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

@@ -187,14 +187,13 @@ describe("admin desktop wiring", () => {
     await mod.fetchAdminSites("desktop-token");
     await mod.createAdminSite("desktop-token", {
       project_id: "project_default",
-      site_code: "SITE_A",
-      display_name: "SITE_A",
       hospital_name: "Hospital A",
+      source_institution_id: "HIRA_SITE_A",
       research_registry_enabled: true,
     });
     await mod.updateAdminSite("SITE_A", "desktop-token", {
-      display_name: "SITE_A",
       hospital_name: "Hospital A",
+      source_institution_id: "HIRA_SITE_A",
       research_registry_enabled: true,
     });
     await mod.fetchUsers("desktop-token");
@@ -263,9 +262,8 @@ describe("admin desktop wiring", () => {
         method: "POST",
         body: {
           project_id: "project_default",
-          site_code: "SITE_A",
-          display_name: "SITE_A",
           hospital_name: "Hospital A",
+          source_institution_id: "HIRA_SITE_A",
           research_registry_enabled: true,
         },
         controlPlaneOwner: "local",
@@ -278,8 +276,8 @@ describe("admin desktop wiring", () => {
       {
         method: "PATCH",
         body: {
-          display_name: "SITE_A",
           hospital_name: "Hospital A",
+          source_institution_id: "HIRA_SITE_A",
           research_registry_enabled: true,
         },
         controlPlaneOwner: "local",

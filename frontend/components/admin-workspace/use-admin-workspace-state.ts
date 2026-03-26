@@ -47,14 +47,13 @@ export type ReviewDraft = {
   assigned_site_id: string;
   create_site_if_missing: boolean;
   project_id: string;
-  site_code: string;
-  display_name: string;
   hospital_name: string;
   research_registry_enabled: boolean;
   reviewer_notes: string;
 };
 
 export type UserFormState = {
+  user_id?: string;
   username: string;
   full_name: string;
   password: string;
@@ -64,8 +63,6 @@ export type UserFormState = {
 
 export type SiteFormState = {
   project_id: string;
-  site_code: string;
-  display_name: string;
   hospital_name: string;
   research_registry_enabled: boolean;
   source_institution_id?: string;
@@ -192,8 +189,6 @@ export function createUserForm(): UserFormState {
 export function createSiteForm(projectId = ""): SiteFormState {
   return {
     project_id: projectId,
-    site_code: "",
-    display_name: "",
     hospital_name: "",
     research_registry_enabled: true,
     source_institution_id: undefined,
@@ -357,7 +352,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     val_split: 0.2,
     test_split: 0.2,
     use_pretrained: true,
-    regenerate_split: false,
+    regenerate_split: true,
   });
   const [crossValidationForm, setCrossValidationForm] = useState({
     architecture: "convnext_tiny",

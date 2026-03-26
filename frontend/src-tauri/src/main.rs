@@ -78,6 +78,7 @@ static LOCAL_BACKEND_STATE: OnceLock<Mutex<LocalBackendRuntime>> = OnceLock::new
 static ML_SIDECAR_STATE: OnceLock<Mutex<MlSidecarRuntime>> = OnceLock::new();
 static LOCAL_WORKER_STATE: OnceLock<Mutex<LocalWorkerRuntime>> = OnceLock::new();
 static DESKTOP_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static DESKTOP_RUNTIME_OWNER: OnceLock<String> = OnceLock::new();
 static PREVIEW_WARM_STATE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[cfg(windows)]
@@ -99,6 +100,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_oauth::init())
         .setup(|app| {
+            initialize_desktop_runtime_owner();
             if let Ok(path) = app.path().resource_dir() {
                 store_desktop_resource_dir(path);
             }
@@ -154,6 +156,7 @@ fn main() {
             run_initial_training_benchmark,
             resume_initial_training_benchmark,
             cancel_site_job,
+            clear_initial_training_benchmark_history,
             fetch_cross_validation_reports,
             run_cross_validation,
             run_ssl_pretraining,

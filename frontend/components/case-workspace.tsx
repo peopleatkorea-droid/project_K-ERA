@@ -2405,6 +2405,60 @@ export function CaseWorkspace({
     window.scrollTo({ top: 0, behavior: "auto" });
   }
 
+  async function handleOpenImageTextSearchResult(
+    patientId: string,
+    visitDate: string,
+  ) {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForCase });
+      return;
+    }
+
+    const findMatchingCase = (items: CaseSummaryRecord[]) =>
+      items.find(
+        (item) =>
+          item.patient_id === patientId && item.visit_date === visitDate,
+      ) ?? null;
+
+    const cachedMatch = findMatchingCase(cases);
+    if (cachedMatch) {
+      openSavedCase(cachedMatch, "cases");
+      return;
+    }
+
+    try {
+      const nextCases = await fetchCases(selectedSiteId, token, {
+        mine: showOnlyMine,
+      });
+      setCases(nextCases);
+      const refreshedMatch = findMatchingCase(nextCases);
+      if (refreshedMatch) {
+        openSavedCase(refreshedMatch, "cases");
+        return;
+      }
+      setToast({
+        tone: "error",
+        message: pick(
+          locale,
+          `Could not open ${patientId} / ${displayVisitReference(locale, visitDate)} from the image search results.`,
+          `이미지 검색 결과의 ${patientId} / ${displayVisitReference(locale, visitDate)} 케이스를 열 수 없습니다.`,
+        ),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(
+          nextError,
+          pick(
+            locale,
+            "Unable to refresh the case list for this search result.",
+            "검색 결과용 케이스 목록을 다시 불러오지 못했습니다.",
+          ),
+        ),
+      });
+    }
+  }
+
   useEffect(() => {
     if (
       !desktopFastMode ||
@@ -4341,6 +4395,8 @@ export function CaseWorkspace({
                   locale={locale}
                   localeTag={localeTag}
                   commonNotAvailable={common.notAvailable}
+                  siteId={selectedSiteId}
+                  token={token}
                   selectedSiteLabel={selectedSiteLabel}
                   selectedPatientId={selectedCase?.patient_id}
                   patientListRows={patientListRows}
@@ -4363,6 +4419,7 @@ export function CaseWorkspace({
                   onShowOnlyMineChange={handlePatientScopeChange}
                   onPageChange={handlePatientListPageChange}
                   onOpenSavedCase={openSavedCase}
+                  onOpenImageTextSearchResult={handleOpenImageTextSearchResult}
                   onPrefetchCase={(caseRecord) => {
                     if (selectedSiteId) {
                       prefetchDesktopVisitImages(
@@ -4455,8 +4512,6 @@ export function CaseWorkspace({
                     locale,
                     selectedCase.visit_date,
                   )}
-                  siteId={selectedSiteId ?? ""}
-                  token={token}
                   panelBusy={panelBusy}
                   selectedCaseImageCountHint={selectedCase.image_count}
                   selectedCaseImages={selectedCaseImages}

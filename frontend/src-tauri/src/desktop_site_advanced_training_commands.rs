@@ -36,6 +36,33 @@ pub(super) fn cancel_site_job(payload: CancelSiteJobCommandRequest) -> Result<Js
 }
 
 #[tauri::command]
+pub(super) fn clear_initial_training_benchmark_history(
+    payload: SiteBenchmarkCommandRequest,
+) -> Result<JsonValue, String> {
+    let site_id = payload.site_id.trim().to_string();
+    if site_id.is_empty() {
+        return Err("site_id is required.".to_string());
+    }
+    let request_payload = json!({
+        "site_id": site_id.clone(),
+        "token": payload.token,
+    });
+    if ml_sidecar_should_be_used() {
+        return request_ml_sidecar_json("clear_initial_training_benchmark_history", request_payload);
+    }
+    request_local_api_json(
+        HttpMethod::DELETE,
+        &format!("/api/sites/{site_id}/training/initial/benchmark"),
+        request_payload
+            .get("token")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+        Vec::new(),
+        None,
+    )
+}
+
+#[tauri::command]
 pub(super) fn fetch_cross_validation_reports(
     payload: CrossValidationReportsCommandRequest,
 ) -> Result<JsonValue, String> {

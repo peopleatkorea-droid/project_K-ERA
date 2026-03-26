@@ -52,7 +52,6 @@ import {
 } from "./main-app-bridge-users";
 import {
   DEFAULT_PROJECT_ID,
-  HIRA_SITE_ID_PATTERN,
   mapLegacyRoleToMembershipRole,
   normalizeRegistryConsents,
   normalizeStringArray,
@@ -140,15 +139,8 @@ function coerceHiraItems(value: unknown): Record<string, unknown>[] {
   return [];
 }
 
-function normalizeSiteAlias(alias: string, officialName: string, siteId: string): string {
-  const trimmedAlias = trimText(alias);
-  if (!trimmedAlias) {
-    return "";
-  }
-  if (trimmedAlias === trimText(officialName) || trimmedAlias === trimText(siteId)) {
-    return "";
-  }
-  return trimmedAlias;
+function nextGeneratedSiteId(): string {
+  return makeControlPlaneId("site").slice(0, "site_".length + 10);
 }
 
 async function officialInstitutionNameForId(sourceInstitutionId: string | null): Promise<string> {
@@ -334,8 +326,6 @@ async function createAdminSiteRecord(
   user: AuthUser,
   payload: {
     project_id?: string;
-    site_code?: string;
-    display_name?: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;
@@ -344,22 +334,13 @@ async function createAdminSiteRecord(
   assertPlatformAdmin(user);
   const projectId = DEFAULT_PROJECT_ID;
   const sourceInstitutionId = trimText(payload.source_institution_id) || null;
-  let siteCode = trimText(payload.site_code);
-  if (sourceInstitutionId && HIRA_SITE_ID_PATTERN.test(sourceInstitutionId)) {
-    siteCode = sourceInstitutionId;
-  }
-  if (!siteCode) {
-    throw new Error("Site code is required.");
+  if (!sourceInstitutionId) {
+    throw new Error("Linked HIRA institution is required.");
   }
   const officialInstitutionName = await officialInstitutionNameForId(sourceInstitutionId);
-  const hospitalName = trimText(payload.hospital_name) || officialInstitutionName || siteCode;
+  const hospitalName = trimText(payload.hospital_name) || officialInstitutionName || sourceInstitutionId;
   if (!hospitalName) {
     throw new Error("Site hospital name is required.");
-  }
-  const displayName = normalizeSiteAlias(trimText(payload.display_name), hospitalName, siteCode);
-  const existingSite = await siteRowById(siteCode);
-  if (existingSite) {
-    throw new Error(`Site ${siteCode} already exists.`);
   }
   if (sourceInstitutionId) {
     const mapped = await siteRowBySourceInstitutionId(sourceInstitutionId);
@@ -369,8 +350,20 @@ async function createAdminSiteRecord(
       );
     }
   }
+  let siteId = nextGeneratedSiteId();
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const existingSite = await siteRowById(siteId);
+    if (!existingSite) {
+      break;
+    }
+    siteId = nextGeneratedSiteId();
+  }
+  if (await siteRowById(siteId)) {
+    throw new Error("Unable to allocate a site ID.");
+  }
+  const displayName = hospitalName;
   await upsertSiteRecord({
-    site_id: siteCode,
+    site_id: siteId,
     project_id: projectId,
     display_name: displayName,
     hospital_name: hospitalName,
@@ -378,7 +371,7 @@ async function createAdminSiteRecord(
     local_storage_root: "",
     research_registry_enabled: payload.research_registry_enabled ?? true,
   });
-  const created = await siteRowById(siteCode);
+  const created = await siteRowById(siteId);
   if (!created) {
     throw new Error("Unable to create site.");
   }
@@ -389,7 +382,6 @@ async function updateAdminSiteRecord(
   user: AuthUser,
   siteId: string,
   payload: {
-    display_name?: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;
@@ -406,11 +398,7 @@ async function updateAdminSiteRecord(
   const officialInstitutionName = await officialInstitutionNameForId(sourceInstitutionId);
   const existingHospitalName = trimText(rowValue<string>(existing, "hospital_name"));
   const hospitalName = trimText(payload.hospital_name) || officialInstitutionName || existingHospitalName || siteId;
-  const displayName = normalizeSiteAlias(
-    payload.display_name === undefined ? trimText(rowValue<string>(existing, "display_name")) : trimText(payload.display_name),
-    hospitalName,
-    siteId,
-  );
+  const displayName = hospitalName;
   if (sourceInstitutionId && sourceInstitutionId !== currentSourceInstitutionId) {
     const mapped = await siteRowBySourceInstitutionId(sourceInstitutionId);
     if (mapped && rowValue<string>(mapped, "site_id") !== siteId) {
@@ -448,8 +436,6 @@ async function reviewMainAccessRequestRecord(
     assigned_site_id?: string;
     create_site_if_missing?: boolean;
     project_id?: string;
-    site_code?: string;
-    display_name?: string;
     hospital_name?: string;
     research_registry_enabled?: boolean;
     reviewer_notes?: string;
@@ -506,8 +492,6 @@ async function reviewMainAccessRequestRecord(
       targetSiteId = rowValue<string>(mappedSite, "site_id");
     } else {
       createdSite = await createAdminSiteRecord(reviewer, {
-        site_code: payload.site_code,
-        display_name: payload.display_name || current.requested_site_label,
         hospital_name: payload.hospital_name || current.requested_site_label,
         source_institution_id: current.requested_site_id,
         research_registry_enabled: payload.research_registry_enabled ?? false,
@@ -834,8 +818,6 @@ export async function reviewMainAccessRequest(
     assigned_site_id?: string;
     create_site_if_missing?: boolean;
     project_id?: string;
-    site_code?: string;
-    display_name?: string;
     hospital_name?: string;
     research_registry_enabled?: boolean;
     reviewer_notes?: string;
@@ -938,8 +920,6 @@ export async function createMainAdminSite(
   request: NextRequest,
   payload: {
     project_id?: string;
-    site_code?: string;
-    display_name?: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;
@@ -953,7 +933,6 @@ export async function updateMainAdminSite(
   request: NextRequest,
   siteId: string,
   payload: {
-    display_name?: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;

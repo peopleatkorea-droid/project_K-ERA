@@ -1240,6 +1240,27 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(me_response.json()["user_id"], "remote_admin_user")
             remote_client.main_auth_me.assert_called_once_with(user_bearer_token=remote_token)
 
+    def test_auth_me_downgrades_unassigned_non_admin_token_to_application_required(self):
+        token = self.app_module._create_access_token(
+            {
+                "user_id": "user_unassigned",
+                "username": "people.at.korea@gmail.com",
+                "role": "researcher",
+                "site_ids": [],
+                "approval_status": "approved",
+                "full_name": "Unassigned Researcher",
+            }
+        )
+
+        me_response = self.client.get(
+            "/api/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        self.assertEqual(me_response.json()["approval_status"], "application_required")
+        self.assertEqual(me_response.json()["site_ids"], [])
+
     def _make_test_image_bytes(self, image_format: str = "PNG", color: tuple[int, int, int] = (32, 96, 160)) -> bytes:
         buffer = io.BytesIO()
         Image.new("RGB", (24, 24), color=color).save(buffer, format=image_format)
@@ -1664,6 +1685,46 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["n_visits"], 1)
         self.assertEqual(payload["n_images"], 1)
         self.assertEqual(payload["n_active_visits"], 1)
+
+    def test_site_summary_counts_reflect_latest_raw_inventory_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+
+        extra_images = [
+            ("RAW-NEW-001", "Initial", "raw_new_001_initial.png"),
+            ("RAW-NEW-001", "FU #1", "raw_new_001_fu1.png"),
+            ("RAW-NEW-001", "FU #1", "raw_new_001_fu1_b.png"),
+            ("RAW-NEW-002", "Initial", "raw_new_002_initial.png"),
+        ]
+        for patient_id, visit_label, file_name in extra_images:
+            visit_dir = self.site_store.raw_dir / patient_id / visit_label
+            visit_dir.mkdir(parents=True, exist_ok=True)
+            (visit_dir / file_name).write_bytes(self._make_test_image_bytes("PNG"))
+
+        empty_dir = self.site_store.raw_dir / "test" / "Initial"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+
+        counts_response = self.client.get(
+            f"/api/sites/{self.site_id}/summary/counts",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(counts_response.status_code, 200, counts_response.text)
+        counts_payload = counts_response.json()
+        self.assertEqual(counts_payload["n_patients"], 3)
+        self.assertEqual(counts_payload["n_visits"], 4)
+        self.assertEqual(counts_payload["n_images"], 5)
+        self.assertEqual(counts_payload["n_active_visits"], 1)
+
+        summary_response = self.client.get(
+            f"/api/sites/{self.site_id}/summary",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(summary_response.status_code, 200, summary_response.text)
+        summary_payload = summary_response.json()
+        self.assertEqual(summary_payload["n_patients"], 3)
+        self.assertEqual(summary_payload["n_visits"], 4)
+        self.assertEqual(summary_payload["n_images"], 5)
+        self.assertEqual(summary_payload["n_active_visits"], 1)
 
     def test_image_preview_endpoint_reuses_cached_thumbnail_http(self):
         admin_token = self._login("admin", "admin123")
@@ -3471,8 +3532,6 @@ class ApiHttpTests(unittest.TestCase):
                 "decision": "approved",
                 "assigned_role": "researcher",
                 "create_site_if_missing": True,
-                "site_code": "HIRA_PARK_EYE",
-                "display_name": "Park Eye Hospital",
                 "hospital_name": "Park Eye Hospital",
                 "research_registry_enabled": False,
                 "reviewer_notes": "created during approval",
@@ -3480,21 +3539,24 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(review_response.status_code, 200, review_response.text)
         review_payload = review_response.json()
+        created_site_id = review_payload["created_site"]["site_id"]
         self.assertEqual(review_payload["request"]["status"], "approved")
-        self.assertEqual(review_payload["request"]["requested_site_id"], "HIRA_PARK_EYE")
+        self.assertEqual(review_payload["request"]["requested_site_id"], created_site_id)
         self.assertEqual(review_payload["request"]["requested_role"], "researcher")
-        self.assertEqual(review_payload["request"]["resolved_site_id"], "HIRA_PARK_EYE")
+        self.assertEqual(review_payload["request"]["resolved_site_id"], created_site_id)
         self.assertIsNotNone(review_payload["created_site"])
-        self.assertEqual(review_payload["created_site"]["site_id"], "HIRA_PARK_EYE")
+        self.assertTrue(created_site_id.startswith("site_"))
         self.assertEqual(review_payload["created_site"]["source_institution_id"], "HIRA_EYE_002")
+        self.assertEqual(review_payload["created_site"]["display_name"], "Park Eye Hospital")
         self.assertFalse(review_payload["created_site"]["research_registry_enabled"])
 
         refreshed_user = self.cp.get_user_by_id(self.requester["user_id"])
         self.assertEqual(refreshed_user["role"], "researcher")
-        self.assertIn("HIRA_PARK_EYE", refreshed_user["site_ids"] or [])
-        created_site = self.cp.get_site("HIRA_PARK_EYE")
+        self.assertIn(created_site_id, refreshed_user["site_ids"] or [])
+        created_site = self.cp.get_site(created_site_id)
         self.assertIsNotNone(created_site)
         self.assertEqual(created_site["source_institution_id"], "HIRA_EYE_002")
+        self.assertEqual(created_site["display_name"], "Park Eye Hospital")
         self.assertFalse(created_site["research_registry_enabled"])
 
     def test_platform_admin_can_sync_institution_directory_http(self):
@@ -3587,23 +3649,22 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "project_id": project_id,
-                "site_code": "OPS_HTTP",
-                "display_name": "Ops HTTP Site",
                 "hospital_name": "Ops Hospital",
+                "source_institution_id": "OPS_HTTP_SOURCE",
             },
         )
         self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+        site_id = create_site_response.json()["site_id"]
 
         update_site_response = self.client.patch(
-            "/api/admin/sites/OPS_HTTP",
+            f"/api/admin/sites/{site_id}",
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
-                "display_name": "Ops HTTP Site Updated",
                 "hospital_name": "Ops Hospital Updated",
             },
         )
         self.assertEqual(update_site_response.status_code, 200, update_site_response.text)
-        self.assertEqual(update_site_response.json()["display_name"], "Ops HTTP Site Updated")
+        self.assertEqual(update_site_response.json()["display_name"], "Ops Hospital Updated")
         self.assertEqual(update_site_response.json()["hospital_name"], "Ops Hospital Updated")
 
         create_user_response = self.client.post(
@@ -3614,7 +3675,7 @@ class ApiHttpTests(unittest.TestCase):
                 "full_name": "Ops Researcher",
                 "password": "ops123",
                 "role": "researcher",
-                "site_ids": ["OPS_HTTP"],
+                "site_ids": [site_id],
             },
         )
         self.assertEqual(create_user_response.status_code, 200, create_user_response.text)
@@ -3623,7 +3684,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(any(item["username"] == "ops_researcher" for item in users_response.json()))
 
         template_response = self.client.get(
-            "/api/sites/OPS_HTTP/import/template.csv",
+            f"/api/sites/{site_id}/import/template.csv",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         self.assertEqual(template_response.status_code, 200, template_response.text)
@@ -3641,7 +3702,7 @@ class ApiHttpTests(unittest.TestCase):
             archive.writestr("ops_002_slit.jpg", self._make_test_image_bytes("JPEG", (40, 120, 180)))
 
         import_response = self.client.post(
-            "/api/sites/OPS_HTTP/import/bulk",
+            f"/api/sites/{site_id}/import/bulk",
             headers={"Authorization": f"Bearer {admin_token}"},
             files=[
                 ("csv_file", ("ops_import.csv", csv_content, "text/csv")),
@@ -3656,16 +3717,16 @@ class ApiHttpTests(unittest.TestCase):
         fake_workflow = FakeWorkflow(self.app_module, self.cp)
         with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
             validation_response = self.client.post(
-                "/api/sites/OPS_HTTP/validations/run",
+                f"/api/sites/{site_id}/validations/run",
                 headers={"Authorization": f"Bearer {admin_token}"},
                 json={"execution_mode": "cpu"},
             )
             self.assertEqual(validation_response.status_code, 200, validation_response.text)
             validation_job_id = validation_response.json()["job"]["job_id"]
-            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id="OPS_HTTP")
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=site_id)
 
         job_response = self.client.get(
-            f"/api/sites/OPS_HTTP/jobs/{validation_job_id}",
+            f"/api/sites/{site_id}/jobs/{validation_job_id}",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         self.assertEqual(job_response.status_code, 200, job_response.text)
@@ -3674,7 +3735,7 @@ class ApiHttpTests(unittest.TestCase):
         validation_id = job_payload["result"]["response"]["summary"]["validation_id"]
 
         cases_response = self.client.get(
-            f"/api/sites/OPS_HTTP/validations/{validation_id}/cases?misclassified_only=true&limit=4",
+            f"/api/sites/{site_id}/validations/{validation_id}/cases?misclassified_only=true&limit=4",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         self.assertEqual(cases_response.status_code, 200, cases_response.text)
@@ -3688,7 +3749,49 @@ class ApiHttpTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         self.assertEqual(comparison_response.status_code, 200, comparison_response.text)
-        self.assertTrue(any(item["site_id"] == "OPS_HTTP" for item in comparison_response.json()))
+        self.assertTrue(any(item["site_id"] == site_id for item in comparison_response.json()))
+
+    def test_platform_admin_can_update_site_source_institution_mapping_http(self):
+        admin_token = self._token_for_username("admin")
+
+        projects_response = self.client.get("/api/admin/projects", headers={"Authorization": f"Bearer {admin_token}"})
+        self.assertEqual(projects_response.status_code, 200, projects_response.text)
+        project_id = projects_response.json()[0]["project_id"]
+
+        create_site_response = self.client.post(
+            "/api/admin/sites",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "project_id": project_id,
+                "hospital_name": "Ops Hospital",
+                "source_institution_id": "OPS_HTTP_SOURCE",
+            },
+        )
+        self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+        site_id = create_site_response.json()["site_id"]
+
+        update_site_response = self.client.patch(
+            f"/api/admin/sites/{site_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "hospital_name": "Ops Hospital",
+                "source_institution_id": "39100103",
+            },
+        )
+        self.assertEqual(update_site_response.status_code, 200, update_site_response.text)
+        self.assertEqual(update_site_response.json()["source_institution_id"], "39100103")
+        self.assertEqual(self.cp.get_site(site_id)["source_institution_id"], "39100103")
+
+        preserve_mapping_response = self.client.patch(
+            f"/api/admin/sites/{site_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "hospital_name": "Ops Hospital Updated",
+            },
+        )
+        self.assertEqual(preserve_mapping_response.status_code, 200, preserve_mapping_response.text)
+        self.assertEqual(preserve_mapping_response.json()["source_institution_id"], "39100103")
+        self.assertEqual(self.cp.get_site(site_id)["source_institution_id"], "39100103")
 
     def test_site_admin_can_manage_storage_settings_and_empty_site_root(self):
         site_admin_token = self._token_for_username("http_site_admin")
@@ -3920,6 +4023,38 @@ class ApiHttpTests(unittest.TestCase):
         recovered_images = self.site_store.list_images()
         self.assertEqual(len(recovered_images), 1)
         self.assertTrue(Path(recovered_images[0]["image_path"]).exists())
+
+    def test_site_admin_can_sync_raw_inventory_metadata_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        visit_dir = self.site_store.raw_dir / "00415029" / "Initial"
+        visit_dir.mkdir(parents=True, exist_ok=True)
+        image_path = visit_dir / "http_sync_slit.png"
+        image_path.write_bytes(self._make_test_image_bytes())
+
+        response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["created_patients"], 1)
+        self.assertEqual(payload["created_visits"], 1)
+        self.assertEqual(payload["created_images"], 1)
+        self.assertTrue(Path(payload["manifest_path"]).exists())
+        self.assertTrue(Path(payload["metadata_backup_path"]).exists())
+
+        lookup = self.site_store.lookup_patient_id("00415029")
+        self.assertTrue(bool(lookup["exists"]))
+        visits = self.site_store.list_visits_for_patient("00415029")
+        self.assertEqual(len(visits), 1)
+        self.assertFalse(bool(visits[0]["culture_confirmed"]))
+        images = self.site_store.list_images_for_visit("00415029", "Initial")
+        self.assertEqual(len(images), 1)
+        self.assertEqual(Path(images[0]["image_path"]).resolve(), image_path.resolve())
+        self.assertEqual(images[0]["view"], "slit")
+        self.assertEqual(self.site_store.dataset_records(), [])
 
 
 if __name__ == "__main__":

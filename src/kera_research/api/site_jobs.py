@@ -117,7 +117,7 @@ def start_initial_training(
             "use_pretrained": bool(payload.use_pretrained),
             "pretraining_source": getattr(payload, "pretraining_source", None),
             "ssl_checkpoint_path": getattr(payload, "ssl_checkpoint_path", None),
-            "regenerate_split": bool(payload.regenerate_split),
+            "regenerate_split": True,
             "output_model_path": str(output_path),
         },
         queue_name=queue_name_for_job_type("initial_training"),
@@ -169,7 +169,7 @@ def start_initial_training_benchmark(
             "pretraining_source": getattr(payload, "pretraining_source", None),
             "ssl_checkpoint_path": getattr(payload, "ssl_checkpoint_path", None),
             "benchmark_suite_key": getattr(payload, "benchmark_suite_key", None),
-            "regenerate_split": bool(payload.regenerate_split),
+            "regenerate_split": True,
         },
         queue_name=queue_name_for_job_type("initial_training_benchmark"),
     )

@@ -247,6 +247,32 @@ def build_site_training_router(support: Any) -> APIRouter:
             queue_name_for_job_type=queue_name_for_job_type,
         )
 
+    @router.delete("/api/sites/{site_id}/training/initial/benchmark")
+    def clear_initial_training_benchmark_history(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        active_statuses = {"queued", "running", "cancelling"}
+        active_jobs = [
+            job
+            for job in site_store.list_jobs()
+            if str(job.get("job_type") or "") == "initial_training_benchmark"
+            and str(job.get("status") or "").strip().lower() in active_statuses
+        ]
+        if active_jobs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Stop the active benchmark job before deleting benchmark history.",
+            )
+        deleted_jobs = site_store.delete_jobs(job_type="initial_training_benchmark")
+        return {
+            "site_id": site_id,
+            "deleted_jobs": deleted_jobs,
+        }
+
     @router.get("/api/sites/{site_id}/jobs/{job_id}")
     def get_site_job(
         site_id: str,

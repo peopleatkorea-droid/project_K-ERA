@@ -723,6 +723,105 @@ class ControlPlaneRegressionTests(unittest.TestCase):
             ).scalar()
         self.assertEqual(Path(str(stored_path)).resolve(), Path(str(image["image_path"])).resolve())
 
+    def test_site_store_relinks_images_when_only_visit_file_remains(self) -> None:
+        project = self.cp.create_project("Visit File Relink Project", "test", "owner")
+        site_id = self._unique_site_id("VISIT_RELINK_SITE")
+        self.cp.create_site(project["project_id"], site_id, "Visit Relink Site", "Visit Relink Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+        patient_id = self._unique_patient_id("VRL")
+        site_store.create_patient(patient_id, "female", 58, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="FU #1",
+            actual_visit_date="2026-03-22",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Candida",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        image = site_store.add_image(
+            patient_id=patient_id,
+            visit_date="FU #1",
+            view="white",
+            is_representative=True,
+            file_name="visit_relink.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+
+        original_path = Path(str(image["image_path"]))
+        renamed_path = original_path.with_name("renamed_visit_only.png")
+        original_path.replace(renamed_path)
+
+        reloaded_store = self.app_module.SiteStore(site_id)
+        resolved_image = reloaded_store.get_image(image["image_id"])
+
+        self.assertIsNotNone(resolved_image)
+        self.assertEqual(Path(str(resolved_image["image_path"])).resolve(), renamed_path.resolve())
+        self.assertEqual(len(reloaded_store.dataset_records()), 1)
+
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            stored_path = conn.execute(
+                select(self.db_module.images.c.image_path).where(self.db_module.images.c.image_id == image["image_id"])
+            ).scalar()
+        self.assertEqual(Path(str(stored_path)).resolve(), renamed_path.resolve())
+
+    def test_site_summary_stats_auto_repairs_stale_image_paths(self) -> None:
+        project = self.cp.create_project("Summary Relink Project", "test", "owner")
+        site_id = self._unique_site_id("SUMMARY_RELINK_SITE")
+        self.cp.create_site(project["project_id"], site_id, "Summary Relink Site", "Summary Relink Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+        patient_id = self._unique_patient_id("SRL")
+        site_store.create_patient(patient_id, "female", 58, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="FU #1",
+            actual_visit_date="2026-03-22",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Candida",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        image = site_store.add_image(
+            patient_id=patient_id,
+            visit_date="FU #1",
+            view="white",
+            is_representative=True,
+            file_name="summary_relink.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+
+        image_name = Path(str(image["image_path"])).name
+        stale_path = site_store.raw_dir / patient_id / "F" / "U1" / image_name
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(self.db_module.images)
+                .where(self.db_module.images.c.image_id == image["image_id"])
+                .values(image_path=str(stale_path))
+            )
+
+        reloaded_store = self.app_module.SiteStore(site_id)
+        summary = reloaded_store.site_summary_stats()
+
+        self.assertEqual(summary["n_patients"], 1)
+        self.assertEqual(summary["n_visits"], 1)
+        self.assertEqual(summary["n_images"], 1)
+
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            stored_path = conn.execute(
+                select(self.db_module.images.c.image_path).where(self.db_module.images.c.image_id == image["image_id"])
+            ).scalar()
+        self.assertEqual(Path(str(stored_path)).resolve(), Path(str(image["image_path"])).resolve())
+
     def test_site_store_standardizes_legacy_visit_folder_layout(self) -> None:
         project = self.cp.create_project("Storage Standardize Project", "test", "owner")
         site_id = self._unique_site_id("STD_SITE")
@@ -774,6 +873,149 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertFalse(legacy_path.exists())
         self.assertFalse((site_store.raw_dir / patient_id / "F").exists())
         self.assertEqual(Path(str(stored_image["image_path"])).resolve(), canonical_path.resolve())
+
+    def test_site_store_syncs_raw_only_metadata_without_polluting_manifest(self) -> None:
+        project = self.cp.create_project("Raw Sync Project", "test", "owner")
+        site_id = self._unique_site_id("RAW_SYNC")
+        self.cp.create_site(project["project_id"], site_id, "Raw Sync Site", "Raw Sync Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+
+        visit_dir = site_store.raw_dir / "00415029" / "Initial"
+        visit_dir.mkdir(parents=True, exist_ok=True)
+        image_path = visit_dir / "raw_sync_slit.png"
+        image_path.write_bytes(self._make_test_image_bytes())
+
+        result = site_store.sync_raw_inventory_metadata()
+
+        self.assertEqual(result["created_patients"], 1)
+        self.assertEqual(result["created_visits"], 1)
+        self.assertEqual(result["created_images"], 1)
+        self.assertEqual(len(site_store.list_patients()), 1)
+        visits = site_store.list_visits()
+        self.assertEqual(len(visits), 1)
+        self.assertFalse(bool(visits[0]["culture_confirmed"]))
+        self.assertEqual(str(visits[0]["culture_category"] or ""), "")
+        images = site_store.list_images()
+        self.assertEqual(len(images), 1)
+        self.assertEqual(Path(images[0]["image_path"]).resolve(), image_path.resolve())
+        self.assertEqual(images[0]["view"], "slit")
+        self.assertEqual(site_store.dataset_records(), [])
+        self.assertEqual(site_store.list_case_summaries(), [])
+        self.assertEqual(site_store.list_patient_case_rows()["items"], [])
+
+        second_pass = site_store.sync_raw_inventory_metadata()
+        self.assertEqual(second_pass["created_patients"], 0)
+        self.assertEqual(second_pass["created_visits"], 0)
+        self.assertEqual(second_pass["created_images"], 0)
+
+    def test_site_store_sync_ignores_empty_raw_patient_directories(self) -> None:
+        project = self.cp.create_project("Raw Empty Project", "test", "owner")
+        site_id = self._unique_site_id("RAW_EMPTY")
+        self.cp.create_site(project["project_id"], site_id, "Raw Empty Site", "Raw Empty Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+
+        empty_visit_dir = site_store.raw_dir / "test" / "Initial"
+        empty_visit_dir.mkdir(parents=True, exist_ok=True)
+
+        result = site_store.sync_raw_inventory_metadata()
+
+        self.assertEqual(result["created_patients"], 0)
+        self.assertEqual(result["created_visits"], 0)
+        self.assertEqual(result["created_images"], 0)
+        self.assertEqual(len(site_store.list_patients()), 0)
+        self.assertEqual(len(site_store.list_visits()), 0)
+        self.assertEqual(len(site_store.list_images()), 0)
+
+    def test_site_store_restores_placeholder_raw_sync_metadata_from_local_backup_db(self) -> None:
+        storage_root = Path(self.tempdir.name) / "KERA_DATA"
+        backup_db = storage_root / "kera-DESKTOP-V9HBNPO.db"
+        current_db = storage_root / "kera.current.db"
+        hidden_paths: list[tuple[Path, Path]] = []
+
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        backup_module = reload_app_module(
+            backup_db,
+            control_plane_artifact_dir=Path(self.tempdir.name) / "backup_artifacts",
+            storage_dir=storage_root,
+            data_plane_database_url=f"sqlite:///{backup_db.as_posix()}",
+        )
+        backup_db_module = sys.modules["kera_research.db"]
+        backup_cp = backup_module.ControlPlaneStore()
+        site_id = self._unique_site_id("RAW_RESTORE")
+        patient_id = "17870656"
+        project = backup_cp.create_project("Raw Restore Project", "test", "owner")
+        backup_cp.create_site(project["project_id"], site_id, "Restore Site", "Restore Hospital")
+        backup_site_store = backup_module.SiteStore(site_id)
+        backup_site_store.create_patient(patient_id, "female", 62, created_by_user_id="owner")
+        backup_site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="Initial",
+            actual_visit_date="2026-03-17",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Aspergillus",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=[],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        backup_site_store.add_image(
+            patient_id=patient_id,
+            visit_date="Initial",
+            view="white",
+            is_representative=True,
+            file_name="restore.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+
+        backup_db_module.CONTROL_PLANE_ENGINE.dispose()
+        backup_db_module.DATA_PLANE_ENGINE.dispose()
+        for db_path in storage_root.glob("kera*.db"):
+            hidden_path = db_path.with_suffix(db_path.suffix + ".hidden")
+            db_path.replace(hidden_path)
+            hidden_paths.append((db_path, hidden_path))
+
+        current_module = reload_app_module(
+            current_db,
+            control_plane_artifact_dir=Path(self.tempdir.name) / "current_artifacts",
+            storage_dir=storage_root,
+            data_plane_database_url=f"sqlite:///{current_db.as_posix()}",
+        )
+        self.app_module = current_module
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = current_module.ControlPlaneStore()
+        current_project = self.cp.create_project("Current Raw Restore Project", "test", "owner")
+        self.cp.create_site(current_project["project_id"], site_id, "Restore Site", "Restore Hospital")
+        current_site_store = current_module.SiteStore(site_id)
+
+        first_pass = current_site_store.sync_raw_inventory_metadata()
+        self.assertEqual(first_pass["created_patients"], 1)
+        self.assertEqual(first_pass["created_visits"], 1)
+        placeholder_patient = current_site_store.get_patient(patient_id)
+        self.assertEqual(placeholder_patient["sex"], "unknown")
+        self.assertEqual(placeholder_patient["age"], 0)
+        placeholder_visit = current_site_store.get_visit(patient_id, "Initial")
+        self.assertFalse(bool(placeholder_visit["culture_confirmed"]))
+        self.assertEqual(str(placeholder_visit["research_registry_source"]), "raw_inventory_sync")
+
+        for original_path, hidden_path in hidden_paths:
+            if original_path == backup_db:
+                hidden_path.replace(original_path)
+        second_pass = current_site_store.sync_raw_inventory_metadata()
+        restored_patient = current_site_store.get_patient(patient_id)
+        restored_visit = current_site_store.get_visit(patient_id, "Initial")
+
+        self.assertEqual(second_pass["restored_patients"], 1)
+        self.assertEqual(restored_patient["sex"], "female")
+        self.assertEqual(restored_patient["age"], 62)
+        self.assertTrue(bool(restored_visit["culture_confirmed"]))
+        self.assertEqual(str(restored_visit["culture_species"]), "Aspergillus")
+        self.assertEqual(str(restored_visit["research_registry_source"]), "visit_create")
+        self.assertEqual(len(current_site_store.dataset_records()), 1)
 
 
 class ApiRouteBodyBindingTests(unittest.TestCase):

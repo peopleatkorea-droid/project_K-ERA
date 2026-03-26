@@ -258,8 +258,6 @@ export async function createAdminSite(
   token: string,
   payload: {
     project_id: string;
-    site_code: string;
-    display_name: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;
@@ -297,7 +295,6 @@ export async function updateAdminSite(
   siteId: string,
   token: string,
   payload: {
-    display_name: string;
     hospital_name?: string;
     source_institution_id?: string | null;
     research_registry_enabled?: boolean;
@@ -465,6 +462,21 @@ export async function upsertManagedUser(
   );
 }
 
+export async function deleteManagedUser(userId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ deleted: boolean; user_id: string }>(
+      `/api/admin/users/${userId}`,
+      token,
+      { method: "DELETE" },
+    );
+  }
+  return requestMainControlPlane<{ deleted: boolean; user_id: string }>(
+    `/admin/users/${userId}`,
+    { method: "DELETE" },
+    token,
+  );
+}
+
 export async function reviewAccessRequest(
   requestId: string,
   token: string,
@@ -474,8 +486,6 @@ export async function reviewAccessRequest(
     assigned_site_id?: string;
     create_site_if_missing?: boolean;
     project_id?: string;
-    site_code?: string;
-    display_name?: string;
     hospital_name?: string;
     research_registry_enabled?: boolean;
     reviewer_notes?: string;

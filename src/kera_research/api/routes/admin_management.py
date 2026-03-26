@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from kera_research.api.control_plane_proxy import call_remote_control_plane_method, remote_control_plane_is_primary
 from kera_research.api.routes.admin_shared import FIXED_PROJECT_ID, resolve_fixed_project
+from kera_research.services.control_plane_workspace_ops import SOURCE_INSTITUTION_ID_UNSET
 
 
 def build_admin_management_router(support: Any) -> APIRouter:
@@ -103,6 +104,8 @@ def build_admin_management_router(support: Any) -> APIRouter:
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        if not str(payload.source_institution_id or "").strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Linked HIRA institution is required.")
         remote_site = call_remote_control_plane_method(
             cp,
             authorization=authorization,
@@ -120,10 +123,8 @@ def build_admin_management_router(support: Any) -> APIRouter:
         fixed_project = resolve_fixed_project(cp, user.get("user_id"))
         try:
             return cp.create_site(
-                str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
-                payload.site_code,
-                payload.display_name,
-                payload.hospital_name,
+                project_id=str(fixed_project.get("project_id") or FIXED_PROJECT_ID),
+                hospital_name=payload.hospital_name,
                 source_institution_id=payload.source_institution_id,
                 research_registry_enabled=payload.research_registry_enabled,
             )
@@ -158,8 +159,12 @@ def build_admin_management_router(support: Any) -> APIRouter:
         try:
             return cp.update_site_metadata(
                 site_id,
-                payload.display_name,
-                payload.hospital_name,
+                hospital_name=payload.hospital_name,
+                source_institution_id=(
+                    payload.source_institution_id
+                    if "source_institution_id" in payload.model_fields_set
+                    else SOURCE_INSTITUTION_ID_UNSET
+                ),
                 research_registry_enabled=payload.research_registry_enabled,
             )
         except ValueError as exc:
@@ -246,6 +251,37 @@ def build_admin_management_router(support: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    @router.delete("/api/admin/users/{user_id}")
+    def delete_user(
+        user_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        remote_result = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_delete_user",
+            user_id=user_id,
+        )
+        if remote_result is not None:
+            return remote_result
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane user management is unavailable.",
+            )
+        target = cp.get_user_by_id(user_id)
+        if not target:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+        if target.get("user_id") == user.get("user_id"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete your own account.")
+        cp.delete_user(user_id)
+        return {"deleted": True, "user_id": user_id}
+
     @router.get("/api/admin/site-comparison")
     def site_comparison(
         user: dict[str, Any] = Depends(get_approved_user),
@@ -328,6 +364,27 @@ def build_admin_management_router(support: Any) -> APIRouter:
         return {
             "site_id": site_store.site_id,
             "site_dir": str(site_store.site_dir),
+            "manifest_path": str(site_store.manifest_path),
+            "metadata_backup_path": str(site_store.metadata_backup_path()),
+            **result,
+        }
+
+    @router.post("/api/admin/sites/{site_id}/metadata/sync-raw")
+    def sync_site_metadata_from_raw(
+        site_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        result = site_store.sync_raw_inventory_metadata()
+        if any(int(result.get(key) or 0) > 0 for key in ("created_patients", "created_visits", "created_images")):
+            site_store.generate_manifest()
+            site_store.export_metadata_backup()
+        return {
+            "site_id": site_store.site_id,
+            "site_dir": str(site_store.site_dir),
+            "raw_dir": str(site_store.raw_dir),
             "manifest_path": str(site_store.manifest_path),
             "metadata_backup_path": str(site_store.metadata_backup_path()),
             **result,

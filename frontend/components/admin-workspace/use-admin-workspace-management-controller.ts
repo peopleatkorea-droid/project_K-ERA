@@ -6,6 +6,7 @@ import { getSiteDisplayName } from "../../lib/site-labels";
 import {
   createAdminSite,
   createProject,
+  deleteManagedUser,
   fetchAccessRequests,
   fetchInstitutionDirectoryStatus,
   fetchStorageSettings,
@@ -56,6 +57,9 @@ type ManagementControllerCopy = {
   userSaved: string;
   unableSaveUser: string;
   unableLoadStorageSettings: string;
+  deleteUserConfirm: (username: string) => string;
+  userDeleted: (username: string) => string;
+  unableDeleteUser: string;
 };
 
 type UseAdminWorkspaceManagementControllerOptions = {
@@ -243,8 +247,6 @@ export function useAdminWorkspaceManagementController({
         assigned_role: "researcher",
         assigned_site_id: draft?.assigned_site_id,
         create_site_if_missing: draft?.create_site_if_missing,
-        site_code: draft?.site_code,
-        display_name: draft?.display_name?.trim(),
         hospital_name: draft?.hospital_name,
         research_registry_enabled: draft?.research_registry_enabled,
         reviewer_notes: draft?.reviewer_notes,
@@ -330,8 +332,6 @@ export function useAdminWorkspaceManagementController({
     setEditingSiteId(site.site_id);
     setSiteForm({
       project_id: site.project_id,
-      site_code: site.site_id,
-      display_name: site.site_alias ?? "",
       hospital_name: site.hospital_name ?? "",
       research_registry_enabled: site.research_registry_enabled ?? true,
       source_institution_id: site.source_institution_id ?? undefined,
@@ -342,16 +342,13 @@ export function useAdminWorkspaceManagementController({
 
   async function handleCreateSite() {
     const effectiveProjectId = siteForm.project_id || projects[0]?.project_id || defaultWorkspaceProjectId;
-    const normalizedDisplayName = siteForm.display_name.trim();
-    if (!siteForm.site_code.trim() || !siteForm.hospital_name.trim()) {
+    if (!String(siteForm.source_institution_id ?? "").trim() || !siteForm.hospital_name.trim()) {
       setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
       const createdSite = await createAdminSite(token, {
         project_id: effectiveProjectId,
-        site_code: siteForm.site_code,
-        display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
         source_institution_id: siteForm.source_institution_id ?? null,
         research_registry_enabled: siteForm.research_registry_enabled,
@@ -367,14 +364,16 @@ export function useAdminWorkspaceManagementController({
   }
 
   async function handleUpdateSite() {
-    const normalizedDisplayName = siteForm.display_name.trim();
-    if (!editingSiteId || !siteForm.hospital_name.trim()) {
+    if (!editingSiteId) {
       setToast({ tone: "error", message: copy.siteNameRequired });
+      return;
+    }
+    if (!String(siteForm.source_institution_id ?? "").trim() || !siteForm.hospital_name.trim()) {
+      setToast({ tone: "error", message: copy.siteFieldsRequired });
       return;
     }
     try {
       const updatedSite = await updateAdminSite(editingSiteId, token, {
-        display_name: normalizedDisplayName,
         hospital_name: siteForm.hospital_name,
         source_institution_id: siteForm.source_institution_id ?? null,
         research_registry_enabled: siteForm.research_registry_enabled,
@@ -505,6 +504,21 @@ export function useAdminWorkspaceManagementController({
     }
   }
 
+  async function handleDeleteUser(userId: string, username: string) {
+    const confirmed = window.confirm(copy.deleteUserConfirm(username));
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteManagedUser(userId, token);
+      handleResetUserForm();
+      setManagedUsers((current) => current.filter((u) => u.user_id !== userId));
+      setToast({ tone: "success", message: copy.userDeleted(username) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableDeleteUser) });
+    }
+  }
+
   async function handleSaveSite() {
     if (editingSiteId) {
       await handleUpdateSite();
@@ -528,5 +542,6 @@ export function useAdminWorkspaceManagementController({
     handleRecoverSelectedSiteMetadata,
     handleResetUserForm,
     handleSaveUser,
+    handleDeleteUser,
   };
 }

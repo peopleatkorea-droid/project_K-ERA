@@ -164,6 +164,22 @@ describe("training desktop routing", () => {
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });
 
+  it("uses the desktop benchmark-clear command when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ site_id: "SITE_A", deleted_jobs: 3 });
+
+    const mod = await import("./training");
+    await mod.clearInitialTrainingBenchmarkHistory("SITE_A", "desktop-token");
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("clear_initial_training_benchmark_history", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
   it("uses the desktop embedding status and backfill commands when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValueOnce({ pending_case_count: 0 }).mockResolvedValueOnce({ job: { job_id: "job_2" } });

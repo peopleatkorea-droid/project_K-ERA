@@ -1,0 +1,66 @@
+[project]
+name = "kera-research"
+version = "0.1.0"
+description = "K-ERA research workflow platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2.0",
+    "plotly>=6.0.0",
+    "matplotlib>=3.10.0",
+    "numpy>=2.2.0",
+    "Pillow>=11.1.0",
+    "scikit-learn>=1.6.0",
+    "SQLAlchemy>=2.0.38",
+    "psycopg2-binary>=2.9.10",
+    "fastapi>=0.116.0",
+    "uvicorn>=0.35.0",
+    "python-multipart>=0.0.20",
+    "PyJWT>=2.10.1",
+    "cryptography>=44.0.0",
+    "bcrypt>=4.0.0",
+    "google-auth>=2.38.0",
+    "requests>=2.32.0",
+    "httpx>=0.28.0",
+    "transformers>=4.48.0",
+    "open_clip_torch>=2.30.0",
+    "faiss-cpu>=1.10.0",
+]
+
+[project.optional-dependencies]
+cpu = [
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+]
+gpu = [
+    "torch==2.10.0+cu128",
+    "torchvision==0.25.0+cu128",
+]
+dev = [
+    "pytest>=9.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kera_research"]
+
+# ---------------------------------------------------------------------------
+# uv 설정
+# ---------------------------------------------------------------------------
+
+# PyTorch CUDA 전용 인덱스 (gpu extra에서만 사용)
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# gpu extra 선택 시 torch/torchvision을 CUDA 인덱스에서 가져옴
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "extra == 'gpu'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "extra == 'gpu'" },
+]

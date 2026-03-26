@@ -508,6 +508,12 @@ class ResearchTrainingWorkflow:
         use_medsam_crops: bool = True,
         regenerate_split: bool = False,
         progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
     ) -> dict[str, Any]:
         service = self.service
         manifest_df = site_store.generate_manifest()
@@ -546,7 +552,9 @@ class ResearchTrainingWorkflow:
 
         emit_progress(stage="preparing_data", message="Preparing manifest and patient split.", percent=3)
 
-        saved_split = None if regenerate_split else site_store.load_patient_split() or None
+        # Initial training should always reflect the current dataset rather than a stale saved split.
+        effective_regenerate_split = True
+        saved_split = None if effective_regenerate_split else site_store.load_patient_split() or None
         created_versions: list[dict[str, Any]] = []
         component_results: list[dict[str, Any]] = []
         shared_patient_split: dict[str, Any] | None = saved_split
@@ -605,6 +613,12 @@ class ResearchTrainingWorkflow:
                 case_aggregation=normalized_case_aggregation,
                 training_input_policy=self._training_input_policy_for_crop_mode(component_crop_mode),
                 progress_callback=component_progress_callback,
+                fine_tuning_mode=fine_tuning_mode,
+                backbone_learning_rate=backbone_learning_rate,
+                head_learning_rate=head_learning_rate,
+                warmup_epochs=warmup_epochs,
+                early_stop_patience=early_stop_patience,
+                partial_unfreeze_blocks=partial_unfreeze_blocks,
             )
             patient_split = {**result["patient_split"], "site_id": site_store.site_id}
             shared_patient_split = patient_split
@@ -690,8 +704,14 @@ class ResearchTrainingWorkflow:
                     "pretraining_source": normalized_pretraining_source,
                     "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
                     "case_aggregation": normalized_case_aggregation,
-                    "regenerate_split": bool(regenerate_split),
+                    "regenerate_split": bool(effective_regenerate_split),
                     "seed": 42,
+                    "fine_tuning_mode": str(fine_tuning_mode or "full"),
+                    "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
+                    "head_learning_rate": float(head_learning_rate) if head_learning_rate is not None else None,
+                    "warmup_epochs": int(max(0, warmup_epochs)),
+                    "early_stop_patience": int(early_stop_patience) if early_stop_patience is not None else None,
+                    "partial_unfreeze_blocks": int(max(1, partial_unfreeze_blocks)),
                 },
                 metrics={
                     "best_val_acc": component_results[0].get("best_val_acc"),
@@ -820,7 +840,7 @@ class ResearchTrainingWorkflow:
                 "pretraining_source": normalized_pretraining_source,
                 "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
                 "case_aggregation": normalized_case_aggregation,
-                "regenerate_split": bool(regenerate_split),
+                "regenerate_split": bool(effective_regenerate_split),
                 "seed": 42,
             },
             metrics={
@@ -835,6 +855,201 @@ class ResearchTrainingWorkflow:
         )
         experiment_result["experiment"] = experiment
         return experiment_result
+
+    def run_full_dataset_refit(
+        self,
+        site_store: SiteStore,
+        architecture: str,
+        output_model_path: str,
+        execution_device: str,
+        crop_mode: str = "automated",
+        epochs: int = 30,
+        learning_rate: float = 1e-4,
+        batch_size: int = 16,
+        use_pretrained: bool = True,
+        pretraining_source: str | None = None,
+        ssl_checkpoint_path: str | None = None,
+        case_aggregation: str = "mean",
+        use_medsam_crops: bool = True,
+        progress_callback: Any = None,
+        fine_tuning_mode: str = "full",
+        backbone_learning_rate: float | None = None,
+        head_learning_rate: float | None = None,
+        warmup_epochs: int = 0,
+        early_stop_patience: int | None = None,
+        partial_unfreeze_blocks: int = 1,
+    ) -> dict[str, Any]:
+        service = self.service
+        manifest_df = site_store.generate_manifest()
+        if manifest_df.empty:
+            raise ValueError("학습 데이터가 없습니다. 먼저 이미지를 등록하세요.")
+        if not use_medsam_crops:
+            raise ValueError("Full-dataset refit is MedSAM crop-based.")
+        normalized_crop_mode = service._normalize_crop_mode(crop_mode)
+        self._validate_architecture_crop_mode(architecture, normalized_crop_mode)
+        normalized_case_aggregation = service.model_manager.normalize_case_aggregation(case_aggregation, architecture)
+        normalized_pretraining_source = service.model_manager.normalize_training_pretraining_source(
+            pretraining_source,
+            use_pretrained=use_pretrained,
+        )
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                    "crop_mode": normalized_crop_mode,
+                    "case_aggregation": normalized_case_aggregation,
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "train_loss": payload.get("train_loss"),
+                    "val_acc": payload.get("val_acc"),
+                }
+            )
+
+        emit_progress(stage="preparing_refit", message="Preparing full-dataset refit records.", percent=5)
+        records = service._prepare_records_for_model(
+            site_store,
+            manifest_df.to_dict("records"),
+            crop_mode=normalized_crop_mode,
+        )
+        if not records:
+            raise ValueError("No records are available for the requested full-dataset refit.")
+
+        def refit_progress_callback(epoch: int, total_epochs: int, train_loss: float, val_acc: float | None) -> None:
+            progress_ratio = epoch / max(1, total_epochs)
+            percent = 10 + int(80 * progress_ratio)
+            emit_progress(
+                stage="training_refit",
+                message="Training final model on all available cases.",
+                percent=percent,
+                epoch=epoch,
+                epochs=total_epochs,
+                train_loss=round(float(train_loss), 4),
+                val_acc=round(float(val_acc), 4) if val_acc is not None else None,
+            )
+
+        result = service.model_manager.refit_all_cases(
+            records=records,
+            architecture=architecture,
+            output_model_path=output_model_path,
+            device=execution_device,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            use_pretrained=use_pretrained,
+            pretraining_source=normalized_pretraining_source,
+            ssl_checkpoint_path=ssl_checkpoint_path,
+            crop_mode=normalized_crop_mode,
+            case_aggregation=normalized_case_aggregation,
+            training_input_policy=self._training_input_policy_for_crop_mode(normalized_crop_mode),
+            progress_callback=refit_progress_callback,
+            fine_tuning_mode=fine_tuning_mode,
+            backbone_learning_rate=backbone_learning_rate,
+            head_learning_rate=head_learning_rate,
+            warmup_epochs=warmup_epochs,
+            early_stop_patience=early_stop_patience,
+            partial_unfreeze_blocks=partial_unfreeze_blocks,
+        )
+        patient_ids = list(dict.fromkeys(str(record["patient_id"]) for record in records))
+        refit_scope = {
+            "split_id": make_id("split"),
+            "strategy": "patient_level_full_dataset_refit",
+            "site_id": site_store.site_id,
+            "patient_ids": patient_ids,
+            "n_train_patients": len(patient_ids),
+            "n_train": len(records),
+            "created_at": utc_now(),
+        }
+        version_name = f"global-{architecture}-{normalized_crop_mode}-refitall-v{make_id('refit')[:6]}"
+        new_version = {
+            "version_id": make_id("model"),
+            "version_name": version_name,
+            "model_name": "keratitis_cls",
+            "architecture": architecture,
+            "stage": "global",
+            "base_version_id": None,
+            "model_path": output_model_path,
+            "filename": Path(output_model_path).name,
+            "requires_medsam_crop": use_medsam_crops,
+            "crop_mode": normalized_crop_mode,
+            "case_aggregation": result.get("case_aggregation", normalized_case_aggregation),
+            "bag_level": bool(result.get("bag_level", False)),
+            "training_input_policy": self._training_input_policy_for_crop_mode(normalized_crop_mode),
+            "preprocess_signature": service.model_manager.preprocess_signature(),
+            "num_classes": len(LABEL_TO_INDEX),
+            "decision_threshold": result.get("decision_threshold", 0.5),
+            "threshold_selection_metric": result.get("threshold_selection_metric", "default"),
+            "threshold_selection_metrics": result.get("threshold_selection_metrics"),
+            "created_at": utc_now(),
+            "publish_required": False,
+            "is_current": False,
+            "notes": (
+                f"Full-dataset refit on all available cases with {self._crop_mode_description(normalized_crop_mode)} "
+                f"using {result.get('case_aggregation', normalized_case_aggregation)} aggregation: "
+                f"{len(patient_ids)} patients / {len(records)} records, best train_loss={float(result.get('best_train_loss') or 0.0):.4f}. "
+                "This model was trained after winner selection and does not include a holdout evaluation split."
+            ),
+            "notes_ko": (
+                f"{self._crop_mode_description(normalized_crop_mode)} 기반 "
+                f"{result.get('case_aggregation', normalized_case_aggregation)} 집계로 전체 데이터 refit: "
+                f"{len(patient_ids)}명 / {len(records)} records, best train_loss={float(result.get('best_train_loss') or 0.0):.4f}. "
+                "winner 선정 후 전체 데이터로 다시 학습한 모델이며, 별도 holdout 평가는 포함하지 않습니다."
+            ),
+            "notes_en": (
+                f"Full-dataset refit on all available cases with {self._crop_mode_description(normalized_crop_mode)} "
+                f"using {result.get('case_aggregation', normalized_case_aggregation)} aggregation: "
+                f"{len(patient_ids)} patients / {len(records)} records, best train_loss={float(result.get('best_train_loss') or 0.0):.4f}. "
+                "This model was trained after winner selection and does not include a holdout evaluation split."
+            ),
+            "ready": True,
+        }
+        model_version = service.control_plane.ensure_model_version(new_version)
+        result["model_version"] = model_version
+        result["version_name"] = version_name
+        result["patient_split"] = refit_scope
+        experiment = service._register_experiment(
+            site_store,
+            experiment_type="final_refit",
+            status="completed",
+            created_at=utc_now(),
+            execution_device=execution_device,
+            manifest_df=manifest_df,
+            parameters={
+                "architecture": architecture,
+                "crop_mode": normalized_crop_mode,
+                "epochs": int(epochs),
+                "learning_rate": float(learning_rate),
+                "batch_size": int(batch_size),
+                "use_pretrained": bool(normalized_pretraining_source != "scratch"),
+                "pretraining_source": normalized_pretraining_source,
+                "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
+                "case_aggregation": normalized_case_aggregation,
+                "seed": 42,
+                "full_dataset_refit": True,
+                "fine_tuning_mode": str(fine_tuning_mode or "full"),
+                "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
+                "head_learning_rate": float(head_learning_rate) if head_learning_rate is not None else None,
+                "warmup_epochs": int(max(0, warmup_epochs)),
+                "early_stop_patience": int(early_stop_patience) if early_stop_patience is not None else None,
+                "partial_unfreeze_blocks": int(max(1, partial_unfreeze_blocks)),
+            },
+            metrics={
+                "best_train_loss": result.get("best_train_loss"),
+                "epochs_completed": result.get("epochs_completed"),
+                "stopped_early": result.get("stopped_early"),
+                "decision_threshold": result.get("decision_threshold", 0.5),
+            },
+            report_payload=result,
+            model_version=model_version,
+            patient_split=refit_scope,
+        )
+        result["experiment"] = experiment
+        emit_progress(stage="completed", message="Full-dataset refit completed.", percent=100)
+        return result
 
     def run_cross_validation(
         self,

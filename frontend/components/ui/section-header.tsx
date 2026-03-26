@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import { cn } from "../../lib/cn";
 
-type HeadingTag = "h2" | "h3" | "h4";
+type HeadingTag = "h2" | "h3" | "h4" | "h5";
 
 export type SectionHeaderProps = {
   className?: string;

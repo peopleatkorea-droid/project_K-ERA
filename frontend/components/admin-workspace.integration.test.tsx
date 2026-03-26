@@ -495,7 +495,6 @@ describe("AdminWorkspace integration", () => {
     });
 
     fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
-    fireEvent.change(screen.getByPlaceholderText("e.g. JNUH"), { target: { value: "JNUH" } });
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
     await waitFor(() => {
@@ -503,8 +502,6 @@ describe("AdminWorkspace integration", () => {
         "test-token",
         expect.objectContaining({
           project_id: "project_default",
-          site_code: "39100103",
-          display_name: "JNUH",
           hospital_name: "제주대학교병원",
           source_institution_id: "39100103",
           research_registry_enabled: true,
@@ -703,7 +700,6 @@ describe("AdminWorkspace integration", () => {
       expect(hiraSearch).toHaveValue("");
     });
     expect(screen.queryByRole("button", { name: "Select this hospital" })).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText("e.g. JNUH")).toHaveValue("");
     expect(screen.getAllByText("제주대학교병원").length).toBeGreaterThan(0);
     expect(screen.getByText(/제주대학교병원 - HIRA 39100103 - Jeju Special Self-Governing Province/i)).toBeInTheDocument();
     expect(screen.getByText(/Linked HIRA institution/i)).toBeInTheDocument();
@@ -711,15 +707,100 @@ describe("AdminWorkspace integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
 
     await waitFor(() => {
-        expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
+      expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
         "test-token",
         expect.objectContaining({
           project_id: "project_default",
-          site_code: "39100103",
-          display_name: "",
           hospital_name: "제주대학교병원",
           source_institution_id: "39100103",
           research_registry_enabled: true,
+        }),
+      );
+    });
+  });
+
+  it("falls back to the institution id when a HIRA search result has no 8-digit site code", async () => {
+    const opaqueInstitutionId = "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz";
+    apiMocks.searchPublicInstitutions.mockResolvedValue([
+      {
+        institution_id: opaqueInstitutionId,
+        source: "hira",
+        name: "제주대학교병원",
+        institution_type_code: "11",
+        institution_type_name: "Tertiary hospital",
+        address: "Jeju Special Self-Governing Province",
+        phone: "064-000-0000",
+        homepage: "",
+        sido_code: "50",
+        sggu_code: "500",
+        emdong_name: "",
+        postal_code: "",
+        x_pos: "",
+        y_pos: "",
+        ophthalmology_available: true,
+        open_status: "active",
+        synced_at: "2026-03-17T00:00:00Z",
+      },
+    ]);
+
+    render(
+      <LocaleProvider>
+        <AdminWorkspace
+          token="test-token"
+          user={{
+            user_id: "user_admin",
+            username: "admin",
+            full_name: "Admin User",
+            role: "admin",
+            site_ids: ["SITE_A"],
+            approval_status: "approved",
+          }}
+          sites={[
+            {
+              site_id: "SITE_A",
+              display_name: "Site A",
+              hospital_name: "Hospital A",
+            },
+          ]}
+          selectedSiteId="SITE_A"
+          summary={{
+            site_id: "SITE_A",
+            n_patients: 0,
+            n_visits: 0,
+            n_images: 0,
+            n_active_visits: 0,
+            n_validation_runs: 0,
+            latest_validation: null,
+          }}
+          theme="light"
+          initialSection="management"
+          onSelectSite={vi.fn()}
+          onOpenCanvas={vi.fn()}
+          onLogout={vi.fn()}
+          onRefreshSites={vi.fn(async () => undefined)}
+          onSiteDataChanged={vi.fn(async () => undefined)}
+          onToggleTheme={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    const hiraSearch = await screen.findByPlaceholderText("Jeju, Seoul, Kim's Eye...");
+    fireEvent.change(hiraSearch, { target: { value: "Jeju" } });
+
+    await waitFor(() => {
+      expect(apiMocks.searchPublicInstitutions).toHaveBeenCalledWith("Jeju", { limit: 8 });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select this hospital" }));
+    fireEvent.click(screen.getByRole("button", { name: "Register hospital" }));
+
+    await waitFor(() => {
+      expect(apiMocks.createAdminSite).toHaveBeenCalledWith(
+        "test-token",
+        expect.objectContaining({
+          project_id: "project_default",
+          hospital_name: "제주대학교병원",
+          source_institution_id: opaqueInstitutionId,
         }),
       );
     });
@@ -835,8 +916,6 @@ describe("AdminWorkspace integration", () => {
     );
 
     expect(await screen.findByText("39100103")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("JNUH"));
-    expect(await screen.findByText(/HIRA 39100103/)).toBeInTheDocument();
     expect(screen.queryByText("JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz")).not.toBeInTheDocument();
   });
 
