@@ -18,6 +18,24 @@ fn terminate_orphan_local_worker_processes(backend: &DesktopBackendTarget) -> Re
     terminate_windows_processes_matching_all_fragments(&orphan_local_worker_process_fragments(backend))
 }
 
+fn worker_launch_command(python_path: &str, worker_module: &str) -> Vec<String> {
+    vec![
+        python_path.to_string(),
+        "-m".to_string(),
+        worker_module.to_string(),
+        "--poll-interval".to_string(),
+        "2.0".to_string(),
+    ]
+}
+
+fn adopted_local_worker_log_paths() -> Result<(String, String), String> {
+    let (stdout_log_path, stderr_log_path) = local_worker_log_paths()?;
+    Ok((
+        stdout_log_path.to_string_lossy().to_string(),
+        stderr_log_path.to_string_lossy().to_string(),
+    ))
+}
+
 fn spawn_local_worker_process() -> Result<SpawnedLocalWorker, String> {
     let values = resolved_env_values();
     let backend = resolve_desktop_backend_target(&values)?;
@@ -51,13 +69,7 @@ fn spawn_local_worker_process() -> Result<SpawnedLocalWorker, String> {
             .open(&stderr_log_path)
             .map_err(|error| error.to_string())?;
 
-        let launch_command = vec![
-            python_path.clone(),
-            "-m".to_string(),
-            backend.worker_module.clone(),
-            "--poll-interval".to_string(),
-            "2.0".to_string(),
-        ];
+        let launch_command = worker_launch_command(&python_path, &backend.worker_module);
 
         let mut command = Command::new(&python_path);
         command
@@ -95,9 +107,14 @@ fn spawn_local_worker_process() -> Result<SpawnedLocalWorker, String> {
     ))
 }
 
+fn local_worker_runtime_pid(runtime: &LocalWorkerRuntime) -> Option<u32> {
+    runtime.child.as_ref().map(Child::id).or(runtime.managed_pid)
+}
+
 fn sync_local_worker_runtime(runtime: &mut LocalWorkerRuntime) {
     let mut cleared_error: Option<String> = None;
     if let Some(child) = runtime.child.as_mut() {
+        runtime.managed_pid = Some(child.id());
         match child.try_wait() {
             Ok(Some(status)) => {
                 cleared_error = Some(format!(
@@ -111,10 +128,23 @@ fn sync_local_worker_runtime(runtime: &mut LocalWorkerRuntime) {
                 ));
             }
         }
+    } else if let Some(pid) = runtime.managed_pid {
+        match managed_process_pid_is_running(pid) {
+            Ok(true) => {}
+            Ok(false) => {
+                cleared_error = Some("Desktop-managed local worker is no longer running.".to_string());
+            }
+            Err(error) => {
+                cleared_error = Some(format!(
+                    "Failed to inspect desktop-managed local worker: {error}"
+                ));
+            }
+        }
     }
     if let Some(error) = cleared_error {
-        let pid = runtime.child.as_ref().map(Child::id);
+        let pid = local_worker_runtime_pid(runtime);
         runtime.child = None;
+        runtime.managed_pid = None;
         let _ = unregister_managed_process(pid);
         runtime.python_preflight = None;
         runtime.launched_by_desktop = false;
@@ -131,9 +161,9 @@ fn local_worker_status_snapshot(runtime: &LocalWorkerRuntime) -> LocalWorkerStat
             "external".to_string()
         },
         managed,
-        running: runtime.child.is_some(),
+        running: local_worker_runtime_pid(runtime).is_some(),
         launched_by_desktop: runtime.launched_by_desktop,
-        pid: runtime.child.as_ref().map(Child::id),
+        pid: local_worker_runtime_pid(runtime),
         python_path: runtime.python_path.clone(),
         python_preflight: runtime.python_preflight.clone(),
         launch_command: runtime.launch_command.clone(),
@@ -159,11 +189,44 @@ pub(super) fn ensure_local_worker_ready_internal() -> Result<LocalWorkerStatus, 
     let python_preflight = ensure_desktop_runtime_readiness_for_backend()?;
     let values = resolved_env_values();
     let backend = resolve_desktop_backend_target(&values)?;
+    let worker_fragments = orphan_local_worker_process_fragments(&backend);
     let mut runtime = local_worker_state()
         .lock()
         .map_err(|_| "Failed to access desktop local worker state.".to_string())?;
     sync_local_worker_runtime(&mut runtime);
-    if runtime.child.is_none() {
+    if local_worker_runtime_pid(&runtime).is_none() {
+        if let Some(reconnected) = reconnect_registered_managed_process("worker", &worker_fragments)? {
+            let adopted_python_path = reconnected
+                .python_path
+                .clone()
+                .unwrap_or_else(|| python_preflight.candidate_path.clone());
+            runtime.managed_pid = Some(reconnected.pid);
+            runtime.python_path = Some(adopted_python_path.clone());
+            runtime.python_preflight = Some(python_preflight.clone());
+            runtime.launch_command = Some(worker_launch_command(&adopted_python_path, &backend.worker_module));
+            if let Ok((stdout_log_path, stderr_log_path)) = adopted_local_worker_log_paths() {
+                runtime.stdout_log_path = Some(stdout_log_path);
+                runtime.stderr_log_path = Some(stderr_log_path);
+            }
+            runtime.last_started_at = reconnected.recorded_at;
+            runtime.last_error = None;
+            runtime.launched_by_desktop = true;
+            return Ok(local_worker_status_snapshot(&runtime));
+        }
+        if let Some(pid) = find_running_process_pid_matching_all_fragments(&worker_fragments)? {
+            let adopted_python_path = python_preflight.candidate_path.clone();
+            runtime.managed_pid = Some(pid);
+            runtime.python_path = Some(adopted_python_path.clone());
+            runtime.python_preflight = Some(python_preflight.clone());
+            runtime.launch_command = Some(worker_launch_command(&adopted_python_path, &backend.worker_module));
+            if let Ok((stdout_log_path, stderr_log_path)) = adopted_local_worker_log_paths() {
+                runtime.stdout_log_path = Some(stdout_log_path);
+                runtime.stderr_log_path = Some(stderr_log_path);
+            }
+            runtime.last_error = None;
+            runtime.launched_by_desktop = false;
+            return Ok(local_worker_status_snapshot(&runtime));
+        }
         let mut terminated = cleanup_registered_managed_processes("worker")?;
         terminated.extend(terminate_orphan_local_worker_processes(&backend)?);
         if !terminated.is_empty() {
@@ -174,6 +237,7 @@ pub(super) fn ensure_local_worker_ready_internal() -> Result<LocalWorkerStatus, 
         }
         let spawned = spawn_local_worker_process()?;
         runtime.child = Some(spawned.child);
+        runtime.managed_pid = runtime.child.as_ref().map(Child::id);
         runtime.python_path = Some(spawned.python_path);
         runtime.python_preflight = Some(spawned.python_preflight);
         runtime.launch_command = Some(spawned.launch_command);
@@ -199,7 +263,11 @@ pub(super) fn stop_local_worker_internal() -> Result<LocalWorkerStatus, String> 
         let _ = unregister_managed_process(Some(child.id()));
         let _ = child.kill();
         let _ = child.wait();
+    } else if let Some(pid) = runtime.managed_pid {
+        let _ = unregister_managed_process(Some(pid));
+        let _ = terminate_windows_process(pid);
     }
+    runtime.managed_pid = None;
     runtime.launched_by_desktop = false;
     runtime.python_preflight = None;
     let _ = cleanup_registered_managed_processes("worker");

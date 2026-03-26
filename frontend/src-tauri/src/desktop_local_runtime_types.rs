@@ -11,6 +11,7 @@ pub(super) struct DesktopPythonRuntimePreflight {
 
 pub(super) struct LocalBackendRuntime {
     child: Option<Child>,
+    managed_pid: Option<u32>,
     python_path: Option<String>,
     python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
@@ -23,6 +24,7 @@ pub(super) struct LocalBackendRuntime {
 
 pub(super) struct LocalWorkerRuntime {
     child: Option<Child>,
+    managed_pid: Option<u32>,
     python_path: Option<String>,
     python_preflight: Option<DesktopPythonRuntimePreflight>,
     launch_command: Option<Vec<String>>,
@@ -37,6 +39,7 @@ impl Default for LocalBackendRuntime {
     fn default() -> Self {
         Self {
             child: None,
+            managed_pid: None,
             python_path: None,
             python_preflight: None,
             launch_command: None,
@@ -62,6 +65,7 @@ impl Default for LocalWorkerRuntime {
     fn default() -> Self {
         Self {
             child: None,
+            managed_pid: None,
             python_path: None,
             python_preflight: None,
             launch_command: None,

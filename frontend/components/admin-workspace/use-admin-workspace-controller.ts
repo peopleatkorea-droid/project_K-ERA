@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { pick, translateApiError } from "../../lib/i18n";
+import { messageFromUnknownError } from "../../lib/error-message";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../../lib/site-labels";
 import {
   cancelSiteJob,
@@ -368,8 +369,10 @@ export function useAdminWorkspaceController({
   const accessRequestNotificationBusyRef = useRef(false);
   const autoPublishEnabled = Boolean(overview?.federation_setup?.onedrive_auto_publish_enabled);
   const describeError = useCallback(
-    (nextError: unknown, fallback: string) =>
-      nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback,
+    (nextError: unknown, fallback: string) => {
+      const message = messageFromUnknownError(nextError);
+      return message ? translateApiError(locale, message) : fallback;
+    },
     [locale],
   );
   const selectedSiteLabel = selectedSiteId ? getSiteDisplayName(selectedManagedSite, selectedSiteId) : "";

@@ -15,6 +15,24 @@ enum WindowsProcessSnapshotResponse {
     Many(Vec<WindowsProcessSnapshot>),
 }
 
+fn normalized_fragments(fragments: &[String]) -> Vec<String> {
+    fragments
+        .iter()
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+}
+
+fn command_line_matches_all_fragments(command_line: &str, fragments: &[String]) -> bool {
+    if fragments.is_empty() {
+        return false;
+    }
+    let normalized_command_line = command_line.to_ascii_lowercase();
+    fragments
+        .iter()
+        .all(|fragment| normalized_command_line.contains(fragment))
+}
+
 #[cfg(windows)]
 fn list_windows_process_snapshots() -> Result<Vec<WindowsProcessSnapshot>, String> {
     let output = Command::new("powershell")
@@ -63,14 +81,7 @@ fn terminate_windows_process(_pid: u32) -> Result<(), String> {
 
 #[cfg(windows)]
 fn terminate_windows_processes_matching_all_fragments(fragments: &[String]) -> Result<Vec<u32>, String> {
-    if fragments.is_empty() {
-        return Ok(Vec::new());
-    }
-    let normalized_fragments = fragments
-        .iter()
-        .map(|item| item.trim().to_ascii_lowercase())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
+    let normalized_fragments = normalized_fragments(fragments);
     if normalized_fragments.is_empty() {
         return Ok(Vec::new());
     }
@@ -107,6 +118,12 @@ struct ManagedProcessRegistryEntry {
     storage_dir: String,
     python_path: Option<String>,
     recorded_at: String,
+}
+
+pub(super) struct ReconnectedManagedProcess {
+    pid: u32,
+    python_path: Option<String>,
+    recorded_at: Option<String>,
 }
 
 struct ManagedProcessCleanupContext {
@@ -222,4 +239,93 @@ pub(super) fn cleanup_registered_managed_processes(role: &str) -> Result<Vec<u32
 
     save_managed_process_registry(&retained)?;
     Ok(terminated)
+}
+
+#[cfg(windows)]
+pub(super) fn reconnect_registered_managed_process(
+    role: &str,
+    fragments: &[String],
+) -> Result<Option<ReconnectedManagedProcess>, String> {
+    let context = current_managed_process_cleanup_context()?;
+    let normalized_fragments = normalized_fragments(fragments);
+    if normalized_fragments.is_empty() {
+        return Ok(None);
+    }
+
+    let process_by_pid = list_windows_process_snapshots()?
+        .into_iter()
+        .map(|snapshot| (snapshot.process_id, snapshot))
+        .collect::<HashMap<_, _>>();
+    let mut entries = load_managed_process_registry()?;
+    let mut retained = Vec::new();
+    let mut adopted: Option<ReconnectedManagedProcess> = None;
+    let mut changed = false;
+
+    for entry in entries.drain(..) {
+        if !should_cleanup_registered_process(&entry, role, &context) {
+            retained.push(entry);
+            continue;
+        }
+        let Some(snapshot) = process_by_pid.get(&entry.pid) else {
+            changed = true;
+            continue;
+        };
+        if command_line_matches_all_fragments(&snapshot.command_line, &normalized_fragments) {
+            adopted = Some(ReconnectedManagedProcess {
+                pid: entry.pid,
+                python_path: entry.python_path.clone(),
+                recorded_at: Some(entry.recorded_at.clone()),
+            });
+        }
+        retained.push(entry);
+    }
+
+    if changed {
+        save_managed_process_registry(&retained)?;
+    }
+    Ok(adopted)
+}
+
+#[cfg(not(windows))]
+pub(super) fn reconnect_registered_managed_process(
+    _role: &str,
+    _fragments: &[String],
+) -> Result<Option<ReconnectedManagedProcess>, String> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+pub(super) fn find_running_process_pid_matching_all_fragments(
+    fragments: &[String],
+) -> Result<Option<u32>, String> {
+    let normalized_fragments = normalized_fragments(fragments);
+    if normalized_fragments.is_empty() {
+        return Ok(None);
+    }
+    let mut matching = list_windows_process_snapshots()?
+        .into_iter()
+        .filter(|snapshot| command_line_matches_all_fragments(&snapshot.command_line, &normalized_fragments))
+        .map(|snapshot| snapshot.process_id)
+        .collect::<Vec<_>>();
+    matching.sort_unstable();
+    Ok(matching.pop())
+}
+
+#[cfg(not(windows))]
+pub(super) fn find_running_process_pid_matching_all_fragments(
+    _fragments: &[String],
+) -> Result<Option<u32>, String> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+pub(super) fn managed_process_pid_is_running(pid: u32) -> Result<bool, String> {
+    Ok(list_windows_process_snapshots()?
+        .into_iter()
+        .any(|snapshot| snapshot.process_id == pid))
+}
+
+#[cfg(not(windows))]
+pub(super) fn managed_process_pid_is_running(_pid: u32) -> Result<bool, String> {
+    Ok(false)
 }
