@@ -39,6 +39,7 @@ from kera_research.api.site_jobs import (
     start_cross_validation,
     start_initial_training,
     start_initial_training_benchmark,
+    start_retrieval_baseline,
     start_site_validation,
     start_ssl_pretraining,
 )
@@ -969,6 +970,31 @@ def _resume_initial_training_benchmark(params: dict[str, Any]) -> dict[str, Any]
     )
 
 
+def _run_retrieval_baseline(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    execution_device = resolve_execution_device_or_raise(
+        resolve_execution_device=_resolve_execution_device,
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        unavailable_label="Retrieval baseline",
+    )
+    payload = SimpleNamespace(
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        crop_mode=str(params.get("crop_mode") or "automated"),
+        top_k=int(params.get("top_k") or 10),
+    )
+    return start_retrieval_baseline(
+        site_store,
+        site_id=site_id,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=_queue_name_for_job_type,
+    )
+
+
 def _cancel_site_job(params: dict[str, Any]) -> dict[str, Any]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -1174,6 +1200,7 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "run_site_validation": _run_site_validation,
     "run_initial_training": _run_initial_training,
     "run_initial_training_benchmark": _run_initial_training_benchmark,
+    "run_retrieval_baseline": _run_retrieval_baseline,
     "resume_initial_training_benchmark": _resume_initial_training_benchmark,
     "cancel_site_job": _cancel_site_job,
     "clear_initial_training_benchmark_history": _clear_initial_training_benchmark_history,

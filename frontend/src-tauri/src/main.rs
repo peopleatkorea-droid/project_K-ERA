@@ -160,6 +160,7 @@ fn main() {
             fetch_cross_validation_reports,
             run_cross_validation,
             run_ssl_pretraining,
+            run_retrieval_baseline,
             fetch_ai_clinic_embedding_status,
             backfill_ai_clinic_embeddings,
             list_cases,

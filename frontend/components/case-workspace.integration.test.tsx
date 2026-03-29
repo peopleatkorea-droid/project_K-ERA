@@ -1067,7 +1067,7 @@ describe("CaseWorkspace integration", () => {
     }
 
     expect(
-      within(hospitalSection).getByText("Latest autosave"),
+      await within(hospitalSection).findByText("Latest autosave"),
     ).toBeInTheDocument();
 
     fireEvent.click(
@@ -2303,7 +2303,9 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
     await openSavedCase();
 
-    expect(await screen.findByText("FU #1")).toBeInTheDocument();
+    expect(
+      await screen.findByText((content) => content.includes("FU #1")),
+    ).toBeInTheDocument();
     expect(
       screen.getByText("Open this visit to load saved images."),
     ).toBeInTheDocument();
@@ -2462,7 +2464,7 @@ describe("CaseWorkspace integration", () => {
       );
     });
     await waitFor(() => {
-      expect(apiMocks.fetchCases).toHaveBeenCalledTimes(2);
+      expect(apiMocks.fetchCases).toHaveBeenCalledTimes(3);
     });
     expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
 

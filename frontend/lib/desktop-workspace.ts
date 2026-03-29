@@ -69,7 +69,7 @@ export function clearDesktopWorkspaceCaches() {
 export async function fetchDesktopCases(
   siteId: string,
   token: string,
-  options: { mine?: boolean; signal?: AbortSignal } = {},
+  options: { mine?: boolean; patientId?: string; signal?: AbortSignal } = {},
 ) {
   return invokeDesktop<CaseSummaryRecord[]>(
     "list_cases",
@@ -77,6 +77,7 @@ export async function fetchDesktopCases(
       payload: {
         site_id: siteId,
         created_by_user_id: options.mine ? readUserIdFromToken(token) : null,
+        patient_id: options.patientId?.trim() || null,
       },
     },
     options.signal,

@@ -47,6 +47,7 @@ import {
 } from "../lib/desktop-control-plane-status";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
 import { prewarmDesktopWorker } from "../lib/desktop-runtime-prewarm";
+import { isTokenExpired, readTokenExpiresAt } from "../lib/token-payload";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import { DesktopLandingScreen } from "./desktop-landing";
 
@@ -86,6 +87,7 @@ function DesktopShellApp() {
   const [configBusy, setConfigBusy] = useState(false);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeReadyCycle, setRuntimeReadyCycle] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [controlPlaneStatus, setControlPlaneStatus] = useState<DesktopControlPlaneProbe | null>(null);
   const [controlPlaneStatusBusy, setControlPlaneStatusBusy] = useState(false);
@@ -94,6 +96,7 @@ function DesktopShellApp() {
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
     runtimeFailed: pick(locale, "The desktop app could not start its local services.", "데스크톱 앱의 로컬 서비스를 시작하지 못했습니다."),
     sessionBusy: pick(locale, "Opening saved session...", "저장된 세션을 여는 중..."),
+    sessionExpired: pick(locale, "Your session expired. Sign in again.", "세션이 만료되었습니다. 다시 로그인해 주세요."),
     sessionBlocked: pick(
       locale,
       "This desktop app opens only approved local workspace accounts. Use the web admin app for access requests and central operations.",
@@ -182,7 +185,33 @@ function DesktopShellApp() {
     return fallback;
   }
 
-  async function loadDesktopRuntime(autoStart: boolean) {
+  function resetSession(nextError: string | null = null) {
+    clearDesktopSession();
+    void clearDesktopSessionCache();
+    setToken(null);
+    setUser(null);
+    setSites([]);
+    setSelectedSiteId(null);
+    setSummary(null);
+    setWorkspaceMode("canvas");
+    setOperationsSection("management");
+    setWorkspaceSettingsOpen(false);
+    setAdminLoginOpen(false);
+    setAdminForm({ username: "", password: "" });
+    setError(nextError);
+  }
+
+  function isSessionAuthFailure(nextError: unknown): boolean {
+    const detail = describeError(nextError, "").toLowerCase();
+    return (
+      detail.includes("invalid token") ||
+      detail.includes("authentication required") ||
+      detail.includes("missing bearer token") ||
+      detail.includes("expired")
+    );
+  }
+
+  async function loadDesktopRuntime(autoStart: boolean, options: { throwOnError?: boolean } = {}) {
     setRuntimeBusy(true);
     setRuntimeError(null);
     try {
@@ -191,9 +220,14 @@ function DesktopShellApp() {
       setConfigForm(nextConfig.values);
       if (autoStart && nextConfig.setup_ready) {
         await ensureDesktopLocalBackendReady();
+        setRuntimeReadyCycle((current) => current + 1);
       }
     } catch (nextError) {
-      setRuntimeError(describeError(nextError, copy.runtimeFailed));
+      const message = describeError(nextError, copy.runtimeFailed);
+      setRuntimeError(message);
+      if (options.throwOnError) {
+        throw nextError instanceof Error ? nextError : new Error(message);
+      }
     } finally {
       setRuntimeBusy(false);
     }
@@ -215,13 +249,7 @@ function DesktopShellApp() {
         prewarmPatientListPage(preferredSiteId, currentToken, { page_size: 25 });
       }
     } catch (nextError) {
-      clearDesktopSession();
-      setToken(null);
-      setUser(null);
-      setSites([]);
-      setSelectedSiteId(null);
-      setSummary(null);
-      setError(describeError(nextError, copy.loginFailed));
+      resetSession(describeError(nextError, copy.loginFailed));
     } finally {
       setBootstrapBusy(false);
     }
@@ -229,6 +257,11 @@ function DesktopShellApp() {
 
   useEffect(() => {
     void loadDesktopSessionCache().then((cached) => {
+      if (cached?.token && isTokenExpired(cached.token)) {
+        resetSession(copy.sessionExpired);
+        void loadDesktopRuntime(false);
+        return;
+      }
       if (cached?.token && cached.user && cached.sites.length > 0) {
         const preferredSiteId = cached.sites[0]?.site_id ?? null;
         setToken(cached.token);
@@ -247,20 +280,51 @@ function DesktopShellApp() {
               setSites(nextSites);
               void saveDesktopSessionCache({ token: cached.token, user: nextUser, sites: nextSites });
             })
-            .catch(() => undefined);
+            .catch((nextError) => {
+              if (isSessionAuthFailure(nextError)) {
+                resetSession(copy.sessionExpired);
+              }
+            });
         });
         return;
       }
 
       const stored = window.localStorage.getItem(DESKTOP_TOKEN_KEY);
       if (stored) {
+        if (isTokenExpired(stored)) {
+          resetSession(copy.sessionExpired);
+          void loadDesktopRuntime(false);
+          return;
+        }
         setToken(stored);
         void loadDesktopRuntime(true);
       } else {
         void loadDesktopRuntime(false);
       }
     });
-  }, []);
+  }, [copy.sessionExpired]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    if (isTokenExpired(token)) {
+      resetSession(copy.sessionExpired);
+      return;
+    }
+    const expiresAt = readTokenExpiresAt(token);
+    if (!expiresAt) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      if (isTokenExpired(token)) {
+        resetSession(copy.sessionExpired);
+      }
+    }, Math.max(expiresAt - Date.now() - 30_000, 0));
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [copy.sessionExpired, token]);
 
   useEffect(() => {
     if (!token || user) {
@@ -309,6 +373,9 @@ function DesktopShellApp() {
       setSummary(null);
       return;
     }
+    if (runtimeBusy) {
+      return;
+    }
     const currentSiteId = selectedSiteId;
     const currentToken = token;
     let cancelled = false;
@@ -339,7 +406,7 @@ function DesktopShellApp() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSiteId, token, user, locale]);
+  }, [selectedSiteId, token, user, locale, runtimeBusy, runtimeReadyCycle]);
 
   async function handleGoogleLogin() {
     setAuthBusy(true);
@@ -371,7 +438,7 @@ function DesktopShellApp() {
     setError(null);
     try {
       await stopDesktopLocalRuntime().catch(() => null);
-      await loadDesktopRuntime(true);
+      await loadDesktopRuntime(true, { throwOnError: true });
       const auth = await desktopLocalLogin(adminForm.username.trim(), adminForm.password);
       persistDesktopSession(auth.access_token);
       setToken(auth.access_token);
@@ -476,19 +543,7 @@ function DesktopShellApp() {
   }
 
   function handleLogout() {
-    clearDesktopSession();
-    void clearDesktopSessionCache();
-    setToken(null);
-    setUser(null);
-    setSites([]);
-    setSelectedSiteId(null);
-    setSummary(null);
-    setWorkspaceMode("canvas");
-    setOperationsSection("management");
-    setWorkspaceSettingsOpen(false);
-    setAdminLoginOpen(false);
-    setAdminForm({ username: "", password: "" });
-    setError(null);
+    resetSession(null);
   }
 
   const screenError = error ?? runtimeError;

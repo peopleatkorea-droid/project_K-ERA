@@ -659,7 +659,7 @@ def build_case_images_router(support: Any) -> APIRouter:
                 item["preview_url"] = f"/api/sites/{site_id}/images/{item['image_id']}/preview"
                 item.pop("image_path", None)
             return {"query": query, **result}
-        except RuntimeError as exc:
+        except (RuntimeError, OSError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     return router

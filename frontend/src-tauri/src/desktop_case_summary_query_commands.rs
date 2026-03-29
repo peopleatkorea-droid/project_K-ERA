@@ -4,6 +4,13 @@ pub(super) fn list_cases(payload: ListCasesRequest) -> Result<Vec<CaseSummaryRec
     if site_id.is_empty() {
         return Err("site_id is required.".to_string());
     }
+    let patient_id = payload
+        .patient_id
+        .as_deref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(normalize_patient_pseudonym)
+        .transpose()?;
     let conn = open_data_plane_db()?;
     query_case_summaries(
         &conn,
@@ -13,6 +20,7 @@ pub(super) fn list_cases(payload: ListCasesRequest) -> Result<Vec<CaseSummaryRec
             .as_deref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty()),
+        patient_id.as_deref(),
     )
 }
 

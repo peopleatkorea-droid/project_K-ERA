@@ -1304,6 +1304,9 @@ export type InitialTrainingResult = {
   n_train: number;
   n_val: number;
   n_test: number;
+  n_train_images?: number;
+  n_val_images?: number;
+  n_test_images?: number;
   n_train_cases?: number;
   n_val_cases?: number;
   n_test_cases?: number;
@@ -1492,6 +1495,12 @@ export type CrossValidationJobResponse = {
 };
 
 export type SslPretrainingJobResponse = {
+  site_id: string;
+  execution_device: string;
+  job: SiteJobRecord;
+};
+
+export type RetrievalBaselineJobResponse = {
   site_id: string;
   execution_device: string;
   job: SiteJobRecord;

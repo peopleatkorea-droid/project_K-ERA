@@ -144,3 +144,35 @@ pub(super) fn resume_initial_training_benchmark(
         })),
     )
 }
+
+#[tauri::command]
+pub(super) fn run_retrieval_baseline(payload: RetrievalBaselineCommandRequest) -> Result<JsonValue, String> {
+    let site_id = payload.site_id.trim().to_string();
+    if site_id.is_empty() {
+        return Err("site_id is required.".to_string());
+    }
+    let request_payload = json!({
+        "site_id": site_id.clone(),
+        "token": payload.token,
+        "execution_mode": payload.execution_mode.unwrap_or_else(|| "auto".to_string()),
+        "crop_mode": payload.crop_mode.unwrap_or_else(|| "automated".to_string()),
+        "top_k": payload.top_k.unwrap_or(10),
+    });
+    if ml_sidecar_should_be_used() {
+        return request_ml_sidecar_json("run_retrieval_baseline", request_payload);
+    }
+    request_local_api_json(
+        HttpMethod::POST,
+        &format!("/api/sites/{site_id}/training/retrieval-baseline"),
+        request_payload
+            .get("token")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+        Vec::new(),
+        Some(json!({
+            "execution_mode": request_payload.get("execution_mode").cloned().unwrap_or(JsonValue::Null),
+            "crop_mode": request_payload.get("crop_mode").cloned().unwrap_or(JsonValue::Null),
+            "top_k": request_payload.get("top_k").cloned().unwrap_or(JsonValue::Null),
+        })),
+    )
+}

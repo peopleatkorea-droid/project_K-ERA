@@ -115,6 +115,7 @@ pub(super) fn query_case_summaries(
     conn: &Connection,
     site_id: &str,
     created_by_user_id: Option<&str>,
+    patient_id: Option<&str>,
 ) -> Result<Vec<CaseSummaryRecord>, String> {
     let mut sql = "
       with image_stats as (
@@ -178,6 +179,13 @@ pub(super) fn query_case_summaries(
     {
         sql.push_str(" and p.created_by_user_id = ?");
         params.push(Value::Text(user_id.to_string()));
+    }
+    if let Some(patient_id) = patient_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        sql.push_str(" and v.patient_id = ?");
+        params.push(Value::Text(patient_id.to_string()));
     }
     sql.push_str(" order by coalesce(v.visit_index, 0) desc, image_stats.latest_image_uploaded_at desc, v.created_at desc");
 

@@ -2384,6 +2384,127 @@ class ModelManager:
             return ("classifier.",)
         return ()
 
+    def _normalize_ssl_state_dict_for_target(
+        self,
+        state_dict: dict[str, Any],
+        target_module: nn.Module,
+    ) -> dict[str, Any]:
+        normalized = dict(state_dict)
+
+        def add_candidate(
+            candidates: list[dict[str, Any]],
+            seen_signatures: set[tuple[str, ...]],
+            candidate: dict[str, Any],
+        ) -> None:
+            signature = tuple(sorted(candidate.keys()))
+            if signature in seen_signatures:
+                return
+            seen_signatures.add(signature)
+            candidates.append(candidate)
+
+        candidates: list[dict[str, Any]] = []
+        seen_signatures: set[tuple[str, ...]] = set()
+        add_candidate(candidates, seen_signatures, normalized)
+
+        if any(key.startswith("module.") for key in normalized):
+            add_candidate(
+                candidates,
+                seen_signatures,
+                {key.replace("module.", "", 1): value for key, value in normalized.items()},
+            )
+
+        base_candidates = list(candidates)
+        for candidate in base_candidates:
+            if any(key.startswith("backbone.") for key in candidate):
+                add_candidate(
+                    candidates,
+                    seen_signatures,
+                    {
+                        key.replace("backbone.", "", 1) if key.startswith("backbone.") else key: value
+                        for key, value in candidate.items()
+                    },
+                )
+            else:
+                add_candidate(
+                    candidates,
+                    seen_signatures,
+                    {f"backbone.{key}": value for key, value in candidate.items()},
+                )
+
+        target_keys = set(target_module.state_dict().keys())
+        if not target_keys:
+            return normalized
+
+        def score(candidate: dict[str, Any]) -> tuple[int, int]:
+            overlap = sum(1 for key in candidate if key in target_keys)
+            exact_prefix_bonus = 1 if any(key.startswith("backbone.") for key in candidate) == any(
+                key.startswith("backbone.") for key in target_keys
+            ) else 0
+            return overlap, exact_prefix_bonus
+
+        return max(candidates, key=score)
+
+    def _adapt_ssl_state_dict_shapes(
+        self,
+        state_dict: dict[str, Any],
+        target_module: nn.Module,
+    ) -> dict[str, Any]:
+        target_state = target_module.state_dict()
+        adapted = dict(state_dict)
+
+        for key, value in list(adapted.items()):
+            target_value = target_state.get(key)
+            if target_value is None or not hasattr(value, "shape") or not hasattr(target_value, "shape"):
+                continue
+            if tuple(value.shape) == tuple(target_value.shape):
+                continue
+            resized = self._resize_ssl_tensor_for_target(key, value, target_value)
+            if resized is not None:
+                adapted[key] = resized
+
+        return adapted
+
+    def _resize_ssl_tensor_for_target(
+        self,
+        key: str,
+        source_tensor: Any,
+        target_tensor: Any,
+    ) -> Any | None:
+        if torch is None or F is None:
+            return None
+        if not key.endswith("position_embeddings"):
+            return None
+        if source_tensor.ndim != 3 or target_tensor.ndim != 3:
+            return None
+        if source_tensor.shape[0] != 1 or target_tensor.shape[0] != 1:
+            return None
+        if source_tensor.shape[2] != target_tensor.shape[2]:
+            return None
+        if source_tensor.shape[1] <= 1 or target_tensor.shape[1] <= 1:
+            return None
+
+        source_cls = source_tensor[:, :1, :]
+        source_patches = source_tensor[:, 1:, :]
+        target_patch_count = int(target_tensor.shape[1] - 1)
+
+        source_grid = int(round(math.sqrt(int(source_patches.shape[1]))))
+        target_grid = int(round(math.sqrt(target_patch_count)))
+        if source_grid * source_grid != int(source_patches.shape[1]):
+            return None
+        if target_grid * target_grid != target_patch_count:
+            return None
+
+        patch_tokens = source_patches.transpose(1, 2).reshape(1, int(source_tensor.shape[2]), source_grid, source_grid)
+        resized = F.interpolate(
+            patch_tokens,
+            size=(target_grid, target_grid),
+            mode="bicubic",
+            align_corners=False,
+        )
+        resized = resized.reshape(1, int(source_tensor.shape[2]), target_patch_count).transpose(1, 2)
+        resized = resized.to(dtype=target_tensor.dtype)
+        return torch.cat([source_cls.to(dtype=target_tensor.dtype), resized], dim=1)
+
     def load_ssl_encoder_into_model(
         self,
         model: nn.Module,
@@ -2409,6 +2530,8 @@ class ModelManager:
             )
 
         target_module = self._ssl_target_module(model, architecture)
+        state_dict = self._normalize_ssl_state_dict_for_target(state_dict, target_module)
+        state_dict = self._adapt_ssl_state_dict_shapes(state_dict, target_module)
         incompatible = target_module.load_state_dict(state_dict, strict=False)
         missing_keys = [
             key

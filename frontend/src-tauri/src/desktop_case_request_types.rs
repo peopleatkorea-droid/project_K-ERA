@@ -11,6 +11,7 @@ struct ListPatientBoardRequest {
 struct ListCasesRequest {
     site_id: String,
     created_by_user_id: Option<String>,
+    patient_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

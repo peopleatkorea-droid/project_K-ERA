@@ -12,6 +12,7 @@ import {
   runCrossValidation,
   runInitialTraining,
   runInitialTrainingBenchmark,
+  runRetrievalBaseline,
   runSslPretraining,
   resumeInitialTrainingBenchmark,
 } from "../../lib/api";
@@ -92,6 +93,9 @@ export function useAdminWorkspaceTrainingController({
     setBenchmarkBusy,
     setBenchmarkJob,
     setBenchmarkResult,
+    setRetrievalBusy,
+    setRetrievalJob,
+    setRetrievalResult,
     setCrossValidationBusy,
     setCrossValidationJob,
     setCrossValidationReports,
@@ -483,6 +487,41 @@ export function useAdminWorkspaceTrainingController({
     }
   }
 
+  async function handleRetrievalBaseline() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: pick(locale, "Select a site first.", "먼저 사이트를 선택하세요.") });
+      return;
+    }
+    setRetrievalBusy(true);
+    setRetrievalJob(null);
+    try {
+      const started = await runRetrievalBaseline(selectedSiteId, token, {
+        execution_mode: initialForm.execution_mode,
+        crop_mode: initialForm.crop_mode === "paired" ? "automated" : (initialForm.crop_mode as "automated" | "manual"),
+      });
+      setRetrievalJob(started.job);
+      const latestJob = await waitForSiteJobSettlement({
+        siteId: selectedSiteId,
+        token,
+        initialJob: started.job,
+        isActive: isActiveJobStatus,
+        onUpdate: setRetrievalJob,
+      });
+      const result = latestJob.result?.response;
+      if (latestJob.status === "failed") {
+        throw new Error(latestJob.result?.error || pick(locale, "Retrieval baseline failed.", "Retrieval baseline 실패."));
+      }
+      if (isBenchmarkResponse(result)) {
+        setRetrievalResult(result);
+        setToast({ tone: "success", message: pick(locale, "Retrieval baseline completed.", "Retrieval baseline 완료.") });
+      }
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, pick(locale, "Retrieval baseline failed.", "Retrieval baseline 실패.")) });
+    } finally {
+      setRetrievalBusy(false);
+    }
+  }
+
   async function handleClearBenchmarkHistory() {
     if (!selectedSiteId) {
       return;
@@ -775,6 +814,7 @@ export function useAdminWorkspaceTrainingController({
     handleCancelInitialTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleRetrievalBaseline,
     handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus,
     handleCrossValidation,

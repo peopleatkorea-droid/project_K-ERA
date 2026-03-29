@@ -195,6 +195,43 @@ def start_initial_training_benchmark(
     }
 
 
+def start_retrieval_baseline(
+    site_store: Any,
+    *,
+    site_id: str,
+    payload: Any,
+    execution_device: str,
+    queue_name_for_job_type: Callable[[str], str],
+) -> dict[str, Any]:
+    job = site_store.enqueue_job(
+        "retrieval_baseline",
+        {
+            "execution_mode": payload.execution_mode,
+            "execution_device": execution_device,
+            "crop_mode": getattr(payload, "crop_mode", "automated"),
+            "top_k": int(getattr(payload, "top_k", 10)),
+        },
+        queue_name=queue_name_for_job_type("retrieval_baseline"),
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "queued",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "Retrieval baseline job queued.",
+                "percent": 0,
+                "crop_mode": getattr(payload, "crop_mode", "automated"),
+            }
+        },
+    )
+    return {
+        "site_id": site_id,
+        "execution_device": execution_device,
+        "job": site_store.get_job(job["job_id"]) or job,
+    }
+
+
 def start_cross_validation(
     site_store: Any,
     *,

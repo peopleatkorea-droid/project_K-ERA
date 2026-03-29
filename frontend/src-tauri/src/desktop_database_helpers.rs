@@ -28,6 +28,176 @@ pub(super) fn ensure_data_plane_indexes() {
           ON patients(site_id, patient_id);
     ",
     );
+    let _ = conn.execute_batch(
+        "
+        CREATE VIRTUAL TABLE IF NOT EXISTS patient_case_search USING fts5(
+          site_id UNINDEXED,
+          visit_id UNINDEXED,
+          patient_id,
+          local_case_code,
+          chart_alias,
+          culture_category,
+          culture_species,
+          visit_date,
+          actual_visit_date,
+          tokenize = 'unicode61 remove_diacritics 2'
+        );
+        DROP TRIGGER IF EXISTS patient_case_search_visits_ai;
+        DROP TRIGGER IF EXISTS patient_case_search_visits_au;
+        DROP TRIGGER IF EXISTS patient_case_search_visits_ad;
+        DROP TRIGGER IF EXISTS patient_case_search_patients_ai;
+        DROP TRIGGER IF EXISTS patient_case_search_patients_au;
+        DROP TRIGGER IF EXISTS patient_case_search_patients_ad;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_ai
+        AFTER INSERT ON visits
+        BEGIN
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            NEW.visit_id,
+            NEW.patient_id,
+            COALESCE(p.local_case_code, ''),
+            COALESCE(p.chart_alias, ''),
+            COALESCE(NEW.culture_category, ''),
+            COALESCE(NEW.culture_species, ''),
+            COALESCE(NEW.visit_date, ''),
+            COALESCE(NEW.actual_visit_date, '')
+          FROM patients p
+          WHERE p.site_id = NEW.site_id AND p.patient_id = NEW.patient_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_au
+        AFTER UPDATE ON visits
+        BEGIN
+          DELETE FROM patient_case_search WHERE visit_id = OLD.visit_id;
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            NEW.visit_id,
+            NEW.patient_id,
+            COALESCE(p.local_case_code, ''),
+            COALESCE(p.chart_alias, ''),
+            COALESCE(NEW.culture_category, ''),
+            COALESCE(NEW.culture_species, ''),
+            COALESCE(NEW.visit_date, ''),
+            COALESCE(NEW.actual_visit_date, '')
+          FROM patients p
+          WHERE p.site_id = NEW.site_id AND p.patient_id = NEW.patient_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_ad
+        AFTER DELETE ON visits
+        BEGIN
+          DELETE FROM patient_case_search WHERE visit_id = OLD.visit_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_ai
+        AFTER INSERT ON patients
+        BEGIN
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            v.visit_id,
+            NEW.patient_id,
+            COALESCE(NEW.local_case_code, ''),
+            COALESCE(NEW.chart_alias, ''),
+            COALESCE(v.culture_category, ''),
+            COALESCE(v.culture_species, ''),
+            COALESCE(v.visit_date, ''),
+            COALESCE(v.actual_visit_date, '')
+          FROM visits v
+          WHERE v.site_id = NEW.site_id AND v.patient_id = NEW.patient_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_au
+        AFTER UPDATE ON patients
+        BEGIN
+          DELETE FROM patient_case_search
+          WHERE site_id = OLD.site_id AND patient_id = OLD.patient_id;
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            v.visit_id,
+            NEW.patient_id,
+            COALESCE(NEW.local_case_code, ''),
+            COALESCE(NEW.chart_alias, ''),
+            COALESCE(v.culture_category, ''),
+            COALESCE(v.culture_species, ''),
+            COALESCE(v.visit_date, ''),
+            COALESCE(v.actual_visit_date, '')
+          FROM visits v
+          WHERE v.site_id = NEW.site_id AND v.patient_id = NEW.patient_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_ad
+        AFTER DELETE ON patients
+        BEGIN
+          DELETE FROM patient_case_search
+          WHERE site_id = OLD.site_id AND patient_id = OLD.patient_id;
+        END;
+        DELETE FROM patient_case_search;
+        INSERT INTO patient_case_search (
+          site_id,
+          visit_id,
+          patient_id,
+          local_case_code,
+          chart_alias,
+          culture_category,
+          culture_species,
+          visit_date,
+          actual_visit_date
+        )
+        SELECT
+          v.site_id,
+          v.visit_id,
+          v.patient_id,
+          COALESCE(p.local_case_code, ''),
+          COALESCE(p.chart_alias, ''),
+          COALESCE(v.culture_category, ''),
+          COALESCE(v.culture_species, ''),
+          COALESCE(v.visit_date, ''),
+          COALESCE(v.actual_visit_date, '')
+        FROM visits v
+        JOIN patients p
+          ON v.site_id = p.site_id
+         AND v.patient_id = p.patient_id;
+    ",
+    );
 }
 
 fn control_plane_sqlite_database_path() -> Result<PathBuf, String> {

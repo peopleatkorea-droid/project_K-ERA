@@ -49,6 +49,30 @@ export type FetchWorkspacePatientListPageOptions = {
 
 const PATIENT_LIST_THUMBNAIL_MAX_SIDE = 160;
 const CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
+const workspacePatientListPageCache = new Map<string, PatientListPageResponse>();
+const workspacePatientListPagePromiseCache = new Map<string, Promise<PatientListPageResponse>>();
+
+function buildWorkspacePatientListPageCacheKey(
+  siteId: string,
+  token: string,
+  options: FetchWorkspacePatientListPageOptions,
+): string {
+  return JSON.stringify({
+    runtime: "web",
+    siteId,
+    token,
+    mine: Boolean(options.mine),
+    page: options.page ?? 1,
+    page_size: options.page_size ?? 25,
+    search: options.search?.trim() ?? "",
+  });
+}
+
+function throwIfWorkspaceRequestAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+}
 
 function withPatientListPreviewUrls(
   siteId: string,
@@ -170,7 +194,7 @@ export async function fetchWorkspacePatientIdLookup(
 export async function fetchWorkspaceCases(
   siteId: string,
   token: string,
-  options?: { mine?: boolean; signal?: AbortSignal },
+  options?: { mine?: boolean; patientId?: string; signal?: AbortSignal },
 ) {
   if (canUseDesktopWorkspaceTransport()) {
     return fetchDesktopCases(siteId, token, options);
@@ -178,6 +202,9 @@ export async function fetchWorkspaceCases(
   const params = new URLSearchParams();
   if (options?.mine) {
     params.set("mine", "true");
+  }
+  if (options?.patientId?.trim()) {
+    params.set("patient_id", options.patientId.trim());
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return request<CaseSummaryRecord[]>(`/api/sites/${siteId}/cases${suffix}`, { signal: options?.signal }, token);
@@ -191,6 +218,16 @@ export async function fetchWorkspacePatientListPage(
   if (canUseDesktopTransport()) {
     return fetchDesktopPatientListPage(siteId, token, options);
   }
+  const cacheKey = buildWorkspacePatientListPageCacheKey(siteId, token, options);
+  const cached = workspacePatientListPageCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const pending = workspacePatientListPagePromiseCache.get(cacheKey);
+  if (pending) {
+    return pending;
+  }
+  throwIfWorkspaceRequestAborted(options.signal);
   const params = new URLSearchParams();
   if (options.mine) {
     params.set("mine", "true");
@@ -205,22 +242,30 @@ export async function fetchWorkspacePatientListPage(
     params.set("q", options.search.trim());
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  const response = await request<PatientListPageResponse>(
+  const nextRequest = request<PatientListPageResponse>(
     `/api/sites/${siteId}/patients/list-board${suffix}`,
     { signal: options.signal },
     token,
-  );
-  const hydratedResponse = withPatientListPreviewUrls(siteId, token, response);
-  const thumbnailIds = hydratedResponse.items.flatMap((row) =>
-    row.representative_thumbnails
-      .map((thumbnail) => String(thumbnail.image_id ?? "").trim())
-      .filter((imageId) => imageId.length > 0),
-  );
-  void ensureImagePreviews(siteId, thumbnailIds, token, {
-    maxSide: PATIENT_LIST_THUMBNAIL_MAX_SIDE,
-    signal: options.signal,
-  }).catch(() => undefined);
-  return hydratedResponse;
+  )
+    .then((response) => {
+      const hydratedResponse = withPatientListPreviewUrls(siteId, token, response);
+      const thumbnailIds = hydratedResponse.items.flatMap((row) =>
+        row.representative_thumbnails
+          .map((thumbnail) => String(thumbnail.image_id ?? "").trim())
+          .filter((imageId) => imageId.length > 0),
+      );
+      void ensureImagePreviews(siteId, thumbnailIds, token, {
+        maxSide: PATIENT_LIST_THUMBNAIL_MAX_SIDE,
+        signal: options.signal,
+      }).catch(() => undefined);
+      workspacePatientListPageCache.set(cacheKey, hydratedResponse);
+      return hydratedResponse;
+    })
+    .finally(() => {
+      workspacePatientListPagePromiseCache.delete(cacheKey);
+    });
+  workspacePatientListPagePromiseCache.set(cacheKey, nextRequest);
+  return nextRequest;
 }
 
 export function prewarmWorkspacePatientListPage(
@@ -228,14 +273,17 @@ export function prewarmWorkspacePatientListPage(
   token: string,
   options: FetchWorkspacePatientListPageOptions = {},
 ) {
-  if (!canUseDesktopTransport()) {
+  if (canUseDesktopTransport()) {
+    prewarmDesktopPatientListPage(siteId, token, options);
     return;
   }
-  prewarmDesktopPatientListPage(siteId, token, options);
+  void fetchWorkspacePatientListPage(siteId, token, options).catch(() => undefined);
 }
 
 export function invalidateWorkspaceDesktopCaches() {
   clearDesktopTransportCaches();
+  workspacePatientListPageCache.clear();
+  workspacePatientListPagePromiseCache.clear();
 }
 
 export async function fetchWorkspaceVisits(siteId: string, token: string, patientId?: string) {

@@ -615,6 +615,32 @@ function organismSummaryLabel(
   return `${visible} + ${organisms.length - Math.max(1, maxVisibleSpecies)}`;
 }
 
+function buildFallbackSiteSummary(
+  siteId: string,
+  caseRecords: CaseSummaryRecord[],
+): SiteSummary {
+  const patientIds = new Set(
+    caseRecords
+      .map((record) => String(record.patient_id || "").trim())
+      .filter((value) => value.length > 0),
+  );
+  return {
+    site_id: siteId,
+    n_patients: patientIds.size,
+    n_visits: caseRecords.length,
+    n_images: caseRecords.reduce(
+      (sum, record) => sum + Math.max(0, Number(record.image_count || 0)),
+      0,
+    ),
+    n_active_visits: caseRecords.reduce(
+      (sum, record) => sum + (record.active_stage ? 1 : 0),
+      0,
+    ),
+    n_validation_runs: 0,
+    latest_validation: null,
+  };
+}
+
 function organismDetailLabel(
   cultureCategory: string,
   cultureSpecies: string,
@@ -1013,6 +1039,8 @@ export function CaseWorkspace({
   const [patientListTotalCount, setPatientListTotalCount] = useState(0);
   const [patientListTotalPages, setPatientListTotalPages] = useState(1);
   const [patientListLoading, setPatientListLoading] = useState(false);
+  const [fallbackRailSummary, setFallbackRailSummary] =
+    useState<SiteSummary | null>(null);
   const [patientIdLookup, setPatientIdLookup] =
     useState<PatientIdLookupResponse | null>(null);
   const [patientIdLookupBusy, setPatientIdLookupBusy] = useState(false);
@@ -1480,6 +1508,8 @@ export function CaseWorkspace({
     setCases,
     selectedCase,
     setSelectedCase,
+    selectedPatientCases,
+    setSelectedPatientCases,
     selectedCaseImages,
     setSelectedCaseImages,
     patientVisitGallery,
@@ -1518,6 +1548,45 @@ export function CaseWorkspace({
     pick,
     setToast,
   });
+  useEffect(() => {
+    if (!selectedSiteId) {
+      setFallbackRailSummary(null);
+      return;
+    }
+    if (summary) {
+      setFallbackRailSummary(null);
+      return;
+    }
+    if (cases.length > 0) {
+      setFallbackRailSummary(buildFallbackSiteSummary(selectedSiteId, cases));
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    void fetchCases(selectedSiteId, token, {
+      mine: showOnlyMine,
+      signal: controller.signal,
+    })
+      .then((nextCases) => {
+        if (cancelled) {
+          return;
+        }
+        setFallbackRailSummary(
+          buildFallbackSiteSummary(selectedSiteId, nextCases),
+        );
+      })
+      .catch((nextError) => {
+        if (isAbortError(nextError) || cancelled) {
+          return;
+        }
+        setFallbackRailSummary(null);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [cases, selectedSiteId, showOnlyMine, summary, token]);
+  const effectiveRailSummary = summary ?? fallbackRailSummary;
   const onArtifactsChanged = useCallback(() => {
     if (
       !medsamArtifactPanelEnabled ||
@@ -1614,6 +1683,7 @@ export function CaseWorkspace({
     setPanelOpen,
     setCases,
     setSelectedCase,
+    setSelectedPatientCases,
     setSelectedCaseImages,
     setCaseHistory,
     setContributionResult,
@@ -2400,6 +2470,7 @@ export function CaseWorkspace({
       return [caseRecord, ...current];
     });
     setSelectedCase(caseRecord);
+    setSelectedPatientCases([caseRecord]);
     setPanelOpen(true);
     setRailView(nextView);
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -2515,6 +2586,13 @@ export function CaseWorkspace({
         ? { ...current, ...updates }
         : current,
     );
+    setSelectedPatientCases((current) =>
+      current.map((item) =>
+        item.patient_id === patientId && item.visit_date === visitDate
+          ? { ...item, ...updates }
+          : item,
+      ),
+    );
   }
 
   async function includeCaseInResearchRegistry(
@@ -2599,6 +2677,7 @@ export function CaseWorkspace({
 
       if (deleted.deleted_patient) {
         setSelectedCase(null);
+        setSelectedPatientCases([]);
         setSelectedCaseImages([]);
         setPatientVisitGallery({});
         resetAnalysisState();
@@ -2627,6 +2706,7 @@ export function CaseWorkspace({
         nextCases[0] ??
         null;
       setSelectedCase(nextSelectedCase);
+      setSelectedPatientCases(nextSelectedCase ? [nextSelectedCase] : []);
       setToast({
         tone: "success",
         message: copy.visitDeleted(
@@ -3216,6 +3296,7 @@ export function CaseWorkspace({
       clearDraftStorage(selectedSiteId!);
       resetDraft();
       setSelectedCase(createdCase ?? null);
+      setSelectedPatientCases(createdCase ? [createdCase] : []);
       setPanelOpen(true);
       setCompletionState({
         kind: "saved",
@@ -3695,12 +3776,6 @@ export function CaseWorkspace({
     Math.max(1, patientListPage),
     patientListTotalPages,
   );
-
-  const selectedPatientCases = selectedCase
-    ? [...cases]
-        .filter((item) => item.patient_id === selectedCase.patient_id)
-        .sort((left, right) => caseTimestamp(right) - caseTimestamp(left))
-    : [];
 
   useEffect(() => {
     if (canUseDesktopTransport()) {
@@ -4183,13 +4258,13 @@ export function CaseWorkspace({
       savedLabel={common.saved}
       actionNeededLabel={common.actionNeeded}
     >
-      <CaseWorkspaceLeftRail
-        locale={locale}
-        visibleSites={visibleSites}
-        selectedSiteId={selectedSiteId}
-        allowCaseCreation={Boolean(selectedSiteId)}
-        summary={summary}
-        fastMode={desktopFastMode}
+        <CaseWorkspaceLeftRail
+          locale={locale}
+          visibleSites={visibleSites}
+          selectedSiteId={selectedSiteId}
+          allowCaseCreation={Boolean(selectedSiteId)}
+          summary={effectiveRailSummary}
+          fastMode={desktopFastMode}
         newCaseModeActive={newCaseModeActive}
         listModeActive={listModeActive}
         isAuthoringCanvas={isAuthoringCanvas}

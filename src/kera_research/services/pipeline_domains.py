@@ -1051,6 +1051,170 @@ class ResearchTrainingWorkflow:
         emit_progress(stage="completed", message="Full-dataset refit completed.", percent=100)
         return result
 
+    def run_retrieval_baseline(
+        self,
+        site_store: SiteStore,
+        execution_device: str,
+        crop_mode: str = "automated",
+        top_k: int = 10,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        import numpy as np
+
+        from kera_research.services.retrieval import Dinov2ImageRetriever
+
+        service = self.service
+        manifest_df = site_store.generate_manifest()
+        if manifest_df.empty:
+            raise ValueError("학습 데이터가 없습니다. 먼저 이미지를 등록하세요.")
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                }
+            )
+
+        emit_progress(stage="preparing_data", message="Preparing records.", percent=5)
+        records = service._prepare_records_for_model(
+            site_store,
+            manifest_df.to_dict("records"),
+            crop_mode=crop_mode,
+        )
+        if not records:
+            raise ValueError("No readable images after applying crop mode.")
+
+        # Group by patient_id
+        from collections import defaultdict
+
+        patient_to_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for record in records:
+            patient_to_records[str(record["patient_id"])].append(record)
+
+        patient_ids = sorted(patient_to_records.keys())
+        n_patients = len(patient_ids)
+        if n_patients < 2:
+            raise ValueError("At least 2 patients required for LOOCV retrieval baseline.")
+
+        emit_progress(stage="embedding", message="Extracting embeddings for all images.", percent=10)
+        retriever = Dinov2ImageRetriever()
+        all_image_paths = [str(record["image_path"]) for record in records]
+        all_embeddings = retriever.encode_images(all_image_paths, execution_device)
+
+        # Map image_path → embedding index
+        path_to_idx = {path: i for i, path in enumerate(all_image_paths)}
+
+        patient_embeddings: dict[str, np.ndarray] = {}
+        patient_labels: dict[str, int] = {}
+        for patient_id in patient_ids:
+            patient_records = patient_to_records[patient_id]
+            patient_indices = [path_to_idx[str(record["image_path"])] for record in patient_records]
+            patient_embedding = np.mean(all_embeddings[patient_indices], axis=0).astype(np.float32)
+            patient_norm = float(np.linalg.norm(patient_embedding))
+            patient_embeddings[patient_id] = patient_embedding / max(patient_norm, 1e-12)
+            patient_labels[patient_id] = LABEL_TO_INDEX[str(patient_records[0]["culture_category"])]
+
+        true_labels: list[int] = []
+        predicted_labels: list[int] = []
+        positive_probabilities: list[float] = []
+        test_predictions: list[dict[str, Any]] = []
+        softmax_temperature = 0.1
+
+        emit_progress(stage="loocv", message="Running leave-one-patient-out evaluation.", percent=20)
+        for patient_idx, query_patient_id in enumerate(patient_ids):
+            query_records = patient_to_records[query_patient_id]
+            db_patient_ids = [patient_id for patient_id in patient_ids if patient_id != query_patient_id]
+            if not db_patient_ids:
+                continue
+
+            query_embedding = patient_embeddings[query_patient_id]
+            db_embeddings = np.stack([patient_embeddings[patient_id] for patient_id in db_patient_ids], axis=0)
+            db_labels_int = [patient_labels[patient_id] for patient_id in db_patient_ids]
+
+            # Cosine similarity
+            similarities = db_embeddings @ query_embedding  # shape (N,)
+
+            # Top-K temperature-softmax vote over patient-level neighbors.
+            k = min(top_k, len(db_patient_ids))
+            top_indices = np.argsort(similarities)[::-1][:k]
+            top_sims = similarities[top_indices]
+            top_labels = [db_labels_int[i] for i in top_indices]
+            stabilized_logits = (top_sims - float(np.max(top_sims))) / softmax_temperature
+            vote_weights = np.exp(stabilized_logits)
+            weight_total = float(np.sum(vote_weights))
+            if weight_total <= 1e-12:
+                p_fungal = 0.5
+            else:
+                p_fungal = float(
+                    np.sum([weight for weight, label in zip(vote_weights.tolist(), top_labels) if label == 1]) / weight_total
+                )
+
+            patient_label = patient_labels[query_patient_id]
+            predicted_label = 1 if p_fungal >= 0.5 else 0
+            true_labels.append(patient_label)
+            predicted_labels.append(predicted_label)
+            positive_probabilities.append(float(p_fungal))
+            test_predictions.append(
+                {
+                    "sample_key": f"patient::{query_patient_id}",
+                    "sample_kind": "patient",
+                    "patient_id": query_patient_id,
+                    "visit_date": None,
+                    "true_label": INDEX_TO_LABEL[patient_label],
+                    "true_label_index": patient_label,
+                    "predicted_label": INDEX_TO_LABEL[predicted_label],
+                    "predicted_label_index": predicted_label,
+                    "positive_probability": float(p_fungal),
+                    "is_correct": bool(patient_label == predicted_label),
+                    "source_image_paths": [str(record["image_path"]) for record in query_records],
+                }
+            )
+
+            percent = 20 + int((patient_idx + 1) / n_patients * 75)
+            emit_progress(
+                stage="loocv",
+                message=f"Evaluated {patient_idx + 1}/{n_patients} patients.",
+                percent=percent,
+            )
+
+        if not true_labels:
+            raise ValueError("No patient-level predictions were produced.")
+
+        emit_progress(stage="metrics", message="Computing metrics.", percent=96)
+        metrics = service.model_manager.classification_metrics(true_labels, predicted_labels, positive_probabilities)
+
+        training_id = make_id("retrieval")
+        n_total_images = len(records)
+        result: dict[str, Any] = {
+            "training_id": training_id,
+            "version_name": f"retrieval-dinov2-loocv-{training_id[:8]}",
+            "output_model_path": "",
+            "n_train": 0,
+            "n_val": 0,
+            "n_test": n_patients,
+            "n_test_cases": n_patients,
+            "n_test_images": n_total_images,
+            "n_train_patients": 0,
+            "n_val_patients": 0,
+            "n_test_patients": n_patients,
+            "best_val_acc": None,
+            "use_pretrained": True,
+            "crop_mode": crop_mode,
+            "top_k": top_k,
+            "evaluation_mode": "loocv_patient_level",
+            "vote_mode": "temperature_softmax_patient_knn",
+            "softmax_temperature": softmax_temperature,
+            "val_metrics": metrics,
+            "test_metrics": metrics,
+            "test_predictions": test_predictions,
+        }
+        emit_progress(stage="completed", message="Retrieval baseline LOOCV completed.", percent=100)
+        return result
+
     def run_cross_validation(
         self,
         site_store: SiteStore,

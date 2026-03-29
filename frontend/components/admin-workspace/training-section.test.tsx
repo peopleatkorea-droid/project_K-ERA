@@ -38,6 +38,11 @@ function buildProps(
     benchmarkJob: null,
     benchmarkProgress: null,
     benchmarkPercent: 0,
+    retrievalBusy: false,
+    retrievalResult: null,
+    retrievalJob: null,
+    retrievalProgress: null,
+    retrievalPercent: 0,
     setInitialForm: vi.fn(),
     formatMetric: (value) => (typeof value === "number" ? value.toFixed(3) : "n/a"),
     formatTrainingStage: (stage) => stage ?? "n/a",
@@ -49,6 +54,7 @@ function buildProps(
     onRunLesionGuidedInitBenchmark: vi.fn(),
     onRunLesionGuidedBenchmark: vi.fn(),
     onRunInitialTraining: vi.fn(),
+    onRunRetrievalBaseline: vi.fn(),
     onResumeBenchmark: vi.fn(),
     onClearBenchmarkHistory: vi.fn(),
     ...overrides,
@@ -62,6 +68,7 @@ describe("TrainingSection", () => {
     const onRunLesionGuidedInitBenchmark = vi.fn();
     const onRunLesionGuidedBenchmark = vi.fn();
     const onRunInitialTraining = vi.fn();
+    const onRunRetrievalBaseline = vi.fn();
 
     render(
       <TrainingSection
@@ -71,6 +78,7 @@ describe("TrainingSection", () => {
           onRunLesionGuidedInitBenchmark,
           onRunLesionGuidedBenchmark,
           onRunInitialTraining,
+          onRunRetrievalBaseline,
         })}
       />
     );
@@ -92,11 +100,14 @@ describe("TrainingSection", () => {
     expect(screen.getByRole("dialog", { name: "LGF + SSL 6-model training confirmation" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Start LGF + SSL 6-model training" }));
     fireEvent.click(screen.getByRole("button", { name: "Run initial training" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run Retrieval Baseline" }));
 
     expect(onRunBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunLesionGuidedInitBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunLesionGuidedBenchmark).toHaveBeenCalledTimes(1);
     expect(onRunInitialTraining).toHaveBeenCalledTimes(1);
+    expect(onRunRetrievalBaseline).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("option", { name: "Retrieval DINOv2 (LOOCV)" })).not.toBeInTheDocument();
   });
 
   it("shows remaining models, ETA, and stop controls during batch training", () => {

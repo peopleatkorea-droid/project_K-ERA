@@ -2,6 +2,7 @@
 
 import { request, requestBlob } from "./api-core";
 import { convertDesktopFilePath, hasDesktopRuntime, invokeDesktop } from "./desktop-ipc";
+import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "./desktop-local-api";
 import { warnDesktopMlFallback } from "./desktop-sidecar-config";
 import type {
   AiClinicResponse,
@@ -597,6 +598,13 @@ export async function searchAnalysisImagesByText(
   token: string,
   topK = 10,
 ): Promise<ImageTextSearchResponse> {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalApiJson<ImageTextSearchResponse>(
+      `/api/sites/${siteId}/images/search/text`,
+      token,
+      { method: "POST", body: { query, top_k: topK } },
+    );
+  }
   return request<ImageTextSearchResponse>(
     `/api/sites/${siteId}/images/search/text`,
     {

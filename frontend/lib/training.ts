@@ -19,6 +19,7 @@ import type {
   InitialTrainingBenchmarkJobResponse,
   InitialTrainingJobResponse,
   ModelVersionRecord,
+  RetrievalBaselineJobResponse,
   SslPretrainingJobResponse,
   SiteJobRecord,
   SiteValidationJobResponse,
@@ -609,6 +610,40 @@ export async function runSslPretraining(
         min_patient_quality: "medium",
         include_review_rows: false,
         use_amp: true,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function runRetrievalBaseline(
+  siteId: string,
+  token: string,
+  payload: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    crop_mode?: "automated" | "manual";
+    top_k?: number;
+  } = {},
+) {
+  if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Retrieval baseline is unavailable");
+    return invokeDesktop<RetrievalBaselineJobResponse>("run_retrieval_baseline", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  return request<RetrievalBaselineJobResponse>(
+    `/api/sites/${siteId}/training/retrieval-baseline`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        crop_mode: "automated",
+        top_k: 10,
         ...payload,
       }),
     },

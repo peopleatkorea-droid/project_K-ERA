@@ -233,6 +233,9 @@ export function AdminWorkspace({
     setBenchmarkResult,
     benchmarkJob,
     setBenchmarkJob,
+    retrievalBusy,
+    retrievalResult,
+    retrievalJob,
     crossValidationBusy,
     setCrossValidationBusy,
     crossValidationJob,
@@ -306,6 +309,8 @@ export function AdminWorkspace({
     setSslForm,
     sslProgress,
     sslPercent,
+    retrievalProgress,
+    retrievalPercent,
     formatTrainingStage,
     formatEmbeddingStage,
     toggleRocValidationSelection,
@@ -322,6 +327,7 @@ export function AdminWorkspace({
     handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining,
+    handleRetrievalBaseline,
     handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus,
     handleCrossValidation,
@@ -805,6 +811,11 @@ export function AdminWorkspace({
               benchmarkJob={benchmarkJob}
               benchmarkProgress={benchmarkProgress}
               benchmarkPercent={benchmarkPercent}
+              retrievalBusy={retrievalBusy}
+              retrievalResult={retrievalResult}
+              retrievalJob={retrievalJob}
+              retrievalProgress={retrievalProgress}
+              retrievalPercent={retrievalPercent}
               setInitialForm={setInitialForm}
               formatMetric={formatMetric}
               formatTrainingStage={formatTrainingStage}
@@ -818,6 +829,7 @@ export function AdminWorkspace({
               onRunLesionGuidedBenchmark={() => void handleLesionGuidedBenchmarkTraining()}
               onRunInitialTraining={() => void handleInitialTraining()}
               onResumeBenchmark={() => void handleResumeBenchmarkTraining()}
+              onRunRetrievalBaseline={() => void handleRetrievalBaseline()}
             />
           ) : null}
           {section === "cross_validation" ? (

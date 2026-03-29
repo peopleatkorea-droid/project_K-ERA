@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, case, delete, desc, func, or_, select, update
+from sqlalchemy import and_, case, column, delete, desc, func, literal_column, or_, select, table, update
 
 from kera_research.config import (
     BASE_DIR,
@@ -31,6 +31,7 @@ from kera_research.db import (
     DATA_PLANE_DATABASE_URL,
     DATA_PLANE_ENGINE,
     app_settings,
+    data_plane_sqlite_search_ready,
     images as db_images,
     init_control_plane_db,
     init_data_plane_db,
@@ -304,6 +305,28 @@ def _case_summary_search_haystack(summary: dict[str, Any]) -> str:
     ).strip().lower()
 
 
+def _sqlite_search_tokens(value: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in str(value or ""):
+        if char.isalnum():
+            current.append(char.casefold())
+            continue
+        if current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _sqlite_patient_case_match_query(value: str | None) -> str | None:
+    tokens = _sqlite_search_tokens(str(value or ""))
+    if not tokens:
+        return None
+    return " ".join(f"{token}*" for token in tokens)
+
+
 def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
     try:
         with Image.open(BytesIO(content)) as image:
@@ -488,8 +511,11 @@ class SiteStore:
                 raise ValueError("Image file not found on disk.")
             should_persist = remapped and Path(raw_path).is_absolute()
         except Exception:
-            resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
-            should_persist = str(resolved_path) != raw_path
+            try:
+                resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
+                should_persist = str(resolved_path) != raw_path
+            except Exception:
+                return record
         record["image_path"] = str(resolved_path)
         if persist and should_persist:
             self._persist_image_record_path(image_id, resolved_path)
@@ -2317,11 +2343,20 @@ class SiteStore:
 
         return preview_path
 
-    def list_case_summaries(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
+    def list_case_summaries(
+        self,
+        created_by_user_id: str | None = None,
+        patient_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Optimized case summaries using a single JOIN query."""
         patient_table = db_patients.alias("p")
         visit_table = db_visits.alias("v")
         image_table = db_images.alias("i")
+        normalized_patient_id = (
+            normalize_patient_pseudonym(patient_id)
+            if str(patient_id or "").strip()
+            else None
+        )
 
         # Subquery for image aggregates per visit
         image_stats = (
@@ -2408,6 +2443,8 @@ class SiteStore:
 
         if created_by_user_id:
             query = query.where(patient_table.c.created_by_user_id == created_by_user_id)
+        if normalized_patient_id:
+            query = query.where(visit_table.c.patient_id == normalized_patient_id)
 
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
@@ -2512,7 +2549,29 @@ class SiteStore:
 
         # Build search conditions
         search_conditions = []
-        if normalized_search:
+        fts_match_query = (
+            _sqlite_patient_case_match_query(normalized_search)
+            if normalized_search and data_plane_sqlite_search_ready()
+            else None
+        )
+        if fts_match_query:
+            fts_search = table(
+                "patient_case_search",
+                column("site_id"),
+                column("visit_id"),
+            )
+            matching_visit_ids = (
+                select(fts_search.c.visit_id)
+                .select_from(fts_search)
+                .where(
+                    and_(
+                        fts_search.c.site_id == self.site_id,
+                        literal_column("patient_case_search").op("MATCH")(fts_match_query),
+                    )
+                )
+            )
+            search_conditions = [visit_table.c.visit_id.in_(matching_visit_ids)]
+        elif normalized_search:
             search_pattern = f"%{normalized_search}%"
             search_conditions = [
                 or_(

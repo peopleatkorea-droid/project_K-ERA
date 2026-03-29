@@ -11,6 +11,7 @@ from kera_research.api.site_jobs import (
     start_cross_validation,
     start_initial_training,
     start_initial_training_benchmark,
+    start_retrieval_baseline,
     start_site_validation,
     start_ssl_pretraining,
 )
@@ -48,6 +49,7 @@ def build_site_training_router(support: Any) -> APIRouter:
     EmbeddingBackfillRequest = support.EmbeddingBackfillRequest
     CrossValidationRunRequest = support.CrossValidationRunRequest
     SSLPretrainingRunRequest = support.SSLPretrainingRunRequest
+    RetrievalBaselineRequest = support.RetrievalBaselineRequest
 
     @router.get("/api/sites/{site_id}/validations")
     def list_site_validations(
@@ -447,6 +449,28 @@ def build_site_training_router(support: Any) -> APIRouter:
             unavailable_label="SSL pretraining",
         )
         return start_ssl_pretraining(
+            site_store,
+            site_id=site_id,
+            payload=payload,
+            execution_device=execution_device,
+            queue_name_for_job_type=queue_name_for_job_type,
+        )
+
+    @router.post("/api/sites/{site_id}/training/retrieval-baseline")
+    def run_retrieval_baseline(
+        site_id: str,
+        payload: RetrievalBaselineRequest,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        execution_device = resolve_execution_device_or_raise(
+            resolve_execution_device=resolve_execution_device,
+            execution_mode=payload.execution_mode,
+            unavailable_label="Retrieval baseline",
+        )
+        return start_retrieval_baseline(
             site_store,
             site_id=site_id,
             payload=payload,

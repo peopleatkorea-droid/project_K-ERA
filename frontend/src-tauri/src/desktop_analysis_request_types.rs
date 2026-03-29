@@ -304,3 +304,12 @@ struct EmbeddingBackfillCommandRequest {
     model_version_id: Option<String>,
     force_refresh: Option<bool>,
 }
+
+#[derive(Debug, Deserialize)]
+struct RetrievalBaselineCommandRequest {
+    site_id: String,
+    token: String,
+    execution_mode: Option<String>,
+    crop_mode: Option<String>,
+    top_k: Option<i64>,
+}

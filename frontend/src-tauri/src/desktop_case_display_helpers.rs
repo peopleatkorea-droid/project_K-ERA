@@ -47,25 +47,52 @@ pub(super) fn case_sort_key(record: &CaseSummaryRecord) -> (String, String, Stri
     )
 }
 
-pub(super) fn build_search_clause(search: &Option<String>, params: &mut Vec<Value>) -> String {
-    let normalized = search
-        .as_ref()
-        .map(|value| value.trim().to_lowercase())
-        .filter(|value| !value.is_empty());
-    if let Some(search_value) = normalized {
-        let pattern = format!("%{search_value}%");
-        for _ in 0..7 {
-            params.push(Value::Text(pattern.clone()));
+fn search_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+            continue;
         }
+        if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn build_fts_match_query(search: &Option<String>) -> Option<String> {
+    let tokens = search_tokens(search.as_deref().unwrap_or(""));
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(
+        tokens
+            .into_iter()
+            .map(|token| format!("{token}*"))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+pub(super) fn build_search_clause(
+    site_id: &str,
+    search: &Option<String>,
+    params: &mut Vec<Value>,
+) -> String {
+    if let Some(search_value) = build_fts_match_query(search) {
+        params.push(Value::Text(site_id.to_string()));
+        params.push(Value::Text(search_value));
         "
-          and (
-            lower(coalesce(p.patient_id, '')) like ?
-            or lower(coalesce(p.local_case_code, '')) like ?
-            or lower(coalesce(p.chart_alias, '')) like ?
-            or lower(coalesce(v.culture_category, '')) like ?
-            or lower(coalesce(v.culture_species, '')) like ?
-            or lower(coalesce(v.visit_date, '')) like ?
-            or lower(coalesce(v.actual_visit_date, '')) like ?
+          and v.visit_id in (
+            select visit_id
+            from patient_case_search
+            where site_id = ?
+              and patient_case_search match ?
           )
         "
         .to_string()

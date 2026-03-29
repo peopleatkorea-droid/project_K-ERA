@@ -1845,6 +1845,7 @@ export function useAdminWorkspaceController({
     handleLesionGuidedBenchmarkTraining: trainingController.handleLesionGuidedBenchmarkTraining,
     handleCancelBenchmarkTraining: trainingController.handleCancelBenchmarkTraining,
     handleResumeBenchmarkTraining: trainingController.handleResumeBenchmarkTraining,
+    handleRetrievalBaseline: trainingController.handleRetrievalBaseline,
     handleClearBenchmarkHistory: trainingController.handleClearBenchmarkHistory,
     handleRefreshBenchmarkStatus: trainingController.handleRefreshBenchmarkStatus,
     handleCrossValidation: trainingController.handleCrossValidation,

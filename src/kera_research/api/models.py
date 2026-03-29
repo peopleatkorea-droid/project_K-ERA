@@ -168,6 +168,12 @@ class ResumeBenchmarkRequest(BaseModel):
     execution_mode: str | None = None
 
 
+class RetrievalBaselineRequest(BaseModel):
+    execution_mode: str = "auto"
+    crop_mode: str = "automated"
+    top_k: int = 10
+
+
 class CrossValidationRunRequest(BaseModel):
     architecture: str = "convnext_tiny"
     execution_mode: str = "auto"

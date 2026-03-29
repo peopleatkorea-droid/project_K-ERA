@@ -34,6 +34,7 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   { value: "lesion_guided_fusion__vit", label: "LGF ViT" },
   { value: "lesion_guided_fusion__swin", label: "LGF Swin" },
   { value: "lesion_guided_fusion__dinov2", label: "LGF DINOv2" },
+  { value: "retrieval_dinov2", label: "Retrieval DINOv2 (LOOCV)" },
 ];
 
 const TRAINING_ARCHITECTURE_LABELS = new Map(TRAINING_ARCHITECTURE_OPTIONS.map((option) => [option.value, option.label]));

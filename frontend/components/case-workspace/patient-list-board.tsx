@@ -217,8 +217,9 @@ export function PatientListBoard({
     try {
       const response = await searchAnalysisImagesByText(siteId, query, token);
       setImageTextSearchResults(response.results);
-    } catch {
-      setImageTextSearchError(pick(locale, "Search failed. Please try again.", "검색 실패. 다시 시도해 주세요."));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setImageTextSearchError(detail || pick(locale, "Search failed. Please try again.", "검색 실패. 다시 시도해 주세요."));
     } finally {
       setImageTextSearchBusy(false);
     }

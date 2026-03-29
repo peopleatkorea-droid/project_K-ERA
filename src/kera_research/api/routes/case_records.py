@@ -31,12 +31,16 @@ def build_case_records_router(support: Any) -> APIRouter:
     def list_cases(
         site_id: str,
         mine: bool = False,
+        patient_id: str | None = None,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> Response:
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
-        payload = site_store.list_case_summaries(created_by_user_id=created_by_user_id)
+        payload = site_store.list_case_summaries(
+            created_by_user_id=created_by_user_id,
+            patient_id=patient_id,
+        )
         schedule_image_derivative_backfill(
             site_store,
             [str(item.get("representative_image_id") or "").strip() for item in payload],

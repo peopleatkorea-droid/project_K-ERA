@@ -315,6 +315,9 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [benchmarkBusy, setBenchmarkBusy] = useState(false);
   const [benchmarkResult, setBenchmarkResult] = useState<InitialTrainingBenchmarkResponse | null>(null);
   const [benchmarkJob, setBenchmarkJob] = useState<SiteJobRecord | null>(null);
+  const [retrievalBusy, setRetrievalBusy] = useState(false);
+  const [retrievalResult, setRetrievalResult] = useState<InitialTrainingBenchmarkResponse | null>(null);
+  const [retrievalJob, setRetrievalJob] = useState<SiteJobRecord | null>(null);
   const [crossValidationBusy, setCrossValidationBusy] = useState(false);
   const [crossValidationJob, setCrossValidationJob] = useState<SiteJobRecord | null>(null);
   const [sslBusy, setSslBusy] = useState(false);
@@ -454,6 +457,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const crossValidationPercent = Math.max(0, Math.min(100, Math.round(crossValidationProgress?.percent ?? 0)));
   const sslProgress = sslJob?.result?.progress ?? null;
   const sslPercent = Math.max(0, Math.min(100, Math.round(sslProgress?.percent ?? 0)));
+  const retrievalProgress = retrievalJob?.result?.progress ?? null;
+  const retrievalPercent = Math.max(0, Math.min(100, Math.round(retrievalProgress?.percent ?? 0)));
   const setToast = useCallback<Dispatch<SetStateAction<ToastState>>>((nextValue) => {
     setToastState((current) => {
       const resolved = typeof nextValue === "function" ? nextValue(current) : nextValue;
@@ -641,6 +646,12 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setBenchmarkResult,
     benchmarkJob,
     setBenchmarkJob,
+    retrievalBusy,
+    setRetrievalBusy,
+    retrievalResult,
+    setRetrievalResult,
+    retrievalJob,
+    setRetrievalJob,
     crossValidationBusy,
     setCrossValidationBusy,
     crossValidationJob,
@@ -720,6 +731,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     crossValidationPercent,
     sslProgress,
     sslPercent,
+    retrievalProgress,
+    retrievalPercent,
     formatTrainingStage,
     formatEmbeddingStage,
     toggleRocValidationSelection,

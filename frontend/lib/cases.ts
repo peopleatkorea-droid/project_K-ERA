@@ -145,7 +145,11 @@ export async function fetchPatientIdLookup(
   return fetchPatientIdLookupRuntime(siteId, token, patientId, options);
 }
 
-export async function fetchCases(siteId: string, token: string, options?: { mine?: boolean; signal?: AbortSignal }) {
+export async function fetchCases(
+  siteId: string,
+  token: string,
+  options?: { mine?: boolean; patientId?: string; signal?: AbortSignal },
+) {
   return fetchCasesRuntime(siteId, token, options);
 }
 

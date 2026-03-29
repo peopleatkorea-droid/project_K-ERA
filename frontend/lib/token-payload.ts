@@ -3,6 +3,7 @@
 type MainAppTokenPayload = {
   sub?: unknown;
   role?: unknown;
+  exp?: unknown;
 };
 
 function decodeBase64Url(segment: string): string | null {
@@ -42,4 +43,25 @@ export function readUserIdFromToken(token: string): string | null {
 export function readUserRoleFromToken(token: string): string | null {
   const payload = readTokenPayload(token);
   return typeof payload?.role === "string" && payload.role.trim() ? payload.role.trim() : null;
+}
+
+export function readTokenExpiresAt(token: string): number | null {
+  const payload = readTokenPayload(token);
+  const exp = payload?.exp;
+  const numericExp =
+    typeof exp === "number" ? exp : typeof exp === "string" && exp.trim() ? Number(exp.trim()) : Number.NaN;
+  if (!Number.isFinite(numericExp) || numericExp <= 0) {
+    return null;
+  }
+  return numericExp * 1000;
+}
+
+export function isTokenExpired(token: string, options?: { now?: number; clockSkewMs?: number }): boolean {
+  const expiresAt = readTokenExpiresAt(token);
+  if (expiresAt === null) {
+    return false;
+  }
+  const now = options?.now ?? Date.now();
+  const clockSkewMs = options?.clockSkewMs ?? 30_000;
+  return now >= expiresAt - clockSkewMs;
 }

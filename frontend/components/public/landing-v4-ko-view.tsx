@@ -179,7 +179,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               참여
             </a>
             <button
-              className="cursor-pointer rounded-full border border-[rgba(45,212,192,0.13)] px-3 py-1 text-[0.75rem] tracking-[0.06em] text-[#3f4b6a] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]"
+              className="cursor-pointer rounded-full border border-[rgba(45,212,192,0.13)] px-3 py-1 text-[0.75rem] tracking-[0.06em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]"
               type="button"
               onClick={() => props.onLocaleChange("en")}
             >

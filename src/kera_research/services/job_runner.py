@@ -20,6 +20,7 @@ WorkflowFactory = Callable[[ControlPlaneStore], Any]
 QUEUE_BY_JOB_TYPE = {
     "initial_training": "training",
     "initial_training_benchmark": "training",
+    "retrieval_baseline": "training",
     "cross_validation": "training",
     "ssl_pretraining": "training",
     "site_validation": "validation",
@@ -492,12 +493,51 @@ class SiteJobWorker:
             },
         }
 
+    def _handle_retrieval_baseline(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        workflow = self._workflow_service()
+        execution_device = str(payload["execution_device"])
+        crop_mode = str(payload.get("crop_mode") or "automated")
+        top_k = int(payload.get("top_k") or 10)
+
+        def update_progress(progress_payload: dict[str, Any]) -> None:
+            self._raise_if_cancel_requested(site_store, job["job_id"], "Retrieval baseline cancelled.")
+            self._update_progress(site_store, job["job_id"], progress_payload)
+
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Retrieval baseline cancelled.")
+        result = self._call_with_supported_kwargs(
+            workflow.run_retrieval_baseline,
+            site_store=site_store,
+            execution_device=execution_device,
+            crop_mode=crop_mode,
+            top_k=top_k,
+            progress_callback=update_progress,
+        )
+        response = {
+            "site_id": site_store.site_id,
+            "execution_device": execution_device,
+            "architectures": ["retrieval_dinov2"],
+            "benchmark_suite_key": "retrieval_baseline",
+            "results": [
+                {
+                    "architecture": "retrieval_dinov2",
+                    "status": "completed",
+                    "result": result,
+                    "model_version": None,
+                }
+            ],
+            "failures": [],
+        }
+        return response
+
     def _dispatch_job(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         job_type = str(job.get("job_type") or "")
         if job_type == "initial_training":
             return self._handle_initial_training(site_store, job)
         if job_type == "initial_training_benchmark":
             return self._handle_initial_training_benchmark(site_store, job)
+        if job_type == "retrieval_baseline":
+            return self._handle_retrieval_baseline(site_store, job)
         if job_type == "cross_validation":
             return self._handle_cross_validation(site_store, job)
         if job_type == "ssl_pretraining":

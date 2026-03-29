@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 from sqlalchemy import (
     JSON,
@@ -24,6 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 
 from kera_research.config import PATIENT_REFERENCE_SALT, STORAGE_DIR
 
@@ -31,9 +35,11 @@ from kera_research.config import PATIENT_REFERENCE_SALT, STORAGE_DIR
 def _configure_sqlite_wal(dbapi_conn: object, _connection_record: object) -> None:
     """Enable WAL journal mode for SQLite to allow concurrent reads during writes."""
     cursor = dbapi_conn.cursor()  # type: ignore[attr-defined]
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 
 def _apply_sqlite_wal(engine: Engine, database_url: str) -> None:
@@ -52,6 +58,84 @@ def _default_local_control_plane_cache_url() -> str:
     return f"sqlite:///{database_path}"
 
 
+def _sqlite_url_for_path(path: Path) -> str:
+    return f"sqlite:///{path.resolve().as_posix()}"
+
+
+def _sqlite_database_path(database_url: str) -> Path | None:
+    normalized = str(database_url or "").strip()
+    if not normalized.startswith("sqlite:///"):
+        return None
+    raw_path = unquote(normalized[len("sqlite:///") :]).strip()
+    if not raw_path or raw_path == ":memory:":
+        return None
+    if os.name == "nt" and raw_path.startswith("/") and len(raw_path) >= 3 and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    return Path(raw_path)
+
+
+def _sqlite_file_is_malformed(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+        finally:
+            connection.close()
+        return False
+    except sqlite3.DatabaseError as exc:
+        return _is_malformed_sqlite_error(exc)
+    except OSError:
+        return False
+
+
+def _recovered_control_plane_cache_path(database_path: Path) -> Path:
+    suffix = database_path.suffix
+    stem = database_path.stem
+    candidate = database_path.with_name(f"{stem}.recovered{suffix}")
+    recovery_index = 2
+    while _sqlite_file_is_malformed(candidate):
+        candidate = database_path.with_name(f"{stem}.recovered{recovery_index}{suffix}")
+        recovery_index += 1
+    return candidate
+
+
+def _is_malformed_sqlite_error(error: BaseException) -> bool:
+    message = str(error or "").strip().lower()
+    return "database disk image is malformed" in message or "file is not a database" in message
+
+
+def _can_rebuild_local_control_plane_cache(error: BaseException) -> bool:
+    return (
+        isinstance(error, SQLAlchemyDatabaseError)
+        and DATABASE_TOPOLOGY["control_plane_connection_mode"] == "remote_api_cache"
+        and DATABASE_TOPOLOGY["control_plane_backend"] == "sqlite"
+        and _is_malformed_sqlite_error(error)
+        and _sqlite_database_path(CONTROL_PLANE_DATABASE_URL) is not None
+    )
+
+
+def _quarantine_local_control_plane_cache() -> list[Path]:
+    database_path = _sqlite_database_path(CONTROL_PLANE_DATABASE_URL)
+    if database_path is None:
+        return []
+    CONTROL_PLANE_ENGINE.dispose()
+    quarantine_suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ.corrupt.bak")
+    moved_paths: list[Path] = []
+    for candidate in (
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+    ):
+        if not candidate.exists():
+            continue
+        target = Path(f"{candidate}.{quarantine_suffix}")
+        candidate.replace(target)
+        moved_paths.append(target)
+    return moved_paths
+
+
 def _control_plane_remote_api_enabled() -> bool:
     return bool(
         (os.getenv("KERA_CONTROL_PLANE_API_BASE_URL") or os.getenv("NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL") or "")
@@ -66,9 +150,30 @@ def _resolve_control_plane_database_url() -> str:
         or ""
     ).strip()
     if local_cache_url:
+        local_cache_path = _sqlite_database_path(local_cache_url)
+        if local_cache_path is not None and _sqlite_file_is_malformed(local_cache_path):
+            recovered_path = _recovered_control_plane_cache_path(local_cache_path)
+            warnings.warn(
+                "The local control-plane cache database is malformed. "
+                f"Using a fresh recovery cache at {recovered_path.name}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return _sqlite_url_for_path(recovered_path)
         return local_cache_url
     if _control_plane_remote_api_enabled():
-        return _default_local_control_plane_cache_url()
+        default_cache_url = _default_local_control_plane_cache_url()
+        default_cache_path = _sqlite_database_path(default_cache_url)
+        if default_cache_path is not None and _sqlite_file_is_malformed(default_cache_path):
+            recovered_path = _recovered_control_plane_cache_path(default_cache_path)
+            warnings.warn(
+                "The default local control-plane cache database is malformed. "
+                f"Using a fresh recovery cache at {recovered_path.name}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return _sqlite_url_for_path(recovered_path)
+        return default_cache_url
     legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
     return (
         os.getenv("KERA_CONTROL_PLANE_DATABASE_URL")
@@ -207,6 +312,7 @@ _CONTROL_PLANE_DB_INITIALIZED = False
 _DATA_PLANE_DB_INITIALIZED = False
 _CONTROL_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_DB_INIT_LOCK = threading.Lock()
+_DATA_PLANE_SQLITE_SEARCH_READY = False
 
 users = Table(
     "users",
@@ -529,8 +635,24 @@ def init_control_plane_db() -> None:
     with _CONTROL_PLANE_DB_INIT_LOCK:
         if _CONTROL_PLANE_DB_INITIALIZED:
             return
-        CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
-        _migrate_control_plane_schema()
+        rebuild_cache = False
+        try:
+            CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
+            _migrate_control_plane_schema()
+        except Exception as exc:
+            if not _can_rebuild_local_control_plane_cache(exc):
+                raise
+            rebuild_cache = True
+        if rebuild_cache:
+            moved_paths = _quarantine_local_control_plane_cache()
+            warnings.warn(
+                "Rebuilt the malformed local control-plane cache database. "
+                f"Backed up files: {', '.join(path.name for path in moved_paths) or 'none'}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
+            _migrate_control_plane_schema()
         _CONTROL_PLANE_DB_INITIALIZED = True
 
 
@@ -549,6 +671,217 @@ def init_data_plane_db() -> None:
 def init_db() -> None:
     init_control_plane_db()
     init_data_plane_db()
+
+
+def data_plane_sqlite_search_ready() -> bool:
+    return DATA_PLANE_ENGINE.dialect.name == "sqlite" and _DATA_PLANE_SQLITE_SEARCH_READY
+
+
+def _ensure_sqlite_patient_case_search(conn: Any) -> None:
+    global _DATA_PLANE_SQLITE_SEARCH_READY
+    if DATA_PLANE_ENGINE.dialect.name != "sqlite":
+        _DATA_PLANE_SQLITE_SEARCH_READY = False
+        return
+
+    trigger_statements = [
+        "DROP TRIGGER IF EXISTS patient_case_search_visits_ai",
+        "DROP TRIGGER IF EXISTS patient_case_search_visits_au",
+        "DROP TRIGGER IF EXISTS patient_case_search_visits_ad",
+        "DROP TRIGGER IF EXISTS patient_case_search_patients_ai",
+        "DROP TRIGGER IF EXISTS patient_case_search_patients_au",
+        "DROP TRIGGER IF EXISTS patient_case_search_patients_ad",
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_ai
+        AFTER INSERT ON visits
+        BEGIN
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            NEW.visit_id,
+            NEW.patient_id,
+            COALESCE(p.local_case_code, ''),
+            COALESCE(p.chart_alias, ''),
+            COALESCE(NEW.culture_category, ''),
+            COALESCE(NEW.culture_species, ''),
+            COALESCE(NEW.visit_date, ''),
+            COALESCE(NEW.actual_visit_date, '')
+          FROM patients p
+          WHERE p.site_id = NEW.site_id AND p.patient_id = NEW.patient_id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_au
+        AFTER UPDATE ON visits
+        BEGIN
+          DELETE FROM patient_case_search WHERE visit_id = OLD.visit_id;
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            NEW.visit_id,
+            NEW.patient_id,
+            COALESCE(p.local_case_code, ''),
+            COALESCE(p.chart_alias, ''),
+            COALESCE(NEW.culture_category, ''),
+            COALESCE(NEW.culture_species, ''),
+            COALESCE(NEW.visit_date, ''),
+            COALESCE(NEW.actual_visit_date, '')
+          FROM patients p
+          WHERE p.site_id = NEW.site_id AND p.patient_id = NEW.patient_id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_visits_ad
+        AFTER DELETE ON visits
+        BEGIN
+          DELETE FROM patient_case_search WHERE visit_id = OLD.visit_id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_ai
+        AFTER INSERT ON patients
+        BEGIN
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            v.visit_id,
+            NEW.patient_id,
+            COALESCE(NEW.local_case_code, ''),
+            COALESCE(NEW.chart_alias, ''),
+            COALESCE(v.culture_category, ''),
+            COALESCE(v.culture_species, ''),
+            COALESCE(v.visit_date, ''),
+            COALESCE(v.actual_visit_date, '')
+          FROM visits v
+          WHERE v.site_id = NEW.site_id AND v.patient_id = NEW.patient_id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_au
+        AFTER UPDATE ON patients
+        BEGIN
+          DELETE FROM patient_case_search
+          WHERE site_id = OLD.site_id AND patient_id = OLD.patient_id;
+          INSERT INTO patient_case_search (
+            site_id,
+            visit_id,
+            patient_id,
+            local_case_code,
+            chart_alias,
+            culture_category,
+            culture_species,
+            visit_date,
+            actual_visit_date
+          )
+          SELECT
+            NEW.site_id,
+            v.visit_id,
+            NEW.patient_id,
+            COALESCE(NEW.local_case_code, ''),
+            COALESCE(NEW.chart_alias, ''),
+            COALESCE(v.culture_category, ''),
+            COALESCE(v.culture_species, ''),
+            COALESCE(v.visit_date, ''),
+            COALESCE(v.actual_visit_date, '')
+          FROM visits v
+          WHERE v.site_id = NEW.site_id AND v.patient_id = NEW.patient_id;
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS patient_case_search_patients_ad
+        AFTER DELETE ON patients
+        BEGIN
+          DELETE FROM patient_case_search
+          WHERE site_id = OLD.site_id AND patient_id = OLD.patient_id;
+        END
+        """,
+    ]
+    try:
+        conn.exec_driver_sql(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS patient_case_search USING fts5(
+              site_id UNINDEXED,
+              visit_id UNINDEXED,
+              patient_id,
+              local_case_code,
+              chart_alias,
+              culture_category,
+              culture_species,
+              visit_date,
+              actual_visit_date,
+              tokenize = 'unicode61 remove_diacritics 2'
+            )
+            """
+        )
+        for statement in trigger_statements:
+            conn.exec_driver_sql(statement)
+        conn.exec_driver_sql("DELETE FROM patient_case_search")
+        conn.exec_driver_sql(
+            """
+            INSERT INTO patient_case_search (
+              site_id,
+              visit_id,
+              patient_id,
+              local_case_code,
+              chart_alias,
+              culture_category,
+              culture_species,
+              visit_date,
+              actual_visit_date
+            )
+            SELECT
+              v.site_id,
+              v.visit_id,
+              v.patient_id,
+              COALESCE(p.local_case_code, ''),
+              COALESCE(p.chart_alias, ''),
+              COALESCE(v.culture_category, ''),
+              COALESCE(v.culture_species, ''),
+              COALESCE(v.visit_date, ''),
+              COALESCE(v.actual_visit_date, '')
+            FROM visits v
+            JOIN patients p
+              ON v.site_id = p.site_id
+             AND v.patient_id = p.patient_id
+            """
+        )
+        _DATA_PLANE_SQLITE_SEARCH_READY = True
+    except Exception:
+        _DATA_PLANE_SQLITE_SEARCH_READY = False
+        warnings.warn(
+            "Unable to initialize SQLite patient-case FTS search; falling back to legacy LIKE filters.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _migrate_control_plane_schema() -> None:
@@ -777,6 +1110,8 @@ def _migrate_data_plane_schema() -> None:
                     )
                 )
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_site_jobs_claimed_by ON site_jobs (claimed_by)"))
+
+        _ensure_sqlite_patient_case_search(conn)
 
 
 def _backfill_visit_reference_columns(conn: Any) -> None:

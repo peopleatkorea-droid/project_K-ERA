@@ -51,6 +51,19 @@ function scheduleDeferredBrowserTask(task: () => void, timeoutMs = 180) {
   return () => window.clearTimeout(timerId);
 }
 
+function caseSummaryTimestamp(caseRecord: CaseSummaryRecord): number {
+  const rawValue = caseRecord.latest_image_uploaded_at ?? caseRecord.created_at ?? "";
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return 0;
+  }
+  return parsed.getTime();
+}
+
+function sortCaseTimelineRecords(records: CaseSummaryRecord[]): CaseSummaryRecord[] {
+  return [...records].sort((left, right) => caseSummaryTimestamp(right) - caseSummaryTimestamp(left));
+}
+
 type ToastState = {
   tone: "success" | "error";
   message: string;
@@ -92,6 +105,7 @@ export function useCaseWorkspaceSiteData({
   const [cases, setCases] = useState<CaseSummaryRecord[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
   const [selectedCase, setSelectedCase] = useState<CaseSummaryRecord | null>(null);
+  const [selectedPatientCases, setSelectedPatientCases] = useState<CaseSummaryRecord[]>([]);
   const [selectedCaseImages, setSelectedCaseImages] = useState<SavedImagePreview[]>([]);
   const [patientVisitGallery, setPatientVisitGallery] = useState<Record<string, SavedImagePreview[]>>({});
   const [panelBusy, setPanelBusy] = useState(false);
@@ -109,8 +123,12 @@ export function useCaseWorkspaceSiteData({
   const visitImageRecordCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
   const visitImageRecordPromiseCacheRef = useRef<Map<string, Promise<SavedImagePreview[]>>>(new Map());
   const visitImagePreviewWarmPromiseCacheRef = useRef<Map<string, Promise<void>>>(new Map());
+  const patientCaseTimelineCacheRef = useRef<Map<string, CaseSummaryRecord[]>>(new Map());
+  const patientCaseTimelinePromiseCacheRef = useRef<Map<string, Promise<CaseSummaryRecord[]>>>(new Map());
+  const patientCaseTimelineReadyRef = useRef<Map<string, boolean>>(new Map());
   const caseImageCacheRef = useRef<Map<string, SavedImagePreview[]>>(new Map());
   const caseHistoryCacheRef = useRef<Map<string, CaseHistoryResponse>>(new Map());
+  const siteCasesLoadedRef = useRef(false);
   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
   const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
   const siteModelVersionsLoadedSiteIdRef = useRef<string | null>(null);
@@ -121,6 +139,12 @@ export function useCaseWorkspaceSiteData({
     visitImagePreviewWarmPromiseCacheRef.current.clear();
     caseImageCacheRef.current.clear();
     selectedCaseImageCaseIdRef.current = null;
+  }
+
+  function clearPatientCaseTimelineCache() {
+    patientCaseTimelineCacheRef.current.clear();
+    patientCaseTimelinePromiseCacheRef.current.clear();
+    patientCaseTimelineReadyRef.current.clear();
   }
 
   function isAbortError(error: unknown): boolean {
@@ -136,6 +160,10 @@ export function useCaseWorkspaceSiteData({
 
   function buildVisitImageCacheKey(patientId: string, visitDate: string): string {
     return `${patientId}::${normalizeVisitMatchKey(visitDate)}`;
+  }
+
+  function buildPatientCaseTimelineCacheKey(patientId: string): string {
+    return patientId.trim();
   }
 
   function hasSettledCaseImageCache(
@@ -155,10 +183,13 @@ export function useCaseWorkspaceSiteData({
     siteActivityLoadedSiteIdRef.current = null;
     siteValidationLoadedSiteIdRef.current = null;
     siteModelVersionsLoadedSiteIdRef.current = null;
+    siteCasesLoadedRef.current = false;
     clearCaseImageCache();
+    clearPatientCaseTimelineCache();
     setCases([]);
     setCasesLoading(false);
     setSelectedCase(null);
+    setSelectedPatientCases([]);
     setSelectedCaseImages([]);
     setPatientVisitGallery({});
     setPanelBusy(false);
@@ -176,9 +207,32 @@ export function useCaseWorkspaceSiteData({
 
   useEffect(() => {
     clearCaseImageCache();
+    clearPatientCaseTimelineCache();
     setSelectedCaseImages([]);
     setPatientVisitGallery({});
   }, [caseImageCacheVersion]);
+
+  useEffect(() => {
+    clearPatientCaseTimelineCache();
+    siteCasesLoadedRef.current = false;
+  }, [showOnlyMine]);
+
+  useEffect(() => {
+    if (selectedPatientCases.length === 0) {
+      return;
+    }
+    const patientId = selectedPatientCases[0]?.patient_id?.trim();
+    if (!patientId) {
+      return;
+    }
+    if (!patientCaseTimelineReadyRef.current.get(buildPatientCaseTimelineCacheKey(patientId))) {
+      return;
+    }
+    patientCaseTimelineCacheRef.current.set(
+      buildPatientCaseTimelineCacheKey(patientId),
+      sortCaseTimelineRecords(selectedPatientCases),
+    );
+  }, [selectedPatientCases]);
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -197,11 +251,13 @@ export function useCaseWorkspaceSiteData({
 
     async function loadRecords() {
       setCasesLoading(true);
+      siteCasesLoadedRef.current = false;
       try {
         const nextCases = await fetchCases(currentSiteId, token, { mine: showOnlyMine, signal: controller.signal });
         if (cancelled) {
           return;
         }
+        siteCasesLoadedRef.current = true;
         setCases(nextCases);
         setSelectedCase((current) => {
           if (!current) {
@@ -234,6 +290,145 @@ export function useCaseWorkspaceSiteData({
   }, [describeError, railView, selectedSiteId, setToast, showOnlyMine, token, unableLoadRecentCases]);
 
   useEffect(() => {
+    if (!selectedSiteId || !selectedCase) {
+      setSelectedPatientCases([]);
+      return;
+    }
+
+    const currentSiteId = selectedSiteId;
+    const currentCase = selectedCase;
+    const cacheKey = buildPatientCaseTimelineCacheKey(currentCase.patient_id);
+    let cancelled = false;
+    const controller = new AbortController();
+
+    function syncSelectedCaseFromTimeline(timeline: CaseSummaryRecord[]) {
+      const refreshedCase =
+        timeline.find((item) => item.case_id === currentCase.case_id) ??
+        timeline.find(
+          (item) =>
+            item.patient_id === currentCase.patient_id &&
+            item.visit_date === currentCase.visit_date,
+        ) ??
+        null;
+      if (!refreshedCase) {
+        return;
+      }
+      setSelectedCase((active) => {
+        if (!active) {
+          return active;
+        }
+        if (
+          active.patient_id !== currentCase.patient_id ||
+          active.visit_date !== currentCase.visit_date
+        ) {
+          return active;
+        }
+        return refreshedCase;
+      });
+    }
+
+    async function loadPatientCaseTimeline(patientId: string): Promise<CaseSummaryRecord[]> {
+      const patientTimelineCacheKey = buildPatientCaseTimelineCacheKey(patientId);
+      const cachedTimeline = patientCaseTimelineCacheRef.current.get(patientTimelineCacheKey);
+      if (cachedTimeline && patientCaseTimelineReadyRef.current.get(patientTimelineCacheKey)) {
+        return cachedTimeline;
+      }
+      const pendingRequest = patientCaseTimelinePromiseCacheRef.current.get(patientTimelineCacheKey);
+      if (pendingRequest) {
+        return pendingRequest;
+      }
+      const nextRequest = fetchCases(currentSiteId, token, {
+        mine: showOnlyMine,
+        patientId,
+        signal: controller.signal,
+      })
+        .then((items) => {
+          const sortedItems = sortCaseTimelineRecords(items);
+          patientCaseTimelineReadyRef.current.set(patientTimelineCacheKey, true);
+          patientCaseTimelineCacheRef.current.set(patientTimelineCacheKey, sortedItems);
+          return sortedItems;
+        })
+        .finally(() => {
+          patientCaseTimelinePromiseCacheRef.current.delete(patientTimelineCacheKey);
+        });
+      patientCaseTimelinePromiseCacheRef.current.set(patientTimelineCacheKey, nextRequest);
+      return nextRequest;
+    }
+
+    const cachedTimeline = patientCaseTimelineCacheRef.current.get(cacheKey);
+    if (cachedTimeline && patientCaseTimelineReadyRef.current.get(cacheKey)) {
+      setSelectedPatientCases(cachedTimeline);
+      syncSelectedCaseFromTimeline(cachedTimeline);
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+
+    const loadedTimeline = sortCaseTimelineRecords(
+      cases.filter((item) => item.patient_id === currentCase.patient_id),
+    );
+    const hasAdditionalPatientVisit = loadedTimeline.some(
+      (item) => item.case_id !== currentCase.case_id,
+    );
+    if (loadedTimeline.length > 0 && (siteCasesLoadedRef.current || hasAdditionalPatientVisit)) {
+      patientCaseTimelineReadyRef.current.set(cacheKey, true);
+      patientCaseTimelineCacheRef.current.set(cacheKey, loadedTimeline);
+      setSelectedPatientCases(loadedTimeline);
+      syncSelectedCaseFromTimeline(loadedTimeline);
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+
+    setSelectedPatientCases((current) => {
+      const hasSamePatientOnly =
+        current.length > 0 &&
+        current.every((item) => item.patient_id === currentCase.patient_id);
+      if (!hasSamePatientOnly) {
+        return [currentCase];
+      }
+      if (current.some((item) => item.case_id === currentCase.case_id)) {
+        return current;
+      }
+      return sortCaseTimelineRecords([...current, currentCase]);
+    });
+
+    void loadPatientCaseTimeline(currentCase.patient_id)
+      .then((timeline) => {
+        if (cancelled) {
+          return;
+        }
+        setSelectedPatientCases(timeline);
+        syncSelectedCaseFromTimeline(timeline);
+      })
+      .catch((nextError) => {
+        if (isAbortError(nextError)) {
+          return;
+        }
+        if (!cancelled) {
+          setToast({
+            tone: "error",
+            message: describeError(
+              nextError,
+              pick(
+                locale,
+                "Unable to load this patient's visit timeline.",
+                "이 환자의 방문 타임라인을 불러오지 못했습니다.",
+              ),
+            ),
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, setToast, showOnlyMine, token]);
+
+  useEffect(() => {
     setCaseHistory(null);
     setPatientVisitGallery({});
     setPatientVisitGalleryBusy(false);
@@ -245,8 +440,11 @@ export function useCaseWorkspaceSiteData({
 
     const currentSiteId = selectedSiteId;
     const currentCase = selectedCase;
-    const matchedPatientCases = cases.filter((item) => item.patient_id === currentCase.patient_id);
-    const patientCases = matchedPatientCases.length > 0 ? matchedPatientCases : [currentCase];
+    const patientCases =
+      selectedPatientCases.length > 0 &&
+      selectedPatientCases.every((item) => item.patient_id === currentCase.patient_id)
+        ? selectedPatientCases
+        : [currentCase];
     let cancelled = false;
     const controller = new AbortController();
 
@@ -550,7 +748,7 @@ export function useCaseWorkspaceSiteData({
       cancelDeferredGallery();
       cancelDeferredHistory();
     };
-  }, [caseImageCacheVersion, cases, describeError, locale, pick, selectedCase, selectedSiteId, token, unableLoadCaseHistory]);
+  }, [caseImageCacheVersion, describeError, locale, pick, selectedCase, selectedPatientCases, selectedSiteId, token, unableLoadCaseHistory]);
 
   useEffect(() => {
     if (!selectedCase || selectedCaseImageCaseIdRef.current !== selectedCase.case_id) {
@@ -678,6 +876,8 @@ export function useCaseWorkspaceSiteData({
     casesLoading,
     selectedCase,
     setSelectedCase,
+    selectedPatientCases,
+    setSelectedPatientCases,
     selectedCaseImages,
     setSelectedCaseImages,
     patientVisitGallery,

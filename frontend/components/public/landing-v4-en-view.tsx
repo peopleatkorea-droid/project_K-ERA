@@ -124,7 +124,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             EN
           </button>
           <button
-            className="border-l border-white/25 px-3.5 py-1 text-[0.63rem] tracking-[0.1em] text-white/55 transition hover:bg-white/10 hover:text-white font-mono-alt"
+            className="border-l border-white/25 px-3.5 py-1 text-[0.63rem] tracking-[0.1em] text-white/80 transition hover:bg-white/10 hover:text-white font-mono-alt"
             type="button"
             onClick={() => props.onLocaleChange("ko")}
           >

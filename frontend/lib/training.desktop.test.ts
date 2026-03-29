@@ -207,6 +207,30 @@ describe("training desktop routing", () => {
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });
 
+  it("uses the desktop retrieval baseline runner when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_retrieval_1" } });
+
+    const mod = await import("./training");
+    await mod.runRetrievalBaseline("SITE_A", "desktop-token", {
+      execution_mode: "gpu",
+      crop_mode: "manual",
+      top_k: 7,
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_retrieval_baseline", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        execution_mode: "gpu",
+        crop_mode: "manual",
+        top_k: 7,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
   it("uses the desktop SSL runner when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_ssl_1" } });

@@ -47,9 +47,5 @@ pub(super) fn desktop_local_backend_mode() -> String {
             }
         }
     }
-    if desktop_ml_transport() == "http" {
-        "external".to_string()
-    } else {
-        "managed".to_string()
-    }
+    "managed".to_string()
 }

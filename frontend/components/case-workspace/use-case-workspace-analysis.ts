@@ -116,6 +116,7 @@ type Args = {
   setPanelOpen: Dispatch<SetStateAction<boolean>>;
   setCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   setSelectedCase: Dispatch<SetStateAction<CaseSummaryRecord | null>>;
+  setSelectedPatientCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   setSelectedCaseImages: Dispatch<SetStateAction<SavedImagePreview[]>>;
   setCaseHistory: Dispatch<SetStateAction<CaseHistoryResponse | null>>;
   setContributionResult: Dispatch<
@@ -179,6 +180,7 @@ export function useCaseWorkspaceAnalysis({
   setPanelOpen,
   setCases,
   setSelectedCase,
+  setSelectedPatientCases,
   setSelectedCaseImages,
   setCaseHistory,
   setContributionResult,
@@ -1754,6 +1756,17 @@ export function useCaseWorkspaceAnalysis({
             item.visit_date === selectedCase.visit_date,
         ) ??
         null;
+      setSelectedPatientCases((current) =>
+        current.map((item) =>
+          item.case_id === selectedCase.case_id
+            ? {
+                ...item,
+                representative_image_id: imageId,
+                representative_view: targetImage.view,
+              }
+            : item,
+        ),
+      );
       setSelectedCase(refreshedCase);
       setToast({
         tone: "success",

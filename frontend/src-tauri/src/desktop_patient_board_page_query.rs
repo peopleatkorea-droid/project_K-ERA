@@ -22,7 +22,7 @@ fn query_patient_board_page_ids(
     } else {
         String::new()
     };
-    let search_clause = build_search_clause(&payload.search, &mut ids_params);
+    let search_clause = build_search_clause(site_id, &payload.search, &mut ids_params);
     ids_params.push(Value::Text(site_id.to_string()));
     let raw_offset = (page.saturating_sub(1) * page_size) as i64;
     ids_params.push(Value::Integer(page_size as i64));

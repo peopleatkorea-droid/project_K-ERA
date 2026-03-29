@@ -119,16 +119,70 @@ export function useCaseWorkspaceDraftState({
   draftStorageKey,
   favoriteStorageKey,
 }: Args) {
-  const [draft, setDraft] = useState<DraftState>(() => createDraft());
-  const [pendingOrganism, setPendingOrganism] = useState<OrganismRecord>({
-    culture_category: "bacterial",
-    culture_species: cultureSpecies.bacterial[0],
-  });
+  function defaultPendingOrganism(category = "bacterial"): OrganismRecord {
+    const nextCategory = String(category || "bacterial");
+    const speciesOptions = cultureSpecies[nextCategory] ?? cultureSpecies.bacterial ?? [];
+    return {
+      culture_category: nextCategory,
+      culture_species: speciesOptions[0] ?? "",
+    };
+  }
+
+  function readStoredDraftSnapshot(siteId: string | null): PersistedDraft | null {
+    if (!siteId || typeof window === "undefined") {
+      return null;
+    }
+    const rawDraft = window.localStorage.getItem(draftStorageKey(userId, siteId));
+    if (!rawDraft) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(rawDraft) as PersistedDraft;
+      return {
+        ...parsed,
+        draft: normalizeRecoveredDraft({
+          ...createDraft(),
+          ...parsed.draft,
+        }),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function readStoredFavoriteIds(siteId: string | null): string[] {
+    if (!siteId || typeof window === "undefined") {
+      return [];
+    }
+    const rawFavorites = window.localStorage.getItem(favoriteStorageKey(userId, siteId));
+    if (!rawFavorites) {
+      return [];
+    }
+    try {
+      const parsedFavorites = JSON.parse(rawFavorites) as string[];
+      return Array.isArray(parsedFavorites) ? parsedFavorites : [];
+    } catch {
+      return [];
+    }
+  }
+
+  const initialDraftSnapshotRef = useRef<PersistedDraft | null>(readStoredDraftSnapshot(selectedSiteId));
+  const initialFavoriteCaseIdsRef = useRef<string[]>(readStoredFavoriteIds(selectedSiteId));
+  const [draft, setDraft] = useState<DraftState>(
+    () => initialDraftSnapshotRef.current?.draft ?? createDraft(),
+  );
+  const [pendingOrganism, setPendingOrganism] = useState<OrganismRecord>(() =>
+    defaultPendingOrganism(initialDraftSnapshotRef.current?.draft.culture_category),
+  );
   const [showAdditionalOrganismForm, setShowAdditionalOrganismForm] = useState(false);
   const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
   const [draftLesionPromptBoxes, setDraftLesionPromptBoxes] = useState<LesionBoxMap>({});
-  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
-  const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>([]);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(
+    () => initialDraftSnapshotRef.current?.updated_at ?? null,
+  );
+  const [favoriteCaseIds, setFavoriteCaseIds] = useState<string[]>(
+    () => initialFavoriteCaseIdsRef.current,
+  );
   const draftImagesRef = useRef<DraftImage[]>([]);
   const lastPersistedAssetSignatureRef = useRef<string>(EMPTY_DRAFT_ASSET_SIGNATURE);
   const lastPersistedAssetStorageKeyRef = useRef<string | null>(null);
@@ -141,15 +195,6 @@ export function useCaseWorkspaceDraftState({
   function resetPersistedAssetSnapshot() {
     lastPersistedAssetSignatureRef.current = EMPTY_DRAFT_ASSET_SIGNATURE;
     lastPersistedAssetStorageKeyRef.current = null;
-  }
-
-  function defaultPendingOrganism(category = "bacterial"): OrganismRecord {
-    const nextCategory = String(category || "bacterial");
-    const speciesOptions = cultureSpecies[nextCategory] ?? cultureSpecies.bacterial ?? [];
-    return {
-      culture_category: nextCategory,
-      culture_species: speciesOptions[0] ?? "",
-    };
   }
 
   function pruneLesionBoxes(nextImages: DraftImage[], currentBoxes: LesionBoxMap): LesionBoxMap {
@@ -227,18 +272,18 @@ export function useCaseWorkspaceDraftState({
         }
       }
 
-      let persistedAssets = null;
-      try {
-        persistedAssets = await readPersistedDraftAssets(storageKey);
-      } catch {
-        persistedAssets = null;
-      }
-
-      if (cancelled) {
-        return;
-      }
-
       if (!rawDraft) {
+        let persistedAssets = null;
+        try {
+          persistedAssets = await readPersistedDraftAssets(storageKey);
+        } catch {
+          persistedAssets = null;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
         rememberPersistedAssets(storageKey, [], {});
         setDraft(createDraft());
         setPendingOrganism(defaultPendingOrganism());
@@ -258,13 +303,25 @@ export function useCaseWorkspaceDraftState({
           ...createDraft(),
           ...parsed.draft,
         });
-        const recoveredImages = persistedAssets ? recoverDraftImages(persistedAssets.images) : [];
-        const recoveredLesionBoxes = pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {});
-        rememberPersistedAssets(storageKey, recoveredImages, recoveredLesionBoxes);
         setDraft(recoveredDraft);
         setPendingOrganism(defaultPendingOrganism(recoveredDraft.culture_category));
         setShowAdditionalOrganismForm(false);
         setDraftSavedAt(parsed.updated_at);
+
+        let persistedAssets = null;
+        try {
+          persistedAssets = await readPersistedDraftAssets(storageKey);
+        } catch {
+          persistedAssets = null;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const recoveredImages = persistedAssets ? recoverDraftImages(persistedAssets.images) : [];
+        const recoveredLesionBoxes = pruneLesionBoxes(recoveredImages, persistedAssets?.lesion_boxes ?? {});
+        rememberPersistedAssets(storageKey, recoveredImages, recoveredLesionBoxes);
         replaceDraftImages(recoveredImages);
         setDraftLesionPromptBoxes(recoveredLesionBoxes);
         setToast({

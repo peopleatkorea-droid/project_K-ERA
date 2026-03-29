@@ -34,7 +34,13 @@ const TRAINING_ARCHITECTURE_OPTIONS = [
   ...LESION_GUIDED_FUSION_ARCHITECTURE_OPTIONS,
 ];
 
-const TRAINING_ARCHITECTURE_LABELS = new Map(TRAINING_ARCHITECTURE_OPTIONS.map((option) => [option.value, option.label]));
+const EXTRA_ARCHITECTURE_LABELS = [
+  { value: "retrieval_dinov2", label: "Retrieval DINOv2 (LOOCV)" },
+];
+
+const TRAINING_ARCHITECTURE_LABELS = new Map(
+  [...TRAINING_ARCHITECTURE_OPTIONS, ...EXTRA_ARCHITECTURE_LABELS].map((option) => [option.value, option.label]),
+);
 const ATTENTION_MIL_ARCHITECTURES = new Set(["dinov2_mil", "swin_mil"]);
 const BASELINE_BENCHMARK_PHASES = [
   {
@@ -231,6 +237,11 @@ type Props = {
   benchmarkJob: SiteJobRecord | null;
   benchmarkProgress: SiteJobRecord["result"] extends { progress?: infer T } ? T : unknown;
   benchmarkPercent: number;
+  retrievalBusy: boolean;
+  retrievalResult: InitialTrainingBenchmarkResponse | null;
+  retrievalJob: SiteJobRecord | null;
+  retrievalProgress: SiteJobRecord["result"] extends { progress?: infer T } ? T : unknown;
+  retrievalPercent: number;
   setInitialForm: Dispatch<SetStateAction<InitialTrainingForm>>;
   formatMetric: (value: number | null | undefined, emptyLabel?: string) => string;
   formatTrainingStage: (stage: string | null | undefined) => string;
@@ -244,6 +255,7 @@ type Props = {
   onRunLesionGuidedBenchmark: () => void;
   onRunInitialTraining: () => void;
   onResumeBenchmark: () => void;
+  onRunRetrievalBaseline: () => void;
 };
 
 type BenchmarkSuiteDefinition = (typeof BENCHMARK_SUITES)[number];
@@ -499,6 +511,11 @@ export function TrainingSection({
   benchmarkJob,
   benchmarkProgress,
   benchmarkPercent,
+  retrievalBusy,
+  retrievalResult,
+  retrievalJob,
+  retrievalProgress,
+  retrievalPercent,
   setInitialForm,
   formatMetric,
   formatTrainingStage,
@@ -512,6 +529,7 @@ export function TrainingSection({
   onRunLesionGuidedBenchmark,
   onRunInitialTraining,
   onResumeBenchmark,
+  onRunRetrievalBaseline,
 }: Props) {
   const [benchmarkConfirmSuiteKey, setBenchmarkConfirmSuiteKey] = useState<string | null>(null);
   const benchmarkPayload = (benchmarkJob?.payload ?? {}) as BenchmarkJobPayload;
@@ -524,6 +542,20 @@ export function TrainingSection({
   const resolvedBenchmarkResult =
     benchmarkResult ??
     (isBenchmarkResponse(benchmarkJob?.result?.response) ? benchmarkJob.result.response : null);
+  const resolvedRetrievalResult =
+    retrievalResult ?? (isBenchmarkResponse(retrievalJob?.result?.response) ? (retrievalJob?.result?.response as InitialTrainingBenchmarkResponse) : null);
+  // Merge retrieval entries into benchmark result for unified paper figures display
+  const mergedBenchmarkResult: InitialTrainingBenchmarkResponse | null = resolvedBenchmarkResult
+    ? resolvedRetrievalResult
+      ? {
+          ...resolvedBenchmarkResult,
+          results: [...resolvedBenchmarkResult.results, ...resolvedRetrievalResult.results],
+        }
+      : resolvedBenchmarkResult
+    : resolvedRetrievalResult ?? null;
+  const retrievalActive =
+    retrievalJob != null &&
+    ["queued", "running"].includes(String((retrievalJob.status as string | undefined) ?? "").toLowerCase());
   const activeBenchmarkSuite =
     getBenchmarkSuiteByKey(benchmarkPayload.benchmark_suite_key) ??
     getBenchmarkSuiteByKey(benchmarkResponseSuiteKey) ??
@@ -718,7 +750,7 @@ export function TrainingSection({
           {resolvedBenchmarkResult ? (
             <TrainingPaperFigures
               locale={locale}
-              benchmarkResult={resolvedBenchmarkResult}
+              benchmarkResult={mergedBenchmarkResult ?? resolvedBenchmarkResult}
               selectedSiteLabel={selectedSiteLabel}
               notAvailableLabel={notAvailableLabel}
               formatMetric={formatMetric}
@@ -1184,7 +1216,7 @@ export function TrainingSection({
             </Button>
             <TrainingPaperFigures
               locale={locale}
-              benchmarkResult={resolvedBenchmarkResult}
+              benchmarkResult={mergedBenchmarkResult ?? resolvedBenchmarkResult}
               selectedSiteLabel={selectedSiteLabel}
               notAvailableLabel={notAvailableLabel}
               formatMetric={formatMetric}
@@ -1251,6 +1283,67 @@ export function TrainingSection({
           <MetricItem value={formatMetric(initialResult.result.best_val_acc, notAvailableLabel)} label={pick(locale, "best val acc", "최고 검증 정확도")} />
         </MetricGrid>
       ) : null}
+
+      {/* Retrieval Baseline Section */}
+      <div className="grid gap-3 rounded-[18px] border border-border bg-surface px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="grid gap-1">
+            <span className={docSectionLabelClass}>
+              {pick(locale, "Retrieval Baseline (DINOv2 LOOCV)", "Retrieval Baseline (DINOv2 LOOCV)")}
+            </span>
+            <p className="text-xs text-muted">
+              {pick(
+                locale,
+                "Evaluates DINOv2 frozen embeddings with patient-level leave-one-out cosine similarity voting. No training required. Results appear in the ranking and ROC figures above.",
+                "DINOv2 frozen 임베딩으로 환자 단위 leave-one-out cosine similarity voting을 평가합니다. 학습 불필요. 위 ranking/ROC 그래프에 자동 포함됩니다.",
+              )}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={retrievalBusy || retrievalActive || !selectedSiteId}
+            onClick={onRunRetrievalBaseline}
+          >
+            {retrievalActive
+              ? pick(locale, "Running...", "실행 중...")
+              : pick(locale, "Run Retrieval Baseline", "Retrieval Baseline 실행")}
+          </Button>
+        </div>
+        {retrievalActive ? (
+          <div className="grid gap-3">
+            <div className="flex items-center gap-2">
+              <span className={docSiteBadgeClass}>{formatTrainingStage((retrievalProgress as { stage?: string } | null)?.stage ?? null)}</span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-brand/10" aria-hidden="true">
+              <div className="h-full rounded-full bg-brand" style={{ width: `${retrievalPercent}%` }} />
+            </div>
+            <MetricGrid columns={2}>
+              <MetricItem value={`${retrievalPercent}%`} label={pick(locale, "progress", "진행률")} />
+              <MetricItem
+                value={
+                  (retrievalProgress as { message?: string } | null)?.message ||
+                  pick(locale, "Waiting for progress...", "진행 상태를 기다리는 중...")
+                }
+                label={pick(locale, "status", "상태")}
+              />
+            </MetricGrid>
+          </div>
+        ) : null}
+        {resolvedRetrievalResult ? (() => {
+          const entry = resolvedRetrievalResult.results[0];
+          const metrics = entry?.result?.test_metrics as Record<string, unknown> | null | undefined;
+          return (
+            <MetricGrid columns={4}>
+              <MetricItem value={formatMetric(metrics?.AUROC as number | null, notAvailableLabel)} label="AUROC (LOOCV)" />
+              <MetricItem value={formatMetric(metrics?.balanced_accuracy as number | null, notAvailableLabel)} label={pick(locale, "balanced acc", "균형 정확도")} />
+              <MetricItem value={formatMetric(metrics?.sensitivity as number | null, notAvailableLabel)} label={pick(locale, "sensitivity", "민감도")} />
+              <MetricItem value={formatMetric(metrics?.specificity as number | null, notAvailableLabel)} label={pick(locale, "specificity", "특이도")} />
+            </MetricGrid>
+          );
+        })() : null}
+      </div>
     </Card>
   );
 }

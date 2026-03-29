@@ -708,6 +708,7 @@ class WeekendPlanRunner:
             "log_path": str(self.plan_root / "weekend_plan.log"),
             "events_path": str(self.events_path),
             "stages": self.stage_results,
+            "total_stages": len(self.stages),
             "estimated_total_hours": round(sum(float(stage.estimated_hours) for stage in self.stages), 1),
         }
 
@@ -939,6 +940,7 @@ class WeekendPlanRunner:
                 ),
                 force=True,
             )
+            self.save_summary()
             raise
 
     def resolve_ssl_checkpoint(self, stage_id: str) -> str:
@@ -1277,6 +1279,7 @@ class WeekendPlanRunner:
                 ),
                 force=True,
             )
+            self.save_summary()
             raise
 
 
@@ -1291,8 +1294,9 @@ def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
 
-    plan_id = f"transformer_weekend_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    plan_root = (args.plan_root or (REPO_ROOT / "artifacts" / "weekend_plans" / plan_id)).expanduser().resolve()
+    default_plan_id = f"transformer_weekend_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    plan_root = (args.plan_root or (REPO_ROOT / "artifacts" / "weekend_plans" / default_plan_id)).expanduser().resolve()
+    plan_id = plan_root.name if args.plan_root else default_plan_id
     log_path = plan_root / "weekend_plan.log"
     configure_logging(log_path, args.log_level)
 
