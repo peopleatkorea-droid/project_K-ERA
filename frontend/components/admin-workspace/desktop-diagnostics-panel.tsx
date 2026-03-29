@@ -9,14 +9,25 @@ import { SectionHeader } from "../ui/section-header";
 import {
   ensureDesktopDiagnosticsBackends,
   fetchDesktopDiagnosticsSnapshot,
+  type DesktopNodeStatus,
   stopDesktopDiagnosticsBackends,
   type DesktopDiagnosticsSnapshot,
 } from "../../lib/desktop-diagnostics";
 import { pick, type Locale } from "../../lib/i18n";
+import { registerLocalNodeViaMainAdmin } from "../../lib/local-node-client";
+import type { ManagedSiteRecord } from "../../lib/types";
 
 type Props = {
+  token: string;
   locale: Locale;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
+  selectedManagedSite?: ManagedSiteRecord | null;
+  selectedSiteLabel?: string | null;
+};
+
+type InlineStatus = {
+  tone: "success" | "danger";
+  message: string;
 };
 
 function formatBoolean(locale: Locale, value: boolean | null | undefined) {
@@ -68,6 +79,44 @@ function formatCapabilityState(locale: Locale, value: boolean | null | undefined
     return pick(locale, "Unavailable", "사용 불가");
   }
   return value ? pick(locale, "Present", "존재") : pick(locale, "Missing", "없음");
+}
+
+function formatStoredCredentialsState(locale: Locale, nodeStatus: DesktopNodeStatus | null | undefined) {
+  if (!nodeStatus) {
+    return pick(locale, "Unavailable", "사용 불가");
+  }
+  return nodeStatus.stored_credentials_present ? pick(locale, "Present", "존재") : pick(locale, "Missing", "없음");
+}
+
+function inlineStatusClassName(status: InlineStatus | null) {
+  if (!status) {
+    return null;
+  }
+  if (status.tone === "success") {
+    return "rounded-[16px] border border-emerald-300/40 bg-emerald-50/80 px-4 py-3 text-sm leading-6 text-emerald-900 dark:border-emerald-200/20 dark:bg-[rgba(22,101,52,0.18)] dark:text-[rgba(220,252,231,0.96)]";
+  }
+  return "rounded-[16px] border border-danger/20 bg-danger/5 px-4 py-3 text-sm leading-6 text-danger";
+}
+
+function resolveSiteLabel(site: ManagedSiteRecord | null | undefined, selectedSiteLabel: string | null | undefined) {
+  const candidates = [
+    selectedSiteLabel,
+    site?.source_institution_name,
+    site?.hospital_name,
+    site?.display_name,
+    site?.site_id,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function reconnectFailureMessage(_locale: Locale, detail: string) {
+  return detail;
 }
 
 function renderProcessDetails(
@@ -124,10 +173,12 @@ function renderProcessDetails(
   );
 }
 
-export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
+export function DesktopDiagnosticsPanel({ token, locale, formatDateTime, selectedManagedSite = null, selectedSiteLabel = null }: Props) {
   const [snapshot, setSnapshot] = useState<DesktopDiagnosticsSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [reconnectStatus, setReconnectStatus] = useState<InlineStatus | null>(null);
 
   async function run(
     operation: (signal?: AbortSignal) => Promise<DesktopDiagnosticsSnapshot>,
@@ -162,9 +213,66 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    setReconnectStatus(null);
+  }, [selectedManagedSite?.site_id]);
+
   const runtime = snapshot?.runtime ?? "web";
   const controlPlane = snapshot?.nodeStatus?.control_plane ?? null;
   const topology = snapshot?.nodeStatus?.database_topology ?? null;
+  const selectedSiteId = String(selectedManagedSite?.site_id ?? "").trim();
+  const resolvedSiteLabel = resolveSiteLabel(selectedManagedSite, selectedSiteLabel);
+  const reconnectUnavailableReason =
+    runtime !== "desktop"
+      ? pick(locale, "This recovery flow is only available in the desktop app.", "이 복구 기능은 데스크톱 앱에서만 사용할 수 있습니다.")
+      : !String(token ?? "").trim()
+        ? pick(locale, "Your admin session is missing. Sign in again before reconnecting the operations hub.", "관리자 세션이 없습니다. 운영 허브를 다시 연결하기 전에 다시 로그인하세요.")
+      : !selectedSiteId
+        ? pick(locale, "Select a hospital above before reconnecting the operations hub.", "운영 허브를 다시 연결하려면 먼저 병원을 선택하세요.")
+        : null;
+
+  async function handleReconnect() {
+    if (reconnectUnavailableReason) {
+      setReconnectStatus({ tone: "danger", message: reconnectUnavailableReason });
+      return;
+    }
+    setReconnectBusy(true);
+    setReconnectStatus(null);
+    setError(null);
+    try {
+      const preparedSnapshot = await ensureDesktopDiagnosticsBackends();
+      setSnapshot(preparedSnapshot);
+      const controlPlaneBaseUrl = String(preparedSnapshot?.nodeStatus?.control_plane?.base_url ?? controlPlane?.base_url ?? "").trim() || undefined;
+      await registerLocalNodeViaMainAdmin({
+        control_plane_user_token: token,
+        control_plane_base_url: controlPlaneBaseUrl,
+        device_name: "local-node",
+        site_id: selectedSiteId,
+        display_name: String(selectedManagedSite?.display_name ?? resolvedSiteLabel ?? selectedSiteId).trim() || selectedSiteId,
+        hospital_name: String(selectedManagedSite?.hospital_name ?? resolvedSiteLabel ?? selectedSiteId).trim() || selectedSiteId,
+        source_institution_id: String(selectedManagedSite?.source_institution_id ?? "").trim() || undefined,
+        overwrite: true,
+      });
+      const refreshedSnapshot = await fetchDesktopDiagnosticsSnapshot();
+      setSnapshot(refreshedSnapshot);
+      setReconnectStatus({
+        tone: "success",
+        message: pick(
+          locale,
+          `Operations hub is reconnected for ${resolvedSiteLabel ?? selectedSiteId}.`,
+          `${resolvedSiteLabel ?? selectedSiteId}에 운영 허브를 다시 연결했습니다.`,
+        ),
+      });
+    } catch (nextError) {
+      const detail = nextError instanceof Error ? nextError.message : String(nextError);
+      setReconnectStatus({
+        tone: "danger",
+        message: reconnectFailureMessage(locale, detail),
+      });
+    } finally {
+      setReconnectBusy(false);
+    }
+  }
 
   return (
     <Card as="section" variant="nested" className="grid gap-4 p-5">
@@ -302,6 +410,16 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
             label={pick(locale, "Data DB", "Data DB")}
           />
         </MetricGrid>
+        <MetricGrid columns={2}>
+          <MetricItem
+            value={formatStoredCredentialsState(locale, snapshot?.nodeStatus)}
+            label={pick(locale, "Stored node credentials", "저장된 node credentials")}
+          />
+          <MetricItem
+            value={formatBoolean(locale, snapshot?.nodeStatus ? Boolean(snapshot.nodeStatus.bootstrap) : null)}
+            label={pick(locale, "Bootstrap cache", "Bootstrap cache")}
+          />
+        </MetricGrid>
         <div className="grid gap-2 text-sm leading-6 text-muted">
           <div className="rounded-[14px] border border-border/70 bg-white/65 px-3 py-2 dark:bg-white/4">
             <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted">Base URL</div>
@@ -311,6 +429,48 @@ export function DesktopDiagnosticsPanel({ locale, formatDateTime }: Props) {
             <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted">Node ID</div>
             <div className="font-mono text-[0.78rem] text-ink break-all">{controlPlane?.node_id || "n/a"}</div>
           </div>
+        </div>
+      </Card>
+
+      <Card as="section" variant="nested" className="grid gap-3 border border-border/80 p-4">
+        <SectionHeader
+          title={pick(locale, "Operations hub recovery", "운영 허브 복구")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Use the current admin session to re-register this desktop node for the selected hospital and store fresh credentials in the local backend.",
+            "현재 관리자 세션으로 선택한 병원용 데스크톱 node를 다시 등록하고 새 credentials를 로컬 backend에 저장합니다.",
+          )}
+          aside={
+            <span className="rounded-full border border-border/80 bg-white/70 px-3 py-1 text-[0.72rem] font-semibold text-muted dark:bg-white/6">
+              {resolvedSiteLabel ?? pick(locale, "No hospital selected", "병원 미선택")}
+            </span>
+          }
+        />
+        <div className="rounded-[14px] border border-border/70 bg-white/65 px-3 py-2 text-sm leading-6 text-muted dark:bg-white/4">
+          {pick(
+            locale,
+            "No separate hub sign-in is required here. The reconnect action uses your current admin login and the hospital selected above.",
+            "여기서는 별도 운영 허브 로그인이 필요하지 않습니다. 다시 연결은 현재 관리자 로그인과 위에서 선택한 병원 기준으로 진행됩니다.",
+          )}
+        </div>
+        {reconnectUnavailableReason ? (
+          <div className="rounded-[16px] border border-amber-300/40 bg-amber-50/80 px-4 py-3 text-sm leading-6 text-[rgb(120,74,31)] dark:border-amber-200/20 dark:bg-[rgba(120,74,31,0.16)] dark:text-[rgba(255,232,204,0.92)]">
+            {reconnectUnavailableReason}
+          </div>
+        ) : null}
+        {reconnectStatus ? <div className={inlineStatusClassName(reconnectStatus)!}>{reconnectStatus.message}</div> : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            loading={reconnectBusy}
+            disabled={Boolean(reconnectUnavailableReason)}
+            onClick={() => void handleReconnect()}
+          >
+            {pick(locale, "Reconnect this hospital", "이 병원으로 다시 연결")}
+          </Button>
         </div>
       </Card>
 

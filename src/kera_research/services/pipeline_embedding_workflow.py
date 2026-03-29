@@ -88,9 +88,10 @@ class ResearchEmbeddingWorkflow:
         update_index: bool = True,
     ) -> dict[str, Any]:
         service = self.service
+        all_records = site_store.dataset_records()
         case_records = [
             item
-            for item in site_store.dataset_records()
+            for item in all_records
             if str(item.get("patient_id") or "") == patient_id
             and str(item.get("visit_date") or "") == visit_date
         ]
@@ -105,6 +106,20 @@ class ResearchEmbeddingWorkflow:
         )
         available_backends = ["classifier"]
         embedding_dims = {"classifier": int(classifier_embedding.size)}
+
+        biomedclip_error: str | None = None
+        try:
+            biomedclip_embedding = service.text_retriever._prepare_case_biomedclip_embedding(
+                site_store,
+                case_records,
+                execution_device,
+                force_refresh=force_refresh,
+            )
+            available_backends.append("biomedclip")
+            embedding_dims["biomedclip"] = int(biomedclip_embedding.size)
+        except Exception as exc:
+            biomedclip_error = str(exc)
+
         dinov2_error: str | None = None
         try:
             dinov2_embedding = service._prepare_case_dinov2_embedding(
@@ -135,6 +150,12 @@ class ResearchEmbeddingWorkflow:
                         model_version=model_version,
                         backend="dinov2",
                     )
+                if "biomedclip" in available_backends:
+                    vector_index["biomedclip"] = self.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="biomedclip",
+                    )
             except Exception as exc:
                 vector_index_error = str(exc)
         return {
@@ -147,6 +168,7 @@ class ResearchEmbeddingWorkflow:
             "embedding_dims": embedding_dims,
             "available_backends": available_backends,
             "dinov2_error": dinov2_error,
+            "biomedclip_error": biomedclip_error,
             "vector_index": vector_index,
             "vector_index_error": vector_index_error,
             "execution_device": execution_device,

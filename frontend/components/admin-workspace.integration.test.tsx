@@ -1032,9 +1032,9 @@ describe("AdminWorkspace integration", () => {
 
   it("shows the bundle root in the management input when the active root resolves under KERA_DATA", async () => {
     apiMocks.fetchStorageSettings.mockResolvedValue({
-      storage_root: "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
-      default_storage_root: "C:\\InstallParent\\KERA_DATA\\sites",
-      effective_default_storage_root: "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
+      storage_root: "\\\\?\\C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
+      default_storage_root: "\\\\?\\C:\\InstallParent\\KERA_DATA\\sites",
+      effective_default_storage_root: "\\\\?\\C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA\\sites",
       storage_root_source: "environment_default",
       uses_custom_root: false,
     });
@@ -1083,6 +1083,7 @@ describe("AdminWorkspace integration", () => {
     const input = await screen.findByLabelText("Folder path");
     expect(input).toHaveValue("C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
     expect(input).toHaveAttribute("placeholder", "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
+    expect(screen.getByText("C:\\InstallParent\\KERA_DATA")).toBeInTheDocument();
   });
 
   it("shows a loading placeholder instead of an empty storage root before settings resolve", async () => {

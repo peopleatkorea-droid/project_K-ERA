@@ -365,6 +365,7 @@ export async function uploadImage(
     visit_date: string;
     view: string;
     is_representative?: boolean;
+    refresh_embeddings?: boolean;
     file: File;
   },
 ) {

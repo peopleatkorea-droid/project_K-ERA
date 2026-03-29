@@ -20,10 +20,48 @@ class BiomedClipTextRetriever:
         runtime = ensure_biomedclip_runtime(requested_device)
         return runtime.torch, runtime.model, runtime.preprocess, runtime.tokenizer, runtime.device
 
+    def _biomedclip_embedding_dir(self, site_store: SiteStore) -> Path:
+        from kera_research.storage import ensure_dir
+        return ensure_dir(site_store.artifact_dir / "embeddings" / "biomedclip")
+
+    def _prepare_case_biomedclip_embedding(
+        self,
+        site_store: SiteStore,
+        case_records: list[dict[str, Any]],
+        requested_device: str,
+        force_refresh: bool = False,
+    ) -> np.ndarray:
+        if not case_records:
+            raise ValueError("No records provided for BiomedCLIP case embedding.")
+
+        image_paths = [
+            Path(str(record.get("image_path") or "").strip())
+            for record in case_records
+            if str(record.get("image_path") or "").strip()
+        ]
+        if not image_paths:
+            raise ValueError("No valid image paths found in case records for BiomedCLIP.")
+
+        persistence_dir = self._biomedclip_embedding_dir(site_store)
+        image_features = self.encode_images(
+            image_paths,
+            requested_device,
+            persistence_dir=persistence_dir,
+        )
+        case_vector = np.mean(image_features, axis=0).astype(np.float32)
+        case_vector = case_vector / max(float(np.linalg.norm(case_vector)), 1e-12)
+        return case_vector
+
     def warmup(self, requested_device: str = "auto") -> None:
         self._ensure_loaded(requested_device)
 
-    def encode_images(self, image_paths: list[str | Path], requested_device: str, batch_size: int = 32) -> np.ndarray:
+    def encode_images(
+        self,
+        image_paths: list[str | Path],
+        requested_device: str,
+        batch_size: int = 32,
+        persistence_dir: Path | None = None,
+    ) -> np.ndarray:
         if not image_paths:
             raise ValueError("At least one image is required for BiomedCLIP retrieval.")
         torch, model, preprocess, _tokenizer, device = self._ensure_loaded(requested_device)
@@ -31,9 +69,23 @@ class BiomedClipTextRetriever:
         results: list[np.ndarray | None] = [None] * len(image_paths)
         uncached_indices: list[int] = []
         for i, image_path in enumerate(image_paths):
-            cached = self._image_cache.get(str(image_path))
+            image_path_str = str(image_path)
+            cached = self._image_cache.get(image_path_str)
             if cached is not None:
                 results[i] = cached
+            elif persistence_dir is not None:
+                # Try loading from disk cache
+                cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                disk_path = persistence_dir / f"{cache_key}.npy"
+                if disk_path.exists():
+                    try:
+                        cached = np.load(disk_path)
+                        self._image_cache[image_path_str] = cached
+                        results[i] = cached
+                    except (OSError, ValueError):
+                        uncached_indices.append(i)
+                else:
+                    uncached_indices.append(i)
             else:
                 uncached_indices.append(i)
 
@@ -55,8 +107,18 @@ class BiomedClipTextRetriever:
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
             embeddings = features.detach().cpu().numpy().astype(np.float32)
             for j, idx in enumerate(valid_chunk_indices):
-                self._image_cache[str(image_paths[idx])] = embeddings[j]
-                results[idx] = embeddings[j]
+                image_path_str = str(image_paths[idx])
+                embedding = embeddings[j]
+                self._image_cache[image_path_str] = embedding
+                results[idx] = embedding
+                if persistence_dir is not None:
+                    cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                    disk_path = persistence_dir / f"{cache_key}.npy"
+                    try:
+                        persistence_dir.mkdir(parents=True, exist_ok=True)
+                        np.save(disk_path, embedding)
+                    except OSError:
+                        pass
         return np.stack(results, axis=0)  # type: ignore[arg-type]
 
     def encode_texts(self, texts: list[str], requested_device: str) -> np.ndarray:
@@ -94,6 +156,7 @@ class BiomedClipTextRetriever:
         text_records: list[dict[str, Any]],
         requested_device: str,
         top_k: int = 3,
+        persistence_dir: Path | None = None,
     ) -> dict[str, Any]:
         if not text_records:
             return {
@@ -103,7 +166,10 @@ class BiomedClipTextRetriever:
                 "text_evidence": [],
             }
 
-        image_features = self.encode_images(query_image_paths, requested_device)
+        if persistence_dir is None:
+            persistence_dir = self._biomedclip_embedding_dir(site_store)
+
+        image_features = self.encode_images(query_image_paths, requested_device, persistence_dir=persistence_dir)
         query_vector = np.mean(image_features, axis=0).astype(np.float32)
         query_norm = float(np.linalg.norm(query_vector))
         query_vector = query_vector / max(query_norm, 1e-12)
@@ -139,6 +205,7 @@ class BiomedClipTextRetriever:
         image_records: list[dict[str, Any]],
         requested_device: str,
         top_k: int = 10,
+        persistence_dir: Path | None = None,
     ) -> dict[str, Any]:
         if not image_records:
             return {
@@ -148,7 +215,7 @@ class BiomedClipTextRetriever:
                 "results": [],
             }
 
-        text_features = self.encode_texts([query_text], requested_device)
+        text_features = self.encode_texts(query_text, requested_device) if isinstance(query_text, list) else self.encode_texts([query_text], requested_device)
         query_vector = text_features[0].astype(np.float32)
 
         valid_records: list[dict[str, Any]] = []
@@ -167,7 +234,7 @@ class BiomedClipTextRetriever:
                 "results": [],
             }
 
-        image_features = self.encode_images(valid_paths, requested_device)
+        image_features = self.encode_images(valid_paths, requested_device, persistence_dir=persistence_dir)
         similarities = np.matmul(image_features, query_vector).tolist()
 
         ranked = sorted(
@@ -229,7 +296,13 @@ class Dinov2ImageRetriever:
             self._device = device
         return torch, self._processor, self._model
 
-    def encode_images(self, image_paths: list[str | Path], requested_device: str, batch_size: int = 32) -> np.ndarray:
+    def encode_images(
+        self,
+        image_paths: list[str | Path],
+        requested_device: str,
+        batch_size: int = 32,
+        persistence_dir: Path | None = None,
+    ) -> np.ndarray:
         if not image_paths:
             raise ValueError("At least one image is required for DINOv2 retrieval.")
         torch, processor, model = self._ensure_loaded(requested_device)
@@ -237,9 +310,23 @@ class Dinov2ImageRetriever:
         results: list[np.ndarray | None] = [None] * len(image_paths)
         uncached_indices: list[int] = []
         for i, image_path in enumerate(image_paths):
-            cached = self._image_cache.get(str(image_path))
+            image_path_str = str(image_path)
+            cached = self._image_cache.get(image_path_str)
             if cached is not None:
                 results[i] = cached
+            elif persistence_dir is not None:
+                # Try loading from disk cache
+                cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                disk_path = persistence_dir / f"{cache_key}.npy"
+                if disk_path.exists():
+                    try:
+                        cached = np.load(disk_path)
+                        self._image_cache[image_path_str] = cached
+                        results[i] = cached
+                    except (OSError, ValueError):
+                        uncached_indices.append(i)
+                else:
+                    uncached_indices.append(i)
             else:
                 uncached_indices.append(i)
 
@@ -267,6 +354,16 @@ class Dinov2ImageRetriever:
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
             embeddings = features.detach().cpu().numpy().astype(np.float32)
             for j, idx in enumerate(valid_chunk_indices):
-                self._image_cache[str(image_paths[idx])] = embeddings[j]
-                results[idx] = embeddings[j]
+                image_path_str = str(image_paths[idx])
+                embedding = embeddings[j]
+                self._image_cache[image_path_str] = embedding
+                results[idx] = embedding
+                if persistence_dir is not None:
+                    cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                    disk_path = persistence_dir / f"{cache_key}.npy"
+                    try:
+                        persistence_dir.mkdir(parents=True, exist_ok=True)
+                        np.save(disk_path, embedding)
+                    except OSError:
+                        pass
         return np.stack(results, axis=0)  # type: ignore[arg-type]

@@ -155,10 +155,14 @@ import {
   type CaseValidationCompareResponse,
   type CaseContributionResponse,
   backfillMedsamArtifacts,
+  buildImageContentUrl,
+  buildImagePreviewUrl,
+  type ImageRecord,
   type OrganismRecord,
   fetchMedsamArtifactItems,
   fetchMedsamArtifactStatus,
   fetchPatientIdLookup,
+  fetchSiteSummaryCounts,
   type SiteActivityResponse,
   type SiteValidationRunRecord,
   createPatient,
@@ -198,6 +202,7 @@ import {
   type SiteRecord,
   type SiteSummary,
   type VisitRecord,
+  mergeSiteSummaryCounts,
   runSiteValidation,
   setRepresentativeImage as setRepresentativeImageOnServer,
   startLiveLesionPreview,
@@ -232,6 +237,7 @@ const PREDISPOSING_FACTOR_OPTIONS = [
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
 const MAX_MODEL_COMPARE_SELECTIONS = 8;
 const PATIENT_LIST_PAGE_SIZE = 25;
+const SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
 const WORKSPACE_TIMING_LOGS =
   process.env.NEXT_PUBLIC_KERA_WORKSPACE_TIMING_LOGS === "1" ||
   process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
@@ -260,6 +266,7 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Enterobacter",
     "Citrobacter",
     "Burkholderia",
+    "Stenotrophomonas",
     "Achromobacter",
     "Nocardia",
     "Other",
@@ -300,6 +307,20 @@ type DraftImage = {
   view: string;
   is_representative: boolean;
 };
+
+function toSavedCaseImagePreview(siteId: string, token: string, image: ImageRecord): SavedImagePreview {
+  return {
+    ...image,
+    content_url: image.content_url ?? buildImageContentUrl(siteId, image.image_id, token),
+    preview_url:
+      ("preview_url" in image && typeof image.preview_url === "string" && image.preview_url.trim().length > 0
+        ? image.preview_url
+        : null) ??
+      buildImagePreviewUrl(siteId, image.image_id, token, {
+        maxSide: SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE,
+      }),
+  };
+}
 
 type ValidationArtifactKind =
   | "gradcam"
@@ -1011,6 +1032,8 @@ export function CaseWorkspace({
   const [editingCaseContext, setEditingCaseContext] = useState<{
     patient_id: string;
     visit_date: string;
+    created_at?: string | null;
+    created_by_user_id?: string | null;
   } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [railView, setRailView] = useState<"cases" | "patients">("patients");
@@ -1514,6 +1537,8 @@ export function CaseWorkspace({
     setSelectedCaseImages,
     patientVisitGallery,
     setPatientVisitGallery,
+    patientVisitGalleryLoadingCaseIds,
+    patientVisitGalleryErrorCaseIds,
     panelBusy,
     patientVisitGalleryBusy,
     siteActivity,
@@ -1528,6 +1553,8 @@ export function CaseWorkspace({
     caseHistory,
     setCaseHistory,
     loadCaseHistory,
+    ensurePatientVisitImagesLoaded,
+    primeCaseImageCache,
     loadSiteActivity,
     loadSiteValidationRuns,
     ensureSiteValidationRunsLoaded,
@@ -1562,18 +1589,12 @@ export function CaseWorkspace({
       return;
     }
     let cancelled = false;
-    const controller = new AbortController();
-    void fetchCases(selectedSiteId, token, {
-      mine: showOnlyMine,
-      signal: controller.signal,
-    })
-      .then((nextCases) => {
+    void fetchSiteSummaryCounts(selectedSiteId, token)
+      .then((nextCounts) => {
         if (cancelled) {
           return;
         }
-        setFallbackRailSummary(
-          buildFallbackSiteSummary(selectedSiteId, nextCases),
-        );
+        setFallbackRailSummary(mergeSiteSummaryCounts(null, nextCounts));
       })
       .catch((nextError) => {
         if (isAbortError(nextError) || cancelled) {
@@ -1583,9 +1604,8 @@ export function CaseWorkspace({
       });
     return () => {
       cancelled = true;
-      controller.abort();
     };
-  }, [cases, selectedSiteId, showOnlyMine, summary, token]);
+  }, [cases, selectedSiteId, summary, token]);
   const effectiveRailSummary = summary ?? fallbackRailSummary;
   const onArtifactsChanged = useCallback(() => {
     if (
@@ -2182,6 +2202,8 @@ export function CaseWorkspace({
       setEditingCaseContext({
         patient_id: caseToEdit.patient_id,
         visit_date: caseToEdit.visit_date,
+        created_at: caseToEdit.created_at,
+        created_by_user_id: caseToEdit.created_by_user_id,
       });
       setSelectedCase(null);
       setSelectedCaseImages([]);
@@ -2470,7 +2492,9 @@ export function CaseWorkspace({
       return [caseRecord, ...current];
     });
     setSelectedCase(caseRecord);
-    setSelectedPatientCases([caseRecord]);
+    setSelectedPatientCases(
+      buildKnownPatientTimeline(cases, caseRecord.patient_id, caseRecord),
+    );
     setPanelOpen(true);
     setRailView(nextView);
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -2706,7 +2730,15 @@ export function CaseWorkspace({
         nextCases[0] ??
         null;
       setSelectedCase(nextSelectedCase);
-      setSelectedPatientCases(nextSelectedCase ? [nextSelectedCase] : []);
+      setSelectedPatientCases(
+        nextSelectedCase
+          ? buildKnownPatientTimeline(
+              nextCases,
+              nextSelectedCase.patient_id,
+              nextSelectedCase,
+            )
+          : [],
+      );
       setToast({
         tone: "success",
         message: copy.visitDeleted(
@@ -3232,59 +3264,185 @@ export function CaseWorkspace({
       chart_alias: draft.chart_alias.trim(),
       local_case_code: draft.local_case_code.trim(),
     };
+    const additionalOrganisms = normalizeAdditionalOrganisms(
+      draft.culture_category,
+      draft.culture_species,
+      draft.additional_organisms,
+    );
     const visitPayload = (visitReference: string) => ({
       patient_id: patientId,
       visit_date: visitReference,
       actual_visit_date: draft.actual_visit_date.trim() || null,
       culture_category: draft.culture_category,
       culture_species: draft.culture_species.trim(),
-      additional_organisms: normalizeAdditionalOrganisms(
-        draft.culture_category,
-        draft.culture_species,
-        draft.additional_organisms,
-      ),
+      additional_organisms: additionalOrganisms,
       contact_lens_use: draft.contact_lens_use,
       predisposing_factor: draft.predisposing_factor,
       other_history: draft.other_history.trim(),
       visit_status: draft.visit_status,
       is_initial_visit: /^initial$/i.test(visitReference),
-      polymicrobial: draft.additional_organisms.length > 0,
+      polymicrobial: additionalOrganisms.length > 0,
     });
     const uploadDraftImagesToVisit = async (visitReference: string) => {
-      for (const image of draftImages) {
-        await uploadImage(selectedSiteId!, token, {
-          patient_id: patientId,
-          visit_date: visitReference,
-          view: image.view,
-          is_representative: image.is_representative,
-          file: image.file,
+      return Promise.all(
+        draftImages.map(async (image, index) => {
+          const uploadedImage = await uploadImage(selectedSiteId!, token, {
+            patient_id: patientId,
+            visit_date: visitReference,
+            view: image.view,
+            is_representative: image.is_representative,
+            refresh_embeddings: index === draftImages.length - 1,
+            file: image.file,
+          });
+          return toSavedCaseImagePreview(selectedSiteId!, token, uploadedImage);
+        }),
+      );
+    };
+    const buildOptimisticSavedCase = (
+      visitRecord: Partial<VisitRecord>,
+      visitReference: string,
+      uploadedImages: SavedImagePreview[],
+    ): CaseSummaryRecord => {
+      const representativeImage =
+        uploadedImages.find((image) => image.is_representative) ??
+        uploadedImages[0] ??
+        null;
+      const createdAt =
+        visitRecord.created_at ??
+        editingSourceCase?.created_at ??
+        new Date().toISOString();
+      return {
+        case_id: `${patientId}::${visitReference}`,
+        visit_id: String(visitRecord.visit_id ?? `${patientId}::${visitReference}`),
+        patient_id: patientId,
+        created_by_user_id:
+          visitRecord.created_by_user_id ??
+          editingSourceCase?.created_by_user_id ??
+          user.user_id,
+        visit_date: visitReference,
+        actual_visit_date: draft.actual_visit_date.trim() || null,
+        chart_alias: patientPayload.chart_alias,
+        local_case_code: patientPayload.local_case_code,
+        sex: draft.sex,
+        age: draft.age.trim().length > 0 ? Number(draft.age) : null,
+        culture_category: draft.culture_category,
+        culture_species: draft.culture_species.trim(),
+        additional_organisms: additionalOrganisms,
+        contact_lens_use: draft.contact_lens_use,
+        predisposing_factor: draft.predisposing_factor,
+        other_history: draft.other_history.trim(),
+        visit_status: draft.visit_status,
+        active_stage: draft.visit_status === "active",
+        is_initial_visit: /^initial$/i.test(visitReference),
+        smear_result: visitRecord.smear_result ?? "not done",
+        polymicrobial: additionalOrganisms.length > 0,
+        image_count: uploadedImages.length,
+        representative_image_id: representativeImage?.image_id ?? null,
+        representative_view: representativeImage?.view ?? null,
+        created_at: createdAt,
+        latest_image_uploaded_at:
+          uploadedImages[uploadedImages.length - 1]?.uploaded_at ?? createdAt,
+      };
+    };
+    const finalizeSavedCase = (
+      visitRecord: Partial<VisitRecord>,
+      visitReference: string,
+      uploadedImages: SavedImagePreview[] = [],
+    ) => {
+      const optimisticCase = buildOptimisticSavedCase(
+        visitRecord,
+        visitReference,
+        uploadedImages,
+      );
+      const nextKnownCases = upsertCaseSummaryRecord(cases, optimisticCase, {
+        replaceCase: editingSourceCase,
+      });
+      const shouldIncludeOptimisticCase =
+        !showOnlyMine ||
+        String(
+          visitRecord.created_by_user_id ??
+            editingSourceCase?.created_by_user_id ??
+            user.user_id,
+        ) === user.user_id;
+      const shouldOptimisticallyUpdatePatientList =
+        shouldIncludeOptimisticCase &&
+        patientMatchesListSearch(normalizedPatientListSearch, optimisticCase);
+      const currentPatientCaseCount = nextKnownCases.filter(
+        (item) => item.patient_id === optimisticCase.patient_id,
+      ).length;
+      const currentPatientRow = patientListRows.find(
+        (row) => row.patient_id === optimisticCase.patient_id,
+      );
+      const optimisticThumbnail = (() => {
+        const representativeImage =
+          uploadedImages.find((image) => image.is_representative) ??
+          uploadedImages[0] ??
+          null;
+        if (!representativeImage) {
+          return null;
+        }
+        return {
+          case_id: optimisticCase.case_id,
+          image_id: representativeImage.image_id,
+          view: representativeImage.view,
+          preview_url: representativeImage.preview_url,
+          fallback_url: representativeImage.content_url ?? null,
+        };
+      })();
+      const optimisticPatientRow: PatientListRow = {
+        patient_id: optimisticCase.patient_id,
+        latest_case: optimisticCase,
+        case_count: Math.max(1, currentPatientCaseCount),
+        representative_thumbnail_count: Math.max(
+          optimisticThumbnail ? 1 : 0,
+          currentPatientRow?.representative_thumbnail_count ??
+            currentPatientRow?.representative_thumbnails.length ??
+            0,
+        ),
+        organism_summary: organismSummaryLabel(
+          optimisticCase.culture_category,
+          optimisticCase.culture_species,
+          optimisticCase.additional_organisms,
+          2,
+        ),
+        representative_thumbnails: [
+          ...(optimisticThumbnail ? [optimisticThumbnail] : []),
+          ...(currentPatientRow?.representative_thumbnails ?? []).filter(
+            (thumbnail) => thumbnail.case_id !== optimisticCase.case_id,
+          ),
+        ].slice(0, 3),
+      };
+
+      if (shouldIncludeOptimisticCase) {
+        startTransition(() => {
+          setCases(nextKnownCases);
+          if (shouldOptimisticallyUpdatePatientList) {
+            const rowExistsOnCurrentPage = Boolean(currentPatientRow);
+            const nextPatientListRows =
+              rowExistsOnCurrentPage || patientListPage === 1
+                ? upsertPatientListRow(patientListRows, optimisticPatientRow).slice(
+                    0,
+                    PATIENT_LIST_PAGE_SIZE,
+                  )
+                : patientListRows;
+            const nextTotalCount = currentPatientRow
+              ? patientListTotalCount
+              : patientListTotalCount + 1;
+            setPatientListRows(nextPatientListRows);
+            setPatientListTotalCount(nextTotalCount);
+            setPatientListTotalPages(
+              Math.max(1, Math.ceil(nextTotalCount / PATIENT_LIST_PAGE_SIZE)),
+            );
+            if (patientListPage === 1) {
+              setPatientListPage(1);
+            }
+          }
         });
       }
-    };
-    const finalizeSavedCase = async (visitReference: string) => {
-      await onSiteDataChanged(selectedSiteId!);
-      invalidateCaseWorkspaceImageCaches();
-      const [nextCases, nextPatientList] = await Promise.all([
-        fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
-        fetchPatientListPage(selectedSiteId!, token, {
-          mine: showOnlyMine,
-          page: 1,
-          page_size: PATIENT_LIST_PAGE_SIZE,
-          search: normalizedPatientListSearch,
-        }),
-      ]);
-      startTransition(() => {
-        setCases(nextCases);
-        setPatientListRows(nextPatientList.items);
-        setPatientListTotalCount(nextPatientList.total_count);
-        setPatientListTotalPages(Math.max(1, nextPatientList.total_pages || 1));
-        setPatientListPage(nextPatientList.page);
-      });
-      const createdCase = nextCases.find(
-        (item) =>
-          item.patient_id === patientId && item.visit_date === visitReference,
-      );
-      await loadSiteActivity(selectedSiteId!);
+
+      if (uploadedImages.length > 0) {
+        primeCaseImageCache(optimisticCase, uploadedImages);
+      }
       setToast({
         tone: "success",
         message: copy.caseSaved(
@@ -3295,15 +3453,66 @@ export function CaseWorkspace({
       });
       clearDraftStorage(selectedSiteId!);
       resetDraft();
-      setSelectedCase(createdCase ?? null);
-      setSelectedPatientCases(createdCase ? [createdCase] : []);
+      setSelectedCase(optimisticCase);
+      setSelectedPatientCases(
+        buildKnownPatientTimeline(nextKnownCases, optimisticCase.patient_id, optimisticCase),
+      );
       setPanelOpen(true);
+      void loadSiteActivity(selectedSiteId!);
       setCompletionState({
         kind: "saved",
         patient_id: patientId,
         visit_date: visitReference,
         timestamp: new Date().toISOString(),
       });
+
+      void (async () => {
+        try {
+          await onSiteDataChanged(selectedSiteId!);
+          const [nextCases, nextPatientList] = await Promise.all([
+            fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
+            fetchPatientListPage(selectedSiteId!, token, {
+              mine: showOnlyMine,
+              page: 1,
+              page_size: PATIENT_LIST_PAGE_SIZE,
+              search: normalizedPatientListSearch,
+            }),
+          ]);
+          const refreshedCase =
+            nextCases.find(
+              (item) =>
+                item.patient_id === patientId && item.visit_date === visitReference,
+            ) ?? optimisticCase;
+          if (uploadedImages.length > 0) {
+            primeCaseImageCache(refreshedCase, uploadedImages);
+          }
+          startTransition(() => {
+            setCases(nextCases);
+            setPatientListRows(nextPatientList.items);
+            setPatientListTotalCount(nextPatientList.total_count);
+            setPatientListTotalPages(
+              Math.max(1, nextPatientList.total_pages || 1),
+            );
+            setPatientListPage(nextPatientList.page);
+            setSelectedCase((current) => {
+              if (!current) {
+                return current;
+              }
+              return current.patient_id === patientId &&
+                current.visit_date === visitReference
+                ? refreshedCase
+                : current;
+            });
+            setSelectedPatientCases((current) =>
+              current.some((item) => item.patient_id === patientId)
+                ? buildKnownPatientTimeline(nextCases, patientId, refreshedCase)
+                : current,
+            );
+          });
+        } catch (nextError) {
+          console.warn("Saved case background refresh failed", nextError);
+        }
+      })();
     };
     const nextAvailableFollowUpReference = async () => {
       const visits = await fetchVisits(selectedSiteId!, token, patientId);
@@ -3363,21 +3572,21 @@ export function CaseWorkspace({
         }
       };
       const overwriteEditedVisit = async (visitReference: string) => {
-        await updateVisit(
+        const savedVisit = (await updateVisit(
           selectedSiteId,
           token,
           editingSourceCase?.patient_id ?? patientId,
           editingSourceCase?.visit_date ?? visitReference,
           visitPayload(visitReference),
-        );
+        )) as Partial<VisitRecord>;
         await deleteVisitImages(
           selectedSiteId,
           token,
           patientId,
           visitReference,
         );
-        await uploadDraftImagesToVisit(visitReference);
-        await finalizeSavedCase(visitReference);
+        const uploadedImages = await uploadDraftImagesToVisit(visitReference);
+        finalizeSavedCase(savedVisit, visitReference, uploadedImages);
       };
 
       await ensureAndSyncPatient();
@@ -3435,13 +3644,13 @@ export function CaseWorkspace({
         Number(matchingPatientLookup.visit_count || 0) > 0;
 
       try {
-        await createVisit(
+        const savedVisit = (await createVisit(
           selectedSiteId,
           token,
           visitPayload(createVisitReference),
-        );
-        await uploadDraftImagesToVisit(createVisitReference);
-        await finalizeSavedCase(createVisitReference);
+        )) as Partial<VisitRecord>;
+        const uploadedImages = await uploadDraftImagesToVisit(createVisitReference);
+        finalizeSavedCase(savedVisit, createVisitReference, uploadedImages);
       } catch (nextError) {
         if (!isAlreadyExistsError(nextError)) {
           throw nextError;
@@ -3452,13 +3661,13 @@ export function CaseWorkspace({
           if (alternateVisitReference === createVisitReference) {
             throw nextError;
           }
-          await createVisit(
+          const savedVisit = (await createVisit(
             selectedSiteId,
             token,
             visitPayload(alternateVisitReference),
-          );
-          await uploadDraftImagesToVisit(alternateVisitReference);
-          await finalizeSavedCase(alternateVisitReference);
+          )) as Partial<VisitRecord>;
+          const uploadedImages = await uploadDraftImagesToVisit(alternateVisitReference);
+          finalizeSavedCase(savedVisit, alternateVisitReference, uploadedImages);
           return;
         }
         const overwriteConfirmed = window.confirm(
@@ -3469,21 +3678,21 @@ export function CaseWorkspace({
           ),
         );
         if (overwriteConfirmed) {
-          await updateVisit(
+          const savedVisit = (await updateVisit(
             selectedSiteId,
             token,
             patientId,
             createVisitReference,
             visitPayload(createVisitReference),
-          );
+          )) as Partial<VisitRecord>;
           await deleteVisitImages(
             selectedSiteId,
             token,
             patientId,
             createVisitReference,
           );
-          await uploadDraftImagesToVisit(createVisitReference);
-          await finalizeSavedCase(createVisitReference);
+          const uploadedImages = await uploadDraftImagesToVisit(createVisitReference);
+          finalizeSavedCase(savedVisit, createVisitReference, uploadedImages);
         } else {
           const alternateVisitReference =
             await nextAvailableFollowUpReference();
@@ -3497,13 +3706,13 @@ export function CaseWorkspace({
           if (!saveAlternateConfirmed) {
             return;
           }
-          await createVisit(
+          const savedVisit = (await createVisit(
             selectedSiteId,
             token,
             visitPayload(alternateVisitReference),
-          );
-          await uploadDraftImagesToVisit(alternateVisitReference);
-          await finalizeSavedCase(alternateVisitReference);
+          )) as Partial<VisitRecord>;
+          const uploadedImages = await uploadDraftImagesToVisit(alternateVisitReference);
+          finalizeSavedCase(savedVisit, alternateVisitReference, uploadedImages);
         }
       }
     } catch (nextError) {
@@ -4193,6 +4402,7 @@ export function CaseWorkspace({
           formatImageQualityScore={formatImageQualityScore}
           formatProbability={formatProbability}
           formatMetadataField={formatAiClinicMetadataFieldForLocale}
+          token={token}
         />
       </AiClinicPanel>
     ),
@@ -4307,9 +4517,6 @@ export function CaseWorkspace({
               status={controlPlaneStatus}
               busy={controlPlaneStatusBusy}
             />
-            {selectedSiteLabel ? (
-              <span className={docSiteBadgeClass}>{selectedSiteLabel}</span>
-            ) : null}
             {!canOpenOperations ? (
               <span className={workspaceUserBadgeClass}>
                 {translateRole(locale, user.role)}
@@ -4564,6 +4771,8 @@ export function CaseWorkspace({
                   panelBusy={panelBusy}
                   patientVisitGalleryBusy={patientVisitGalleryBusy}
                   patientVisitGallery={patientVisitGallery}
+                  patientVisitGalleryLoadingCaseIds={patientVisitGalleryLoadingCaseIds}
+                  patientVisitGalleryErrorCaseIds={patientVisitGalleryErrorCaseIds}
                   pick={pick}
                   translateOption={translateOption}
                   displayVisitReference={displayVisitReference}
@@ -4574,6 +4783,12 @@ export function CaseWorkspace({
                   onStartFollowUpDraft={startFollowUpDraftFromSelectedCase}
                   onToggleFavorite={toggleFavoriteCase}
                   onOpenSavedCase={openSavedCase}
+                  onEnsureVisitImages={(caseRecord) => {
+                    if (!selectedSiteId) {
+                      return Promise.resolve([]);
+                    }
+                    return ensurePatientVisitImagesLoaded(selectedSiteId, caseRecord);
+                  }}
                   onDeleteSavedCase={handleDeleteSavedCase}
                   isFavoriteCase={isFavoriteCase}
                   caseTitle={formatCaseTitle(selectedCase)}
@@ -5013,11 +5228,101 @@ function caseTimestamp(caseRecord: CaseSummaryRecord): number {
   return parsed.getTime();
 }
 
+function buildKnownPatientTimeline(
+  caseRecords: CaseSummaryRecord[],
+  patientId: string,
+  fallbackCase: CaseSummaryRecord | null = null,
+): CaseSummaryRecord[] {
+  const normalizedPatientId = String(patientId ?? "").trim();
+  if (!normalizedPatientId) {
+    return fallbackCase ? [fallbackCase] : [];
+  }
+  const byCaseId = new Map<string, CaseSummaryRecord>();
+  for (const item of caseRecords) {
+    if (String(item.patient_id ?? "").trim() !== normalizedPatientId) {
+      continue;
+    }
+    const caseId = String(item.case_id ?? "").trim();
+    if (!caseId) {
+      continue;
+    }
+    byCaseId.set(caseId, item);
+  }
+  if (fallbackCase) {
+    byCaseId.set(fallbackCase.case_id, fallbackCase);
+  }
+  return Array.from(byCaseId.values()).sort(
+    (left, right) => caseTimestamp(right) - caseTimestamp(left),
+  );
+}
+
 function buildPatientListThumbMap(
   rows: PatientListRow[],
 ): Record<string, PatientListThumbnail[]> {
   return Object.fromEntries(
     rows.map((row) => [row.patient_id, row.representative_thumbnails]),
+  );
+}
+
+function upsertCaseSummaryRecord(
+  caseRecords: CaseSummaryRecord[],
+  nextCase: CaseSummaryRecord,
+  options: {
+    replaceCase?:
+      | {
+          case_id?: string | null;
+          patient_id: string;
+          visit_date: string;
+        }
+      | null;
+  } = {},
+): CaseSummaryRecord[] {
+  const replaceCase = options.replaceCase;
+  const filtered = caseRecords.filter((item) => {
+    if (
+      replaceCase &&
+      (item.case_id === replaceCase.case_id ||
+        (item.patient_id === replaceCase.patient_id &&
+          item.visit_date === replaceCase.visit_date))
+    ) {
+      return false;
+    }
+    return item.case_id !== nextCase.case_id;
+  });
+  return [nextCase, ...filtered].sort(
+    (left, right) => caseTimestamp(right) - caseTimestamp(left),
+  );
+}
+
+function upsertPatientListRow(
+  rows: PatientListRow[],
+  nextRow: PatientListRow,
+): PatientListRow[] {
+  return [nextRow, ...rows.filter((row) => row.patient_id !== nextRow.patient_id)].sort(
+    (left, right) =>
+      caseTimestamp(right.latest_case) - caseTimestamp(left.latest_case),
+  );
+}
+
+function patientMatchesListSearch(
+  normalizedSearch: string,
+  caseRecord: CaseSummaryRecord,
+): boolean {
+  const search = normalizedSearch.trim().toLowerCase();
+  if (!search) {
+    return true;
+  }
+  const searchableValues = [
+    caseRecord.patient_id,
+    caseRecord.chart_alias,
+    caseRecord.local_case_code,
+    caseRecord.culture_category,
+    caseRecord.culture_species,
+    caseRecord.visit_date,
+    caseRecord.actual_visit_date ?? "",
+  ];
+  return searchableValues.some((value) =>
+    String(value ?? "").toLowerCase().includes(search),
   );
 }
 

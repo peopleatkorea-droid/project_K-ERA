@@ -146,6 +146,34 @@ class RemoteControlPlaneClient:
         )
         return dict(payload)
 
+    def register_main_admin_node(
+        self,
+        *,
+        user_bearer_token: str,
+        device_name: str,
+        os_info: str = "",
+        app_version: str = "",
+        site_id: str | None = None,
+        display_name: str | None = None,
+        hospital_name: str | None = None,
+        source_institution_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/admin/nodes/register",
+            json_body={
+                "device_name": device_name,
+                "os_info": os_info,
+                "app_version": app_version,
+                "site_id": site_id,
+                "display_name": display_name,
+                "hospital_name": hospital_name,
+                "source_institution_id": source_institution_id,
+            },
+            headers=self._user_headers(user_bearer_token),
+        )
+        return dict(payload)
+
     def bootstrap(self) -> dict[str, Any]:
         payload = self._request_json("GET", "/nodes/bootstrap", headers=self._node_headers())
         return dict(payload)

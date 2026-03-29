@@ -18,7 +18,10 @@ pub(super) fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRe
     )?;
     let destination = visit_dir.join(format!("{image_id}{normalized_suffix}"));
     fs::write(&destination, sanitized_content).map_err(|error| error.to_string())?;
-    let quality_scores = score_slit_lamp_image(&destination, &payload.view).ok();
+    let derivative_site_id = site_id.clone();
+    let derivative_image_id = image_id.clone();
+    let derivative_destination = destination.clone();
+    let derivative_view = payload.view.clone();
     let uploaded_at = utc_now();
     conn.execute(
         "
@@ -48,14 +51,12 @@ pub(super) fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRe
             0,
             0,
             0,
-            quality_scores.as_ref().map(|value| value.to_string()),
+            Option::<String>::None,
             uploaded_at.clone(),
             uploaded_at
         ],
     )
     .map_err(|error| error.to_string())?;
-    let _ = preview_file_path(&payload.site_id, &image_id, &destination, 256);
-    let _ = preview_file_path(&payload.site_id, &image_id, &destination, 640);
     let mut stmt = conn
         .prepare(
             "
@@ -74,7 +75,19 @@ pub(super) fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRe
         .next()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Uploaded image not found.".to_string())?;
-    desktop_image_record_from_row(row, &payload.site_id, Some(640)).map(|(record, _)| record)
+    let record = desktop_image_record_from_row(row, &site_id, Some(640)).map(|(record, _)| record)?;
+    std::thread::spawn(move || {
+        let quality_scores = score_slit_lamp_image(&derivative_destination, &derivative_view).ok();
+        let Ok(conn) = open_data_plane_db() else {
+            return;
+        };
+        let quality_payload = quality_scores.as_ref().map(|value| value.to_string());
+        let _ = conn.execute(
+            "update images set quality_scores = ? where site_id = ? and image_id = ?",
+            params![quality_payload, derivative_site_id, derivative_image_id],
+        );
+    });
+    Ok(record)
 }
 
 #[tauri::command]

@@ -39,7 +39,8 @@ const repoVenvPython = process.platform === "win32"
 const repoVenvBinDir = path.dirname(repoVenvPython);
 
 if (!fs.existsSync(repoVenvPython)) {
-  console.error(`K-ERA desktop dev requires the repository .venv interpreter, but it was not found: ${repoVenvPython}`);
+  console.error(`K-ERA desktop dev requires the uv-managed repository .venv interpreter, but it was not found: ${repoVenvPython}`);
+  console.error("Run .\\scripts\\setup_local_node.ps1 from the repository root first.");
   process.exit(1);
 }
 

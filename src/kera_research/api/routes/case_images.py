@@ -4,7 +4,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
 
@@ -171,7 +181,7 @@ def build_case_images_router(support: Any) -> APIRouter:
             site_store,
             [str(item.get("image_id") or "").strip() for item in payload],
         )
-        return private_json_response(payload, max_age=30)
+        return private_json_response(payload, max_age=1)
 
     @router.post("/api/sites/{site_id}/images")
     async def upload_image(
@@ -180,6 +190,7 @@ def build_case_images_router(support: Any) -> APIRouter:
         visit_date: str = Form(...),
         view: str = Form(...),
         is_representative: bool = Form(False),
+        refresh_embeddings: bool = Form(True),
         file: UploadFile = File(...),
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
@@ -198,13 +209,18 @@ def build_case_images_router(support: Any) -> APIRouter:
                 content=content,
                 created_by_user_id=user["user_id"],
             )
-            queue_case_embedding_refresh(
-                cp,
+            schedule_image_derivative_backfill(
                 site_store,
-                patient_id=patient_id,
-                visit_date=visit_date,
-                trigger="image_upload",
+                [str(saved_image.get("image_id") or "").strip()],
             )
+            if refresh_embeddings:
+                queue_case_embedding_refresh(
+                    cp,
+                    site_store,
+                    patient_id=patient_id,
+                    visit_date=visit_date,
+                    trigger="image_upload",
+                )
             return saved_image
         except InvalidImageUploadError as exc:
             raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
@@ -619,7 +635,13 @@ def build_case_images_router(support: Any) -> APIRouter:
                     visit_date=str(image.get("visit_date") or ""),
                 )
             scorer = get_semantic_prompt_scorer()
-            result = scorer.score_image(analysis_path, view=str(image.get("view") or "white"), top_k=top_k)
+            persistence_dir = site_store.embedding_dir / "biomedclip"
+            result = scorer.score_image(
+                analysis_path,
+                view=str(image.get("view") or "white"),
+                top_k=top_k,
+                persistence_dir=persistence_dir,
+            )
             return {
                 "image_id": image_id,
                 "view": str(image.get("view") or "white"),
@@ -639,6 +661,7 @@ def build_case_images_router(support: Any) -> APIRouter:
     def search_images_by_text(
         site_id: str,
         body: ImageTextSearchRequest,
+        authorization: str | None = Header(default=None),
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
@@ -649,14 +672,20 @@ def build_case_images_router(support: Any) -> APIRouter:
         try:
             workflow = get_workflow(cp)
             all_images = site_store.list_images()
+            persistence_dir = site_store.embedding_dir / "biomedclip"
             result = workflow.text_retriever.retrieve_images(
                 query_text=query,
                 image_records=all_images,
-                requested_device="cpu",
+                requested_device="auto", # Changed from "cpu" to "auto" to leverage GPU if available
                 top_k=max(1, min(int(body.top_k or 10), 50)),
+                persistence_dir=persistence_dir,
             )
+            token = (authorization or "").replace("Bearer ", "").strip()
             for item in result["results"]:
-                item["preview_url"] = f"/api/sites/{site_id}/images/{item['image_id']}/preview"
+                preview_url = f"/api/sites/{site_id}/images/{item['image_id']}/preview"
+                if token:
+                    preview_url += f"?token={token}"
+                item["preview_url"] = preview_url
                 item.pop("image_path", None)
             return {"query": query, **result}
         except (RuntimeError, OSError, ValueError) as exc:

@@ -187,7 +187,14 @@ class SemanticPromptScoringService:
     def warmup(self) -> None:
         self._ensure_client()
 
-    def score_image(self, image_path: str | Path, *, view: str, top_k: int = 3) -> dict[str, Any]:
+    def score_image(
+        self,
+        image_path: str | Path,
+        *,
+        view: str,
+        top_k: int = 3,
+        persistence_dir: Path | None = None,
+    ) -> dict[str, Any]:
         client = self._ensure_client()
         top_k = min(max(int(top_k), 1), 5)
         image_file = Path(image_path)

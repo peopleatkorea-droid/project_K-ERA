@@ -98,6 +98,27 @@ function withPatientListPreviewUrls(
   };
 }
 
+function withWorkspaceImageUrls(
+  siteId: string,
+  token: string,
+  images: ImageRecord[],
+): ImageRecord[] {
+  return images.map((image) => ({
+    ...image,
+    content_url:
+      image.content_url ?? buildImageContentUrl(siteId, image.image_id, token),
+    preview_url:
+      ("preview_url" in image &&
+      typeof image.preview_url === "string" &&
+      image.preview_url.trim().length > 0
+        ? image.preview_url
+        : null) ??
+      buildImagePreviewUrl(siteId, image.image_id, token, {
+        maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
+      }),
+  }));
+}
+
 export async function fetchWorkspaceSiteActivity(siteId: string, token: string, signal?: AbortSignal) {
   if (canUseDesktopWorkspaceTransport()) {
     return fetchDesktopSiteActivity(siteId, token, { signal });
@@ -423,7 +444,22 @@ export async function fetchWorkspaceImages(
     params.set("visit_date", visitDate);
   }
   const suffix = params.size ? `?${params.toString()}` : "";
-  return request<ImageRecord[]>(`/api/sites/${siteId}/images${suffix}`, { signal }, token);
+  const images = await request<ImageRecord[]>(
+    `/api/sites/${siteId}/images${suffix}`,
+    { signal },
+    token,
+  );
+  const hydratedImages = withWorkspaceImageUrls(siteId, token, images);
+  const previewableImageIds = hydratedImages
+    .map((image) => String(image.image_id ?? "").trim())
+    .filter((imageId) => imageId.length > 0);
+  if (previewableImageIds.length > 0) {
+    void ensureImagePreviews(siteId, previewableImageIds, token, {
+      maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
+      signal,
+    }).catch(() => undefined);
+  }
+  return hydratedImages;
 }
 
 export async function fetchWorkspaceVisitImagesWithPreviews(
@@ -436,25 +472,7 @@ export async function fetchWorkspaceVisitImagesWithPreviews(
   if (canUseDesktopTransport()) {
     return fetchDesktopVisitImages(siteId, patientId, visitDate, options);
   }
-  const images = await fetchWorkspaceImages(siteId, token, patientId, visitDate, options.signal);
-  const previewableImageIds = images
-    .map((image) => String(image.image_id ?? "").trim())
-    .filter((imageId) => imageId.length > 0);
-  void ensureImagePreviews(siteId, previewableImageIds, token, {
-    maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
-    signal: options.signal,
-  }).catch(() => undefined);
-  return images.map((image) => {
-    const contentUrl = buildImageContentUrl(siteId, image.image_id, token);
-    const previewUrl = buildImagePreviewUrl(siteId, image.image_id, token, {
-      maxSide: CASE_IMAGE_PREVIEW_MAX_SIDE,
-    });
-    return {
-      ...image,
-      content_url: contentUrl,
-      preview_url: previewUrl,
-    };
-  });
+  return fetchWorkspaceImages(siteId, token, patientId, visitDate, options.signal);
 }
 
 export async function uploadWorkspaceImage(
@@ -465,6 +483,7 @@ export async function uploadWorkspaceImage(
     visit_date: string;
     view: string;
     is_representative?: boolean;
+    refresh_embeddings?: boolean;
     file: File;
   },
 ) {
@@ -476,6 +495,7 @@ export async function uploadWorkspaceImage(
   form.set("visit_date", payload.visit_date);
   form.set("view", payload.view);
   form.set("is_representative", String(Boolean(payload.is_representative)));
+  form.set("refresh_embeddings", String(payload.refresh_embeddings !== false));
   form.set("file", payload.file);
   return request<ImageRecord>(
     `/api/sites/${siteId}/images`,

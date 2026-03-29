@@ -346,10 +346,11 @@ export async function uploadDesktopImage(
     visit_date: string;
     view: string;
     is_representative?: boolean;
+    refresh_embeddings?: boolean;
     file: File;
   },
 ) {
-  const buffer = await payload.file.arrayBuffer();
+  const bytes = new Uint8Array(await payload.file.arrayBuffer());
   const response = await invokeDesktop<DesktopImageRecord>("upload_image", {
     payload: {
       site_id: siteId,
@@ -359,7 +360,7 @@ export async function uploadDesktopImage(
       view: payload.view,
       is_representative: Boolean(payload.is_representative),
       file_name: payload.file.name || "upload.bin",
-      bytes: Array.from(new Uint8Array(buffer)),
+      bytes,
     },
   });
   clearDesktopWorkspaceCaches();

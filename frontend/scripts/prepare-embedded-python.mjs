@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 
 const frontendRoot = process.cwd();
 const repoRoot = path.resolve(frontendRoot, "..");
+const uvCommand = process.env.UV_BIN || (process.platform === "win32" ? "uv.exe" : "uv");
 const buildRoot = path.join(frontendRoot, ".desktop-runtime");
 const runtimeDir = path.join(buildRoot, "python-runtime");
 const runtimeBundleRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
@@ -260,10 +261,10 @@ function computeSignature(pythonInfo) {
     sourcePython: signatureForPath(path.join(pythonInfo.sourceHome, "python.exe")),
     venvPython: signatureForPath(pythonInfo.venvPythonPath),
     pyvenvCfg: signatureForPath(pythonInfo.pyvenvCfgPath),
-    requirements: [
-      signatureForPath(path.join(repoRoot, "requirements.txt")),
-      signatureForPath(path.join(repoRoot, "requirements-cpu.txt")),
-      signatureForPath(path.join(repoRoot, "requirements-gpu-cu128.txt")),
+    dependencyInputs: [
+      signatureForPath(path.join(repoRoot, "pyproject.toml")),
+      signatureForPath(path.join(repoRoot, "uv.lock")),
+      signatureForPath(path.join(repoRoot, ".python-version")),
     ],
     sitePackages: signatureForPath(path.join(pythonInfo.venvDir, "Lib", "site-packages")),
     torchVersion: pythonInfo.torchVersion,
@@ -431,11 +432,12 @@ async function replaceCudaTorchWithCpuWheels(pythonInfo) {
   await removeMatchingSitePackagesEntries(sitePackagesDir, torchCleanupTokens);
 
   const installArgs = [
-    "-m",
     "pip",
     "install",
+    "--python",
+    pythonInfo.venvPythonPath,
     "--no-deps",
-    "--force-reinstall",
+    "--reinstall",
     "--target",
     sitePackagesDir,
     wheelInfo.torchWheel,
@@ -443,7 +445,7 @@ async function replaceCudaTorchWithCpuWheels(pythonInfo) {
   if (wheelInfo.torchvisionWheel) {
     installArgs.push(wheelInfo.torchvisionWheel);
   }
-  runPythonArgs(pythonInfo.venvPythonPath, installArgs);
+  runCommand(uvCommand, installArgs);
 }
 
 async function prepareEmbeddedPythonRuntime(pythonInfo) {

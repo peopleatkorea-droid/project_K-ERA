@@ -1848,25 +1848,60 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(items_by_id["missing-image"]["cache_status"], "missing")
         self.assertEqual(items_by_id["missing-image"]["error"], "Image not found.")
 
-    def test_image_upload_persists_quality_scores_and_prewarms_previews_http(self):
+    def test_image_upload_defers_quality_scores_and_preview_generation_http(self):
         admin_token = self._login("admin", "admin123")
-        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"patient_id": "HTTP-001", "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+        visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "Initial",
+                "culture_category": "bacterial",
+                "culture_species": "Staphylococcus aureus",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        upload_response = self.client.post(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            data={
+                "patient_id": "HTTP-001",
+                "visit_date": "Initial",
+                "view": "slit",
+                "is_representative": "true",
+            },
+            files={"file": ("slit.png", self._make_test_image_bytes("PNG"), "image/png")},
+        )
+        self.assertEqual(upload_response.status_code, 200, upload_response.text)
+        image_id = upload_response.json()["image_id"]
+        self.assertIsNone(upload_response.json().get("quality_scores"))
 
-        self.assertTrue(self.site_store.image_preview_cache_path(image_id, 256).exists())
-        self.assertTrue(self.site_store.image_preview_cache_path(image_id, 640).exists())
-
-        with patch("kera_research.api.app.score_slit_lamp_image", side_effect=AssertionError("quality scores should come from storage")):
-            response = self.client.get(
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            refreshed_response = self.client.get(
                 f"/api/sites/{self.site_id}/images?patient_id=HTTP-001&visit_date=Initial",
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["image_id"], image_id)
-        self.assertIsInstance(payload[0].get("quality_scores"), dict)
-        self.assertIn("quality_score", payload[0]["quality_scores"])
+            if (
+                refreshed_response.status_code == 200
+                and refreshed_response.json()
+                and refreshed_response.json()[0].get("quality_scores")
+                and self.site_store.image_preview_cache_path(image_id, 256).exists()
+                and self.site_store.image_preview_cache_path(image_id, 640).exists()
+            ):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("upload-triggered derivative backfill did not complete in time")
 
     def test_image_list_triggers_background_derivative_backfill_http(self):
         admin_token = self._login("admin", "admin123")
@@ -1969,6 +2004,69 @@ class ApiHttpTests(unittest.TestCase):
             if job is not None and job.get("status") == "completed":
                 break
             time.sleep(0.1)
+
+    def test_case_embedding_refresh_delays_image_upload_trigger_http(self):
+        job_key = (self.site_id, "HTTP-001", "Initial")
+        self.app_module._PENDING_EMBEDDING_JOBS.clear()
+        self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_CASE_EMBEDDING_UPLOAD_DELAY_SECONDS": "7",
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                            self.app_module._queue_case_embedding_refresh(
+                                self.cp,
+                                self.site_store,
+                                patient_id="HTTP-001",
+                                visit_date="Initial",
+                                trigger="image_upload",
+                            )
+
+            self.assertEqual(fake_executor.submit.call_count, 1)
+            submitted_fn, submitted_key, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            self.assertTrue(callable(submitted_fn))
+            self.assertEqual(submitted_key, job_key)
+            self.assertEqual(submitted_trigger, "image_upload")
+            self.assertEqual(submitted_delay, 7.0)
+        finally:
+            self.app_module._PENDING_EMBEDDING_JOBS.clear()
+            self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+
+    def test_case_embedding_refresh_keeps_non_save_triggers_immediate_http(self):
+        job_key = (self.site_id, "HTTP-001", "Initial")
+        self.app_module._PENDING_EMBEDDING_JOBS.clear()
+        self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                            self.app_module._queue_case_embedding_refresh(
+                                self.cp,
+                                self.site_store,
+                                patient_id="HTTP-001",
+                                visit_date="Initial",
+                                trigger="lesion_box_update",
+                            )
+
+            self.assertEqual(fake_executor.submit.call_count, 1)
+            submitted_fn, submitted_key, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            self.assertTrue(callable(submitted_fn))
+            self.assertEqual(submitted_key, job_key)
+            self.assertEqual(submitted_trigger, "lesion_box_update")
+            self.assertEqual(submitted_delay, 0.0)
+        finally:
+            self.app_module._PENDING_EMBEDDING_JOBS.clear()
+            self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
 
     def test_embedding_status_reports_missing_images_http(self):
         admin_token = self._login("admin", "admin123")

@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import type { CaseSummaryRecord, OrganismRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
@@ -45,6 +47,8 @@ type SavedCaseOverviewProps = {
   panelBusy: boolean;
   patientVisitGalleryBusy: boolean;
   patientVisitGallery: Record<string, SavedImagePreview[]>;
+  patientVisitGalleryLoadingCaseIds: Record<string, boolean>;
+  patientVisitGalleryErrorCaseIds: Record<string, boolean>;
   pick: (locale: Locale, en: string, ko: string) => string;
   translateOption: TranslateOption;
   displayVisitReference: (locale: Locale, visitReference: string) => string;
@@ -60,6 +64,7 @@ type SavedCaseOverviewProps = {
   onStartFollowUpDraft: () => void | Promise<void>;
   onToggleFavorite: (caseId: string) => void;
   onOpenSavedCase: (caseRecord: CaseSummaryRecord, nextView: "cases" | "patients") => void;
+  onEnsureVisitImages: (caseRecord: CaseSummaryRecord) => void | Promise<unknown>;
   onDeleteSavedCase: (caseRecord: CaseSummaryRecord) => void | Promise<void>;
   isFavoriteCase: (caseId: string) => boolean;
   caseTitle: string;
@@ -96,6 +101,8 @@ export function SavedCaseOverview({
   panelBusy,
   patientVisitGalleryBusy,
   patientVisitGallery,
+  patientVisitGalleryLoadingCaseIds,
+  patientVisitGalleryErrorCaseIds,
   pick,
   translateOption,
   displayVisitReference,
@@ -106,10 +113,12 @@ export function SavedCaseOverview({
   onStartFollowUpDraft,
   onToggleFavorite,
   onOpenSavedCase,
+  onEnsureVisitImages,
   onDeleteSavedCase,
   isFavoriteCase,
   caseTitle,
 }: SavedCaseOverviewProps) {
+  const autoRequestedVisitImagesRef = useRef<Set<string>>(new Set());
   const caseNumber = selectedCase.local_case_code || caseTitle || selectedCase.patient_id;
   const selectedVisitLabel = resolveVisitLabel(locale, selectedCase.visit_date, selectedCase.is_initial_visit, pick, displayVisitReference);
   const selectedOrganismLabel = `${translateOption(locale, "cultureCategory", selectedCase.culture_category)} · ${organismSummaryLabel(
@@ -118,6 +127,36 @@ export function SavedCaseOverview({
     selectedCase.additional_organisms,
     2
   )}`;
+
+  useEffect(() => {
+    autoRequestedVisitImagesRef.current.clear();
+  }, [selectedCase.case_id]);
+
+  useEffect(() => {
+    // Protected UX: opening a saved case must hydrate visit thumbnails without requiring extra per-visit clicks.
+    for (const caseItem of selectedPatientCases) {
+      const hasLoadedVisitImages = Array.isArray(patientVisitGallery[caseItem.case_id]);
+      const visitImagesPending = !hasLoadedVisitImages && Number(caseItem.image_count ?? 0) > 0;
+      if (!visitImagesPending) {
+        autoRequestedVisitImagesRef.current.delete(caseItem.case_id);
+        continue;
+      }
+      if (patientVisitGalleryLoadingCaseIds[caseItem.case_id] || patientVisitGalleryErrorCaseIds[caseItem.case_id]) {
+        continue;
+      }
+      if (autoRequestedVisitImagesRef.current.has(caseItem.case_id)) {
+        continue;
+      }
+      autoRequestedVisitImagesRef.current.add(caseItem.case_id);
+      void onEnsureVisitImages(caseItem);
+    }
+  }, [
+    onEnsureVisitImages,
+    patientVisitGallery,
+    patientVisitGalleryErrorCaseIds,
+    patientVisitGalleryLoadingCaseIds,
+    selectedPatientCases,
+  ]);
 
   return (
     <div className={savedCaseOverviewMainClass}>
@@ -185,6 +224,8 @@ export function SavedCaseOverview({
               const hasLoadedVisitImages = Array.isArray(visitImages);
               const visibleVisitImages = visitImages ?? [];
               const isCurrentVisit = selectedCase.case_id === caseItem.case_id;
+              const visitImagesLoading = Boolean(patientVisitGalleryLoadingCaseIds[caseItem.case_id]);
+              const visitImagesFailed = Boolean(patientVisitGalleryErrorCaseIds[caseItem.case_id]);
               const visitImagesPending = !hasLoadedVisitImages && Number(caseItem.image_count ?? 0) > 0;
               const visitLabel = resolveVisitLabel(locale, caseItem.visit_date, caseItem.is_initial_visit, pick, displayVisitReference);
               const imageCount = visibleVisitImages.length || caseItem.image_count;
@@ -272,10 +313,12 @@ export function SavedCaseOverview({
                     </div>
                   ) : (
                     <div className={emptySurfaceClass}>
-                      {(isCurrentVisit && panelBusy) || (patientVisitGalleryBusy && !hasLoadedVisitImages)
+                      {(isCurrentVisit && panelBusy) || visitImagesLoading || (patientVisitGalleryBusy && !hasLoadedVisitImages)
                         ? commonLoading
-                        : visitImagesPending
-                          ? pick(locale, "Open this visit to load saved images.", "이 방문을 열면 저장 이미지를 불러옵니다.")
+                        : visitImagesFailed
+                          ? pick(locale, "Unable to load saved images for this visit.", "이 방문의 저장 이미지를 불러오지 못했습니다.")
+                          : visitImagesPending
+                            ? commonLoading
                           : pick(locale, "No saved images for this visit yet.", "이 방문에는 아직 저장 이미지가 없습니다.")}
                     </div>
                   )}

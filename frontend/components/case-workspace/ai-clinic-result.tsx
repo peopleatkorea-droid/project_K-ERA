@@ -38,6 +38,7 @@ type Props = {
   formatImageQualityScore: (value: number | null | undefined, emptyLabel?: string) => string;
   formatProbability: (value: number | null | undefined, emptyLabel?: string) => string;
   formatMetadataField: (field: string) => string;
+  token: string;
 };
 
 type FieldItem = {
@@ -150,6 +151,7 @@ function AiClinicResultInner({
   formatImageQualityScore,
   formatProbability,
   formatMetadataField,
+  token,
 }: Props) {
   const readySummary = useMemo(
     () => buildReadySummary(validationResult, modelCompareResult),
@@ -336,7 +338,7 @@ function AiClinicResultInner({
                     {item.preview_url ? (
                       <Card as="div" variant="panel" className="overflow-hidden">
                         <img
-                          src={item.preview_url}
+                          src={item.preview_url ? `${item.preview_url}${item.preview_url.includes("?") ? "&" : "?"}token=${token}` : undefined}
                           alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
                           className="aspect-[4/3] w-full object-cover"
                           loading="lazy"

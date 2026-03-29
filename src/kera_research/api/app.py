@@ -821,6 +821,25 @@ def _get_model_version(cp: ControlPlaneStore, model_version_id: str | None) -> d
     return cp.current_global_model()
 
 
+import concurrent.futures
+
+_EMBEDDING_INDEX_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_PENDING_EMBEDDING_JOBS: dict[tuple[str, str, str], bool] = {}
+_PENDING_EMBEDDING_TRIGGERS: dict[tuple[str, str, str], str] = {}
+_EMBEDDING_JOB_LOCK = threading.Lock()
+
+
+def _case_embedding_refresh_delay_seconds(trigger: str) -> float:
+    normalized_trigger = str(trigger or "").strip().lower()
+    if normalized_trigger != "image_upload":
+        return 0.0
+    raw_value = os.getenv("KERA_CASE_EMBEDDING_UPLOAD_DELAY_SECONDS", "10").strip()
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return 10.0
+
+
 def _queue_case_embedding_refresh(
     cp: ControlPlaneStore,
     site_store: SiteStore,
@@ -837,70 +856,70 @@ def _queue_case_embedding_refresh(
     model_version = cp.current_global_model()
     if model_version is None or not model_version.get("ready", True):
         return
-    execution_device = _preferred_embedding_execution_device()
-    job = site_store.enqueue_job(
-        "ai_clinic_embedding_index",
-        {
-            "patient_id": patient_id,
-            "visit_date": visit_date,
-            "trigger": trigger,
-            "model_version_id": model_version.get("version_id"),
-            "model_version_name": model_version.get("version_name"),
-            "execution_device": execution_device,
-        },
-    )
-    site_store.update_job_status(
-        job["job_id"],
-        "running",
-        {
-            "progress": {
-                "stage": "queued",
-                "message": "AI Clinic embedding indexing queued.",
-                "percent": 0,
-            }
-        },
-    )
 
-    def run_index_job() -> None:
+    job_key = (site_store.site_id, patient_id, visit_date)
+    with _EMBEDDING_JOB_LOCK:
+        _PENDING_EMBEDDING_TRIGGERS[job_key] = trigger
+        if job_key in _PENDING_EMBEDDING_JOBS:
+            _PENDING_EMBEDDING_JOBS[job_key] = True  # Mark as dirty
+            return
+        _PENDING_EMBEDDING_JOBS[job_key] = False
+
+    execution_device = _preferred_embedding_execution_device()
+    delay_seconds = _case_embedding_refresh_delay_seconds(trigger)
+
+    def run_index_job_safe(key: tuple[str, str, str], job_trigger: str, job_delay_seconds: float) -> None:
         try:
+            if job_delay_seconds > 0:
+                # Keep case-save UX responsive by yielding the CPU-intensive refresh
+                # until after the save flow has completed and the next screen has rendered.
+                time.sleep(job_delay_seconds)
             workflow = _get_workflow(cp)
-            result = workflow.index_case_embedding(
+            # Create a localized job record in DB for visibility
+            job = site_store.enqueue_job(
+                "ai_clinic_embedding_index",
+                {
+                    "patient_id": key[1],
+                    "visit_date": key[2],
+                    "trigger": job_trigger,
+                    "model_version_id": model_version.get("version_id"),
+                    "execution_device": execution_device,
+                },
+            )
+            site_store.update_job_status(job["job_id"], "running", {"message": "Indexing..."})
+
+            workflow.index_case_embedding(
                 site_store,
-                patient_id=patient_id,
-                visit_date=visit_date,
+                patient_id=key[1],
+                visit_date=key[2],
                 model_version=model_version,
                 execution_device=execution_device,
             )
-            site_store.update_job_status(
-                job["job_id"],
-                "completed",
-                {
-                    "progress": {
-                        "stage": "completed",
-                        "message": "AI Clinic embedding indexing completed.",
-                        "percent": 100,
-                    },
-                    "response": result,
-                },
-            )
+            site_store.update_job_status(job["job_id"], "completed")
+
         except Exception as exc:
+            # We don't want to crash the worker thread
             try:
-                site_store.update_job_status(
-                    job["job_id"],
-                    "failed",
-                    {
-                        "progress": {
-                            "stage": "failed",
-                            "message": "AI Clinic embedding indexing failed.",
-                            "percent": 100,
-                        },
-                        "error": str(exc),
-                    },
-                )
+                print(f"Embedding indexing failed for {key}: {exc}")
             except Exception:
                 pass
+        finally:
+            with _EMBEDDING_JOB_LOCK:
+                is_dirty = _PENDING_EMBEDDING_JOBS.get(key, False)
+                latest_trigger = _PENDING_EMBEDDING_TRIGGERS.get(key, job_trigger)
+                if is_dirty:
+                    _PENDING_EMBEDDING_JOBS[key] = False  # Reset dirty bit and re-queue
+                    _EMBEDDING_INDEX_EXECUTOR.submit(
+                        run_index_job_safe,
+                        key,
+                        latest_trigger,
+                        _case_embedding_refresh_delay_seconds(latest_trigger),
+                    )
+                else:
+                    _PENDING_EMBEDDING_JOBS.pop(key, None)
+                    _PENDING_EMBEDDING_TRIGGERS.pop(key, None)
 
-    threading.Thread(target=run_index_job, daemon=True).start()
+    _EMBEDDING_INDEX_EXECUTOR.submit(run_index_job_safe, job_key, trigger, delay_seconds)
 
 
 def _queue_site_embedding_backfill(

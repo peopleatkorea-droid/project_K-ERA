@@ -104,6 +104,9 @@ fn main() {
             if let Ok(path) = app.path().resource_dir() {
                 store_desktop_resource_dir(path);
             }
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.maximize();
+            }
             ensure_bundled_python_runtime_ready()
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             // Ensure SQLite performance indexes exist (no-op if already present)
@@ -196,7 +199,6 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running K-ERA desktop shell");
 }
-
 
 
 

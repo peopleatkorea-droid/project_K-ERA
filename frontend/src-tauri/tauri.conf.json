@@ -29,6 +29,7 @@
         "title": "K-ERA Desktop",
         "width": 1600,
         "height": 1000,
+        "maximized": true,
         "resizable": true,
         "dragDropEnabled": false
       }

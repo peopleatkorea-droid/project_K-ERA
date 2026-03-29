@@ -45,7 +45,7 @@ def build_case_records_router(support: Any) -> APIRouter:
             site_store,
             [str(item.get("representative_image_id") or "").strip() for item in payload],
         )
-        return private_json_response(payload, max_age=15)
+        return private_json_response(payload, max_age=1)
 
     @router.get("/api/sites/{site_id}/model-versions")
     def list_site_model_versions(
@@ -113,7 +113,7 @@ def build_case_records_router(support: Any) -> APIRouter:
             for item in row.get("representative_thumbnails", [])
         ]
         schedule_image_derivative_backfill(site_store, representative_image_ids)
-        return private_json_response(payload, max_age=15)
+        return private_json_response(payload, max_age=1)
 
     @router.post("/api/sites/{site_id}/patients")
     def create_patient(
@@ -290,7 +290,7 @@ def build_case_records_router(support: Any) -> APIRouter:
             }
             for item in history.get("contributions", [])
         ]
-        return private_json_response(history, max_age=10)
+        return private_json_response(history, max_age=1)
 
     @router.get("/api/sites/{site_id}/patients/{patient_reference_id}/trajectory")
     def get_patient_trajectory(

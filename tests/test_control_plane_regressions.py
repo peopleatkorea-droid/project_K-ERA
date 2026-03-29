@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import os
 import shutil
 import sys
@@ -394,6 +395,66 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         data_plane_module.invalidate_site_storage_root_cache("REMOTE_SITE")
 
         self.assertEqual(site_store.site_dir.resolve(), custom_root.resolve())
+
+    def test_resolve_fixed_project_materializes_remote_bootstrap_project_locally(self) -> None:
+        self._reload_remote_control_plane_app()
+        control_plane_dir = Path(self.tempdir.name) / "remote_storage" / "control_plane"
+        control_plane_dir.mkdir(parents=True, exist_ok=True)
+        (control_plane_dir / "remote_bootstrap_cache.json").write_text(
+            json.dumps(
+                {
+                    "project": {
+                        "project_id": "project_default",
+                        "name": "K-ERA Default Project",
+                        "created_at": "2026-03-21T13:28:55.344Z",
+                    },
+                    "site": {
+                        "site_id": "39100103",
+                        "display_name": "제주대학교병원",
+                        "hospital_name": "제주대학교병원",
+                        "source_institution_id": "39100103",
+                        "created_at": "2026-03-11T09:39:04.000Z",
+                    },
+                    "memberships": [
+                        {
+                            "site_id": "39100103",
+                            "status": "active",
+                            "site": {
+                                "site_id": "39100103",
+                                "display_name": "제주대학교병원",
+                                "hospital_name": "제주대학교병원",
+                                "source_institution_id": "39100103",
+                                "created_at": "2026-03-11T09:39:04.000Z",
+                            },
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        from kera_research.api.routes.admin_shared import resolve_fixed_project
+
+        self.assertEqual(self.cp.workspace.list_projects(), [])
+        self.assertEqual(self.cp.list_projects()[0]["project_id"], "project_default")
+
+        fixed_project = resolve_fixed_project(self.cp, "owner")
+
+        self.assertEqual(fixed_project["project_id"], "project_default")
+        self.assertEqual(self.cp.workspace.list_projects()[0]["project_id"], "project_default")
+
+        created_site = self.cp.create_site(
+            fixed_project["project_id"],
+            hospital_name="Jeju National University Hospital",
+            source_institution_id="39100104",
+        )
+
+        self.assertEqual(created_site["project_id"], "project_default")
+        self.assertEqual(
+            self.cp.workspace.list_projects()[0]["site_ids"],
+            ["39100103", created_site["site_id"]],
+        )
 
     def test_bundle_move_remaps_site_paths_without_metadata_recovery(self) -> None:
         self.db_module.CONTROL_PLANE_ENGINE.dispose()

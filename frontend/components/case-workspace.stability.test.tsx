@@ -151,12 +151,17 @@ describe("CaseWorkspace stability", () => {
     apiMocks.fetchImages.mockResolvedValue([
       {
         image_id: "image_1",
+        visit_id: "visit_1",
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
         image_path: "C:\\KERA\\image_1.png",
         view: "white",
         is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
         lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
       },
     ]);
     apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
@@ -246,7 +251,147 @@ describe("CaseWorkspace stability", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it("fetches patient images once when opening a saved case", async () => {
+  it("loads the current visit once and fetches the rest of the patient gallery in one request", async () => {
+    apiMocks.fetchCases.mockResolvedValue([
+      {
+        case_id: "case_2",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "FU #1",
+        actual_visit_date: "2026-03-16",
+        created_by_user_id: "user_admin",
+        created_at: "2026-03-16T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-16T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_2",
+        representative_view: "white",
+        age: 65,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: false,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+      {
+        case_id: "case_1",
+        patient_id: "KERA-2026-001",
+        chart_alias: "",
+        local_case_code: "",
+        culture_category: "bacterial",
+        culture_species: "Staphylococcus aureus",
+        additional_organisms: [],
+        visit_date: "Initial",
+        actual_visit_date: null,
+        created_by_user_id: "user_admin",
+        created_at: "2026-03-15T00:00:00Z",
+        latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+        image_count: 1,
+        representative_image_id: "image_1",
+        representative_view: "white",
+        age: 65,
+        sex: "female",
+        visit_status: "active",
+        is_initial_visit: true,
+        smear_result: "not done",
+        polymicrobial: false,
+      },
+    ]);
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_2",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "FU #1",
+            actual_visit_date: "2026-03-16",
+            created_by_user_id: "user_admin",
+            created_at: "2026-03-16T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-16T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_2",
+            representative_view: "white",
+            age: 65,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: false,
+            smear_result: "not done",
+            polymicrobial: false,
+          },
+          case_count: 2,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_2",
+              image_id: "image_2",
+              view: "white",
+              preview_url: "/preview/image_2",
+              fallback_url: "/content/image_2",
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
+    apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
+      {
+        image_id: "image_2",
+        visit_id: "visit_2",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_2.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_2",
+        preview_url: "/preview/image_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-16T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
+    apiMocks.fetchImages.mockResolvedValue([
+      {
+        image_id: "image_2",
+        visit_id: "visit_2",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_2.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_2",
+        preview_url: "/preview/image_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-16T00:00:00Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
+
     render(
       <LocaleProvider>
         <CaseWorkspace
@@ -291,15 +436,27 @@ describe("CaseWorkspace stability", () => {
     fireEvent.click(await screen.findByRole("button", { name: /KERA-2026-001/i }));
 
     await waitFor(() => {
-      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchImages).toHaveBeenCalledTimes(1);
     });
-    expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
-      "SITE_A",
-      "test-token",
-      "KERA-2026-001",
-      "Initial",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
+    expect(apiMocks.fetchVisitImagesWithPreviews.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(
+      apiMocks.fetchVisitImagesWithPreviews.mock.calls.some(
+        ([siteId, authToken, patientId, visitDate]) =>
+          siteId === "SITE_A" &&
+          authToken === "test-token" &&
+          patientId === "KERA-2026-001" &&
+          visitDate === "FU #1",
+      ),
+    ).toBe(true);
+    expect(
+      apiMocks.fetchImages.mock.calls.some(
+        ([siteId, authToken, patientId, visitDate]) =>
+          siteId === "SITE_A" &&
+          authToken === "test-token" &&
+          patientId === "KERA-2026-001" &&
+          visitDate === undefined,
+      ),
+    ).toBe(true);
   });
 
   it("blocks case authoring when no hospital workspace is selected", async () => {

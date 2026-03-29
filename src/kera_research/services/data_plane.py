@@ -1239,11 +1239,6 @@ class SiteStore:
         sanitized_content, normalized_suffix = _sanitize_image_bytes(content, file_name)
         destination = visit_dir / f"{image_id}{normalized_suffix}"
         destination.write_bytes(sanitized_content)
-        try:
-            quality_scores = score_slit_lamp_image(str(destination), view=view)
-        except Exception:
-            quality_scores = None
-
         image_record = {
             "image_id": image_id,
             "visit_id": visit["visit_id"],
@@ -1260,17 +1255,12 @@ class SiteStore:
             "has_medsam_mask": False,
             "has_lesion_crop": False,
             "has_lesion_mask": False,
-            "quality_scores": quality_scores,
+            "quality_scores": None,
             "artifact_status_updated_at": utc_now(),
             "uploaded_at": utc_now(),
         }
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(db_images.insert().values(**image_record))
-        for max_side in _PREWARMED_IMAGE_PREVIEW_SIDES:
-            try:
-                self.ensure_image_preview(image_record, max_side)
-            except Exception:
-                continue
         return image_record
 
     def delete_images_for_visit(self, patient_id: str, visit_date: str) -> int:

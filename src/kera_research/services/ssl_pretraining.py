@@ -297,7 +297,9 @@ class Dinov2Encoder(nn.Module):
         try:
             from transformers import Dinov2Config, Dinov2Model
         except ImportError as exc:  # pragma: no cover - dependency guard
-            raise RuntimeError("transformers is required for DINOv2 SSL pretraining. Run: pip install transformers") from exc
+            raise RuntimeError(
+                "transformers is required for DINOv2 SSL pretraining. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+            ) from exc
 
         from kera_research.services.retrieval import DINOv2_MODEL_ID
 

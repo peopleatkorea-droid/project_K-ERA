@@ -52,6 +52,85 @@ class ControlPlaneWorkspaceOps:
             conn.execute(projects.insert().values(**record))
         return record
 
+    def ensure_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str = "",
+        owner_user_id: str | None = None,
+        site_ids: list[str] | None = None,
+        created_at: str | None = None,
+        create_if_missing: bool = False,
+    ) -> dict[str, Any] | None:
+        normalized_project_id = str(project_id or "").strip()
+        if not normalized_project_id:
+            raise ValueError("Project id is required.")
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            existing_project = conn.execute(
+                select(projects).where(projects.c.project_id == normalized_project_id)
+            ).mappings().first()
+            if existing_project is not None:
+                return dict(existing_project)
+
+            remote_project = next(
+                (
+                    item
+                    for item in self.store._remote_bootstrap_project_records()
+                    if str(item.get("project_id") or "").strip() == normalized_project_id
+                ),
+                None,
+            )
+            if remote_project is None and not create_if_missing:
+                return None
+
+            raw_site_ids = site_ids if site_ids is not None else (remote_project.get("site_ids") if remote_project else [])
+            normalized_site_ids: list[str] = []
+            seen_site_ids: set[str] = set()
+            for raw_site_id in raw_site_ids or []:
+                normalized_site_id = str(raw_site_id or "").strip()
+                if not normalized_site_id or normalized_site_id in seen_site_ids:
+                    continue
+                seen_site_ids.add(normalized_site_id)
+                normalized_site_ids.append(normalized_site_id)
+
+            record = {
+                "project_id": normalized_project_id,
+                "name": str(name or (remote_project.get("name") if remote_project else "") or normalized_project_id).strip()
+                or normalized_project_id,
+                "description": str(description or (remote_project.get("description") if remote_project else "") or "").strip(),
+                "owner_user_id": str(
+                    owner_user_id or (remote_project.get("owner_user_id") if remote_project else "") or "system"
+                ).strip()
+                or "system",
+                "site_ids": normalized_site_ids,
+                "created_at": str(created_at or (remote_project.get("created_at") if remote_project else "") or utc_now()),
+            }
+            conn.execute(projects.insert().values(**record))
+        return record
+
+    def _attach_site_to_project(self, conn: Any, project_id: str, site_id: str) -> None:
+        project_row = conn.execute(select(projects).where(projects.c.project_id == project_id)).mappings().first()
+        if project_row is None:
+            return
+        project_site_ids: list[str] = []
+        seen_site_ids: set[str] = set()
+        for raw_site_id in project_row.get("site_ids") or []:
+            normalized_site_id = str(raw_site_id or "").strip()
+            if not normalized_site_id or normalized_site_id in seen_site_ids:
+                continue
+            seen_site_ids.add(normalized_site_id)
+            project_site_ids.append(normalized_site_id)
+        normalized_site_id = str(site_id or "").strip()
+        if not normalized_site_id or normalized_site_id in seen_site_ids:
+            return
+        project_site_ids.append(normalized_site_id)
+        conn.execute(
+            update(projects)
+            .where(projects.c.project_id == project_id)
+            .values(site_ids=project_site_ids)
+        )
+
     def list_sites(self, project_id: str | None = None) -> list[dict[str, Any]]:
         query = select(sites)
         if project_id:
@@ -103,6 +182,7 @@ class ControlPlaneWorkspaceOps:
             "research_registry_enabled": bool(research_registry_enabled),
             "created_at": utc_now(),
         }
+        self.ensure_project(project_id)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             if normalized_source_institution_id:
                 existing_institution_site = conn.execute(
@@ -132,14 +212,7 @@ class ControlPlaneWorkspaceOps:
             record["site_id"] = normalized_site_code
             record["local_storage_root"] = str(Path(self.store.instance_storage_root()) / normalized_site_code)
             conn.execute(sites.insert().values(**record))
-            project_site_ids = list(project_row["site_ids"] or [])
-            if normalized_site_code not in project_site_ids:
-                project_site_ids.append(normalized_site_code)
-            conn.execute(
-                update(projects)
-                .where(projects.c.project_id == project_id)
-                .values(site_ids=project_site_ids)
-            )
+            self._attach_site_to_project(conn, project_id, normalized_site_code)
         return record
 
     def update_site_metadata(
@@ -222,8 +295,18 @@ class ControlPlaneWorkspaceOps:
             "research_registry_enabled": bool(merged_site.get("research_registry_enabled", True)),
             "created_at": str(merged_site.get("created_at") or utc_now()),
         }
+        self.ensure_project(
+            record["project_id"],
+            name=str(merged_site.get("project_name") or record["project_id"]).strip() or record["project_id"],
+            description=str(merged_site.get("project_description") or "").strip(),
+            owner_user_id=str(merged_site.get("owner_user_id") or "").strip() or None,
+            site_ids=[normalized_site_id],
+            created_at=str(merged_site.get("project_created_at") or record["created_at"]).strip() or record["created_at"],
+            create_if_missing=True,
+        )
         with CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(sites.insert().values(**record))
+            self._attach_site_to_project(conn, record["project_id"], normalized_site_id)
         return self.get_site(normalized_site_id) or record
 
     def update_site_storage_root(self, site_id: str, storage_root: str) -> dict[str, Any]:

@@ -51,3 +51,37 @@ export async function persistLocalNodeCredentials(payload: {
     }),
   );
 }
+
+export async function registerLocalNodeViaMainAdmin(payload: {
+  control_plane_user_token: string;
+  control_plane_base_url?: string | null;
+  device_name: string;
+  os_info?: string;
+  app_version?: string;
+  site_id?: string;
+  display_name?: string;
+  hospital_name?: string;
+  source_institution_id?: string;
+  overwrite?: boolean;
+}): Promise<{
+  registered: boolean;
+  node_id: string;
+  node_token: string;
+  bootstrap: Record<string, unknown> | null;
+  credentials: Record<string, unknown>;
+}> {
+  const baseUrl = localNodeBaseUrl();
+  if (!baseUrl) {
+    throw new Error("Local node API base URL is not configured.");
+  }
+  return parseResponse(
+    await fetch(`${baseUrl}/api/control-plane/node/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        registration_source: "main_admin",
+      }),
+    }),
+  );
+}

@@ -1,5 +1,12 @@
+function stripWindowsExtendedPrefix(value: string): string {
+  return value
+    .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+    .replace(/^\\\\\?\\/i, "")
+    .replace(/^\\\?\\/, "");
+}
+
 export function toStorageRootDisplayPath(value: string | null | undefined): string {
-  const normalizedValue = String(value ?? "").trim().replace(/[\\/]+$/, "");
+  const normalizedValue = stripWindowsExtendedPrefix(String(value ?? "").trim()).replace(/[\\/]+$/, "");
   if (!normalizedValue || !/[\\/]sites$/i.test(normalizedValue)) {
     return normalizedValue;
   }

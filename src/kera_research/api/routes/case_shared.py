@@ -1,3 +1,4 @@
+import concurrent.futures
 import threading
 from typing import Any
 
@@ -23,14 +24,19 @@ class ImagePreviewBatchRequest(BaseModel):
     max_side: int = 512
 
 
-def private_json_response(payload: Any, *, max_age: int = 15) -> JSONResponse:
+def private_json_response(payload: Any, *, max_age: int = 1) -> JSONResponse:
     return JSONResponse(
         content=payload,
         headers={
-            "Cache-Control": f"private, max-age={max_age}, stale-while-revalidate={max_age}",
+            "Cache-Control": f"private, max-age={max_age}, stale-while-revalidate=5",
             "Vary": "Authorization",
         },
     )
+
+
+_IMAGE_DERIVATIVE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_PENDING_IMAGE_DERIVATIVE_IDS: set[tuple[str, str]] = set()
+_PENDING_IMAGE_DERIVATIVE_LOCK = threading.Lock()
 
 
 def schedule_image_derivative_backfill(site_store: Any, image_ids: list[str] | None) -> None:
@@ -43,14 +49,32 @@ def schedule_image_derivative_backfill(site_store: Any, image_ids: list[str] | N
     )
     if not requested_ids:
         return
+    site_id = str(getattr(site_store, "site_id", "") or "").strip()
+    if not site_id:
+        return
+    pending_keys = [(site_id, image_id) for image_id in requested_ids]
+    with _PENDING_IMAGE_DERIVATIVE_LOCK:
+        queued_ids = [
+            image_id
+            for key, image_id in zip(pending_keys, requested_ids, strict=False)
+            if key not in _PENDING_IMAGE_DERIVATIVE_IDS
+        ]
+        if not queued_ids:
+            return
+        for image_id in queued_ids:
+            _PENDING_IMAGE_DERIVATIVE_IDS.add((site_id, image_id))
 
     def run_backfill() -> None:
         try:
-            site_store.backfill_image_derivatives(requested_ids)
+            site_store.backfill_image_derivatives(queued_ids)
         except Exception:
             return
+        finally:
+            with _PENDING_IMAGE_DERIVATIVE_LOCK:
+                for image_id in queued_ids:
+                    _PENDING_IMAGE_DERIVATIVE_IDS.discard((site_id, image_id))
 
-    threading.Thread(target=run_backfill, daemon=True).start()
+    _IMAGE_DERIVATIVE_EXECUTOR.submit(run_backfill)
 
 
 def sync_case_artifact_cache_best_effort(

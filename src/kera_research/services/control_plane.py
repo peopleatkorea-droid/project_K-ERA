@@ -737,6 +737,27 @@ class ControlPlaneStore:
     def create_project(self, name: str, description: str, owner_user_id: str) -> dict[str, Any]:
         return self.workspace_views.create_project(name, description, owner_user_id)
 
+    def ensure_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str = "",
+        owner_user_id: str | None = None,
+        site_ids: list[str] | None = None,
+        created_at: str | None = None,
+        create_if_missing: bool = False,
+    ) -> dict[str, Any] | None:
+        return self.workspace.ensure_project(
+            project_id,
+            name=name,
+            description=description,
+            owner_user_id=owner_user_id,
+            site_ids=site_ids,
+            created_at=created_at,
+            create_if_missing=create_if_missing,
+        )
+
     def list_sites(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self.workspace_views.list_sites(project_id)
 

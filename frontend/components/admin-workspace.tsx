@@ -907,6 +907,7 @@ export function AdminWorkspace({
           ) : null}
           {section === "management" ? (
             <ManagementSection
+              token={token}
               locale={locale}
               notAvailableLabel={common.notAvailable}
               canManagePlatform={canManagePlatform}

@@ -8,6 +8,10 @@ from kera_research.api.models import (
     LocalControlPlaneNodeRegisterRequest,
     LocalControlPlaneSmokeRequest,
 )
+from kera_research.services.control_plane_direct_registration import (
+    direct_control_plane_registration_supported,
+    register_main_admin_node_via_direct_db,
+)
 
 
 def build_desktop_router(support: Any) -> APIRouter:
@@ -122,16 +126,28 @@ def build_desktop_router(support: Any) -> APIRouter:
             node_token="",
         )
         try:
-            registration = client.register_node(
-                user_bearer_token=payload.control_plane_user_token,
-                device_name=payload.device_name,
-                os_info=payload.os_info or remote_node_os_info(),
-                app_version=payload.app_version or get_app_version(),
-                site_id=payload.site_id,
-                display_name=payload.display_name,
-                hospital_name=payload.hospital_name,
-                source_institution_id=payload.source_institution_id,
-            )
+            registration_args = {
+                "user_bearer_token": payload.control_plane_user_token,
+                "device_name": payload.device_name,
+                "os_info": payload.os_info or remote_node_os_info(),
+                "app_version": payload.app_version or get_app_version(),
+                "site_id": payload.site_id,
+                "display_name": payload.display_name,
+                "hospital_name": payload.hospital_name,
+                "source_institution_id": payload.source_institution_id,
+            }
+            if payload.registration_source == "main_admin":
+                try:
+                    registration = client.register_main_admin_node(**registration_args)
+                except Exception:
+                    if not direct_control_plane_registration_supported():
+                        raise
+                    registration = register_main_admin_node_via_direct_db(
+                        remote_client=client,
+                        **registration_args,
+                    )
+            else:
+                registration = client.register_node(**registration_args)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -149,7 +165,15 @@ def build_desktop_router(support: Any) -> APIRouter:
             control_plane_base_url=client.base_url,
             node_id=node_id,
             node_token=node_token,
-            site_id=str(payload.site_id or registration.get("bootstrap", {}).get("site", {}).get("site_id") or "").strip() or None,
+            site_id=(
+                str(
+                    payload.site_id
+                    or registration.get("site_id")
+                    or registration.get("bootstrap", {}).get("site", {}).get("site_id")
+                    or ""
+                ).strip()
+                or None
+            ),
         )
         cp.clear_remote_control_plane_state()
         cp.reload_remote_control_plane_credentials()

@@ -36,7 +36,7 @@ def ensure_biomedclip_runtime(requested_device: str | None = None) -> BiomedClip
         import open_clip
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "BiomedCLIP dependencies are not installed. Run pip install -r requirements.txt after updating the environment."
+            "BiomedCLIP dependencies are not installed. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
         ) from exc
 
     try:

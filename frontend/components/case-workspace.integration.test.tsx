@@ -68,6 +68,7 @@ const apiMocks = vi.hoisted(() => ({
 const desktopTransportMocks = vi.hoisted(() => ({
   canUseDesktopTransport: vi.fn(() => false),
   prefetchDesktopVisitImages: vi.fn(),
+  ensureDesktopImagePreviews: vi.fn(async () => new Map()),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -124,6 +125,8 @@ vi.mock("../lib/desktop-transport", async () => {
     canUseDesktopTransport: desktopTransportMocks.canUseDesktopTransport,
     prefetchDesktopVisitImages:
       desktopTransportMocks.prefetchDesktopVisitImages,
+    ensureDesktopImagePreviews:
+      desktopTransportMocks.ensureDesktopImagePreviews,
   };
 });
 
@@ -133,6 +136,9 @@ describe("CaseWorkspace integration", () => {
     desktopTransportMocks.canUseDesktopTransport.mockReturnValue(false);
     desktopTransportMocks.prefetchDesktopVisitImages.mockImplementation(
       () => undefined,
+    );
+    desktopTransportMocks.ensureDesktopImagePreviews.mockResolvedValue(
+      new Map(),
     );
     window.localStorage.clear();
     window.history.replaceState(null, "", "/");
@@ -309,12 +315,17 @@ describe("CaseWorkspace integration", () => {
     apiMocks.fetchImages.mockResolvedValue([
       {
         image_id: "image_1",
+        visit_id: "visit_1",
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
         image_path: "C:\\KERA\\image_1.png",
         view: "white",
         is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
         lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
       },
     ]);
     apiMocks.fetchVisitImagesWithPreviews.mockResolvedValue([
@@ -908,6 +919,16 @@ describe("CaseWorkspace integration", () => {
     await screen.findByText("Case summary");
   }
 
+  function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((nextResolve, nextReject) => {
+      resolve = nextResolve;
+      reject = nextReject;
+    });
+    return { promise, resolve, reject };
+  }
+
   it("marks the active workspace mode in the top rail", async () => {
     renderWorkspace();
 
@@ -1321,6 +1342,7 @@ describe("CaseWorkspace integration", () => {
           visit_date: "Initial",
           view: "white",
           is_representative: true,
+          refresh_embeddings: true,
           file,
         },
       );
@@ -1335,6 +1357,53 @@ describe("CaseWorkspace integration", () => {
         )
       ).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("opens the saved-case view before the background refresh settles", async () => {
+    const deferredRefresh = createDeferred<void>();
+    const onSiteDataChanged = vi.fn(() => deferredRefresh.promise);
+    seedDraft();
+    const { container } = renderWorkspace(onSiteDataChanged);
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    await addDraftImage(container);
+    apiMocks.fetchCases.mockClear();
+    apiMocks.fetchPatientListPage.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+
+    await waitFor(() => {
+      expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
+    });
+    expect(await screen.findByText("Case summary")).toBeInTheDocument();
+    expect(
+      apiMocks.fetchCases.mock.calls.some(
+        ([, , options]) => !options || !("patientId" in (options ?? {})) || !options?.patientId,
+      ),
+    ).toBe(false);
+    expect(apiMocks.fetchPatientListPage).not.toHaveBeenCalled();
+
+    deferredRefresh.resolve();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchCases).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ mine: false }),
+      );
+      expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({
+          mine: false,
+          page: 1,
+          page_size: 25,
+          search: "",
+        }),
+      );
+    });
   });
 
   it("shows a newly saved case in list view without a full page refresh", async () => {
@@ -1562,12 +1631,12 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
     await openSavedCase();
 
-    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+    fireEvent.change(await screen.findByLabelText("Saved image mode"), {
       target: { value: "lesion_crop" },
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Run BiomedCLIP analysis" }),
+      await screen.findByRole("button", { name: "Run BiomedCLIP analysis" }),
     );
 
     await waitFor(() => {
@@ -1587,7 +1656,7 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
     await openSavedCase();
 
-    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+    fireEvent.change(await screen.findByLabelText("Saved image mode"), {
       target: { value: "roi_crop" },
     });
 
@@ -1646,7 +1715,7 @@ describe("CaseWorkspace integration", () => {
     renderWorkspace();
     await openSavedCase();
 
-    fireEvent.change(screen.getByLabelText("Saved image mode"), {
+    fireEvent.change(await screen.findByLabelText("Saved image mode"), {
       target: { value: "lesion_crop" },
     });
 
@@ -2231,13 +2300,15 @@ describe("CaseWorkspace integration", () => {
     await openSavedCase();
 
     await waitFor(() => {
-      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
-        "SITE_A",
-        "test-token",
-        "KERA-2026-001",
-        "Initial",
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
+      expect(
+        apiMocks.fetchVisitImagesWithPreviews.mock.calls.some(
+          ([siteId, authToken, patientId, visitDate]) =>
+            siteId === "SITE_A" &&
+            authToken === "test-token" &&
+            patientId === "KERA-2026-001" &&
+            visitDate === "Initial",
+        ),
+      ).toBe(true);
     });
     const previewImages = await screen.findAllByAltText("image_1");
     expect(
@@ -2250,7 +2321,8 @@ describe("CaseWorkspace integration", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows deferred visit copy instead of an empty-state message when other visit images have not loaded yet", async () => {
+  it("preserves protected UX: opening a saved case auto-loads other visit thumbnails in desktop mode", async () => {
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(true);
     apiMocks.fetchCases.mockResolvedValue([
       {
         case_id: "case_1",
@@ -2299,19 +2371,743 @@ describe("CaseWorkspace integration", () => {
         polymicrobial: false,
       },
     ]);
+    apiMocks.fetchVisitImagesWithPreviews.mockImplementation(
+      async (_siteId, _token, patientId: string, visitDate: string) => {
+        if (patientId !== "KERA-2026-001") {
+          return [];
+        }
+        if (visitDate === "FU #1") {
+          return [
+            {
+              image_id: "image_2",
+              visit_id: "visit_2",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_2.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_2",
+              preview_url: "/preview/image_2",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-16T00:00:00Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        return [
+          {
+            image_id: "image_1",
+            visit_id: "visit_1",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            image_path: "C:\\KERA\\image_1.png",
+            view: "white",
+            is_representative: true,
+            content_url: "/content/image_1",
+            preview_url: "/preview/image_1",
+            lesion_prompt_box: null,
+            uploaded_at: "2026-03-15T00:00:00Z",
+            quality_scores: null,
+          },
+        ];
+      },
+    );
+    apiMocks.fetchImages.mockResolvedValue([
+      {
+        image_id: "image_2",
+        visit_id: "visit_2",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_2.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_2",
+        preview_url: "/preview/image_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-16T00:00:00Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_1",
+        visit_id: "visit_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_1",
+        preview_url: "/preview/image_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+    ]);
 
     renderWorkspace();
     await openSavedCase();
 
+    await waitFor(() => {
+      expect(
+        apiMocks.fetchImages.mock.calls.some(
+          ([siteId, authToken, patientId, visitDate]) =>
+            siteId === "SITE_A" &&
+            authToken === "test-token" &&
+            patientId === "KERA-2026-001" &&
+            visitDate === undefined,
+        ),
+      ).toBe(true);
+    });
     expect(
       await screen.findByText((content) => content.includes("FU #1")),
     ).toBeInTheDocument();
+    const followUpPreview = await screen.findByAltText("image_2");
+    expect(followUpPreview.getAttribute("src")).toContain("/preview/image_2");
     expect(
-      screen.getByText("Open this visit to load saved images."),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("No saved images for this visit yet."),
+      screen.queryByText("Open this visit to load saved images."),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not collapse the patient timeline when only the latest visit is locally seeded", async () => {
+    const initialCase = {
+      case_id: "case_initial",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "Initial",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-15T00:00:00Z",
+      latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+      image_count: 1,
+      representative_image_id: "image_initial",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: true,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    const followUpCase = {
+      case_id: "case_fu1",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "FU #1",
+      actual_visit_date: "2026-03-29",
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-29T07:00:00Z",
+      latest_image_uploaded_at: "2026-03-29T07:00:01Z",
+      image_count: 3,
+      representative_image_id: "image_fu1",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: false,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    apiMocks.fetchCases.mockImplementation(
+      async (_siteId, _token, options?: { patientId?: string | null }) =>
+        options?.patientId?.trim() === "KERA-2026-001"
+          ? [followUpCase, initialCase]
+          : [followUpCase],
+    );
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: followUpCase,
+          case_count: 2,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnail_count: 2,
+          representative_thumbnails: [],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
+    apiMocks.fetchVisitImagesWithPreviews.mockImplementation(
+      async (_siteId, _token, patientId: string, visitDate: string) => {
+        if (patientId !== "KERA-2026-001") {
+          return [];
+        }
+        if (visitDate === "FU #1") {
+          return [
+            {
+              image_id: "image_fu1",
+              visit_id: "visit_fu1",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_fu1.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_fu1",
+              preview_url: "/preview/image_fu1",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:01Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        return [
+          {
+            image_id: "image_initial",
+            visit_id: "visit_initial",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            image_path: "C:\\KERA\\image_initial.png",
+            view: "white",
+            is_representative: true,
+            content_url: "/content/image_initial",
+            preview_url: "/preview/image_initial",
+            lesion_prompt_box: null,
+            uploaded_at: "2026-03-15T00:00:00Z",
+            quality_scores: null,
+          },
+        ];
+      },
+    );
+
+    renderWorkspace();
+    await openSavedCase();
+
+    await waitFor(() => {
+      expect(apiMocks.fetchCases).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        expect.objectContaining({ patientId: "KERA-2026-001" }),
+      );
+    });
+    expect(await screen.findByText("2 visits")).toBeInTheDocument();
+    expect((await screen.findAllByText("FU #1")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Initial")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(apiMocks.fetchImages).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        "KERA-2026-001",
+        undefined,
+        expect.any(AbortSignal),
+      );
+    }, { timeout: 3000 });
+  });
+
+  it("does not carry thumbnails from the previous patient into the newly opened patient", async () => {
+    const patientAInitial = {
+      case_id: "case_a_initial",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "Initial",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-15T00:00:00Z",
+      latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+      image_count: 1,
+      representative_image_id: "image_a_initial",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: true,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    const patientAFollowUp = {
+      case_id: "case_a_fu1",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "FU #1",
+      actual_visit_date: "2026-03-29",
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-29T07:00:00Z",
+      latest_image_uploaded_at: "2026-03-29T07:00:01Z",
+      image_count: 2,
+      representative_image_id: "image_a_fu1",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: false,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    const patientBInitial = {
+      case_id: "case_b_initial",
+      patient_id: "KERA-2026-002",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "Initial",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-18T00:00:00Z",
+      latest_image_uploaded_at: "2026-03-18T00:00:00Z",
+      image_count: 1,
+      representative_image_id: "image_b_initial",
+      representative_view: "white",
+      age: 33,
+      sex: "male",
+      visit_status: "active",
+      is_initial_visit: true,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    apiMocks.fetchCases.mockImplementation(
+      async (_siteId, _token, options?: { patientId?: string | null }) => {
+        const requestedPatientId = options?.patientId?.trim();
+        if (requestedPatientId === "KERA-2026-001") {
+          return [patientAFollowUp, patientAInitial];
+        }
+        if (requestedPatientId === "KERA-2026-002") {
+          return [patientBInitial];
+        }
+        return [patientAFollowUp, patientBInitial];
+      },
+    );
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: patientAFollowUp,
+          case_count: 2,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnail_count: 2,
+          representative_thumbnails: [],
+        },
+        {
+          patient_id: "KERA-2026-002",
+          latest_case: patientBInitial,
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnail_count: 1,
+          representative_thumbnails: [],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 2,
+      total_pages: 1,
+    });
+    apiMocks.fetchVisitImagesWithPreviews.mockImplementation(
+      async (_siteId, _token, patientId: string, visitDate: string) => {
+        if (patientId === "KERA-2026-001" && visitDate === "FU #1") {
+          return [
+            {
+              image_id: "image_a_fu1",
+              visit_id: "visit_a_fu1",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_a_fu1.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_a_fu1",
+              preview_url: "/preview/image_a_fu1",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:01Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        if (patientId === "KERA-2026-001" && visitDate === "Initial") {
+          return [
+            {
+              image_id: "image_a_initial",
+              visit_id: "visit_a_initial",
+              patient_id: "KERA-2026-001",
+              visit_date: "Initial",
+              image_path: "C:\\KERA\\image_a_initial.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_a_initial",
+              preview_url: "/preview/image_a_initial",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-15T00:00:00Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        if (patientId === "KERA-2026-002" && visitDate === "Initial") {
+          return [
+            {
+              image_id: "image_b_initial",
+              visit_id: "visit_b_initial",
+              patient_id: "KERA-2026-002",
+              visit_date: "Initial",
+              image_path: "C:\\KERA\\image_b_initial.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_b_initial",
+              preview_url: "/preview/image_b_initial",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-18T00:00:00Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    apiMocks.fetchImages.mockImplementation(
+      async (_siteId, _token, patientId?: string) => {
+        if (patientId === "KERA-2026-001") {
+          return [
+            {
+              image_id: "image_a_fu1",
+              visit_id: "visit_a_fu1",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_a_fu1.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_a_fu1",
+              preview_url: "/preview/image_a_fu1",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:01Z",
+              quality_scores: null,
+            },
+            {
+              image_id: "image_a_initial",
+              visit_id: "visit_a_initial",
+              patient_id: "KERA-2026-001",
+              visit_date: "Initial",
+              image_path: "C:\\KERA\\image_a_initial.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_a_initial",
+              preview_url: "/preview/image_a_initial",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-15T00:00:00Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        if (patientId === "KERA-2026-002") {
+          return [
+            {
+              image_id: "image_b_initial",
+              visit_id: "visit_b_initial",
+              patient_id: "KERA-2026-002",
+              visit_date: "Initial",
+              image_path: "C:\\KERA\\image_b_initial.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_b_initial",
+              preview_url: "/preview/image_b_initial",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-18T00:00:00Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    renderWorkspace();
+    await openSavedCase("KERA-2026-001");
+
+    expect((await screen.findAllByAltText("image_a_fu1")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByAltText("image_a_initial")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /List view/i }));
+    await openSavedCase("KERA-2026-002");
+
+    expect((await screen.findAllByAltText("image_b_initial")).length).toBeGreaterThan(0);
+    expect(screen.queryAllByAltText("image_a_fu1")).toHaveLength(0);
+    expect(screen.queryAllByAltText("image_a_initial")).toHaveLength(0);
+  });
+
+  it("keeps initial and follow-up thumbnails distinct when switching visits within the same patient timeline", async () => {
+    const initialCase = {
+      case_id: "case_initial_switch",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "Initial",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-15T00:00:00Z",
+      latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+      image_count: 3,
+      representative_image_id: "image_initial_1",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: true,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    const followUpCase = {
+      case_id: "case_fu_switch",
+      patient_id: "KERA-2026-001",
+      chart_alias: "",
+      local_case_code: "",
+      culture_category: "bacterial",
+      culture_species: "Staphylococcus aureus",
+      additional_organisms: [],
+      visit_date: "FU #1",
+      actual_visit_date: null,
+      created_by_user_id: "user_researcher",
+      created_at: "2026-03-29T07:00:00Z",
+      latest_image_uploaded_at: "2026-03-29T07:00:01Z",
+      image_count: 3,
+      representative_image_id: "image_fu_1",
+      representative_view: "white",
+      age: 20,
+      sex: "female",
+      visit_status: "active",
+      is_initial_visit: false,
+      smear_result: "not done",
+      polymicrobial: false,
+    };
+    apiMocks.fetchCases.mockImplementation(
+      async (_siteId, _token, options?: { patientId?: string | null }) =>
+        options?.patientId?.trim() === "KERA-2026-001"
+          ? [followUpCase, initialCase]
+          : [followUpCase],
+    );
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: followUpCase,
+          case_count: 2,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnail_count: 2,
+          representative_thumbnails: [],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
+    apiMocks.fetchVisitImagesWithPreviews.mockImplementation(
+      async (_siteId, _token, patientId: string, visitDate: string) => {
+        if (patientId !== "KERA-2026-001") {
+          return [];
+        }
+        if (visitDate === "FU #1") {
+          return [
+            {
+              image_id: "image_fu_1",
+              visit_id: "visit_fu",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_fu_1.png",
+              view: "white",
+              is_representative: true,
+              content_url: "/content/image_fu_1",
+              preview_url: "/preview/image_fu_1",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:01Z",
+              quality_scores: null,
+            },
+            {
+              image_id: "image_fu_2",
+              visit_id: "visit_fu",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_fu_2.png",
+              view: "white",
+              is_representative: false,
+              content_url: "/content/image_fu_2",
+              preview_url: "/preview/image_fu_2",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:02Z",
+              quality_scores: null,
+            },
+            {
+              image_id: "image_fu_3",
+              visit_id: "visit_fu",
+              patient_id: "KERA-2026-001",
+              visit_date: "FU #1",
+              image_path: "C:\\KERA\\image_fu_3.png",
+              view: "fluorescein",
+              is_representative: false,
+              content_url: "/content/image_fu_3",
+              preview_url: "/preview/image_fu_3",
+              lesion_prompt_box: null,
+              uploaded_at: "2026-03-29T07:00:03Z",
+              quality_scores: null,
+            },
+          ];
+        }
+        return [
+          {
+            image_id: "image_initial_1",
+            visit_id: "visit_initial",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            image_path: "C:\\KERA\\image_initial_1.png",
+            view: "white",
+            is_representative: true,
+            content_url: "/content/image_initial_1",
+            preview_url: "/preview/image_initial_1",
+            lesion_prompt_box: null,
+            uploaded_at: "2026-03-15T00:00:00Z",
+            quality_scores: null,
+          },
+          {
+            image_id: "image_initial_2",
+            visit_id: "visit_initial",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            image_path: "C:\\KERA\\image_initial_2.png",
+            view: "white",
+            is_representative: false,
+            content_url: "/content/image_initial_2",
+            preview_url: "/preview/image_initial_2",
+            lesion_prompt_box: null,
+            uploaded_at: "2026-03-15T00:00:01Z",
+            quality_scores: null,
+          },
+          {
+            image_id: "image_initial_3",
+            visit_id: "visit_initial",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            image_path: "C:\\KERA\\image_initial_3.png",
+            view: "white",
+            is_representative: false,
+            content_url: "/content/image_initial_3",
+            preview_url: "/preview/image_initial_3",
+            lesion_prompt_box: null,
+            uploaded_at: "2026-03-15T00:00:02Z",
+            quality_scores: null,
+          },
+        ];
+      },
+    );
+    apiMocks.fetchImages.mockResolvedValue([
+      {
+        image_id: "image_fu_1",
+        visit_id: "visit_fu",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_fu_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_fu_1",
+        preview_url: "/preview/image_fu_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-29T07:00:01Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_fu_2",
+        visit_id: "visit_fu",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_fu_2.png",
+        view: "slit",
+        is_representative: false,
+        content_url: "/content/image_fu_2",
+        preview_url: "/preview/image_fu_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-29T07:00:02Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_fu_3",
+        visit_id: "visit_fu",
+        patient_id: "KERA-2026-001",
+        visit_date: "FU #1",
+        image_path: "C:\\KERA\\image_fu_3.png",
+        view: "fluorescein",
+        is_representative: false,
+        content_url: "/content/image_fu_3",
+        preview_url: "/preview/image_fu_3",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-29T07:00:03Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_initial_1",
+        visit_id: "visit_initial",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_initial_1.png",
+        view: "white",
+        is_representative: true,
+        content_url: "/content/image_initial_1",
+        preview_url: "/preview/image_initial_1",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:00Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_initial_2",
+        visit_id: "visit_initial",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_initial_2.png",
+        view: "white",
+        is_representative: false,
+        content_url: "/content/image_initial_2",
+        preview_url: "/preview/image_initial_2",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:01Z",
+        quality_scores: null,
+      },
+      {
+        image_id: "image_initial_3",
+        visit_id: "visit_initial",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        image_path: "C:\\KERA\\image_initial_3.png",
+        view: "white",
+        is_representative: false,
+        content_url: "/content/image_initial_3",
+        preview_url: "/preview/image_initial_3",
+        lesion_prompt_box: null,
+        uploaded_at: "2026-03-15T00:00:02Z",
+        quality_scores: null,
+      },
+    ]);
+
+    renderWorkspace();
+    await openSavedCase("KERA-2026-001");
+
+    expect((await screen.findAllByAltText("image_fu_1")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByAltText("image_initial_1")).length).toBeGreaterThan(0);
+
+    const initialHeading = await screen.findByText("Initial");
+    const initialCard = initialHeading.closest("section");
+    if (!initialCard) {
+      throw new Error("Unable to locate the Initial visit card.");
+    }
+    fireEvent.click(within(initialCard).getByRole("button", { name: "Open visit" }));
+
+    await screen.findByRole("button", { name: "Current visit" });
+    expect((await screen.findAllByAltText("image_initial_1")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByAltText("image_fu_1")).length).toBeGreaterThan(0);
+    expect(screen.queryAllByAltText("image_initial_3").length).toBeGreaterThan(0);
+    expect(screen.queryAllByAltText("image_fu_3").length).toBeGreaterThan(0);
   });
 
   it("loads saved images correctly in React Strict Mode", async () => {
@@ -2319,21 +3115,25 @@ describe("CaseWorkspace integration", () => {
     await openSavedCase();
 
     await waitFor(() => {
-      expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledWith(
-        "SITE_A",
-        "test-token",
-        "KERA-2026-001",
-        "Initial",
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
+      expect(
+        apiMocks.fetchVisitImagesWithPreviews.mock.calls.some(
+          ([siteId, authToken, patientId, visitDate]) =>
+            siteId === "SITE_A" &&
+            authToken === "test-token" &&
+            patientId === "KERA-2026-001" &&
+            visitDate === "Initial",
+        ),
+      ).toBe(true);
     });
     expect(screen.getAllByText("1 images").length).toBeGreaterThan(0);
-    expect(
-      screen.queryByText("No saved images are attached to this case yet."),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("No saved images for this visit yet."),
-    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.queryByText("No saved images are attached to this case yet."),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("No saved images for this visit yet."),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("keeps saved images visible when the visit-image response already carries preview URLs", async () => {
@@ -2450,7 +3250,7 @@ describe("CaseWorkspace integration", () => {
     ).toBe(true);
     expect(apiMocks.fetchVisitImagesWithPreviews).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set representative" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Set representative" }));
 
     await waitFor(() => {
       expect(apiMocks.setRepresentativeImage).toHaveBeenCalledWith(
@@ -3134,7 +3934,7 @@ describe("CaseWorkspace integration", () => {
     expect(await screen.findByText("Expanded evidence")).toBeInTheDocument();
     expect(screen.getByText("SIM-001")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Load evidence" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load evidence" }));
 
     await waitFor(() => {
       expect(apiMocks.runCaseAiClinic).toHaveBeenCalledWith(

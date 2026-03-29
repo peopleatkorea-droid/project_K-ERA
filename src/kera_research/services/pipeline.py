@@ -1747,6 +1747,22 @@ class ResearchWorkflowService:
             partial_unfreeze_blocks=partial_unfreeze_blocks,
         )
 
+    def run_retrieval_baseline(
+        self,
+        site_store: SiteStore,
+        execution_device: str,
+        crop_mode: str = "automated",
+        top_k: int = 10,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        return self.training_workflow.run_retrieval_baseline(
+            site_store,
+            execution_device,
+            crop_mode=crop_mode,
+            top_k=top_k,
+            progress_callback=progress_callback,
+        )
+
     def run_cross_validation(
         self,
         site_store: SiteStore,

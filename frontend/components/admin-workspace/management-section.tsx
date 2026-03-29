@@ -25,6 +25,7 @@ type UserFormState = {
 };
 
 type Props = {
+  token: string;
   locale: Locale;
   notAvailableLabel: string;
   canManagePlatform: boolean;
@@ -222,6 +223,7 @@ function normalizeStoragePath(value: string | null | undefined): string {
 }
 
 export function ManagementSection({
+  token,
   locale,
   notAvailableLabel,
   canManagePlatform,
@@ -427,7 +429,13 @@ export function ManagementSection({
         aside={<span className={docSiteBadgeClass}>{translateRole(locale, canManagePlatform ? "admin" : "site_admin")}</span>}
       />
 
-      <DesktopDiagnosticsPanel locale={locale} formatDateTime={formatDateTime} />
+      <DesktopDiagnosticsPanel
+        token={token}
+        locale={locale}
+        formatDateTime={formatDateTime}
+        selectedManagedSite={selectedManagedSite}
+        selectedSiteLabel={selectedSiteLabel}
+      />
 
       {canManageStorageRoot ? (
         <div className="grid gap-4">

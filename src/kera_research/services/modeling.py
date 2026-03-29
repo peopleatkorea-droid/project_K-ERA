@@ -417,7 +417,9 @@ if nn is not None:
         def __init__(self, variant: str = "densenet121", num_classes: int = 2) -> None:
             super().__init__()
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for DenseNet. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for DenseNet. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
             builder = getattr(_torchvision_models, variant, None)
             if builder is None:
                 raise ValueError(f"Unknown DenseNet variant: {variant}")
@@ -442,7 +444,9 @@ if nn is not None:
         def __init__(self, num_classes: int = 2) -> None:
             super().__init__()
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for ConvNeXt. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for ConvNeXt. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
             backbone = _torchvision_models.convnext_tiny(weights=None)
             in_features = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(in_features, num_classes)
@@ -466,7 +470,9 @@ if nn is not None:
             try:
                 from transformers import Dinov2Config, Dinov2Model
             except ImportError as exc:  # pragma: no cover - dependency guard
-                raise RuntimeError("transformers is required for DINOv2. Run: pip install transformers") from exc
+                raise RuntimeError(
+                    "transformers is required for DINOv2. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                ) from exc
 
             if pretrained:
                 backbone = Dinov2Model.from_pretrained(DINOv2_MODEL_ID)
@@ -637,7 +643,9 @@ if nn is not None:
         ) -> None:
             super().__init__()
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for Swin Attention MIL. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for Swin Attention MIL. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
 
             if pretrained:
                 from torchvision.models import Swin_T_Weights
@@ -1263,14 +1271,18 @@ class ModelManager:
             return TinyKeratitisCNN()
         if architecture == "vit":
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for ViT. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for ViT. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
             backbone = _torchvision_models.vit_b_16(weights=None)
             in_features = backbone.heads.head.in_features
             backbone.heads.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
             return backbone
         if architecture == "swin":
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for Swin. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for Swin. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
             backbone = _torchvision_models.swin_t(weights=None)
             in_features = backbone.head.in_features
             backbone.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
@@ -1279,7 +1291,9 @@ class ModelManager:
             return ConvNeXtTinyKeratitis()
         if architecture == "efficientnet_v2_s":
             if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError("torchvision is required for EfficientNetV2-S. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required for EfficientNetV2-S. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
             backbone = _torchvision_models.efficientnet_v2_s(weights=None)
             in_features = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
@@ -2061,7 +2075,9 @@ class ModelManager:
             return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if not _TORCHVISION_AVAILABLE:
             if architecture not in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
-                raise RuntimeError("torchvision is required. Run: pip install torchvision")
+                raise RuntimeError(
+                    "torchvision is required. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
         if architecture == "vit":
             from torchvision.models import ViT_B_16_Weights
 

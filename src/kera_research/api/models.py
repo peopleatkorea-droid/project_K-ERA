@@ -285,6 +285,7 @@ class UserUpsertRequest(BaseModel):
 class LocalControlPlaneNodeRegisterRequest(BaseModel):
     control_plane_base_url: str | None = None
     control_plane_user_token: str
+    registration_source: Literal["control_plane_user", "main_admin"] = "control_plane_user"
     device_name: str = "local-node"
     os_info: str = ""
     app_version: str = ""
