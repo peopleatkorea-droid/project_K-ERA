@@ -1,6 +1,10 @@
 import logging
 import os
+import subprocess
+import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -20,6 +24,10 @@ from kera_research.api.routes.site_shared import (
 
 logger = logging.getLogger(__name__)
 TIMING_LOGS_ENABLED = str(os.getenv("KERA_BOOTSTRAP_TIMING_LOGS") or "").strip() == "1"
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_CLUSTER_VIZ_HTML = _REPO_ROOT / "artifacts" / "dinov2_cluster_3d" / "cluster_3d.html"
+_VISUALIZE_SCRIPT = _REPO_ROOT / "scripts" / "visualize_dinov2_clusters_3d.py"
 
 
 def build_site_overview_router(support: Any) -> APIRouter:
@@ -246,5 +254,76 @@ def build_site_overview_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
         return build_site_activity(cp, site_id, current_user_id=user["user_id"])
+
+    @router.get("/api/sites/{site_id}/explore/cluster-visualization/status")
+    def explore_cluster_status(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if not _CLUSTER_VIZ_HTML.exists():
+            return {"exists": False, "generated_at": None, "size_bytes": 0}
+        stat = _CLUSTER_VIZ_HTML.stat()
+        generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        return {"exists": True, "generated_at": generated_at, "size_bytes": stat.st_size}
+
+    @router.get("/api/sites/{site_id}/explore/cluster-visualization")
+    def explore_cluster_html(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if not _CLUSTER_VIZ_HTML.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cluster visualization has not been generated yet.")
+        return {"html": _CLUSTER_VIZ_HTML.read_text(encoding="utf-8")}
+
+    @router.post("/api/sites/{site_id}/explore/cluster-visualization/regenerate")
+    def explore_cluster_regenerate(
+        site_id: str,
+        backbone: str = "official",
+        crop_mode: str = "full",
+        view_filter: str = "all",
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if backbone not in ("official", "ssl"):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid backbone: {backbone}")
+        if crop_mode not in ("full", "cornea_roi", "lesion_crop"):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid crop_mode: {crop_mode}")
+        if view_filter not in ("all", "white", "slit", "fluorescein"):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid view_filter: {view_filter}")
+        if not _VISUALIZE_SCRIPT.exists():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Visualization script not found.")
+        cmd = [
+            sys.executable, str(_VISUALIZE_SCRIPT),
+            "--site-id", site_id,
+            "--backbone", backbone,
+            "--crop-mode", crop_mode,
+            "--view-filter", view_filter,
+            "--device", "auto",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            logger.error("cluster viz regeneration failed: %s", result.stderr[-2000:])
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Regeneration failed: {result.stderr[-500:]}",
+            )
+        if not _CLUSTER_VIZ_HTML.exists():
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Script ran but output file not found.")
+        stat = _CLUSTER_VIZ_HTML.stat()
+        generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        return {"ok": True, "generated_at": generated_at, "size_bytes": stat.st_size}
 
     return router

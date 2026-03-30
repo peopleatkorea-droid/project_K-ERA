@@ -97,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SSL_CHECKPOINT,
     )
     parser.add_argument(
+        "--view-filter",
+        default="all",
+        choices=["all", "white", "slit", "fluorescein"],
+        help="Filter images by view type. 'all' keeps every view.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=REPO_ROOT / "artifacts" / "dinov2_cluster_3d" / "cluster_3d.html",
@@ -117,31 +123,38 @@ def _normalize_category(raw: Any) -> str:
     return str(raw or "unknown").strip().lower() or "unknown"
 
 
+def filter_by_view(records: list[dict[str, Any]], view_filter: str) -> list[dict[str, Any]]:
+    if view_filter == "all":
+        return records
+    target = view_filter.strip().lower()
+    return [r for r in records if str(r.get("view") or "").strip().lower() == target]
+
+
 def prepare_image_records(
     *,
     manifest_records: list[dict[str, Any]],
     crop_mode: str,
+    view_filter: str,
     workflow: ResearchWorkflowService | None,
     site_store: SiteStore,
 ) -> list[dict[str, Any]]:
     normalized = crop_mode.strip().lower()
     if normalized == "full":
-        return [
-            r for r in manifest_records
-            if str(r.get("image_path") or "").strip()
-        ]
-    if workflow is None:
+        base = [r for r in manifest_records if str(r.get("image_path") or "").strip()]
+    elif workflow is None:
         raise RuntimeError(
             f"crop_mode='{crop_mode}' requires the pipeline workflow (ControlPlaneStore). "
             "Pass --crop-mode full to skip this."
         )
-    if normalized == "cornea_roi":
-        records = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode="automated")
+    elif normalized == "cornea_roi":
+        base = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode="automated")
+        base = [r for r in base if str(r.get("image_path") or "").strip()]
     elif normalized == "lesion_crop":
-        records = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode="manual")
+        base = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode="manual")
+        base = [r for r in base if str(r.get("image_path") or "").strip()]
     else:
         raise ValueError(f"Unsupported crop_mode: {crop_mode}")
-    return [r for r in records if str(r.get("image_path") or "").strip()]
+    return filter_by_view(base, view_filter)
 
 
 def build_visit_level_points(
@@ -270,6 +283,7 @@ def build_plotly_figure(
     *,
     backbone: str,
     crop_mode: str,
+    view_filter: str,
     level: str,
     site_id: str,
 ) -> Any:
@@ -314,9 +328,10 @@ def build_plotly_figure(
             )
         )
 
+    view_label = view_filter if view_filter != "all" else "all views"
     title_text = (
         f"DINOv2 Embedding Cluster — {level.capitalize()} level  "
-        f"<sub>(site={site_id} · backbone={backbone} · crop={crop_mode} · n={len(points)})</sub>"
+        f"<sub>(site={site_id} · backbone={backbone} · crop={crop_mode} · view={view_label} · n={len(points)})</sub>"
     )
 
     fig = go.Figure(data=traces)
@@ -378,10 +393,11 @@ def main() -> int:
         control_plane = ControlPlaneStore()
         workflow = ResearchWorkflowService(control_plane)
 
-    print(f"Preparing records (crop_mode={args.crop_mode})...")
+    print(f"Preparing records (crop_mode={args.crop_mode}, view_filter={args.view_filter})...")
     image_records = prepare_image_records(
         manifest_records=manifest_records,
         crop_mode=args.crop_mode,
+        view_filter=args.view_filter,
         workflow=workflow,
         site_store=site_store,
     )
@@ -436,6 +452,7 @@ def main() -> int:
         points,
         backbone=args.backbone,
         crop_mode=args.crop_mode,
+        view_filter=args.view_filter,
         level=args.level,
         site_id=args.site_id,
     )

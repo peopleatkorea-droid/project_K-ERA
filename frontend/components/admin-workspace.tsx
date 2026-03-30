@@ -27,6 +27,7 @@ import {
 } from "./ui/workspace-patterns";
 import { CrossValidationSection } from "./admin-workspace/cross-validation-section";
 import { DashboardSection } from "./admin-workspace/dashboard-section";
+import { ExploreSection } from "./admin-workspace/explore-section";
 import { FederationSection } from "./admin-workspace/federation-section";
 import { ImportsSection } from "./admin-workspace/imports-section";
 import { ManagementSection } from "./admin-workspace/management-section";
@@ -51,7 +52,8 @@ export type WorkspaceSection =
   | "ssl"
   | "registry"
   | "management"
-  | "federation";
+  | "federation"
+  | "explore";
 
 type AdminWorkspaceProps = {
   token: string;
@@ -497,6 +499,7 @@ export function AdminWorkspace({
               ["registry", pick(locale, "Model registry", "모델 레지스트리")],
               ["management", pick(locale, "Management", "관리")],
               ...(canAggregate ? [["federation", pick(locale, "Federation", "?고빀?숈뒿")]] : []),
+              ["explore", pick(locale, "Explore", "탐색")],
             ].map(([value, label]) => (
               <button
                 key={value}
@@ -714,6 +717,13 @@ export function AdminWorkspace({
           </div>
         </Card>
         <div className="grid gap-4">
+          {section === "explore" ? (
+            <ExploreSection
+              locale={locale}
+              token={token}
+              selectedSiteId={selectedSiteId}
+            />
+          ) : null}
           {section === "dashboard" ? (
             <DashboardSection
               locale={locale}
