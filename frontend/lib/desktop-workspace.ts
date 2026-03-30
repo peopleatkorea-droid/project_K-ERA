@@ -351,20 +351,24 @@ export async function uploadDesktopImage(
   },
 ) {
   const bytes = new Uint8Array(await payload.file.arrayBuffer());
-  const response = await invokeDesktop<DesktopImageRecord>("upload_image", {
-    payload: {
-      site_id: siteId,
-      ...desktopAuth(token),
-      patient_id: payload.patient_id,
-      visit_date: payload.visit_date,
-      view: payload.view,
-      is_representative: Boolean(payload.is_representative),
-      file_name: payload.file.name || "upload.bin",
-      bytes,
-    },
-  });
-  clearDesktopWorkspaceCaches();
-  return normalizeDesktopImage(response);
+  try {
+    const response = await invokeDesktop<DesktopImageRecord>("upload_image", {
+      payload: {
+        site_id: siteId,
+        ...desktopAuth(token),
+        patient_id: payload.patient_id,
+        visit_date: payload.visit_date,
+        view: payload.view,
+        is_representative: Boolean(payload.is_representative),
+        file_name: payload.file.name || "upload.bin",
+        bytes,
+      },
+    });
+    clearDesktopWorkspaceCaches();
+    return normalizeDesktopImage(response);
+  } catch (error) {
+    throw error;
+  }
 }
 
 export async function deleteDesktopVisitImages(

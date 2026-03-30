@@ -32,6 +32,8 @@ def build_site_summary_counts(site_store: SiteStore, site_id: str) -> dict[str, 
         "n_visits": stats["n_visits"],
         "n_images": stats["n_images"],
         "n_active_visits": stats["n_active_visits"],
+        "n_fungal_visits": stats["n_fungal_visits"],
+        "n_bacterial_visits": stats["n_bacterial_visits"],
     }
 
 
@@ -43,6 +45,8 @@ def build_local_summary(site_store: SiteStore, site_id: str) -> dict[str, Any]:
         "n_visits": stats["n_visits"],
         "n_images": stats["n_images"],
         "n_active_visits": stats["n_active_visits"],
+        "n_fungal_visits": stats["n_fungal_visits"],
+        "n_bacterial_visits": stats["n_bacterial_visits"],
     }
     return {
         **summary,

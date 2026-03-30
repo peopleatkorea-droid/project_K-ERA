@@ -375,6 +375,8 @@ export type SiteSummary = {
   n_visits: number;
   n_images: number;
   n_active_visits: number;
+  n_fungal_visits?: number;
+  n_bacterial_visits?: number;
   n_validation_runs: number;
   latest_validation?: Record<string, unknown> | null;
   research_registry?: {
@@ -388,7 +390,13 @@ export type SiteSummary = {
 
 export type SiteSummaryCounts = Pick<
   SiteSummary,
-  "site_id" | "n_patients" | "n_visits" | "n_images" | "n_active_visits"
+  | "site_id"
+  | "n_patients"
+  | "n_visits"
+  | "n_images"
+  | "n_active_visits"
+  | "n_fungal_visits"
+  | "n_bacterial_visits"
 >;
 
 export type CaseValidationSummary = {

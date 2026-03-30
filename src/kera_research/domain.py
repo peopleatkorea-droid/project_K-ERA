@@ -40,12 +40,25 @@ BASE_TRAINING_ARCHITECTURES = [
     "dual_input_concat",
 ]
 LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX = "lesion_guided_fusion__"
+THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX = "lesion_guided_fusion_3scale__"
+LESION_GUIDED_FUSION_ARCHITECTURE_PREFIXES = (
+    LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX,
+    THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX,
+)
 LESION_GUIDED_FUSION_BACKBONES = ["efficientnet_v2_s", "densenet121", "convnext_tiny", "vit", "swin", "dinov2"]
 LESION_GUIDED_FUSION_ARCHITECTURES = [
     f"{LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX}{backbone}"
     for backbone in LESION_GUIDED_FUSION_BACKBONES
 ]
-TRAINING_ARCHITECTURES = [*BASE_TRAINING_ARCHITECTURES, *LESION_GUIDED_FUSION_ARCHITECTURES]
+THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURES = [
+    f"{THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX}{backbone}"
+    for backbone in LESION_GUIDED_FUSION_BACKBONES
+]
+TRAINING_ARCHITECTURES = [
+    *BASE_TRAINING_ARCHITECTURES,
+    *LESION_GUIDED_FUSION_ARCHITECTURES,
+    *THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURES,
+]
 MODEL_ARCHITECTURES = list(dict.fromkeys(TRAINING_ARCHITECTURES))
 
 CULTURE_SPECIES = {
@@ -73,6 +86,8 @@ CULTURE_SPECIES = {
         "Enterobacter",
         "Citrobacter",
         "Burkholderia",
+        "Pandoraea species",
+        "Stenotrophomonas",
         "Achromobacter",
         "Nocardia",
         "Other",
@@ -134,15 +149,23 @@ _ACTUAL_VISIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def is_lesion_guided_fusion_architecture(value: str | None) -> bool:
     normalized = str(value or "").strip().lower()
-    return normalized.startswith(LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX)
+    return any(normalized.startswith(prefix) for prefix in LESION_GUIDED_FUSION_ARCHITECTURE_PREFIXES)
+
+
+def is_three_scale_lesion_guided_fusion_architecture(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized.startswith(THREE_SCALE_LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX)
 
 
 def lesion_guided_fusion_backbone(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     if not is_lesion_guided_fusion_architecture(normalized):
         return None
-    backbone = normalized[len(LESION_GUIDED_FUSION_ARCHITECTURE_PREFIX) :].strip()
-    return backbone or None
+    for prefix in LESION_GUIDED_FUSION_ARCHITECTURE_PREFIXES:
+        if normalized.startswith(prefix):
+            backbone = normalized[len(prefix) :].strip()
+            return backbone or None
+    return None
 
 
 def is_dual_input_training_architecture(value: str | None) -> bool:

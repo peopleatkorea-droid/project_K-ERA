@@ -23,12 +23,16 @@ from kera_research.domain import (
     is_attention_mil_architecture,
     is_dual_input_training_architecture,
     is_lesion_guided_fusion_architecture,
+    is_three_scale_lesion_guided_fusion_architecture,
     lesion_guided_fusion_backbone,
     make_id,
     utc_now,
 )
 from kera_research.services.model_artifacts import ModelArtifactStore
-from kera_research.services.lesion_guided_fusion import LesionGuidedFusionKeratitis
+from kera_research.services.lesion_guided_fusion import (
+    LesionGuidedFusionKeratitis,
+    ThreeScaleLesionGuidedFusionKeratitis,
+)
 from kera_research.services.retrieval import DINOv2_MODEL_ID
 
 try:
@@ -187,6 +191,48 @@ def _load_mask_tensor(
     resized = mask.resize((image_size, image_size))
     array = np.asarray(resized, dtype=np.float32) / 255.0
     return torch.from_numpy(array).unsqueeze(0)
+
+
+def _extract_medium_crop_tensor(
+    image_tensor: torch.Tensor,
+    lesion_mask_tensor: torch.Tensor,
+    *,
+    scale_factor: float,
+    min_relative_side: float = 0.35,
+) -> torch.Tensor:
+    require_torch()
+    if image_tensor.ndim != 3:
+        raise ValueError(f"Expected a CHW image tensor, got shape {tuple(image_tensor.shape)}.")
+    if lesion_mask_tensor.ndim == 3:
+        lesion_mask = lesion_mask_tensor.squeeze(0)
+    elif lesion_mask_tensor.ndim == 2:
+        lesion_mask = lesion_mask_tensor
+    else:
+        raise ValueError(f"Expected a HW or 1HW lesion mask tensor, got shape {tuple(lesion_mask_tensor.shape)}.")
+
+    height, width = int(image_tensor.shape[-2]), int(image_tensor.shape[-1])
+    coordinates = torch.nonzero(lesion_mask > 0.05, as_tuple=False)
+    if coordinates.numel() == 0:
+        return image_tensor.clone()
+
+    top = int(coordinates[:, 0].min().item())
+    bottom = int(coordinates[:, 0].max().item()) + 1
+    left = int(coordinates[:, 1].min().item())
+    right = int(coordinates[:, 1].max().item()) + 1
+    bbox_height = max(1, bottom - top)
+    bbox_width = max(1, right - left)
+    min_side = max(16, int(round(min(height, width) * float(min_relative_side))))
+    side = int(round(max(bbox_height, bbox_width) * max(1.0, float(scale_factor))))
+    side = max(min_side, min(max(height, width), side))
+    center_y = (top + bottom) / 2.0
+    center_x = (left + right) / 2.0
+    crop_top = max(0, min(height - side, int(round(center_y - side / 2.0))))
+    crop_left = max(0, min(width - side, int(round(center_x - side / 2.0))))
+    crop_bottom = min(height, crop_top + side)
+    crop_right = min(width, crop_left + side)
+    crop = image_tensor[:, crop_top:crop_bottom, crop_left:crop_right].unsqueeze(0)
+    resized = F.interpolate(crop, size=(height, width), mode="bilinear", align_corners=False)
+    return resized.squeeze(0)
 
 
 if nn is not None:
@@ -992,6 +1038,55 @@ class LesionGuidedFusionDataset(Dataset):
         return cornea_tensor, lesion_tensor, lesion_mask_tensor, torch.tensor(label_value, dtype=torch.long)
 
 
+class ThreeScaleLesionGuidedFusionDataset(Dataset):
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.records = list(records)
+        self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        record = self.records[index]
+        image_size = _preprocess_image_size(self.preprocess_metadata)
+        cornea_path = str(record.get("cornea_image_path") or record.get("roi_crop_path") or record.get("image_path") or "")
+        lesion_path = str(record.get("lesion_image_path") or record.get("lesion_crop_path") or "")
+        lesion_mask_path = str(record.get("lesion_mask_path") or "")
+        if not cornea_path or not lesion_path or not lesion_mask_path:
+            raise ValueError("Three-scale lesion-guided fusion requires cornea crop, lesion crop, and lesion mask inputs.")
+
+        _, cornea_tensor = _load_image_tensor(cornea_path, image_size=image_size)
+        _, lesion_tensor = _load_image_tensor(lesion_path, image_size=image_size)
+        lesion_mask_tensor = _load_mask_tensor(lesion_mask_path, image_size=image_size)
+        cornea_tensor = cornea_tensor.squeeze(0)
+        lesion_tensor = lesion_tensor.squeeze(0)
+        if self.augment:
+            cornea_tensor, lesion_mask_tensor = _augment_cornea_tensor_and_mask(
+                cornea_tensor,
+                lesion_mask_tensor,
+                view=record.get("view"),
+            )
+            lesion_tensor = _augment_tensor(lesion_tensor, view=record.get("view"))
+        medium_scale_factor = float(record.get("medium_crop_scale_factor") or 1.5)
+        medium_tensor = _extract_medium_crop_tensor(
+            cornea_tensor,
+            lesion_mask_tensor,
+            scale_factor=medium_scale_factor,
+        )
+        cornea_tensor = _apply_preprocess_to_tensor(cornea_tensor, self.preprocess_metadata)
+        medium_tensor = _apply_preprocess_to_tensor(medium_tensor, self.preprocess_metadata)
+        lesion_tensor = _apply_preprocess_to_tensor(lesion_tensor, self.preprocess_metadata)
+        label_value = LABEL_TO_INDEX[str(record["culture_category"])]
+        return cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor, torch.tensor(label_value, dtype=torch.long)
+
+
 def _group_records_by_visit(records: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for record in records:
@@ -1265,6 +1360,8 @@ class ModelManager:
 
     def build_model(self, architecture: str) -> nn.Module:
         require_torch()
+        if is_three_scale_lesion_guided_fusion_architecture(architecture):
+            return ThreeScaleLesionGuidedFusionKeratitis(architecture, num_classes=DEFAULT_NUM_CLASSES, init_mode="random")
         if is_lesion_guided_fusion_architecture(architecture):
             return LesionGuidedFusionKeratitis(architecture, num_classes=DEFAULT_NUM_CLASSES, init_mode="random")
         if architecture == "cnn":
@@ -1408,7 +1505,13 @@ class ModelManager:
         model = self.build_model(architecture).to(device)
         state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
         strict = architecture not in DENSENET_VARIANTS
-        model.load_state_dict(state_dict, strict=strict)
+        try:
+            model.load_state_dict(state_dict, strict=strict)
+        except RuntimeError:
+            if architecture not in {"dinov2", "dinov2_mil"}:
+                raise
+            model = self.build_model_pretrained(architecture).to(device)
+            model.load_state_dict(state_dict, strict=strict)
         model._kera_preprocess_metadata = self.resolve_preprocess_metadata(
             resolved_reference,
             checkpoint_metadata,
@@ -1491,8 +1594,17 @@ class ModelManager:
                 image_size=_preprocess_image_size(preprocess_metadata),
             ).unsqueeze(0).to(device)
         model.eval()
+        architecture = str(model_reference.get("architecture") or "")
         with torch.no_grad():
-            logits = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
+            if is_three_scale_lesion_guided_fusion_architecture(architecture):
+                medium_tensor = _extract_medium_crop_tensor(
+                    cornea_tensor.squeeze(0),
+                    lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
+                    scale_factor=1.5,
+                ).unsqueeze(0).to(device)
+                logits = model(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
+            else:
+                logits = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
         probabilities = torch.softmax(logits, dim=1).squeeze(0)
         pred_index = int(torch.argmax(probabilities).item())
         return Prediction(
@@ -1561,8 +1673,17 @@ class ModelManager:
                 image_size=_preprocess_image_size(preprocess_metadata),
             ).unsqueeze(0).to(device)
         model.eval()
+        architecture = str(model_reference.get("architecture") or "")
         with torch.no_grad():
-            fused_features = model.forward_features(cornea_tensor, lesion_tensor, lesion_mask_tensor)
+            if is_three_scale_lesion_guided_fusion_architecture(architecture):
+                medium_tensor = _extract_medium_crop_tensor(
+                    cornea_tensor.squeeze(0),
+                    lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
+                    scale_factor=1.5,
+                ).unsqueeze(0).to(device)
+                fused_features = model.forward_features(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
+            else:
+                fused_features = model.forward_features(cornea_tensor, lesion_tensor, lesion_mask_tensor)
         embedding = fused_features[0].detach().cpu().numpy().astype(np.float32)
         return embedding
 
@@ -1822,6 +1943,7 @@ class ModelManager:
                 image_size=_preprocess_image_size(preprocess_metadata),
             ).unsqueeze(0).to(device)
         model.eval()
+        architecture = str(getattr(model, "architecture", "") or "")
 
         branch_activations: dict[str, torch.Tensor] = {}
         branch_gradients: dict[str, torch.Tensor] = {}
@@ -1834,7 +1956,15 @@ class ModelManager:
             branch_activations[branch_name] = output
 
         forward_handle = target_layer.register_forward_hook(forward_hook)
-        scores = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
+        if is_three_scale_lesion_guided_fusion_architecture(architecture):
+            medium_tensor = _extract_medium_crop_tensor(
+                cornea_tensor.squeeze(0),
+                lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
+                scale_factor=1.5,
+            ).unsqueeze(0).to(device)
+            scores = model(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
+        else:
+            scores = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
         if target_class is None:
             target_class = int(torch.argmax(scores, dim=1).item())
         model.zero_grad()
@@ -1924,7 +2054,11 @@ class ModelManager:
         preprocess_metadata = self.resolve_preprocess_metadata(base_model_reference)
         if self.is_dual_input_architecture(architecture):
             dataset = (
-                LesionGuidedFusionDataset(records, preprocess_metadata=preprocess_metadata)
+                (
+                    ThreeScaleLesionGuidedFusionDataset(records, preprocess_metadata=preprocess_metadata)
+                    if is_three_scale_lesion_guided_fusion_architecture(architecture)
+                    else LesionGuidedFusionDataset(records, preprocess_metadata=preprocess_metadata)
+                )
                 if is_lesion_guided_fusion_architecture(architecture)
                 else PairedCropDataset(records, preprocess_metadata=preprocess_metadata)
             )
@@ -1949,17 +2083,8 @@ class ModelManager:
             batch_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
                 for batch in loader:
-                    if len(batch) == 4:
-                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
-                        lesion_masks = lesion_masks.to(device)
-                    else:
-                        cornea_inputs, lesion_inputs, batch_labels = batch
-                        lesion_masks = None
-                    cornea_inputs = cornea_inputs.to(device)
-                    lesion_inputs = lesion_inputs.to(device)
-                    batch_labels = batch_labels.to(device)
                     optimizer.zero_grad()
-                    logits = model(cornea_inputs, lesion_inputs, lesion_masks)
+                    logits, batch_labels = self._paired_forward_from_batch(model, batch, device)
                     loss = loss_fn(logits, batch_labels)
                     loss.backward()
                     optimizer.step()
@@ -2008,7 +2133,18 @@ class ModelManager:
         if is_lesion_guided_fusion_architecture(architecture):
             for parameter in model.parameters():
                 parameter.requires_grad = False
-            for module in (model.lesion_projection, model.channel_gate, model.spatial_attention, model.fusion_projection, model.classifier):
+            fusion_head_modules = [
+                getattr(model, "medium_projection", None),
+                getattr(model, "lesion_projection", None),
+                getattr(model, "context_projection", None),
+                getattr(model, "channel_gate", None),
+                getattr(model, "spatial_attention", None),
+                getattr(model, "fusion_projection", None),
+                getattr(model, "classifier", None),
+            ]
+            for module in fusion_head_modules:
+                if module is None:
+                    continue
                 for parameter in module.parameters():
                     parameter.requires_grad = True
             return
@@ -2071,6 +2207,8 @@ class ModelManager:
     def build_model_pretrained(self, architecture: str, num_classes: int = 2) -> nn.Module:
         """ImageNet pretrained 가중치로 학습용 backbone을 초기화합니다."""
         require_torch()
+        if is_three_scale_lesion_guided_fusion_architecture(architecture):
+            return ThreeScaleLesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if is_lesion_guided_fusion_architecture(architecture):
             return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if not _TORCHVISION_AVAILABLE:
@@ -2162,7 +2300,19 @@ class ModelManager:
 
     def _head_modules(self, model: nn.Module, architecture: str) -> list[nn.Module]:
         if is_lesion_guided_fusion_architecture(architecture):
-            return [model.lesion_projection, model.channel_gate, model.spatial_attention, model.fusion_projection, model.classifier]
+            return [
+                module
+                for module in [
+                    getattr(model, "medium_projection", None),
+                    getattr(model, "lesion_projection", None),
+                    getattr(model, "context_projection", None),
+                    getattr(model, "channel_gate", None),
+                    getattr(model, "spatial_attention", None),
+                    getattr(model, "fusion_projection", None),
+                    getattr(model, "classifier", None),
+                ]
+                if module is not None
+            ]
         if architecture == "cnn":
             return [model.classifier]
         if architecture == "vit":
@@ -2856,6 +3006,39 @@ class ModelManager:
             "positive_probabilities": positive_probabilities,
         }
 
+    def _paired_forward_from_batch(
+        self,
+        model: nn.Module,
+        batch: Any,
+        device: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        require_torch()
+        if len(batch) == 5:
+            cornea_inputs, medium_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+            cornea_inputs = cornea_inputs.to(device)
+            medium_inputs = medium_inputs.to(device)
+            lesion_inputs = lesion_inputs.to(device)
+            lesion_masks = lesion_masks.to(device)
+            batch_labels = batch_labels.to(device)
+            logits = model(cornea_inputs, medium_inputs, lesion_inputs, lesion_masks)
+            return logits, batch_labels
+        if len(batch) == 4:
+            cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
+            cornea_inputs = cornea_inputs.to(device)
+            lesion_inputs = lesion_inputs.to(device)
+            lesion_masks = lesion_masks.to(device)
+            batch_labels = batch_labels.to(device)
+            logits = model(cornea_inputs, lesion_inputs, lesion_masks)
+            return logits, batch_labels
+        if len(batch) == 3:
+            cornea_inputs, lesion_inputs, batch_labels = batch
+            cornea_inputs = cornea_inputs.to(device)
+            lesion_inputs = lesion_inputs.to(device)
+            batch_labels = batch_labels.to(device)
+            logits = model(cornea_inputs, lesion_inputs, None)
+            return logits, batch_labels
+        raise ValueError(f"Unsupported paired batch structure with {len(batch)} items.")
+
     def _collect_paired_loader_outputs(
         self,
         model: nn.Module,
@@ -2868,16 +3051,7 @@ class ModelManager:
         positive_probabilities: list[float] = []
         with torch.no_grad():
             for batch in loader:
-                if len(batch) == 4:
-                    cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
-                    lesion_masks = lesion_masks.to(device)
-                else:
-                    cornea_inputs, lesion_inputs, batch_labels = batch
-                    lesion_masks = None
-                cornea_inputs = cornea_inputs.to(device)
-                lesion_inputs = lesion_inputs.to(device)
-                batch_labels = batch_labels.to(device)
-                logits = model(cornea_inputs, lesion_inputs, lesion_masks)
+                logits, batch_labels = self._paired_forward_from_batch(model, batch, device)
                 probabilities = torch.softmax(logits, dim=1)
                 true_labels.extend(int(value) for value in batch_labels.tolist())
                 positive_probabilities.extend(float(value) for value in probabilities[:, 1].tolist())
@@ -3254,6 +3428,9 @@ class ModelManager:
             "n_train": len(train_records),
             "n_val": len(val_records),
             "n_test": len(test_records),
+            "n_train_images": len(train_records),
+            "n_val_images": len(val_records),
+            "n_test_images": len(test_records),
             "n_train_cases": train_case_count,
             "n_val_cases": val_case_count,
             "n_test_cases": test_case_count,
@@ -3261,6 +3438,7 @@ class ModelManager:
             "n_val_patients": len(val_patient_ids),
             "n_test_patients": len(test_patient_ids),
             "best_val_acc": round(best_val_acc, 4),
+            "best_val_auroc": round(float(val_metrics["AUROC"]), 4) if val_metrics.get("AUROC") is not None else None,
             "use_pretrained": resolved_pretraining_source != "scratch",
             "pretraining_source": resolved_pretraining_source,
             "ssl_checkpoint_path": str(ssl_checkpoint_path) if ssl_checkpoint_path else None,
@@ -3276,6 +3454,7 @@ class ModelManager:
             "test_predictions": test_predictions,
             "case_aggregation": "attention_mil",
             "bag_level": True,
+            "evaluation_unit": "visit",
             "backbone_frozen": backbone_frozen,
             "fine_tuning_mode": resolved_fine_tuning_mode,
             "backbone_learning_rate": float(backbone_learning_rate) if backbone_learning_rate is not None else None,
@@ -3388,7 +3567,11 @@ class ModelManager:
 
         preprocess_metadata = self.preprocess_metadata()
         if self.is_dual_input_architecture(architecture):
-            dataset_cls = LesionGuidedFusionDataset if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
+            dataset_cls = (
+                ThreeScaleLesionGuidedFusionDataset
+                if is_three_scale_lesion_guided_fusion_architecture(architecture)
+                else LesionGuidedFusionDataset
+            ) if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
             train_ds = dataset_cls(train_records, augment=True, preprocess_metadata=preprocess_metadata)
             val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
             test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
@@ -3455,17 +3638,9 @@ class ModelManager:
             train_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
                 for batch in train_loader:
-                    if len(batch) == 4:
-                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
-                        lesion_masks = lesion_masks.to(device)
-                    else:
-                        cornea_inputs, lesion_inputs, batch_labels = batch
-                        lesion_masks = None
-                    cornea_inputs = cornea_inputs.to(device)
-                    lesion_inputs = lesion_inputs.to(device)
-                    batch_labels = batch_labels.to(device)
                     optimizer.zero_grad()
-                    loss = loss_fn(model(cornea_inputs, lesion_inputs, lesion_masks), batch_labels)
+                    logits, batch_labels = self._paired_forward_from_batch(model, batch, device)
+                    loss = loss_fn(logits, batch_labels)
                     loss.backward()
                     optimizer.step()
                     train_losses.append(float(loss.item()))
@@ -3487,16 +3662,8 @@ class ModelManager:
             with torch.no_grad():
                 if self.is_dual_input_architecture(architecture):
                     for batch in val_loader:
-                        if len(batch) == 4:
-                            cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
-                            lesion_masks = lesion_masks.to(device)
-                        else:
-                            cornea_inputs, lesion_inputs, batch_labels = batch
-                            lesion_masks = None
-                        cornea_inputs = cornea_inputs.to(device)
-                        lesion_inputs = lesion_inputs.to(device)
-                        batch_labels = batch_labels.to(device)
-                        preds = torch.argmax(model(cornea_inputs, lesion_inputs, lesion_masks), dim=1)
+                        logits, batch_labels = self._paired_forward_from_batch(model, batch, device)
+                        preds = torch.argmax(logits, dim=1)
                         correct += int((preds == batch_labels).sum().item())
                         total += len(batch_labels)
                 else:
@@ -3663,7 +3830,11 @@ class ModelManager:
 
         preprocess_metadata = self.preprocess_metadata()
         if self.is_dual_input_architecture(architecture):
-            dataset_cls = LesionGuidedFusionDataset if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
+            dataset_cls = (
+                ThreeScaleLesionGuidedFusionDataset
+                if is_three_scale_lesion_guided_fusion_architecture(architecture)
+                else LesionGuidedFusionDataset
+            ) if is_lesion_guided_fusion_architecture(architecture) else PairedCropDataset
             train_ds = dataset_cls(records, augment=True, preprocess_metadata=preprocess_metadata)
         else:
             train_ds = ManifestImageDataset(records, augment=True, preprocess_metadata=preprocess_metadata)
@@ -3722,17 +3893,9 @@ class ModelManager:
             train_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
                 for batch in train_loader:
-                    if len(batch) == 4:
-                        cornea_inputs, lesion_inputs, lesion_masks, batch_labels = batch
-                        lesion_masks = lesion_masks.to(device)
-                    else:
-                        cornea_inputs, lesion_inputs, batch_labels = batch
-                        lesion_masks = None
-                    cornea_inputs = cornea_inputs.to(device)
-                    lesion_inputs = lesion_inputs.to(device)
-                    batch_labels = batch_labels.to(device)
                     optimizer.zero_grad()
-                    loss = loss_fn(model(cornea_inputs, lesion_inputs, lesion_masks), batch_labels)
+                    logits, batch_labels = self._paired_forward_from_batch(model, batch, device)
+                    loss = loss_fn(logits, batch_labels)
                     loss.backward()
                     optimizer.step()
                     train_losses.append(float(loss.item()))

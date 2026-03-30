@@ -20,7 +20,13 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from kera_research.domain import LABEL_TO_INDEX, is_attention_mil_architecture, is_lesion_guided_fusion_architecture
+from kera_research.domain import (
+    LABEL_TO_INDEX,
+    is_attention_mil_architecture,
+    is_lesion_guided_fusion_architecture,
+    is_three_scale_lesion_guided_fusion_architecture,
+    lesion_guided_fusion_backbone,
+)
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.modeling import (
@@ -28,6 +34,7 @@ from kera_research.services.modeling import (
     ManifestImageDataset,
     ModelManager,
     PairedCropDataset,
+    ThreeScaleLesionGuidedFusionDataset,
     VisitBagDataset,
     collate_visit_bags,
 )
@@ -50,6 +57,17 @@ DEFAULT_WARMSTART_MODEL = (
     / "dinov2_recovery_validation_smoke"
     / "h2_full_ft_tuned"
     / "h2_full_ft_tuned.pth"
+)
+
+DEFAULT_H5_WARMSTART_MODEL = (
+    REPO_ROOT
+    / "artifacts"
+    / "dinov2_overnight_master_20260329"
+    / "warmstart_balanced_queue"
+    / "runs"
+    / "h5_warmstart_lgf_highhead_pat10"
+    / "h5_warmstart_lgf_highhead_pat10"
+    / "h5_warmstart_lgf_highhead_pat10.pth"
 )
 
 
@@ -76,6 +94,10 @@ class ExperimentSpec:
     fungal_weight_multiplier: float = 1.0
     threshold_strategy: str = "balanced_accuracy"
     specificity_floor: float | None = None
+    model_selection_metric: str = "balanced_accuracy"
+    medium_crop_scale_factor: float | None = None
+    pretraining_source: str | None = "ssl"
+    use_pretrained: bool = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -365,6 +387,111 @@ def build_default_experiments(main_epochs: int, overfit_epochs: int) -> list[Exp
             batch_size=2,
             warm_start_model_path=str(DEFAULT_WARMSTART_MODEL),
         ),
+        ExperimentSpec(
+            name="h6_3scale_warmstart_d15",
+            hypothesis="h6_three_scale_lgf",
+            architecture="lesion_guided_fusion_3scale__dinov2",
+            crop_mode="paired",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            warm_start_model_path=str(DEFAULT_WARMSTART_MODEL),
+            model_selection_metric="val_auroc",
+            medium_crop_scale_factor=1.5,
+        ),
+        ExperimentSpec(
+            name="h6_3scale_warmstart_d20",
+            hypothesis="h6_three_scale_lgf",
+            architecture="lesion_guided_fusion_3scale__dinov2",
+            crop_mode="paired",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            warm_start_model_path=str(DEFAULT_WARMSTART_MODEL),
+            model_selection_metric="val_auroc",
+            medium_crop_scale_factor=2.0,
+        ),
+        ExperimentSpec(
+            name="h6_3scale_nowarm_d15",
+            hypothesis="h6_three_scale_lgf",
+            architecture="lesion_guided_fusion_3scale__dinov2",
+            crop_mode="paired",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            model_selection_metric="val_auroc",
+            medium_crop_scale_factor=1.5,
+        ),
+        ExperimentSpec(
+            name="h7_mil_official_valauroc",
+            hypothesis="h7_visit_level_mil_matrix",
+            architecture="dinov2_mil",
+            crop_mode="automated",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            case_aggregation="attention_mil",
+            model_selection_metric="val_auroc",
+            pretraining_source="imagenet",
+            use_pretrained=True,
+        ),
+        ExperimentSpec(
+            name="h7_mil_ssl_valauroc",
+            hypothesis="h7_visit_level_mil_matrix",
+            architecture="dinov2_mil",
+            crop_mode="automated",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            case_aggregation="attention_mil",
+            model_selection_metric="val_auroc",
+            pretraining_source="ssl",
+            use_pretrained=True,
+        ),
+        ExperimentSpec(
+            name="h7_mil_h5backbone_valauroc",
+            hypothesis="h7_visit_level_mil_matrix",
+            architecture="dinov2_mil",
+            crop_mode="automated",
+            fine_tuning_mode="full",
+            learning_rate=5e-5,
+            backbone_learning_rate=1e-5,
+            head_learning_rate=1.5e-4,
+            warmup_epochs=3,
+            early_stop_patience=10,
+            epochs=main_epochs,
+            batch_size=2,
+            case_aggregation="attention_mil",
+            warm_start_model_path=str(DEFAULT_H5_WARMSTART_MODEL),
+            model_selection_metric="val_auroc",
+            pretraining_source="scratch",
+            use_pretrained=False,
+        ),
     ]
 
 
@@ -430,7 +557,10 @@ def build_tiny_split(
     }
 
 
-def training_input_policy_for_crop_mode(workflow: ResearchWorkflowService, crop_mode: str) -> str:
+def training_input_policy_for_crop_mode(workflow: ResearchWorkflowService, crop_mode: str, architecture: str) -> str:
+    if is_three_scale_lesion_guided_fusion_architecture(architecture):
+        backbone = lesion_guided_fusion_backbone(architecture) or "unknown"
+        return f"medsam_cornea_plus_medium_plus_lesion_triscale_fusion__{backbone}"
     return workflow.training_workflow._training_input_policy_for_crop_mode(crop_mode)
 
 
@@ -451,6 +581,7 @@ def build_loaders(
     records: list[dict[str, Any]],
     split: dict[str, Any],
     batch_size: int,
+    medium_crop_scale_factor: float | None = None,
 ) -> tuple[DataLoader, DataLoader, DataLoader, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     preprocess_metadata = model_manager.preprocess_metadata()
     patient_to_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -470,6 +601,16 @@ def build_loaders(
     train_records = [record for patient_id in effective_split["train_patient_ids"] for record in patient_to_records[str(patient_id)]]
     val_records = [record for patient_id in effective_split["val_patient_ids"] for record in patient_to_records[str(patient_id)]]
     test_records = [record for patient_id in effective_split["test_patient_ids"] for record in patient_to_records[str(patient_id)]]
+
+    if is_three_scale_lesion_guided_fusion_architecture(architecture):
+        resolved_scale = float(medium_crop_scale_factor or 1.5)
+
+        def with_medium_scale(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [{**record, "medium_crop_scale_factor": resolved_scale} for record in items]
+
+        train_records = with_medium_scale(train_records)
+        val_records = with_medium_scale(val_records)
+        test_records = with_medium_scale(test_records)
 
     if is_attention_mil_architecture(architecture):
         train_ds = VisitBagDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
@@ -496,10 +637,10 @@ def build_loaders(
         return train_loader, val_loader, test_loader, train_records, val_records, test_records, preprocess_metadata, effective_split
 
     dataset_cls = (
-        LesionGuidedFusionDataset
-        if is_lesion_guided_fusion_architecture(architecture)
-        else ManifestImageDataset
-    )
+        ThreeScaleLesionGuidedFusionDataset
+        if is_three_scale_lesion_guided_fusion_architecture(architecture)
+        else LesionGuidedFusionDataset
+    ) if is_lesion_guided_fusion_architecture(architecture) else ManifestImageDataset
     train_ds = dataset_cls(train_records, augment=True, preprocess_metadata=preprocess_metadata)
     val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
     test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
@@ -530,6 +671,29 @@ def threshold_candidates(positive_probabilities: list[float]) -> list[float]:
     candidates.update(unique_probabilities)
     candidates.update(round((left + right) / 2.0, 6) for left, right in zip(unique_probabilities, unique_probabilities[1:]))
     return sorted(candidates)
+
+
+def build_model_selection_score(
+    selection: dict[str, Any],
+    *,
+    metric: str,
+) -> tuple[Any, ...]:
+    metrics = selection["selection_metrics"]
+    threshold = float(selection["decision_threshold"])
+    normalized = str(metric or "balanced_accuracy").strip().lower() or "balanced_accuracy"
+    auroc = float(metrics["AUROC"]) if metrics.get("AUROC") is not None else -1.0
+    balanced_accuracy = float(metrics.get("balanced_accuracy") or 0.0)
+    f1 = float(metrics.get("F1") or 0.0)
+    accuracy = float(metrics.get("accuracy") or 0.0)
+    sensitivity = float(metrics.get("sensitivity") or 0.0)
+    specificity = float(metrics.get("specificity") or 0.0)
+    if normalized in {"val_auroc", "auroc"}:
+        return (auroc, balanced_accuracy, f1, accuracy, sensitivity, specificity, -abs(threshold - 0.5))
+    if normalized in {"val_accuracy", "accuracy"}:
+        return (accuracy, balanced_accuracy, f1, auroc, sensitivity, specificity, -abs(threshold - 0.5))
+    if normalized in {"val_sensitivity", "sensitivity"}:
+        return (sensitivity, balanced_accuracy, specificity, f1, accuracy, auroc, -abs(threshold - 0.5))
+    return (balanced_accuracy, f1, accuracy, auroc, sensitivity, specificity, -abs(threshold - 0.5))
 
 
 def select_threshold_variant(
@@ -593,6 +757,57 @@ def select_threshold_variant(
     return best_result
 
 
+def _extract_canonical_dinov2_backbone_state(
+    state_dict: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    prefix_candidates = (
+        "backbone_adapter.encoder.backbone.",
+        "backbone.",
+    )
+    for prefix in prefix_candidates:
+        matched = {
+            key[len(prefix) :]: value
+            for key, value in state_dict.items()
+            if key.startswith(prefix)
+        }
+        if matched:
+            return matched, prefix
+
+    raw_backbone_state = {
+        key: value
+        for key, value in state_dict.items()
+        if key.startswith("embeddings.") or key.startswith("encoder.")
+    }
+    if raw_backbone_state:
+        return raw_backbone_state, "<raw_backbone>"
+
+    raise ValueError("No canonical DINOv2 backbone weights were found in warm-start checkpoint.")
+
+
+def _resolve_dinov2_warm_start_target(
+    model: torch.nn.Module,
+    architecture: str,
+) -> tuple[torch.nn.Module, str]:
+    normalized_architecture = str(architecture or "").strip().lower()
+    if normalized_architecture in {"dinov2", "dinov2_mil"}:
+        target_module = getattr(model, "backbone", None)
+        if target_module is None:
+            raise ValueError(f"{architecture} model does not expose a backbone module for warm-start loading.")
+        return target_module, "backbone"
+
+    if lesion_guided_fusion_backbone(architecture) != "dinov2":
+        raise ValueError(f"Warm-start is currently implemented only for DINOv2 architectures, got {architecture}")
+
+    target_module = getattr(
+        getattr(getattr(model, "backbone_adapter", None), "encoder", None),
+        "backbone",
+        None,
+    )
+    if target_module is None:
+        raise ValueError("LGF model does not expose backbone_adapter.encoder.backbone for warm-start loading.")
+    return target_module, "backbone_adapter.encoder.backbone"
+
+
 def apply_warm_start_backbone(model: torch.nn.Module, *, architecture: str, warm_start_model_path: str | None) -> dict[str, Any] | None:
     if not warm_start_model_path:
         return None
@@ -604,18 +819,9 @@ def apply_warm_start_backbone(model: torch.nn.Module, *, architecture: str, warm
     if not isinstance(state_dict, dict) or not state_dict:
         raise ValueError(f"Warm-start checkpoint does not contain a valid state_dict: {checkpoint_path}")
 
-    if architecture != "lesion_guided_fusion__dinov2":
-        raise ValueError(f"Warm-start is currently implemented only for lesion_guided_fusion__dinov2, got {architecture}")
-
-    source_backbone_state = {key: value for key, value in state_dict.items() if key.startswith("backbone.")}
-    if not source_backbone_state:
-        raise ValueError(f"No direct DINOv2 backbone weights were found in warm-start checkpoint: {checkpoint_path}")
-
-    target_module = getattr(model, "backbone_adapter", None)
-    target_encoder = getattr(target_module, "encoder", None)
-    if target_encoder is None:
-        raise ValueError("LGF model does not expose backbone_adapter.encoder for warm-start loading.")
-    incompatible = target_encoder.load_state_dict(source_backbone_state, strict=False)
+    source_backbone_state, source_prefix = _extract_canonical_dinov2_backbone_state(state_dict)
+    target_module, target_name = _resolve_dinov2_warm_start_target(model, architecture)
+    incompatible = target_module.load_state_dict(source_backbone_state, strict=False)
     if incompatible.missing_keys or incompatible.unexpected_keys:
         raise ValueError(
             "Warm-start backbone loading failed: "
@@ -624,6 +830,8 @@ def apply_warm_start_backbone(model: torch.nn.Module, *, architecture: str, warm
     return {
         "checkpoint_path": str(checkpoint_path),
         "loaded_keys": len(source_backbone_state),
+        "source_prefix": source_prefix,
+        "target_module": target_name,
     }
 
 
@@ -645,13 +853,15 @@ def train_custom_experiment(
         records=records,
         split=split,
         batch_size=spec.batch_size,
+        medium_crop_scale_factor=spec.medium_crop_scale_factor,
     )
 
+    resolved_ssl_checkpoint_path = ssl_checkpoint_path if str(spec.pretraining_source or "").strip().lower() == "ssl" else None
     model, resolved_pretraining_source, ssl_metadata = model_manager.build_model_for_training(
         spec.architecture,
-        pretraining_source="ssl",
-        use_pretrained=True,
-        ssl_checkpoint_path=ssl_checkpoint_path,
+        pretraining_source=spec.pretraining_source,
+        use_pretrained=spec.use_pretrained,
+        ssl_checkpoint_path=resolved_ssl_checkpoint_path,
     )
     warm_start_metadata = apply_warm_start_backbone(
         model,
@@ -682,12 +892,21 @@ def train_custom_experiment(
         warmup_epochs=spec.warmup_epochs,
     )
 
-    class_counts = np.bincount(
-        [LABEL_TO_INDEX[str(item["culture_category"])] for item in train_records],
-        minlength=len(LABEL_TO_INDEX),
-    )
+    if is_attention_mil_architecture(spec.architecture):
+        train_case_labels = [
+            LABEL_TO_INDEX[str(visit_records[0]["culture_category"])]
+            for visit_records in train_loader.dataset.visit_records
+        ]
+        count_unit = len(train_case_labels)
+        class_counts = np.bincount(train_case_labels, minlength=len(LABEL_TO_INDEX))
+    else:
+        count_unit = len(train_records)
+        class_counts = np.bincount(
+            [LABEL_TO_INDEX[str(item["culture_category"])] for item in train_records],
+            minlength=len(LABEL_TO_INDEX),
+        )
     class_weights = np.array(
-        [0.0 if count == 0 else len(train_records) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+        [0.0 if count == 0 else count_unit / (len(LABEL_TO_INDEX) * count) for count in class_counts],
         dtype=np.float32,
     )
     class_weights[LABEL_TO_INDEX["fungal"]] *= float(spec.fungal_weight_multiplier)
@@ -716,13 +935,9 @@ def train_custom_experiment(
                 optimizer.step()
                 train_losses.append(float(loss.item()))
         elif is_lesion_guided_fusion_architecture(spec.architecture):
-            for cornea_inputs, lesion_inputs, lesion_masks, batch_labels in train_loader:
-                cornea_inputs = cornea_inputs.to(device)
-                lesion_inputs = lesion_inputs.to(device)
-                lesion_masks = lesion_masks.to(device)
-                batch_labels = batch_labels.to(device)
+            for batch in train_loader:
                 optimizer.zero_grad()
-                logits = model(cornea_inputs, lesion_inputs, lesion_masks)
+                logits, batch_labels = model_manager._paired_forward_from_batch(model, batch, device)
                 loss = loss_fn(logits, batch_labels)
                 loss.backward()
                 optimizer.step()
@@ -761,13 +976,17 @@ def train_custom_experiment(
                 "epoch": epoch,
                 "train_loss": train_loss,
                 "val_acc": float(val_metrics["accuracy"]),
+                "val_auroc": float(val_metrics["AUROC"]) if val_metrics.get("AUROC") is not None else None,
                 "val_bal_acc": float(val_metrics["balanced_accuracy"]),
                 "val_sensitivity": float(val_metrics["sensitivity"]),
                 "val_specificity": float(val_metrics["specificity"]),
             }
         )
 
-        score_tuple = tuple(threshold_selection["_score_tuple"])
+        score_tuple = build_model_selection_score(
+            threshold_selection,
+            metric=spec.model_selection_metric,
+        )
         if best_score is None or score_tuple > best_score:
             best_score = score_tuple
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
@@ -791,6 +1010,7 @@ def train_custom_experiment(
 
     model.load_state_dict(best_state)
     output_model_path.parent.mkdir(parents=True, exist_ok=True)
+    bag_level = bool(is_attention_mil_architecture(spec.architecture))
     torch.save(
         {
             "architecture": spec.architecture,
@@ -800,7 +1020,7 @@ def train_custom_experiment(
                 artifact_type="model",
                 crop_mode=spec.crop_mode,
                 case_aggregation=spec.case_aggregation,
-                bag_level=False,
+                bag_level=bag_level,
                 training_input_policy=training_input_policy,
                 preprocess_metadata=preprocess_metadata,
             ),
@@ -851,6 +1071,9 @@ def train_custom_experiment(
     train_metrics["n_samples"] = len(train_outputs["true_labels"])
     val_metrics["n_samples"] = len(val_outputs["true_labels"])
     test_metrics["n_samples"] = len(test_outputs["true_labels"])
+    n_train_cases = len(train_loader.dataset) if bag_level else None
+    n_val_cases = len(val_loader.dataset) if bag_level else None
+    n_test_cases = len(test_loader.dataset) if bag_level else None
 
     return {
         "training_id": f"custom_{spec.name}",
@@ -860,14 +1083,25 @@ def train_custom_experiment(
         "n_train": len(train_records),
         "n_val": len(val_records),
         "n_test": len(test_records),
+        "n_train_images": len(train_records),
+        "n_val_images": len(val_records),
+        "n_test_images": len(test_records),
+        "n_train_cases": n_train_cases,
+        "n_val_cases": n_val_cases,
+        "n_test_cases": n_test_cases,
         "n_train_patients": len(effective_split["train_patient_ids"]),
         "n_val_patients": len(effective_split["val_patient_ids"]),
         "n_test_patients": len(effective_split["test_patient_ids"]),
         "best_val_acc": round(float(best_threshold_selection["selection_metrics"]["accuracy"]), 4),
+        "best_val_auroc": (
+            round(float(best_threshold_selection["selection_metrics"]["AUROC"]), 4)
+            if best_threshold_selection["selection_metrics"].get("AUROC") is not None
+            else None
+        ),
         "best_epoch": int(best_epoch),
         "use_pretrained": resolved_pretraining_source != "scratch",
         "pretraining_source": resolved_pretraining_source,
-        "ssl_checkpoint_path": str(ssl_checkpoint_path),
+        "ssl_checkpoint_path": str(resolved_ssl_checkpoint_path) if resolved_ssl_checkpoint_path else None,
         "ssl_checkpoint": ssl_metadata,
         "warm_start_checkpoint": warm_start_metadata,
         "history": history,
@@ -878,8 +1112,9 @@ def train_custom_experiment(
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
-        "case_aggregation": spec.case_aggregation,
-        "bag_level": False,
+        "case_aggregation": "attention_mil" if bag_level else spec.case_aggregation,
+        "bag_level": bag_level,
+        "evaluation_unit": "visit" if bag_level else "image",
         "fine_tuning_mode": resolved_fine_tuning_mode,
         "backbone_learning_rate": float(spec.backbone_learning_rate) if spec.backbone_learning_rate is not None else None,
         "head_learning_rate": float(spec.head_learning_rate) if spec.head_learning_rate is not None else None,
@@ -889,6 +1124,8 @@ def train_custom_experiment(
         "epochs_completed": len(history),
         "partial_unfreeze_blocks": int(max(1, spec.partial_unfreeze_blocks)),
         "fungal_weight_multiplier": float(spec.fungal_weight_multiplier),
+        "model_selection_metric": str(spec.model_selection_metric or "balanced_accuracy"),
+        "medium_crop_scale_factor": float(spec.medium_crop_scale_factor) if spec.medium_crop_scale_factor is not None else None,
         "best_train_loss": float(min(item["train_loss"] for item in history)) if history else math.nan,
     }
 
@@ -903,9 +1140,15 @@ def evaluate_saved_model(
     device: str,
     batch_size: int,
     decision_threshold: float,
+    medium_crop_scale_factor: float | None = None,
 ) -> dict[str, Any]:
     preprocess_metadata = model_manager.preprocess_metadata()
     train_records, val_records, test_records = split_records(records, split)
+    if is_three_scale_lesion_guided_fusion_architecture(architecture):
+        resolved_scale = float(medium_crop_scale_factor or 1.5)
+        train_records = [{**record, "medium_crop_scale_factor": resolved_scale} for record in train_records]
+        val_records = [{**record, "medium_crop_scale_factor": resolved_scale} for record in val_records]
+        test_records = [{**record, "medium_crop_scale_factor": resolved_scale} for record in test_records]
     model_reference = {
         "architecture": architecture,
         "model_path": str(model_path),
@@ -944,7 +1187,7 @@ def evaluate_saved_model(
         }
 
     if is_lesion_guided_fusion_architecture(architecture):
-        dataset_cls = LesionGuidedFusionDataset
+        dataset_cls = ThreeScaleLesionGuidedFusionDataset if is_three_scale_lesion_guided_fusion_architecture(architecture) else LesionGuidedFusionDataset
         train_ds = dataset_cls(train_records, augment=False, preprocess_metadata=preprocess_metadata)
         val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
         test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
@@ -997,7 +1240,7 @@ def run_experiment(
     experiment_dir.mkdir(parents=True, exist_ok=True)
     output_model_path = experiment_dir / f"{spec.name}.pth"
     records = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode=spec.crop_mode)
-    training_input_policy = training_input_policy_for_crop_mode(workflow, spec.crop_mode)
+    training_input_policy = training_input_policy_for_crop_mode(workflow, spec.crop_mode, spec.architecture)
 
     def progress_callback(epoch: int, total_epochs: int, train_loss: float, val_acc: float) -> None:
         print(
@@ -1018,7 +1261,15 @@ def run_experiment(
             ),
         )
 
-    if spec.warm_start_model_path or spec.threshold_strategy != "balanced_accuracy" or spec.fungal_weight_multiplier != 1.0:
+    if (
+        spec.warm_start_model_path
+        or spec.threshold_strategy != "balanced_accuracy"
+        or spec.fungal_weight_multiplier != 1.0
+        or spec.model_selection_metric != "balanced_accuracy"
+        or spec.medium_crop_scale_factor is not None
+        or str(spec.pretraining_source or "").strip().lower() != "ssl"
+        or not spec.use_pretrained
+    ):
         result = train_custom_experiment(
             spec=spec,
             model_manager=workflow.model_manager,
@@ -1041,9 +1292,9 @@ def run_experiment(
             batch_size=spec.batch_size,
             val_split=float(split.get("val_split") or 0.2),
             test_split=float(split.get("test_split") or 0.2),
-            use_pretrained=True,
-            pretraining_source="ssl",
-            ssl_checkpoint_path=ssl_checkpoint_path,
+            use_pretrained=spec.use_pretrained,
+            pretraining_source=spec.pretraining_source,
+            ssl_checkpoint_path=ssl_checkpoint_path if str(spec.pretraining_source or "").strip().lower() == "ssl" else None,
             saved_split=split,
             crop_mode=spec.crop_mode,
             case_aggregation=spec.case_aggregation,
@@ -1066,6 +1317,7 @@ def run_experiment(
         device=device,
         batch_size=spec.batch_size,
         decision_threshold=float(result["decision_threshold"]),
+        medium_crop_scale_factor=spec.medium_crop_scale_factor,
     )
     payload = {
         "spec": asdict(spec),
@@ -1089,9 +1341,11 @@ def summarize_result(name: str, hypothesis: str, payload: dict[str, Any]) -> dic
         "fine_tuning_mode": result["fine_tuning_mode"],
         "epochs_completed": len(result.get("history", [])),
         "stopped_early": bool(result.get("stopped_early")),
+        "evaluation_unit": result.get("evaluation_unit", "image"),
         "n_train_patients": int(result["n_train_patients"]),
         "n_val_patients": int(result["n_val_patients"]),
         "n_test_patients": int(result["n_test_patients"]),
+        "n_test_cases": result.get("n_test_cases"),
         "train_acc": float(train_metrics["accuracy"]),
         "train_bal_acc": float(train_metrics["balanced_accuracy"]),
         "train_auroc": float(train_metrics["AUROC"]) if train_metrics.get("AUROC") is not None else None,
@@ -1108,6 +1362,7 @@ def summarize_result(name: str, hypothesis: str, payload: dict[str, Any]) -> dic
         "test_ece": float(test_metrics["ece"]),
         "decision_threshold": float(result["decision_threshold"]),
         "best_val_acc": float(result["best_val_acc"]),
+        "best_val_auroc": float(result["best_val_auroc"]) if result.get("best_val_auroc") is not None else None,
         "best_train_loss": float(result.get("best_train_loss", 0.0)),
         "output_model_path": str(result["output_model_path"]),
     }

@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -888,6 +889,29 @@ class FakeSemanticPromptScorer:
         return saved_summary, case_predictions, {"accuracy": 0.5}
 
 
+class CoalescingLesionPreviewWorkflow(FakeWorkflow):
+    def __init__(self, app_module, control_plane):
+        super().__init__(app_module, control_plane)
+        self.preview_signatures: list[str | None] = []
+        self.first_started = threading.Event()
+        self.release_first = threading.Event()
+        self.latest_started = threading.Event()
+
+    def preview_image_lesion(self, site_store, image_id, *, lesion_prompt_box=None):
+        prompt_signature = self._lesion_prompt_box_signature(lesion_prompt_box)
+        self.preview_signatures.append(prompt_signature)
+        if len(self.preview_signatures) == 1:
+            self.first_started.set()
+            self.release_first.wait(timeout=2)
+        else:
+            self.latest_started.set()
+        return super().preview_image_lesion(
+            site_store,
+            image_id,
+            lesion_prompt_box=lesion_prompt_box,
+        )
+
+
 class ApiHttpTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -1638,8 +1662,8 @@ class ApiHttpTests(unittest.TestCase):
             json={
                 "patient_id": "HTTP-001",
                 "visit_date": "FU #1",
-                "culture_category": "bacterial",
-                "culture_species": "Staphylococcus aureus",
+                "culture_category": "fungal",
+                "culture_species": "Candida",
                 "contact_lens_use": "none",
                 "visit_status": "scar",
                 "is_initial_visit": False,
@@ -1658,6 +1682,8 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["n_visits"], 2)
         self.assertEqual(payload["n_images"], 1)
         self.assertEqual(payload["n_active_visits"], 1)
+        self.assertEqual(payload["n_fungal_visits"], 1)
+        self.assertEqual(payload["n_bacterial_visits"], 1)
         self.assertEqual(payload["n_validation_runs"], 0)
         self.assertIsNone(payload["latest_validation"])
 
@@ -1685,6 +1711,8 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["n_visits"], 1)
         self.assertEqual(payload["n_images"], 1)
         self.assertEqual(payload["n_active_visits"], 1)
+        self.assertEqual(payload["n_fungal_visits"], 0)
+        self.assertEqual(payload["n_bacterial_visits"], 1)
 
     def test_site_summary_counts_reflect_latest_raw_inventory_http(self):
         admin_token = self._login("admin", "admin123")
@@ -1714,6 +1742,8 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(counts_payload["n_visits"], 4)
         self.assertEqual(counts_payload["n_images"], 5)
         self.assertEqual(counts_payload["n_active_visits"], 1)
+        self.assertEqual(counts_payload["n_fungal_visits"], 0)
+        self.assertEqual(counts_payload["n_bacterial_visits"], 1)
 
         summary_response = self.client.get(
             f"/api/sites/{self.site_id}/summary",
@@ -1725,6 +1755,8 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(summary_payload["n_visits"], 4)
         self.assertEqual(summary_payload["n_images"], 5)
         self.assertEqual(summary_payload["n_active_visits"], 1)
+        self.assertEqual(summary_payload["n_fungal_visits"], 0)
+        self.assertEqual(summary_payload["n_bacterial_visits"], 1)
 
     def test_image_preview_endpoint_reuses_cached_thumbnail_http(self):
         admin_token = self._login("admin", "admin123")
@@ -2031,11 +2063,12 @@ class ApiHttpTests(unittest.TestCase):
                             )
 
             self.assertEqual(fake_executor.submit.call_count, 1)
-            submitted_fn, submitted_key, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
             self.assertTrue(callable(submitted_fn))
             self.assertEqual(submitted_key, job_key)
             self.assertEqual(submitted_trigger, "image_upload")
-            self.assertEqual(submitted_delay, 7.0)
+            self.assertEqual(submitted_embedding_delay, 7.0)
+            self.assertEqual(submitted_index_delay, 7.0)
         finally:
             self.app_module._PENDING_EMBEDDING_JOBS.clear()
             self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
@@ -2059,11 +2092,117 @@ class ApiHttpTests(unittest.TestCase):
                             )
 
             self.assertEqual(fake_executor.submit.call_count, 1)
-            submitted_fn, submitted_key, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
             self.assertTrue(callable(submitted_fn))
             self.assertEqual(submitted_key, job_key)
             self.assertEqual(submitted_trigger, "lesion_box_update")
-            self.assertEqual(submitted_delay, 0.0)
+            self.assertEqual(submitted_embedding_delay, 0.0)
+            self.assertEqual(submitted_index_delay, 0.0)
+        finally:
+            self.app_module._PENDING_EMBEDDING_JOBS.clear()
+            self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+
+    def test_case_embedding_refresh_delays_representative_change_trigger_http(self):
+        job_key = (self.site_id, "HTTP-001", "Initial")
+        self.app_module._PENDING_EMBEDDING_JOBS.clear()
+        self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_CASE_EMBEDDING_REPRESENTATIVE_DELAY_SECONDS": "20",
+                    "KERA_CASE_VECTOR_INDEX_REPRESENTATIVE_DELAY_SECONDS": "60",
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                            self.app_module._queue_case_embedding_refresh(
+                                self.cp,
+                                self.site_store,
+                                patient_id="HTTP-001",
+                                visit_date="Initial",
+                                trigger="representative_change",
+                            )
+
+            self.assertEqual(fake_executor.submit.call_count, 1)
+            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
+            self.assertTrue(callable(submitted_fn))
+            self.assertEqual(submitted_key, job_key)
+            self.assertEqual(submitted_trigger, "representative_change")
+            self.assertEqual(submitted_embedding_delay, 20.0)
+            self.assertEqual(submitted_index_delay, 60.0)
+        finally:
+            self.app_module._PENDING_EMBEDDING_JOBS.clear()
+            self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+
+    def test_case_embedding_refresh_runs_embeddings_before_vector_index_http(self):
+        job_key = (self.site_id, "HTTP-001", "Initial")
+        self.app_module._PENDING_EMBEDDING_JOBS.clear()
+        self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            fake_workflow = Mock()
+            fake_workflow.index_case_embedding.return_value = {
+                "case_id": "HTTP-001::Initial",
+                "patient_id": "HTTP-001",
+                "visit_date": "Initial",
+                "model_version_id": "model-1",
+                "embedding_dim": 256,
+                "embedding_dims": {"classifier": 256, "dinov2": 768},
+                "available_backends": ["classifier", "dinov2"],
+                "dinov2_error": None,
+                "biomedclip_error": "not-configured",
+                "status": "cached",
+            }
+            fake_workflow.rebuild_case_vector_index.side_effect = lambda site_store, *, model_version, backend: {
+                "backend": backend,
+                "count": 1,
+                "dimension": 256 if backend == "classifier" else 768,
+            }
+
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_CASE_EMBEDDING_REPRESENTATIVE_DELAY_SECONDS": "2",
+                    "KERA_CASE_VECTOR_INDEX_REPRESENTATIVE_DELAY_SECONDS": "5",
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                            self.app_module._queue_case_embedding_refresh(
+                                self.cp,
+                                self.site_store,
+                                patient_id="HTTP-001",
+                                visit_date="Initial",
+                                trigger="representative_change",
+                            )
+
+            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
+            with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+                with patch.object(self.app_module.time, "sleep") as sleep_mock:
+                    with patch.object(self.app_module.time, "monotonic", return_value=0.0):
+                        submitted_fn(submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay)
+
+            fake_workflow.index_case_embedding.assert_called_once()
+            self.assertFalse(fake_workflow.index_case_embedding.call_args.kwargs["update_index"])
+            self.assertEqual(
+                [call.kwargs["backend"] for call in fake_workflow.rebuild_case_vector_index.call_args_list],
+                ["classifier", "dinov2"],
+            )
+            self.assertEqual(sleep_mock.call_args_list[0].args[0], 2.0)
+            self.assertEqual(sleep_mock.call_args_list[1].args[0], 5.0)
+            jobs = [
+                job for job in self.site_store.list_jobs() if job.get("job_type") == "ai_clinic_embedding_index"
+            ]
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0]["status"], "completed")
         finally:
             self.app_module._PENDING_EMBEDDING_JOBS.clear()
             self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
@@ -2224,6 +2363,88 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(job_payload["image_id"], image_id)
             self.assertIn(job_payload["status"], {"running", "done"})
             self.assertIn("prompt_signature", job_payload)
+
+    def test_live_lesion_preview_coalesces_latest_prompt_http(self):
+        token = self._token_for_username("http_researcher")
+        image_id = self._seed_case(token)
+        first_box = {"x0": 0.2, "y0": 0.2, "x1": 0.6, "y1": 0.7}
+        middle_box = {"x0": 0.15, "y0": 0.15, "x1": 0.55, "y1": 0.65}
+        latest_box = {"x0": 0.1, "y0": 0.12, "x1": 0.52, "y1": 0.68}
+
+        fake_workflow = CoalescingLesionPreviewWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            lesion_box_response = self.client.patch(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+                headers={"Authorization": f"Bearer {token}"},
+                json=first_box,
+            )
+            self.assertEqual(lesion_box_response.status_code, 200, lesion_box_response.text)
+
+            first_response = self.client.post(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(first_response.status_code, 200, first_response.text)
+            first_payload = first_response.json()
+            self.assertTrue(fake_workflow.first_started.wait(timeout=1))
+
+            middle_patch = self.client.patch(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+                headers={"Authorization": f"Bearer {token}"},
+                json=middle_box,
+            )
+            self.assertEqual(middle_patch.status_code, 200, middle_patch.text)
+            middle_response = self.client.post(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(middle_response.status_code, 200, middle_response.text)
+
+            latest_patch = self.client.patch(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-box",
+                headers={"Authorization": f"Bearer {token}"},
+                json=latest_box,
+            )
+            self.assertEqual(latest_patch.status_code, 200, latest_patch.text)
+            latest_response = self.client.post(
+                f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(latest_response.status_code, 200, latest_response.text)
+
+            self.assertEqual(first_payload["job_id"], middle_response.json()["job_id"])
+            self.assertEqual(first_payload["job_id"], latest_response.json()["job_id"])
+
+            fake_workflow.release_first.set()
+            self.assertTrue(fake_workflow.latest_started.wait(timeout=1))
+
+            deadline = time.time() + 2
+            job_payload = None
+            while time.time() < deadline:
+                job_response = self.client.get(
+                    f"/api/sites/{self.site_id}/images/{image_id}/lesion-live-preview/jobs/{first_payload['job_id']}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                self.assertEqual(job_response.status_code, 200, job_response.text)
+                job_payload = job_response.json()
+                if job_payload["status"] == "done":
+                    break
+                time.sleep(0.05)
+
+        self.assertIsNotNone(job_payload)
+        assert job_payload is not None
+        self.assertEqual(job_payload["status"], "done")
+        self.assertEqual(
+            fake_workflow.preview_signatures,
+            [
+                fake_workflow._lesion_prompt_box_signature(first_box),
+                fake_workflow._lesion_prompt_box_signature(latest_box),
+            ],
+        )
+        self.assertEqual(
+            job_payload["prompt_signature"],
+            fake_workflow._lesion_prompt_box_signature(latest_box),
+        )
 
     def test_stored_case_lesion_preview_http(self):
         token = self._token_for_username("http_researcher")

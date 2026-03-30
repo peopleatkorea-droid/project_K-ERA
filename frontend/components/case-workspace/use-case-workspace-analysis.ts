@@ -1264,9 +1264,9 @@ export function useCaseWorkspaceAnalysis({
 
   async function triggerLiveLesionPreview(
     imageId: string,
-    options: { quiet?: boolean } = {},
+    options: { quiet?: boolean; force?: boolean } = {},
   ) {
-    if (!liveLesionCropEnabled || !selectedSiteId) {
+    if ((!liveLesionCropEnabled && !options.force) || !selectedSiteId) {
       return;
     }
     const requestVersion =
@@ -1350,6 +1350,7 @@ export function useCaseWorkspaceAnalysis({
   async function persistLesionPromptBox(
     imageId: string,
     nextBox: NormalizedBox,
+    options: { forceLivePreview?: boolean; trackBusy?: boolean } = {},
   ) {
     if (!selectedSiteId) {
       throw new Error(
@@ -1360,7 +1361,10 @@ export function useCaseWorkspaceAnalysis({
         ),
       );
     }
-    setLesionBoxBusyImageId(imageId);
+    const shouldTrackBusy = options.trackBusy !== false;
+    if (shouldTrackBusy) {
+      setLesionBoxBusyImageId(imageId);
+    }
     try {
       const normalized = normalizeBox(nextBox);
       if (
@@ -1396,12 +1400,52 @@ export function useCaseWorkspaceAnalysis({
         ...current,
         [imageId]: normalized,
       }));
-      if (liveLesionCropEnabled) {
-        void triggerLiveLesionPreview(imageId, { quiet: true });
+      if (liveLesionCropEnabled || options.forceLivePreview) {
+        void triggerLiveLesionPreview(imageId, {
+          quiet: true,
+          force: options.forceLivePreview,
+        });
       }
       return normalized;
     } finally {
-      setLesionBoxBusyImageId(null);
+      if (shouldTrackBusy) {
+        setLesionBoxBusyImageId(null);
+      }
+    }
+  }
+
+  async function applySavedLesionBoxesAndStartLivePreview(
+    entries: Array<{
+      imageId: string;
+      lesionBox: NormalizedBox;
+      isRepresentative?: boolean;
+    }>,
+  ) {
+    const deduplicated = Array.from(
+      new Map(
+        entries
+          .filter(
+            (entry) =>
+              entry.imageId.trim().length > 0 &&
+              entry.lesionBox.x1 - entry.lesionBox.x0 >= 0.01 &&
+              entry.lesionBox.y1 - entry.lesionBox.y0 >= 0.01,
+          )
+          .map((entry) => [entry.imageId, entry] as const),
+      ).values(),
+    );
+    const results = await Promise.allSettled(
+      deduplicated.map((entry) =>
+        persistLesionPromptBox(entry.imageId, entry.lesionBox, {
+          forceLivePreview: true,
+          trackBusy: false,
+        }),
+      ),
+    );
+    const firstRejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (firstRejected) {
+      throw firstRejected.reason;
     }
   }
 
@@ -1493,7 +1537,7 @@ export function useCaseWorkspaceAnalysis({
       ...current,
       [imageId]: { x0: startX, y0: startY, x1: startX, y1: startY },
     }));
-    element.setPointerCapture(event.pointerId);
+    element.setPointerCapture?.(event.pointerId);
   }
 
   function handleLesionPointerMove(
@@ -2275,5 +2319,6 @@ export function useCaseWorkspaceAnalysis({
     handleLesionPointerDown,
     handleLesionPointerMove,
     finishLesionPointer,
+    applySavedLesionBoxesAndStartLivePreview,
   };
 }

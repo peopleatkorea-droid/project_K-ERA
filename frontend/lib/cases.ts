@@ -94,6 +94,14 @@ export function mergeSiteSummaryCounts(
     n_visits: counts.n_visits,
     n_images: counts.n_images,
     n_active_visits: counts.n_active_visits,
+    n_fungal_visits:
+      counts.n_fungal_visits ??
+      (preserveExistingDetails ? currentSummary?.n_fungal_visits : undefined) ??
+      0,
+    n_bacterial_visits:
+      counts.n_bacterial_visits ??
+      (preserveExistingDetails ? currentSummary?.n_bacterial_visits : undefined) ??
+      0,
     n_validation_runs: preserveExistingDetails ? currentSummary?.n_validation_runs ?? 0 : 0,
     latest_validation: preserveExistingDetails ? currentSummary?.latest_validation ?? null : null,
     research_registry: preserveExistingDetails ? currentSummary?.research_registry : undefined,

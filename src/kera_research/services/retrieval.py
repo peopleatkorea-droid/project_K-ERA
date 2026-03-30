@@ -257,11 +257,66 @@ class BiomedClipTextRetriever:
 
 
 class Dinov2ImageRetriever:
-    def __init__(self) -> None:
+    def __init__(self, *, ssl_checkpoint_path: str | Path | None = None) -> None:
         self._model: Any | None = None
         self._processor: Any | None = None
         self._device: str | None = None
         self._image_cache: dict[str, np.ndarray] = {}
+        self._ssl_checkpoint_path = (
+            str(Path(ssl_checkpoint_path).expanduser().resolve())
+            if ssl_checkpoint_path
+            else None
+        )
+        self._cache_namespace = (
+            f"dinov2_ssl::{self._ssl_checkpoint_path}"
+            if self._ssl_checkpoint_path
+            else f"dinov2_official::{DINOv2_MODEL_ID}"
+        )
+
+    @property
+    def source_label(self) -> str:
+        return "ssl" if self._ssl_checkpoint_path else "official"
+
+    @property
+    def source_reference(self) -> str:
+        return self._ssl_checkpoint_path or DINOv2_MODEL_ID
+
+    def _disk_cache_key(self, image_path: str | Path) -> str:
+        return hashlib.sha256(f"{self._cache_namespace}::{image_path}".encode()).hexdigest()
+
+    def _load_ssl_checkpoint_into_model(self, model: Any, checkpoint_path: str) -> None:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover - runtime dependency guard
+            raise RuntimeError("DINOv2 SSL retrieval requires PyTorch.") from exc
+
+        resolved = Path(checkpoint_path).expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"DINOv2 SSL checkpoint does not exist: {resolved}")
+        checkpoint = torch.load(resolved, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("DINOv2 SSL checkpoint format is invalid.")
+        checkpoint_architecture = str(checkpoint.get("architecture") or "").strip().lower()
+        if checkpoint_architecture and checkpoint_architecture != "dinov2":
+            raise ValueError(
+                f"DINOv2 retrieval expected a dinov2 SSL checkpoint, found {checkpoint_architecture}."
+            )
+        raw_state_dict = checkpoint.get("state_dict")
+        if not isinstance(raw_state_dict, dict) or not raw_state_dict:
+            raise ValueError("DINOv2 SSL checkpoint does not contain a usable state_dict.")
+
+        state_dict = {
+            key[len("backbone.") :] if key.startswith("backbone.") else key: value
+            for key, value in raw_state_dict.items()
+        }
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        missing = list(incompatible.missing_keys)
+        unexpected = list(incompatible.unexpected_keys)
+        if missing or unexpected:
+            raise ValueError(
+                "DINOv2 SSL retrieval checkpoint could not be applied cleanly: "
+                f"missing={missing[:8]}, unexpected={unexpected[:8]}"
+            )
 
     def _resolve_runtime_device(self, requested_device: str) -> str:
         try:
@@ -289,6 +344,8 @@ class Dinov2ImageRetriever:
         if self._model is None or self._processor is None or self._device != device:
             processor = AutoImageProcessor.from_pretrained(DINOv2_MODEL_ID)
             model = AutoModel.from_pretrained(DINOv2_MODEL_ID)
+            if self._ssl_checkpoint_path:
+                self._load_ssl_checkpoint_into_model(model, self._ssl_checkpoint_path)
             model = model.to(device)
             model.eval()
             self._processor = processor
@@ -316,7 +373,7 @@ class Dinov2ImageRetriever:
                 results[i] = cached
             elif persistence_dir is not None:
                 # Try loading from disk cache
-                cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                cache_key = self._disk_cache_key(image_path_str)
                 disk_path = persistence_dir / f"{cache_key}.npy"
                 if disk_path.exists():
                     try:
@@ -359,7 +416,7 @@ class Dinov2ImageRetriever:
                 self._image_cache[image_path_str] = embedding
                 results[idx] = embedding
                 if persistence_dir is not None:
-                    cache_key = hashlib.sha256(image_path_str.encode()).hexdigest()
+                    cache_key = self._disk_cache_key(image_path_str)
                     disk_path = persistence_dir / f"{cache_key}.npy"
                     try:
                         persistence_dir.mkdir(parents=True, exist_ok=True)

@@ -169,6 +169,12 @@ export function CaseWorkspaceLeftRail({
               <strong className={railMetricValueClass}>{summary.n_images ?? 0}</strong>
               <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
             </div>
+            <div className={railMetricCardClass}>
+              <strong className={railMetricValueClass}>
+                {(summary.n_fungal_visits ?? 0).toLocaleString()} / {(summary.n_bacterial_visits ?? 0).toLocaleString()}
+              </strong>
+              <span className={railMetricLabelClass}>{pick(locale, "fungal / bacterial", "진균 / 세균")}</span>
+            </div>
           </MetricGrid>
         ) : null}
         {latestAutosavedDraft ? (

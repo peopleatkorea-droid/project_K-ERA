@@ -2,6 +2,7 @@ import React from "react";
 
 import {
   act,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -34,7 +35,10 @@ const apiMocks = vi.hoisted(() => ({
   deleteVisitImages: vi.fn(),
   setRepresentativeImage: vi.fn(),
   uploadImage: vi.fn(),
+  fetchSiteSummaryCounts: vi.fn(),
   updateImageLesionBox: vi.fn(),
+  startLiveLesionPreview: vi.fn(),
+  fetchLiveLesionPreviewJob: vi.fn(),
   fetchCases: vi.fn(),
   fetchPatientIdLookup: vi.fn(),
   fetchPatientListPage: vi.fn(),
@@ -83,7 +87,10 @@ vi.mock("../lib/api", async () => {
     deleteVisitImages: apiMocks.deleteVisitImages,
     setRepresentativeImage: apiMocks.setRepresentativeImage,
     uploadImage: apiMocks.uploadImage,
+    fetchSiteSummaryCounts: apiMocks.fetchSiteSummaryCounts,
     updateImageLesionBox: apiMocks.updateImageLesionBox,
+    startLiveLesionPreview: apiMocks.startLiveLesionPreview,
+    fetchLiveLesionPreviewJob: apiMocks.fetchLiveLesionPreviewJob,
     fetchCases: apiMocks.fetchCases,
     fetchPatientIdLookup: apiMocks.fetchPatientIdLookup,
     fetchPatientListPage: apiMocks.fetchPatientListPage,
@@ -131,7 +138,10 @@ vi.mock("../lib/desktop-transport", async () => {
 });
 
 describe("CaseWorkspace integration", () => {
+  let draftImageCounter = 0;
+
   beforeEach(() => {
+    draftImageCounter = 0;
     vi.resetAllMocks();
     desktopTransportMocks.canUseDesktopTransport.mockReturnValue(false);
     desktopTransportMocks.prefetchDesktopVisitImages.mockImplementation(
@@ -178,7 +188,44 @@ describe("CaseWorkspace integration", () => {
       view: "white",
       is_representative: true,
     });
+    apiMocks.fetchSiteSummaryCounts.mockResolvedValue({
+      site_id: "SITE_A",
+      n_patients: 1,
+      n_visits: 1,
+      n_images: 1,
+      n_active_visits: 1,
+      n_fungal_visits: 0,
+      n_bacterial_visits: 1,
+    });
     apiMocks.updateImageLesionBox.mockResolvedValue({});
+    apiMocks.startLiveLesionPreview.mockImplementation(
+      async (_siteId, imageId: string) => ({
+        job_id: `lesionjob_${imageId}`,
+        site_id: "SITE_A",
+        image_id: imageId,
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        status: "done",
+        prompt_signature: `prompt_${imageId}`,
+        backend: "medsam",
+        has_lesion_crop: true,
+        has_lesion_mask: true,
+      }),
+    );
+    apiMocks.fetchLiveLesionPreviewJob.mockImplementation(
+      async (_siteId, imageId: string) => ({
+        job_id: `lesionjob_${imageId}`,
+        site_id: "SITE_A",
+        image_id: imageId,
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        status: "done",
+        prompt_signature: `prompt_${imageId}`,
+        backend: "medsam",
+        has_lesion_crop: true,
+        has_lesion_mask: true,
+      }),
+    );
     apiMocks.fetchCases.mockResolvedValue([
       {
         case_id: "case_1",
@@ -786,6 +833,8 @@ describe("CaseWorkspace integration", () => {
       n_visits: number;
       n_images: number;
       n_active_visits: number;
+      n_fungal_visits: number;
+      n_bacterial_visits: number;
       n_validation_runs: number;
       latest_validation: Record<string, unknown> | null;
       research_registry: {
@@ -856,8 +905,93 @@ describe("CaseWorkspace integration", () => {
     );
   }
 
-  async function addDraftImage(container: HTMLElement) {
-    const file = new File(["white-image"], "slit.png", { type: "image/png" });
+  function setMockElementRect(element: Element, width = 240, height = 180) {
+    Object.defineProperty(element, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: height,
+        width,
+        height,
+        toJSON: () => ({}),
+      }),
+    });
+  }
+
+  async function drawDraftLesionBox(fileName: string) {
+    const lesionCanvas = await screen.findByLabelText(
+      `Lesion box canvas for ${fileName}`,
+    );
+    const imageCard = lesionCanvas.closest("article");
+    if (!imageCard) {
+      throw new Error(`Unable to find the draft image card for ${fileName}.`);
+    }
+    setMockElementRect(lesionCanvas);
+    const pointerDown = createEvent.pointerDown(lesionCanvas, {
+      clientX: 24,
+      clientY: 24,
+      pointerType: "mouse",
+      buttons: 1,
+    });
+    Object.assign(pointerDown, {
+      pointerId: 1,
+      clientX: 24,
+      clientY: 24,
+      pointerType: "mouse",
+      buttons: 1,
+    });
+    fireEvent(lesionCanvas, pointerDown);
+
+    const pointerMove = createEvent.pointerMove(lesionCanvas, {
+      clientX: 196,
+      clientY: 132,
+      pointerType: "mouse",
+      buttons: 1,
+    });
+    Object.assign(pointerMove, {
+      pointerId: 1,
+      clientX: 196,
+      clientY: 132,
+      pointerType: "mouse",
+      buttons: 1,
+    });
+    fireEvent(lesionCanvas, pointerMove);
+
+    const pointerUp = createEvent.pointerUp(lesionCanvas, {
+      clientX: 196,
+      clientY: 132,
+      pointerType: "mouse",
+      buttons: 0,
+    });
+    Object.assign(pointerUp, {
+      pointerId: 1,
+      clientX: 196,
+      clientY: 132,
+      pointerType: "mouse",
+      buttons: 0,
+    });
+    fireEvent(lesionCanvas, pointerUp);
+    await waitFor(() => {
+      expect(
+        within(imageCard).getByText("Lesion box ready"),
+      ).toBeInTheDocument();
+    });
+  }
+
+  async function addDraftImage(
+    container: HTMLElement,
+    options: { drawLesionBox?: boolean; fileName?: string } = {},
+  ) {
+    draftImageCounter += 1;
+    const file = new File(
+      ["white-image"],
+      options.fileName ?? `slit-${draftImageCounter}.png`,
+      { type: "image/png" },
+    );
     await waitFor(() => {
       expect(container.querySelector('input[type="file"]')).not.toBeNull();
     });
@@ -868,7 +1002,18 @@ describe("CaseWorkspace integration", () => {
     fireEvent.change(fileInput, {
       target: { files: [file] },
     });
+    if (options.drawLesionBox !== false) {
+      await drawDraftLesionBox(file.name);
+    }
     return file;
+  }
+
+  async function waitForSaveReady() {
+    const saveButton = screen.getByRole("button", { name: "Save to hospital" });
+    await waitFor(() => {
+      expect(saveButton).not.toBeDisabled();
+    });
+    return saveButton;
   }
 
   async function openNewCaseCanvas() {
@@ -1000,11 +1145,40 @@ describe("CaseWorkspace integration", () => {
     expect(screen.queryByText("Lesion boxes")).not.toBeInTheDocument();
   });
 
+  it("keeps save disabled until every draft image has a lesion box", async () => {
+    const { container } = renderWorkspace();
+
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+
+    await addDraftImage(container, {
+      drawLesionBox: false,
+      fileName: "needs-box.png",
+    });
+
+    const saveButton = screen.getByRole("button", { name: "Save to hospital" });
+    expect(saveButton).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Draw and save a lesion box on every uploaded image before saving this case.",
+      ),
+    ).toBeInTheDocument();
+
+    await drawDraftLesionBox("needs-box.png");
+
+    await waitFor(() => {
+      expect(saveButton).not.toBeDisabled();
+    });
+  });
+
   it("shows hospital summary metrics in the rail and removes duplicate list-view panels", async () => {
     renderWorkspace(undefined, {
       n_patients: 22,
       n_visits: 43,
       n_images: 112,
+      n_fungal_visits: 19,
+      n_bacterial_visits: 24,
       n_validation_runs: 0,
     });
 
@@ -1017,9 +1191,11 @@ describe("CaseWorkspace integration", () => {
     expect(within(hospitalSection).getByText("22")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("43")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("112")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("19 / 24")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("patients")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("visits")).toBeInTheDocument();
     expect(within(hospitalSection).getByText("images")).toBeInTheDocument();
+    expect(within(hospitalSection).getByText("fungal / bacterial")).toBeInTheDocument();
     expect(
       within(hospitalSection).queryByText("validations"),
     ).not.toBeInTheDocument();
@@ -1028,6 +1204,20 @@ describe("CaseWorkspace integration", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Selected hospital")).not.toBeInTheDocument();
     expect(screen.queryByText("Momentum")).not.toBeInTheDocument();
+  });
+
+  it("hydrates hospital fungal and bacterial counts from loaded cases when the incoming summary omits them", async () => {
+    renderWorkspace();
+
+    const hospitalSection = screen.getByText("Hospital").closest("section");
+    if (!hospitalSection) {
+      throw new Error("Unable to find the hospital rail section.");
+    }
+
+    await waitFor(() => {
+      expect(within(hospitalSection).getByText("0 / 1")).toBeInTheDocument();
+    });
+    expect(within(hospitalSection).getByText("fungal / bacterial")).toBeInTheDocument();
   });
 
   it("shows the real hospital name in the rail when raw HIRA codes are stored", async () => {
@@ -1315,11 +1505,7 @@ describe("CaseWorkspace integration", () => {
 
     const file = await addDraftImage(container);
 
-    expect(
-      screen.queryByText("Draw a lesion box directly on the image when ready."),
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(apiMocks.createPatient).toHaveBeenCalledWith(
@@ -1342,13 +1528,48 @@ describe("CaseWorkspace integration", () => {
           visit_date: "Initial",
           view: "white",
           is_representative: true,
-          refresh_embeddings: true,
+          refresh_embeddings: false,
           file,
+        },
+      );
+      expect(apiMocks.setRepresentativeImage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          representative_image_id: "image_1",
         },
       );
     });
     await waitFor(() => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
+    });
+    await waitFor(() => {
+      expect(apiMocks.fetchCaseRoiPreview).toHaveBeenCalledWith(
+        "SITE_A",
+        "KERA-2026-001",
+        "Initial",
+        "test-token",
+      );
+    });
+    await waitFor(() => {
+      expect(apiMocks.updateImageLesionBox).toHaveBeenCalledWith(
+        "SITE_A",
+        "image_1",
+        "test-token",
+        expect.objectContaining({
+          x0: expect.any(Number),
+          y0: expect.any(Number),
+          x1: expect.any(Number),
+          y1: expect.any(Number),
+        }),
+      );
+      expect(apiMocks.startLiveLesionPreview).toHaveBeenCalledWith(
+        "SITE_A",
+        "image_1",
+        "test-token",
+      );
     });
     expect(
       (
@@ -1372,7 +1593,7 @@ describe("CaseWorkspace integration", () => {
     apiMocks.fetchCases.mockClear();
     apiMocks.fetchPatientListPage.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
@@ -1519,7 +1740,7 @@ describe("CaseWorkspace integration", () => {
     completeRequiredIntakeFields("KERA-2026-009");
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(apiMocks.fetchPatientListPage).toHaveBeenCalledWith(
@@ -1599,7 +1820,7 @@ describe("CaseWorkspace integration", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(apiMocks.createPatient).not.toHaveBeenCalled();
@@ -1752,7 +1973,7 @@ describe("CaseWorkspace integration", () => {
     completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalledTimes(1);
@@ -1837,7 +2058,7 @@ describe("CaseWorkspace integration", () => {
     completeRequiredIntakeFields();
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
     await addDraftImage(container);
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(confirmMock).toHaveBeenCalledTimes(2);
@@ -1854,6 +2075,199 @@ describe("CaseWorkspace integration", () => {
     });
   });
 
+  it("limits desktop image upload concurrency during save so later files wait for an open slot", async () => {
+    desktopTransportMocks.canUseDesktopTransport.mockReturnValue(true);
+    apiMocks.uploadImage.mockReset();
+
+    let resolveFirstUpload: ((value: unknown) => void) | null = null;
+    let resolveSecondUpload: ((value: unknown) => void) | null = null;
+    let resolveThirdUpload: ((value: unknown) => void) | null = null;
+    const firstUpload = new Promise((resolve) => {
+      resolveFirstUpload = resolve;
+    });
+    const secondUpload = new Promise((resolve) => {
+      resolveSecondUpload = resolve;
+    });
+    const thirdUpload = new Promise((resolve) => {
+      resolveThirdUpload = resolve;
+    });
+
+    apiMocks.uploadImage
+      .mockImplementationOnce(() => firstUpload)
+      .mockImplementationOnce(() => secondUpload)
+      .mockImplementationOnce(() => thirdUpload);
+
+    const { container } = renderWorkspace();
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    await addDraftImage(container);
+    await addDraftImage(container);
+    await addDraftImage(container);
+    fireEvent.click(await waitForSaveReady());
+
+    await waitFor(() => {
+      expect(apiMocks.uploadImage).toHaveBeenCalledTimes(2);
+    });
+    expect(apiMocks.uploadImage).toHaveBeenNthCalledWith(
+      1,
+      "SITE_A",
+      "test-token",
+      expect.objectContaining({
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        refresh_embeddings: false,
+      }),
+    );
+    expect(apiMocks.uploadImage).toHaveBeenNthCalledWith(
+      2,
+      "SITE_A",
+      "test-token",
+      expect.objectContaining({
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        refresh_embeddings: false,
+      }),
+    );
+    expect(apiMocks.uploadImage).not.toHaveBeenCalledTimes(3);
+    expect(apiMocks.setRepresentativeImage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveFirstUpload?.({
+        image_id: "image_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        view: "white",
+        is_representative: true,
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.uploadImage).toHaveBeenCalledTimes(3);
+    });
+    expect(apiMocks.uploadImage).toHaveBeenNthCalledWith(
+      3,
+      "SITE_A",
+      "test-token",
+      expect.objectContaining({
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        refresh_embeddings: false,
+      }),
+    );
+
+    await act(async () => {
+      resolveSecondUpload?.({
+        image_id: "image_2",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        view: "white",
+        is_representative: false,
+      });
+      resolveThirdUpload?.({
+        image_id: "image_3",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        view: "white",
+        is_representative: false,
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.setRepresentativeImage).not.toHaveBeenCalled();
+    });
+  });
+
+  it("queues post-save embedding refresh only after all uploads complete", async () => {
+    apiMocks.uploadImage.mockReset();
+    apiMocks.uploadImage
+      .mockResolvedValueOnce({
+        image_id: "image_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        view: "white",
+        is_representative: true,
+      })
+      .mockResolvedValueOnce({
+        image_id: "image_2",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        view: "white",
+        is_representative: false,
+      });
+
+    const { container } = renderWorkspace();
+    await openNewCaseCanvas();
+    completeRequiredIntakeFields();
+    fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
+    await addDraftImage(container);
+    await addDraftImage(container);
+    fireEvent.click(await waitForSaveReady());
+
+    await waitFor(() => {
+      expect(apiMocks.uploadImage).toHaveBeenCalledTimes(2);
+    });
+    expect(apiMocks.uploadImage).toHaveBeenNthCalledWith(
+      1,
+      "SITE_A",
+      "test-token",
+      expect.objectContaining({ refresh_embeddings: false }),
+    );
+    expect(apiMocks.uploadImage).toHaveBeenNthCalledWith(
+      2,
+      "SITE_A",
+      "test-token",
+      expect.objectContaining({ refresh_embeddings: false }),
+    );
+    await waitFor(() => {
+      expect(apiMocks.setRepresentativeImage).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          representative_image_id: "image_1",
+        },
+      );
+    });
+    await waitFor(() => {
+      expect(apiMocks.updateImageLesionBox.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            "SITE_A",
+            "image_1",
+            "test-token",
+            expect.objectContaining({
+              x0: expect.any(Number),
+              y0: expect.any(Number),
+              x1: expect.any(Number),
+              y1: expect.any(Number),
+            }),
+          ],
+          [
+            "SITE_A",
+            "image_2",
+            "test-token",
+            expect.objectContaining({
+              x0: expect.any(Number),
+              y0: expect.any(Number),
+              x1: expect.any(Number),
+              y1: expect.any(Number),
+            }),
+          ],
+        ]),
+      );
+      expect(apiMocks.startLiveLesionPreview.mock.calls).toEqual(
+        expect.arrayContaining([
+          ["SITE_A", "image_1", "test-token"],
+          ["SITE_A", "image_2", "test-token"],
+        ]),
+      );
+    });
+  });
+
   it("moves an edited case to the updated patient id when saving", async () => {
     renderWorkspace();
 
@@ -1865,7 +2279,8 @@ describe("CaseWorkspace integration", () => {
       target: { value: "17452298" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Lock intake" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save to hospital" }));
+    await drawDraftLesionBox("image_1.png");
+    fireEvent.click(await waitForSaveReady());
 
     await waitFor(() => {
       expect(apiMocks.createPatient).toHaveBeenCalledWith(

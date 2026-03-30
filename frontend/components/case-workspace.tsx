@@ -266,6 +266,7 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Enterobacter",
     "Citrobacter",
     "Burkholderia",
+    "Pandoraea species",
     "Stenotrophomonas",
     "Achromobacter",
     "Nocardia",
@@ -551,6 +552,16 @@ function toNormalizedBox(value: unknown): NormalizedBox | null {
   return null;
 }
 
+function hasUsableLesionPromptBox(
+  box: NormalizedBox | null | undefined,
+): box is NormalizedBox {
+  return Boolean(
+    box &&
+      box.x1 - box.x0 >= 0.01 &&
+      box.y1 - box.y0 >= 0.01,
+  );
+}
+
 function organismKey(
   organism: Pick<OrganismRecord, "culture_category" | "culture_species">,
 ): string {
@@ -657,8 +668,51 @@ function buildFallbackSiteSummary(
       (sum, record) => sum + (record.active_stage ? 1 : 0),
       0,
     ),
+    n_fungal_visits: caseRecords.reduce(
+      (sum, record) =>
+        sum + (String(record.culture_category || "").trim().toLowerCase() === "fungal" ? 1 : 0),
+      0,
+    ),
+    n_bacterial_visits: caseRecords.reduce(
+      (sum, record) =>
+        sum + (String(record.culture_category || "").trim().toLowerCase() === "bacterial" ? 1 : 0),
+      0,
+    ),
     n_validation_runs: 0,
     latest_validation: null,
+  };
+}
+
+function mergeRailSummaryCategoryCounts(
+  summary: SiteSummary | null,
+  derivedSummary: SiteSummary | null,
+): SiteSummary | null {
+  if (!summary) {
+    return derivedSummary;
+  }
+  if (!derivedSummary) {
+    return summary;
+  }
+  const summaryFungal = summary.n_fungal_visits;
+  const summaryBacterial = summary.n_bacterial_visits;
+  const derivedFungal = derivedSummary.n_fungal_visits ?? 0;
+  const derivedBacterial = derivedSummary.n_bacterial_visits ?? 0;
+  const derivedTotal = derivedFungal + derivedBacterial;
+  const summaryHasExplicitCategoryCounts =
+    typeof summaryFungal === "number" && typeof summaryBacterial === "number";
+  const summaryCategoryTotal = (summaryFungal ?? 0) + (summaryBacterial ?? 0);
+
+  if (
+    summaryHasExplicitCategoryCounts &&
+    (summaryCategoryTotal > 0 || derivedTotal === 0)
+  ) {
+    return summary;
+  }
+
+  return {
+    ...summary,
+    n_fungal_visits: derivedFungal,
+    n_bacterial_visits: derivedBacterial,
   };
 }
 
@@ -976,6 +1030,49 @@ function computeNextFollowUpNumber(visits: VisitRecord[]): number {
     maxFollowUp = Math.max(maxFollowUp, Number(match[1]) || 0);
   }
   return maxFollowUp + 1;
+}
+
+function yieldUploadLoopToBrowser(): Promise<void> {
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
+const DESKTOP_SAVE_UPLOAD_CONCURRENCY = 2;
+
+async function mapWithConcurrency<TInput, TOutput>(
+  items: readonly TInput[],
+  concurrency: number,
+  worker: (item: TInput, index: number) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const normalizedConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array<TOutput>(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      if (currentIndex < items.length - 1) {
+        await yieldUploadLoopToBrowser();
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: normalizedConcurrency }, () => runWorker()),
+  );
+  return results;
 }
 
 export function CaseWorkspace({
@@ -1346,6 +1443,11 @@ export function CaseWorkspace({
       "Add at least one slit-lamp image to save this case.",
       "耳?댁뒪瑜???ν븯?ㅻ㈃ ?멸레???대?吏瑜??섎굹 ?댁긽 異붽??섏꽭??",
     ),
+    lesionBoxesRequired: pick(
+      locale,
+      "Draw a lesion box on every image before saving this case.",
+      "케이스를 저장하기 전에 모든 이미지에 병변 박스를 그려 주세요.",
+    ),
     patientCreationFailed: pick(
       locale,
       "Patient creation failed.",
@@ -1580,7 +1682,12 @@ export function CaseWorkspace({
       setFallbackRailSummary(null);
       return;
     }
-    if (summary) {
+    const summaryNeedsCategoryHydration = Boolean(
+      summary &&
+        (typeof summary.n_fungal_visits !== "number" ||
+          typeof summary.n_bacterial_visits !== "number"),
+    );
+    if (summary && !summaryNeedsCategoryHydration) {
       setFallbackRailSummary(null);
       return;
     }
@@ -1594,7 +1701,9 @@ export function CaseWorkspace({
         if (cancelled) {
           return;
         }
-        setFallbackRailSummary(mergeSiteSummaryCounts(null, nextCounts));
+        setFallbackRailSummary(
+          mergeSiteSummaryCounts(summary ?? null, nextCounts),
+        );
       })
       .catch((nextError) => {
         if (isAbortError(nextError) || cancelled) {
@@ -1606,7 +1715,24 @@ export function CaseWorkspace({
       cancelled = true;
     };
   }, [cases, selectedSiteId, summary, token]);
-  const effectiveRailSummary = summary ?? fallbackRailSummary;
+  const caseDerivedRailSummary = useMemo(() => {
+    if (!selectedSiteId || cases.length === 0) {
+      return null;
+    }
+    return buildFallbackSiteSummary(selectedSiteId, cases);
+  }, [cases, selectedSiteId]);
+  const stagedRailSummary = useMemo(
+    () => mergeRailSummaryCategoryCounts(summary, fallbackRailSummary),
+    [fallbackRailSummary, summary],
+  );
+  const effectiveRailSummary = useMemo(
+    () =>
+      mergeRailSummaryCategoryCounts(
+        stagedRailSummary,
+        caseDerivedRailSummary,
+      ),
+    [caseDerivedRailSummary, stagedRailSummary],
+  );
   const onArtifactsChanged = useCallback(() => {
     if (
       !medsamArtifactPanelEnabled ||
@@ -1683,6 +1809,7 @@ export function CaseWorkspace({
     handleLesionPointerDown,
     handleLesionPointerMove,
     finishLesionPointer,
+    applySavedLesionBoxesAndStartLivePreview,
   } = useCaseWorkspaceAnalysis({
     locale,
     token,
@@ -2932,7 +3059,7 @@ export function CaseWorkspace({
       ...current,
       [draftId]: { x0: startX, y0: startY, x1: startX, y1: startY },
     }));
-    element.setPointerCapture(event.pointerId);
+    element.setPointerCapture?.(event.pointerId);
   }
 
   function handleDraftLesionPointerMove(
@@ -3269,6 +3396,14 @@ export function CaseWorkspace({
       draft.culture_species,
       draft.additional_organisms,
     );
+    const draftImageLesionBoxes = draftImages.map((image) => {
+      const nextBox = draftLesionPromptBoxes[image.draft_id] ?? null;
+      if (!nextBox) {
+        return null;
+      }
+      const normalized = normalizeBox(nextBox);
+      return hasUsableLesionPromptBox(normalized) ? normalized : null;
+    });
     const visitPayload = (visitReference: string) => ({
       patient_id: patientId,
       visit_date: visitReference,
@@ -3284,19 +3419,60 @@ export function CaseWorkspace({
       polymicrobial: additionalOrganisms.length > 0,
     });
     const uploadDraftImagesToVisit = async (visitReference: string) => {
-      return Promise.all(
-        draftImages.map(async (image, index) => {
-          const uploadedImage = await uploadImage(selectedSiteId!, token, {
-            patient_id: patientId,
-            visit_date: visitReference,
-            view: image.view,
-            is_representative: image.is_representative,
-            refresh_embeddings: index === draftImages.length - 1,
-            file: image.file,
-          });
-          return toSavedCaseImagePreview(selectedSiteId!, token, uploadedImage);
-        }),
-      );
+      const uploadSingleDraftImage = async (
+        image: (typeof draftImages)[number],
+      ) => {
+        const uploadedImage = await uploadImage(selectedSiteId!, token, {
+          patient_id: patientId,
+          visit_date: visitReference,
+          view: image.view,
+          is_representative: image.is_representative,
+          refresh_embeddings: false,
+          file: image.file,
+        });
+        return toSavedCaseImagePreview(selectedSiteId!, token, uploadedImage);
+      };
+      const uploadedImages: SavedImagePreview[] = [];
+      if (canUseDesktopTransport()) {
+        uploadedImages.push(
+          ...(await mapWithConcurrency(
+            draftImages,
+            DESKTOP_SAVE_UPLOAD_CONCURRENCY,
+            async (image) => uploadSingleDraftImage(image),
+          )),
+        );
+      } else {
+        uploadedImages.push(
+          ...(await Promise.all(
+            draftImages.map((image) => uploadSingleDraftImage(image)),
+          )),
+        );
+      }
+      const representativeImage =
+        uploadedImages.find((image) => image.is_representative) ??
+        uploadedImages[0] ??
+        null;
+      if (representativeImage && !canUseDesktopTransport()) {
+        void setRepresentativeImageOnServer(selectedSiteId!, token, {
+          patient_id: patientId,
+          visit_date: visitReference,
+          representative_image_id: representativeImage.image_id,
+        }).catch((nextError) => {
+          console.warn("Post-save embedding refresh queue failed", nextError);
+        });
+      }
+      const uploadedImagesWithLesionBoxes = uploadedImages.map((image, index) => {
+        const lesionPromptBox = draftImageLesionBoxes[index];
+        if (!lesionPromptBox) {
+          return image;
+        }
+        return {
+          ...image,
+          lesion_prompt_box: lesionPromptBox,
+          has_lesion_box: true,
+        };
+      });
+      return uploadedImagesWithLesionBoxes;
     };
     const buildOptimisticSavedCase = (
       visitRecord: Partial<VisitRecord>,
@@ -3465,6 +3641,40 @@ export function CaseWorkspace({
         visit_date: visitReference,
         timestamp: new Date().toISOString(),
       });
+      const postSaveLesionEntries = uploadedImages
+        .map((image) => ({
+          imageId: image.image_id,
+          lesionBox: toNormalizedBox(image.lesion_prompt_box),
+          isRepresentative: Boolean(image.is_representative),
+        }))
+        .filter(
+          (entry): entry is {
+            imageId: string;
+            lesionBox: NormalizedBox;
+            isRepresentative: boolean;
+          } => hasUsableLesionPromptBox(entry.lesionBox),
+        );
+      if (postSaveLesionEntries.length > 0) {
+        window.setTimeout(() => {
+          void applySavedLesionBoxesAndStartLivePreview(
+            postSaveLesionEntries,
+          ).catch((nextError) => {
+            console.warn("Post-save lesion preview warm-up failed", nextError);
+          });
+        }, 0);
+      }
+      if (uploadedImages.length > 0) {
+        window.setTimeout(() => {
+          void fetchCaseRoiPreview(
+            selectedSiteId!,
+            patientId,
+            visitReference,
+            token,
+          ).catch((nextError) => {
+            console.warn("Saved case MedSAM warm-up failed", nextError);
+          });
+        }, postSaveLesionEntries.length > 0 ? 600 : 200);
+      }
 
       void (async () => {
         try {
@@ -3544,6 +3754,10 @@ export function CaseWorkspace({
     }
     if (draftImages.length === 0) {
       setToast({ tone: "error", message: copy.imageRequired });
+      return;
+    }
+    if (draftImageLesionBoxes.some((box) => !hasUsableLesionPromptBox(box))) {
+      setToast({ tone: "error", message: copy.lesionBoxesRequired });
       return;
     }
 

@@ -13,8 +13,9 @@ import {
   canvasFooterTitleClass,
   canvasPropertyGridClass,
   canvasSidebarItemClass,
+  draftLesionSurfaceClass,
   imageGridClass,
-  imagePreviewCoverClass,
+  lesionBoxOverlayClass,
   togglePillClass,
 } from "../ui/workspace-patterns";
 
@@ -71,6 +72,14 @@ const compactSummaryPropertyClass =
   "flex min-w-0 items-center justify-between gap-3 rounded-[18px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.82))] px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.03)] dark:bg-white/4";
 const compactSummaryLabelClass = "shrink-0 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-muted";
 const compactSummaryValueClass = "min-w-0 truncate text-sm font-medium leading-6 text-ink text-right";
+const draftLesionStatusChipClass =
+  "inline-flex min-h-10 w-full items-center justify-center rounded-[12px] border border-border/80 bg-surface px-3.5 text-center text-[0.78rem] font-semibold tracking-[0.01em] text-muted whitespace-nowrap";
+
+function hasUsableDraftLesionBox(
+  box: NormalizedBox | null | undefined,
+): box is NormalizedBox {
+  return Boolean(box && box.x1 - box.x0 >= 0.01 && box.y1 - box.y0 >= 0.01);
+}
 
 function SummaryProperty({ label, value }: { label: string; value: string }) {
   return (
@@ -98,37 +107,73 @@ function ImageGrid({
   return (
     <div className={imageGridClass(images.length === 1)}>
       {images.map((image) => {
+        const draftBox = draftLesionPromptBoxes[image.draft_id] ?? null;
+        const hasUsableDraftBox = hasUsableDraftLesionBox(draftBox);
+        const lesionCanvasLabel = pick(
+          locale,
+          `Lesion box canvas for ${image.file.name}`,
+          `${image.file.name} 병변 박스 캔버스`,
+        );
         return (
           <Card key={image.draft_id} as="article" variant="interactive" className="grid gap-2 overflow-hidden rounded-[18px] p-2.5">
-            <div className="relative overflow-hidden rounded-[16px] border border-border/70 bg-surface-muted/55">
-              <img
-                src={image.preview_url}
-                alt={image.file.name}
-                className={imagePreviewCoverClass}
-                loading="lazy"
-                decoding="async"
-                draggable={false}
-                onDragStart={(event) => event.preventDefault()}
-              />
+            <div className="grid place-items-center rounded-[16px] border border-border/70 bg-surface-muted/55 p-2">
+              <div
+                aria-label={lesionCanvasLabel}
+                className={`${draftLesionSurfaceClass} mx-auto w-fit max-w-full !aspect-auto rounded-[14px] border-border/60 bg-white/70`}
+                onPointerDown={(event) => onPointerDown(image.draft_id, event)}
+                onPointerMove={(event) => onPointerMove(image.draft_id, event)}
+                onPointerUp={(event) => onPointerUp(image.draft_id, event)}
+                onPointerCancel={(event) => onPointerUp(image.draft_id, event)}
+              >
+                <img
+                  src={image.preview_url}
+                  alt={image.file.name}
+                  className="block max-h-[320px] w-auto max-w-full select-none rounded-[12px] object-contain"
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  onDragStart={(event) => event.preventDefault()}
+                />
+                {draftBox ? (
+                  <div
+                    className={lesionBoxOverlayClass}
+                    style={{
+                      left: `${draftBox.x0 * 100}%`,
+                      top: `${draftBox.y0 * 100}%`,
+                      width: `${(draftBox.x1 - draftBox.x0) * 100}%`,
+                      height: `${(draftBox.y1 - draftBox.y0) * 100}%`,
+                    }}
+                  />
+                ) : null}
+              </div>
             </div>
 
-            <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-1.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <button
-                    className={`${togglePillClass(image.is_representative, true)} whitespace-nowrap px-3`}
-                    type="button"
-                    onClick={() => onSetRepresentative(image.draft_id)}
-                  >
-                    {image.is_representative
-                      ? pick(locale, "Representative", "대표 이미지")
-                      : pick(locale, "Mark representative", "대표로 지정")}
-                  </button>
-                </div>
-                <Button size="sm" variant="ghost" type="button" className="min-h-9 shrink-0 px-3.5" onClick={() => onRemove(image.draft_id)}>
+            <div className="grid gap-2.5 px-1 pb-1">
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <button
+                  className={`${togglePillClass(image.is_representative, true)} inline-flex min-w-0 items-center justify-center whitespace-nowrap px-3.5 text-center`}
+                  type="button"
+                  onClick={() => onSetRepresentative(image.draft_id)}
+                >
+                  {image.is_representative
+                    ? pick(locale, "Representative", "대표 이미지")
+                    : pick(locale, "Mark representative", "대표로 지정")}
+                </button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  type="button"
+                  className="min-h-10 min-w-[92px] shrink-0 whitespace-nowrap px-4"
+                  onClick={() => onRemove(image.draft_id)}
+                >
                   {pick(locale, "Remove", "제거")}
                 </Button>
               </div>
+              <span className={draftLesionStatusChipClass}>
+                {hasUsableDraftBox
+                  ? pick(locale, "Lesion box ready", "병변 박스 준비됨")
+                  : pick(locale, "Draw lesion box", "병변 박스 그리기")}
+              </span>
             </div>
           </Card>
         );
@@ -250,9 +295,28 @@ export function ImageManagerPanel({
 }: Props) {
   const allDraftImages = [...whiteDraftImages, ...fluoresceinDraftImages];
   const representativeCount = allDraftImages.filter((image) => image.is_representative).length;
-  const readyToSubmit = intakeCompleted && Boolean(selectedSiteId) && allDraftImages.length > 0;
+  const boxedImageCount = allDraftImages.filter((image) =>
+    hasUsableDraftLesionBox(draftLesionPromptBoxes[image.draft_id]),
+  ).length;
+  const lesionBoxesComplete =
+    allDraftImages.length > 0 && boxedImageCount === allDraftImages.length;
+  const readyToSubmit =
+    intakeCompleted &&
+    Boolean(selectedSiteId) &&
+    allDraftImages.length > 0 &&
+    lesionBoxesComplete;
   const imageSummary = allDraftImages.length
-    ? pick(locale, `${allDraftImages.length} draft images are lined up for ${resolvedVisitReferenceLabel}.`, `${resolvedVisitReferenceLabel}에 연결된 초안 이미지 ${allDraftImages.length}장을 정리해 두었습니다.`)
+    ? lesionBoxesComplete
+      ? pick(
+          locale,
+          `${allDraftImages.length} draft images are lined up for ${resolvedVisitReferenceLabel}, and every image has a lesion box.`,
+          `${resolvedVisitReferenceLabel}에 연결된 초안 이미지 ${allDraftImages.length}장에 병변 박스를 모두 지정했습니다.`,
+        )
+      : pick(
+          locale,
+          `${boxedImageCount} of ${allDraftImages.length} draft images already have lesion boxes. Draw directly on each image before saving.`,
+          `초안 이미지 ${allDraftImages.length}장 중 ${boxedImageCount}장에 병변 박스를 지정했습니다. 저장 전 모든 이미지에 직접 그려 주세요.`,
+        )
     : pick(locale, "Start by dropping one or more images into a lane below.", "아래 레인에 이미지 한 장 이상을 먼저 놓아보세요.");
 
   return (
@@ -271,7 +335,7 @@ export function ImageManagerPanel({
         readyToSubmit
           ? pick(locale, "Ready to submit", "제출 준비됨")
           : intakeCompleted
-            ? pick(locale, "Draft images", "초안 이미지")
+            ? pick(locale, "Lesion boxes required", "병변 박스 필요")
             : pick(locale, "Draft only until intake completes", "intake 완료 전까지는 초안 상태")
       }
       statusTone={readyToSubmit ? "complete" : intakeCompleted ? "active" : "pending"}
@@ -335,6 +399,12 @@ export function ImageManagerPanel({
                 ? pick(locale, "Complete the intake first. Image uploads can continue, but submission stays disabled until the case structure is locked.", "먼저 intake를 완료하세요. 이미지 업로드는 계속할 수 있지만, 케이스 구조를 고정하기 전까지 제출은 비활성화됩니다.")
                 : allDraftImages.length === 0
                   ? pick(locale, "Add at least one image before saving this case to the hospital workspace.", "병원 워크스페이스에 저장하려면 이미지가 최소 한 장 필요합니다.")
+                  : !lesionBoxesComplete
+                    ? pick(
+                        locale,
+                        "Draw and save a lesion box on every uploaded image before saving this case.",
+                        "케이스를 저장하기 전에 업로드한 모든 이미지에 병변 박스를 그리고 저장해 주세요.",
+                      )
                   : pick(locale, "Patient, visit, and image records are aligned. You can save this case to the selected hospital now.", "환자, 방문, 이미지 기록이 정렬되었습니다. 이제 선택한 병원에 케이스를 저장할 수 있습니다.")}
           </p>
         </div>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,9 @@ class MedSAMService:
     _model_cache: dict[tuple[str, str, str], Any] = {}
     _model_cache_lock = threading.Lock()
     _inference_locks: dict[tuple[str, str, str], threading.Lock] = {}
+    _image_predictor_cache: OrderedDict[tuple[str, str, str, str, int, int], tuple[Any, threading.Lock]] = OrderedDict()
+    _image_predictor_cache_lock = threading.Lock()
+    _image_predictor_cache_limit = 8
 
     def __init__(
         self,
@@ -324,6 +328,50 @@ class MedSAMService:
             self._inference_locks[cache_key] = inference_lock
             return predictor_class, model, inference_lock
 
+    def _image_predictor_cache_key(self, image_path: str | Path, device: str) -> tuple[str, str, str, str, int, int]:
+        resolved_image_path = Path(image_path).expanduser().resolve()
+        image_stat = resolved_image_path.stat()
+        medsam_root, checkpoint_path, device_key = self._model_cache_key(device)
+        return (
+            medsam_root,
+            checkpoint_path,
+            device_key,
+            str(resolved_image_path),
+            int(image_stat.st_mtime_ns),
+            int(image_stat.st_size),
+        )
+
+    def _load_cached_image_predictor(
+        self,
+        image_path: str | Path,
+        *,
+        device: str,
+        torch_module: Any,
+    ) -> tuple[Any, threading.Lock]:
+        cache_key = self._image_predictor_cache_key(image_path, device)
+        with self._image_predictor_cache_lock:
+            cached_predictor = self._image_predictor_cache.get(cache_key)
+            if cached_predictor is not None:
+                self._image_predictor_cache.move_to_end(cache_key)
+                return cached_predictor
+
+        predictor_class, model, inference_lock = self._load_cached_model(device)
+        with Image.open(image_path) as image:
+            image_array = np.asarray(image.convert("RGB"))
+        with inference_lock, torch_module.inference_mode():
+            predictor = predictor_class(model)
+            predictor.set_image(image_array)
+
+        with self._image_predictor_cache_lock:
+            cached_predictor = self._image_predictor_cache.get(cache_key)
+            if cached_predictor is not None:
+                self._image_predictor_cache.move_to_end(cache_key)
+                return cached_predictor
+            self._image_predictor_cache[cache_key] = (predictor, inference_lock)
+            while len(self._image_predictor_cache) > self._image_predictor_cache_limit:
+                self._image_predictor_cache.popitem(last=False)
+        return predictor, inference_lock
+
     def _can_run_inprocess_medsam(self) -> bool:
         checkpoint_path = str(self.medsam_checkpoint or "").strip()
         if not checkpoint_path or not Path(checkpoint_path).exists():
@@ -352,9 +400,13 @@ class MedSAMService:
         import torch
 
         device = self._resolve_device()
-        predictor_class, model, inference_lock = self._load_cached_model(device)
-        image_array = np.asarray(Image.open(image_path).convert("RGB"))
-        height, width = image_array.shape[:2]
+        predictor, inference_lock = self._load_cached_image_predictor(
+            image_path,
+            device=device,
+            torch_module=torch,
+        )
+        with Image.open(image_path) as image:
+            width, height = image.size
         fallback_box = np.asarray(prompt_box, dtype=np.float32) if prompt_box else self._default_cornea_box(width, height)
         mask_output_path = Path(mask_output_path)
         crop_output_path = Path(crop_output_path)
@@ -362,8 +414,6 @@ class MedSAMService:
         crop_output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with inference_lock, torch.inference_mode():
-            predictor = predictor_class(model)
-            predictor.set_image(image_array)
             masks, scores, _ = predictor.predict(box=fallback_box, multimask_output=True)
 
         mask = self._select_mask(masks, scores, fallback_box, width, height)

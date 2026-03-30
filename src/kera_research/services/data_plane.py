@@ -2210,6 +2210,7 @@ class SiteStore:
     def site_summary_stats(self) -> dict[str, int]:
         self._repair_missing_image_paths_if_due(force=True)
         self._sync_raw_inventory_metadata_if_due()
+        normalized_culture_category = func.lower(func.trim(func.coalesce(db_visits.c.culture_category, "")))
         patient_count_query = (
             select(func.count())
             .select_from(db_patients)
@@ -2252,6 +2253,36 @@ class SiteStore:
                         else_=0,
                     )
                 ).label("n_excluded_visits"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                normalized_culture_category == "fungal",
+                                or_(
+                                    db_visits.c.culture_confirmed == True,
+                                    db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
+                                ),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("n_fungal_visits"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                normalized_culture_category == "bacterial",
+                                or_(
+                                    db_visits.c.culture_confirmed == True,
+                                    db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
+                                ),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("n_bacterial_visits"),
             )
             .where(db_visits.c.site_id == self.site_id)
         )
@@ -2281,6 +2312,8 @@ class SiteStore:
             "n_active_visits": int(visit_summary.get("n_active_visits") or 0),
             "n_included_visits": int(visit_summary.get("n_included_visits") or 0),
             "n_excluded_visits": int(visit_summary.get("n_excluded_visits") or 0),
+            "n_fungal_visits": int(visit_summary.get("n_fungal_visits") or 0),
+            "n_bacterial_visits": int(visit_summary.get("n_bacterial_visits") or 0),
         }
 
     def image_preview_cache_path(self, image_id: str, max_side: int) -> Path:

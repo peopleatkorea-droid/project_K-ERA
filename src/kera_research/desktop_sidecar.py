@@ -608,8 +608,22 @@ def _start_live_lesion_preview(params: dict[str, Any]) -> dict[str, Any]:
             if (
                 existing.get("site_id") == site_id
                 and existing.get("image_id") == image_id
+                and existing.get("status") == "running"
+            ):
+                if prompt_signature in {
+                    existing.get("prompt_signature"),
+                    existing.get("pending_prompt_signature"),
+                }:
+                    return _serialize_lesion_preview_job(dict(existing))
+                existing["pending_prompt_signature"] = prompt_signature
+                existing["pending_lesion_prompt_box"] = dict(lesion_prompt_box)
+                existing["finished_at"] = None
+                return _serialize_lesion_preview_job(dict(existing))
+            if (
+                existing.get("site_id") == site_id
+                and existing.get("image_id") == image_id
                 and existing.get("prompt_signature") == prompt_signature
-                and existing.get("status") in {"running", "done"}
+                and existing.get("status") == "done"
             ):
                 return _serialize_lesion_preview_job(dict(existing))
     job_id = make_id("lesionjob")
@@ -626,32 +640,92 @@ def _start_live_lesion_preview(params: dict[str, Any]) -> dict[str, Any]:
         "finished_at": None,
         "prompt_signature": prompt_signature,
         "lesion_prompt_box": lesion_prompt_box,
+        "pending_prompt_signature": None,
+        "pending_lesion_prompt_box": None,
     }
     with _LESION_PREVIEW_JOBS_LOCK:
         _LESION_PREVIEW_JOBS[job_id] = job_record
 
     def _run() -> None:
-        try:
-            result = workflow.preview_image_lesion(site_store, image_id, lesion_prompt_box=dict(lesion_prompt_box))
+        while True:
+            with _LESION_PREVIEW_JOBS_LOCK:
+                current_job = _LESION_PREVIEW_JOBS.get(job_id)
+                if current_job is None:
+                    return
+                pending_signature = current_job.pop("pending_prompt_signature", None)
+                pending_box = current_job.pop("pending_lesion_prompt_box", None)
+                if pending_signature:
+                    current_job["prompt_signature"] = pending_signature
+                    if isinstance(pending_box, dict):
+                        current_job["lesion_prompt_box"] = dict(pending_box)
+                active_box = dict(current_job.get("lesion_prompt_box") or lesion_prompt_box)
+                active_signature = str(
+                    current_job.get("prompt_signature")
+                    or workflow._lesion_prompt_box_signature(active_box)
+                    or ""
+                )
+                current_job.update(
+                    {
+                        "status": "running",
+                        "error": None,
+                        "result": None,
+                        "finished_at": None,
+                        "prompt_signature": active_signature,
+                        "lesion_prompt_box": active_box,
+                    }
+                )
+            try:
+                result = workflow.preview_image_lesion(
+                    site_store,
+                    image_id,
+                    lesion_prompt_box=active_box,
+                )
+            except Exception as exc:
+                with _LESION_PREVIEW_JOBS_LOCK:
+                    current_job = _LESION_PREVIEW_JOBS.get(job_id)
+                    if current_job is None:
+                        return
+                    if current_job.get("pending_prompt_signature"):
+                        continue
+                    current_job.update(
+                        {
+                            "status": "failed",
+                            "error": str(exc),
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                return
+
+            rerun_required = False
+            with _LESION_PREVIEW_JOBS_LOCK:
+                current_job = _LESION_PREVIEW_JOBS.get(job_id)
+                if current_job is None:
+                    return
+                rerun_required = bool(current_job.get("pending_prompt_signature"))
+                if rerun_required:
+                    current_job.update(
+                        {
+                            "status": "running",
+                            "error": None,
+                            "finished_at": None,
+                        }
+                    )
+                else:
+                    current_job.update(
+                        {
+                            "status": "done",
+                            "result": result,
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                            "prompt_signature": active_signature,
+                            "lesion_prompt_box": active_box,
+                        }
+                    )
+            if rerun_required:
+                continue
+
             refreshed_image = site_store.get_image(image_id) or image
             _sync_image_artifact_cache_best_effort(workflow, site_store, refreshed_image)
-            with _LESION_PREVIEW_JOBS_LOCK:
-                _LESION_PREVIEW_JOBS[job_id].update(
-                    {
-                        "status": "done",
-                        "result": result,
-                        "finished_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-        except Exception as exc:
-            with _LESION_PREVIEW_JOBS_LOCK:
-                _LESION_PREVIEW_JOBS[job_id].update(
-                    {
-                        "status": "failed",
-                        "error": str(exc),
-                        "finished_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+            return
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()

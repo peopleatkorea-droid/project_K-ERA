@@ -127,6 +127,8 @@ describe("cases desktop wiring", () => {
           n_visits: 2,
           n_images: 3,
           n_active_visits: 1,
+          n_fungal_visits: 1,
+          n_bacterial_visits: 1,
           n_validation_runs: 4,
           latest_validation: { validation_id: "val_1" },
           research_registry: {
@@ -142,6 +144,8 @@ describe("cases desktop wiring", () => {
           n_visits: 133,
           n_images: 408,
           n_active_visits: 19,
+          n_fungal_visits: 21,
+          n_bacterial_visits: 112,
         },
       ),
     ).toMatchObject({
@@ -150,6 +154,8 @@ describe("cases desktop wiring", () => {
       n_visits: 133,
       n_images: 408,
       n_active_visits: 19,
+      n_fungal_visits: 21,
+      n_bacterial_visits: 112,
       n_validation_runs: 4,
       latest_validation: { validation_id: "val_1" },
       research_registry: {

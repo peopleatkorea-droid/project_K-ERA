@@ -112,6 +112,8 @@ def build_site_overview_router(support: Any) -> APIRouter:
             "n_visits": stats["n_visits"],
             "n_images": stats["n_images"],
             "n_active_visits": stats["n_active_visits"],
+            "n_fungal_visits": stats["n_fungal_visits"],
+            "n_bacterial_visits": stats["n_bacterial_visits"],
             "n_validation_runs": validation_run_count,
             "latest_validation": latest_run,
             "research_registry": {

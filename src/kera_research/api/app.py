@@ -829,15 +829,50 @@ _PENDING_EMBEDDING_TRIGGERS: dict[tuple[str, str, str], str] = {}
 _EMBEDDING_JOB_LOCK = threading.Lock()
 
 
-def _case_embedding_refresh_delay_seconds(trigger: str) -> float:
-    normalized_trigger = str(trigger or "").strip().lower()
-    if normalized_trigger != "image_upload":
-        return 0.0
-    raw_value = os.getenv("KERA_CASE_EMBEDDING_UPLOAD_DELAY_SECONDS", "10").strip()
+def _parse_nonnegative_delay_seconds(env_name: str, default_seconds: float) -> float:
+    raw_value = os.getenv(env_name, str(default_seconds)).strip()
     try:
         return max(0.0, float(raw_value))
     except ValueError:
-        return 10.0
+        return float(default_seconds)
+
+
+def _case_embedding_refresh_delay_seconds(trigger: str, *, execution_device: str) -> float:
+    normalized_trigger = str(trigger or "").strip().lower()
+    normalized_device = str(execution_device or "cpu").strip().lower()
+    gpu_available = normalized_device.startswith("cuda")
+    if normalized_trigger == "image_upload":
+        return _parse_nonnegative_delay_seconds("KERA_CASE_EMBEDDING_UPLOAD_DELAY_SECONDS", 10.0)
+    elif normalized_trigger == "representative_change":
+        # Save completion and post-save MedSAM warm-up take priority over
+        # classifier / retrieval embedding refresh for the newly written case.
+        return _parse_nonnegative_delay_seconds(
+            "KERA_CASE_EMBEDDING_REPRESENTATIVE_DELAY_SECONDS",
+            20.0 if gpu_available else 30.0,
+        )
+    return 0.0
+
+
+def _case_vector_index_refresh_delay_seconds(
+    trigger: str,
+    *,
+    execution_device: str,
+    embedding_delay_seconds: float,
+) -> float:
+    normalized_trigger = str(trigger or "").strip().lower()
+    normalized_device = str(execution_device or "cpu").strip().lower()
+    gpu_available = normalized_device.startswith("cuda")
+    if normalized_trigger == "image_upload":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_CASE_VECTOR_INDEX_UPLOAD_DELAY_SECONDS",
+            embedding_delay_seconds,
+        )
+    if normalized_trigger == "representative_change":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_CASE_VECTOR_INDEX_REPRESENTATIVE_DELAY_SECONDS",
+            60.0 if gpu_available else 90.0,
+        )
+    return 0.0
 
 
 def _queue_case_embedding_refresh(
@@ -866,14 +901,35 @@ def _queue_case_embedding_refresh(
         _PENDING_EMBEDDING_JOBS[job_key] = False
 
     execution_device = _preferred_embedding_execution_device()
-    delay_seconds = _case_embedding_refresh_delay_seconds(trigger)
+    embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
+        trigger,
+        execution_device=execution_device,
+    )
+    index_delay_seconds = max(
+        embedding_delay_seconds,
+        _case_vector_index_refresh_delay_seconds(
+            trigger,
+            execution_device=execution_device,
+            embedding_delay_seconds=embedding_delay_seconds,
+        ),
+    )
 
-    def run_index_job_safe(key: tuple[str, str, str], job_trigger: str, job_delay_seconds: float) -> None:
+    def run_index_job_safe(
+        key: tuple[str, str, str],
+        job_trigger: str,
+        job_embedding_delay_seconds: float,
+        job_index_delay_seconds: float,
+    ) -> None:
+        job: dict[str, Any] | None = None
         try:
-            if job_delay_seconds > 0:
+            job_started_at = time.monotonic()
+            if job_embedding_delay_seconds > 0:
                 # Keep case-save UX responsive by yielding the CPU-intensive refresh
                 # until after the save flow has completed and the next screen has rendered.
-                time.sleep(job_delay_seconds)
+                time.sleep(job_embedding_delay_seconds)
+            with _EMBEDDING_JOB_LOCK:
+                if _PENDING_EMBEDDING_JOBS.get(key, False):
+                    return
             workflow = _get_workflow(cp)
             # Create a localized job record in DB for visibility
             job = site_store.enqueue_job(
@@ -884,20 +940,165 @@ def _queue_case_embedding_refresh(
                     "trigger": job_trigger,
                     "model_version_id": model_version.get("version_id"),
                     "execution_device": execution_device,
+                    "embedding_delay_seconds": float(job_embedding_delay_seconds),
+                    "vector_index_delay_seconds": float(job_index_delay_seconds),
                 },
             )
-            site_store.update_job_status(job["job_id"], "running", {"message": "Indexing..."})
+            site_store.update_job_status(
+                job["job_id"],
+                "running",
+                {
+                    "progress": {
+                        "stage": "embedding",
+                        "message": "Refreshing case embeddings.",
+                        "percent": 25,
+                    }
+                },
+            )
 
-            workflow.index_case_embedding(
+            embedding_response = workflow.index_case_embedding(
                 site_store,
                 patient_id=key[1],
                 visit_date=key[2],
                 model_version=model_version,
                 execution_device=execution_device,
+                update_index=False,
             )
-            site_store.update_job_status(job["job_id"], "completed")
+            site_store.update_job_status(
+                job["job_id"],
+                "running",
+                {
+                    "progress": {
+                        "stage": "index_wait",
+                        "message": "Waiting before vector index rebuild.",
+                        "percent": 50,
+                    },
+                    "response": {
+                        **embedding_response,
+                        "execution_device": execution_device,
+                    },
+                },
+            )
+
+            with _EMBEDDING_JOB_LOCK:
+                if _PENDING_EMBEDDING_JOBS.get(key, False):
+                    site_store.update_job_status(
+                        job["job_id"],
+                        "completed",
+                        {
+                            "progress": {
+                                "stage": "superseded",
+                                "message": "Skipped vector index rebuild because a newer case update is queued.",
+                                "percent": 100,
+                            },
+                            "response": {
+                                **embedding_response,
+                                "execution_device": execution_device,
+                                "vector_index": None,
+                                "vector_index_error": None,
+                            },
+                        },
+                    )
+                    return
+
+            remaining_index_delay_seconds = max(
+                0.0,
+                float(job_index_delay_seconds) - (time.monotonic() - job_started_at),
+            )
+            if remaining_index_delay_seconds > 0:
+                time.sleep(remaining_index_delay_seconds)
+
+            with _EMBEDDING_JOB_LOCK:
+                if _PENDING_EMBEDDING_JOBS.get(key, False):
+                    site_store.update_job_status(
+                        job["job_id"],
+                        "completed",
+                        {
+                            "progress": {
+                                "stage": "superseded",
+                                "message": "Skipped vector index rebuild because a newer case update is queued.",
+                                "percent": 100,
+                            },
+                            "response": {
+                                **embedding_response,
+                                "execution_device": execution_device,
+                                "vector_index": None,
+                                "vector_index_error": None,
+                            },
+                        },
+                    )
+                    return
+
+            site_store.update_job_status(
+                job["job_id"],
+                "running",
+                {
+                    "progress": {
+                        "stage": "index",
+                        "message": "Rebuilding AI Clinic vector index.",
+                        "percent": 75,
+                    }
+                },
+            )
+
+            available_backends = list(embedding_response.get("available_backends") or [])
+            vector_index: dict[str, Any] | None = None
+            vector_index_error: str | None = None
+            try:
+                vector_index = {
+                    "classifier": workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="classifier",
+                    )
+                }
+                if "dinov2" in available_backends:
+                    vector_index["dinov2"] = workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="dinov2",
+                    )
+                if "biomedclip" in available_backends:
+                    vector_index["biomedclip"] = workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="biomedclip",
+                    )
+            except Exception as exc:
+                vector_index_error = str(exc)
+
+            site_store.update_job_status(
+                job["job_id"],
+                "completed",
+                {
+                    "progress": {
+                        "stage": "completed",
+                        "message": "AI Clinic embedding refresh completed.",
+                        "percent": 100,
+                    },
+                    "response": {
+                        **embedding_response,
+                        "execution_device": execution_device,
+                        "vector_index": vector_index,
+                        "vector_index_error": vector_index_error,
+                    },
+                },
+            )
 
         except Exception as exc:
+            if job is not None:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "failed",
+                    {
+                        "progress": {
+                            "stage": "failed",
+                            "message": "AI Clinic embedding refresh failed.",
+                            "percent": 100,
+                        },
+                        "error": str(exc),
+                    },
+                )
             # We don't want to crash the worker thread
             try:
                 print(f"Embedding indexing failed for {key}: {exc}")
@@ -909,17 +1110,37 @@ def _queue_case_embedding_refresh(
                 latest_trigger = _PENDING_EMBEDDING_TRIGGERS.get(key, job_trigger)
                 if is_dirty:
                     _PENDING_EMBEDDING_JOBS[key] = False  # Reset dirty bit and re-queue
+                    latest_execution_device = _preferred_embedding_execution_device()
+                    latest_embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
+                        latest_trigger,
+                        execution_device=latest_execution_device,
+                    )
+                    latest_index_delay_seconds = max(
+                        latest_embedding_delay_seconds,
+                        _case_vector_index_refresh_delay_seconds(
+                            latest_trigger,
+                            execution_device=latest_execution_device,
+                            embedding_delay_seconds=latest_embedding_delay_seconds,
+                        ),
+                    )
                     _EMBEDDING_INDEX_EXECUTOR.submit(
                         run_index_job_safe,
                         key,
                         latest_trigger,
-                        _case_embedding_refresh_delay_seconds(latest_trigger),
+                        latest_embedding_delay_seconds,
+                        latest_index_delay_seconds,
                     )
                 else:
                     _PENDING_EMBEDDING_JOBS.pop(key, None)
                     _PENDING_EMBEDDING_TRIGGERS.pop(key, None)
 
-    _EMBEDDING_INDEX_EXECUTOR.submit(run_index_job_safe, job_key, trigger, delay_seconds)
+    _EMBEDDING_INDEX_EXECUTOR.submit(
+        run_index_job_safe,
+        job_key,
+        trigger,
+        embedding_delay_seconds,
+        index_delay_seconds,
+    )
 
 
 def _queue_site_embedding_backfill(
