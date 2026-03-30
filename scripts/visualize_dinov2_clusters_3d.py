@@ -31,7 +31,9 @@ DEFAULT_SSL_CHECKPOINT = (
 # culture_category → marker color
 CATEGORY_COLORS: dict[str, str] = {
     "bacteria": "#2563eb",
+    "bacterial": "#2563eb",
     "fungus": "#f97316",
+    "fungal": "#f97316",
     "acanthamoeba": "#16a34a",
     "mixed": "#7c3aed",
     "unknown": "#94a3b8",
@@ -40,7 +42,9 @@ CATEGORY_COLORS: dict[str, str] = {
 # culture_category → marker symbol
 CATEGORY_SYMBOLS: dict[str, str] = {
     "bacteria": "circle",
+    "bacterial": "circle",
     "fungus": "diamond",
+    "fungal": "diamond",
     "acanthamoeba": "square",
     "mixed": "cross",
     "unknown": "circle-open",
