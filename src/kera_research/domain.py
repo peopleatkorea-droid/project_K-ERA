@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timezone
+from typing import Iterable
 from uuid import uuid4
 
 SEX_OPTIONS = ["female", "male", "unknown"]
@@ -73,6 +74,7 @@ CULTURE_SPECIES = {
         "Other Streptococcus species",
         "Enterococcus faecalis",
         "Gemella species",
+        "Granulicatella species",
         "Pseudomonas aeruginosa",
         "Moraxella",
         "Corynebacterium",
@@ -93,26 +95,59 @@ CULTURE_SPECIES = {
         "Other",
     ],
     "fungal": [
+        # Common molds first, then the remaining named molds, then yeasts, then catch-alls.
         "Fusarium",
         "Aspergillus",
-        "Candida",
-        "Curvularia",
-        "Alternaria",
-        "Colletotrichum",
         "Acremonium",
-        "Lasiodiplodia",
-        "Cladophialophora",
-        "Australiasca",
-        "Penicillium",
-        "Bipolaris",
-        "Scedosporium",
-        "Paecilomyces",
-        "Exserohilum",
-        "Cladosporium",
+        "Alternaria",
+        "Australiasca species",
         "Beauveria bassiana",
+        "Bipolaris",
+        "Cladophialophora",
+        "Cladosporium",
+        "Colletotrichum",
+        "Curvularia",
+        "Exserohilum",
+        "Lasiodiplodia",
+        "Paecilomyces",
+        "Penicillium",
+        "Scedosporium",
+        "Other Molds",
+        "Candida",
+        "Other Yeasts",
         "Other",
     ],
 }
+
+
+def order_culture_species(category: str | None, species_names: Iterable[str]) -> list[str]:
+    normalized_category = str(category or "").strip().lower()
+    canonical_order = CULTURE_SPECIES.get(normalized_category, [])
+    canonical_rank = {species.casefold(): index for index, species in enumerate(canonical_order)}
+    deduped_species: list[str] = []
+    seen: set[str] = set()
+
+    for raw_species in species_names:
+        species = str(raw_species or "").strip()
+        if not species:
+            continue
+        species_key = species.casefold()
+        if species_key in seen:
+            continue
+        seen.add(species_key)
+        deduped_species.append(species)
+
+    if not canonical_order:
+        return sorted(deduped_species, key=str.casefold)
+
+    return sorted(
+        deduped_species,
+        key=lambda species: (
+            0 if species.casefold() in canonical_rank else 1,
+            canonical_rank.get(species.casefold(), len(canonical_rank)),
+            species.casefold(),
+        ),
+    )
 
 LABEL_TO_INDEX = {"bacterial": 0, "fungal": 1}
 INDEX_TO_LABEL = {0: "bacterial", 1: "fungal"}

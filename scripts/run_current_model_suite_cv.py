@@ -569,6 +569,7 @@ def run_single_job_subprocess(
     device: str,
     fold_index: int,
     component_name: str,
+    view_filter: str | None = None,
     epochs_override: int | None,
     max_retries: int,
     retry_delay_seconds: int,
@@ -591,6 +592,8 @@ def run_single_job_subprocess(
         "--component",
         component_name,
     ]
+    if view_filter is not None and str(view_filter).strip():
+        command.extend(["--view-filter", str(view_filter).strip()])
     if epochs_override is not None:
         command.extend(["--epochs-override", str(int(epochs_override))])
 
@@ -647,7 +650,13 @@ def audit_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for prediction in result.get(split_name, []):
             query_patient = str(prediction.get("patient_id") or "")
             query_visit = str(prediction.get("visit_date") or "")
-            for neighbor in prediction.get("neighbor_visits", []):
+            neighbor_rows = (
+                prediction.get("neighbor_visits")
+                or prediction.get("neighbor_images")
+                or prediction.get("top_neighbors")
+                or []
+            )
+            for neighbor in neighbor_rows:
                 total_neighbors += 1
                 if str(neighbor.get("patient_id") or "") == query_patient:
                     same_patient_neighbors += 1

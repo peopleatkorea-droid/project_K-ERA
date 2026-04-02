@@ -21,6 +21,9 @@ from sqlalchemy import select, update as sa_update
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
 from google.oauth2 import id_token as google_id_token
 
 from kera_research.config import (
@@ -398,20 +401,24 @@ def _verify_google_id_token(id_token: str) -> dict[str, str]:
             detail="Google authentication is not configured on the server.",
         )
 
-    try:
-        payload = google_id_token.verify_oauth2_token(
-            id_token,
-            google.auth.transport.requests.Request(),
-            None,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token verification failed.") from exc
+    # Try each configured client ID so the library performs audience validation.
+    # google-auth caches the public certs, so repeated calls are inexpensive.
+    payload: dict | None = None
+    for _client_id in client_ids:
+        try:
+            payload = google_id_token.verify_oauth2_token(
+                id_token,
+                google.auth.transport.requests.Request(),
+                _client_id,
+            )
+            break
+        except ValueError:
+            continue
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token verification failed.")
 
     if str(payload.get("iss", "")).strip() not in GOOGLE_ISSUERS:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token issuer mismatch.")
-    audience = str(payload.get("aud", "")).strip()
-    if audience not in client_ids:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token audience mismatch.")
     if str(payload.get("email_verified", "")).lower() not in {"true", "1"}:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email is not verified.")
 
@@ -1613,6 +1620,21 @@ def _site_comparison_rows(cp: ControlPlaneStore, user: dict[str, Any]) -> list[d
     return rows
 
 
+_VALID_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9\-\.]+(?::\d+)?$")
+
+
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add minimal security headers to every API response."""
+
+    async def dispatch(self, request: StarletteRequest, call_next: Any) -> StarletteResponse:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        # Disable legacy XSS auditor; modern browsers rely on CSP instead.
+        response.headers.setdefault("X-XSS-Protection", "0")
+        return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="K-ERA Research API", version="0.2.0")
 
@@ -1623,7 +1645,13 @@ def create_app() -> FastAPI:
     ]
     extra_origin = os.getenv("KERA_FRONTEND_ORIGIN", "").strip()
     if extra_origin:
-        allowed_origins.append(extra_origin)
+        if _VALID_ORIGIN_RE.match(extra_origin):
+            allowed_origins.append(extra_origin)
+        else:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "KERA_FRONTEND_ORIGIN '%s' is not a valid URL, ignoring.", extra_origin
+            )
 
     app.add_middleware(
         CORSMiddleware,
@@ -1632,6 +1660,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Accept"],
     )
+    app.add_middleware(_SecurityHeadersMiddleware)
 
     route_supports = build_route_supports(
         get_control_plane=get_control_plane,

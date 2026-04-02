@@ -1,10 +1,13 @@
 import { NextRequest } from "next/server";
 
-import { controlPlaneDevAuthEnabled } from "../../../../../lib/control-plane/config";
+import { controlPlaneDevAuthEnabled, controlPlaneSandboxEnabled } from "../../../../../lib/control-plane/config";
 import { jsonError, sessionResponse } from "../../../../../lib/control-plane/http";
 import { ensureControlPlaneIdentity, setControlPlaneUserGlobalRole } from "../../../../../lib/control-plane/store";
 
 export async function POST(request: NextRequest) {
+  if (!controlPlaneSandboxEnabled()) {
+    return jsonError("Legacy control-plane sandbox is disabled.", 404);
+  }
   if (!controlPlaneDevAuthEnabled()) {
     return jsonError("Development auth is disabled.", 403);
   }

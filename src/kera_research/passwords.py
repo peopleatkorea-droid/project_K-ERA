@@ -8,7 +8,7 @@ import os
 import bcrypt
 
 PASSWORD_SCHEME = "pbkdf2_sha256"
-PASSWORD_ITERATIONS = max(1, int(os.getenv("KERA_PASSWORD_PBKDF2_ITERATIONS", "").strip() or "210000"))
+PASSWORD_ITERATIONS = max(210000, int(os.getenv("KERA_PASSWORD_PBKDF2_ITERATIONS", "").strip() or "210000"))
 PASSWORD_KEY_LENGTH = 32
 _BCRYPT_MAX_PASSWORD_BYTES = 72
 

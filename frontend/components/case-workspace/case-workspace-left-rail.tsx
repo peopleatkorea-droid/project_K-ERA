@@ -103,6 +103,12 @@ export function CaseWorkspaceLeftRail({
   const validationHistoryDeferred = deferValidationHistory && siteValidationRuns.length === 0;
   const hasStoredSiteValidations = (summary?.n_validation_runs ?? 0) > 0;
   const shouldShowDeferredValidationMessage = validationHistoryDeferred && (!summary || hasStoredSiteValidations);
+  const summaryMetricCardClass = `${railMetricCardClass} px-3 py-2.5`;
+  const summaryMetricValueClass = `${railMetricValueClass} text-[1.45rem] leading-none`;
+  const summaryMetricSplitValueClass =
+    `${summaryMetricValueClass} whitespace-nowrap text-[clamp(1.02rem,3.4vw,1.22rem)] tracking-[-0.06em]`;
+  const summaryMetricLabelClass = `${railMetricLabelClass} text-[0.68rem] tracking-[0.1em]`;
+  const summaryMetricSplitLabelClass = `${summaryMetricLabelClass} whitespace-nowrap`;
 
   return (
     <aside className={workspaceRailClass}>
@@ -157,23 +163,23 @@ export function CaseWorkspaceLeftRail({
         </div>
         {selectedSiteId && summary ? (
           <MetricGrid className={railMetricGridClass} columns={2}>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{summary.n_patients ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "patients", "환자")}</span>
+            <div className={summaryMetricCardClass}>
+              <strong className={summaryMetricValueClass}>{summary.n_patients ?? 0}</strong>
+              <span className={summaryMetricLabelClass}>{pick(locale, "patients", "환자")}</span>
             </div>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{summary.n_visits ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "visits", "방문")}</span>
+            <div className={summaryMetricCardClass}>
+              <strong className={summaryMetricValueClass}>{summary.n_visits ?? 0}</strong>
+              <span className={summaryMetricLabelClass}>{pick(locale, "visits", "방문")}</span>
             </div>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>{summary.n_images ?? 0}</strong>
-              <span className={railMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
+            <div className={summaryMetricCardClass}>
+              <strong className={summaryMetricValueClass}>{summary.n_images ?? 0}</strong>
+              <span className={summaryMetricLabelClass}>{pick(locale, "images", "이미지")}</span>
             </div>
-            <div className={railMetricCardClass}>
-              <strong className={railMetricValueClass}>
+            <div className={summaryMetricCardClass}>
+              <strong className={summaryMetricSplitValueClass}>
                 {(summary.n_fungal_visits ?? 0).toLocaleString()} / {(summary.n_bacterial_visits ?? 0).toLocaleString()}
               </strong>
-              <span className={railMetricLabelClass}>{pick(locale, "fungal / bacterial", "진균 / 세균")}</span>
+              <span className={summaryMetricSplitLabelClass}>{pick(locale, "fungal / bacterial", "진균 / 세균")}</span>
             </div>
           </MetricGrid>
         ) : null}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { controlPlaneSandboxEnabled } from "./config";
 import { createSessionToken, readSessionUserId, sessionCookieOptions } from "./session";
 import { authenticateNode, getControlPlaneUser } from "./store";
 import type { ControlPlaneNode, ControlPlaneUser } from "./types";
@@ -8,7 +9,14 @@ export function jsonError(message: string, status = 400) {
   return NextResponse.json({ detail: message }, { status });
 }
 
+function assertControlPlaneSandboxEnabled(): void {
+  if (!controlPlaneSandboxEnabled()) {
+    throw new Error("Legacy control-plane sandbox is disabled.");
+  }
+}
+
 export async function sessionResponse(userId: string, payload: Record<string, unknown>) {
+  assertControlPlaneSandboxEnabled();
   const token = await createSessionToken(userId);
   const response = NextResponse.json(
     {
@@ -23,6 +31,7 @@ export async function sessionResponse(userId: string, payload: Record<string, un
 }
 
 export async function requireControlPlaneUser(request: NextRequest): Promise<ControlPlaneUser> {
+  assertControlPlaneSandboxEnabled();
   const userId = await readSessionUserId(request);
   if (!userId) {
     throw new Error("Authentication required.");
@@ -38,6 +47,7 @@ export async function requireControlPlaneUser(request: NextRequest): Promise<Con
 }
 
 export async function requireControlPlaneNode(request: NextRequest): Promise<ControlPlaneNode> {
+  assertControlPlaneSandboxEnabled();
   const nodeId = request.headers.get("x-kera-node-id")?.trim() || "";
   const nodeToken = request.headers.get("x-kera-node-token")?.trim() || "";
   if (!nodeId || !nodeToken) {

@@ -1141,6 +1141,9 @@ def evaluate_saved_model(
     batch_size: int,
     decision_threshold: float,
     medium_crop_scale_factor: float | None = None,
+    crop_mode: str | None = None,
+    case_aggregation: str | None = None,
+    training_input_policy: str | None = None,
 ) -> dict[str, Any]:
     preprocess_metadata = model_manager.preprocess_metadata()
     train_records, val_records, test_records = split_records(records, split)
@@ -1152,10 +1155,20 @@ def evaluate_saved_model(
     model_reference = {
         "architecture": architecture,
         "model_path": str(model_path),
-        "crop_mode": "paired" if is_lesion_guided_fusion_architecture(architecture) else "automated",
-        "case_aggregation": "attention_mil" if is_attention_mil_architecture(architecture) else "mean",
+        "crop_mode": (
+            str(crop_mode).strip()
+            if crop_mode is not None
+            else ("paired" if is_lesion_guided_fusion_architecture(architecture) else "automated")
+        ),
+        "case_aggregation": (
+            str(case_aggregation).strip()
+            if case_aggregation is not None
+            else ("attention_mil" if is_attention_mil_architecture(architecture) else "mean")
+        ),
         "preprocess": preprocess_metadata,
     }
+    if training_input_policy is not None:
+        model_reference["training_input_policy"] = str(training_input_policy).strip()
     model = model_manager.load_model(model_reference, device)
 
     if is_attention_mil_architecture(architecture):

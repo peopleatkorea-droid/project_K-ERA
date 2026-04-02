@@ -1,5 +1,19 @@
 const defaultControlPlaneBasePath = "/control-plane/api";
 
+function parseBooleanEnv(value: string | undefined): boolean | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
@@ -12,12 +26,24 @@ export function controlPlaneBasePath(): string {
   return trimTrailingSlash(configured.startsWith("/") ? configured : `/${configured}`);
 }
 
+export function controlPlaneSandboxEnabled(): boolean {
+  const explicit = parseBooleanEnv(process.env.KERA_CONTROL_PLANE_SANDBOX);
+  if (explicit !== null) {
+    return explicit;
+  }
+  return process.env.NODE_ENV !== "production";
+}
+
 export function controlPlaneSessionSecret(): string {
-  return (
+  const secret =
     process.env.KERA_CONTROL_PLANE_SESSION_SECRET?.trim() ||
-    process.env.KERA_API_SECRET?.trim() ||
-    "replace-me-in-production-control-plane"
-  );
+    process.env.KERA_API_SECRET?.trim();
+  if (!secret) {
+    throw new Error(
+      "Session secret is not configured. Set KERA_CONTROL_PLANE_SESSION_SECRET or KERA_API_SECRET environment variable."
+    );
+  }
+  return secret;
 }
 
 export function controlPlaneDatabaseUrl(): string {

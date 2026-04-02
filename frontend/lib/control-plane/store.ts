@@ -274,12 +274,6 @@ export async function ensureControlPlaneIdentity(
     if (shouldPromoteToAdmin(email)) {
       nextRole = "admin";
     }
-  } else if (!options?.skipAutoAdminPromotion) {
-    const userCountRows = await sql`select count(*)::int as count from users`;
-    const currentCount = Number(rowValue<number>(userCountRows[0], "count") || 0);
-    if (currentCount === 0) {
-      nextRole = "admin";
-    }
   }
 
   await sql`

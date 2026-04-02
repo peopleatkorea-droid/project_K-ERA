@@ -253,6 +253,7 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Other Streptococcus species",
     "Enterococcus faecalis",
     "Gemella species",
+    "Granulicatella species",
     "Pseudomonas aeruginosa",
     "Moraxella",
     "Corynebacterium",
@@ -273,23 +274,26 @@ const CULTURE_SPECIES: Record<string, string[]> = {
     "Other",
   ],
   fungal: [
+    // Common molds first, then the remaining named molds, then yeasts, then catch-alls.
     "Fusarium",
     "Aspergillus",
-    "Candida",
-    "Curvularia",
-    "Alternaria",
-    "Colletotrichum",
     "Acremonium",
-    "Lasiodiplodia",
-    "Cladophialophora",
-    "Australiasca",
-    "Penicillium",
-    "Bipolaris",
-    "Scedosporium",
-    "Paecilomyces",
-    "Exserohilum",
-    "Cladosporium",
+    "Alternaria",
+    "Australiasca species",
     "Beauveria bassiana",
+    "Bipolaris",
+    "Cladophialophora",
+    "Cladosporium",
+    "Colletotrichum",
+    "Curvularia",
+    "Exserohilum",
+    "Lasiodiplodia",
+    "Paecilomyces",
+    "Penicillium",
+    "Scedosporium",
+    "Other Molds",
+    "Candida",
+    "Other Yeasts",
     "Other",
   ],
 };
@@ -4617,6 +4621,7 @@ export function CaseWorkspace({
           formatProbability={formatProbability}
           formatMetadataField={formatAiClinicMetadataFieldForLocale}
           token={token}
+          siteId={selectedSiteId}
         />
       </AiClinicPanel>
     ),

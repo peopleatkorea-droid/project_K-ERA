@@ -1,7 +1,11 @@
+import logging
+import threading
+import time
+from collections import defaultdict
 from typing import Any
 
 import requests
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from kera_research.api.control_plane_proxy import (
     call_remote_control_plane_method,
     call_remote_public_control_plane_method,
@@ -11,6 +15,31 @@ from kera_research.api.control_plane_proxy import (
 
 AUTO_APPROVAL_REVIEWER_ID = "system_auto_approve"
 AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request."
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Simple in-memory rate limiter for login endpoints
+# Keyed by client IP; tracks timestamps of recent attempts.
+# ---------------------------------------------------------------------------
+_login_rate: dict[str, list[float]] = defaultdict(list)
+_login_rate_lock = threading.Lock()
+_MAX_LOGIN_ATTEMPTS = 10
+_LOGIN_WINDOW_SECONDS = 300.0  # 5 minutes
+
+
+def _check_login_rate_limit(ip: str) -> None:
+    now = time.monotonic()
+    with _login_rate_lock:
+        window = _login_rate[ip]
+        _login_rate[ip] = [t for t in window if now - t < _LOGIN_WINDOW_SECONDS]
+        if len(_login_rate[ip]) >= _MAX_LOGIN_ATTEMPTS:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many login attempts. Please try again later.",
+                headers={"Retry-After": str(int(_LOGIN_WINDOW_SECONDS))},
+            )
+        _login_rate[ip].append(now)
 
 
 def build_auth_router(support: Any) -> APIRouter:
@@ -146,10 +175,12 @@ def build_auth_router(support: Any) -> APIRouter:
 
     @router.post("/api/auth/login")
     def login(
+        request: Request,
         payload: LoginRequest,
         cp=Depends(get_control_plane),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
+        _check_login_rate_limit(request.client.host if request.client else "unknown")
         if not local_login_enabled():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -177,29 +208,36 @@ def build_auth_router(support: Any) -> APIRouter:
             )
         return build_auth_response(cp, user)
 
-    @router.post("/api/auth/dev-login")
-    def dev_login(cp=Depends(get_control_plane)) -> dict[str, Any]:
-        if not local_dev_auth_enabled():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Local development admin login is disabled.",
+    if local_dev_auth_enabled():
+        logger.warning(
+            "KERA_CONTROL_PLANE_DEV_AUTH is enabled — /api/auth/dev-login is active. "
+            "This must never be set in production."
+        )
+
+        @router.post("/api/auth/dev-login")
+        def dev_login(request: Request, cp=Depends(get_control_plane)) -> dict[str, Any]:
+            client_ip = request.client.host if request.client else "unknown"
+            logger.warning(
+                "Dev login endpoint accessed from %s.",
+                client_ip,
             )
-        user = cp.get_user_by_username("admin")
-        if user is None:
-            user = cp.upsert_user(
-                {
-                    "user_id": "user_admin",
-                    "username": "admin",
-                    "password": "__google__",
-                    "role": "admin",
-                    "full_name": "Platform Administrator",
-                    "site_ids": [],
-                    "registry_consents": {},
-                }
-            )
-        elif user.get("role") != "admin":
-            user = cp.upsert_user({**user, "role": "admin"})
-        return build_auth_response(cp, user)
+            _check_login_rate_limit(client_ip)
+            user = cp.get_user_by_username("admin")
+            if user is None:
+                user = cp.upsert_user(
+                    {
+                        "user_id": "user_admin",
+                        "username": "admin",
+                        "password": "__google__",
+                        "role": "admin",
+                        "full_name": "Platform Administrator",
+                        "site_ids": [],
+                        "registry_consents": {},
+                    }
+                )
+            elif user.get("role") != "admin":
+                user = cp.upsert_user({**user, "role": "admin"})
+            return build_auth_response(cp, user)
 
     @router.post("/api/auth/google")
     def google_login(payload: GoogleLoginRequest, cp=Depends(get_control_plane)) -> dict[str, Any]:

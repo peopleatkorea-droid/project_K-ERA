@@ -480,6 +480,8 @@ class ResearchTrainingWorkflow:
             return "medsam_lesion_crop_only"
         if crop_mode == "paired":
             return "medsam_cornea_plus_lesion_paired_fusion"
+        if crop_mode == "raw":
+            return "raw_or_model_defined"
         return "medsam_cornea_crop_only"
 
     def _crop_mode_description(self, crop_mode: str) -> str:
@@ -487,6 +489,8 @@ class ResearchTrainingWorkflow:
             return "MedSAM lesion-centered crops"
         if crop_mode == "paired":
             return "paired cornea and lesion crops"
+        if crop_mode == "raw":
+            return "full-frame source images"
         return "MedSAM cornea crops"
 
     def run_initial_training(

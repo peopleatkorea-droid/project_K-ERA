@@ -12,6 +12,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -183,8 +184,11 @@ def build_case_images_router(support: Any) -> APIRouter:
         )
         return private_json_response(payload, max_age=1)
 
+    _VALID_IMAGE_VIEWS = frozenset({"white", "slit", "fluorescein"})
+
     @router.post("/api/sites/{site_id}/images")
     async def upload_image(
+        request: Request,
         site_id: str,
         patient_id: str = Form(...),
         visit_date: str = Form(...),
@@ -195,6 +199,20 @@ def build_case_images_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
+        # Reject oversized requests before reading the body into memory.
+        content_length_header = request.headers.get("content-length")
+        if content_length_header is not None:
+            try:
+                if int(content_length_header) > max_image_bytes:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 20 MB limit.")
+            except ValueError:
+                pass
+        normalized_view = view.strip().lower()
+        if normalized_view not in _VALID_IMAGE_VIEWS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid view. Allowed values: {', '.join(sorted(_VALID_IMAGE_VIEWS))}.",
+            )
         site_store = require_site_access(cp, user, site_id)
         content = await file.read()
         if len(content) > max_image_bytes:
@@ -203,7 +221,7 @@ def build_case_images_router(support: Any) -> APIRouter:
             saved_image = site_store.add_image(
                 patient_id=patient_id,
                 visit_date=visit_date,
-                view=view,
+                view=normalized_view,
                 is_representative=is_representative,
                 file_name=file.filename or "upload.bin",
                 content=content,

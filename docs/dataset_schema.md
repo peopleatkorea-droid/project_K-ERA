@@ -33,6 +33,7 @@ This schema is designed for a research workflow tool for infectious keratitis im
 - `Streptococcus pneumoniae`
 - `Pseudomonas aeruginosa`
 - `Gemella species`
+- `Granulicatella species`
 - `Moraxella`
 - `Nocardia`
 - `Other`

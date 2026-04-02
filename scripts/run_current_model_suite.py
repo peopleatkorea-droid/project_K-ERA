@@ -25,7 +25,6 @@ from scripts.run_dinov2_recovery_validation import (
 from scripts.run_dinov2_visit_retrieval_validation import (
     RetrievalSpec as VisitRetrievalSpec,
     run_experiment as run_visit_retrieval_experiment,
-    summarize_result as summarize_visit_retrieval_result,
 )
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.data_plane import SiteStore
@@ -375,6 +374,7 @@ def run_standard_component(
     experiment_dir.mkdir(parents=True, exist_ok=True)
     output_model_path = experiment_dir / f"{spec.name}.pth"
     records = workflow._prepare_records_for_model(site_store, manifest_records, crop_mode=spec.crop_mode)
+    training_input_policy = training_input_policy_for_crop_mode(workflow, spec.crop_mode, spec.architecture)
     result = workflow.model_manager.initial_train(
         records=records,
         architecture=spec.architecture,
@@ -391,7 +391,7 @@ def run_standard_component(
         saved_split=shared_split,
         crop_mode=spec.crop_mode,
         case_aggregation=spec.case_aggregation,
-        training_input_policy=training_input_policy_for_crop_mode(workflow, spec.crop_mode, spec.architecture),
+        training_input_policy=training_input_policy,
         progress_callback=None,
         fine_tuning_mode=spec.fine_tuning_mode,
         backbone_learning_rate=spec.backbone_learning_rate,
@@ -409,6 +409,9 @@ def run_standard_component(
         device=device,
         batch_size=spec.batch_size,
         decision_threshold=float(result["decision_threshold"]),
+        crop_mode=spec.crop_mode,
+        case_aggregation=spec.case_aggregation,
+        training_input_policy=training_input_policy,
     )
     payload = {
         "suite_component": {
@@ -565,7 +568,8 @@ def summarize_training_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def summarize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
     result = payload["result"]
-    row = summarize_visit_retrieval_result(result)
+    val_metrics = result["val_metrics"]
+    test_metrics = result["test_metrics"]
     component = payload["suite_component"]
     return {
         "order": component["order"],
@@ -579,17 +583,17 @@ def summarize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "train_acc": None,
         "train_bal_acc": None,
         "train_auroc": None,
-        "val_acc": float(row["val_acc"]),
-        "val_bal_acc": float(row["val_bal_acc"]),
-        "val_auroc": float(row["val_auroc"]) if row["val_auroc"] is not None else None,
-        "test_acc": float(row["test_acc"]),
-        "test_bal_acc": float(row["test_bal_acc"]),
-        "test_auroc": float(row["test_auroc"]) if row["test_auroc"] is not None else None,
-        "test_sensitivity": float(row["test_sensitivity"]),
-        "test_specificity": float(row["test_specificity"]),
+        "val_acc": float(val_metrics["accuracy"]),
+        "val_bal_acc": float(val_metrics["balanced_accuracy"]),
+        "val_auroc": float(val_metrics["AUROC"]) if val_metrics.get("AUROC") is not None else None,
+        "test_acc": float(test_metrics["accuracy"]),
+        "test_bal_acc": float(test_metrics["balanced_accuracy"]),
+        "test_auroc": float(test_metrics["AUROC"]) if test_metrics.get("AUROC") is not None else None,
+        "test_sensitivity": float(test_metrics["sensitivity"]),
+        "test_specificity": float(test_metrics["specificity"]),
         "best_val_acc": None,
         "best_val_auroc": None,
-        "decision_threshold": float(row["decision_threshold"]),
+        "decision_threshold": float(result["decision_threshold"]),
         "output_model_path": "",
     }
 

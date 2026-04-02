@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -13,6 +13,7 @@ import type {
   CaseValidationResponse,
 } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
+import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "../../lib/desktop-local-api";
 
 type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
   preview_url: string | null;
@@ -20,6 +21,21 @@ type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
 
 type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
   similar_cases: AiClinicSimilarCasePreview[];
+};
+
+type ClusterNeighbor = {
+  patient_id: string;
+  visit_date: string;
+  category: string;
+  species: string;
+  age: string;
+  sex: string;
+  distance: number;
+};
+
+type ClusterPositionResult = {
+  html: string;
+  neighbors: ClusterNeighbor[];
 };
 
 type Props = {
@@ -39,6 +55,7 @@ type Props = {
   formatProbability: (value: number | null | undefined, emptyLabel?: string) => string;
   formatMetadataField: (field: string) => string;
   token: string;
+  siteId?: string | null;
 };
 
 type FieldItem = {
@@ -152,11 +169,49 @@ function AiClinicResultInner({
   formatProbability,
   formatMetadataField,
   token,
+  siteId = null,
 }: Props) {
   const readySummary = useMemo(
     () => buildReadySummary(validationResult, modelCompareResult),
     [validationResult, modelCompareResult],
   );
+
+  const [clusterResult, setClusterResult] = useState<ClusterPositionResult | null>(null);
+  const [clusterLoading, setClusterLoading] = useState(false);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const clusterLoadedForRef = useRef<string | null>(null);
+
+  const loadClusterPosition = useCallback(async (patientId: string, visitDate: string) => {
+    if (!siteId || clusterLoading) return;
+    const key = `${patientId}|${visitDate}`;
+    if (clusterLoadedForRef.current === key) return;
+    setClusterLoading(true);
+    setClusterError(null);
+    try {
+      const params = new URLSearchParams({ patient_id: patientId, visit_date: visitDate });
+      const path = `/api/sites/${siteId}/cluster-position?${params.toString()}`;
+      let data: ClusterPositionResult;
+      if (canUseDesktopLocalApiTransport()) {
+        data = await requestDesktopLocalApiJson<ClusterPositionResult>(path, token, { method: "POST" });
+      } else {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({})) as { detail?: string };
+          throw new Error(err.detail ?? `Error: ${res.status}`);
+        }
+        data = await res.json() as ClusterPositionResult;
+      }
+      clusterLoadedForRef.current = key;
+      setClusterResult(data);
+    } catch (err: unknown) {
+      setClusterError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClusterLoading(false);
+    }
+  }, [siteId, token, clusterLoading]);
 
   if (!result) {
     return (
@@ -310,6 +365,94 @@ function AiClinicResultInner({
           />
         ) : null}
       </Section>
+
+      {siteId ? (
+        <Section
+          title={pick(locale, "Embedding cluster position", "임베딩 클러스터 위치")}
+          subtitle={pick(
+            locale,
+            "3D UMAP position of this visit within the site embedding space. Nearest neighbors exclude the same patient.",
+            "전체 데이터셋 내 이 방문의 3D UMAP 위치입니다. 동일 환자는 제외한 가장 가까운 방문을 표시합니다.",
+          )}
+        >
+          {!clusterResult && !clusterError ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={clusterLoading}
+                onClick={() => void loadClusterPosition(queryCase.patient_id, queryCase.visit_date)}
+              >
+                {clusterLoading
+                  ? pick(locale, "Loading cluster position... (first time may take ~10s)", "클러스터 위치 계산 중... (첫 번째는 ~10초 소요)")
+                  : pick(locale, "Show cluster position", "클러스터에서 위치 보기")}
+              </Button>
+            </div>
+          ) : clusterError ? (
+            <div className="grid gap-3">
+              <div className="rounded-[18px] border border-danger/25 bg-danger/6 px-4 py-3 text-sm text-danger">
+                {clusterError}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => { setClusterError(null); clusterLoadedForRef.current = null; }}
+                >
+                  {pick(locale, "Retry", "다시 시도")}
+                </Button>
+              </div>
+            </div>
+          ) : clusterResult ? (
+            <div className="grid gap-4">
+              <Card variant="nested" className="overflow-hidden p-0">
+                <iframe
+                  srcDoc={clusterResult.html}
+                  title={pick(locale, "Embedding cluster position", "임베딩 클러스터 위치")}
+                  className="h-[540px] w-full border-0"
+                  sandbox="allow-scripts"
+                />
+              </Card>
+              {clusterResult.neighbors.length > 0 ? (
+                <div className="grid gap-3">
+                  <span className="text-sm font-semibold text-ink">
+                    {pick(locale, "Nearest neighbors (no same-patient duplicates)", "최근접 방문 (동일 환자 제외)")}
+                  </span>
+                  {clusterResult.neighbors.map((n, i) => (
+                    <Card key={`${n.patient_id}-${n.visit_date}`} as="article" variant="panel" className="p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-sm font-semibold text-ink">
+                          {pick(locale, `Neighbor ${i + 1}`, `이웃 ${i + 1}`)}
+                        </span>
+                        <span
+                          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+                          style={{
+                            background: n.category.includes("bact") ? "#dbeafe" : n.category.includes("fung") ? "#ffedd5" : "#f1f5f9",
+                            color: n.category.includes("bact") ? "#1d4ed8" : n.category.includes("fung") ? "#c2410c" : "#475569",
+                          }}
+                        >
+                          {translateOption(locale, "cultureCategory", n.category)}
+                        </span>
+                      </div>
+                      <FieldGrid
+                        items={[
+                          { label: pick(locale, "Species", "균주"), value: n.species || notAvailableLabel },
+                          {
+                            label: pick(locale, "Sex / Age", "성별 / 나이"),
+                            value: `${translateOption(locale, "sex", n.sex || "unknown")} / ${n.age || notAvailableLabel}`,
+                          },
+                          { label: pick(locale, "Visit", "방문일"), value: displayVisitReference(n.visit_date) },
+                          { label: pick(locale, "Cosine distance", "코사인 거리"), value: n.distance.toFixed(4) },
+                        ]}
+                      />
+                    </Card>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </Section>
+      ) : null}
 
       <Section
         title={pick(locale, "Similar patients", "유사 환자")}

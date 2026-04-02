@@ -26,8 +26,133 @@ logger = logging.getLogger(__name__)
 TIMING_LOGS_ENABLED = str(os.getenv("KERA_BOOTSTRAP_TIMING_LOGS") or "").strip() == "1"
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_CLUSTER_VIZ_HTML = _REPO_ROOT / "artifacts" / "dinov2_cluster_3d" / "cluster_3d.html"
+_CLUSTER_VIZ_DIR = _REPO_ROOT / "artifacts" / "dinov2_cluster_3d"
+_CLUSTER_VIZ_HTML = _CLUSTER_VIZ_DIR / "cluster_3d.html"
+_CLUSTER_VIZ_2D_PNG = _CLUSTER_VIZ_DIR / "cluster_2d.png"
+_CLUSTER_VIZ_2D_SVG = _CLUSTER_VIZ_DIR / "cluster_2d.svg"
+_CLUSTER_VIZ_2D_ADVANCED_PNG = _CLUSTER_VIZ_DIR / "cluster_2d_advanced.png"
+_CLUSTER_REDUCER_3D_PKL = _CLUSTER_VIZ_DIR / "umap_reducer_3d.pkl"
+_CLUSTER_EMBEDDINGS_NPY = _CLUSTER_VIZ_DIR / "cluster_embeddings.npy"
+_CLUSTER_METADATA_JSON = _CLUSTER_VIZ_DIR / "cluster_metadata.json"
+_DEFAULT_SSL_CHECKPOINT = (
+    _REPO_ROOT / "artifacts" / "weekend_plans"
+    / "transformer_weekend_plan_20260326_172929"
+    / "ssl_runs" / "dinov2_ssl_weak_ocular" / "ssl_encoder_latest.pth"
+)
 _VISUALIZE_SCRIPT = _REPO_ROOT / "scripts" / "visualize_dinov2_clusters_3d.py"
+
+
+def _build_cluster_position_html(
+    cluster_points: list[dict],
+    query_coords: list[float],
+    query_patient_id: str,
+    query_visit_date: str,
+    neighbor_patient_ids: list[str],
+) -> str:
+    """Generate a compact Plotly 3D HTML with the query visit highlighted and top neighbors marked."""
+    import plotly.graph_objects as go
+    import numpy as np
+    from collections import defaultdict
+
+    COLORS: dict[str, str] = {
+        "bacterial": "#2563eb", "bacteria": "#2563eb",
+        "fungal": "#f97316", "fungus": "#f97316",
+        "acanthamoeba": "#16a34a", "mixed": "#7c3aed", "unknown": "#94a3b8",
+    }
+    SYMBOLS: dict[str, str] = {
+        "bacterial": "circle", "bacteria": "circle",
+        "fungal": "diamond", "fungus": "diamond",
+        "acanthamoeba": "square", "mixed": "cross", "unknown": "circle-open",
+    }
+
+    def _c(cat: str) -> str:
+        return COLORS.get(cat, COLORS["unknown"])
+
+    def _s(cat: str) -> str:
+        return SYMBOLS.get(cat, SYMBOLS["unknown"])
+
+    neighbor_set = set(neighbor_patient_ids)
+    cat_groups: dict[str, list[dict]] = defaultdict(list)
+    neighbor_pts: list[dict] = []
+    for pt in cluster_points:
+        if pt["patient_id"] in neighbor_set:
+            neighbor_pts.append(pt)
+        else:
+            cat_groups[pt["culture_category"]].append(pt)
+
+    traces: list[Any] = []
+
+    for cat in sorted(cat_groups):
+        pts = cat_groups[cat]
+        hover = [
+            f"<b>{p['patient_id']}</b><br>"
+            f"{p['culture_category'].capitalize()} / {p['culture_species'] or '—'}<br>"
+            f"Visit: {p['visit_date']}<br>"
+            f"Age/Sex: {p['age']} / {p['sex']}"
+            for p in pts
+        ]
+        traces.append(go.Scatter3d(
+            x=[p["coords_3d"][0] for p in pts],
+            y=[p["coords_3d"][1] for p in pts],
+            z=[p["coords_3d"][2] for p in pts],
+            mode="markers",
+            name=cat.capitalize(),
+            marker=dict(size=5, color=_c(cat), symbol=_s(cat),
+                        opacity=0.35, line=dict(width=0)),
+            text=hover,
+            hovertemplate="%{text}<extra></extra>",
+        ))
+
+    for rank, pt in enumerate(neighbor_pts[:3], start=1):
+        c3 = pt["coords_3d"]
+        cat = pt["culture_category"]
+        hover_txt = (
+            f"<b>Neighbor {rank}: {pt['patient_id']}</b><br>"
+            f"{cat.capitalize()} / {pt['culture_species'] or '—'}<br>"
+            f"Visit: {pt['visit_date']}<br>"
+            f"Age/Sex: {pt['age']} / {pt['sex']}"
+        )
+        traces.append(go.Scatter3d(
+            x=[c3[0]], y=[c3[1]], z=[c3[2]],
+            mode="markers",
+            name=f"Neighbor {rank}",
+            marker=dict(size=11, color=_c(cat), symbol=_s(cat),
+                        opacity=1.0, line=dict(width=2, color="white")),
+            text=[hover_txt],
+            hovertemplate="%{text}<extra></extra>",
+        ))
+
+    traces.append(go.Scatter3d(
+        x=[query_coords[0]], y=[query_coords[1]], z=[query_coords[2]],
+        mode="markers",
+        name=f"Current: {query_patient_id}",
+        marker=dict(size=16, color="#dc2626", symbol="diamond",
+                    opacity=1.0, line=dict(width=2, color="white")),
+        text=[f"<b>Current visit</b><br>{query_patient_id}<br>{query_visit_date}"],
+        hovertemplate="%{text}<extra></extra>",
+    ))
+
+    axis_style = dict(backgroundcolor="#f1f5f9", gridcolor="#cbd5e1", showbackground=True)
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        title=dict(
+            text=f"Cluster position — {query_patient_id} / {query_visit_date}",
+            x=0.5, xanchor="center", font=dict(size=13),
+        ),
+        scene=dict(
+            xaxis=dict(title="UMAP-1", **axis_style),
+            yaxis=dict(title="UMAP-2", **axis_style),
+            zaxis=dict(title="UMAP-3", **axis_style),
+            bgcolor="#f8fafc",
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+        ),
+        legend=dict(itemsizing="constant", bgcolor="white",
+                    bordercolor="#cbd5e1", borderwidth=1),
+        paper_bgcolor="white",
+        margin=dict(l=0, r=0, t=45, b=0),
+        height=520,
+    )
+    return fig.to_html(full_html=True, include_plotlyjs=True)
 
 
 def build_site_overview_router(support: Any) -> APIRouter:
@@ -264,10 +389,21 @@ def build_site_overview_router(support: Any) -> APIRouter:
         require_admin_workspace_permission(user)
         assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
         if not _CLUSTER_VIZ_HTML.exists():
-            return {"exists": False, "generated_at": None, "size_bytes": 0}
+            return {"exists": False, "generated_at": None, "size_bytes": 0, "has_2d": False}
         stat = _CLUSTER_VIZ_HTML.stat()
         generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-        return {"exists": True, "generated_at": generated_at, "size_bytes": stat.st_size}
+        return {
+            "exists": True,
+            "generated_at": generated_at,
+            "size_bytes": stat.st_size,
+            "has_2d": _CLUSTER_VIZ_2D_PNG.exists(),
+            "has_2d_advanced": _CLUSTER_VIZ_2D_ADVANCED_PNG.exists(),
+            "has_cluster_artifacts": (
+                _CLUSTER_REDUCER_3D_PKL.exists()
+                and _CLUSTER_EMBEDDINGS_NPY.exists()
+                and _CLUSTER_METADATA_JSON.exists()
+            ),
+        }
 
     @router.get("/api/sites/{site_id}/explore/cluster-visualization")
     def explore_cluster_html(
@@ -293,11 +429,11 @@ def build_site_overview_router(support: Any) -> APIRouter:
         require_admin_workspace_permission(user)
         assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
         if backbone not in ("official", "ssl"):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid backbone: {backbone}")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid backbone. Allowed: official, ssl.")
         if crop_mode not in ("full", "cornea_roi", "lesion_crop"):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid crop_mode: {crop_mode}")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid crop_mode. Allowed: full, cornea_roi, lesion_crop.")
         if view_filter not in ("all", "white", "slit", "fluorescein"):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid view_filter: {view_filter}")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid view_filter. Allowed: all, white, slit, fluorescein.")
         if not _VISUALIZE_SCRIPT.exists():
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Visualization script not found.")
         cmd = [
@@ -318,12 +454,206 @@ def build_site_overview_router(support: Any) -> APIRouter:
             logger.error("cluster viz regeneration failed: %s", result.stderr[-2000:])
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Regeneration failed: {result.stderr[-500:]}",
+                detail="Visualization regeneration failed. Check server logs for details.",
             )
         if not _CLUSTER_VIZ_HTML.exists():
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Script ran but output file not found.")
         stat = _CLUSTER_VIZ_HTML.stat()
         generated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-        return {"ok": True, "generated_at": generated_at, "size_bytes": stat.st_size}
+        return {
+            "ok": True,
+            "generated_at": generated_at,
+            "size_bytes": stat.st_size,
+            "has_2d": _CLUSTER_VIZ_2D_PNG.exists(),
+            "has_2d_advanced": _CLUSTER_VIZ_2D_ADVANCED_PNG.exists(),
+        }
+
+    @router.get("/api/sites/{site_id}/explore/cluster-visualization/2d")
+    def explore_cluster_2d(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if not _CLUSTER_VIZ_2D_PNG.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="2D cluster visualization has not been generated yet.",
+            )
+        import base64
+        png_b64 = base64.b64encode(_CLUSTER_VIZ_2D_PNG.read_bytes()).decode("ascii")
+        return {"png_base64": png_b64}
+
+    @router.get("/api/sites/{site_id}/explore/cluster-visualization/2d/advanced")
+    def explore_cluster_2d_advanced(
+        site_id: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if not _CLUSTER_VIZ_2D_ADVANCED_PNG.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Advanced 2D cluster visualization has not been generated yet.",
+            )
+        import base64
+        png_b64 = base64.b64encode(_CLUSTER_VIZ_2D_ADVANCED_PNG.read_bytes()).decode("ascii")
+        return {"png_base64": png_b64}
+
+    @router.post("/api/sites/{site_id}/cluster-position")
+    def cluster_position(
+        site_id: str,
+        patient_id: str,
+        visit_date: str,
+        cp=Depends(get_control_plane),
+        user: dict[str, Any] = Depends(get_approved_user),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+
+        if not (
+            _CLUSTER_REDUCER_3D_PKL.exists()
+            and _CLUSTER_EMBEDDINGS_NPY.exists()
+            and _CLUSTER_METADATA_JSON.exists()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cluster artifacts not found. Generate the cluster visualization first.",
+            )
+
+        import json
+        import pickle
+        import numpy as np
+
+        cluster_meta_doc: dict[str, Any] = json.loads(
+            _CLUSTER_METADATA_JSON.read_text(encoding="utf-8")
+        )
+        cluster_points: list[dict[str, Any]] = cluster_meta_doc["points"]
+        backbone: str = cluster_meta_doc.get("backbone", "official")
+        crop_mode: str = cluster_meta_doc.get("crop_mode", "full")
+        view_filter: str = cluster_meta_doc.get("view_filter", "all")
+
+        with open(_CLUSTER_REDUCER_3D_PKL, "rb") as _f:
+            umap_reducer = pickle.load(_f)
+        cluster_embeddings: np.ndarray = np.load(str(_CLUSTER_EMBEDDINGS_NPY))
+
+        try:
+            manifest_records: list[dict[str, Any]] = site_store.generate_manifest().to_dict("records")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Manifest load failed: {exc}",
+            )
+
+        visit_records = [
+            r for r in manifest_records
+            if str(r.get("patient_id", "")) == patient_id
+            and str(r.get("visit_date", "")) == visit_date
+            and str(r.get("image_path") or "").strip()
+        ]
+        if not visit_records:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No images found for patient {patient_id} visit {visit_date}.",
+            )
+
+        if crop_mode == "cornea_roi":
+            resolved = []
+            for r in visit_records:
+                stem = Path(str(r.get("image_path") or "")).stem
+                crop_path = site_store.roi_crop_dir / f"{stem}_crop.png"
+                if crop_path.exists():
+                    resolved.append({**r, "image_path": str(crop_path)})
+            if not resolved:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="No cached cornea ROI crops found for this visit.",
+                )
+            visit_records = resolved
+        elif crop_mode == "lesion_crop":
+            resolved = []
+            for r in visit_records:
+                stem = Path(str(r.get("image_path") or "")).stem
+                crop_path = site_store.lesion_crop_dir / f"{stem}_crop.png"
+                if crop_path.exists():
+                    resolved.append({**r, "image_path": str(crop_path)})
+            if not resolved:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="No cached lesion crops found for this visit.",
+                )
+            visit_records = resolved
+
+        if view_filter != "all":
+            filtered = [
+                r for r in visit_records
+                if str(r.get("view") or "").lower() == view_filter.lower()
+            ]
+            if filtered:
+                visit_records = filtered
+
+        ssl_ckpt = (
+            str(_DEFAULT_SSL_CHECKPOINT)
+            if backbone == "ssl" and _DEFAULT_SSL_CHECKPOINT.exists()
+            else None
+        )
+        from kera_research.services.retrieval import Dinov2ImageRetriever
+        retriever = Dinov2ImageRetriever(ssl_checkpoint_path=ssl_ckpt)
+        cache_dir = _CLUSTER_VIZ_DIR / "_embedding_cache" / backbone / crop_mode
+        image_paths = [str(r["image_path"]) for r in visit_records]
+
+        try:
+            image_embs: np.ndarray = retriever.encode_images(
+                image_paths, "auto", persistence_dir=cache_dir
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Image encoding failed: {exc}",
+            )
+
+        query_vec = np.mean(image_embs, axis=0).astype(np.float32)
+        query_vec /= max(float(np.linalg.norm(query_vec)), 1e-12)
+
+        try:
+            query_coords_3d: np.ndarray = umap_reducer.transform(query_vec.reshape(1, -1))[0]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"UMAP transform failed: {exc}",
+            )
+
+        sims: np.ndarray = cluster_embeddings @ query_vec
+        sorted_indices = np.argsort(-sims)
+        neighbors: list[dict[str, Any]] = []
+        seen_patients: set[str] = {patient_id}
+        for idx in sorted_indices.tolist():
+            pt = cluster_points[idx]
+            pid = pt["patient_id"]
+            if pid in seen_patients:
+                continue
+            seen_patients.add(pid)
+            neighbors.append({
+                "patient_id": pid,
+                "visit_date": pt["visit_date"],
+                "category": pt["culture_category"],
+                "species": pt["culture_species"],
+                "age": pt["age"],
+                "sex": pt["sex"],
+                "distance": round(float(1.0 - float(sims[idx])), 4),
+            })
+            if len(neighbors) >= 3:
+                break
+
+        html = _build_cluster_position_html(
+            cluster_points=cluster_points,
+            query_coords=query_coords_3d.tolist(),
+            query_patient_id=patient_id,
+            query_visit_date=visit_date,
+            neighbor_patient_ids=[n["patient_id"] for n in neighbors],
+        )
+        return {"html": html, "neighbors": neighbors}
 
     return router

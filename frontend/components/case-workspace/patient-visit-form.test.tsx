@@ -195,4 +195,52 @@ describe("PatientVisitForm", () => {
     expect(traumaButton.className).not.toContain("ring-2 ring-amber-200/85");
     expect(traumaButton.className).not.toContain("shadow-[inset_0_1px_0_rgba(255,255,255,0.62),0_12px_24px_rgba(245,158,11,0.22)]");
   });
+
+  it("preserves the intended fungal species order in the dropdown", () => {
+    const fungalSpeciesOrder = [
+      "Fusarium",
+      "Aspergillus",
+      "Acremonium",
+      "Alternaria",
+      "Australiasca species",
+      "Beauveria bassiana",
+      "Bipolaris",
+      "Cladophialophora",
+      "Cladosporium",
+      "Colletotrichum",
+      "Curvularia",
+      "Exserohilum",
+      "Lasiodiplodia",
+      "Paecilomyces",
+      "Penicillium",
+      "Scedosporium",
+      "Other Molds",
+      "Candida",
+      "Other Yeasts",
+    ];
+
+    render(
+      <PatientVisitForm
+        {...buildProps({
+          draft: {
+            ...buildProps().draft,
+            culture_category: "fungal",
+            culture_species: "Fusarium",
+          },
+          cultureSpecies: {
+            bacterial: ["Staphylococcus aureus", "Pseudomonas aeruginosa"],
+            fungal: [...fungalSpeciesOrder, "Other"],
+          },
+          speciesOptions: [...fungalSpeciesOrder, "Other"],
+        })}
+      />
+    );
+
+    const optionLabels = screen
+      .getAllByRole("option")
+      .map((option) => option.textContent?.trim() ?? "")
+      .filter((label) => fungalSpeciesOrder.includes(label));
+
+    expect(optionLabels).toEqual(fungalSpeciesOrder);
+  });
 });

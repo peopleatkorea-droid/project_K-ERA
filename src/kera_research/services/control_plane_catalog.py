@@ -6,7 +6,7 @@ from typing import Any, Callable
 from sqlalchemy import and_, case, func, or_, select, update
 
 from kera_research.db import CONTROL_PLANE_ENGINE, institution_directory, organism_catalog, organism_requests
-from kera_research.domain import make_id, utc_now
+from kera_research.domain import make_id, order_culture_species, utc_now
 from kera_research.services.institution_directory import HiraInstitutionDirectoryClient
 
 
@@ -212,11 +212,14 @@ class ControlPlaneCatalogFacade:
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         if category:
-            return [row["species_name"] for row in rows]
+            return order_culture_species(category, [row["species_name"] for row in rows])
         catalog: dict[str, list[str]] = {}
         for row in rows:
             catalog.setdefault(row["culture_category"], []).append(row["species_name"])
-        return catalog
+        return {
+            culture_category: order_culture_species(culture_category, species_names)
+            for culture_category, species_names in catalog.items()
+        }
 
     def request_new_organism(
         self,

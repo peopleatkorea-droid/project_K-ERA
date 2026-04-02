@@ -80,7 +80,7 @@ class ResearchWorkflowService:
 
     def _normalize_crop_mode(self, crop_mode: str | None) -> str:
         normalized = str(crop_mode or "automated").strip().lower()
-        if normalized in {"automated", "manual", "both", "paired"}:
+        if normalized in {"automated", "manual", "both", "paired", "raw"}:
             return normalized
         return "automated"
 
