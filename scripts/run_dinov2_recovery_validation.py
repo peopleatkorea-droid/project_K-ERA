@@ -1074,6 +1074,29 @@ def train_custom_experiment(
     n_train_cases = len(train_loader.dataset) if bag_level else None
     n_val_cases = len(val_loader.dataset) if bag_level else None
     n_test_cases = len(test_loader.dataset) if bag_level else None
+    if bag_level:
+        train_sample_rows = model_manager._visit_prediction_rows_from_records(train_loader.dataset.visit_records)
+        val_sample_rows = model_manager._visit_prediction_rows_from_records(val_loader.dataset.visit_records)
+        test_sample_rows = model_manager._visit_prediction_rows_from_records(test_loader.dataset.visit_records)
+    else:
+        train_sample_rows = model_manager._image_prediction_rows_from_records(train_records)
+        val_sample_rows = model_manager._image_prediction_rows_from_records(val_records)
+        test_sample_rows = model_manager._image_prediction_rows_from_records(test_records)
+    train_predictions = model_manager._build_prediction_records(
+        train_sample_rows,
+        [float(value) for value in train_outputs["positive_probabilities"]],
+        threshold=decision_threshold,
+    )
+    val_predictions = model_manager._build_prediction_records(
+        val_sample_rows,
+        [float(value) for value in val_outputs["positive_probabilities"]],
+        threshold=decision_threshold,
+    )
+    test_predictions = model_manager._build_prediction_records(
+        test_sample_rows,
+        [float(value) for value in test_outputs["positive_probabilities"]],
+        threshold=decision_threshold,
+    )
 
     return {
         "training_id": f"custom_{spec.name}",
@@ -1112,6 +1135,9 @@ def train_custom_experiment(
         "train_metrics": train_metrics,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
+        "train_predictions": train_predictions,
+        "val_predictions": val_predictions,
+        "test_predictions": test_predictions,
         "case_aggregation": "attention_mil" if bag_level else spec.case_aggregation,
         "bag_level": bag_level,
         "evaluation_unit": "visit" if bag_level else "image",

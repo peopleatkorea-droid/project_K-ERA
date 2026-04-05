@@ -80,8 +80,11 @@ TRAINING_PRETRAINING_SOURCES = ("scratch", "imagenet", "ssl")
 TRAINING_FINE_TUNING_MODES = ("full", "linear_probe", "partial")
 SSL_BACKBONE_ARCHITECTURE_BY_MODEL = {
     "densenet121": "densenet121",
+    "densenet121_mil": "densenet121",
     "convnext_tiny": "convnext_tiny",
+    "convnext_tiny_mil": "convnext_tiny",
     "efficientnet_v2_s": "efficientnet_v2_s",
+    "efficientnet_v2_s_mil": "efficientnet_v2_s",
     "vit": "vit",
     "swin": "swin",
     "dinov2": "dinov2",
@@ -93,10 +96,13 @@ IMAGENET_PRETRAINED_ARCHITECTURES = {
     "vit",
     "swin",
     "convnext_tiny",
+    "convnext_tiny_mil",
     "efficientnet_v2_s",
+    "efficientnet_v2_s_mil",
     "dinov2",
     "dinov2_mil",
     "swin_mil",
+    "densenet121_mil",
     "dual_input_concat",
     *DENSENET_VARIANTS,
     *LESION_GUIDED_FUSION_ARCHITECTURES,
@@ -452,6 +458,29 @@ if nn is not None:
             features = features.permute(0, 3, 1, 2).contiguous()
         features = backbone.avgpool(features)
         return torch.flatten(features, 1)
+
+
+    def _encode_efficientnet_backbone(backbone: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+        features = backbone.features(inputs)
+        features = backbone.avgpool(features)
+        return torch.flatten(features, 1)
+
+
+    def _encode_convnext_backbone(backbone: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+        features = backbone.features(inputs)
+        features = backbone.avgpool(features)
+        features = backbone.classifier[0](features)
+        features = backbone.classifier[1](features)
+        return features
+
+
+    def _encode_densenet_backbone(backbone: nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+        features = backbone.features(inputs)
+        features = F.relu(features, inplace=False)
+        features = F.adaptive_avg_pool2d(features, (1, 1))
+        return torch.flatten(features, 1)
+
+
     class DenseNetKeratitis(nn.Module):
         """Wrapper for torchvision DenseNet variants (121/169/201).
 
@@ -744,6 +773,212 @@ if nn is not None:
                 return logits, attention
             return logits
 
+
+    class EfficientNetV2AttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+        ) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError(
+                    "torchvision is required for EfficientNetV2-S Attention MIL. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
+
+            if pretrained:
+                from torchvision.models import EfficientNet_V2_S_Weights
+
+                backbone = _torchvision_models.efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+            else:
+                backbone = _torchvision_models.efficientnet_v2_s(weights=None)
+
+            self.backbone = backbone
+            self.hidden_size = int(backbone.classifier[-1].in_features)
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def encode_instances(self, inputs: torch.Tensor) -> torch.Tensor:
+            if inputs.ndim == 4:
+                batch_size = inputs.shape[0]
+                features = _encode_efficientnet_backbone(self.backbone, inputs)
+                return features.view(batch_size, 1, -1)
+            if inputs.ndim != 5:
+                raise ValueError(
+                    f"EfficientNetV2AttentionMIL expects a 4D or 5D tensor, got shape {tuple(inputs.shape)}."
+                )
+            batch_size, bag_size, channels, height, width = inputs.shape
+            flattened = inputs.view(batch_size * bag_size, channels, height, width)
+            features = _encode_efficientnet_backbone(self.backbone, flattened)
+            return features.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
+
+    class ConvNeXtTinyAttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+        ) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError(
+                    "torchvision is required for ConvNeXt Attention MIL. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
+
+            if pretrained:
+                from torchvision.models import ConvNeXt_Tiny_Weights
+
+                backbone = _torchvision_models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
+            else:
+                backbone = _torchvision_models.convnext_tiny(weights=None)
+
+            self.backbone = backbone
+            self.hidden_size = int(backbone.classifier[-1].in_features)
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def encode_instances(self, inputs: torch.Tensor) -> torch.Tensor:
+            if inputs.ndim == 4:
+                batch_size = inputs.shape[0]
+                features = _encode_convnext_backbone(self.backbone, inputs)
+                return features.view(batch_size, 1, -1)
+            if inputs.ndim != 5:
+                raise ValueError(f"ConvNeXtTinyAttentionMIL expects a 4D or 5D tensor, got shape {tuple(inputs.shape)}.")
+            batch_size, bag_size, channels, height, width = inputs.shape
+            flattened = inputs.view(batch_size * bag_size, channels, height, width)
+            features = _encode_convnext_backbone(self.backbone, flattened)
+            return features.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
+
+    class DenseNetAttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+            variant: str = "densenet121",
+        ) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError(
+                    "torchvision is required for DenseNet Attention MIL. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
+            if variant not in DENSENET_VARIANTS:
+                raise ValueError(f"Unsupported DenseNet Attention MIL variant: {variant}")
+
+            if pretrained:
+                from torchvision.models import DenseNet121_Weights
+
+                weight_map = {
+                    "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
+                }
+                backbone = getattr(_torchvision_models, variant)(weights=weight_map[variant])
+            else:
+                backbone = getattr(_torchvision_models, variant)(weights=None)
+
+            self.backbone = backbone
+            self.hidden_size = int(backbone.classifier.in_features)
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+
+        def encode_instances(self, inputs: torch.Tensor) -> torch.Tensor:
+            if inputs.ndim == 4:
+                batch_size = inputs.shape[0]
+                features = _encode_densenet_backbone(self.backbone, inputs)
+                return features.view(batch_size, 1, -1)
+            if inputs.ndim != 5:
+                raise ValueError(f"DenseNetAttentionMIL expects a 4D or 5D tensor, got shape {tuple(inputs.shape)}.")
+            batch_size, bag_size, channels, height, width = inputs.shape
+            flattened = inputs.view(batch_size * bag_size, channels, height, width)
+            features = _encode_densenet_backbone(self.backbone, flattened)
+            return features.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
 else:  # pragma: no cover - dependency guard
     class TinyKeratitisCNN:  # type: ignore[override]
         pass
@@ -767,6 +1002,15 @@ else:  # pragma: no cover - dependency guard
         pass
 
     class SwinAttentionMIL:  # type: ignore[override]
+        pass
+
+    class EfficientNetV2AttentionMIL:  # type: ignore[override]
+        pass
+
+    class ConvNeXtTinyAttentionMIL:  # type: ignore[override]
+        pass
+
+    class DenseNetAttentionMIL:  # type: ignore[override]
         pass
 
     class DualInputConcatKeratitis:  # type: ignore[override]
@@ -1401,6 +1645,12 @@ class ModelManager:
             return Dinov2AttentionMIL(pretrained=False)
         if architecture == "swin_mil":
             return SwinAttentionMIL(pretrained=False)
+        if architecture == "efficientnet_v2_s_mil":
+            return EfficientNetV2AttentionMIL(pretrained=False)
+        if architecture == "convnext_tiny_mil":
+            return ConvNeXtTinyAttentionMIL(pretrained=False)
+        if architecture == "densenet121_mil":
+            return DenseNetAttentionMIL(pretrained=False, variant="densenet121")
         if architecture == "dual_input_concat":
             return DualInputConcatKeratitis(pretrained=False)
         if architecture in DENSENET_VARIANTS:
@@ -2212,7 +2462,15 @@ class ModelManager:
         if is_lesion_guided_fusion_architecture(architecture):
             return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
         if not _TORCHVISION_AVAILABLE:
-            if architecture not in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
+            if architecture not in {
+                "dinov2",
+                "dinov2_mil",
+                "swin_mil",
+                "efficientnet_v2_s_mil",
+                "convnext_tiny_mil",
+                "densenet121_mil",
+                "dual_input_concat",
+            }:
                 raise RuntimeError(
                     "torchvision is required. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
                 )
@@ -2261,12 +2519,18 @@ class ModelManager:
             in_features = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(in_features, num_classes)
             return backbone
+        if architecture == "efficientnet_v2_s_mil":
+            return EfficientNetV2AttentionMIL(num_classes=num_classes, pretrained=True)
         if architecture == "dinov2":
             return Dinov2Keratitis(num_classes=num_classes, pretrained=True)
         if architecture == "dinov2_mil":
             return Dinov2AttentionMIL(num_classes=num_classes, pretrained=True)
         if architecture == "swin_mil":
             return SwinAttentionMIL(num_classes=num_classes, pretrained=True)
+        if architecture == "convnext_tiny_mil":
+            return ConvNeXtTinyAttentionMIL(num_classes=num_classes, pretrained=True)
+        if architecture == "densenet121_mil":
+            return DenseNetAttentionMIL(num_classes=num_classes, pretrained=True, variant="densenet121")
         if architecture == "dual_input_concat":
             return DualInputConcatKeratitis(num_classes=num_classes, pretrained=True)
         raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
@@ -2525,7 +2789,7 @@ class ModelManager:
             return getattr(model, "model", model)
         if normalized in {"vit", "swin", "efficientnet_v2_s"}:
             return model
-        if normalized in {"dinov2", "dinov2_mil", "swin_mil", "dual_input_concat"}:
+        if normalized in {"dinov2", "dinov2_mil", "swin_mil", "efficientnet_v2_s_mil", "convnext_tiny_mil", "densenet121_mil", "dual_input_concat"}:
             backbone = getattr(model, "backbone", None)
             if backbone is None:
                 raise ValueError(f"{architecture} does not expose a backbone module for SSL initialization.")
@@ -2546,6 +2810,12 @@ class ModelManager:
             return ("head.",)
         if normalized == "swin_mil":
             return ("head.",)
+        if normalized == "efficientnet_v2_s_mil":
+            return ("classifier.",)
+        if normalized == "convnext_tiny_mil":
+            return ("classifier.",)
+        if normalized == "densenet121_mil":
+            return ("classifier.",)
         if normalized == "efficientnet_v2_s":
             return ("classifier.",)
         return ()

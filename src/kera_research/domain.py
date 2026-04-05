@@ -29,7 +29,13 @@ VISIT_STATUS_OPTIONS = ["active", "improving", "scar"]
 USER_ROLE_OPTIONS = ["admin", "site_admin", "researcher", "viewer"]
 EXECUTION_MODES = ["Auto", "CPU mode", "GPU mode"]
 DENSENET_VARIANTS = ["densenet121"]
-ATTENTION_MIL_ARCHITECTURES = ["dinov2_mil", "swin_mil"]
+ATTENTION_MIL_ARCHITECTURES = [
+    "dinov2_mil",
+    "swin_mil",
+    "efficientnet_v2_s_mil",
+    "convnext_tiny_mil",
+    "densenet121_mil",
+]
 BASE_TRAINING_ARCHITECTURES = [
     "densenet121",
     "convnext_tiny",
