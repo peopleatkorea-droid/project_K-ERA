@@ -23,10 +23,35 @@ from kera_research.domain import (
     is_attention_mil_architecture,
     is_dual_input_training_architecture,
     is_lesion_guided_fusion_architecture,
+    is_paired_attention_mil_architecture,
     is_three_scale_lesion_guided_fusion_architecture,
     lesion_guided_fusion_backbone,
     make_id,
     utc_now,
+)
+from kera_research.services.modeling_gradcam import (
+    cam_array_from_tensors as _cam_array_from_tensors_impl,
+    classifier_module as _classifier_module_impl,
+    dinov2_gradcam_projection as _dinov2_gradcam_projection_impl,
+    generate_cam_artifacts_from_layer as _generate_cam_artifacts_from_layer_impl,
+    generate_cam_from_layer as _generate_cam_from_layer_impl,
+    generate_explanation as _generate_explanation_impl,
+    generate_explanation_artifacts as _generate_explanation_artifacts_impl,
+    generate_paired_cam_artifacts_from_layer as _generate_paired_cam_artifacts_from_layer_impl,
+    generate_paired_explanation_artifacts as _generate_paired_explanation_artifacts_impl,
+    gradcam_target_layer as _gradcam_target_layer_impl,
+    normalize_cam_feature_map as _normalize_cam_feature_map_impl,
+    overlay_heatmap as _overlay_heatmap_impl,
+)
+from kera_research.services.modeling_runtime import (
+    build_model as _build_model_impl,
+    build_model_pretrained as _build_model_pretrained_impl,
+    extract_image_embedding as _extract_image_embedding_impl,
+    extract_paired_image_embedding as _extract_paired_image_embedding_impl,
+    extract_state_dict_from_checkpoint as _extract_state_dict_from_checkpoint_impl,
+    load_model as _load_model_impl,
+    predict_image as _predict_image_impl,
+    predict_paired_image as _predict_paired_image_impl,
 )
 from kera_research.services.model_artifacts import ModelArtifactStore
 from kera_research.services.lesion_guided_fusion import (
@@ -99,6 +124,7 @@ IMAGENET_PRETRAINED_ARCHITECTURES = {
     "convnext_tiny_mil",
     "efficientnet_v2_s",
     "efficientnet_v2_s_mil",
+    "efficientnet_v2_s_dinov2_lesion_mil",
     "dinov2",
     "dinov2_mil",
     "swin_mil",
@@ -842,6 +868,119 @@ if nn is not None:
             return logits
 
 
+    class EfficientNetDinov2LesionAttentionMIL(nn.Module):
+        def __init__(
+            self,
+            num_classes: int = 2,
+            *,
+            pretrained: bool = False,
+            attention_size: int = 256,
+            dropout: float = 0.2,
+            freeze_lesion_encoder: bool = True,
+        ) -> None:
+            super().__init__()
+            if not _TORCHVISION_AVAILABLE:
+                raise RuntimeError(
+                    "torchvision is required for EfficientNetV2-S + DINOv2 lesion MIL. "
+                    "Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
+                )
+            if pretrained:
+                from torchvision.models import EfficientNet_V2_S_Weights
+
+                full_backbone = _torchvision_models.efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
+            else:
+                full_backbone = _torchvision_models.efficientnet_v2_s(weights=None)
+
+            self.full_backbone = full_backbone
+            self.hidden_size = int(full_backbone.classifier[-1].in_features)
+            self.full_backbone.classifier = nn.Identity()
+            lesion_encoder = Dinov2FeatureExtractor(num_classes=num_classes, pretrained=pretrained)
+            self.lesion_backbone = lesion_encoder.backbone
+            self.lesion_hidden_size = int(lesion_encoder.hidden_size)
+            self.lesion_projection = nn.Sequential(
+                nn.LayerNorm(self.lesion_hidden_size),
+                nn.Linear(self.lesion_hidden_size, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            self.fusion_projection = nn.Sequential(
+                nn.LayerNorm(self.hidden_size * 2),
+                nn.Linear(self.hidden_size * 2, self.hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            self.attention_pool = AttentionMILPool(self.hidden_size, attention_size=attention_size)
+            self.classifier = nn.Linear(self.hidden_size, num_classes)
+            self.freeze_lesion_encoder = bool(freeze_lesion_encoder)
+            if self.freeze_lesion_encoder:
+                for parameter in self.lesion_backbone.parameters():
+                    parameter.requires_grad = False
+
+        def _encode_full(self, inputs: torch.Tensor) -> torch.Tensor:
+            return _encode_efficientnet_backbone(self.full_backbone, inputs)
+
+        def _encode_lesion(self, inputs: torch.Tensor) -> torch.Tensor:
+            if self.freeze_lesion_encoder:
+                with torch.no_grad():
+                    outputs = self.lesion_backbone(pixel_values=inputs)
+            else:
+                outputs = self.lesion_backbone(pixel_values=inputs)
+            return outputs.pooler_output if getattr(outputs, "pooler_output", None) is not None else outputs.last_hidden_state[:, 0]
+
+        def encode_instances(
+            self,
+            full_inputs: torch.Tensor,
+            lesion_inputs: torch.Tensor,
+        ) -> torch.Tensor:
+            if full_inputs.ndim == 4 and lesion_inputs.ndim == 4:
+                full_features = self._encode_full(full_inputs)
+                lesion_features = self.lesion_projection(self._encode_lesion(lesion_inputs))
+                fused = torch.cat([full_features, lesion_features], dim=1)
+                return self.fusion_projection(fused).view(full_inputs.shape[0], 1, -1)
+            if full_inputs.ndim != 5 or lesion_inputs.ndim != 5:
+                raise ValueError(
+                    "EfficientNetDinov2LesionAttentionMIL expects paired 4D or 5D tensors, "
+                    f"got {tuple(full_inputs.shape)} and {tuple(lesion_inputs.shape)}."
+                )
+            batch_size, bag_size, channels, height, width = full_inputs.shape
+            flat_full = full_inputs.view(batch_size * bag_size, channels, height, width)
+            flat_lesion = lesion_inputs.view(batch_size * bag_size, channels, height, width)
+            full_features = self._encode_full(flat_full)
+            lesion_features = self.lesion_projection(self._encode_lesion(flat_lesion))
+            fused = torch.cat([full_features, lesion_features], dim=1)
+            fused = self.fusion_projection(fused)
+            return fused.view(batch_size, bag_size, -1)
+
+        def forward_features(
+            self,
+            full_inputs: torch.Tensor,
+            lesion_inputs: torch.Tensor,
+            *,
+            bag_mask: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            instance_features = self.encode_instances(full_inputs, lesion_inputs)
+            if bag_mask is None:
+                bag_mask = torch.ones(instance_features.shape[:2], dtype=torch.bool, device=instance_features.device)
+            elif bag_mask.ndim == 1:
+                bag_mask = bag_mask.unsqueeze(0)
+            pooled, attention = self.attention_pool(instance_features, mask=bag_mask)
+            return pooled, attention
+
+        def forward(
+            self,
+            full_inputs: torch.Tensor,
+            lesion_inputs: torch.Tensor,
+            bag_mask: torch.Tensor | None = None,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            pooled, attention = self.forward_features(full_inputs, lesion_inputs, bag_mask=bag_mask)
+            logits = self.classifier(pooled)
+            if return_attention:
+                return logits, attention
+            return logits
+
+
     class ConvNeXtTinyAttentionMIL(nn.Module):
         def __init__(
             self,
@@ -1385,6 +1524,70 @@ class VisitBagDataset(Dataset):
         }
 
 
+class VisitPairedBagDataset(Dataset):
+    def __init__(
+        self,
+        records: Iterable[dict[str, Any]],
+        augment: bool = False,
+        *,
+        preprocess_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.visit_records = _group_records_by_visit(records)
+        self.augment = augment
+        self.preprocess_metadata = dict(preprocess_metadata) if isinstance(preprocess_metadata, dict) else None
+
+    def __len__(self) -> int:
+        return len(self.visit_records)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        bag_records = self.visit_records[index]
+        full_tensors: list[torch.Tensor] = []
+        lesion_tensors: list[torch.Tensor] = []
+        image_paths: list[str] = []
+        source_image_paths: list[str] = []
+        lesion_image_paths: list[str] = []
+        views: list[str] = []
+        image_size = _preprocess_image_size(self.preprocess_metadata)
+        for record in bag_records:
+            full_path = str(
+                record.get("full_image_path")
+                or record.get("source_image_path")
+                or record.get("raw_image_path")
+                or record.get("image_path")
+                or ""
+            )
+            lesion_path = str(record.get("lesion_image_path") or record.get("lesion_crop_path") or "")
+            if not full_path or not lesion_path:
+                raise ValueError("Paired visit-level MIL requires both full-frame and lesion crop paths.")
+            _, full_tensor = _load_image_tensor(full_path, image_size=image_size)
+            _, lesion_tensor = _load_image_tensor(lesion_path, image_size=image_size)
+            next_full = full_tensor.squeeze(0)
+            next_lesion = lesion_tensor.squeeze(0)
+            if self.augment:
+                next_full = _augment_tensor(next_full, view=record.get("view"))
+                next_lesion = _augment_tensor(next_lesion, view=record.get("view"))
+            next_full = _apply_preprocess_to_tensor(next_full, self.preprocess_metadata)
+            next_lesion = _apply_preprocess_to_tensor(next_lesion, self.preprocess_metadata)
+            full_tensors.append(next_full)
+            lesion_tensors.append(next_lesion)
+            image_paths.append(full_path)
+            source_image_paths.append(str(record.get("source_image_path") or full_path))
+            lesion_image_paths.append(lesion_path)
+            views.append(str(record.get("view") or ""))
+        label_value = LABEL_TO_INDEX[str(bag_records[0]["culture_category"])]
+        return {
+            "full_images": torch.stack(full_tensors, dim=0),
+            "lesion_images": torch.stack(lesion_tensors, dim=0),
+            "label": torch.tensor(label_value, dtype=torch.long),
+            "patient_id": str(bag_records[0]["patient_id"]),
+            "visit_date": str(bag_records[0]["visit_date"]),
+            "image_paths": image_paths,
+            "source_image_paths": source_image_paths,
+            "lesion_image_paths": lesion_image_paths,
+            "views": views,
+        }
+
+
 def collate_visit_bags(items: list[dict[str, Any]]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if not items:
         raise ValueError("Visit bag collation requires at least one item.")
@@ -1400,6 +1603,29 @@ def collate_visit_bags(items: list[dict[str, Any]]) -> tuple[torch.Tensor, torch
         batch_mask[index, :bag_size] = True
         labels[index] = item["label"]
     return batch_images, batch_mask, labels
+
+
+def collate_visit_paired_bags(items: list[dict[str, Any]]) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor]:
+    if not items:
+        raise ValueError("Paired visit bag collation requires at least one item.")
+    max_bag_size = max(int(item["full_images"].shape[0]) for item in items)
+    channels, height, width = items[0]["full_images"].shape[1:]
+    batch_full = torch.zeros((len(items), max_bag_size, channels, height, width), dtype=items[0]["full_images"].dtype)
+    batch_lesion = torch.zeros(
+        (len(items), max_bag_size, channels, height, width),
+        dtype=items[0]["lesion_images"].dtype,
+    )
+    batch_mask = torch.zeros((len(items), max_bag_size), dtype=torch.bool)
+    labels = torch.zeros((len(items),), dtype=torch.long)
+    for index, item in enumerate(items):
+        full_bag = item["full_images"]
+        lesion_bag = item["lesion_images"]
+        bag_size = int(full_bag.shape[0])
+        batch_full[index, :bag_size] = full_bag
+        batch_lesion[index, :bag_size] = lesion_bag
+        batch_mask[index, :bag_size] = True
+        labels[index] = item["label"]
+    return (batch_full, batch_lesion), batch_mask, labels
 
 
 @dataclass
@@ -1603,59 +1829,7 @@ class ModelManager:
         }
 
     def build_model(self, architecture: str) -> nn.Module:
-        require_torch()
-        if is_three_scale_lesion_guided_fusion_architecture(architecture):
-            return ThreeScaleLesionGuidedFusionKeratitis(architecture, num_classes=DEFAULT_NUM_CLASSES, init_mode="random")
-        if is_lesion_guided_fusion_architecture(architecture):
-            return LesionGuidedFusionKeratitis(architecture, num_classes=DEFAULT_NUM_CLASSES, init_mode="random")
-        if architecture == "cnn":
-            return TinyKeratitisCNN()
-        if architecture == "vit":
-            if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError(
-                    "torchvision is required for ViT. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
-                )
-            backbone = _torchvision_models.vit_b_16(weights=None)
-            in_features = backbone.heads.head.in_features
-            backbone.heads.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
-            return backbone
-        if architecture == "swin":
-            if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError(
-                    "torchvision is required for Swin. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
-                )
-            backbone = _torchvision_models.swin_t(weights=None)
-            in_features = backbone.head.in_features
-            backbone.head = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
-            return backbone
-        if architecture == "convnext_tiny":
-            return ConvNeXtTinyKeratitis()
-        if architecture == "efficientnet_v2_s":
-            if not _TORCHVISION_AVAILABLE:
-                raise RuntimeError(
-                    "torchvision is required for EfficientNetV2-S. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
-                )
-            backbone = _torchvision_models.efficientnet_v2_s(weights=None)
-            in_features = backbone.classifier[-1].in_features
-            backbone.classifier[-1] = nn.Linear(in_features, DEFAULT_NUM_CLASSES)
-            return backbone
-        if architecture == "dinov2":
-            return Dinov2Keratitis(pretrained=False)
-        if architecture == "dinov2_mil":
-            return Dinov2AttentionMIL(pretrained=False)
-        if architecture == "swin_mil":
-            return SwinAttentionMIL(pretrained=False)
-        if architecture == "efficientnet_v2_s_mil":
-            return EfficientNetV2AttentionMIL(pretrained=False)
-        if architecture == "convnext_tiny_mil":
-            return ConvNeXtTinyAttentionMIL(pretrained=False)
-        if architecture == "densenet121_mil":
-            return DenseNetAttentionMIL(pretrained=False, variant="densenet121")
-        if architecture == "dual_input_concat":
-            return DualInputConcatKeratitis(pretrained=False)
-        if architecture in DENSENET_VARIANTS:
-            return DenseNetKeratitis(variant=architecture)
-        raise ValueError(f"Unsupported architecture: {architecture}")
+        return _build_model_impl(self, architecture)
 
     def ensure_baseline_models(self) -> list[dict[str, Any]]:
         require_torch()
@@ -1743,84 +1917,13 @@ class ModelManager:
         return str(self.artifact_store.resolve_model_path(model_reference, allow_download=allow_download))
 
     def load_model(self, model_reference: dict[str, Any], device: str) -> nn.Module:
-        require_torch()
-        resolved_reference = self.resolve_model_reference(model_reference, allow_download=True)
-        architecture = resolved_reference.get("architecture", "densenet121")
-        model_path = resolved_reference["model_path"]
-        cache_key = (str(model_path), str(device))
-        if cache_key in self._model_cache:
-            return self._model_cache[cache_key]
-        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-        checkpoint_metadata = self.validate_model_artifact(resolved_reference, checkpoint)
-        model = self.build_model(architecture).to(device)
-        state_dict = self._extract_state_dict_from_checkpoint(checkpoint, architecture)
-        strict = architecture not in DENSENET_VARIANTS
-        try:
-            model.load_state_dict(state_dict, strict=strict)
-        except RuntimeError:
-            if architecture not in {"dinov2", "dinov2_mil"}:
-                raise
-            model = self.build_model_pretrained(architecture).to(device)
-            model.load_state_dict(state_dict, strict=strict)
-        model._kera_preprocess_metadata = self.resolve_preprocess_metadata(
-            resolved_reference,
-            checkpoint_metadata,
-        )
-        model.eval()
-        self._model_cache[cache_key] = model
-        return model
+        return _load_model_impl(self, model_reference, device)
 
     def _extract_state_dict_from_checkpoint(self, checkpoint: Any, architecture: str) -> dict[str, Any]:
-        """Load various checkpoint shapes into the model's expected key format."""
-        if not isinstance(checkpoint, dict):
-            try:
-                state_dict = checkpoint.state_dict()
-            except AttributeError:
-                state_dict = checkpoint
-        else:
-            state_dict = None
-            for key in ("state_dict", "model", "model_state_dict", "weights"):
-                if key in checkpoint:
-                    state_dict = checkpoint[key]
-                    break
-            if state_dict is None:
-                state_dict = checkpoint
-
-        if hasattr(state_dict, "items"):
-            state_dict = dict(state_dict)
-        if state_dict is None:
-            raise ValueError("Checkpoint did not contain a readable state_dict.")
-
-        if any(k.startswith("module.") for k in state_dict):
-            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
-
-        model = self.build_model(architecture)
-        model_expects_prefix = any(k.startswith("model.") for k in model.state_dict())
-        has_model_prefix = any(k.startswith("model.") for k in state_dict)
-        if has_model_prefix and not model_expects_prefix:
-            state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
-        elif not has_model_prefix and model_expects_prefix:
-            state_dict = {f"model.{k}": v for k, v in state_dict.items()}
-
-        return state_dict
+        return _extract_state_dict_from_checkpoint_impl(self, checkpoint, architecture)
 
     def predict_image(self, model: nn.Module, image_path: str | Path, device: str) -> Prediction:
-        require_torch()
-        _, tensor = preprocess_image(
-            image_path,
-            preprocess_metadata=self.model_preprocess_metadata(model),
-        )
-        tensor = tensor.to(device)
-        model.eval()
-        with torch.no_grad():
-            logits = model(tensor)
-            probabilities = torch.softmax(logits, dim=1).squeeze(0)
-        pred_index = int(torch.argmax(probabilities).item())
-        return Prediction(
-            predicted_label=INDEX_TO_LABEL[pred_index],
-            probability=float(probabilities[1].item()),
-            logits=[float(value) for value in logits.squeeze(0).tolist()],
-        )
+        return _predict_image_impl(self, model, image_path, device)
 
     def predict_paired_image(
         self,
@@ -1831,36 +1934,14 @@ class ModelManager:
         lesion_mask_path: str | Path | None,
         device: str,
     ) -> Prediction:
-        require_torch()
-        preprocess_metadata = self.model_preprocess_metadata(model, model_reference)
-        _, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
-        _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
-        cornea_tensor = cornea_tensor.to(device)
-        lesion_tensor = lesion_tensor.to(device)
-        lesion_mask_tensor = None
-        if lesion_mask_path:
-            lesion_mask_tensor = _load_mask_tensor(
-                lesion_mask_path,
-                image_size=_preprocess_image_size(preprocess_metadata),
-            ).unsqueeze(0).to(device)
-        model.eval()
-        architecture = str(model_reference.get("architecture") or "")
-        with torch.no_grad():
-            if is_three_scale_lesion_guided_fusion_architecture(architecture):
-                medium_tensor = _extract_medium_crop_tensor(
-                    cornea_tensor.squeeze(0),
-                    lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
-                    scale_factor=1.5,
-                ).unsqueeze(0).to(device)
-                logits = model(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
-            else:
-                logits = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
-        probabilities = torch.softmax(logits, dim=1).squeeze(0)
-        pred_index = int(torch.argmax(probabilities).item())
-        return Prediction(
-            predicted_label=INDEX_TO_LABEL[pred_index],
-            probability=float(probabilities[1].item()),
-            logits=[float(value) for value in logits.squeeze(0).tolist()],
+        return _predict_paired_image_impl(
+            self,
+            model,
+            model_reference,
+            cornea_image_path,
+            lesion_image_path,
+            lesion_mask_path,
+            device,
         )
 
     def extract_image_embedding(
@@ -1870,34 +1951,13 @@ class ModelManager:
         image_path: str | Path,
         device: str,
     ) -> np.ndarray:
-        require_torch()
-        _, tensor = preprocess_image(
+        return _extract_image_embedding_impl(
+            self,
+            model,
+            model_reference,
             image_path,
-            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
+            device,
         )
-        tensor = tensor.to(device)
-        model.eval()
-        architecture = str(model_reference.get("architecture") or "densenet121")
-
-        classifier_module = self._classifier_module(model, architecture)
-
-        captured_inputs: list[torch.Tensor] = []
-
-        def capture_pre_classifier_input(_module: nn.Module, inputs: tuple[torch.Tensor, ...]) -> None:
-            if inputs:
-                captured_inputs.append(inputs[0].detach())
-
-        hook_handle = classifier_module.register_forward_pre_hook(capture_pre_classifier_input)
-        try:
-            with torch.no_grad():
-                _ = model(tensor)
-        finally:
-            hook_handle.remove()
-
-        if not captured_inputs:
-            raise RuntimeError("Unable to extract the penultimate feature embedding from the model.")
-        embedding = captured_inputs[0].reshape(captured_inputs[0].shape[0], -1)[0].cpu().numpy().astype(np.float32)
-        return embedding
 
     def extract_paired_image_embedding(
         self,
@@ -1908,34 +1968,15 @@ class ModelManager:
         lesion_mask_path: str | Path | None,
         device: str,
     ) -> np.ndarray:
-        require_torch()
-        if not hasattr(model, "forward_features"):
-            raise RuntimeError("Dual-input model does not expose fused feature extraction.")
-        preprocess_metadata = self.model_preprocess_metadata(model, model_reference)
-        _, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
-        _, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
-        cornea_tensor = cornea_tensor.to(device)
-        lesion_tensor = lesion_tensor.to(device)
-        lesion_mask_tensor = None
-        if lesion_mask_path:
-            lesion_mask_tensor = _load_mask_tensor(
-                lesion_mask_path,
-                image_size=_preprocess_image_size(preprocess_metadata),
-            ).unsqueeze(0).to(device)
-        model.eval()
-        architecture = str(model_reference.get("architecture") or "")
-        with torch.no_grad():
-            if is_three_scale_lesion_guided_fusion_architecture(architecture):
-                medium_tensor = _extract_medium_crop_tensor(
-                    cornea_tensor.squeeze(0),
-                    lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
-                    scale_factor=1.5,
-                ).unsqueeze(0).to(device)
-                fused_features = model.forward_features(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
-            else:
-                fused_features = model.forward_features(cornea_tensor, lesion_tensor, lesion_mask_tensor)
-        embedding = fused_features[0].detach().cpu().numpy().astype(np.float32)
-        return embedding
+        return _extract_paired_image_embedding_impl(
+            self,
+            model,
+            model_reference,
+            cornea_image_path,
+            lesion_image_path,
+            lesion_mask_path,
+            device,
+        )
 
     def generate_explanation(
         self,
@@ -1946,14 +1987,15 @@ class ModelManager:
         output_path: str | Path,
         target_class: int | None = None,
     ) -> str:
-        return self.generate_explanation_artifacts(
+        return _generate_explanation_impl(
+            self,
             model,
             model_reference,
             image_path,
             device,
             output_path,
             target_class=target_class,
-        )["overlay_path"]
+        )
 
     def generate_explanation_artifacts(
         self,
@@ -1965,16 +2007,15 @@ class ModelManager:
         target_class: int | None = None,
         heatmap_output_path: str | Path | None = None,
     ) -> dict[str, str]:
-        architecture = model_reference.get("architecture", "densenet121")
-        return self._generate_cam_artifacts_from_layer(
-            model=model,
-            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
-            image_path=image_path,
-            device=device,
-            output_path=output_path,
-            heatmap_output_path=heatmap_output_path,
-            target_layer=self._gradcam_target_layer(model, architecture),
+        return _generate_explanation_artifacts_impl(
+            self,
+            model,
+            model_reference,
+            image_path,
+            device,
+            output_path,
             target_class=target_class,
+            heatmap_output_path=heatmap_output_path,
         )
 
     def generate_paired_explanation_artifacts(
@@ -1992,98 +2033,39 @@ class ModelManager:
         cornea_heatmap_output_path: str | Path | None = None,
         lesion_heatmap_output_path: str | Path | None = None,
     ) -> dict[str, str]:
-        architecture = str(model_reference.get("architecture") or "densenet121")
-        if not self.is_dual_input_architecture(architecture):
-            raise ValueError("Paired Grad-CAM is only available for dual-input architectures.")
-        return self._generate_paired_cam_artifacts_from_layer(
-            model=model,
-            preprocess_metadata=self.model_preprocess_metadata(model, model_reference),
+        return _generate_paired_explanation_artifacts_impl(
+            self,
+            model,
+            model_reference,
             cornea_image_path=cornea_image_path,
             lesion_image_path=lesion_image_path,
             lesion_mask_path=lesion_mask_path,
             device=device,
             cornea_output_path=cornea_output_path,
             lesion_output_path=lesion_output_path,
+            target_class=target_class,
             cornea_heatmap_output_path=cornea_heatmap_output_path,
             lesion_heatmap_output_path=lesion_heatmap_output_path,
-            target_layer=self._gradcam_target_layer(model, architecture),
-            target_class=target_class,
         )
 
     def _classifier_module(self, model: nn.Module, architecture: str) -> nn.Module:
-        if architecture == "cnn":
-            return model.classifier
-        if architecture == "vit":
-            return model.heads.head
-        if architecture == "swin":
-            return model.head
-        if architecture == "convnext_tiny":
-            return model.classifier[-1]
-        if architecture == "efficientnet_v2_s":
-            return model.classifier[-1]
-        if architecture == "dinov2":
-            return model.classifier
-        if is_attention_mil_architecture(architecture):
-            return model.classifier
-        if architecture == "dual_input_concat":
-            return model.classifier
-        if is_lesion_guided_fusion_architecture(architecture):
-            return model.classifier
-        if architecture in DENSENET_VARIANTS:
-            return model.classifier
-        raise ValueError(f"Unsupported architecture: {architecture}")
+        return _classifier_module_impl(self, model, architecture)
 
     def _gradcam_target_layer(self, model: nn.Module, architecture: str) -> nn.Module:
-        if architecture == "cnn":
-            return model.features[-2]
-        if architecture == "vit":
-            return model.conv_proj
-        if architecture == "swin":
-            return model.features[-1]
-        if architecture == "convnext_tiny":
-            return model.features[-1]
-        if architecture == "efficientnet_v2_s":
-            return model.features[-1]
-        if architecture == "dinov2":
-            return self._dinov2_gradcam_projection(model, "DINOv2")
-        if architecture == "dinov2_mil":
-            return self._dinov2_gradcam_projection(model, "DINOv2 MIL")
-        if architecture == "swin_mil":
-            return model.backbone.features[-1]
-        if architecture == "dual_input_concat":
-            return self._dinov2_gradcam_projection(model, "Dual-input DINOv2")
-        if is_lesion_guided_fusion_architecture(architecture):
-            return model.backbone_adapter.gradcam_target_layer
-        if architecture in DENSENET_VARIANTS:
-            return model.features.denseblock4 if hasattr(model.features, "denseblock4") else model.features
-        raise ValueError(f"Unsupported architecture: {architecture}")
+        return _gradcam_target_layer_impl(self, model, architecture)
 
     def _dinov2_gradcam_projection(self, model: nn.Module, label: str) -> nn.Module:
-        patch_embeddings = getattr(getattr(getattr(model, "backbone", None), "embeddings", None), "patch_embeddings", None)
-        projection = getattr(patch_embeddings, "projection", None)
-        if projection is None:
-            raise ValueError(f"{label} Grad-CAM target layer is unavailable.")
-        return projection
+        return _dinov2_gradcam_projection_impl(self, model, label)
 
     def _normalize_cam_feature_map(self, tensor: torch.Tensor) -> torch.Tensor:
-        if tensor.ndim != 3:
-            raise RuntimeError(f"Grad-CAM target layer must produce a 3D feature map, got shape {tuple(tensor.shape)}.")
-        if tensor.shape[0] <= tensor.shape[-1]:
-            return tensor
-        return tensor.permute(2, 0, 1).contiguous()
+        return _normalize_cam_feature_map_impl(self, tensor)
 
     def _cam_array_from_tensors(
         self,
         activation_tensor: torch.Tensor,
         gradient_tensor: torch.Tensor,
     ) -> np.ndarray:
-        activation = self._normalize_cam_feature_map(activation_tensor[0].detach())
-        gradient = self._normalize_cam_feature_map(gradient_tensor[0].detach())
-        weights = gradient.mean(dim=(1, 2), keepdim=True)
-        cam = torch.relu((weights * activation).sum(dim=0)).cpu().numpy()
-        cam = cam - cam.min()
-        denominator = cam.max() if cam.max() > 0 else 1.0
-        return np.asarray(cam / denominator, dtype=np.float32)
+        return _cam_array_from_tensors_impl(self, activation_tensor, gradient_tensor)
 
     def _generate_cam_from_layer(
         self,
@@ -2095,14 +2077,14 @@ class ModelManager:
         target_layer: nn.Module,
         target_class: int | None = None,
     ) -> str:
-        return self._generate_cam_artifacts_from_layer(
-            model=model,
-            preprocess_metadata=preprocess_metadata,
-            image_path=image_path,
-            device=device,
-            output_path=output_path,
-            heatmap_output_path=None,
-            target_layer=target_layer,
+        return _generate_cam_from_layer_impl(
+            self,
+            model,
+            preprocess_metadata,
+            image_path,
+            device,
+            output_path,
+            target_layer,
             target_class=target_class,
         )["overlay_path"]
 
@@ -2117,50 +2099,17 @@ class ModelManager:
         target_layer: nn.Module,
         target_class: int | None = None,
     ) -> dict[str, str]:
-        require_torch()
-        original_image, tensor = preprocess_image(image_path, preprocess_metadata=preprocess_metadata)
-        tensor = tensor.to(device)
-        model.eval()
-
-        activations: list[torch.Tensor] = []
-        gradients: list[torch.Tensor] = []
-
-        def forward_hook(_module: nn.Module, _input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
-            activations.append(output.detach())
-
-        def backward_hook(
-            _module: nn.Module,
-            grad_input: tuple[torch.Tensor, ...],
-            grad_output: tuple[torch.Tensor, ...],
-        ) -> None:
-            del grad_input
-            gradients.append(grad_output[0].detach())
-
-        forward_handle = target_layer.register_forward_hook(forward_hook)
-        backward_handle = target_layer.register_full_backward_hook(backward_hook)
-
-        scores = model(tensor)
-        if target_class is None:
-            target_class = int(torch.argmax(scores, dim=1).item())
-        model.zero_grad()
-        scores[:, target_class].backward()
-
-        forward_handle.remove()
-        backward_handle.remove()
-
-        cam = self._cam_array_from_tensors(activations[-1], gradients[-1])
-
-        overlay = self._overlay_heatmap(np.asarray(original_image), cam)
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(overlay).save(output)
-        resolved_heatmap_path = Path(heatmap_output_path) if heatmap_output_path is not None else output.with_suffix(".npy")
-        resolved_heatmap_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(resolved_heatmap_path, np.asarray(cam, dtype=np.float32))
-        return {
-            "overlay_path": str(output),
-            "heatmap_path": str(resolved_heatmap_path),
-        }
+        return _generate_cam_artifacts_from_layer_impl(
+            self,
+            model=model,
+            preprocess_metadata=preprocess_metadata,
+            image_path=image_path,
+            device=device,
+            output_path=output_path,
+            heatmap_output_path=heatmap_output_path,
+            target_layer=target_layer,
+            target_class=target_class,
+        )
 
     def _generate_paired_cam_artifacts_from_layer(
         self,
@@ -2178,113 +2127,24 @@ class ModelManager:
         target_layer: nn.Module,
         target_class: int | None = None,
     ) -> dict[str, str]:
-        require_torch()
-        if not hasattr(model, "forward"):
-            raise RuntimeError("Paired Grad-CAM requires a callable dual-input model.")
-
-        cornea_original, cornea_tensor = preprocess_image(cornea_image_path, preprocess_metadata=preprocess_metadata)
-        lesion_original, lesion_tensor = preprocess_image(lesion_image_path, preprocess_metadata=preprocess_metadata)
-        cornea_tensor = cornea_tensor.to(device)
-        lesion_tensor = lesion_tensor.to(device)
-        lesion_mask_tensor = None
-        if lesion_mask_path:
-            lesion_mask_tensor = _load_mask_tensor(
-                lesion_mask_path,
-                image_size=_preprocess_image_size(preprocess_metadata),
-            ).unsqueeze(0).to(device)
-        model.eval()
-        architecture = str(getattr(model, "architecture", "") or "")
-
-        branch_activations: dict[str, torch.Tensor] = {}
-        branch_gradients: dict[str, torch.Tensor] = {}
-
-        def forward_hook(_module: nn.Module, _input: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
-            branch_name = str(getattr(model, "_cam_active_branch", "") or f"branch_{len(branch_activations)}")
-            if not torch.is_tensor(output):
-                return
-            output.retain_grad()
-            branch_activations[branch_name] = output
-
-        forward_handle = target_layer.register_forward_hook(forward_hook)
-        if is_three_scale_lesion_guided_fusion_architecture(architecture):
-            medium_tensor = _extract_medium_crop_tensor(
-                cornea_tensor.squeeze(0),
-                lesion_mask_tensor.squeeze(0) if lesion_mask_tensor is not None else torch.zeros_like(cornea_tensor.squeeze(0)[:1]),
-                scale_factor=1.5,
-            ).unsqueeze(0).to(device)
-            scores = model(cornea_tensor, medium_tensor, lesion_tensor, lesion_mask_tensor)
-        else:
-            scores = model(cornea_tensor, lesion_tensor, lesion_mask_tensor)
-        if target_class is None:
-            target_class = int(torch.argmax(scores, dim=1).item())
-        model.zero_grad()
-        scores[:, target_class].backward()
-        forward_handle.remove()
-
-        for branch_name, activation in branch_activations.items():
-            if activation.grad is not None:
-                branch_gradients[branch_name] = activation.grad.detach()
-
-        branch_specs = (
-            (
-                "cornea",
-                cornea_original,
-                cornea_output_path,
-                cornea_heatmap_output_path,
-                "cornea_overlay_path",
-                "cornea_heatmap_path",
-            ),
-            (
-                "lesion",
-                lesion_original,
-                lesion_output_path,
-                lesion_heatmap_output_path,
-                "lesion_overlay_path",
-                "lesion_heatmap_path",
-            ),
+        return _generate_paired_cam_artifacts_from_layer_impl(
+            self,
+            model=model,
+            preprocess_metadata=preprocess_metadata,
+            cornea_image_path=cornea_image_path,
+            lesion_image_path=lesion_image_path,
+            lesion_mask_path=lesion_mask_path,
+            device=device,
+            cornea_output_path=cornea_output_path,
+            lesion_output_path=lesion_output_path,
+            cornea_heatmap_output_path=cornea_heatmap_output_path,
+            lesion_heatmap_output_path=lesion_heatmap_output_path,
+            target_layer=target_layer,
+            target_class=target_class,
         )
-        artifacts: dict[str, str] = {}
-        for branch_name, original_image, output_path, heatmap_output_path, overlay_key, heatmap_key in branch_specs:
-            activation = branch_activations.get(branch_name)
-            gradient = branch_gradients.get(branch_name)
-            if activation is None or gradient is None:
-                raise RuntimeError(f"Unable to collect Grad-CAM tensors for the {branch_name} branch.")
-            cam = self._cam_array_from_tensors(activation.detach(), gradient)
-            overlay = self._overlay_heatmap(np.asarray(original_image), cam)
-            resolved_output_path = Path(output_path)
-            resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(overlay).save(resolved_output_path)
-            resolved_heatmap_path = (
-                Path(heatmap_output_path)
-                if heatmap_output_path is not None
-                else resolved_output_path.with_suffix(".npy")
-            )
-            resolved_heatmap_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(resolved_heatmap_path, np.asarray(cam, dtype=np.float32))
-            artifacts[overlay_key] = str(resolved_output_path)
-            artifacts[heatmap_key] = str(resolved_heatmap_path)
-        return artifacts
 
     def _overlay_heatmap(self, original_array: np.ndarray, heatmap: np.ndarray) -> np.ndarray:
-        resized_heatmap = np.array(
-            Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
-                (original_array.shape[1], original_array.shape[0]),
-            ),
-        )
-        normalized = resized_heatmap.astype(np.float32) / 255.0
-        # Keep the source image intact and emphasize only the hotter Grad-CAM regions.
-        emphasis = np.clip((normalized - 0.35) / 0.65, 0.0, 1.0)
-        alpha = np.where(emphasis > 0, 0.12 + emphasis * 0.43, 0.0).astype(np.float32)
-        alpha = alpha[..., None]
-
-        color = np.zeros_like(original_array, dtype=np.float32)
-        color[..., 0] = 255.0
-        color[..., 1] = 90.0 + emphasis * 120.0
-        color[..., 2] = 20.0 + (1.0 - emphasis) * 35.0
-
-        original = original_array.astype(np.float32)
-        blended = original * (1.0 - alpha) + color * alpha
-        return np.clip(blended, 0, 255).astype(np.uint8)
+        return _overlay_heatmap_impl(self, original_array, heatmap)
 
     def fine_tune(
         self,
@@ -2426,6 +2286,15 @@ class ModelManager:
             for parameter in model.classifier.parameters():
                 parameter.requires_grad = True
             return
+        if architecture == "efficientnet_v2_s_dinov2_lesion_mil":
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.full_backbone.parameters():
+                parameter.requires_grad = False
+            for module in (model.lesion_projection, model.fusion_projection, model.attention_pool, model.classifier):
+                for parameter in module.parameters():
+                    parameter.requires_grad = True
+            return
         if architecture == "dinov2":
             for parameter in model.parameters():
                 parameter.requires_grad = False
@@ -2455,85 +2324,7 @@ class ModelManager:
         raise ValueError(f"Unsupported architecture: {architecture}")
 
     def build_model_pretrained(self, architecture: str, num_classes: int = 2) -> nn.Module:
-        """ImageNet pretrained 가중치로 학습용 backbone을 초기화합니다."""
-        require_torch()
-        if is_three_scale_lesion_guided_fusion_architecture(architecture):
-            return ThreeScaleLesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
-        if is_lesion_guided_fusion_architecture(architecture):
-            return LesionGuidedFusionKeratitis(architecture, num_classes=num_classes, init_mode="imagenet")
-        if not _TORCHVISION_AVAILABLE:
-            if architecture not in {
-                "dinov2",
-                "dinov2_mil",
-                "swin_mil",
-                "efficientnet_v2_s_mil",
-                "convnext_tiny_mil",
-                "densenet121_mil",
-                "dual_input_concat",
-            }:
-                raise RuntimeError(
-                    "torchvision is required. Run uv sync --frozen --extra cpu --extra dev (or --extra gpu)."
-                )
-        if architecture == "vit":
-            from torchvision.models import ViT_B_16_Weights
-
-            backbone = _torchvision_models.vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
-            in_features = backbone.heads.head.in_features
-            backbone.heads.head = nn.Linear(in_features, num_classes)
-            return backbone
-        if architecture == "swin":
-            from torchvision.models import Swin_T_Weights
-
-            backbone = _torchvision_models.swin_t(weights=Swin_T_Weights.IMAGENET1K_V1)
-            in_features = backbone.head.in_features
-            backbone.head = nn.Linear(in_features, num_classes)
-            return backbone
-        if architecture in DENSENET_VARIANTS:
-            from torchvision.models import DenseNet121_Weights
-
-            weight_map = {
-                "densenet121": DenseNet121_Weights.IMAGENET1K_V1,
-            }
-            builder = getattr(_torchvision_models, architecture)
-            backbone = builder(weights=weight_map[architecture])
-            in_features = backbone.classifier.in_features
-            backbone.classifier = nn.Linear(in_features, num_classes)
-            model = DenseNetKeratitis.__new__(DenseNetKeratitis)
-            nn.Module.__init__(model)
-            model.model = backbone
-            return model
-        if architecture == "convnext_tiny":
-            from torchvision.models import ConvNeXt_Tiny_Weights
-
-            backbone = _torchvision_models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
-            in_features = backbone.classifier[-1].in_features
-            backbone.classifier[-1] = nn.Linear(in_features, num_classes)
-            model = ConvNeXtTinyKeratitis.__new__(ConvNeXtTinyKeratitis)
-            nn.Module.__init__(model)
-            model.model = backbone
-            return model
-        if architecture == "efficientnet_v2_s":
-            from torchvision.models import EfficientNet_V2_S_Weights
-
-            backbone = _torchvision_models.efficientnet_v2_s(weights=EfficientNet_V2_S_Weights.IMAGENET1K_V1)
-            in_features = backbone.classifier[-1].in_features
-            backbone.classifier[-1] = nn.Linear(in_features, num_classes)
-            return backbone
-        if architecture == "efficientnet_v2_s_mil":
-            return EfficientNetV2AttentionMIL(num_classes=num_classes, pretrained=True)
-        if architecture == "dinov2":
-            return Dinov2Keratitis(num_classes=num_classes, pretrained=True)
-        if architecture == "dinov2_mil":
-            return Dinov2AttentionMIL(num_classes=num_classes, pretrained=True)
-        if architecture == "swin_mil":
-            return SwinAttentionMIL(num_classes=num_classes, pretrained=True)
-        if architecture == "convnext_tiny_mil":
-            return ConvNeXtTinyAttentionMIL(num_classes=num_classes, pretrained=True)
-        if architecture == "densenet121_mil":
-            return DenseNetAttentionMIL(num_classes=num_classes, pretrained=True, variant="densenet121")
-        if architecture == "dual_input_concat":
-            return DualInputConcatKeratitis(num_classes=num_classes, pretrained=True)
-        raise ValueError(f"Pretrained loading is not supported for architecture: {architecture}.")
+        return _build_model_pretrained_impl(self, architecture, num_classes=num_classes)
 
     def normalize_training_pretraining_source(
         self,
@@ -2587,6 +2378,8 @@ class ModelManager:
             return [model.classifier]
         if architecture == "efficientnet_v2_s":
             return [model.classifier]
+        if architecture == "efficientnet_v2_s_dinov2_lesion_mil":
+            return [model.lesion_projection, model.fusion_projection, model.attention_pool, model.classifier]
         if architecture == "dinov2":
             return [model.classifier]
         if is_attention_mil_architecture(architecture):
@@ -2670,6 +2463,10 @@ class ModelManager:
             if backbone is None:
                 raise ValueError(f"{architecture} does not expose a backbone for partial fine-tuning.")
             self._unfreeze_last_children(backbone, block_count)
+            return
+
+        if normalized == "efficientnet_v2_s_dinov2_lesion_mil":
+            self._unfreeze_last_children(model.full_backbone.features, block_count)
             return
 
         raise ValueError(f"Partial fine-tuning is not supported for architecture: {architecture}")
@@ -3043,18 +2840,38 @@ class ModelManager:
             return DEFAULT_CASE_AGGREGATION
         return normalized
 
+    def _bag_inputs_to_device(
+        self,
+        batch_inputs: torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor],
+        device: str,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        if isinstance(batch_inputs, tuple):
+            return tuple(item.to(device) for item in batch_inputs)
+        if isinstance(batch_inputs, list):
+            return tuple(item.to(device) for item in batch_inputs)
+        return batch_inputs.to(device)
+
     def _bag_forward(
         self,
         model: nn.Module,
-        batch_inputs: torch.Tensor,
+        batch_inputs: torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor],
         batch_mask: torch.Tensor | None = None,
         *,
         return_attention: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        paired_inputs = isinstance(batch_inputs, (tuple, list))
         if batch_mask is None:
+            if paired_inputs:
+                if return_attention:
+                    return model(*batch_inputs, return_attention=True)
+                return model(*batch_inputs)
             if return_attention:
                 return model(batch_inputs, return_attention=True)
             return model(batch_inputs)
+        if paired_inputs:
+            if return_attention:
+                return model(*batch_inputs, bag_mask=batch_mask, return_attention=True)
+            return model(*batch_inputs, bag_mask=batch_mask)
         if return_attention:
             return model(batch_inputs, bag_mask=batch_mask, return_attention=True)
         return model(batch_inputs, batch_mask)
@@ -3071,7 +2888,7 @@ class ModelManager:
         positive_probabilities: list[float] = []
         with torch.no_grad():
             for batch_inputs, batch_mask, batch_labels in loader:
-                batch_inputs = batch_inputs.to(device)
+                batch_inputs = self._bag_inputs_to_device(batch_inputs, device)
                 batch_mask = batch_mask.to(device)
                 batch_labels = batch_labels.to(device)
                 logits = self._bag_forward(model, batch_inputs, batch_mask)
@@ -3533,9 +3350,11 @@ class ModelManager:
         test_records = [record for patient_id in test_patient_ids for record in patient_to_records[patient_id]]
 
         preprocess_metadata = self.preprocess_metadata()
-        train_ds = VisitBagDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
-        val_ds = VisitBagDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
-        test_ds = VisitBagDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+        dataset_cls = VisitPairedBagDataset if is_paired_attention_mil_architecture(architecture) else VisitBagDataset
+        collate_fn = collate_visit_paired_bags if is_paired_attention_mil_architecture(architecture) else collate_visit_bags
+        train_ds = dataset_cls(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+        val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+        test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
 
         train_case_count = len(train_ds)
         val_case_count = len(val_ds)
@@ -3544,9 +3363,9 @@ class ModelManager:
             raise ValueError("Attention MIL training requires at least one visit in each train/val/test split.")
 
         bs = max(1, min(batch_size, train_case_count))
-        train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, collate_fn=collate_visit_bags)
-        val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, val_case_count)), shuffle=False, collate_fn=collate_visit_bags)
-        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, test_case_count)), shuffle=False, collate_fn=collate_visit_bags)
+        train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, collate_fn=collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, val_case_count)), shuffle=False, collate_fn=collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, test_case_count)), shuffle=False, collate_fn=collate_fn)
 
         model, resolved_pretraining_source, ssl_metadata = self.build_model_for_training(
             architecture,
@@ -3599,7 +3418,7 @@ class ModelManager:
             model.train()
             train_losses: list[float] = []
             for batch_inputs, batch_mask, batch_labels in train_loader:
-                batch_inputs = batch_inputs.to(device)
+                batch_inputs = self._bag_inputs_to_device(batch_inputs, device)
                 batch_mask = batch_mask.to(device)
                 batch_labels = batch_labels.to(device)
                 optimizer.zero_grad()
@@ -3615,7 +3434,7 @@ class ModelManager:
             total = 0
             with torch.no_grad():
                 for batch_inputs, batch_mask, batch_labels in val_loader:
-                    batch_inputs = batch_inputs.to(device)
+                    batch_inputs = self._bag_inputs_to_device(batch_inputs, device)
                     batch_mask = batch_mask.to(device)
                     batch_labels = batch_labels.to(device)
                     preds = torch.argmax(self._bag_forward(model, batch_inputs, batch_mask), dim=1)

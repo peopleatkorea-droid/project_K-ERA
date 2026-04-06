@@ -52,6 +52,35 @@ from kera_research.domain import (
     utc_now,
     visit_index_from_label,
 )
+from kera_research.services.data_plane_case_history import (
+    case_history_path as _case_history_path_impl,
+    load_case_history as _load_case_history_impl,
+    record_case_contribution_history as _record_case_contribution_history_impl,
+    record_case_validation_history as _record_case_validation_history_impl,
+    resolve_visit_reference as _resolve_visit_reference_impl,
+)
+from kera_research.services.data_plane_jobs import (
+    artifact_files as _artifact_files_impl,
+    claim_next_job as _claim_next_job_impl,
+    delete_jobs as _delete_jobs_impl,
+    enqueue_job as _enqueue_job_impl,
+    get_job as _get_job_impl,
+    heartbeat_job as _heartbeat_job_impl,
+    job_row_to_dict as _job_row_to_dict_impl,
+    list_jobs as _list_jobs_impl,
+    request_job_cancel as _request_job_cancel_impl,
+    requeue_stale_jobs as _requeue_stale_jobs_impl,
+    update_job_status as _update_job_status_impl,
+)
+from kera_research.services.data_plane_previews import (
+    delete_image_preview_cache as _delete_image_preview_cache_impl,
+    ensure_image_preview as _ensure_image_preview_impl,
+    image_preview_cache_path as _image_preview_cache_path_impl,
+)
+from kera_research.services.data_plane_queries import (
+    list_case_summaries as _list_case_summaries_impl,
+    list_patient_case_rows as _list_patient_case_rows_impl,
+)
 from kera_research.services.quality import score_slit_lamp_image
 from kera_research.storage import ensure_dir, read_json, write_csv, write_json
 
@@ -604,8 +633,7 @@ class SiteStore:
             return result
 
     def _case_history_path(self, patient_id: str, visit_date: str) -> Path:
-        patient_dir = ensure_dir(self.case_history_dir / _safe_path_component(patient_id))
-        return patient_dir / f"{_safe_path_component(visit_date)}.json"
+        return _case_history_path_impl(self, patient_id, visit_date)
 
     def _repair_legacy_visit_labels_once(self) -> None:
         with _SITE_LEGACY_VISIT_LABEL_REPAIRED_LOCK:
@@ -681,87 +709,16 @@ class SiteStore:
         return dict(row) if row else None
 
     def _resolve_visit_reference(self, patient_id: str, visit_date: str) -> tuple[str, str]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        requested_visit_date = _coerce_optional_text(visit_date)
-        if requested_visit_date:
-            existing_visit = self.get_visit(normalized_patient_id, requested_visit_date)
-            if existing_visit is not None:
-                return (
-                    _coerce_optional_text(existing_visit.get("patient_id")) or normalized_patient_id,
-                    _coerce_optional_text(existing_visit.get("visit_date")) or requested_visit_date,
-                )
-        return normalized_patient_id, requested_visit_date
+        return _resolve_visit_reference_impl(self, patient_id, visit_date)
 
     def load_case_history(self, patient_id: str, visit_date: str) -> dict[str, list[dict[str, Any]]]:
-        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
-        history_path = self._case_history_path(resolved_patient_id, resolved_visit_date)
-        payload = read_json(history_path, {"validations": [], "contributions": []})
-        validations = [
-            dict(remap_bundle_paths_in_value(dict(item))) for item in payload.get("validations", []) if isinstance(item, dict)
-        ]
-        contributions = [
-            dict(remap_bundle_paths_in_value(dict(item))) for item in payload.get("contributions", []) if isinstance(item, dict)
-        ]
-        validations.sort(
-            key=lambda item: (
-                str(item.get("run_date") or ""),
-                str(item.get("validation_id") or ""),
-            ),
-            reverse=True,
-        )
-        contributions.sort(
-            key=lambda item: (
-                str(item.get("created_at") or ""),
-                str(item.get("contribution_id") or ""),
-            ),
-            reverse=True,
-        )
-        return {
-            "validations": validations,
-            "contributions": contributions,
-        }
+        return _load_case_history_impl(self, patient_id, visit_date)
 
     def record_case_validation_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
-        history = self.load_case_history(resolved_patient_id, resolved_visit_date)
-        validation_id = str(entry.get("validation_id") or "").strip()
-        if validation_id:
-            history["validations"] = [
-                item
-                for item in history["validations"]
-                if str(item.get("validation_id") or "").strip() != validation_id
-            ]
-        history["validations"].append(dict(entry))
-        history["validations"].sort(
-            key=lambda item: (
-                str(item.get("run_date") or ""),
-                str(item.get("validation_id") or ""),
-            ),
-            reverse=True,
-        )
-        write_json(self._case_history_path(resolved_patient_id, resolved_visit_date), history)
-        return history
+        return _record_case_validation_history_impl(self, patient_id, visit_date, entry)
 
     def record_case_contribution_history(self, patient_id: str, visit_date: str, entry: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        resolved_patient_id, resolved_visit_date = self._resolve_visit_reference(patient_id, visit_date)
-        history = self.load_case_history(resolved_patient_id, resolved_visit_date)
-        contribution_id = str(entry.get("contribution_id") or "").strip()
-        if contribution_id:
-            history["contributions"] = [
-                item
-                for item in history["contributions"]
-                if str(item.get("contribution_id") or "").strip() != contribution_id
-            ]
-        history["contributions"].append(dict(entry))
-        history["contributions"].sort(
-            key=lambda item: (
-                str(item.get("created_at") or ""),
-                str(item.get("contribution_id") or ""),
-            ),
-            reverse=True,
-        )
-        write_json(self._case_history_path(resolved_patient_id, resolved_visit_date), history)
-        return history
+        return _record_case_contribution_history_impl(self, patient_id, visit_date, entry)
 
     def list_patients(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
         self._sync_raw_inventory_metadata_if_due()
@@ -2317,198 +2274,24 @@ class SiteStore:
         }
 
     def image_preview_cache_path(self, image_id: str, max_side: int) -> Path:
-        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
-        preview_dir = ensure_dir(self.image_preview_dir / str(normalized_max_side))
-        return preview_dir / f"{image_id}.jpg"
+        return _image_preview_cache_path_impl(self, image_id, max_side)
 
     def delete_image_preview_cache(self, image_id: str) -> int:
-        normalized_image_id = str(image_id or "").strip()
-        if not normalized_image_id:
-            return 0
-        deleted_count = 0
-        for preview_path in self.image_preview_dir.glob(f"*/{normalized_image_id}.jpg"):
-            preview_path.unlink(missing_ok=True)
-            deleted_count += 1
-        return deleted_count
+        return _delete_image_preview_cache_impl(self, image_id)
 
     def ensure_image_preview(self, image: dict[str, Any], max_side: int) -> Path:
-        image_id = str(image.get("image_id") or "").strip()
-        if not image_id:
-            raise ValueError("Image id is required.")
-        normalized_max_side = min(max(int(max_side or 512), 96), 1024)
-        preview_path = self.image_preview_cache_path(image_id, normalized_max_side)
-        # Uploaded source images are immutable in this workspace, so a cached preview
-        # can be served immediately without re-touching the original OneDrive file.
-        if preview_path.exists():
-            return preview_path
-
-        image_path = Path(str(image.get("image_path") or "")).resolve()
-        if not image_path.exists():
-            raise ValueError("Image file not found on disk.")
-
-        temp_path = preview_path.with_suffix(
-            f".{os.getpid()}.{threading.get_ident()}.tmp"
-        )
-        resampling = getattr(Image, "Resampling", Image)
-
-        try:
-            with Image.open(image_path) as handle:
-                normalized = ImageOps.exif_transpose(handle)
-                preview = normalized.copy()
-                preview.thumbnail((normalized_max_side, normalized_max_side), resampling.LANCZOS)
-                if preview.mode not in {"RGB", "L"}:
-                    preview = preview.convert("RGB")
-                preview.save(temp_path, format="JPEG", quality=82, optimize=True)
-            temp_path.replace(preview_path)
-        except (OSError, UnidentifiedImageError, ValueError):
-            temp_path.unlink(missing_ok=True)
-            raise
-
-        return preview_path
+        return _ensure_image_preview_impl(self, image, max_side)
 
     def list_case_summaries(
         self,
         created_by_user_id: str | None = None,
         patient_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Optimized case summaries using a single JOIN query."""
-        patient_table = db_patients.alias("p")
-        visit_table = db_visits.alias("v")
-        image_table = db_images.alias("i")
-        normalized_patient_id = (
-            normalize_patient_pseudonym(patient_id)
-            if str(patient_id or "").strip()
-            else None
+        return _list_case_summaries_impl(
+            self,
+            created_by_user_id=created_by_user_id,
+            patient_id=patient_id,
         )
-
-        # Subquery for image aggregates per visit
-        image_stats = (
-            select(
-                image_table.c.visit_id,
-                func.count(image_table.c.image_id).label("image_count"),
-                func.max(image_table.c.uploaded_at).label("latest_image_uploaded_at"),
-            )
-            .where(image_table.c.site_id == self.site_id)
-            .group_by(image_table.c.visit_id)
-            .subquery("image_stats")
-        )
-
-        # Subquery for representative image per visit
-        representative_images = (
-            select(
-                image_table.c.visit_id,
-                image_table.c.image_id.label("representative_image_id"),
-                image_table.c.view.label("representative_view"),
-            )
-            .where(
-                and_(
-                    image_table.c.site_id == self.site_id,
-                    image_table.c.is_representative == True,
-                )
-            )
-            .subquery("representative_images")
-        )
-
-        # Main query with LEFT JOINs
-        query = (
-            select(
-                visit_table.c.visit_id,
-                visit_table.c.patient_id,
-                visit_table.c.patient_reference_id,
-                visit_table.c.visit_date,
-                visit_table.c.visit_index,
-                visit_table.c.actual_visit_date,
-                visit_table.c.culture_category,
-                visit_table.c.culture_species,
-                visit_table.c.additional_organisms,
-                visit_table.c.contact_lens_use,
-                visit_table.c.predisposing_factor,
-                visit_table.c.other_history,
-                visit_table.c.visit_status,
-                visit_table.c.active_stage,
-                visit_table.c.is_initial_visit,
-                visit_table.c.smear_result,
-                visit_table.c.polymicrobial,
-                visit_table.c.research_registry_status,
-                visit_table.c.research_registry_updated_at,
-                visit_table.c.research_registry_updated_by,
-                visit_table.c.research_registry_source,
-                visit_table.c.created_at,
-                patient_table.c.chart_alias,
-                patient_table.c.local_case_code,
-                patient_table.c.sex,
-                patient_table.c.age,
-                patient_table.c.created_by_user_id,
-                func.coalesce(image_stats.c.image_count, 0).label("image_count"),
-                image_stats.c.latest_image_uploaded_at,
-                representative_images.c.representative_image_id,
-                representative_images.c.representative_view,
-            )
-            .select_from(
-                visit_table
-                .join(
-                    patient_table,
-                    and_(
-                        visit_table.c.site_id == patient_table.c.site_id,
-                        visit_table.c.patient_id == patient_table.c.patient_id,
-                    ),
-                )
-                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
-                .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
-            )
-            .where(and_(visit_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
-            .order_by(
-                desc(visit_table.c.visit_index),
-                desc(image_stats.c.latest_image_uploaded_at),
-                desc(visit_table.c.created_at),
-            )
-        )
-
-        if created_by_user_id:
-            query = query.where(patient_table.c.created_by_user_id == created_by_user_id)
-        if normalized_patient_id:
-            query = query.where(visit_table.c.patient_id == normalized_patient_id)
-
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-
-        return [
-            {
-                "case_id": f"{row['patient_id']}::{row['visit_date']}",
-                "visit_id": row["visit_id"],
-                "patient_id": row["patient_id"],
-                "patient_reference_id": row["patient_reference_id"],
-                "visit_date": row["visit_date"],
-                "visit_index": row["visit_index"],
-                "actual_visit_date": row["actual_visit_date"],
-                "chart_alias": row["chart_alias"] or "",
-                "local_case_code": row["local_case_code"] or "",
-                "sex": row["sex"] or "",
-                "age": row["age"],
-                "culture_category": row["culture_category"] or "",
-                "culture_species": row["culture_species"] or "",
-                "additional_organisms": row["additional_organisms"] or [],
-                "contact_lens_use": row["contact_lens_use"] or "",
-                "predisposing_factor": row["predisposing_factor"] or [],
-                "other_history": row["other_history"] or "",
-                "visit_status": row["visit_status"] or "active",
-                "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
-                "is_initial_visit": bool(row["is_initial_visit"]),
-                "smear_result": row["smear_result"] or "",
-                "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
-                "research_registry_status": row["research_registry_status"] or "analysis_only",
-                "research_registry_updated_at": row["research_registry_updated_at"],
-                "research_registry_updated_by": row["research_registry_updated_by"],
-                "research_registry_source": row["research_registry_source"],
-                "image_count": int(row["image_count"] or 0),
-                "representative_image_id": row["representative_image_id"],
-                "representative_view": row["representative_view"],
-                "created_by_user_id": row["created_by_user_id"],
-                "created_at": row["created_at"],
-                "latest_image_uploaded_at": row["latest_image_uploaded_at"],
-            }
-            for row in rows
-        ]
 
     def list_patient_case_rows(
         self,
@@ -2518,311 +2301,13 @@ class SiteStore:
         page: int = 1,
         page_size: int = 25,
     ) -> dict[str, Any]:
-        """Optimized patient case rows with DB-level pagination and search."""
-        normalized_search = str(search or "").strip().lower()
-        bounded_page_size = max(1, min(int(page_size or 25), 100))
-        safe_page = max(1, int(page or 1))
-
-        patient_table = db_patients.alias("p")
-        visit_table = db_visits.alias("v")
-        image_table = db_images.alias("i")
-
-        # Image stats subquery
-        image_stats = (
-            select(
-                image_table.c.visit_id,
-                func.count(image_table.c.image_id).label("image_count"),
-                func.max(image_table.c.uploaded_at).label("latest_image_uploaded_at"),
-            )
-            .where(image_table.c.site_id == self.site_id)
-            .group_by(image_table.c.visit_id)
-            .subquery("image_stats")
+        return _list_patient_case_rows_impl(
+            self,
+            created_by_user_id=created_by_user_id,
+            search=search,
+            page=page,
+            page_size=page_size,
         )
-
-        # Representative image subquery
-        representative_images = (
-            select(
-                image_table.c.visit_id,
-                image_table.c.image_id.label("representative_image_id"),
-                image_table.c.view.label("representative_view"),
-            )
-            .where(
-                and_(
-                    image_table.c.site_id == self.site_id,
-                    image_table.c.is_representative == True,
-                )
-            )
-            .subquery("representative_images")
-        )
-
-        # Patient summary subquery (latest case per patient)
-        patient_latest = (
-            select(
-                visit_table.c.patient_id,
-                func.count(visit_table.c.visit_id).label("case_count"),
-                func.max(
-                    visit_table.c.visit_index * 1000000000000 +
-                    func.coalesce(func.length(visit_table.c.created_at), 0)
-                ).label("sort_key"),
-            )
-            .where(and_(visit_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
-            .group_by(visit_table.c.patient_id)
-            .subquery("patient_latest")
-        )
-
-        # Build search conditions
-        search_conditions = []
-        fts_match_query = (
-            _sqlite_patient_case_match_query(normalized_search)
-            if normalized_search and data_plane_sqlite_search_ready()
-            else None
-        )
-        if fts_match_query:
-            fts_search = table(
-                "patient_case_search",
-                column("site_id"),
-                column("visit_id"),
-            )
-            matching_visit_ids = (
-                select(fts_search.c.visit_id)
-                .select_from(fts_search)
-                .where(
-                    and_(
-                        fts_search.c.site_id == self.site_id,
-                        literal_column("patient_case_search").op("MATCH")(fts_match_query),
-                    )
-                )
-            )
-            search_conditions = [visit_table.c.visit_id.in_(matching_visit_ids)]
-        elif normalized_search:
-            search_pattern = f"%{normalized_search}%"
-            search_conditions = [
-                or_(
-                    patient_table.c.patient_id.ilike(search_pattern),
-                    patient_table.c.local_case_code.ilike(search_pattern),
-                    patient_table.c.chart_alias.ilike(search_pattern),
-                    visit_table.c.culture_category.ilike(search_pattern),
-                    visit_table.c.culture_species.ilike(search_pattern),
-                    visit_table.c.visit_date.ilike(search_pattern),
-                    visit_table.c.actual_visit_date.ilike(search_pattern),
-                )
-            ]
-
-        # Count query for total patients matching search
-        count_base = (
-            select(func.count(func.distinct(visit_table.c.patient_id)))
-            .select_from(
-                visit_table.join(
-                    patient_table,
-                    and_(
-                        visit_table.c.site_id == patient_table.c.site_id,
-                        visit_table.c.patient_id == patient_table.c.patient_id,
-                    ),
-                )
-            )
-            .where(and_(visit_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
-        )
-        if created_by_user_id:
-            count_base = count_base.where(patient_table.c.created_by_user_id == created_by_user_id)
-        if search_conditions:
-            count_base = count_base.where(and_(*search_conditions))
-
-        # Run all three queries in a single connection to avoid repeated connection
-        # overhead and reduce lock contention on SQLite.
-        patient_ids_query_base = (
-            select(
-                patient_table.c.patient_id,
-                patient_latest.c.case_count,
-                func.max(image_stats.c.latest_image_uploaded_at).label("max_upload"),
-                func.max(visit_table.c.created_at).label("max_created"),
-                func.max(visit_table.c.visit_index).label("max_visit_index"),
-            )
-            .select_from(
-                patient_table
-                .join(
-                    visit_table,
-                    and_(
-                        patient_table.c.site_id == visit_table.c.site_id,
-                        patient_table.c.patient_id == visit_table.c.patient_id,
-                    ),
-                )
-                .join(patient_latest, patient_table.c.patient_id == patient_latest.c.patient_id)
-                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
-            )
-            .where(and_(patient_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
-            .group_by(patient_table.c.patient_id, patient_latest.c.case_count)
-        )
-        if created_by_user_id:
-            patient_ids_query_base = patient_ids_query_base.where(patient_table.c.created_by_user_id == created_by_user_id)
-        if search_conditions:
-            patient_ids_query_base = patient_ids_query_base.where(and_(*search_conditions))
-
-        cases_query_base = (
-            select(
-                visit_table.c.visit_id,
-                visit_table.c.patient_id,
-                visit_table.c.patient_reference_id,
-                visit_table.c.visit_date,
-                visit_table.c.visit_index,
-                visit_table.c.actual_visit_date,
-                visit_table.c.culture_category,
-                visit_table.c.culture_species,
-                visit_table.c.additional_organisms,
-                visit_table.c.contact_lens_use,
-                visit_table.c.predisposing_factor,
-                visit_table.c.other_history,
-                visit_table.c.visit_status,
-                visit_table.c.active_stage,
-                visit_table.c.is_initial_visit,
-                visit_table.c.smear_result,
-                visit_table.c.polymicrobial,
-                visit_table.c.research_registry_status,
-                visit_table.c.created_at,
-                patient_table.c.chart_alias,
-                patient_table.c.local_case_code,
-                patient_table.c.sex,
-                patient_table.c.age,
-                patient_table.c.created_by_user_id,
-                func.coalesce(image_stats.c.image_count, 0).label("image_count"),
-                image_stats.c.latest_image_uploaded_at,
-                representative_images.c.representative_image_id,
-                representative_images.c.representative_view,
-            )
-            .select_from(
-                visit_table
-                .join(
-                    patient_table,
-                    and_(
-                        visit_table.c.site_id == patient_table.c.site_id,
-                        visit_table.c.patient_id == patient_table.c.patient_id,
-                    ),
-                )
-                .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
-                .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
-            )
-            .where(and_(visit_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
-            .order_by(
-                desc(image_stats.c.latest_image_uploaded_at),
-                desc(visit_table.c.created_at),
-                desc(visit_table.c.visit_index),
-            )
-        )
-
-        with DATA_PLANE_ENGINE.connect() as conn:
-            total_count = conn.execute(count_base).scalar() or 0
-
-            total_pages = max(1, (total_count + bounded_page_size - 1) // bounded_page_size)
-            safe_page = min(safe_page, total_pages) if total_pages > 0 else 1
-            offset = (safe_page - 1) * bounded_page_size
-
-            patient_ids_query = (
-                patient_ids_query_base
-                .order_by(
-                    desc(func.coalesce(func.max(image_stats.c.latest_image_uploaded_at), "")),
-                    desc(func.max(visit_table.c.created_at)),
-                    desc(func.max(visit_table.c.visit_index)),
-                )
-                .limit(bounded_page_size)
-                .offset(offset)
-            )
-            patient_rows = conn.execute(patient_ids_query).mappings().all()
-
-            if not patient_rows:
-                return {
-                    "items": [],
-                    "page": safe_page,
-                    "page_size": bounded_page_size,
-                    "total_count": total_count,
-                    "total_pages": total_pages,
-                }
-
-            patient_ids = [row["patient_id"] for row in patient_rows]
-            case_counts = {row["patient_id"]: int(row["case_count"] or 0) for row in patient_rows}
-
-            cases_query = cases_query_base.where(visit_table.c.patient_id.in_(patient_ids))
-            case_rows = conn.execute(cases_query).mappings().all()
-
-        # Group cases by patient
-        cases_by_patient: dict[str, list[dict[str, Any]]] = {}
-        for row in case_rows:
-            patient_id = row["patient_id"]
-            case_record = {
-                "case_id": f"{row['patient_id']}::{row['visit_date']}",
-                "visit_id": row["visit_id"],
-                "patient_id": row["patient_id"],
-                "patient_reference_id": row["patient_reference_id"],
-                "visit_date": row["visit_date"],
-                "visit_index": row["visit_index"],
-                "actual_visit_date": row["actual_visit_date"],
-                "chart_alias": row["chart_alias"] or "",
-                "local_case_code": row["local_case_code"] or "",
-                "sex": row["sex"] or "",
-                "age": row["age"],
-                "culture_category": row["culture_category"] or "",
-                "culture_species": row["culture_species"] or "",
-                "additional_organisms": row["additional_organisms"] or [],
-                "contact_lens_use": row["contact_lens_use"] or "",
-                "predisposing_factor": row["predisposing_factor"] or [],
-                "other_history": row["other_history"] or "",
-                "visit_status": row["visit_status"] or "active",
-                "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
-                "is_initial_visit": bool(row["is_initial_visit"]),
-                "smear_result": row["smear_result"] or "",
-                "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
-                "research_registry_status": row["research_registry_status"] or "analysis_only",
-                "image_count": int(row["image_count"] or 0),
-                "representative_image_id": row["representative_image_id"],
-                "representative_view": row["representative_view"],
-                "created_by_user_id": row["created_by_user_id"],
-                "created_at": row["created_at"],
-                "latest_image_uploaded_at": row["latest_image_uploaded_at"],
-            }
-            cases_by_patient.setdefault(patient_id, []).append(case_record)
-
-        # Build result rows maintaining the order from patient_ids
-        rows: list[dict[str, Any]] = []
-        for patient_id in patient_ids:
-            cases = cases_by_patient.get(patient_id, [])
-            if not cases:
-                continue
-            sorted_cases = sorted(cases, key=_case_summary_sort_key, reverse=True)
-            latest_case = sorted_cases[0]
-            representative_cases = [
-                item
-                for item in sorted_cases
-                if item.get("representative_image_id")
-            ]
-            rows.append(
-                {
-                    "patient_id": patient_id,
-                    "latest_case": latest_case,
-                    "case_count": case_counts.get(patient_id, len(sorted_cases)),
-                    "representative_thumbnail_count": len(representative_cases),
-                    "organism_summary": _organism_summary_label(
-                        str(latest_case.get("culture_category") or ""),
-                        str(latest_case.get("culture_species") or ""),
-                        latest_case.get("additional_organisms", []) or [],
-                        max_visible_species=2,
-                    ),
-                    "representative_thumbnails": [
-                        {
-                            "case_id": item["case_id"],
-                            "image_id": item["representative_image_id"],
-                            "view": item.get("representative_view"),
-                            "preview_url": None,
-                        }
-                        for item in representative_cases
-                    ][:3],
-                }
-            )
-
-        return {
-            "items": rows,
-            "page": safe_page,
-            "page_size": bounded_page_size,
-            "total_count": total_count,
-            "total_pages": total_pages,
-        }
 
     def update_visit_registry_status(
         self,
@@ -3338,26 +2823,7 @@ class SiteStore:
 
     @staticmethod
     def _job_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "job_id": row["job_id"],
-            "site_id": row["site_id"],
-            "job_type": row["job_type"],
-            "queue_name": row.get("queue_name", "default"),
-            "priority": int(row.get("priority") or 100),
-            "status": row["status"],
-            "attempt_count": int(row.get("attempt_count") or 0),
-            "max_attempts": int(row.get("max_attempts") or 1),
-            "claimed_by": row.get("claimed_by"),
-            "claimed_at": row.get("claimed_at"),
-            "heartbeat_at": row.get("heartbeat_at"),
-            "available_at": row.get("available_at"),
-            "started_at": row.get("started_at"),
-            "finished_at": row.get("finished_at"),
-            "payload": row["payload_json"],
-            "result": row["result_json"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return _job_row_to_dict_impl(row)
 
     def enqueue_job(
         self,
@@ -3369,134 +2835,30 @@ class SiteStore:
         max_attempts: int = 1,
         available_at: str | None = None,
     ) -> dict[str, Any]:
-        created_at = utc_now()
-        record = {
-            "job_id": make_id("job"),
-            "site_id": self.site_id,
-            "job_type": job_type,
-            "status": "queued",
-            "queue_name": queue_name,
-            "priority": int(priority),
-            "attempt_count": 0,
-            "max_attempts": max(1, int(max_attempts)),
-            "claimed_by": None,
-            "claimed_at": None,
-            "heartbeat_at": None,
-            "available_at": available_at or created_at,
-            "started_at": None,
-            "finished_at": None,
-            "payload_json": payload,
-            "result_json": None,
-            "created_at": created_at,
-            "updated_at": None,
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(site_jobs.insert().values(**record))
-        return self._job_row_to_dict(record)
+        return _enqueue_job_impl(
+            self,
+            job_type,
+            payload,
+            queue_name=queue_name,
+            priority=priority,
+            max_attempts=max_attempts,
+            available_at=available_at,
+        )
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
-        query = select(site_jobs).where(site_jobs.c.site_id == self.site_id).order_by(site_jobs.c.created_at.desc())
-        if status:
-            query = query.where(site_jobs.c.status == status)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [self._job_row_to_dict(row) for row in rows]
+        return _list_jobs_impl(self, status=status)
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(
-                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-            ).mappings().first()
-        if row is None:
-            return None
-        return self._job_row_to_dict(row)
+        return _get_job_impl(self, job_id)
 
     def delete_jobs(self, *, job_type: str | None = None) -> int:
-        query = delete(site_jobs).where(site_jobs.c.site_id == self.site_id)
-        normalized_job_type = str(job_type or "").strip()
-        if normalized_job_type:
-            query = query.where(site_jobs.c.job_type == normalized_job_type)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            result = conn.execute(query)
-        return int(result.rowcount or 0)
+        return _delete_jobs_impl(self, job_type=job_type)
 
     def request_job_cancel(self, job_id: str) -> dict[str, Any] | None:
-        with DATA_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-            ).mappings().first()
-            if existing is None:
-                return None
-
-            current_status = str(existing.get("status") or "").strip().lower()
-            if current_status in {"completed", "failed", "cancelled"}:
-                return self._job_row_to_dict(existing)
-
-            result_json = dict(existing.get("result_json") or {})
-            progress = dict(result_json.get("progress") or {})
-            now = utc_now()
-
-            if current_status == "queued":
-                next_status = "cancelled"
-                progress = {
-                    **progress,
-                    "stage": "cancelled",
-                    "message": "Job cancelled before execution.",
-                    "percent": int(progress.get("percent", 0) or 0),
-                }
-                values: dict[str, Any] = {
-                    "status": next_status,
-                    "result_json": {**result_json, "progress": progress},
-                    "finished_at": now,
-                    "updated_at": now,
-                }
-            else:
-                next_status = "cancelling"
-                progress = {
-                    **progress,
-                    "stage": "cancelling",
-                    "message": "Cancellation requested. Waiting for the worker to stop safely.",
-                    "percent": int(progress.get("percent", 0) or 0),
-                }
-                values = {
-                    "status": next_status,
-                    "result_json": {**result_json, "progress": progress},
-                    "updated_at": now,
-                }
-
-            conn.execute(
-                update(site_jobs)
-                .where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-                .values(**values)
-            )
-            row = conn.execute(
-                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-            ).mappings().first()
-        return self._job_row_to_dict(row) if row is not None else None
+        return _request_job_cancel_impl(self, job_id)
 
     def update_job_status(self, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
-        with DATA_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(
-                select(site_jobs).where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-            ).mappings().first()
-            if existing is None:
-                return
-            result_json = result if result is not None else existing["result_json"]
-            values: dict[str, Any] = {
-                "status": status,
-                "result_json": result_json,
-                "updated_at": utc_now(),
-            }
-            if status == "running":
-                values["heartbeat_at"] = values["updated_at"]
-                values["started_at"] = existing.get("started_at") or values["updated_at"]
-            if status in {"completed", "failed", "cancelled"}:
-                values["finished_at"] = values["updated_at"]
-            conn.execute(
-                update(site_jobs)
-                .where(and_(site_jobs.c.site_id == self.site_id, site_jobs.c.job_id == job_id))
-                .values(**values)
-            )
+        _update_job_status_impl(self, job_id, status, result=result)
 
     @staticmethod
     def claim_next_job(
@@ -3505,114 +2867,19 @@ class SiteStore:
         queue_names: list[str] | None = None,
         site_id: str | None = None,
     ) -> dict[str, Any] | None:
-        init_data_plane_db()
-        now = utc_now()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            query = select(site_jobs).where(
-                and_(
-                    site_jobs.c.status == "queued",
-                    or_(site_jobs.c.available_at.is_(None), site_jobs.c.available_at <= now),
-                )
-            )
-            if queue_names:
-                query = query.where(site_jobs.c.queue_name.in_(queue_names))
-            if site_id:
-                query = query.where(site_jobs.c.site_id == site_id)
-            query = query.order_by(site_jobs.c.priority.asc(), site_jobs.c.created_at.asc())
-            candidates = conn.execute(query.limit(20)).mappings().all()
-            for candidate in candidates:
-                updated = conn.execute(
-                    update(site_jobs)
-                    .where(and_(site_jobs.c.job_id == candidate["job_id"], site_jobs.c.status == "queued"))
-                    .values(
-                        status="running",
-                        attempt_count=int(candidate.get("attempt_count") or 0) + 1,
-                        claimed_by=worker_id,
-                        claimed_at=now,
-                        heartbeat_at=now,
-                        started_at=candidate.get("started_at") or now,
-                        updated_at=now,
-                    )
-                )
-                if int(updated.rowcount or 0) <= 0:
-                    continue
-                row = conn.execute(select(site_jobs).where(site_jobs.c.job_id == candidate["job_id"])).mappings().first()
-                if row is not None:
-                    return SiteStore._job_row_to_dict(row)
-        return None
+        return _claim_next_job_impl(
+            worker_id,
+            queue_names=queue_names,
+            site_id=site_id,
+        )
 
     @staticmethod
     def heartbeat_job(job_id: str, worker_id: str) -> None:
-        init_data_plane_db()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(site_jobs)
-                .where(
-                    and_(
-                        site_jobs.c.job_id == job_id,
-                        site_jobs.c.status == "running",
-                        site_jobs.c.claimed_by == worker_id,
-                    )
-                )
-                .values(
-                    heartbeat_at=utc_now(),
-                    updated_at=utc_now(),
-                )
-            )
+        _heartbeat_job_impl(job_id, worker_id)
 
     @staticmethod
     def requeue_stale_jobs(*, heartbeat_before: str) -> int:
-        init_data_plane_db()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(
-                select(site_jobs).where(
-                    and_(
-                        site_jobs.c.status == "running",
-                        site_jobs.c.heartbeat_at.is_not(None),
-                        site_jobs.c.heartbeat_at < heartbeat_before,
-                    )
-                )
-            ).mappings().all()
-            requeued = 0
-            for row in rows:
-                attempt_count = int(row.get("attempt_count") or 0)
-                max_attempts = int(row.get("max_attempts") or 1)
-                if attempt_count < max_attempts:
-                    conn.execute(
-                        update(site_jobs)
-                        .where(site_jobs.c.job_id == row["job_id"])
-                        .values(
-                            status="queued",
-                            claimed_by=None,
-                            claimed_at=None,
-                            heartbeat_at=None,
-                            available_at=utc_now(),
-                            updated_at=utc_now(),
-                        )
-                    )
-                else:
-                    failure_result = dict(row.get("result_json") or {})
-                    failure_result.setdefault("error", "Job lease expired.")
-                    conn.execute(
-                        update(site_jobs)
-                        .where(site_jobs.c.job_id == row["job_id"])
-                        .values(
-                            status="failed",
-                            result_json=failure_result,
-                            finished_at=utc_now(),
-                            updated_at=utc_now(),
-                        )
-                    )
-                requeued += 1
-        return requeued
+        return _requeue_stale_jobs_impl(heartbeat_before=heartbeat_before)
 
     def artifact_files(self, artifact_type: str) -> list[Path]:
-        mapping = {
-            "gradcam": self.gradcam_dir,
-            "medsam_mask": self.medsam_mask_dir,
-            "roi_crop": self.roi_crop_dir,
-            "lesion_mask": self.lesion_mask_dir,
-            "lesion_crop": self.lesion_crop_dir,
-        }
-        directory = mapping[artifact_type]
-        return sorted(directory.glob("*"))
+        return _artifact_files_impl(self, artifact_type)

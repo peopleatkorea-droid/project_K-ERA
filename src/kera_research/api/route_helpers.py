@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any, Callable
+
+import pandas as pd
+from fastapi.responses import Response
 
 from kera_research.domain import visit_label_from_index
 from kera_research.services.control_plane import ControlPlaneStore
@@ -27,6 +31,50 @@ def attach_image_quality_scores(images: list[dict[str, Any]]) -> list[dict[str, 
         }
         for image in images
     ]
+
+
+def load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
+    embedded = update.get("approval_report")
+    if isinstance(embedded, dict):
+        return embedded
+    report_path = str(update.get("approval_report_path") or "").strip()
+    if not report_path:
+        return {}
+    return read_json(Path(report_path), {})
+
+
+def embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | None:
+    media_type = str(artifact.get("media_type") or "application/octet-stream").strip() or "application/octet-stream"
+    encoding = str(artifact.get("encoding") or "").strip().lower()
+    payload = artifact.get("bytes_b64")
+    if encoding != "base64" or not isinstance(payload, str) or not payload.strip():
+        return None
+    try:
+        content = base64.b64decode(payload.encode("ascii"), validate=True)
+    except (ValueError, OSError):
+        return None
+    return Response(content=content, media_type=media_type)
+
+
+def bool_from_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "n"}:
+        return False
+    return default
+
+
+def coerce_text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, float) and pd.isna(value):
+        return default
+    return str(value).strip()
 
 
 def site_level_validation_runs(validation_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -331,3 +379,33 @@ def build_site_activity(
         "recent_contributions": recent_contributions,
         "contribution_leaderboard": cp.get_contribution_leaderboard(user_id=current_user_id, limit=5),
     }
+
+
+def site_comparison_rows(cp: ControlPlaneStore, user: dict[str, Any]) -> list[dict[str, Any]]:
+    visible_sites = cp.list_sites() if user.get("role") == "admin" else cp.accessible_sites_for_user(user)
+    site_index = {site["site_id"]: site for site in visible_sites}
+    summaries_by_site = {
+        item.get("site_id"): item
+        for item in cp.site_validation_site_summaries(list(site_index))
+        if item.get("site_id")
+    }
+    rows: list[dict[str, Any]] = []
+    for site_id, site in site_index.items():
+        summary = summaries_by_site.get(site_id, {})
+        rows.append(
+            {
+                "site_id": site_id,
+                "display_name": site.get("display_name"),
+                "hospital_name": site.get("hospital_name"),
+                "run_count": int(summary.get("run_count") or 0),
+                "accuracy": summary.get("accuracy"),
+                "sensitivity": summary.get("sensitivity"),
+                "specificity": summary.get("specificity"),
+                "F1": summary.get("F1"),
+                "AUROC": summary.get("AUROC"),
+                "latest_validation_id": summary.get("latest_validation_id"),
+                "latest_run_date": summary.get("latest_run_date"),
+            }
+        )
+    rows.sort(key=lambda item: (item.get("accuracy") is not None, item.get("accuracy") or -1), reverse=True)
+    return rows

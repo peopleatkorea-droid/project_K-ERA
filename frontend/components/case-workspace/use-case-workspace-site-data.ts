@@ -956,7 +956,10 @@ function mergeCaseTimelineRecords(...groups: CaseSummaryRecord[][]): CaseSummary
     }
 
     let cancelDeferredHistory: () => void = () => {};
-    const shouldLoadPatientTimelineImmediately = canUseDesktopTransport();
+    // Keep selected-visit rendering responsive, but start patient-wide gallery
+    // hydration immediately when multiple visits are already known.
+    const shouldLoadPatientTimelineImmediately =
+      canUseDesktopTransport() || patientCases.length > 1;
     const deferredHistoryDelayMs = canUseDesktopTransport() ? 12000 : 1600;
     if (shouldLoadPatientTimelineImmediately) {
       void loadPatientCaseGallery();

@@ -1,12 +1,168 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import dataclass
 from typing import Any
 
 
-def build_route_supports(**deps: Any) -> SimpleNamespace:
-    return SimpleNamespace(
-        desktop=SimpleNamespace(
+@dataclass
+class DesktopRouteSupport:
+    get_control_plane: Any
+    google_client_ids: Any
+    desktop_self_check: Any
+    load_node_credentials: Any
+    node_credentials_status: Any
+    save_node_credentials: Any
+    clear_node_credentials: Any
+    database_topology: Any
+    remote_node_os_info: Any
+    local_control_plane_dev_auth_enabled: Any
+    case_reference_salt_fingerprint: Any
+    make_id: Any
+    get_app_version: Any
+    RemoteControlPlaneClient: Any
+    LocalControlPlaneNodeRegisterRequest: Any
+    LocalControlPlaneNodeCredentialsRequest: Any
+    LocalControlPlaneSmokeRequest: Any
+
+
+@dataclass
+class AuthRouteSupport:
+    get_control_plane: Any
+    get_current_user: Any
+    local_login_enabled: Any
+    local_dev_auth_enabled: Any
+    verify_google_id_token: Any
+    build_auth_response: Any
+    LoginRequest: Any
+    GoogleLoginRequest: Any
+    AccessRequestCreateRequest: Any
+
+
+@dataclass
+class AdminRouteSupport:
+    get_control_plane: Any
+    get_approved_user: Any
+    get_workflow: Any
+    require_admin_workspace_permission: Any
+    require_platform_admin: Any
+    require_site_access: Any
+    assert_request_review_permission: Any
+    visible_model_updates: Any
+    is_pending_model_update: Any
+    normalize_storage_root: Any
+    normalize_default_storage_root: Any
+    invalidate_site_storage_root_cache: Any
+    embedded_review_artifact_response: Any
+    load_approval_report: Any
+    site_comparison_rows: Any
+    hash_password: Any
+    registry_orchestrator: Any
+    make_id: Any
+    case_reference_salt_fingerprint: Any
+    AccessRequestReviewRequest: Any
+    StorageSettingsUpdateRequest: Any
+    ModelUpdateReviewRequest: Any
+    ModelVersionPublishRequest: Any
+    ModelVersionAutoPublishRequest: Any
+    AggregationRunRequest: Any
+    ProjectCreateRequest: Any
+    SiteCreateRequest: Any
+    SiteUpdateRequest: Any
+    UserUpsertRequest: Any
+    SiteStorageRootUpdateRequest: Any
+    SiteMetadataRecoveryRequest: Any
+
+
+@dataclass
+class SitesRouteSupport:
+    get_control_plane: Any
+    get_approved_user: Any
+    require_admin_workspace_permission: Any
+    require_validation_permission: Any
+    require_site_access: Any
+    user_can_access_site: Any
+    control_plane_split_enabled: Any
+    local_site_records_for_user: Any
+    get_model_version: Any
+    resolve_execution_device: Any
+    project_id_for_site: Any
+    queue_name_for_job_type: Any
+    get_embedding_backfill_status: Any
+    latest_embedding_backfill_job: Any
+    queue_site_embedding_backfill: Any
+    bool_from_value: Any
+    coerce_text: Any
+    site_level_validation_runs: Any
+    validation_case_rows: Any
+    build_site_activity: Any
+    normalize_storage_root: Any
+    get_workflow: Any
+    import_template_rows: Any
+    model_dir: Any
+    make_id: Any
+    training_architectures: Any
+    load_cross_validation_reports: Any
+    SiteValidationRunRequest: Any
+    InitialTrainingRequest: Any
+    InitialTrainingBenchmarkRequest: Any
+    ResumeBenchmarkRequest: Any
+    EmbeddingBackfillRequest: Any
+    CrossValidationRunRequest: Any
+    SSLPretrainingRunRequest: Any
+    RetrievalBaselineRequest: Any
+
+
+@dataclass
+class CasesRouteSupport:
+    get_control_plane: Any
+    get_approved_user: Any
+    require_site_access: Any
+    user_can_access_site: Any
+    control_plane_split_enabled: Any
+    require_validation_permission: Any
+    require_visit_write_access: Any
+    require_visit_image_write_access: Any
+    require_record_owner: Any
+    image_owner_user_id: Any
+    get_workflow: Any
+    get_semantic_prompt_scorer: Any
+    serialize_lesion_preview_job: Any
+    get_model_version: Any
+    resolve_execution_device: Any
+    project_id_for_site: Any
+    queue_case_embedding_refresh: Any
+    attach_image_quality_scores: Any
+    build_case_history: Any
+    build_patient_trajectory: Any
+    make_id: Any
+    lesion_preview_jobs: Any
+    lesion_preview_jobs_lock: Any
+    max_image_bytes: Any
+    score_slit_lamp_image: Any
+    InvalidImageUploadError: Any
+    PatientCreateRequest: Any
+    PatientUpdateRequest: Any
+    VisitCreateRequest: Any
+    RepresentativeImageRequest: Any
+    LesionBoxRequest: Any
+    CaseValidationRequest: Any
+    CaseAiClinicRequest: Any
+    CaseContributionRequest: Any
+    CaseValidationCompareRequest: Any
+
+
+@dataclass
+class RouteSupports:
+    desktop: DesktopRouteSupport
+    auth: AuthRouteSupport
+    admin: AdminRouteSupport
+    sites: SitesRouteSupport
+    cases: CasesRouteSupport
+
+
+def build_route_supports(**deps: Any) -> RouteSupports:
+    return RouteSupports(
+        desktop=DesktopRouteSupport(
             get_control_plane=deps["get_control_plane"],
             google_client_ids=deps["google_client_ids"],
             desktop_self_check=deps["desktop_self_check"],
@@ -25,7 +181,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             LocalControlPlaneNodeCredentialsRequest=deps["LocalControlPlaneNodeCredentialsRequest"],
             LocalControlPlaneSmokeRequest=deps["LocalControlPlaneSmokeRequest"],
         ),
-        auth=SimpleNamespace(
+        auth=AuthRouteSupport(
             get_control_plane=deps["get_control_plane"],
             get_current_user=deps["get_current_user"],
             local_login_enabled=deps["local_login_enabled"],
@@ -36,7 +192,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             GoogleLoginRequest=deps["GoogleLoginRequest"],
             AccessRequestCreateRequest=deps["AccessRequestCreateRequest"],
         ),
-        admin=SimpleNamespace(
+        admin=AdminRouteSupport(
             get_control_plane=deps["get_control_plane"],
             get_approved_user=deps["get_approved_user"],
             get_workflow=deps["get_workflow"],
@@ -69,7 +225,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             SiteStorageRootUpdateRequest=deps["SiteStorageRootUpdateRequest"],
             SiteMetadataRecoveryRequest=deps["SiteMetadataRecoveryRequest"],
         ),
-        sites=SimpleNamespace(
+        sites=SitesRouteSupport(
             get_control_plane=deps["get_control_plane"],
             get_approved_user=deps["get_approved_user"],
             require_admin_workspace_permission=deps["require_admin_workspace_permission"],
@@ -106,7 +262,7 @@ def build_route_supports(**deps: Any) -> SimpleNamespace:
             SSLPretrainingRunRequest=deps["SSLPretrainingRunRequest"],
             RetrievalBaselineRequest=deps["RetrievalBaselineRequest"],
         ),
-        cases=SimpleNamespace(
+        cases=CasesRouteSupport(
             get_control_plane=deps["get_control_plane"],
             get_approved_user=deps["get_approved_user"],
             require_site_access=deps["require_site_access"],

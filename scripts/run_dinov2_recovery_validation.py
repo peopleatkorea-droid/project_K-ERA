@@ -24,6 +24,7 @@ from kera_research.domain import (
     LABEL_TO_INDEX,
     is_attention_mil_architecture,
     is_lesion_guided_fusion_architecture,
+    is_paired_attention_mil_architecture,
     is_three_scale_lesion_guided_fusion_architecture,
     lesion_guided_fusion_backbone,
 )
@@ -36,7 +37,9 @@ from kera_research.services.modeling import (
     PairedCropDataset,
     ThreeScaleLesionGuidedFusionDataset,
     VisitBagDataset,
+    VisitPairedBagDataset,
     collate_visit_bags,
+    collate_visit_paired_bags,
 )
 from kera_research.services.pipeline import ResearchWorkflowService
 
@@ -561,6 +564,8 @@ def training_input_policy_for_crop_mode(workflow: ResearchWorkflowService, crop_
     if is_three_scale_lesion_guided_fusion_architecture(architecture):
         backbone = lesion_guided_fusion_backbone(architecture) or "unknown"
         return f"medsam_cornea_plus_medium_plus_lesion_triscale_fusion__{backbone}"
+    if is_paired_attention_mil_architecture(architecture):
+        return "raw_full_plus_dinov2_lesion_embedding_visit_mil"
     return workflow.training_workflow._training_input_policy_for_crop_mode(crop_mode)
 
 
@@ -613,26 +618,28 @@ def build_loaders(
         test_records = with_medium_scale(test_records)
 
     if is_attention_mil_architecture(architecture):
-        train_ds = VisitBagDataset(train_records, augment=True, preprocess_metadata=preprocess_metadata)
-        val_ds = VisitBagDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
-        test_ds = VisitBagDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+        dataset_cls = VisitPairedBagDataset if is_paired_attention_mil_architecture(architecture) else VisitBagDataset
+        collate_fn = collate_visit_paired_bags if is_paired_attention_mil_architecture(architecture) else collate_visit_bags
+        train_ds = dataset_cls(train_records, augment=True, preprocess_metadata=preprocess_metadata)
+        val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+        test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
         train_loader = DataLoader(
             train_ds,
             batch_size=max(1, min(batch_size, len(train_ds))),
             shuffle=True,
-            collate_fn=collate_visit_bags,
+            collate_fn=collate_fn,
         )
         val_loader = DataLoader(
             val_ds,
             batch_size=max(1, min(batch_size, len(val_ds))),
             shuffle=False,
-            collate_fn=collate_visit_bags,
+            collate_fn=collate_fn,
         )
         test_loader = DataLoader(
             test_ds,
             batch_size=max(1, min(batch_size, len(test_ds))),
             shuffle=False,
-            collate_fn=collate_visit_bags,
+            collate_fn=collate_fn,
         )
         return train_loader, val_loader, test_loader, train_records, val_records, test_records, preprocess_metadata, effective_split
 
@@ -925,7 +932,7 @@ def train_custom_experiment(
         train_losses: list[float] = []
         if is_attention_mil_architecture(spec.architecture):
             for batch_inputs, batch_mask, batch_labels in train_loader:
-                batch_inputs = batch_inputs.to(device)
+                batch_inputs = model_manager._bag_inputs_to_device(batch_inputs, device)
                 batch_mask = batch_mask.to(device)
                 batch_labels = batch_labels.to(device)
                 optimizer.zero_grad()
@@ -1198,12 +1205,14 @@ def evaluate_saved_model(
     model = model_manager.load_model(model_reference, device)
 
     if is_attention_mil_architecture(architecture):
-        train_ds = VisitBagDataset(train_records, augment=False, preprocess_metadata=preprocess_metadata)
-        val_ds = VisitBagDataset(val_records, augment=False, preprocess_metadata=preprocess_metadata)
-        test_ds = VisitBagDataset(test_records, augment=False, preprocess_metadata=preprocess_metadata)
-        train_loader = DataLoader(train_ds, batch_size=max(1, min(batch_size, len(train_ds))), shuffle=False, collate_fn=collate_visit_bags)
-        val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, len(val_ds))), shuffle=False, collate_fn=collate_visit_bags)
-        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_ds))), shuffle=False, collate_fn=collate_visit_bags)
+        dataset_cls = VisitPairedBagDataset if is_paired_attention_mil_architecture(architecture) else VisitBagDataset
+        collate_fn = collate_visit_paired_bags if is_paired_attention_mil_architecture(architecture) else collate_visit_bags
+        train_ds = dataset_cls(train_records, augment=False, preprocess_metadata=preprocess_metadata)
+        val_ds = dataset_cls(val_records, augment=False, preprocess_metadata=preprocess_metadata)
+        test_ds = dataset_cls(test_records, augment=False, preprocess_metadata=preprocess_metadata)
+        train_loader = DataLoader(train_ds, batch_size=max(1, min(batch_size, len(train_ds))), shuffle=False, collate_fn=collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=max(1, min(batch_size, len(val_ds))), shuffle=False, collate_fn=collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=max(1, min(batch_size, len(test_ds))), shuffle=False, collate_fn=collate_fn)
         return {
             "train_metrics": model_manager.classification_metrics(
                 [int(value) for value in model_manager._collect_bag_loader_outputs(model, train_loader, device)["true_labels"]],

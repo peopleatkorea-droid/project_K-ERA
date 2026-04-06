@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import base64
-import inspect
-import io
-import mimetypes
 import os
 import threading
 import time
-import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -15,12 +10,10 @@ from typing import Any
 
 import google.auth.transport.requests
 import jwt
-import pandas as pd
 import re
 from sqlalchemy import select, update as sa_update
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
@@ -100,12 +93,17 @@ from kera_research.services.data_plane import (
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
-from kera_research.storage import read_json
 from kera_research.api.route_helpers import (
+    attach_image_quality_scores as _attach_image_quality_scores,
+    bool_from_value as _bool_from_value,
     build_case_history as _build_case_history,
     build_patient_trajectory as _build_patient_trajectory,
     build_site_activity as _build_site_activity,
+    coerce_text as _coerce_text,
+    embedded_review_artifact_response as _embedded_review_artifact_response,
     load_cross_validation_reports as _load_cross_validation_reports,
+    load_approval_report as _load_approval_report,
+    site_comparison_rows as _site_comparison_rows,
     site_level_validation_runs as _site_level_validation_runs,
     validation_case_rows as _validation_case_rows,
 )
@@ -115,6 +113,11 @@ from kera_research.api.routes.auth import build_auth_router
 from kera_research.api.routes.cases import build_cases_router
 from kera_research.api.routes.desktop import build_desktop_router
 from kera_research.api.routes.sites import build_sites_router
+from kera_research.api.site_jobs import (
+    build_embedding_backfill_status as _build_embedding_backfill_status_impl,
+    latest_embedding_backfill_job as _latest_embedding_backfill_job,
+    queue_site_embedding_backfill as _queue_site_embedding_backfill_impl,
+)
 
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -720,19 +723,6 @@ def _preferred_embedding_execution_device() -> str:
     hardware = detect_hardware()
     return "cuda" if hardware.get("gpu_available") else "cpu"
 
-
-def _call_with_supported_kwargs(func: Any, /, **kwargs: Any) -> Any:
-    signature = inspect.signature(func)
-    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
-        return func(**kwargs)
-    supported_kwargs = {
-        key: value
-        for key, value in kwargs.items()
-        if key in signature.parameters
-    }
-    return func(**supported_kwargs)
-
-
 def _require_validation_permission(user: dict[str, Any]) -> None:
     if user.get("role") in {"admin", "site_admin", "researcher"}:
         return
@@ -1160,135 +1150,15 @@ def _queue_site_embedding_backfill(
     case_summaries: list[dict[str, Any]] | None = None,
     trigger: str = "manual",
 ) -> dict[str, Any]:
-    case_summaries = list(case_summaries) if case_summaries is not None else site_store.list_case_summaries()
-    job = site_store.enqueue_job(
-        "ai_clinic_embedding_backfill",
-        {
-            "model_version_id": model_version.get("version_id"),
-            "model_version_name": model_version.get("version_name"),
-            "execution_device": execution_device,
-            "force_refresh": bool(force_refresh),
-            "trigger": trigger,
-            "total_cases": len(case_summaries),
-        },
+    return _queue_site_embedding_backfill_impl(
+        cp,
+        site_store,
+        model_version=model_version,
+        execution_device=execution_device,
+        force_refresh=force_refresh,
+        case_summaries=case_summaries,
+        trigger=trigger,
     )
-    site_store.update_job_status(
-        job["job_id"],
-        "running",
-        {
-            "progress": {
-                "stage": "queued",
-                "message": "AI Clinic embedding backfill queued.",
-                "percent": 0,
-                "completed_cases": 0,
-                "total_cases": len(case_summaries),
-                "indexed_cases": 0,
-                "failed_cases": 0,
-            }
-        },
-    )
-
-    def run_backfill_job() -> None:
-        workflow = ResearchWorkflowService(cp)
-        indexed_cases = 0
-        failed_cases = 0
-        failed_case_refs: list[str] = []
-        total_cases = len(case_summaries)
-        for index, summary in enumerate(case_summaries, start=1):
-            patient_id = str(summary.get("patient_id") or "")
-            visit_date = str(summary.get("visit_date") or "")
-            case_id = str(summary.get("case_id") or f"{patient_id}::{visit_date}")
-            try:
-                workflow.index_case_embedding(
-                    site_store,
-                    patient_id=patient_id,
-                    visit_date=visit_date,
-                    model_version=model_version,
-                    execution_device=execution_device,
-                    force_refresh=force_refresh,
-                    update_index=False,
-                )
-                indexed_cases += 1
-            except Exception:
-                failed_cases += 1
-                if len(failed_case_refs) < 20:
-                    failed_case_refs.append(case_id)
-            percent = 100 if total_cases <= 0 else int((index / total_cases) * 100)
-            site_store.update_job_status(
-                job["job_id"],
-                "running",
-                {
-                    "progress": {
-                        "stage": "running",
-                        "message": "AI Clinic embedding backfill in progress.",
-                        "percent": percent,
-                        "completed_cases": index,
-                        "total_cases": total_cases,
-                        "indexed_cases": indexed_cases,
-                        "failed_cases": failed_cases,
-                    }
-                },
-            )
-
-        vector_index: dict[str, Any] | None = None
-        vector_index_error: str | None = None
-        try:
-            vector_index = {
-                "classifier": workflow.rebuild_case_vector_index(
-                    site_store,
-                    model_version=model_version,
-                    backend="classifier",
-                )
-            }
-            dinov2_meta = site_store.embedding_dir / str(model_version.get("version_id") or "unknown") / "dinov2"
-            if dinov2_meta.exists():
-                vector_index["dinov2"] = workflow.rebuild_case_vector_index(
-                    site_store,
-                    model_version=model_version,
-                    backend="dinov2",
-                )
-        except Exception as exc:
-            vector_index_error = str(exc)
-
-        status = "completed" if failed_cases == 0 else "completed"
-        site_store.update_job_status(
-            job["job_id"],
-            status,
-            {
-                "progress": {
-                    "stage": "completed",
-                    "message": "AI Clinic embedding backfill completed.",
-                    "percent": 100,
-                    "completed_cases": total_cases,
-                    "total_cases": total_cases,
-                    "indexed_cases": indexed_cases,
-                    "failed_cases": failed_cases,
-                },
-                "response": {
-                    "model_version_id": model_version.get("version_id"),
-                    "model_version_name": model_version.get("version_name"),
-                    "execution_device": execution_device,
-                    "force_refresh": bool(force_refresh),
-                    "total_cases": total_cases,
-                    "indexed_cases": indexed_cases,
-                    "failed_cases": failed_cases,
-                    "failed_case_ids": failed_case_refs,
-                    "vector_index": vector_index,
-                    "vector_index_error": vector_index_error,
-                },
-            },
-        )
-
-    threading.Thread(target=run_backfill_job, daemon=True).start()
-    return site_store.get_job(job["job_id"]) or job
-
-
-def _latest_embedding_backfill_job(site_store: SiteStore) -> dict[str, Any] | None:
-    jobs = [job for job in site_store.list_jobs() if job.get("job_type") == "ai_clinic_embedding_backfill"]
-    if not jobs:
-        return None
-    active = next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
-    return active or jobs[0]
 
 
 def _build_embedding_backfill_status(
@@ -1297,59 +1167,12 @@ def _build_embedding_backfill_status(
     *,
     model_version: dict[str, Any],
 ) -> dict[str, Any]:
-    workflow = _get_workflow(cp)
-    case_summaries = site_store.list_case_summaries()
-    total_cases = len(case_summaries)
-    total_images = sum(int(item.get("image_count") or 0) for item in case_summaries)
-    missing_cases = workflow.list_cases_requiring_embedding(
+    return _build_embedding_backfill_status_impl(
+        cp,
         site_store,
         model_version=model_version,
-        backend="classifier",
+        workflow_factory=_get_workflow,
     )
-    missing_case_count = len(missing_cases)
-    missing_image_count = sum(int(item.get("image_count") or 0) for item in missing_cases)
-    classifier_index_available = workflow.case_vector_index_exists(
-        site_store,
-        model_version=model_version,
-        backend="classifier",
-    )
-    version_id = str(model_version.get("version_id") or "")
-    dinov2_embedding_dir = site_store.embedding_dir / version_id / "dinov2"
-    dinov2_embedding_available = dinov2_embedding_dir.exists()
-    dinov2_index_available = (
-        workflow.case_vector_index_exists(
-            site_store,
-            model_version=model_version,
-            backend="dinov2",
-        )
-        if dinov2_embedding_available
-        else False
-    )
-    active_job = _latest_embedding_backfill_job(site_store)
-
-    return {
-        "site_id": site_store.site_id,
-        "model_version": {
-            "version_id": model_version.get("version_id"),
-            "version_name": model_version.get("version_name"),
-            "architecture": model_version.get("architecture"),
-        },
-        "total_cases": total_cases,
-        "total_images": total_images,
-        "missing_case_count": missing_case_count,
-        "missing_image_count": missing_image_count,
-        "needs_backfill": bool(
-            missing_case_count > 0
-            or not classifier_index_available
-            or (dinov2_embedding_available and not dinov2_index_available)
-        ),
-        "vector_index": {
-            "classifier_available": classifier_index_available,
-            "dinov2_embedding_available": dinov2_embedding_available,
-            "dinov2_index_available": dinov2_index_available,
-        },
-        "active_job": active_job,
-    }
 
 
 def _visible_model_updates(
@@ -1372,17 +1195,6 @@ def _visible_model_updates(
 
 def _is_pending_model_update(update: dict[str, Any]) -> bool:
     return str(update.get("status") or "").strip().lower() in {"pending", "pending_review", "pending_upload"}
-
-
-def _load_approval_report(update: dict[str, Any]) -> dict[str, Any]:
-    embedded = update.get("approval_report")
-    if isinstance(embedded, dict):
-        return embedded
-    report_path = str(update.get("approval_report_path") or "").strip()
-    if not report_path:
-        return {}
-    return read_json(Path(report_path), {})
-
 
 def _backfill_update_quality_summary(cp: ControlPlaneStore, update: dict[str, Any]) -> dict[str, Any]:
     existing = update.get("quality_summary")
@@ -1510,52 +1322,6 @@ def _backfill_update_quality_summary(cp: ControlPlaneStore, update: dict[str, An
         "risk_flags": image_flags + crop_flags + list(delta_summary.get("flags") or []),
         "strengths": [],
     }
-
-
-def _embedded_review_artifact_response(artifact: dict[str, Any]) -> Response | None:
-    media_type = str(artifact.get("media_type") or "application/octet-stream").strip() or "application/octet-stream"
-    encoding = str(artifact.get("encoding") or "").strip().lower()
-    payload = artifact.get("bytes_b64")
-    if encoding != "base64" or not isinstance(payload, str) or not payload.strip():
-        return None
-    try:
-        content = base64.b64decode(payload.encode("ascii"), validate=True)
-    except (ValueError, OSError):
-        return None
-    return Response(content=content, media_type=media_type)
-
-
-def _attach_image_quality_scores(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            **image,
-            "quality_scores": image.get("quality_scores"),
-        }
-        for image in images
-    ]
-
-
-def _bool_from_value(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "y"}:
-        return True
-    if normalized in {"0", "false", "no", "n"}:
-        return False
-    return default
-
-
-def _coerce_text(value: Any, default: str = "") -> str:
-    if value is None:
-        return default
-    if isinstance(value, float) and pd.isna(value):
-        return default
-    return str(value).strip()
-
-
 def _normalize_storage_root(value: str) -> Path:
     normalized = str(value or "").strip()
     if not normalized:
@@ -1588,38 +1354,6 @@ def _normalize_default_storage_root(value: str) -> Path:
     if not site_root.is_dir():
         raise ValueError("Site storage directory must be a directory.")
     return site_root.resolve()
-
-
-def _site_comparison_rows(cp: ControlPlaneStore, user: dict[str, Any]) -> list[dict[str, Any]]:
-    visible_sites = cp.list_sites() if user.get("role") == "admin" else cp.accessible_sites_for_user(user)
-    site_index = {site["site_id"]: site for site in visible_sites}
-    summaries_by_site = {
-        item.get("site_id"): item
-        for item in cp.site_validation_site_summaries(list(site_index))
-        if item.get("site_id")
-    }
-    rows: list[dict[str, Any]] = []
-    for site_id, site in site_index.items():
-        summary = summaries_by_site.get(site_id, {})
-        rows.append(
-            {
-                "site_id": site_id,
-                "display_name": site.get("display_name"),
-                "hospital_name": site.get("hospital_name"),
-                "run_count": int(summary.get("run_count") or 0),
-                "accuracy": summary.get("accuracy"),
-                "sensitivity": summary.get("sensitivity"),
-                "specificity": summary.get("specificity"),
-                "F1": summary.get("F1"),
-                "AUROC": summary.get("AUROC"),
-                "latest_validation_id": summary.get("latest_validation_id"),
-                "latest_run_date": summary.get("latest_run_date"),
-            }
-        )
-    rows.sort(key=lambda item: (item.get("accuracy") is not None, item.get("accuracy") or -1), reverse=True)
-    return rows
-
-
 _VALID_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9\-\.]+(?::\d+)?$")
 
 

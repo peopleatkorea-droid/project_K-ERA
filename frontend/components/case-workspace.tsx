@@ -27,6 +27,13 @@ import { AiClinicResult } from "./case-workspace/ai-clinic-result";
 import { CaseWorkspaceAuthoringCanvas } from "./case-workspace/case-workspace-authoring-canvas";
 import { CaseWorkspaceLeftRail } from "./case-workspace/case-workspace-left-rail";
 import { CaseWorkspaceReviewPanel } from "./case-workspace/case-workspace-review-panel";
+import {
+  handleOpenImageTextSearchResult as runHandleOpenImageTextSearchResult,
+  openSavedCase as runOpenSavedCase,
+  startEditDraftFromSelectedCase as runStartEditDraftFromSelectedCase,
+  startFollowUpDraftFromSelectedCase as runStartFollowUpDraftFromSelectedCase,
+} from "./case-workspace/case-workspace-saved-case";
+import { handleSaveCase as runHandleSaveCase } from "./case-workspace/case-workspace-save-flow";
 import { CaseWorkspaceShell } from "./case-workspace/case-workspace-shell";
 import { CompletionCard } from "./case-workspace/completion-card";
 import { ContributionHistoryPanel } from "./case-workspace/contribution-history-panel";
@@ -1034,49 +1041,6 @@ function computeNextFollowUpNumber(visits: VisitRecord[]): number {
     maxFollowUp = Math.max(maxFollowUp, Number(match[1]) || 0);
   }
   return maxFollowUp + 1;
-}
-
-function yieldUploadLoopToBrowser(): Promise<void> {
-  if (typeof window === "undefined") {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, 0);
-  });
-}
-
-const DESKTOP_SAVE_UPLOAD_CONCURRENCY = 2;
-
-async function mapWithConcurrency<TInput, TOutput>(
-  items: readonly TInput[],
-  concurrency: number,
-  worker: (item: TInput, index: number) => Promise<TOutput>,
-): Promise<TOutput[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  const normalizedConcurrency = Math.max(1, Math.min(concurrency, items.length));
-  const results = new Array<TOutput>(items.length);
-  let nextIndex = 0;
-
-  const runWorker = async () => {
-    while (true) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      if (currentIndex >= items.length) {
-        return;
-      }
-      results[currentIndex] = await worker(items[currentIndex], currentIndex);
-      if (currentIndex < items.length - 1) {
-        await yieldUploadLoopToBrowser();
-      }
-    }
-  };
-
-  await Promise.all(
-    Array.from({ length: normalizedConcurrency }, () => runWorker()),
-  );
-  return results;
 }
 
 export function CaseWorkspace({
@@ -2115,294 +2079,62 @@ export function CaseWorkspace({
   }
 
   async function startFollowUpDraftFromSelectedCase() {
-    if (!selectedCase) {
-      return;
-    }
-
-    setEditingCaseContext(null);
-    replaceDraftImagesAndBoxes([]);
-    setDraftLesionPromptBoxes({});
-    clearDraftStorage();
-    resetAnalysisState();
-    setSelectedCase(null);
-    setSelectedCaseImages([]);
-    setPanelOpen(true);
-    setRailView("cases");
-    const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(
-      FOLLOW_UP_VISIT_PATTERN,
-    );
-    const fallbackFollowUpNumber = String(
-      (selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1,
-    );
-
-    const applyFallbackDraft = (followUpNumber: string) => {
-      setDraft((current) => ({
-        ...current,
-        patient_id: selectedCase.patient_id,
-        sex: selectedCase.sex || current.sex,
-        age: String(selectedCase.age ?? current.age),
-        chart_alias: selectedCase.chart_alias ?? current.chart_alias,
-        local_case_code:
-          selectedCase.local_case_code ?? current.local_case_code,
-        actual_visit_date: "",
-        culture_category:
-          selectedCase.culture_category || current.culture_category,
-        culture_species:
-          selectedCase.culture_species || current.culture_species,
-        additional_organisms: normalizeAdditionalOrganisms(
-          selectedCase.culture_category,
-          selectedCase.culture_species,
-          selectedCase.additional_organisms,
-        ),
-        contact_lens_use:
-          selectedCase.contact_lens_use || current.contact_lens_use,
-        visit_status: selectedCase.visit_status || current.visit_status,
-        is_initial_visit: false,
-        follow_up_number: followUpNumber,
-        intake_completed: true,
-      }));
-      setPendingOrganism({
-        culture_category: selectedCase.culture_category || "bacterial",
-        culture_species:
-          selectedCase.additional_organisms?.[0]?.culture_species ||
-          selectedCase.culture_species ||
-          (CULTURE_SPECIES[selectedCase.culture_category || "bacterial"]?.[0] ??
-            ""),
-      });
-      setShowAdditionalOrganismForm(false);
-    };
-
-    if (!selectedSiteId) {
-      applyFallbackDraft(fallbackFollowUpNumber);
-      return;
-    }
-
-    try {
-      const visits = await fetchVisits(
-        selectedSiteId,
-        token,
-        selectedCase.patient_id,
-      );
-      const nextFollowUpNumber = String(computeNextFollowUpNumber(visits));
-      const latestVisit =
-        [...visits].sort(
-          (left, right) => visitTimestamp(right) - visitTimestamp(left),
-        )[0] ?? null;
-      if (!latestVisit) {
-        applyFallbackDraft(nextFollowUpNumber);
-        return;
-      }
-      setDraft((current) => ({
-        ...current,
-        patient_id: selectedCase.patient_id,
-        sex: selectedCase.sex || current.sex,
-        age: String(selectedCase.age ?? current.age),
-        chart_alias: selectedCase.chart_alias ?? current.chart_alias,
-        local_case_code:
-          selectedCase.local_case_code ?? current.local_case_code,
-        actual_visit_date: "",
-        culture_category:
-          latestVisit.culture_category ||
-          selectedCase.culture_category ||
-          current.culture_category,
-        culture_species:
-          latestVisit.culture_species ||
-          selectedCase.culture_species ||
-          current.culture_species,
-        additional_organisms: normalizeAdditionalOrganisms(
-          latestVisit.culture_category || selectedCase.culture_category,
-          latestVisit.culture_species || selectedCase.culture_species,
-          latestVisit.additional_organisms ?? selectedCase.additional_organisms,
-        ),
-        contact_lens_use:
-          latestVisit.contact_lens_use ||
-          selectedCase.contact_lens_use ||
-          current.contact_lens_use,
-        visit_status:
-          latestVisit.visit_status ||
-          selectedCase.visit_status ||
-          current.visit_status,
-        is_initial_visit: false,
-        follow_up_number: nextFollowUpNumber,
-        predisposing_factor:
-          latestVisit.predisposing_factor ?? current.predisposing_factor,
-        other_history: latestVisit.other_history ?? current.other_history,
-        intake_completed: true,
-      }));
-      setPendingOrganism({
-        culture_category:
-          latestVisit.culture_category ||
-          selectedCase.culture_category ||
-          "bacterial",
-        culture_species:
-          latestVisit.additional_organisms?.[0]?.culture_species ||
-          latestVisit.culture_species ||
-          selectedCase.culture_species ||
-          (CULTURE_SPECIES[
-            latestVisit.culture_category ||
-              selectedCase.culture_category ||
-              "bacterial"
-          ]?.[0] ??
-            ""),
-      });
-      setShowAdditionalOrganismForm(false);
-    } catch (nextError) {
-      applyFallbackDraft(fallbackFollowUpNumber);
-      setToast({
-        tone: "error",
-        message: describeError(
-          nextError,
-          pick(
-            locale,
-            "Unable to prepare the next follow-up draft for this patient.",
-            "???섏옄???ㅼ쓬 ?ъ쭊 珥덉븞??以鍮꾪븯吏 紐삵뻽?듬땲??",
-          ),
-        ),
-      });
-    }
+    await runStartFollowUpDraftFromSelectedCase({
+      selectedCase,
+      selectedSiteId,
+      token,
+      locale,
+      followUpVisitPattern: FOLLOW_UP_VISIT_PATTERN,
+      cultureSpecies: CULTURE_SPECIES,
+      describeError,
+      pick,
+      setToast,
+      setEditingCaseContext,
+      replaceDraftImagesAndBoxes,
+      setDraftLesionPromptBoxes,
+      clearDraftStorage,
+      resetAnalysisState,
+      setSelectedCase,
+      setSelectedCaseImages,
+      setPanelOpen,
+      setRailView,
+      setDraft,
+      setPendingOrganism,
+      setShowAdditionalOrganismForm,
+      normalizeAdditionalOrganisms,
+      computeNextFollowUpNumber,
+      visitTimestamp,
+    });
   }
 
   async function startEditDraftFromSelectedCase() {
-    if (!selectedCase) {
-      return;
-    }
-
-    const caseToEdit = selectedCase;
-    setEditDraftBusy(true);
-    try {
-      let nextDraftImages: DraftImage[] = [];
-      let nextDraftBoxes: LesionBoxMap = {};
-      let selectedVisit: VisitRecord | null = null;
-
-      if (selectedSiteId) {
-        const [savedImages, savedVisits] = await Promise.all([
-          fetchImages(
-            selectedSiteId,
-            token,
-            caseToEdit.patient_id,
-            caseToEdit.visit_date,
-          ),
-          fetchVisits(selectedSiteId, token, caseToEdit.patient_id),
-        ]);
-        selectedVisit =
-          savedVisits.find(
-            (visit) => visit.visit_date === caseToEdit.visit_date,
-          ) ?? null;
-        nextDraftImages = await Promise.all(
-          savedImages.map(async (image) => {
-            const blob = await fetchImageBlob(
-              selectedSiteId,
-              image.image_id,
-              token,
-            );
-            const mediaType = blob.type || "image/jpeg";
-            const extension =
-              mediaType === "image/png"
-                ? "png"
-                : mediaType === "image/webp"
-                  ? "webp"
-                  : mediaType === "image/bmp"
-                    ? "bmp"
-                    : mediaType === "image/tiff"
-                      ? "tiff"
-                      : "jpg";
-            const file = new File([blob], `${image.image_id}.${extension}`, {
-              type: mediaType,
-            });
-            const draftId = createDraftId();
-            nextDraftBoxes[draftId] =
-              image.lesion_prompt_box &&
-              typeof image.lesion_prompt_box === "object"
-                ? normalizeBox(image.lesion_prompt_box)
-                : null;
-            return {
-              draft_id: draftId,
-              file,
-              preview_url: URL.createObjectURL(blob),
-              view: image.view,
-              is_representative: image.is_representative,
-            };
-          }),
-        );
-      }
-
-      clearDraftStorage();
-      resetAnalysisState();
-      setPanelOpen(true);
-      setRailView("cases");
-      setEditingCaseContext({
-        patient_id: caseToEdit.patient_id,
-        visit_date: caseToEdit.visit_date,
-        created_at: caseToEdit.created_at,
-        created_by_user_id: caseToEdit.created_by_user_id,
-      });
-      setSelectedCase(null);
-      setSelectedCaseImages([]);
-      replaceDraftImagesAndBoxes(nextDraftImages);
-      setDraftLesionPromptBoxes(nextDraftBoxes);
-      setDraft((current) => ({
-        ...current,
-        patient_id: caseToEdit.patient_id,
-        sex: caseToEdit.sex || current.sex,
-        age: String(caseToEdit.age ?? current.age),
-        chart_alias: caseToEdit.chart_alias ?? current.chart_alias,
-        local_case_code: caseToEdit.local_case_code ?? current.local_case_code,
-        actual_visit_date: caseToEdit.actual_visit_date?.trim() || "",
-        culture_category:
-          caseToEdit.culture_category || current.culture_category,
-        culture_species: caseToEdit.culture_species || current.culture_species,
-        additional_organisms: normalizeAdditionalOrganisms(
-          caseToEdit.culture_category,
-          caseToEdit.culture_species,
-          selectedVisit?.additional_organisms ??
-            caseToEdit.additional_organisms,
-        ),
-        contact_lens_use:
-          selectedVisit?.contact_lens_use ||
-          caseToEdit.contact_lens_use ||
-          current.contact_lens_use,
-        visit_status:
-          selectedVisit?.visit_status ||
-          caseToEdit.visit_status ||
-          current.visit_status,
-        is_initial_visit: /^initial$/i.test(caseToEdit.visit_date),
-        follow_up_number: (() => {
-          const followUpMatch = String(caseToEdit.visit_date ?? "").match(
-            FOLLOW_UP_VISIT_PATTERN,
-          );
-          return followUpMatch
-            ? String(Number(followUpMatch[1]) || 1)
-            : current.follow_up_number;
-        })(),
-        predisposing_factor:
-          selectedVisit?.predisposing_factor ?? current.predisposing_factor,
-        other_history: selectedVisit?.other_history ?? current.other_history,
-        intake_completed: false,
-      }));
-      setPendingOrganism({
-        culture_category: caseToEdit.culture_category || "bacterial",
-        culture_species:
-          caseToEdit.additional_organisms?.[0]?.culture_species ||
-          caseToEdit.culture_species ||
-          (CULTURE_SPECIES[caseToEdit.culture_category || "bacterial"]?.[0] ??
-            ""),
-      });
-      setShowAdditionalOrganismForm(false);
-    } catch (nextError) {
-      setToast({
-        tone: "error",
-        message: describeError(
-          nextError,
-          pick(
-            locale,
-            "Unable to open this saved case in edit mode.",
-            "?????耳?댁뒪瑜??섏젙 紐⑤뱶濡??댁? 紐삵뻽?듬땲??",
-          ),
-        ),
-      });
-    } finally {
-      setEditDraftBusy(false);
-    }
+    await runStartEditDraftFromSelectedCase({
+      selectedCase,
+      selectedSiteId,
+      token,
+      locale,
+      followUpVisitPattern: FOLLOW_UP_VISIT_PATTERN,
+      cultureSpecies: CULTURE_SPECIES,
+      describeError,
+      pick,
+      setToast,
+      setEditDraftBusy,
+      clearDraftStorage,
+      resetAnalysisState,
+      setPanelOpen,
+      setRailView,
+      setEditingCaseContext,
+      setSelectedCase,
+      setSelectedCaseImages,
+      replaceDraftImagesAndBoxes,
+      setDraftLesionPromptBoxes,
+      setDraft,
+      setPendingOrganism,
+      setShowAdditionalOrganismForm,
+      createDraftId,
+      normalizeBox,
+      normalizeAdditionalOrganisms,
+    });
   }
 
   function resetDraft() {
@@ -2604,85 +2336,43 @@ export function CaseWorkspace({
     caseRecord: CaseSummaryRecord,
     nextView: "cases" | "patients" = "cases",
   ) {
-    if (desktopFastMode) {
-      caseOpenStartedAtRef.current = performance.now();
-      caseOpenCaseIdRef.current = caseRecord.case_id;
-      caseImagesLoggedCaseIdRef.current = null;
-      if (WORKSPACE_TIMING_LOGS) {
-        console.info("[kera-fast-path] case-open", {
-          case_id: caseRecord.case_id,
-          patient_id: caseRecord.patient_id,
-          visit_date: caseRecord.visit_date,
-        });
-      }
-    }
-    setCases((current) => {
-      if (current.some((item) => item.case_id === caseRecord.case_id)) {
-        return current;
-      }
-      return [caseRecord, ...current];
+    runOpenSavedCase({
+      caseRecord,
+      nextView,
+      desktopFastMode,
+      workspaceTimingLogs: WORKSPACE_TIMING_LOGS,
+      caseOpenStartedAtRef,
+      caseOpenCaseIdRef,
+      caseImagesLoggedCaseIdRef,
+      cases,
+      setCases,
+      setSelectedCase,
+      setSelectedPatientCases,
+      setPanelOpen,
+      setRailView,
+      buildKnownPatientTimeline,
     });
-    setSelectedCase(caseRecord);
-    setSelectedPatientCases(
-      buildKnownPatientTimeline(cases, caseRecord.patient_id, caseRecord),
-    );
-    setPanelOpen(true);
-    setRailView(nextView);
-    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   async function handleOpenImageTextSearchResult(
     patientId: string,
     visitDate: string,
   ) {
-    if (!selectedSiteId) {
-      setToast({ tone: "error", message: copy.selectSiteForCase });
-      return;
-    }
-
-    const findMatchingCase = (items: CaseSummaryRecord[]) =>
-      items.find(
-        (item) =>
-          item.patient_id === patientId && item.visit_date === visitDate,
-      ) ?? null;
-
-    const cachedMatch = findMatchingCase(cases);
-    if (cachedMatch) {
-      openSavedCase(cachedMatch, "cases");
-      return;
-    }
-
-    try {
-      const nextCases = await fetchCases(selectedSiteId, token, {
-        mine: showOnlyMine,
-      });
-      setCases(nextCases);
-      const refreshedMatch = findMatchingCase(nextCases);
-      if (refreshedMatch) {
-        openSavedCase(refreshedMatch, "cases");
-        return;
-      }
-      setToast({
-        tone: "error",
-        message: pick(
-          locale,
-          `Could not open ${patientId} / ${displayVisitReference(locale, visitDate)} from the image search results.`,
-          `이미지 검색 결과의 ${patientId} / ${displayVisitReference(locale, visitDate)} 케이스를 열 수 없습니다.`,
-        ),
-      });
-    } catch (nextError) {
-      setToast({
-        tone: "error",
-        message: describeError(
-          nextError,
-          pick(
-            locale,
-            "Unable to refresh the case list for this search result.",
-            "검색 결과용 케이스 목록을 다시 불러오지 못했습니다.",
-          ),
-        ),
-      });
-    }
+    await runHandleOpenImageTextSearchResult({
+      patientId,
+      visitDate,
+      selectedSiteId,
+      token,
+      showOnlyMine,
+      locale,
+      cases,
+      pick,
+      selectSiteForCaseMessage: copy.selectSiteForCase,
+      displayVisitReference,
+      setToast,
+      setCases,
+      openSavedCase,
+    });
   }
 
   useEffect(() => {
@@ -3377,570 +3067,59 @@ export function CaseWorkspace({
   }
 
   async function handleSaveCase() {
-    const requestedVisitReference = buildVisitReference(draft);
-    const patientId = draft.patient_id.trim();
-    const editingSourceCase = editingCaseContext;
-    const matchingPatientLookup =
-      patientIdLookup &&
-      patientIdLookup.requested_patient_id.trim() === patientId
-        ? patientIdLookup
-        : null;
-    const nextVisitReference = resolveDraftVisitReference(
+    await runHandleSaveCase({
+      locale,
+      selectedSiteId,
+      selectedSiteLabel,
+      token,
+      user,
+      showOnlyMine,
+      patientIdLookup,
       draft,
-      editingSourceCase ? null : matchingPatientLookup,
-    );
-    const patientPayload = {
-      sex: draft.sex,
-      age: Number(draft.age || 0),
-      chart_alias: draft.chart_alias.trim(),
-      local_case_code: draft.local_case_code.trim(),
-    };
-    const additionalOrganisms = normalizeAdditionalOrganisms(
-      draft.culture_category,
-      draft.culture_species,
-      draft.additional_organisms,
-    );
-    const draftImageLesionBoxes = draftImages.map((image) => {
-      const nextBox = draftLesionPromptBoxes[image.draft_id] ?? null;
-      if (!nextBox) {
-        return null;
-      }
-      const normalized = normalizeBox(nextBox);
-      return hasUsableLesionPromptBox(normalized) ? normalized : null;
+      draftImages,
+      draftLesionPromptBoxes,
+      editingCaseContext,
+      cases,
+      patientListRows,
+      patientListPage,
+      patientListTotalCount,
+      normalizedPatientListSearch,
+      pick,
+      copy,
+      describeError,
+      isAlreadyExistsError,
+      setToast,
+      setSaveBusy,
+      setCases,
+      setPatientListRows,
+      setPatientListTotalCount,
+      setPatientListTotalPages,
+      setPatientListPage,
+      setSelectedCase,
+      setSelectedPatientCases,
+      setPanelOpen,
+      setCompletionState,
+      clearDraftStorage,
+      resetDraft,
+      primeCaseImageCache,
+      onSiteDataChanged,
+      loadSiteActivity,
+      buildVisitReference,
+      resolveDraftVisitReference,
+      normalizeAdditionalOrganisms,
+      normalizeBox,
+      hasUsableLesionPromptBox,
+      toSavedCaseImagePreview,
+      upsertCaseSummaryRecord,
+      patientMatchesListSearch,
+      organismSummaryLabel,
+      upsertPatientListRow,
+      buildKnownPatientTimeline,
+      toNormalizedBox,
+      applySavedLesionBoxesAndStartLivePreview,
+      displayVisitReference,
+      computeNextFollowUpNumber,
     });
-    const visitPayload = (visitReference: string) => ({
-      patient_id: patientId,
-      visit_date: visitReference,
-      actual_visit_date: draft.actual_visit_date.trim() || null,
-      culture_category: draft.culture_category,
-      culture_species: draft.culture_species.trim(),
-      additional_organisms: additionalOrganisms,
-      contact_lens_use: draft.contact_lens_use,
-      predisposing_factor: draft.predisposing_factor,
-      other_history: draft.other_history.trim(),
-      visit_status: draft.visit_status,
-      is_initial_visit: /^initial$/i.test(visitReference),
-      polymicrobial: additionalOrganisms.length > 0,
-    });
-    const uploadDraftImagesToVisit = async (visitReference: string) => {
-      const uploadSingleDraftImage = async (
-        image: (typeof draftImages)[number],
-      ) => {
-        const uploadedImage = await uploadImage(selectedSiteId!, token, {
-          patient_id: patientId,
-          visit_date: visitReference,
-          view: image.view,
-          is_representative: image.is_representative,
-          refresh_embeddings: false,
-          file: image.file,
-        });
-        return toSavedCaseImagePreview(selectedSiteId!, token, uploadedImage);
-      };
-      const uploadedImages: SavedImagePreview[] = [];
-      if (canUseDesktopTransport()) {
-        uploadedImages.push(
-          ...(await mapWithConcurrency(
-            draftImages,
-            DESKTOP_SAVE_UPLOAD_CONCURRENCY,
-            async (image) => uploadSingleDraftImage(image),
-          )),
-        );
-      } else {
-        uploadedImages.push(
-          ...(await Promise.all(
-            draftImages.map((image) => uploadSingleDraftImage(image)),
-          )),
-        );
-      }
-      const representativeImage =
-        uploadedImages.find((image) => image.is_representative) ??
-        uploadedImages[0] ??
-        null;
-      if (representativeImage && !canUseDesktopTransport()) {
-        void setRepresentativeImageOnServer(selectedSiteId!, token, {
-          patient_id: patientId,
-          visit_date: visitReference,
-          representative_image_id: representativeImage.image_id,
-        }).catch((nextError) => {
-          console.warn("Post-save embedding refresh queue failed", nextError);
-        });
-      }
-      const uploadedImagesWithLesionBoxes = uploadedImages.map((image, index) => {
-        const lesionPromptBox = draftImageLesionBoxes[index];
-        if (!lesionPromptBox) {
-          return image;
-        }
-        return {
-          ...image,
-          lesion_prompt_box: lesionPromptBox,
-          has_lesion_box: true,
-        };
-      });
-      return uploadedImagesWithLesionBoxes;
-    };
-    const buildOptimisticSavedCase = (
-      visitRecord: Partial<VisitRecord>,
-      visitReference: string,
-      uploadedImages: SavedImagePreview[],
-    ): CaseSummaryRecord => {
-      const representativeImage =
-        uploadedImages.find((image) => image.is_representative) ??
-        uploadedImages[0] ??
-        null;
-      const createdAt =
-        visitRecord.created_at ??
-        editingSourceCase?.created_at ??
-        new Date().toISOString();
-      return {
-        case_id: `${patientId}::${visitReference}`,
-        visit_id: String(visitRecord.visit_id ?? `${patientId}::${visitReference}`),
-        patient_id: patientId,
-        created_by_user_id:
-          visitRecord.created_by_user_id ??
-          editingSourceCase?.created_by_user_id ??
-          user.user_id,
-        visit_date: visitReference,
-        actual_visit_date: draft.actual_visit_date.trim() || null,
-        chart_alias: patientPayload.chart_alias,
-        local_case_code: patientPayload.local_case_code,
-        sex: draft.sex,
-        age: draft.age.trim().length > 0 ? Number(draft.age) : null,
-        culture_category: draft.culture_category,
-        culture_species: draft.culture_species.trim(),
-        additional_organisms: additionalOrganisms,
-        contact_lens_use: draft.contact_lens_use,
-        predisposing_factor: draft.predisposing_factor,
-        other_history: draft.other_history.trim(),
-        visit_status: draft.visit_status,
-        active_stage: draft.visit_status === "active",
-        is_initial_visit: /^initial$/i.test(visitReference),
-        smear_result: visitRecord.smear_result ?? "not done",
-        polymicrobial: additionalOrganisms.length > 0,
-        image_count: uploadedImages.length,
-        representative_image_id: representativeImage?.image_id ?? null,
-        representative_view: representativeImage?.view ?? null,
-        created_at: createdAt,
-        latest_image_uploaded_at:
-          uploadedImages[uploadedImages.length - 1]?.uploaded_at ?? createdAt,
-      };
-    };
-    const finalizeSavedCase = (
-      visitRecord: Partial<VisitRecord>,
-      visitReference: string,
-      uploadedImages: SavedImagePreview[] = [],
-    ) => {
-      const optimisticCase = buildOptimisticSavedCase(
-        visitRecord,
-        visitReference,
-        uploadedImages,
-      );
-      const nextKnownCases = upsertCaseSummaryRecord(cases, optimisticCase, {
-        replaceCase: editingSourceCase,
-      });
-      const shouldIncludeOptimisticCase =
-        !showOnlyMine ||
-        String(
-          visitRecord.created_by_user_id ??
-            editingSourceCase?.created_by_user_id ??
-            user.user_id,
-        ) === user.user_id;
-      const shouldOptimisticallyUpdatePatientList =
-        shouldIncludeOptimisticCase &&
-        patientMatchesListSearch(normalizedPatientListSearch, optimisticCase);
-      const currentPatientCaseCount = nextKnownCases.filter(
-        (item) => item.patient_id === optimisticCase.patient_id,
-      ).length;
-      const currentPatientRow = patientListRows.find(
-        (row) => row.patient_id === optimisticCase.patient_id,
-      );
-      const optimisticThumbnail = (() => {
-        const representativeImage =
-          uploadedImages.find((image) => image.is_representative) ??
-          uploadedImages[0] ??
-          null;
-        if (!representativeImage) {
-          return null;
-        }
-        return {
-          case_id: optimisticCase.case_id,
-          image_id: representativeImage.image_id,
-          view: representativeImage.view,
-          preview_url: representativeImage.preview_url,
-          fallback_url: representativeImage.content_url ?? null,
-        };
-      })();
-      const optimisticPatientRow: PatientListRow = {
-        patient_id: optimisticCase.patient_id,
-        latest_case: optimisticCase,
-        case_count: Math.max(1, currentPatientCaseCount),
-        representative_thumbnail_count: Math.max(
-          optimisticThumbnail ? 1 : 0,
-          currentPatientRow?.representative_thumbnail_count ??
-            currentPatientRow?.representative_thumbnails.length ??
-            0,
-        ),
-        organism_summary: organismSummaryLabel(
-          optimisticCase.culture_category,
-          optimisticCase.culture_species,
-          optimisticCase.additional_organisms,
-          2,
-        ),
-        representative_thumbnails: [
-          ...(optimisticThumbnail ? [optimisticThumbnail] : []),
-          ...(currentPatientRow?.representative_thumbnails ?? []).filter(
-            (thumbnail) => thumbnail.case_id !== optimisticCase.case_id,
-          ),
-        ].slice(0, 3),
-      };
-
-      if (shouldIncludeOptimisticCase) {
-        startTransition(() => {
-          setCases(nextKnownCases);
-          if (shouldOptimisticallyUpdatePatientList) {
-            const rowExistsOnCurrentPage = Boolean(currentPatientRow);
-            const nextPatientListRows =
-              rowExistsOnCurrentPage || patientListPage === 1
-                ? upsertPatientListRow(patientListRows, optimisticPatientRow).slice(
-                    0,
-                    PATIENT_LIST_PAGE_SIZE,
-                  )
-                : patientListRows;
-            const nextTotalCount = currentPatientRow
-              ? patientListTotalCount
-              : patientListTotalCount + 1;
-            setPatientListRows(nextPatientListRows);
-            setPatientListTotalCount(nextTotalCount);
-            setPatientListTotalPages(
-              Math.max(1, Math.ceil(nextTotalCount / PATIENT_LIST_PAGE_SIZE)),
-            );
-            if (patientListPage === 1) {
-              setPatientListPage(1);
-            }
-          }
-        });
-      }
-
-      if (uploadedImages.length > 0) {
-        primeCaseImageCache(optimisticCase, uploadedImages);
-      }
-      setToast({
-        tone: "success",
-        message: copy.caseSaved(
-          patientId,
-          visitReference,
-          selectedSiteLabel ?? selectedSiteId!,
-        ),
-      });
-      clearDraftStorage(selectedSiteId!);
-      resetDraft();
-      setSelectedCase(optimisticCase);
-      setSelectedPatientCases(
-        buildKnownPatientTimeline(nextKnownCases, optimisticCase.patient_id, optimisticCase),
-      );
-      setPanelOpen(true);
-      void loadSiteActivity(selectedSiteId!);
-      setCompletionState({
-        kind: "saved",
-        patient_id: patientId,
-        visit_date: visitReference,
-        timestamp: new Date().toISOString(),
-      });
-      const postSaveLesionEntries = uploadedImages
-        .map((image) => ({
-          imageId: image.image_id,
-          lesionBox: toNormalizedBox(image.lesion_prompt_box),
-          isRepresentative: Boolean(image.is_representative),
-        }))
-        .filter(
-          (entry): entry is {
-            imageId: string;
-            lesionBox: NormalizedBox;
-            isRepresentative: boolean;
-          } => hasUsableLesionPromptBox(entry.lesionBox),
-        );
-      if (postSaveLesionEntries.length > 0) {
-        window.setTimeout(() => {
-          void applySavedLesionBoxesAndStartLivePreview(
-            postSaveLesionEntries,
-          ).catch((nextError) => {
-            console.warn("Post-save lesion preview warm-up failed", nextError);
-          });
-        }, 0);
-      }
-      if (uploadedImages.length > 0) {
-        window.setTimeout(() => {
-          void fetchCaseRoiPreview(
-            selectedSiteId!,
-            patientId,
-            visitReference,
-            token,
-          ).catch((nextError) => {
-            console.warn("Saved case MedSAM warm-up failed", nextError);
-          });
-        }, postSaveLesionEntries.length > 0 ? 600 : 200);
-      }
-
-      void (async () => {
-        try {
-          await onSiteDataChanged(selectedSiteId!);
-          const [nextCases, nextPatientList] = await Promise.all([
-            fetchCases(selectedSiteId!, token, { mine: showOnlyMine }),
-            fetchPatientListPage(selectedSiteId!, token, {
-              mine: showOnlyMine,
-              page: 1,
-              page_size: PATIENT_LIST_PAGE_SIZE,
-              search: normalizedPatientListSearch,
-            }),
-          ]);
-          const refreshedCase =
-            nextCases.find(
-              (item) =>
-                item.patient_id === patientId && item.visit_date === visitReference,
-            ) ?? optimisticCase;
-          if (uploadedImages.length > 0) {
-            primeCaseImageCache(refreshedCase, uploadedImages);
-          }
-          startTransition(() => {
-            setCases(nextCases);
-            setPatientListRows(nextPatientList.items);
-            setPatientListTotalCount(nextPatientList.total_count);
-            setPatientListTotalPages(
-              Math.max(1, nextPatientList.total_pages || 1),
-            );
-            setPatientListPage(nextPatientList.page);
-            setSelectedCase((current) => {
-              if (!current) {
-                return current;
-              }
-              return current.patient_id === patientId &&
-                current.visit_date === visitReference
-                ? refreshedCase
-                : current;
-            });
-            setSelectedPatientCases((current) =>
-              current.some((item) => item.patient_id === patientId)
-                ? buildKnownPatientTimeline(nextCases, patientId, refreshedCase)
-                : current,
-            );
-          });
-        } catch (nextError) {
-          console.warn("Saved case background refresh failed", nextError);
-        }
-      })();
-    };
-    const nextAvailableFollowUpReference = async () => {
-      const visits = await fetchVisits(selectedSiteId!, token, patientId);
-      const usedVisitReferences = visits.map((item) => item.visit_date);
-      let maxFollowUp = 0;
-      for (const item of usedVisitReferences) {
-        const match = String(item).match(FOLLOW_UP_VISIT_PATTERN);
-        if (match) {
-          maxFollowUp = Math.max(maxFollowUp, Number(match[1]));
-        }
-      }
-      return `FU #${String(maxFollowUp + 1)}`;
-    };
-    if (!selectedSiteId) {
-      setToast({ tone: "error", message: copy.selectSiteForCase });
-      return;
-    }
-    if (!draft.intake_completed) {
-      setToast({ tone: "error", message: copy.intakeStepRequired });
-      return;
-    }
-    if (!draft.patient_id.trim()) {
-      setToast({ tone: "error", message: copy.patientIdRequired });
-      return;
-    }
-    if (!draft.culture_species.trim()) {
-      setToast({ tone: "error", message: copy.cultureSpeciesRequired });
-      return;
-    }
-    if (draftImages.length === 0) {
-      setToast({ tone: "error", message: copy.imageRequired });
-      return;
-    }
-    if (draftImageLesionBoxes.some((box) => !hasUsableLesionPromptBox(box))) {
-      setToast({ tone: "error", message: copy.lesionBoxesRequired });
-      return;
-    }
-
-    setSaveBusy(true);
-    try {
-      const ensureAndSyncPatient = async () => {
-        try {
-          if (matchingPatientLookup?.exists) {
-            await updatePatient(
-              selectedSiteId,
-              token,
-              patientId,
-              patientPayload,
-            );
-            return;
-          }
-          await createPatient(selectedSiteId, token, {
-            patient_id: patientId,
-            ...patientPayload,
-          });
-        } catch (nextError) {
-          if (!isAlreadyExistsError(nextError)) {
-            throw nextError;
-          }
-          await updatePatient(selectedSiteId, token, patientId, patientPayload);
-        }
-      };
-      const overwriteEditedVisit = async (visitReference: string) => {
-        const savedVisit = (await updateVisit(
-          selectedSiteId,
-          token,
-          editingSourceCase?.patient_id ?? patientId,
-          editingSourceCase?.visit_date ?? visitReference,
-          visitPayload(visitReference),
-        )) as Partial<VisitRecord>;
-        await deleteVisitImages(
-          selectedSiteId,
-          token,
-          patientId,
-          visitReference,
-        );
-        const uploadedImages = await uploadDraftImagesToVisit(visitReference);
-        finalizeSavedCase(savedVisit, visitReference, uploadedImages);
-      };
-
-      await ensureAndSyncPatient();
-
-      if (editingSourceCase) {
-        try {
-          await overwriteEditedVisit(nextVisitReference);
-          return;
-        } catch (nextError) {
-          if (!isAlreadyExistsError(nextError)) {
-            throw nextError;
-          }
-          const overwriteConfirmed = window.confirm(
-            pick(
-              locale,
-              `Visit ${patientId} / ${displayVisitReference(locale, nextVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
-              `방문 ${patientId} / ${displayVisitReference(locale, nextVisitReference)}가 이미 존재합니다.\n\n확인을 누르면 덮어쓰고, 취소를 누르면 다른 케이스로 저장합니다.`,
-            ),
-          );
-          if (overwriteConfirmed) {
-            await deleteVisit(
-              selectedSiteId,
-              token,
-              patientId,
-              nextVisitReference,
-            );
-            await overwriteEditedVisit(nextVisitReference);
-          } else {
-            const alternateVisitReference =
-              await nextAvailableFollowUpReference();
-            const saveAlternateConfirmed = window.confirm(
-              pick(
-                locale,
-                `Save this case as ${displayVisitReference(locale, alternateVisitReference)} instead?`,
-                `이 케이스를 ${displayVisitReference(locale, alternateVisitReference)}로 저장할까요?`,
-              ),
-            );
-            if (!saveAlternateConfirmed) {
-              return;
-            }
-            await overwriteEditedVisit(alternateVisitReference);
-          }
-          return;
-        }
-      }
-
-      const createVisitReference =
-        matchingPatientLookup?.exists &&
-        Number(matchingPatientLookup.visit_count || 0) > 0 &&
-        /^initial$/i.test(requestedVisitReference)
-          ? await nextAvailableFollowUpReference()
-          : nextVisitReference;
-      const existingPatientFollowUpOnly =
-        matchingPatientLookup?.exists &&
-        Number(matchingPatientLookup.visit_count || 0) > 0;
-
-      try {
-        const savedVisit = (await createVisit(
-          selectedSiteId,
-          token,
-          visitPayload(createVisitReference),
-        )) as Partial<VisitRecord>;
-        const uploadedImages = await uploadDraftImagesToVisit(createVisitReference);
-        finalizeSavedCase(savedVisit, createVisitReference, uploadedImages);
-      } catch (nextError) {
-        if (!isAlreadyExistsError(nextError)) {
-          throw nextError;
-        }
-        if (existingPatientFollowUpOnly) {
-          const alternateVisitReference =
-            await nextAvailableFollowUpReference();
-          if (alternateVisitReference === createVisitReference) {
-            throw nextError;
-          }
-          const savedVisit = (await createVisit(
-            selectedSiteId,
-            token,
-            visitPayload(alternateVisitReference),
-          )) as Partial<VisitRecord>;
-          const uploadedImages = await uploadDraftImagesToVisit(alternateVisitReference);
-          finalizeSavedCase(savedVisit, alternateVisitReference, uploadedImages);
-          return;
-        }
-        const overwriteConfirmed = window.confirm(
-          pick(
-            locale,
-            `Visit ${patientId} / ${displayVisitReference(locale, createVisitReference)} already exists.\n\nPress OK to overwrite it.\nPress Cancel to save as another case.`,
-            `諛⑸Ц ${patientId} / ${displayVisitReference(locale, createVisitReference)}媛 ?대? 議댁옱?⑸땲??\n\n?뺤씤???꾨Ⅴ硫???뼱?곌퀬, 痍⑥냼瑜??꾨Ⅴ硫??ㅻⅨ 耳?댁뒪濡???ν빀?덈떎.`,
-          ),
-        );
-        if (overwriteConfirmed) {
-          const savedVisit = (await updateVisit(
-            selectedSiteId,
-            token,
-            patientId,
-            createVisitReference,
-            visitPayload(createVisitReference),
-          )) as Partial<VisitRecord>;
-          await deleteVisitImages(
-            selectedSiteId,
-            token,
-            patientId,
-            createVisitReference,
-          );
-          const uploadedImages = await uploadDraftImagesToVisit(createVisitReference);
-          finalizeSavedCase(savedVisit, createVisitReference, uploadedImages);
-        } else {
-          const alternateVisitReference =
-            await nextAvailableFollowUpReference();
-          const saveAlternateConfirmed = window.confirm(
-            pick(
-              locale,
-              `Save this case as ${displayVisitReference(locale, alternateVisitReference)} instead?`,
-              `??耳?댁뒪瑜?${displayVisitReference(locale, alternateVisitReference)}濡???ν븷源뚯슂?`,
-            ),
-          );
-          if (!saveAlternateConfirmed) {
-            return;
-          }
-          const savedVisit = (await createVisit(
-            selectedSiteId,
-            token,
-            visitPayload(alternateVisitReference),
-          )) as Partial<VisitRecord>;
-          const uploadedImages = await uploadDraftImagesToVisit(alternateVisitReference);
-          finalizeSavedCase(savedVisit, alternateVisitReference, uploadedImages);
-        }
-      }
-    } catch (nextError) {
-      setToast({
-        tone: "error",
-        message: describeError(nextError, copy.caseSaveFailed),
-      });
-    } finally {
-      setSaveBusy(false);
-    }
   }
 
   useEffect(() => {

@@ -35,6 +35,10 @@ ATTENTION_MIL_ARCHITECTURES = [
     "efficientnet_v2_s_mil",
     "convnext_tiny_mil",
     "densenet121_mil",
+    "efficientnet_v2_s_dinov2_lesion_mil",
+]
+PAIRED_ATTENTION_MIL_ARCHITECTURES = [
+    "efficientnet_v2_s_dinov2_lesion_mil",
 ]
 BASE_TRAINING_ARCHITECTURES = [
     "densenet121",
@@ -211,12 +215,21 @@ def lesion_guided_fusion_backbone(value: str | None) -> str | None:
 
 def is_dual_input_training_architecture(value: str | None) -> bool:
     normalized = str(value or "").strip().lower()
-    return normalized == "dual_input_concat" or is_lesion_guided_fusion_architecture(normalized)
+    return (
+        normalized == "dual_input_concat"
+        or normalized in PAIRED_ATTENTION_MIL_ARCHITECTURES
+        or is_lesion_guided_fusion_architecture(normalized)
+    )
 
 
 def is_attention_mil_architecture(value: str | None) -> bool:
     normalized = str(value or "").strip().lower()
     return normalized in ATTENTION_MIL_ARCHITECTURES
+
+
+def is_paired_attention_mil_architecture(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in PAIRED_ATTENTION_MIL_ARCHITECTURES
 
 
 def make_id(prefix: str) -> str:

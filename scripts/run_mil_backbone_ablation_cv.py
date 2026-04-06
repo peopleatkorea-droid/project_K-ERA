@@ -68,8 +68,10 @@ COMPONENT_ORDER = {
     "official_dinov2_mil": 2,
     "dinov2_retrieval_guided_lesion_mil_top2": 3,
     "efficientnet_v2_s_mil_full": 4,
-    "convnext_tiny_mil_full": 5,
-    "densenet121_mil_cornea": 6,
+    "efficientnet_v2_s_dinov2_lesion_mil": 5,
+    "convnext_tiny_mil_full": 6,
+    "densenet121_mil_cornea": 7,
+    "densenet121_mil_full": 8,
 }
 
 
@@ -241,6 +243,20 @@ def build_components(epochs_override: int | None, lesion_top_k: int, selected_na
         },
         {
             "kind": "mil_custom",
+            "name": "efficientnet_v2_s_dinov2_lesion_mil",
+            "order": COMPONENT_ORDER["efficientnet_v2_s_dinov2_lesion_mil"],
+            "label": "EfficientNetV2-S Full + DINOv2 Lesion MIL",
+            "family": "MIL",
+            "include_in_summary": True,
+            "spec": base_mil_experiment(
+                name="efficientnet_v2_s_dinov2_lesion_mil",
+                architecture="efficientnet_v2_s_dinov2_lesion_mil",
+                crop_mode="paired",
+                epochs_override=epochs_override,
+            ),
+        },
+        {
+            "kind": "mil_custom",
             "name": "densenet121_mil_cornea",
             "order": COMPONENT_ORDER["densenet121_mil_cornea"],
             "label": "DenseNet121 MIL (Cornea ROI)",
@@ -250,6 +266,20 @@ def build_components(epochs_override: int | None, lesion_top_k: int, selected_na
                 name="densenet121_mil_cornea",
                 architecture="densenet121_mil",
                 crop_mode="automated",
+                epochs_override=epochs_override,
+            ),
+        },
+        {
+            "kind": "mil_custom",
+            "name": "densenet121_mil_full",
+            "order": COMPONENT_ORDER["densenet121_mil_full"],
+            "label": "DenseNet121 MIL (Full)",
+            "family": "MIL",
+            "include_in_summary": True,
+            "spec": base_mil_experiment(
+                name="densenet121_mil_full",
+                architecture="densenet121_mil",
+                crop_mode="raw",
                 epochs_override=epochs_override,
             ),
         },
