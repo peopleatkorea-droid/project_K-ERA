@@ -225,4 +225,75 @@ describe("runDesktopSelfCheck", () => {
     expect(snapshot?.items.find((item) => item.id === "controlPlane")?.status).toBe("fail");
     expect(snapshot?.items.find((item) => item.id === "googleAuth")?.status).toBe("fail");
   });
+
+  it("treats an unregistered hospital server link as a warning on a clean desktop", async () => {
+    mockRequestDesktopLocalApiJson.mockResolvedValue({
+      checked_at: "2026-04-07T00:00:00.000Z",
+      storage: {
+        storage_dir: { path: "C:\\KERA_DATA", exists: true, writable: true, detail: "" },
+        runtime_dir: { path: "C:\\Users\\USER\\AppData\\Local\\KERA\\runtime", exists: true, writable: true, detail: "" },
+      },
+      data_plane_database: { path: "C:\\KERA_DATA\\kera.db", exists: true, required: true, ready: true, detail: "" },
+      control_plane_cache_database: {
+        path: "C:\\KERA_DATA\\control_plane_cache.db",
+        exists: true,
+        required: false,
+        ready: true,
+        detail: "",
+      },
+      control_plane: {
+        configured: true,
+        node_sync_enabled: false,
+        base_url: "https://kera-bay.vercel.app/control-plane/api",
+        node_id: "",
+        bootstrap: null,
+        ready: false,
+        detail: "",
+      },
+      model_artifacts: {
+        model_dir: "C:\\KERA_DATA\\models",
+        model_dir_exists: true,
+        active_manifest_path: "C:\\KERA_DATA\\models\\active-manifest.json",
+        active_manifest_exists: false,
+        active_manifest: {},
+        active_model_path: "",
+        active_model_exists: false,
+        current_release: { version_id: "model_global_densenet_v1" },
+        resolved_model_path: "C:\\Program Files\\K-ERA Desktop\\resources\\seed-model\\global_densenet121_baseline_v1.pt",
+        ready: true,
+        downloadable: false,
+        detail: "",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            client_id_configured: true,
+            client_secret_configured: true,
+            configured: true,
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const { runDesktopSelfCheck } = await import("./desktop-self-check");
+    const snapshot = await runDesktopSelfCheck(
+      createConfig({
+        values: {
+          ...createConfig().values,
+          control_plane_node_id: "",
+          control_plane_node_token: "",
+        },
+      }),
+      createDiagnostics(),
+    );
+
+    expect(snapshot?.ready).toBe(true);
+    expect(snapshot?.items.find((item) => item.id === "controlPlane")?.status).toBe("warn");
+    expect(snapshot?.items.find((item) => item.id === "controlPlane")?.blocking).toBe(false);
+    expect(snapshot?.items.find((item) => item.id === "modelArtifacts")?.status).toBe("pass");
+  });
 });

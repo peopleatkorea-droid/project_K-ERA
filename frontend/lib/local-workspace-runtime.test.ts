@@ -15,9 +15,20 @@ const desktopTransportMocks = vi.hoisted(() => ({
 const desktopWorkspaceMocks = vi.hoisted(() => ({
   canUseDesktopWorkspaceTransport: vi.fn(() => false),
   createDesktopPatient: vi.fn(),
+  createDesktopVisit: vi.fn(),
+  deleteDesktopVisit: vi.fn(),
+  deleteDesktopVisitImages: vi.fn(),
   fetchDesktopCases: vi.fn(),
   fetchDesktopCaseHistory: vi.fn(),
+  fetchDesktopImages: vi.fn(),
+  fetchDesktopPatientIdLookup: vi.fn(),
+  fetchDesktopPatients: vi.fn(),
   fetchDesktopSiteActivity: vi.fn(),
+  fetchDesktopVisits: vi.fn(),
+  setDesktopRepresentativeImage: vi.fn(),
+  updateDesktopPatient: vi.fn(),
+  updateDesktopVisit: vi.fn(),
+  uploadDesktopImage: vi.fn(),
 }));
 
 vi.mock("./api-core", () => ({
@@ -205,5 +216,41 @@ describe("local-workspace-runtime desktop routing", () => {
     });
 
     expect(apiCoreMocks.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("defaults created web visits to an unknown culture state until the caller overrides it", async () => {
+    apiCoreMocks.request.mockResolvedValue({});
+    const mod = await import("./local-workspace-runtime");
+
+    await mod.createWorkspaceVisit("SITE_A", "desktop-token", {
+      patient_id: "P-001",
+      visit_date: "Initial",
+      culture_category: "",
+      culture_species: "",
+      contact_lens_use: "none",
+    });
+
+    const requestOptions = apiCoreMocks.request.mock.calls[0][1];
+    const requestBody = JSON.parse(String(requestOptions.body));
+    expect(requestBody.culture_status).toBe("unknown");
+    expect(requestBody.culture_confirmed).toBe(false);
+  });
+
+  it("defaults updated web visits to an unknown culture state until the caller overrides it", async () => {
+    apiCoreMocks.request.mockResolvedValue({});
+    const mod = await import("./local-workspace-runtime");
+
+    await mod.updateWorkspaceVisit("SITE_A", "desktop-token", "P-001", "Initial", {
+      patient_id: "P-001",
+      visit_date: "FU #1",
+      culture_category: "",
+      culture_species: "",
+      contact_lens_use: "none",
+    });
+
+    const requestOptions = apiCoreMocks.request.mock.calls[0][1];
+    const requestBody = JSON.parse(String(requestOptions.body));
+    expect(requestBody.culture_status).toBe("unknown");
+    expect(requestBody.culture_confirmed).toBe(false);
   });
 });

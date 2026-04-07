@@ -153,6 +153,7 @@ export async function runAnalysisCaseAiClinic(
     model_version_ids?: string[];
     top_k?: number;
     retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
   if (canUseDesktopAnalysisTransport()) {
@@ -173,6 +174,7 @@ export async function runAnalysisCaseAiClinic(
         execution_mode: "auto",
         top_k: 3,
         retrieval_backend: "standard",
+        retrieval_profile: "dinov2_lesion_crop",
         ...payload,
       }),
     },
@@ -191,6 +193,7 @@ export async function runAnalysisCaseAiClinicSimilarCases(
     model_version_ids?: string[];
     top_k?: number;
     retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
   if (canUseDesktopAnalysisTransport()) {
@@ -210,7 +213,8 @@ export async function runAnalysisCaseAiClinicSimilarCases(
       body: JSON.stringify({
         execution_mode: "auto",
         top_k: 3,
-        retrieval_backend: "classifier",
+        retrieval_backend: "standard",
+        retrieval_profile: "dinov2_lesion_crop",
         ...payload,
       }),
     },

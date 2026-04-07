@@ -28,17 +28,13 @@ class ResearchValidationWorkflow:
         generate_medsam: bool = True,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         service = self.service
-        manifest_df = site_store.generate_manifest()
-        case_df = manifest_df[
-            (manifest_df["patient_id"] == patient_id)
-            & (manifest_df["visit_date"] == visit_date)
-        ]
-        if case_df.empty:
+        case_records = site_store.case_records_for_visit(patient_id, visit_date)
+        if not case_records:
             raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
 
         case_result = service._predict_case(
             site_store,
-            case_df.to_dict("records"),
+            case_records,
             model_version,
             execution_device,
             generate_gradcam=generate_gradcam,
@@ -47,7 +43,7 @@ class ResearchValidationWorkflow:
         predicted_probability = float(case_result["predicted_probability"])
         predicted_index = int(case_result["predicted_index"])
         true_index = int(case_result["true_index"])
-        case_records = case_df.to_dict("records")
+        validation_mode = "labeled" if true_index != -1 else "inference_only"
         prediction_snapshot: dict[str, Any] | None = None
         try:
             prediction_snapshot = service.prediction_postmortem_analyzer.build_prediction_snapshot(
@@ -66,14 +62,16 @@ class ResearchValidationWorkflow:
             }
 
         validation_id = make_id("validation")
+        true_label = INDEX_TO_LABEL.get(true_index, "unknown") if true_index != -1 else None
         case_prediction: dict[str, Any] = {
             "validation_id": validation_id,
             "patient_id": patient_id,
             "visit_date": visit_date,
-            "true_label": INDEX_TO_LABEL[true_index],
-            "predicted_label": INDEX_TO_LABEL[predicted_index],
+            "validation_mode": validation_mode,
+            "true_label": true_label,
+            "predicted_label": INDEX_TO_LABEL.get(predicted_index, "unknown"),
             "prediction_probability": predicted_probability,
-            "is_correct": bool(true_index == predicted_index),
+            "is_correct": bool(true_index == predicted_index) if true_index != -1 else None,
             "decision_threshold": case_result.get("decision_threshold"),
             "crop_mode": case_result.get("crop_mode"),
             "case_aggregation": case_result.get("case_aggregation"),
@@ -108,14 +106,15 @@ class ResearchValidationWorkflow:
             "model_architecture": model_version.get("architecture", "densenet121"),
             "crop_mode": case_result.get("crop_mode"),
             "case_aggregation": case_result.get("case_aggregation"),
+            "validation_mode": validation_mode,
             "run_date": utc_now(),
             "patient_id": patient_id,
             "visit_date": visit_date,
-            "n_images": int(len(case_df)),
-            "n_model_inputs": int(case_result.get("n_model_inputs", len(case_df))),
+            "n_images": int(len(case_records)),
+            "n_model_inputs": int(case_result.get("n_model_inputs", len(case_records))),
             "predicted_label": INDEX_TO_LABEL[predicted_index],
-            "true_label": INDEX_TO_LABEL[true_index],
-            "is_correct": bool(true_index == predicted_index),
+            "true_label": true_label,
+            "is_correct": bool(true_index == predicted_index) if true_index != -1 else None,
             "prediction_probability": predicted_probability,
             "ensemble_weights": case_result.get("ensemble_weights"),
         }
@@ -130,6 +129,7 @@ class ResearchValidationWorkflow:
                 "model_version_id": saved_summary.get("model_version_id"),
                 "model_architecture": saved_summary.get("model_architecture"),
                 "run_scope": "case",
+                "validation_mode": validation_mode,
                 "predicted_label": case_prediction.get("predicted_label"),
                 "true_label": case_prediction.get("true_label"),
                 "prediction_probability": case_prediction.get("prediction_probability"),
@@ -146,16 +146,12 @@ class ResearchValidationWorkflow:
         visit_date: str,
     ) -> list[dict[str, Any]]:
         service = self.service
-        manifest_df = site_store.generate_manifest()
-        case_df = manifest_df[
-            (manifest_df["patient_id"] == patient_id)
-            & (manifest_df["visit_date"] == visit_date)
-        ]
-        if case_df.empty:
+        case_records = site_store.case_records_for_visit(patient_id, visit_date)
+        if not case_records:
             raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
 
         previews: list[dict[str, Any]] = []
-        for record in case_df.to_dict("records"):
+        for record in case_records:
             roi = service._ensure_roi_crop(site_store, record["image_path"])
             previews.append(
                 {
@@ -232,17 +228,13 @@ class ResearchValidationWorkflow:
         visit_date: str,
     ) -> list[dict[str, Any]]:
         service = self.service
-        manifest_df = site_store.generate_manifest()
-        case_df = manifest_df[
-            (manifest_df["patient_id"] == patient_id)
-            & (manifest_df["visit_date"] == visit_date)
-        ]
-        if case_df.empty:
+        case_records = site_store.case_records_for_visit(patient_id, visit_date)
+        if not case_records:
             raise ValueError(f"No images found for patient {patient_id} / {visit_date}.")
 
         boxed_records = [
             record
-            for record in case_df.to_dict("records")
+            for record in case_records
             if isinstance(record.get("lesion_prompt_box"), dict)
         ]
         if not boxed_records:
@@ -319,8 +311,20 @@ class ResearchContributionWorkflow:
         user_id: str,
         user_public_alias: str | None = None,
         contribution_group_id: str | None = None,
+        registry_consent_granted: bool = False,
     ) -> dict[str, Any]:
         service = self.service
+        policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        if not policy_state.get("is_positive"):
+            raise ValueError("Federated learning contribution is restricted to culture-positive cases.")
+        if not policy_state.get("is_active"):
+            raise ValueError("Federated learning contribution is restricted to active visits.")
+        if not policy_state.get("has_images"):
+            raise ValueError("Federated learning contribution requires at least one saved image.")
+        if not bool(registry_consent_granted):
+            raise ValueError("Join the research registry before contributing this case.")
+        if not policy_state.get("is_registry_included"):
+            raise ValueError("Include this case in the research registry before contributing it.")
         manifest_df = site_store.generate_manifest()
         case_df = manifest_df[
             (manifest_df["patient_id"] == patient_id)
@@ -328,6 +332,17 @@ class ResearchContributionWorkflow:
         ]
         if case_df.empty:
             raise ValueError(f"No data found for patient {patient_id} / {visit_date}.")
+
+        # Federated Learning Data Quality Filter:
+        # Restrict contribution of model updates to cases with a confirmed ground truth label (bacterial/fungal).
+        first_record = case_df.iloc[0]
+        culture_cat = str(first_record.get("culture_category") or "unknown").strip().lower()
+        if LABEL_TO_INDEX.get(culture_cat, -1) == -1:
+            raise ValueError(
+                f"Federated learning contribution requires a definitive Ground Truth (Bacterial or Fungal). "
+                f"Case culture category {culture_cat!r} is not eligible."
+            )
+
         crop_mode = service._resolve_model_crop_mode(model_version)
         if crop_mode == "both":
             raise ValueError("Ensemble models are not supported for local fine-tuning contributions.")

@@ -10,6 +10,7 @@ from typing import Any
 
 from kera_research.config import MODEL_ACTIVE_MANIFEST_PATH, MODEL_AUTO_DOWNLOAD, MODEL_DIR, STORAGE_DIR
 from kera_research.db import DATABASE_TOPOLOGY
+from kera_research.services.bundled_model_seed import bundled_model_reference, reference_matches_bundled_seed
 from kera_research.services.control_plane import ControlPlaneStore
 from kera_research.services.model_artifacts import ModelArtifactStore
 
@@ -70,21 +71,26 @@ def desktop_model_probe(cp: ControlPlaneStore) -> dict[str, Any]:
     active_local_path_raw = str(active_manifest.get("local_path") or active_manifest.get("model_path") or "").strip()
     active_local_path = Path(active_local_path_raw).expanduser().resolve() if active_local_path_raw else None
     current_release = cp.current_global_model()
+    bundled_reference = bundled_model_reference()
+    effective_release = reference_matches_bundled_seed(current_release) or current_release
     resolved_model_path = ""
     ready = False
     downloadable = False
     detail = ""
 
-    if current_release is None:
+    if effective_release is None and bundled_reference is not None:
+        effective_release = bundled_reference
+
+    if effective_release is None:
         detail = "No current model release is available from the control plane."
     else:
         try:
-            resolved_path = artifact_store.resolve_model_path(current_release, allow_download=False)
+            resolved_path = artifact_store.resolve_model_path(effective_release, allow_download=False)
             resolved_model_path = str(resolved_path)
             ready = resolved_path.exists()
         except FileNotFoundError as exc:
             detail = str(exc)
-            downloadable = MODEL_AUTO_DOWNLOAD and bool(str(current_release.get("download_url") or "").strip())
+            downloadable = MODEL_AUTO_DOWNLOAD and bool(str(effective_release.get("download_url") or "").strip())
         except Exception as exc:
             detail = str(exc)
 
@@ -96,7 +102,7 @@ def desktop_model_probe(cp: ControlPlaneStore) -> dict[str, Any]:
         "active_manifest": active_manifest,
         "active_model_path": str(active_local_path) if active_local_path else "",
         "active_model_exists": bool(active_local_path and active_local_path.exists()),
-        "current_release": current_release,
+        "current_release": effective_release,
         "resolved_model_path": resolved_model_path,
         "ready": ready,
         "downloadable": downloadable,

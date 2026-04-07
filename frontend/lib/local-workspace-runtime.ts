@@ -322,6 +322,7 @@ export async function createWorkspaceVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -343,7 +344,8 @@ export async function createWorkspaceVisit(
     {
       method: "POST",
       body: JSON.stringify({
-        culture_confirmed: true,
+        culture_status: "unknown",
+        culture_confirmed: false,
         actual_visit_date: null,
         predisposing_factor: [],
         other_history: "",
@@ -368,6 +370,7 @@ export async function updateWorkspaceVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -393,7 +396,8 @@ export async function updateWorkspaceVisit(
     {
       method: "PATCH",
       body: JSON.stringify({
-        culture_confirmed: true,
+        culture_status: "unknown",
+        culture_confirmed: false,
         actual_visit_date: null,
         predisposing_factor: [],
         other_history: "",

@@ -34,6 +34,7 @@ struct CaseAiClinicCommandRequest {
     model_version_ids: Option<Vec<String>>,
     top_k: Option<i64>,
     retrieval_backend: Option<String>,
+    retrieval_profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

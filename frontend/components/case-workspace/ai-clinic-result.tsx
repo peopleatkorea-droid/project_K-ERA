@@ -175,6 +175,10 @@ function AiClinicResultInner({
     () => buildReadySummary(validationResult, modelCompareResult),
     [validationResult, modelCompareResult],
   );
+  const inferenceOnlyValidation =
+    String(validationResult?.summary.validation_mode || "")
+      .trim()
+      .toLowerCase() === "inference_only";
 
   const [clusterResult, setClusterResult] = useState<ClusterPositionResult | null>(null);
   const [clusterLoading, setClusterLoading] = useState(false);
@@ -342,7 +346,9 @@ function AiClinicResultInner({
                   notAvailableLabel,
               },
               {
-                label: pick(locale, "Predicted label", "예측 라벨"),
+                label: inferenceOnlyValidation
+                  ? pick(locale, "Pattern support", "패턴 지지")
+                  : pick(locale, "Predicted label", "예측 라벨"),
                 value:
                   classification?.predicted_label
                     ? translateOption(locale, "cultureCategory", classification.predicted_label)
@@ -351,7 +357,9 @@ function AiClinicResultInner({
                       : notAvailableLabel,
               },
               {
-                label: pick(locale, "Prediction probability", "예측 확률"),
+                label: inferenceOnlyValidation
+                  ? pick(locale, "Support score", "지지 점수")
+                  : pick(locale, "Prediction probability", "예측 확률"),
                 value: formatProbability(
                   classification?.prediction_probability ?? readySummary?.predictionProbability,
                   notAvailableLabel

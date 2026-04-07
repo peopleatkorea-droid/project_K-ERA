@@ -46,11 +46,13 @@ def reload_app_module(
         "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL",
         "KERA_STORAGE_DIR",
         "KERA_STORAGE_STATE_FILE",
+        "KERA_CONTROL_PLANE_DIR",
         "KERA_CONTROL_PLANE_ARTIFACT_DIR",
         "KERA_CASE_REFERENCE_SALT",
         "KERA_PATIENT_REFERENCE_SALT",
         "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
         "KERA_MODEL_DISTRIBUTION_MODE",
+        "KERA_SITE_STORAGE_SOURCE",
         "KERA_SKIP_LOCAL_ENV_FILE",
     ):
         os.environ.pop(env_name, None)
@@ -67,6 +69,8 @@ def reload_app_module(
         os.environ["KERA_LOCAL_CONTROL_PLANE_DATABASE_URL"] = f"sqlite:///{local_control_plane_db_path.as_posix()}"
     if storage_dir is not None:
         os.environ["KERA_STORAGE_DIR"] = str(storage_dir)
+    control_plane_dir = (storage_dir / "control_plane") if storage_dir is not None else (db_path.parent / "control_plane")
+    os.environ["KERA_CONTROL_PLANE_DIR"] = str(control_plane_dir.resolve())
     storage_state_file = db_path.parent / "storage_dir_state.txt"
     os.environ["KERA_STORAGE_STATE_FILE"] = str(storage_state_file)
     if storage_state_value is not None:
@@ -968,6 +972,71 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(second_pass["created_patients"], 0)
         self.assertEqual(second_pass["created_visits"], 0)
         self.assertEqual(second_pass["created_images"], 0)
+
+    def test_site_store_keeps_ai_clinic_reference_corpus_positive_only_but_allows_saved_negative_query_cases(self) -> None:
+        project = self.cp.create_project("AI Clinic Corpus Project", "test", "owner")
+        site_id = self._unique_site_id("AI_CLINIC_CORPUS")
+        self.cp.create_site(project["project_id"], site_id, "AI Clinic Corpus Site", "AI Clinic Corpus Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+
+        site_store.create_patient("POS-001", "female", 58, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id="POS-001",
+            visit_date="Initial",
+            actual_visit_date="2026-03-22",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Candida",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        site_store.add_image(
+            patient_id="POS-001",
+            visit_date="Initial",
+            view="white",
+            is_representative=True,
+            file_name="positive_case.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+
+        site_store.create_patient("NEG-001", "male", 63, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id="NEG-001",
+            visit_date="Initial",
+            actual_visit_date="2026-03-23",
+            culture_status="negative",
+            culture_confirmed=False,
+            culture_category="",
+            culture_species="",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        site_store.add_image(
+            patient_id="NEG-001",
+            visit_date="Initial",
+            view="slit",
+            is_representative=True,
+            file_name="negative_case.png",
+            content=self._make_test_image_bytes(color="gray"),
+            created_by_user_id="owner",
+        )
+
+        positive_only_records = site_store.dataset_records()
+        all_records = site_store.dataset_records(positive_only=False)
+        negative_query_records = site_store.case_records_for_visit("NEG-001", "Initial")
+
+        self.assertEqual({record["patient_id"] for record in positive_only_records}, {"POS-001"})
+        self.assertEqual({record["patient_id"] for record in all_records}, {"POS-001", "NEG-001"})
+        self.assertEqual(len(negative_query_records), 1)
+        self.assertEqual(negative_query_records[0]["patient_id"], "NEG-001")
+        self.assertEqual(negative_query_records[0]["culture_status"], "negative")
 
     def test_site_store_sync_ignores_empty_raw_patient_directories(self) -> None:
         project = self.cp.create_project("Raw Empty Project", "test", "owner")

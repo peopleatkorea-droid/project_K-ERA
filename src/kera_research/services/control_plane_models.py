@@ -4,6 +4,9 @@ from typing import Any
 
 import requests
 
+from kera_research.db import DATABASE_TOPOLOGY
+from kera_research.services.bundled_model_seed import ensure_bundled_current_model, reference_matches_bundled_seed
+
 
 class ControlPlaneModelFacade:
     def __init__(self, store: Any) -> None:
@@ -19,10 +22,12 @@ class ControlPlaneModelFacade:
         return self.store.registry.ensure_model_version(model_metadata)
 
     def current_global_model(self) -> dict[str, Any] | None:
-        remote_release = self.store._remote_current_release_manifest()
+        use_remote_release = DATABASE_TOPOLOGY.get("control_plane_connection_mode") == "remote_api_cache"
+        remote_release = self.store._remote_current_release_manifest() if use_remote_release else None
         if remote_release is not None:
-            return self.store._normalize_remote_release(remote_release)
-        return self.store.registry.current_global_model()
+            normalized_remote_release = self.store._normalize_remote_release(remote_release)
+            return reference_matches_bundled_seed(normalized_remote_release) or normalized_remote_release
+        return ensure_bundled_current_model(self.store)
 
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
         return self.store.registry.archive_model_version(version_id)

@@ -300,6 +300,7 @@ export async function createVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -325,6 +326,7 @@ export async function updateVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;

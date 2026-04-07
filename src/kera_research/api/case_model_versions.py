@@ -6,6 +6,40 @@ from typing import Any, Callable
 
 from kera_research.domain import is_dual_input_training_architecture
 
+_PREFERRED_ANALYSIS_MODEL_PATTERNS = (
+    "efficientnet_v2_s_mil_full",
+    "efficientnetv2-s mil",
+    "efficientnet_v2_s_mil",
+)
+
+
+def _preferred_operating_model(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ready_versions = [item for item in versions if item.get("ready", True)]
+    if not ready_versions:
+        return None
+    for pattern in _PREFERRED_ANALYSIS_MODEL_PATTERNS:
+        match = next(
+            (
+                item
+                for item in ready_versions
+                if pattern
+                in " ".join(
+                    [
+                        str(item.get("version_id") or "").strip().lower(),
+                        str(item.get("version_name") or "").strip().lower(),
+                        str(item.get("architecture") or "").strip().lower(),
+                    ]
+                )
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+    current_versions = [item for item in ready_versions if item.get("is_current")]
+    if current_versions:
+        return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
+    return sorted(ready_versions, key=lambda item: item.get("created_at", ""))[-1]
+
 
 def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
     if model_version.get("ensemble_mode") == "weighted_average":
@@ -28,12 +62,12 @@ def resolve_requested_model_version(
     model_version_id: str | None,
     model_version_ids: list[str] | None,
 ) -> dict[str, Any] | None:
+    ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
     normalized_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
     if normalized_ids:
         versions_by_id = {
             str(item.get("version_id") or ""): item
-            for item in cp.list_model_versions()
-            if item.get("ready", True)
+            for item in ready_versions
         }
         components: list[dict[str, Any]] = []
         missing_ids: list[str] = []
@@ -95,7 +129,9 @@ def resolve_requested_model_version(
             "notes_en": f"Temporary analysis ensemble across {len(components)} model versions.",
         }
         return cp.ensure_model_version(ensemble_record)
-    return get_model_version(cp, model_version_id)
+    if model_version_id:
+        return get_model_version(cp, model_version_id)
+    return _preferred_operating_model(ready_versions)
 
 
 def resolve_requested_contribution_models(
@@ -105,10 +141,10 @@ def resolve_requested_contribution_models(
     model_version_id: str | None,
     model_version_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
+    ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
     versions_by_id = {
         str(item.get("version_id") or ""): item
-        for item in cp.list_model_versions()
-        if item.get("ready", True)
+        for item in ready_versions
     }
 
     def expand_contribution_model(model_version: dict[str, Any]) -> list[dict[str, Any]]:
@@ -148,7 +184,7 @@ def resolve_requested_contribution_models(
         if missing_ids:
             raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
     else:
-        single_model = get_model_version(cp, model_version_id)
+        single_model = get_model_version(cp, model_version_id) if model_version_id else _preferred_operating_model(ready_versions)
         if single_model is None or not single_model.get("ready", True):
             raise ValueError("No ready model version is available for contribution.")
         requested_models = [single_model]

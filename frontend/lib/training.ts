@@ -165,6 +165,7 @@ export async function runCaseAiClinic(
     model_version_ids?: string[];
     top_k?: number;
     retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
   return runCaseAiClinicRuntime(siteId, token, payload);
@@ -181,6 +182,7 @@ export async function runCaseAiClinicSimilarCases(
     model_version_ids?: string[];
     top_k?: number;
     retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
   return runCaseAiClinicSimilarCasesRuntime(siteId, token, payload);

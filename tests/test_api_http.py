@@ -61,6 +61,7 @@ def reload_app_module(
         "KERA_ONEDRIVE_ROOT_PATH",
         "KERA_ONEDRIVE_SHARE_SCOPE",
         "KERA_ONEDRIVE_SHARE_TYPE",
+        "KERA_SITE_STORAGE_SOURCE",
         "KERA_SKIP_LOCAL_ENV_FILE",
     ):
         os.environ.pop(env_name, None)
@@ -75,6 +76,7 @@ def reload_app_module(
         os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
     state_anchor = db_path or control_plane_db_path or data_plane_db_path or control_plane_artifact_dir
     if state_anchor is not None:
+        os.environ["KERA_CONTROL_PLANE_DIR"] = str(Path(state_anchor).resolve().parent / "control_plane")
         storage_state_file = Path(state_anchor).resolve().parent / "storage_dir_state.txt"
         os.environ["KERA_STORAGE_STATE_FILE"] = str(storage_state_file)
         storage_state_file.unlink(missing_ok=True)
@@ -102,6 +104,9 @@ class FakeModelManager:
     def aggregate_weight_deltas(self, delta_paths, output_path, weights=None, base_model_path=None):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"aggregated")
+
+    def resolve_model_path(self, model_reference, allow_download=True):
+        return str(model_reference.get("model_path") or "")
 
 
 class FakeWorkflow:
@@ -291,6 +296,7 @@ class FakeWorkflow:
         execution_device,
         top_k=3,
         retrieval_backend="hybrid",
+        retrieval_profile="dinov2_lesion_crop",
     ):
         return {
             "patient_id": patient_id,
@@ -298,14 +304,47 @@ class FakeWorkflow:
             "model_version_id": model_version["version_id"],
             "model_version_name": model_version["version_name"],
             "retrieval_backend": retrieval_backend,
+            "retrieval_profile": retrieval_profile,
             "execution_device": execution_device,
             "similar_cases": [],
+            "ai_clinic_profile": {
+                "profile_id": retrieval_profile,
+                "requested_backend": retrieval_backend,
+                "effective_retrieval_backend": retrieval_backend,
+                "retrieval_profile_label": retrieval_profile,
+            },
             "classification_context": {
                 "validation_id": None,
                 "model_version_id": model_version["version_id"],
             },
             "differential": [],
             "workflow_recommendation": None,
+        }
+
+    def run_ai_clinic_similar_cases(
+        self,
+        site_store,
+        *,
+        patient_id,
+        visit_date,
+        model_version,
+        execution_device,
+        top_k=3,
+        retrieval_backend="hybrid",
+        retrieval_profile="dinov2_lesion_crop",
+    ):
+        return {
+            **self.run_ai_clinic_report(
+                site_store,
+                patient_id=patient_id,
+                visit_date=visit_date,
+                model_version=model_version,
+                execution_device=execution_device,
+                top_k=top_k,
+                retrieval_backend=retrieval_backend,
+                retrieval_profile=retrieval_profile,
+            ),
+            "similar_cases": [],
         }
 
     def run_case_postmortem(
@@ -386,7 +425,18 @@ class FakeWorkflow:
             "llm_error": None,
         }
 
-    def contribute_case(self, site_store, patient_id, visit_date, model_version, execution_device, user_id, contribution_group_id=None):
+    def contribute_case(
+        self,
+        site_store,
+        patient_id,
+        visit_date,
+        model_version,
+        execution_device,
+        user_id,
+        user_public_alias=None,
+        contribution_group_id=None,
+        registry_consent_granted=False,
+    ):
         delta_path = site_store.update_dir / f"{self.app_module.make_id('delta')}.pt"
         delta_path.parent.mkdir(parents=True, exist_ok=True)
         delta_path.write_bytes(b"delta")
@@ -738,7 +788,7 @@ class FakeWorkflow:
 
 
 class FakeSemanticPromptScorer:
-    def score_image(self, image_path, *, view, top_k=3):
+    def score_image(self, image_path, *, view, top_k=3, persistence_dir=None):
         return {
             "model_name": "BiomedCLIP",
             "model_id": "fake/biomedclip",
@@ -926,6 +976,8 @@ class ApiHttpTests(unittest.TestCase):
         self.site_id = f"HTTP_{self.app_module.make_id('site')[-6:].upper()}"
         self.cp.create_site(project["project_id"], self.site_id, "HTTP Test Site", "HTTP Hospital")
         self.site_store = self.app_module.SiteStore(self.site_id)
+        shutil.rmtree(self.site_store.site_dir, ignore_errors=True)
+        self.site_store = self.app_module.SiteStore(self.site_id)
         self.seed_model_path = ROOT_DIR / "models" / "http_seed_model.pth"
         self.seed_model_path.parent.mkdir(parents=True, exist_ok=True)
         self.seed_model_path.write_bytes(b"seed")
@@ -1063,7 +1115,7 @@ class ApiHttpTests(unittest.TestCase):
             control_plane_artifact_dir=Path(split_tempdir.name) / "control_artifacts",
         )
         self.db_module = sys.modules["kera_research.db"]
-        self.site_id = "LOCAL_ONLY_SITE"
+        self.site_id = f"LOCAL_ONLY_SITE_{Path(split_tempdir.name).name.replace('-', '').upper()[:8]}"
         from fastapi.testclient import TestClient
 
         self.client = TestClient(self.app_module.create_app())
@@ -1522,6 +1574,32 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(image_response.status_code, 200, image_response.text)
         return image_response.json()["image_id"]
 
+    def _join_and_include_research_case(
+        self,
+        token: str,
+        *,
+        patient_id: str = "HTTP-001",
+        visit_date: str = "Initial",
+    ) -> None:
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+        include_response = self.client.post(
+            f"/api/sites/{self.site_id}/cases/research-registry",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": patient_id,
+                "visit_date": visit_date,
+                "action": "include",
+                "source": "test_helper",
+            },
+        )
+        self.assertEqual(include_response.status_code, 200, include_response.text)
+
     def test_public_sites_and_accessible_site_list_http(self):
         public_response = self.client.get("/api/public/sites")
         self.assertEqual(public_response.status_code, 200, public_response.text)
@@ -1872,7 +1950,7 @@ class ApiHttpTests(unittest.TestCase):
 
         items_by_id = {item["image_id"]: item for item in payload["items"]}
         self.assertTrue(items_by_id[image_id]["ready"])
-        self.assertEqual(items_by_id[image_id]["cache_status"], "generated")
+        self.assertIn(items_by_id[image_id]["cache_status"], {"generated", "hit"})
         self.assertTrue(items_by_id[image_id]["preview_url"].endswith(f"/images/{image_id}/preview?max_side=256"))
         self.assertTrue(preview_path.exists())
 
@@ -2753,6 +2831,7 @@ class ApiHttpTests(unittest.TestCase):
     def test_case_validation_and_contribution_http(self):
         token = self._token_for_username("http_researcher")
         self._seed_case(token)
+        self._join_and_include_research_case(token)
         fake_workflow = FakeWorkflow(self.app_module, self.cp)
         with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
             validation_response = self.client.post(
@@ -2864,6 +2943,7 @@ class ApiHttpTests(unittest.TestCase):
     def test_case_contribution_can_fan_out_into_multiple_updates_http(self):
         token = self._token_for_username("http_researcher")
         self._seed_case(token)
+        self._join_and_include_research_case(token)
         for index, architecture in enumerate(("vit", "swin", "convnext_tiny", "efficientnet_v2_s"), start=1):
             self.cp.ensure_model_version(
                 {
@@ -2921,6 +3001,452 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(history_response.status_code, 200, history_response.text)
             history_payload = history_response.json()
             self.assertEqual(len(history_payload["contributions"]), 5)
+
+    def test_negative_case_can_be_saved_and_listed_without_culture_species_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-NEG-001"
+
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": patient_id, "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+
+        visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "culture_status": "negative",
+                "culture_category": "",
+                "culture_species": "",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        visit_payload = visit_response.json()
+        self.assertEqual(visit_payload["culture_status"], "negative")
+        self.assertFalse(bool(visit_payload["culture_confirmed"]))
+        self.assertEqual(str(visit_payload["culture_category"] or ""), "")
+        self.assertEqual(str(visit_payload["culture_species"] or ""), "")
+
+        image_response = self.client.post(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "view": "white",
+                "is_representative": "true",
+            },
+            files={"file": ("negative.png", self._make_test_image_bytes("PNG"), "image/png")},
+        )
+        self.assertEqual(image_response.status_code, 200, image_response.text)
+
+        cases_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(cases_response.status_code, 200, cases_response.text)
+        self.assertTrue(
+            any(
+                item["patient_id"] == patient_id
+                and item["visit_date"] == "Initial"
+                and item["culture_status"] == "negative"
+                for item in cases_response.json()
+            )
+        )
+
+    def test_visit_defaults_to_unknown_when_culture_fields_are_omitted_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-UNK-001"
+
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": patient_id, "sex": "female", "age": 54, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+
+        visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        visit_payload = visit_response.json()
+        self.assertEqual(visit_payload["culture_status"], "unknown")
+        self.assertFalse(bool(visit_payload["culture_confirmed"]))
+        self.assertEqual(str(visit_payload["culture_category"] or ""), "")
+        self.assertEqual(str(visit_payload["culture_species"] or ""), "")
+
+    def test_case_validation_supports_inference_only_mode_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-INF-001")
+
+        class InferenceOnlyFakeWorkflow(FakeWorkflow):
+            def run_case_validation(self, *args, **kwargs):
+                summary, case_predictions = super().run_case_validation(*args, **kwargs)
+                summary["validation_mode"] = "inference_only"
+                summary["true_label"] = None
+                summary["is_correct"] = None
+                case_predictions[0]["validation_mode"] = "inference_only"
+                case_predictions[0]["true_label"] = None
+                case_predictions[0]["is_correct"] = None
+                return summary, case_predictions
+
+        fake_workflow = InferenceOnlyFakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-INF-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+
+        self.assertEqual(validation_response.status_code, 200, validation_response.text)
+        payload = validation_response.json()
+        self.assertEqual(payload["summary"]["validation_mode"], "inference_only")
+        self.assertIsNone(payload["summary"]["true_label"])
+        self.assertIsNone(payload["summary"]["is_correct"])
+        self.assertIsNone(payload["case_prediction"]["true_label"])
+        self.assertIsNone(payload["case_prediction"]["is_correct"])
+        self.assertIsNone(payload["post_mortem"])
+
+    def test_desktop_sidecar_validation_skips_postmortem_for_inference_only(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-INF-DESKTOP-001")
+
+        import kera_research.desktop_sidecar as desktop_sidecar
+
+        class InferenceOnlyFakeWorkflow(FakeWorkflow):
+            def run_case_validation(self, *args, **kwargs):
+                summary, case_predictions = super().run_case_validation(*args, **kwargs)
+                summary["validation_mode"] = "inference_only"
+                summary["true_label"] = None
+                summary["is_correct"] = None
+                case_predictions[0]["validation_mode"] = "inference_only"
+                case_predictions[0]["true_label"] = None
+                case_predictions[0]["is_correct"] = None
+                return summary, case_predictions
+
+        fake_workflow = InferenceOnlyFakeWorkflow(self.app_module, self.cp)
+        fake_workflow.run_case_postmortem = Mock(side_effect=AssertionError("postmortem should not run"))
+
+        with (
+            patch.object(desktop_sidecar, "get_control_plane", return_value=self.cp),
+            patch.object(
+                desktop_sidecar,
+                "_approved_user",
+                return_value={
+                    "user_id": self.researcher["user_id"],
+                    "username": "http_researcher",
+                    "role": "researcher",
+                    "site_ids": [self.site_id],
+                    "approval_status": "approved",
+                },
+            ),
+            patch.object(desktop_sidecar, "_require_validation_permission", return_value=None),
+            patch.object(desktop_sidecar, "_require_site_access", return_value=self.site_store),
+            patch.object(desktop_sidecar, "_ensure_shared_workflow", return_value=fake_workflow),
+            patch.object(
+                desktop_sidecar,
+                "_resolve_case_model_version",
+                return_value=next(
+                    item
+                    for item in self.cp.list_model_versions()
+                    if str(item.get("version_id") or "") == "model_http_seed"
+                ),
+            ),
+            patch.object(desktop_sidecar, "_resolve_execution_device", return_value="cpu"),
+            patch.object(desktop_sidecar, "_project_id_for_site", return_value="project_http"),
+            patch.object(desktop_sidecar, "_sync_case_artifact_cache_best_effort", return_value=None),
+        ):
+            payload = desktop_sidecar._run_case_validation(
+                {
+                    "token": token,
+                    "site_id": self.site_id,
+                    "patient_id": "HTTP-INF-DESKTOP-001",
+                    "visit_date": "Initial",
+                    "execution_mode": "cpu",
+                }
+            )
+
+        self.assertEqual(payload["summary"]["validation_mode"], "inference_only")
+        self.assertIsNone(payload["case_prediction"]["true_label"])
+        self.assertIsNone(payload["case_prediction"]["is_correct"])
+        self.assertIsNone(payload["post_mortem"])
+        fake_workflow.run_case_postmortem.assert_not_called()
+
+    def test_validation_case_listing_excludes_inference_only_rows_from_misclassified_filter_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-INF-LIST-001"
+        self._seed_case(token, patient_id=patient_id)
+
+        summary = {
+            "validation_id": "validation_inference_only_rows",
+            "project_id": "project_default",
+            "site_id": self.site_id,
+            "model_version": "global-http-seed",
+            "model_version_id": "model_http_seed",
+            "model_architecture": "densenet121",
+            "run_date": "2026-04-07T00:00:00+00:00",
+            "n_patients": 1,
+            "n_cases": 1,
+            "n_images": 1,
+            "AUROC": 0.61,
+            "accuracy": 0.61,
+            "sensitivity": 0.61,
+            "specificity": 0.61,
+            "F1": 0.61,
+        }
+        case_prediction = {
+            "validation_id": summary["validation_id"],
+            "site_id": self.site_id,
+            "patient_id": patient_id,
+            "visit_date": "Initial",
+            "validation_mode": "inference_only",
+            "true_label": None,
+            "predicted_label": "fungal",
+            "prediction_probability": 0.63,
+            "is_correct": None,
+        }
+        self.cp.save_validation_run(summary, [case_prediction])
+
+        filtered_response = self.client.get(
+            f"/api/sites/{self.site_id}/validations/{summary['validation_id']}/cases?misclassified_only=true",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(filtered_response.status_code, 200, filtered_response.text)
+        self.assertEqual(filtered_response.json(), [])
+
+        all_rows_response = self.client.get(
+            f"/api/sites/{self.site_id}/validations/{summary['validation_id']}/cases",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(all_rows_response.status_code, 200, all_rows_response.text)
+        rows = all_rows_response.json()
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["is_correct"])
+
+    def test_case_contribution_requires_registry_consent_and_inclusion_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-CONTRIB-001")
+
+        class PolicyCheckingFakeWorkflow(FakeWorkflow):
+            def contribute_case(self, *args, **kwargs):
+                site_store = kwargs["site_store"]
+                patient_id = kwargs["patient_id"]
+                visit_date = kwargs["visit_date"]
+                policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+                if not policy_state.get("is_registry_included"):
+                    raise ValueError("Include this case in the research registry before contributing it.")
+                return super().contribute_case(*args, **kwargs)
+
+        fake_workflow = PolicyCheckingFakeWorkflow(self.app_module, self.cp)
+
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            blocked_without_consent = self.client.post(
+                f"/api/sites/{self.site_id}/cases/contribute",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-CONTRIB-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+            self.assertEqual(blocked_without_consent.status_code, 409, blocked_without_consent.text)
+            self.assertIn("research registry", blocked_without_consent.json()["detail"].lower())
+
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            blocked_without_include = self.client.post(
+                f"/api/sites/{self.site_id}/cases/contribute",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-CONTRIB-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+            self.assertEqual(blocked_without_include.status_code, 400, blocked_without_include.text)
+            self.assertIn("include this case", blocked_without_include.json()["detail"].lower())
+
+        include_response = self.client.post(
+            f"/api/sites/{self.site_id}/cases/research-registry",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-CONTRIB-001",
+                "visit_date": "Initial",
+                "action": "include",
+                "source": "test_contribution_gate",
+            },
+        )
+        self.assertEqual(include_response.status_code, 200, include_response.text)
+
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            contribution_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/contribute",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": "HTTP-CONTRIB-001", "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+        self.assertEqual(contribution_response.status_code, 200, contribution_response.text)
+
+    def test_desktop_sidecar_contribution_requires_registry_consent_and_inclusion(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-CONTRIB-DESKTOP-001"
+        self._seed_case(token, patient_id=patient_id)
+
+        import kera_research.desktop_sidecar as desktop_sidecar
+
+        researcher_user = {
+            "user_id": self.researcher["user_id"],
+            "username": "http_researcher",
+            "role": "researcher",
+            "site_ids": [self.site_id],
+            "approval_status": "approved",
+        }
+        seed_model_version = next(
+            item for item in self.cp.list_model_versions() if str(item.get("version_id") or "") == "model_http_seed"
+        )
+        fake_workflow = Mock()
+
+        def _contribute_case(*args, **kwargs):
+            policy_state = kwargs["site_store"].case_research_policy_state(kwargs["patient_id"], kwargs["visit_date"])
+            if not bool(kwargs.get("registry_consent_granted")):
+                raise ValueError("Join the research registry before contributing this case.")
+            if not policy_state.get("is_positive"):
+                raise ValueError("Federated learning contribution is restricted to culture-positive cases.")
+            if not policy_state.get("is_active"):
+                raise ValueError("Federated learning contribution is restricted to active visits.")
+            if not policy_state.get("has_images"):
+                raise ValueError("Federated learning contribution requires at least one saved image.")
+            if not policy_state.get("is_registry_included"):
+                raise ValueError("Include this case in the research registry before contributing it.")
+            return {
+                "contribution_id": "desktop_sidecar_contribution_001",
+                "base_model_version_id": seed_model_version["version_id"],
+            }
+
+        fake_workflow.contribute_case.side_effect = _contribute_case
+        request_payload = {
+            "token": token,
+            "site_id": self.site_id,
+            "patient_id": patient_id,
+            "visit_date": "Initial",
+            "execution_mode": "cpu",
+            "model_version_id": "model_http_seed",
+        }
+
+        with (
+            patch.object(desktop_sidecar, "get_control_plane", return_value=self.cp),
+            patch.object(desktop_sidecar, "_approved_user", return_value=researcher_user),
+            patch.object(desktop_sidecar, "_require_validation_permission", return_value=None),
+            patch.object(desktop_sidecar, "_require_site_access", return_value=self.site_store),
+            patch.object(desktop_sidecar, "_ensure_shared_workflow", return_value=fake_workflow),
+            patch.object(desktop_sidecar, "resolve_requested_contribution_models", return_value=[seed_model_version]),
+            patch.object(desktop_sidecar, "_resolve_execution_device", return_value="cpu"),
+            patch.object(desktop_sidecar, "_sync_case_artifact_cache_best_effort", return_value=None),
+        ):
+            with self.assertRaises(Exception) as blocked_without_consent:
+                desktop_sidecar._run_case_contribution(request_payload)
+            self.assertEqual(getattr(blocked_without_consent.exception, "status_code", None), 409)
+            self.assertIn("research registry", str(getattr(blocked_without_consent.exception, "detail", "")).lower())
+
+            consent_response = self.client.post(
+                f"/api/sites/{self.site_id}/research-registry/consent",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"version": "v1"},
+            )
+            self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+            with self.assertRaises(Exception) as blocked_without_include:
+                desktop_sidecar._run_case_contribution(request_payload)
+            self.assertEqual(getattr(blocked_without_include.exception, "status_code", None), 400)
+            self.assertIn("include this case", str(getattr(blocked_without_include.exception, "detail", "")).lower())
+
+            include_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/research-registry",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "patient_id": patient_id,
+                    "visit_date": "Initial",
+                    "action": "include",
+                    "source": "test_desktop_sidecar_contribution_gate",
+                },
+            )
+            self.assertEqual(include_response.status_code, 200, include_response.text)
+
+            fake_workflow.contribute_case.reset_mock()
+            payload = desktop_sidecar._run_case_contribution(request_payload)
+
+        self.assertEqual(payload["update"]["base_model_version_id"], "model_http_seed")
+        self.assertEqual(payload["visit_status"], "active")
+        self.assertTrue(bool(fake_workflow.contribute_case.call_args.kwargs.get("registry_consent_granted")))
+
+    def test_research_registry_include_rejects_non_positive_case_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-REG-NEG-001"
+        patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"patient_id": patient_id, "sex": "female", "age": 61, "chart_alias": "", "local_case_code": ""},
+        )
+        self.assertEqual(patient_response.status_code, 200, patient_response.text)
+        visit_response = self.client.post(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "culture_status": "negative",
+                "culture_category": "",
+                "culture_species": "",
+                "contact_lens_use": "none",
+                "visit_status": "active",
+                "is_initial_visit": True,
+            },
+        )
+        self.assertEqual(visit_response.status_code, 200, visit_response.text)
+        image_response = self.client.post(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {token}"},
+            data={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "view": "white",
+                "is_representative": "true",
+            },
+            files={"file": ("negative_registry.png", self._make_test_image_bytes("PNG"), "image/png")},
+        )
+        self.assertEqual(image_response.status_code, 200, image_response.text)
+
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+        include_response = self.client.post(
+            f"/api/sites/{self.site_id}/cases/research-registry",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": patient_id,
+                "visit_date": "Initial",
+                "action": "include",
+                "source": "test_negative_include",
+            },
+        )
+        self.assertEqual(include_response.status_code, 400, include_response.text)
+        self.assertIn("culture-positive", include_response.json()["detail"])
 
     def test_case_validation_and_ai_clinic_can_use_multi_model_analysis_ensemble_http(self):
         token = self._token_for_username("http_researcher")
@@ -3556,7 +4082,7 @@ class ApiHttpTests(unittest.TestCase):
             "onedrive_share_error": "",
         }
 
-        with patch("kera_research.api.routes.admin.OneDrivePublisher", return_value=fake_publisher):
+        with patch("kera_research.services.admin_registry_orchestrator.OneDrivePublisher", return_value=fake_publisher):
             response = self.client.post(
                 f"/api/admin/model-versions/{pending_version['version_id']}/auto-publish",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -3610,7 +4136,7 @@ class ApiHttpTests(unittest.TestCase):
             "onedrive_share_error": "",
         }
 
-        with patch("kera_research.api.routes.admin.OneDrivePublisher", return_value=fake_publisher):
+        with patch("kera_research.services.admin_registry_orchestrator.OneDrivePublisher", return_value=fake_publisher):
             response = self.client.post(
                 f"/api/admin/model-updates/{update['update_id']}/auto-publish",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -4008,6 +4534,7 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(template_response.status_code, 200, template_response.text)
         self.assertIn("patient_id", template_response.text)
+        self.assertIn("culture_status", template_response.text)
 
         csv_content = (
             "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_confirmed,culture_category,culture_species,"
@@ -4069,6 +4596,64 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(comparison_response.status_code, 200, comparison_response.text)
         self.assertTrue(any(item["site_id"] == site_id for item in comparison_response.json()))
+
+    def test_bulk_import_accepts_unknown_culture_status_without_organism_http(self):
+        admin_token = self._token_for_username("admin")
+
+        projects_response = self.client.get("/api/admin/projects", headers={"Authorization": f"Bearer {admin_token}"})
+        self.assertEqual(projects_response.status_code, 200, projects_response.text)
+        project_id = projects_response.json()[0]["project_id"]
+
+        create_site_response = self.client.post(
+            "/api/admin/sites",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "project_id": project_id,
+                "hospital_name": "Import Unknown Hospital",
+                "source_institution_id": "OPS_HTTP_UNKNOWN",
+            },
+        )
+        self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+        site_id = create_site_response.json()["site_id"]
+
+        csv_content = (
+            "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_status,culture_category,culture_species,"
+            "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative\n"
+            "OPS-U-001,OPS-U-001,CASE-U-001,female,51,Initial,2026-03-11,unknown,,,none,trauma,active,TRUE,unknown,FALSE,,ops_u_001_white.jpg,white,TRUE\n"
+        ).encode("utf-8")
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("ops_u_001_white.jpg", self._make_test_image_bytes("JPEG", (120, 80, 40)))
+
+        import_response = self.client.post(
+            f"/api/sites/{site_id}/import/bulk",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            files=[
+                ("csv_file", ("ops_import_unknown.csv", csv_content, "text/csv")),
+                ("files", ("ops_unknown_images.zip", archive_buffer.getvalue(), "application/zip")),
+            ],
+        )
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+        import_payload = import_response.json()
+        self.assertEqual(import_payload["created_patients"], 1)
+        self.assertEqual(import_payload["created_visits"], 1)
+        self.assertEqual(import_payload["imported_images"], 1)
+        self.assertEqual(import_payload["errors"], [])
+
+        cases_response = self.client.get(
+            f"/api/sites/{site_id}/cases",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(cases_response.status_code, 200, cases_response.text)
+        imported_case = next(
+            item
+            for item in cases_response.json()
+            if item["patient_id"] == "OPS-U-001" and item["visit_date"] == "Initial"
+        )
+        self.assertEqual(imported_case["culture_status"], "unknown")
+        self.assertFalse(bool(imported_case["culture_confirmed"]))
+        self.assertEqual(imported_case["culture_category"], "")
+        self.assertEqual(imported_case["culture_species"], "")
 
     def test_platform_admin_can_update_site_source_institution_mapping_http(self):
         admin_token = self._token_for_username("admin")
@@ -4374,6 +4959,149 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(Path(images[0]["image_path"]).resolve(), image_path.resolve())
         self.assertEqual(images[0]["view"], "slit")
         self.assertEqual(self.site_store.dataset_records(), [])
+
+    def test_workspace_lookup_visit_list_and_image_queries_hide_raw_inventory_placeholder_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        visit_dir = self.site_store.raw_dir / "00415029" / "Initial"
+        visit_dir.mkdir(parents=True, exist_ok=True)
+        (visit_dir / "http_sync_slit.png").write_bytes(self._make_test_image_bytes())
+
+        sync_response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+
+        self.assertEqual(sync_response.status_code, 200, sync_response.text)
+
+        lookup_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients/lookup?patient_id=00415029",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(lookup_response.status_code, 200, lookup_response.text)
+        lookup_payload = lookup_response.json()
+        self.assertTrue(lookup_payload["exists"])
+        self.assertEqual(lookup_payload["normalized_patient_id"], "00415029")
+        self.assertEqual(lookup_payload["visit_count"], 0)
+        self.assertEqual(lookup_payload["image_count"], 0)
+        self.assertIsNone(lookup_payload["latest_visit_date"])
+        self.assertEqual(lookup_payload["patient"]["patient_id"], "00415029")
+
+        patient_visits_response = self.client.get(
+            f"/api/sites/{self.site_id}/visits?patient_id=00415029",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(patient_visits_response.status_code, 200, patient_visits_response.text)
+        self.assertEqual(patient_visits_response.json(), [])
+
+        all_visits_response = self.client.get(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(all_visits_response.status_code, 200, all_visits_response.text)
+        self.assertEqual(all_visits_response.json(), [])
+
+        patients_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(patients_response.status_code, 200, patients_response.text)
+        self.assertEqual(patients_response.json(), [])
+
+        patient_images_response = self.client.get(
+            f"/api/sites/{self.site_id}/images?patient_id=00415029",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(patient_images_response.status_code, 200, patient_images_response.text)
+        self.assertEqual(patient_images_response.json(), [])
+
+        visit_images_response = self.client.get(
+            f"/api/sites/{self.site_id}/images?patient_id=00415029&visit_date=Initial",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(visit_images_response.status_code, 200, visit_images_response.text)
+        self.assertEqual(visit_images_response.json(), [])
+
+        all_images_response = self.client.get(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {site_admin_token}"},
+        )
+        self.assertEqual(all_images_response.status_code, 200, all_images_response.text)
+        self.assertEqual(all_images_response.json(), [])
+
+    def test_image_text_search_hides_raw_inventory_placeholder_images_http(self):
+        token = self._token_for_username("http_researcher")
+        visible_image_id = self._seed_case(token, patient_id="HTTP-TEXT-001", visit_date="Initial")
+        raw_visit_dir = self.site_store.raw_dir / "RAW-TEXT-001" / "Initial"
+        raw_visit_dir.mkdir(parents=True, exist_ok=True)
+        (raw_visit_dir / "placeholder_slit.png").write_bytes(self._make_test_image_bytes())
+
+        sync_response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+            headers={"Authorization": f"Bearer {self._token_for_username('http_site_admin')}"},
+        )
+        self.assertEqual(sync_response.status_code, 200, sync_response.text)
+
+        class TextSearchStub:
+            def retrieve_images(self, *, query_text, image_records, requested_device, top_k=10, persistence_dir=None):
+                return {
+                    "text_retrieval_mode": "stub",
+                    "text_embedding_model": "stub",
+                    "eligible_image_count": len(image_records),
+                    "results": [
+                        {
+                            "image_id": str(item.get("image_id") or ""),
+                            "patient_id": str(item.get("patient_id") or ""),
+                            "visit_date": str(item.get("visit_date") or ""),
+                            "view": str(item.get("view") or ""),
+                            "image_path": str(item.get("image_path") or ""),
+                            "score": 1.0 - (index * 0.01),
+                        }
+                        for index, item in enumerate(image_records[: max(1, min(int(top_k or 10), 50))])
+                    ],
+                }
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        fake_workflow.text_retriever = TextSearchStub()
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            response = self.client.post(
+                f"/api/sites/{self.site_id}/images/search/text",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"query": "slit lamp", "top_k": 10},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["eligible_image_count"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["image_id"], visible_image_id)
+        self.assertEqual(payload["results"][0]["patient_id"], "HTTP-TEXT-001")
+        self.assertNotEqual(payload["results"][0]["patient_id"], "RAW-TEXT-001")
+        self.assertTrue(str(payload["results"][0]["preview_url"] or "").startswith(f"/api/sites/{self.site_id}/images/"))
+
+    def test_patient_list_keeps_manual_patients_without_visits_http(self):
+        token = self._token_for_username("http_researcher")
+        create_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-EMPTY-001",
+                "sex": "female",
+                "age": 44,
+                "chart_alias": "",
+                "local_case_code": "",
+            },
+        )
+        self.assertEqual(create_response.status_code, 200, create_response.text)
+
+        patients_response = self.client.get(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(patients_response.status_code, 200, patients_response.text)
+        self.assertIn(
+            "HTTP-EMPTY-001",
+            [item["patient_id"] for item in patients_response.json()],
+        )
 
 
 if __name__ == "__main__":

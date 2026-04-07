@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import Response
 
 from kera_research.api.control_plane_proxy import site_record_for_request
+from kera_research.db import DATABASE_TOPOLOGY
 from kera_research.api.routes.case_shared import (
     CaseResearchRegistryRequest,
     private_json_response,
@@ -13,6 +14,13 @@ from kera_research.api.routes.case_shared import (
 
 def build_case_records_router(support: Any) -> APIRouter:
     router = APIRouter()
+
+    def local_only_split_mode() -> bool:
+        return (
+            bool(DATABASE_TOPOLOGY.get("control_plane_split_enabled"))
+            and str(DATABASE_TOPOLOGY.get("control_plane_connection_mode") or "").strip().lower() != "remote_api_cache"
+            and bool(tuple(DATABASE_TOPOLOGY.get("split_database_env_names") or ()))
+        )
 
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
@@ -26,6 +34,62 @@ def build_case_records_router(support: Any) -> APIRouter:
     PatientCreateRequest = support.PatientCreateRequest
     PatientUpdateRequest = support.PatientUpdateRequest
     VisitCreateRequest = support.VisitCreateRequest
+
+    def _workspace_visit_culture_status(visit: dict[str, Any]) -> str:
+        normalized_status = str(visit.get("culture_status") or "").strip().lower()
+        if normalized_status:
+            return normalized_status
+        if (
+            bool(visit.get("culture_confirmed"))
+            or str(visit.get("culture_category") or "").strip()
+            or str(visit.get("culture_species") or "").strip()
+        ):
+            return "positive"
+        return "unknown"
+
+    def _workspace_visit_visible(visit: dict[str, Any]) -> bool:
+        source = str(visit.get("research_registry_source") or "").strip().lower()
+        return source != "raw_inventory_sync" or _workspace_visit_culture_status(visit) == "positive"
+
+    def _visible_workspace_visits(visits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [visit for visit in visits if _workspace_visit_visible(visit)]
+
+    def _visible_workspace_patients(site_store: Any, patients: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        all_visits = site_store.list_visits()
+        visible_patient_ids = {
+            str(visit.get("patient_id") or "").strip()
+            for visit in _visible_workspace_visits(all_visits)
+            if str(visit.get("patient_id") or "").strip()
+        }
+        patient_ids_with_any_visit = {
+            str(visit.get("patient_id") or "").strip()
+            for visit in all_visits
+            if str(visit.get("patient_id") or "").strip()
+        }
+        return [
+            patient
+            for patient in patients
+            if str(patient.get("patient_id") or "").strip() in visible_patient_ids
+            or str(patient.get("patient_id") or "").strip() not in patient_ids_with_any_visit
+        ]
+
+    def _visible_workspace_lookup(site_store: Any, patient_id: str) -> dict[str, Any]:
+        lookup = site_store.lookup_patient_id(patient_id)
+        normalized_patient_id = str(lookup.get("normalized_patient_id") or "").strip()
+        visible_cases = (
+            site_store.list_case_summaries(patient_id=normalized_patient_id)
+            if normalized_patient_id
+            else []
+        )
+        latest_visit_date = None
+        if visible_cases:
+            latest_visit_date = str(visible_cases[0].get("visit_date") or "").strip() or None
+        return {
+            **lookup,
+            "visit_count": len(visible_cases),
+            "image_count": sum(int(item.get("image_count") or 0) for item in visible_cases),
+            "latest_visit_date": latest_visit_date,
+        }
 
     @router.get("/api/sites/{site_id}/cases")
     def list_cases(
@@ -56,6 +120,8 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         require_validation_permission(user)
         require_site_access(cp, user, site_id)
+        if local_only_split_mode():
+            return []
         versions = cp.list_model_versions()
         if ready_only:
             versions = [item for item in versions if item.get("ready", True)]
@@ -70,7 +136,10 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
-        return site_store.list_patients(created_by_user_id=created_by_user_id)
+        return _visible_workspace_patients(
+            site_store,
+            site_store.list_patients(created_by_user_id=created_by_user_id),
+        )
 
     @router.get("/api/sites/{site_id}/patients/lookup")
     def lookup_patient_id(
@@ -81,7 +150,7 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
         try:
-            return site_store.lookup_patient_id(patient_id)
+            return _visible_workspace_lookup(site_store, patient_id)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -176,8 +245,8 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         site_store = require_site_access(cp, user, site_id)
         if patient_id:
-            return site_store.list_visits_for_patient(patient_id)
-        return site_store.list_visits()
+            return _visible_workspace_visits(site_store.list_visits_for_patient(patient_id))
+        return _visible_workspace_visits(site_store.list_visits())
 
     @router.post("/api/sites/{site_id}/visits")
     def create_visit(
@@ -192,6 +261,7 @@ def build_case_records_router(support: Any) -> APIRouter:
                 patient_id=payload.patient_id,
                 visit_date=payload.visit_date,
                 actual_visit_date=payload.actual_visit_date,
+                culture_status=payload.culture_status,
                 culture_confirmed=payload.culture_confirmed,
                 culture_category=payload.culture_category,
                 culture_species=payload.culture_species,
@@ -238,6 +308,7 @@ def build_case_records_router(support: Any) -> APIRouter:
                 target_patient_id=payload.patient_id,
                 target_visit_date=payload.visit_date,
                 actual_visit_date=payload.actual_visit_date,
+                culture_status=payload.culture_status,
                 culture_confirmed=payload.culture_confirmed,
                 culture_category=payload.culture_category,
                 culture_species=payload.culture_species,
@@ -349,7 +420,21 @@ def build_case_records_router(support: Any) -> APIRouter:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Join the research registry before including this case.",
                 )
-            if int(case_summary.get("image_count") or 0) <= 0:
+            try:
+                policy_state = site_store.case_research_policy_state(payload.patient_id, payload.visit_date)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            if not policy_state.get("is_positive"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Only culture-positive cases can be included in the research registry.",
+                )
+            if not policy_state.get("is_active"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Only active visits can be included in the research registry.",
+                )
+            if not policy_state.get("has_images"):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one image is required.")
             next_status = "included"
         else:

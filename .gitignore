@@ -13,6 +13,7 @@ frontend/desktop-installed-smoke/
 frontend/desktop-package-variants/
 frontend/desktop-dist/assets/
 frontend/src-tauri/target/
+frontend/src-tauri/tauri.dev.generated.conf.json
 frontend/tsconfig.tsbuildinfo
 frontend/test-errors.txt
 frontend/ts-errors.txt

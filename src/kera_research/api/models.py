@@ -58,9 +58,10 @@ class VisitCreateRequest(BaseModel):
     patient_id: str
     visit_date: str
     actual_visit_date: str | None = None
-    culture_confirmed: bool = True
-    culture_category: str
-    culture_species: str
+    culture_status: str | None = None
+    culture_confirmed: bool | None = None
+    culture_category: str | None = None
+    culture_species: str | None = None
     additional_organisms: list[OrganismSelection] = Field(default_factory=list)
     contact_lens_use: str
     predisposing_factor: list[str] = Field(default_factory=list)
@@ -102,6 +103,7 @@ class CaseAiClinicRequest(BaseModel):
     model_version_ids: list[str] = Field(default_factory=list)
     top_k: int = 3
     retrieval_backend: str = "standard"
+    retrieval_profile: str = "dinov2_lesion_crop"
 
 
 class CaseContributionRequest(BaseModel):

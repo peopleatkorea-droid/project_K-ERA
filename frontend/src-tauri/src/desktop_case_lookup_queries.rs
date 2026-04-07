@@ -26,6 +26,7 @@ pub(super) fn get_visit(
         created_by_user_id,
         visit_date,
         actual_visit_date,
+        culture_status,
         culture_confirmed,
         culture_category,
         culture_species,
@@ -117,6 +118,26 @@ pub(super) fn query_case_summaries(
     created_by_user_id: Option<&str>,
     patient_id: Option<&str>,
 ) -> Result<Vec<CaseSummaryRecord>, String> {
+    let visible_case_condition = "
+      (
+        v.research_registry_source is null
+        or v.research_registry_source != 'raw_inventory_sync'
+        or lower(
+          trim(
+            coalesce(
+              v.culture_status,
+              case
+                when v.culture_confirmed = 1
+                  or trim(coalesce(v.culture_category, '')) != ''
+                  or trim(coalesce(v.culture_species, '')) != ''
+                then 'positive'
+                else 'unknown'
+              end
+            )
+          )
+        ) = 'positive'
+      )
+    ";
     let mut sql = "
       with image_stats as (
         select visit_id, count(image_id) as image_count, max(uploaded_at) as latest_image_uploaded_at
@@ -136,6 +157,8 @@ pub(super) fn query_case_summaries(
         v.visit_date,
         v.visit_index,
         v.actual_visit_date,
+        v.culture_status,
+        v.culture_confirmed,
         v.culture_category,
         v.culture_species,
         v.additional_organisms,
@@ -187,6 +210,8 @@ pub(super) fn query_case_summaries(
         sql.push_str(" and v.patient_id = ?");
         params.push(Value::Text(patient_id.to_string()));
     }
+    sql.push_str(" and ");
+    sql.push_str(visible_case_condition);
     sql.push_str(" order by coalesce(v.visit_index, 0) desc, image_stats.latest_image_uploaded_at desc, v.created_at desc");
 
     let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -198,6 +223,179 @@ pub(super) fn query_case_summaries(
         items.push(case_summary_from_row(row).map_err(|error| error.to_string())?);
     }
     Ok(items)
+}
+
+#[cfg(test)]
+mod desktop_case_lookup_query_tests {
+    use rusqlite::{params, Connection};
+
+    use super::query_case_summaries;
+
+    fn setup_case_query_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            "
+            create table patients (
+              site_id text not null,
+              patient_id text not null,
+              created_by_user_id text,
+              sex text,
+              age integer,
+              chart_alias text,
+              local_case_code text,
+              created_at text
+            );
+            create table visits (
+              site_id text not null,
+              visit_id text not null,
+              patient_id text not null,
+              patient_reference_id text,
+              visit_date text not null,
+              visit_index integer,
+              actual_visit_date text,
+              culture_status text,
+              culture_confirmed integer,
+              culture_category text,
+              culture_species text,
+              additional_organisms text,
+              contact_lens_use text,
+              predisposing_factor text,
+              other_history text,
+              visit_status text,
+              active_stage integer,
+              is_initial_visit integer,
+              smear_result text,
+              polymicrobial integer,
+              research_registry_status text,
+              research_registry_updated_at text,
+              research_registry_updated_by text,
+              research_registry_source text,
+              created_at text
+            );
+            create table images (
+              site_id text not null,
+              visit_id text not null,
+              image_id text not null,
+              patient_id text not null,
+              visit_date text not null,
+              view text,
+              image_path text,
+              is_representative integer,
+              uploaded_at text,
+              lesion_prompt_box text,
+              quality_scores text
+            );
+            ",
+        )
+        .expect("schema");
+        conn.execute(
+            "insert into patients (site_id, patient_id, created_by_user_id, sex, age, chart_alias, local_case_code, created_at)
+             values (?, ?, ?, ?, ?, ?, ?, ?)",
+            params!["site_a", "PAT-001", "user_a", "female", 63_i64, "A", "CASE-A", "2026-04-07T00:00:00+00:00"],
+        )
+        .expect("insert patient");
+        conn
+    }
+
+    #[test]
+    fn query_case_summaries_hides_raw_inventory_sync_non_positive_rows() {
+        let conn = setup_case_query_test_db();
+        let visits = [
+            (
+                "visit_hidden",
+                "Placeholder",
+                "unknown",
+                0_i64,
+                "",
+                "",
+                Some("raw_inventory_sync"),
+                1_i64,
+                "2026-04-07T00:00:00+00:00",
+            ),
+            (
+                "visit_positive_raw",
+                "PositiveRaw",
+                "positive",
+                1_i64,
+                "bacterial",
+                "Bacillus",
+                Some("raw_inventory_sync"),
+                2_i64,
+                "2026-04-07T01:00:00+00:00",
+            ),
+            (
+                "visit_manual",
+                "ManualNegative",
+                "negative",
+                0_i64,
+                "",
+                "",
+                None,
+                3_i64,
+                "2026-04-07T02:00:00+00:00",
+            ),
+        ];
+        for (
+            visit_id,
+            visit_date,
+            culture_status,
+            culture_confirmed,
+            culture_category,
+            culture_species,
+            research_registry_source,
+            visit_index,
+            created_at,
+        ) in visits
+        {
+            conn.execute(
+                "insert into visits (
+                   site_id, visit_id, patient_id, patient_reference_id, visit_date, visit_index, actual_visit_date,
+                   culture_status, culture_confirmed, culture_category, culture_species, additional_organisms,
+                   contact_lens_use, predisposing_factor, other_history, visit_status, active_stage, is_initial_visit,
+                   smear_result, polymicrobial, research_registry_status, research_registry_updated_at,
+                   research_registry_updated_by, research_registry_source, created_at
+                 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    "site_a",
+                    visit_id,
+                    "PAT-001",
+                    Option::<&str>::None,
+                    visit_date,
+                    visit_index,
+                    Option::<&str>::None,
+                    culture_status,
+                    culture_confirmed,
+                    culture_category,
+                    culture_species,
+                    "[]",
+                    "none",
+                    "[]",
+                    "",
+                    "active",
+                    1_i64,
+                    0_i64,
+                    "",
+                    0_i64,
+                    "analysis_only",
+                    Option::<&str>::None,
+                    Option::<&str>::None,
+                    research_registry_source,
+                    created_at,
+                ],
+            )
+            .expect("insert visit");
+        }
+
+        let rows = query_case_summaries(&conn, "site_a", None, None).expect("query summaries");
+        let visit_dates = rows
+            .iter()
+            .map(|item| item.visit_date.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(visit_dates.contains(&"PositiveRaw"));
+        assert!(visit_dates.contains(&"ManualNegative"));
+        assert!(!visit_dates.contains(&"Placeholder"));
+    }
 }
 
 pub(super) fn lookup_public_aliases(

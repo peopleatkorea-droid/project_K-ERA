@@ -159,8 +159,8 @@ def order_culture_species(category: str | None, species_names: Iterable[str]) ->
         ),
     )
 
-LABEL_TO_INDEX = {"bacterial": 0, "fungal": 1}
-INDEX_TO_LABEL = {0: "bacterial", 1: "fungal"}
+LABEL_TO_INDEX = {"bacterial": 0, "fungal": 1, "unknown": -1, "pending": -1, "none": -1}
+INDEX_TO_LABEL = {0: "bacterial", 1: "fungal", -1: "unknown"}
 
 MANIFEST_COLUMNS = [
     "site_id",
@@ -170,6 +170,7 @@ MANIFEST_COLUMNS = [
     "sex",
     "age",
     "visit_date",
+    "culture_status",
     "culture_confirmed",
     "culture_category",
     "culture_species",

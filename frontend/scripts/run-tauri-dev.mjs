@@ -3,6 +3,10 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import {
+  DEFAULT_DESKTOP_SHELL_DEV_PORT,
+  resolveDesktopShellDevPort,
+} from "./desktop-dev-port-lib.mjs";
 
 const env = { ...process.env };
 const rawArgs = process.argv.slice(2);
@@ -12,8 +16,6 @@ const strictNextDev = rawArgs.includes("--strict");
 const cleanPythonBytecode =
   rawArgs.includes("--clean-python-cache") ||
   ["1", "true", "yes", "on"].includes(String(env.KERA_CLEAN_PYTHON_BYTECODE ?? "").trim().toLowerCase());
-const tauriConfigPath = useNextDev ? "src-tauri/tauri.next.dev.conf.json" : "src-tauri/tauri.dev.conf.json";
-const devServerPort = useNextDev ? 3000 : 3001;
 const tauriArgs = rawArgs.filter((arg) => !["--next", "--clean", "--strict", "--clean-python-cache"].includes(arg));
 const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
 const pathEntries = String(env[pathKey] ?? "")
@@ -37,6 +39,12 @@ const repoVenvPython = process.platform === "win32"
   ? path.join(repoRootDir, ".venv", "Scripts", "python.exe")
   : path.join(repoRootDir, ".venv", "bin", "python");
 const repoVenvBinDir = path.dirname(repoVenvPython);
+const srcTauriDir = path.resolve(process.cwd(), "src-tauri");
+const baseTauriConfigPath = path.join(
+  srcTauriDir,
+  useNextDev ? "tauri.next.dev.conf.json" : "tauri.dev.conf.json",
+);
+const generatedTauriConfigPath = path.join(srcTauriDir, "tauri.dev.generated.conf.json");
 
 if (!fs.existsSync(repoVenvPython)) {
   console.error(`K-ERA desktop dev requires the uv-managed repository .venv interpreter, but it was not found: ${repoVenvPython}`);
@@ -72,6 +80,29 @@ if (!env.KERA_NEXT_STRICT_MODE) {
 
 if (!env.KERA_DESKTOP_STRICT_MODE) {
   env.KERA_DESKTOP_STRICT_MODE = strictNextDev ? "1" : "0";
+}
+
+const desktopShellPreferredPort = Number.parseInt(
+  env.KERA_DESKTOP_SHELL_DEV_PORT ?? String(DEFAULT_DESKTOP_SHELL_DEV_PORT),
+  10,
+);
+const desktopShellPortResolution = useNextDev
+  ? null
+  : await resolveDesktopShellDevPort({
+      preferredPort: desktopShellPreferredPort,
+    });
+const devServerPort = useNextDev ? 3000 : desktopShellPortResolution.port;
+const tauriConfigPath = useNextDev
+  ? path.relative(process.cwd(), baseTauriConfigPath)
+  : prepareDesktopShellDevConfig(baseTauriConfigPath, generatedTauriConfigPath, devServerPort);
+
+if (!useNextDev) {
+  env.KERA_DESKTOP_SHELL_DEV_PORT = String(devServerPort);
+  if (desktopShellPortResolution.usedFallback) {
+    console.warn(
+      `[run-tauri-dev] Port ${desktopShellPreferredPort} was unavailable (${desktopShellPortResolution.fallbackReason ?? "unknown"}); using ${devServerPort}.`,
+    );
+  }
 }
 
 function cleanupDevProcesses() {
@@ -132,6 +163,19 @@ function removePythonBytecodeCaches(rootDir) {
       }
     }
   }
+}
+
+function prepareDesktopShellDevConfig(sourceConfigPath, outputConfigPath, port) {
+  const tauriConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8"));
+  const generatedConfig = {
+    ...tauriConfig,
+    build: {
+      ...(tauriConfig.build ?? {}),
+      devUrl: `http://127.0.0.1:${port}`,
+    },
+  };
+  fs.writeFileSync(outputConfigPath, `${JSON.stringify(generatedConfig, null, 2)}\n`, "utf8");
+  return path.relative(process.cwd(), outputConfigPath);
 }
 
 function ensureRuntimeArchiveExists() {

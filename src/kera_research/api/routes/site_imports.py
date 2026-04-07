@@ -64,9 +64,6 @@ def build_site_imports_router(support: Any) -> APIRouter:
             "sex",
             "age",
             "visit_date",
-            "culture_confirmed",
-            "culture_category",
-            "culture_species",
             "image_filename",
             "view",
         ]
@@ -150,13 +147,24 @@ def build_site_imports_router(support: Any) -> APIRouter:
                 if visit_key not in visit_cache:
                     raw_factors = coerce_text(row.get("predisposing_factor"))
                     factors = [item.strip() for item in raw_factors.split("|") if item.strip()]
+                    raw_culture_status = (
+                        coerce_text(row.get("culture_status"))
+                        .strip()
+                        .lower()
+                        .replace("-", "_")
+                        .replace(" ", "_")
+                    )
+                    culture_confirmed = bool_from_value(row.get("culture_confirmed"), False)
+                    if raw_culture_status not in {"positive", "negative", "not_done", "unknown"}:
+                        raw_culture_status = "positive" if culture_confirmed else "unknown"
                     site_store.create_visit(
                         patient_id=patient_id,
                         visit_date=visit_date,
                         actual_visit_date=actual_visit_date,
-                        culture_confirmed=bool_from_value(row.get("culture_confirmed"), True),
-                        culture_category=coerce_text(row.get("culture_category"), "bacterial") or "bacterial",
-                        culture_species=coerce_text(row.get("culture_species"), "Other") or "Other",
+                        culture_status=raw_culture_status,
+                        culture_confirmed=culture_confirmed,
+                        culture_category=coerce_text(row.get("culture_category")) or None,
+                        culture_species=coerce_text(row.get("culture_species")) or None,
                         additional_organisms=[],
                         contact_lens_use=coerce_text(row.get("contact_lens_use"), "unknown") or "unknown",
                         predisposing_factor=factors,

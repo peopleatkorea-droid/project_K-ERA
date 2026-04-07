@@ -14,6 +14,57 @@ class ResearchAiClinicWorkflow:
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
+    def _normalize_retrieval_profile(self, retrieval_profile: str | None) -> dict[str, Any]:
+        normalized = str(retrieval_profile or "dinov2_lesion_crop").strip().lower()
+        profile_map: dict[str, dict[str, Any]] = {
+            "dinov2_lesion_crop": {
+                "profile_id": "dinov2_lesion_crop",
+                "label": "DINOv2 lesion-crop retrieval",
+                "description": "Uses lesion-centered crops for DINOv2 case retrieval.",
+                "model_version": {
+                    "version_id": "retrieval_profile_dinov2_lesion_crop",
+                    "version_name": "retrieval-profile-dinov2-lesion-crop",
+                    "architecture": "retrieval_dinov2",
+                    "crop_mode": "manual",
+                    "requires_medsam_crop": True,
+                    "case_aggregation": "mean",
+                    "bag_level": False,
+                    "ready": True,
+                },
+            },
+            "dinov2_cornea_roi": {
+                "profile_id": "dinov2_cornea_roi",
+                "label": "DINOv2 cornea-ROI retrieval",
+                "description": "Uses MedSAM cornea ROI crops for DINOv2 case retrieval.",
+                "model_version": {
+                    "version_id": "retrieval_profile_dinov2_cornea_roi",
+                    "version_name": "retrieval-profile-dinov2-cornea-roi",
+                    "architecture": "retrieval_dinov2",
+                    "crop_mode": "automated",
+                    "requires_medsam_crop": True,
+                    "case_aggregation": "mean",
+                    "bag_level": False,
+                    "ready": True,
+                },
+            },
+            "dinov2_full_frame": {
+                "profile_id": "dinov2_full_frame",
+                "label": "DINOv2 full-frame retrieval",
+                "description": "Uses uncropped source frames for DINOv2 case retrieval.",
+                "model_version": {
+                    "version_id": "retrieval_profile_dinov2_full_frame",
+                    "version_name": "retrieval-profile-dinov2-full-frame",
+                    "architecture": "retrieval_dinov2",
+                    "crop_mode": "raw",
+                    "requires_medsam_crop": False,
+                    "case_aggregation": "mean",
+                    "bag_level": False,
+                    "ready": True,
+                },
+            },
+        }
+        return profile_map.get(normalized, profile_map["dinov2_lesion_crop"])
+
     def _normalize_requested_backend(self, retrieval_backend: str | None) -> tuple[str, str]:
         normalized = str(retrieval_backend or "standard").strip().lower()
         if normalized not in {"standard", "classifier", "dinov2", "hybrid"}:
@@ -26,25 +77,28 @@ class ResearchAiClinicWorkflow:
         *,
         requested_backend: str,
         effective_backend: str,
+        retrieval_profile: dict[str, Any],
         workflow_recommendation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if requested_backend == "standard":
-            label = "AI Clinic standard"
+            label = f"AI Clinic standard · {retrieval_profile['label']}"
             description = (
                 "Combines similar-patient retrieval, metadata reranking, narrative case evidence, "
                 "differential ranking, and workflow guidance in one review flow."
             )
         else:
-            label = "AI Clinic custom retrieval"
+            label = f"AI Clinic custom retrieval · {retrieval_profile['label']}"
             description = (
                 "Runs AI Clinic with an explicitly selected retrieval engine while preserving the same "
                 "narrative evidence, differential ranking, and workflow guidance stages."
             )
         return {
-            "profile_id": requested_backend,
+            "profile_id": retrieval_profile["profile_id"],
             "label": label,
             "description": description,
+            "requested_backend": requested_backend,
             "effective_retrieval_backend": effective_backend,
+            "retrieval_profile_label": retrieval_profile["label"],
             "workflow_guidance_provider": ((workflow_recommendation or {}).get("provider_label")),
         }
 
@@ -57,11 +111,14 @@ class ResearchAiClinicWorkflow:
         model_version: dict[str, Any],
         execution_device: str,
         top_k: int = 3,
-        retrieval_backend: str = "classifier",
+        retrieval_backend: str = "standard",
+        retrieval_profile: str = "dinov2_lesion_crop",
     ) -> dict[str, Any]:
         service = self.service
         normalized_top_k = max(1, min(int(top_k or 3), 10))
         requested_profile, requested_backend = self._normalize_requested_backend(retrieval_backend)
+        retrieval_profile_record = self._normalize_retrieval_profile(retrieval_profile)
+        retrieval_model_version = dict(retrieval_profile_record["model_version"])
         records = site_store.dataset_records()
         if not records:
             raise ValueError("No dataset records are available for AI Clinic retrieval.")
@@ -72,15 +129,18 @@ class ResearchAiClinicWorkflow:
             cases_by_key.setdefault(key, []).append(record)
 
         query_key = (patient_id, visit_date)
-        query_records = cases_by_key.get(query_key)
+        query_records = site_store.case_records_for_visit(patient_id, visit_date)
         if not query_records:
-            raise ValueError("Selected case is not available for AI Clinic retrieval.")
+            raise ValueError("Selected case does not have saved images for AI Clinic retrieval.")
 
         summaries_by_key = {
             (str(item["patient_id"]), str(item["visit_date"])): item
             for item in site_store.list_case_summaries()
         }
-        query_summary = summaries_by_key.get(query_key, {})
+        query_summary = summaries_by_key.get(query_key)
+        if query_summary is None:
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+            query_summary = dict(policy_state.get("visit") or {})
         quality_cache: dict[str, dict[str, Any] | None] = {}
         query_metadata = service._case_metadata_snapshot(query_summary, query_records, quality_cache)
         loaded_models: dict[str, Any] = {}
@@ -101,7 +161,7 @@ class ResearchAiClinicWorkflow:
                 query_dinov2_embedding = service._prepare_case_dinov2_embedding(
                     site_store,
                     query_records,
-                    model_version,
+                    retrieval_model_version,
                     execution_device,
                 )
             except Exception as exc:
@@ -128,7 +188,7 @@ class ResearchAiClinicWorkflow:
             try:
                 hits = service._faiss_backend_hits(
                     site_store,
-                    model_version=model_version,
+                    model_version=retrieval_model_version if backend_name == "dinov2" else model_version,
                     backend=backend_name,
                     query_embedding=query_embedding,
                     top_k=search_limit,
@@ -182,7 +242,7 @@ class ResearchAiClinicWorkflow:
                         site_store,
                         patient_id=candidate_patient_id,
                         visit_date=candidate_visit_date,
-                        model_version=model_version,
+                        model_version=retrieval_model_version,
                         backend="dinov2",
                     )
                     if vector is not None:
@@ -246,7 +306,7 @@ class ResearchAiClinicWorkflow:
                         candidate_dinov2_embedding = service._prepare_case_dinov2_embedding(
                             site_store,
                             case_records,
-                            model_version,
+                            retrieval_model_version,
                             execution_device,
                         )
                         similarity_components["dinov2"] = float(np.dot(query_dinov2_embedding, candidate_dinov2_embedding))
@@ -307,6 +367,7 @@ class ResearchAiClinicWorkflow:
         profile_summary = self._ai_clinic_profile_summary(
             requested_backend=requested_profile,
             effective_backend=requested_backend,
+            retrieval_profile=retrieval_profile_record,
         )
         technical_details = {
             "similar_case_engine": {
@@ -320,6 +381,9 @@ class ResearchAiClinicWorkflow:
                 ],
                 "metadata_reranking": "enabled",
                 "warning": retrieval_warning,
+                "retrieval_profile_id": retrieval_profile_record["profile_id"],
+                "retrieval_profile_label": retrieval_profile_record["label"],
+                "reference_corpus": "positive_labeled_cases_only",
             }
         }
         return {
@@ -370,9 +434,9 @@ class ResearchAiClinicWorkflow:
             cases_by_key.setdefault(key, []).append(record)
 
         query_key = (patient_id, visit_date)
-        query_records = cases_by_key.get(query_key)
+        query_records = site_store.case_records_for_visit(patient_id, visit_date)
         if not query_records:
-            raise ValueError("Selected case is not available for AI Clinic text retrieval.")
+            raise ValueError("Selected case does not have saved images for AI Clinic text retrieval.")
 
         query_image_paths = service._query_image_paths_for_text_retrieval(site_store, query_records, model_version)
         summaries_by_key = {
@@ -432,7 +496,8 @@ class ResearchAiClinicWorkflow:
         model_version: dict[str, Any],
         execution_device: str,
         top_k: int = 3,
-        retrieval_backend: str = "classifier",
+        retrieval_backend: str = "standard",
+        retrieval_profile: str = "dinov2_lesion_crop",
     ) -> dict[str, Any]:
         service = self.service
         report = self.run_ai_clinic_similar_cases(
@@ -443,6 +508,7 @@ class ResearchAiClinicWorkflow:
             execution_device=execution_device,
             top_k=top_k,
             retrieval_backend=retrieval_backend,
+            retrieval_profile=retrieval_profile,
         )
         try:
             text_report = self.run_ai_clinic_text_evidence(
@@ -483,8 +549,11 @@ class ResearchAiClinicWorkflow:
             classification_context=classification_context,
         )
         ai_clinic_profile = self._ai_clinic_profile_summary(
-            requested_backend=str((report.get("ai_clinic_profile") or {}).get("profile_id") or "standard"),
+            requested_backend=str((report.get("ai_clinic_profile") or {}).get("requested_backend") or "standard"),
             effective_backend=str((report.get("ai_clinic_profile") or {}).get("effective_retrieval_backend") or "hybrid"),
+            retrieval_profile=self._normalize_retrieval_profile(
+                str((report.get("ai_clinic_profile") or {}).get("profile_id") or retrieval_profile)
+            ),
             workflow_recommendation=workflow_recommendation,
         )
         technical_details = dict(report.get("technical_details") or {})

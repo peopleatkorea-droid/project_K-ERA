@@ -30,6 +30,7 @@ from kera_research.db import (
     CONTROL_PLANE_ENGINE,
     DATA_PLANE_DATABASE_URL,
     DATA_PLANE_ENGINE,
+    DATABASE_TOPOLOGY,
     app_settings,
     data_plane_sqlite_search_ready,
     images as db_images,
@@ -42,6 +43,7 @@ from kera_research.db import (
     visits as db_visits,
 )
 from kera_research.domain import (
+    LABEL_TO_INDEX,
     MANIFEST_COLUMNS,
     VISIT_STATUS_OPTIONS,
     make_id,
@@ -100,6 +102,7 @@ _SITE_RAW_METADATA_SYNC_LOCK = threading.Lock()
 _SITE_RAW_METADATA_SYNC_INTERVAL_SECONDS = 15.0
 _INSTANCE_STORAGE_ROOT_SETTING_KEY = "instance_storage_root"
 _PLACEHOLDER_SYNC_SOURCE = "raw_inventory_sync"
+_CULTURE_STATUS_OPTIONS = {"positive", "negative", "not_done", "unknown"}
 
 
 class InvalidImageUploadError(ValueError):
@@ -117,6 +120,21 @@ def _site_storage_lookup_mode() -> str:
     if mode == "local":
         return "local"
     return "auto"
+
+
+def _site_storage_uses_control_plane() -> bool:
+    lookup_mode = _site_storage_lookup_mode()
+    if lookup_mode == "local":
+        return False
+    if lookup_mode == "control_plane":
+        return True
+    if not bool(DATABASE_TOPOLOGY.get("control_plane_split_enabled")):
+        return True
+    if str(DATABASE_TOPOLOGY.get("control_plane_connection_mode") or "").strip().lower() == "remote_api_cache":
+        return True
+    return (
+        not tuple(DATABASE_TOPOLOGY.get("split_database_env_names") or ())
+    )
 
 
 def invalidate_site_storage_root_cache(site_id: str | None = None) -> None:
@@ -201,6 +219,86 @@ def _normalize_additional_organisms(
             continue
         seen.add(entry_key)
         normalized.append(entry)
+    return normalized
+
+
+def _normalize_culture_status(value: Any, default: str = "unknown") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _CULTURE_STATUS_OPTIONS:
+        return normalized
+    return default
+
+
+def _derive_culture_status(
+    culture_status: Any,
+    culture_confirmed: Any,
+    culture_category: Any,
+    culture_species: Any,
+) -> str:
+    normalized_status = _normalize_culture_status(culture_status, default="")
+    if normalized_status:
+        return normalized_status
+    if _coerce_optional_bool(culture_confirmed, False):
+        return "positive"
+    if str(culture_category or "").strip() or str(culture_species or "").strip():
+        return "positive"
+    return "unknown"
+
+
+def _normalize_visit_culture_fields(
+    *,
+    culture_status: Any,
+    culture_confirmed: Any,
+    culture_category: Any,
+    culture_species: Any,
+    additional_organisms: list[dict[str, Any]] | None,
+    polymicrobial: Any,
+) -> dict[str, Any]:
+    normalized_status = _derive_culture_status(
+        culture_status,
+        culture_confirmed,
+        culture_category,
+        culture_species,
+    )
+    if normalized_status == "positive":
+        normalized_category = str(culture_category or "").strip().lower()
+        normalized_species = str(culture_species or "").strip()
+        if LABEL_TO_INDEX.get(normalized_category, -1) == -1:
+            raise ValueError("Positive culture cases require a bacterial or fungal category.")
+        if not normalized_species:
+            raise ValueError("Positive culture cases require a primary organism.")
+        normalized_additional_organisms = _normalize_additional_organisms(
+            normalized_category,
+            normalized_species,
+            additional_organisms,
+        )
+        normalized_polymicrobial = bool(polymicrobial or normalized_additional_organisms)
+    else:
+        normalized_category = ""
+        normalized_species = ""
+        normalized_additional_organisms = []
+        normalized_polymicrobial = False
+    return {
+        "culture_status": normalized_status,
+        "culture_confirmed": normalized_status == "positive",
+        "culture_category": normalized_category,
+        "culture_species": normalized_species,
+        "additional_organisms": normalized_additional_organisms,
+        "polymicrobial": normalized_polymicrobial,
+    }
+
+
+def _hydrate_visit_culture_fields(record: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(record)
+    culture_fields = _normalize_visit_culture_fields(
+        culture_status=normalized.get("culture_status"),
+        culture_confirmed=normalized.get("culture_confirmed"),
+        culture_category=normalized.get("culture_category"),
+        culture_species=normalized.get("culture_species"),
+        additional_organisms=list(normalized.get("additional_organisms") or []),
+        polymicrobial=normalized.get("polymicrobial"),
+    )
+    normalized.update(culture_fields)
     return normalized
 
 
@@ -395,7 +493,7 @@ def _resolve_site_storage_root(site_id: str) -> Path:
             return cached
 
     resolved_root = (SITE_ROOT_DIR / site_id).resolve()
-    if _site_storage_lookup_mode() != "local":
+    if _site_storage_uses_control_plane():
         init_control_plane_db()
         try:
             configured_root = _control_plane_root_override(site_id)
@@ -448,7 +546,7 @@ class SiteStore:
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
         init_data_plane_db()
-        if _site_storage_lookup_mode() != "local":
+        if _site_storage_uses_control_plane():
             init_control_plane_db()
         self.site_id = site_id
         self.site_dir = _resolve_site_storage_root(site_id)
@@ -706,7 +804,7 @@ class SiteStore:
         query = select(db_visits).where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == visit_id))
         with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
-        return dict(row) if row else None
+        return _hydrate_visit_culture_fields(dict(row)) if row else None
 
     def _resolve_visit_reference(self, patient_id: str, visit_date: str) -> tuple[str, str]:
         return _resolve_visit_reference_impl(self, patient_id, visit_date)
@@ -895,7 +993,7 @@ class SiteStore:
         )
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
 
     def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
         self._sync_raw_inventory_metadata_if_due()
@@ -919,11 +1017,11 @@ class SiteStore:
         with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(base_query.where(db_visits.c.visit_date == requested_visit_date)).mappings().first()
             if row is not None:
-                return dict(row)
+                return _hydrate_visit_culture_fields(dict(row))
             if normalized_visit_date and normalized_visit_date != requested_visit_date:
                 row = conn.execute(base_query.where(db_visits.c.visit_date == normalized_visit_date)).mappings().first()
                 if row is not None:
-                    return dict(row)
+                    return _hydrate_visit_culture_fields(dict(row))
             if normalized_visit_index is not None:
                 row = conn.execute(
                     base_query.where(db_visits.c.visit_index == normalized_visit_index).order_by(
@@ -932,7 +1030,7 @@ class SiteStore:
                     )
                 ).mappings().first()
                 if row is not None:
-                    return dict(row)
+                    return _hydrate_visit_culture_fields(dict(row))
         return None
 
     def create_visit(
@@ -940,9 +1038,9 @@ class SiteStore:
         patient_id: str,
         visit_date: str,
         actual_visit_date: str | None,
-        culture_confirmed: bool,
-        culture_category: str,
-        culture_species: str,
+        culture_confirmed: bool | None,
+        culture_category: str | None,
+        culture_species: str | None,
         additional_organisms: list[dict[str, Any]] | None,
         contact_lens_use: str,
         predisposing_factor: list[str],
@@ -953,6 +1051,7 @@ class SiteStore:
         smear_result: str = "",
         polymicrobial: bool = False,
         created_by_user_id: str | None = None,
+        culture_status: str | None = None,
     ) -> dict[str, Any]:
         normalized_patient_id = normalize_patient_pseudonym(patient_id)
         normalized_visit_date = normalize_visit_label(visit_date)
@@ -969,16 +1068,15 @@ class SiteStore:
                 existing_visit_count = int(conn.execute(visit_count_query).scalar() or 0)
             if existing_visit_count > 0:
                 raise ValueError("Existing patients can only receive follow-up visits. Use a FU #N label.")
-        if not culture_confirmed:
-            raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_visit(normalized_patient_id, normalized_visit_date):
             raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} already exists.")
-        normalized_category = culture_category.strip().lower()
-        normalized_species = culture_species.strip()
-        normalized_additional_organisms = _normalize_additional_organisms(
-            normalized_category,
-            normalized_species,
-            additional_organisms,
+        normalized_culture = _normalize_visit_culture_fields(
+            culture_status=culture_status,
+            culture_confirmed=culture_confirmed,
+            culture_category=culture_category,
+            culture_species=culture_species,
+            additional_organisms=additional_organisms,
+            polymicrobial=polymicrobial,
         )
         normalized_status = (visit_status or "").strip().lower()
         if normalized_status not in VISIT_STATUS_OPTIONS:
@@ -996,18 +1094,14 @@ class SiteStore:
             "visit_date": normalized_visit_date,
             "visit_index": visit_index_from_label(normalized_visit_date),
             "actual_visit_date": normalized_actual_visit_date,
-            "culture_confirmed": bool(culture_confirmed),
-            "culture_category": normalized_category,
-            "culture_species": normalized_species,
+            **normalized_culture,
             "contact_lens_use": contact_lens_use,
             "predisposing_factor": predisposing_factor,
-            "additional_organisms": normalized_additional_organisms,
             "other_history": other_history,
             "visit_status": normalized_status,
             "active_stage": normalized_status == "active",
             "is_initial_visit": bool(is_initial_visit),
             "smear_result": smear_result.strip(),
-            "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
             "research_registry_status": "analysis_only",
             "research_registry_updated_at": utc_now(),
             "research_registry_updated_by": created_by_user_id,
@@ -1025,9 +1119,9 @@ class SiteStore:
         target_patient_id: str | None,
         target_visit_date: str | None,
         actual_visit_date: str | None,
-        culture_confirmed: bool,
-        culture_category: str,
-        culture_species: str,
+        culture_confirmed: bool | None,
+        culture_category: str | None,
+        culture_species: str | None,
         additional_organisms: list[dict[str, Any]] | None,
         contact_lens_use: str,
         predisposing_factor: list[str],
@@ -1037,6 +1131,7 @@ class SiteStore:
         is_initial_visit: bool = False,
         smear_result: str = "",
         polymicrobial: bool = False,
+        culture_status: str | None = None,
     ) -> dict[str, Any]:
         normalized_patient_id = normalize_patient_pseudonym(patient_id)
         normalized_visit_date = normalize_visit_label(visit_date)
@@ -1046,8 +1141,6 @@ class SiteStore:
         existing = self.get_visit(normalized_patient_id, normalized_visit_date)
         if existing is None:
             raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
-        if not culture_confirmed:
-            raise ValueError("Only culture-proven keratitis cases are allowed.")
         if self.get_patient(normalized_target_patient_id) is None:
             raise ValueError(f"Patient {normalized_target_patient_id} does not exist.")
         existing_visit_id = _coerce_optional_text(existing.get("visit_id"))
@@ -1073,12 +1166,13 @@ class SiteStore:
                 raise ValueError(
                     f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} already exists."
                 )
-        normalized_category = culture_category.strip().lower()
-        normalized_species = culture_species.strip()
-        normalized_additional_organisms = _normalize_additional_organisms(
-            normalized_category,
-            normalized_species,
-            additional_organisms,
+        normalized_culture = _normalize_visit_culture_fields(
+            culture_status=culture_status,
+            culture_confirmed=culture_confirmed,
+            culture_category=culture_category,
+            culture_species=culture_species,
+            additional_organisms=additional_organisms,
+            polymicrobial=polymicrobial,
         )
         normalized_status = (visit_status or "").strip().lower()
         if normalized_status not in VISIT_STATUS_OPTIONS:
@@ -1093,18 +1187,14 @@ class SiteStore:
             "actual_visit_date": normalized_actual_visit_date,
             "visit_date": normalized_target_visit_date,
             "visit_index": visit_index_from_label(normalized_target_visit_date),
-            "culture_confirmed": bool(culture_confirmed),
-            "culture_category": normalized_category,
-            "culture_species": normalized_species,
+            **normalized_culture,
             "contact_lens_use": contact_lens_use,
             "predisposing_factor": predisposing_factor,
-            "additional_organisms": normalized_additional_organisms,
             "other_history": other_history,
             "visit_status": normalized_status,
             "active_stage": normalized_status == "active",
             "is_initial_visit": bool(is_initial_visit),
             "smear_result": smear_result.strip(),
-            "polymicrobial": bool(polymicrobial or normalized_additional_organisms),
         }
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
@@ -1415,7 +1505,7 @@ class SiteStore:
             "previews_generated": previews_generated,
         }
 
-    def dataset_records(self) -> list[dict[str, Any]]:
+    def dataset_records(self, *, positive_only: bool = True) -> list[dict[str, Any]]:
         patient_table = db_patients.alias("p")
         visit_table = db_visits.alias("v")
         image_table = db_images.alias("i")
@@ -1428,6 +1518,7 @@ class SiteStore:
                 patient_table.c.sex,
                 patient_table.c.age,
                 visit_table.c.visit_date,
+                visit_table.c.culture_status,
                 visit_table.c.culture_confirmed,
                 visit_table.c.culture_category,
                 visit_table.c.culture_species,
@@ -1459,7 +1550,12 @@ class SiteStore:
                     ),
                 )
             )
-            .where(and_(patient_table.c.site_id == self.site_id, visit_table.c.culture_confirmed == True))
+            .where(
+                and_(
+                    patient_table.c.site_id == self.site_id,
+                    visit_table.c.culture_status == "positive" if positive_only else True,
+                )
+            )
             .order_by(patient_table.c.patient_id, visit_table.c.visit_index, visit_table.c.visit_date, image_table.c.uploaded_at)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -1484,6 +1580,7 @@ class SiteStore:
                     "sex": row["sex"],
                     "age": row["age"],
                     "visit_date": row["visit_date"],
+                    "culture_status": row.get("culture_status") or ("positive" if row["culture_confirmed"] else "unknown"),
                     "culture_confirmed": row["culture_confirmed"],
                     "culture_category": row["culture_category"],
                     "culture_species": row["culture_species"],
@@ -1511,7 +1608,7 @@ class SiteStore:
         )
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
 
     def list_images_for_visit(self, patient_id: str, visit_date: str) -> list[dict[str, Any]]:
         self._sync_raw_inventory_metadata_if_due()
@@ -1531,6 +1628,87 @@ class SiteStore:
         with DATA_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         return [self._resolve_image_record_path(dict(row)) for row in rows]
+
+    def case_records_for_visit(
+        self,
+        patient_id: str,
+        visit_date: str,
+    ) -> list[dict[str, Any]]:
+        self._sync_raw_inventory_metadata_if_due()
+        visit = self.get_visit(patient_id, visit_date)
+        if visit is None:
+            return []
+        patient = self.get_patient(str(visit.get("patient_id") or patient_id))
+        if patient is None:
+            return []
+        images = self.list_images_for_visit(
+            str(visit.get("patient_id") or patient_id),
+            str(visit.get("visit_date") or visit_date),
+        )
+        records: list[dict[str, Any]] = []
+        for image in images:
+            resolved_image_record = self._resolve_image_record_path(image)
+            resolved_image_path = Path(str(resolved_image_record.get("image_path") or ""))
+            records.append(
+                {
+                    "site_id": self.site_id,
+                    "patient_id": str(visit.get("patient_id") or patient_id),
+                    "chart_alias": patient.get("chart_alias"),
+                    "local_case_code": patient.get("local_case_code"),
+                    "sex": patient.get("sex"),
+                    "age": patient.get("age"),
+                    "visit_date": str(visit.get("visit_date") or visit_date),
+                    "culture_status": visit.get("culture_status", "unknown"),
+                    "culture_confirmed": bool(visit.get("culture_confirmed")),
+                    "culture_category": visit.get("culture_category", ""),
+                    "culture_species": visit.get("culture_species", ""),
+                    "additional_organisms": visit.get("additional_organisms") or [],
+                    "contact_lens_use": visit.get("contact_lens_use", ""),
+                    "predisposing_factor": "|".join(visit.get("predisposing_factor") or []),
+                    "visit_status": visit.get("visit_status", ""),
+                    "active_stage": visit.get("active_stage"),
+                    "other_history": visit.get("other_history") or "",
+                    "smear_result": visit.get("smear_result") or "",
+                    "polymicrobial": bool(visit.get("polymicrobial")),
+                    "view": resolved_image_record.get("view"),
+                    "image_path": str(resolved_image_path),
+                    "is_representative": resolved_image_record.get("is_representative"),
+                    "lesion_prompt_box": resolved_image_record.get("lesion_prompt_box"),
+                }
+            )
+        return records
+
+    def case_research_policy_state(self, patient_id: str, visit_date: str) -> dict[str, Any]:
+        visit = self.get_visit(patient_id, visit_date)
+        if visit is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        case_summary = next(
+            (
+                item
+                for item in self.list_case_summaries(patient_id=str(visit.get("patient_id") or patient_id))
+                if str(item.get("patient_id") or "") == str(visit.get("patient_id") or patient_id)
+                and str(item.get("visit_date") or "") == str(visit.get("visit_date") or visit_date)
+            ),
+            None,
+        )
+        image_count = int(case_summary.get("image_count") or 0) if case_summary else len(self.list_images_for_visit(patient_id, visit_date))
+        culture_status = _normalize_culture_status(visit.get("culture_status"), default="unknown")
+        visit_status = str(visit.get("visit_status") or "").strip().lower() or ("active" if visit.get("active_stage") else "scar")
+        research_registry_status = str(visit.get("research_registry_status") or "analysis_only").strip().lower() or "analysis_only"
+        return {
+            "patient_id": str(visit.get("patient_id") or patient_id),
+            "visit_date": str(visit.get("visit_date") or visit_date),
+            "visit": visit,
+            "case_summary": case_summary,
+            "culture_status": culture_status,
+            "is_positive": culture_status == "positive",
+            "visit_status": visit_status,
+            "is_active": visit_status == "active",
+            "image_count": image_count,
+            "has_images": image_count > 0,
+            "research_registry_status": research_registry_status,
+            "is_registry_included": research_registry_status == "included",
+        }
 
     def list_images_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
         self._sync_raw_inventory_metadata_if_due()
@@ -1654,7 +1832,12 @@ class SiteStore:
         if age_value > 0:
             return True
         for visit_row in snapshot.get("visits", []) or []:
-            if bool(visit_row.get("culture_confirmed")):
+            if _derive_culture_status(
+                visit_row.get("culture_status"),
+                visit_row.get("culture_confirmed"),
+                visit_row.get("culture_category"),
+                visit_row.get("culture_species"),
+            ) == "positive":
                 return True
             if str(visit_row.get("research_registry_source") or "").strip().lower() != _PLACEHOLDER_SYNC_SOURCE:
                 return True
@@ -1707,6 +1890,14 @@ class SiteStore:
             restored["patients"] += int(patient_update.rowcount or 0)
 
             for visit_row in snapshot.get("visits", []) or []:
+                normalized_culture = _normalize_visit_culture_fields(
+                    culture_status=visit_row.get("culture_status"),
+                    culture_confirmed=visit_row.get("culture_confirmed"),
+                    culture_category=visit_row.get("culture_category"),
+                    culture_species=visit_row.get("culture_species"),
+                    additional_organisms=list(visit_row.get("additional_organisms") or []),
+                    polymicrobial=visit_row.get("polymicrobial"),
+                )
                 visit_update = conn.execute(
                     update(db_visits)
                     .where(
@@ -1717,19 +1908,15 @@ class SiteStore:
                         )
                     )
                     .values(
-                        culture_confirmed=visit_row.get("culture_confirmed"),
-                        culture_category=visit_row.get("culture_category"),
-                        culture_species=visit_row.get("culture_species"),
+                        **normalized_culture,
                         contact_lens_use=visit_row.get("contact_lens_use"),
                         predisposing_factor=visit_row.get("predisposing_factor"),
                         other_history=visit_row.get("other_history"),
                         visit_status=visit_row.get("visit_status"),
                         active_stage=visit_row.get("active_stage"),
                         smear_result=visit_row.get("smear_result"),
-                        polymicrobial=visit_row.get("polymicrobial"),
                         created_at=visit_row.get("created_at"),
                         is_initial_visit=visit_row.get("is_initial_visit"),
-                        additional_organisms=visit_row.get("additional_organisms"),
                         created_by_user_id=visit_row.get("created_by_user_id"),
                         actual_visit_date=visit_row.get("actual_visit_date"),
                         research_registry_status=visit_row.get("research_registry_status"),
@@ -1788,7 +1975,7 @@ class SiteStore:
                     db_patients.c.site_id == self.site_id,
                     db_patients.c.sex == "unknown",
                     db_patients.c.age == 0,
-                    db_visits.c.culture_confirmed == False,
+                    db_visits.c.culture_status != "positive",
                     db_visits.c.research_registry_source == _PLACEHOLDER_SYNC_SOURCE,
                 )
             )
@@ -1804,6 +1991,7 @@ class SiteStore:
             with DATA_PLANE_ENGINE.begin() as conn:
                 visit_rows = conn.execute(
                     select(
+                        db_visits.c.culture_status,
                         db_visits.c.culture_confirmed,
                         db_visits.c.research_registry_source,
                     ).where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
@@ -1813,7 +2001,15 @@ class SiteStore:
                 ).mappings().all()
             if not visit_rows:
                 continue
-            if any(bool(visit.get("culture_confirmed")) for visit in visit_rows):
+            if any(
+                _derive_culture_status(
+                    visit.get("culture_status"),
+                    visit.get("culture_confirmed"),
+                    None,
+                    None,
+                ) == "positive"
+                for visit in visit_rows
+            ):
                 continue
             if any(
                 str(visit.get("research_registry_source") or "").strip().lower() != _PLACEHOLDER_SYNC_SOURCE
@@ -2043,6 +2239,7 @@ class SiteStore:
                             "visit_date": normalized_visit_date,
                             "visit_index": visit_index_from_label(normalized_visit_date),
                             "actual_visit_date": None,
+                            "culture_status": "unknown",
                             "culture_confirmed": False,
                             "culture_category": "",
                             "culture_species": "",
@@ -2216,7 +2413,7 @@ class SiteStore:
                             and_(
                                 normalized_culture_category == "fungal",
                                 or_(
-                                    db_visits.c.culture_confirmed == True,
+                                    db_visits.c.culture_status == "positive",
                                     db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
                                 ),
                             ),
@@ -2231,7 +2428,7 @@ class SiteStore:
                             and_(
                                 normalized_culture_category == "bacterial",
                                 or_(
-                                    db_visits.c.culture_confirmed == True,
+                                    db_visits.c.culture_status == "positive",
                                     db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
                                 ),
                             ),
@@ -2572,6 +2769,14 @@ class SiteStore:
             normalized_patient_id = normalize_patient_pseudonym(patient_id_overrides.get(raw_patient_id, raw_patient_id))
             normalized_visit_date = normalize_visit_label(_coerce_optional_text(row.get("visit_date")))
             visit_id = _coerce_optional_text(row.get("visit_id")) or make_id("visit")
+            normalized_culture = _normalize_visit_culture_fields(
+                culture_status=row.get("culture_status"),
+                culture_confirmed=row.get("culture_confirmed"),
+                culture_category=row.get("culture_category"),
+                culture_species=row.get("culture_species"),
+                additional_organisms=list(row.get("additional_organisms") or []),
+                polymicrobial=row.get("polymicrobial"),
+            )
             visit_record = {
                 "visit_id": visit_id,
                 "site_id": self.site_id,
@@ -2582,18 +2787,14 @@ class SiteStore:
                 "visit_date": normalized_visit_date,
                 "visit_index": int(row.get("visit_index") or visit_index_from_label(normalized_visit_date)),
                 "actual_visit_date": normalize_actual_visit_date(_coerce_optional_text(row.get("actual_visit_date")) or None),
-                "culture_confirmed": _coerce_optional_bool(row.get("culture_confirmed"), True),
-                "culture_category": _coerce_optional_text(row.get("culture_category"), "bacterial") or "bacterial",
-                "culture_species": _coerce_optional_text(row.get("culture_species"), "Other") or "Other",
+                **normalized_culture,
                 "contact_lens_use": _coerce_optional_text(row.get("contact_lens_use"), "unknown") or "unknown",
                 "predisposing_factor": list(row.get("predisposing_factor") or []),
-                "additional_organisms": list(row.get("additional_organisms") or []),
                 "other_history": _coerce_optional_text(row.get("other_history")),
                 "visit_status": _coerce_optional_text(row.get("visit_status"), "active") or "active",
                 "active_stage": _coerce_optional_bool(row.get("active_stage"), True),
                 "is_initial_visit": _coerce_optional_bool(row.get("is_initial_visit"), normalized_visit_date == "Initial"),
                 "smear_result": _coerce_optional_text(row.get("smear_result"), "not done") or "not done",
-                "polymicrobial": _coerce_optional_bool(row.get("polymicrobial"), False),
                 "research_registry_status": _coerce_optional_text(row.get("research_registry_status"), "analysis_only") or "analysis_only",
                 "research_registry_updated_at": _coerce_optional_text(row.get("research_registry_updated_at"), utc_now()),
                 "research_registry_updated_by": _coerce_optional_text(row.get("research_registry_updated_by")) or None,
@@ -2700,6 +2901,14 @@ class SiteStore:
                 normalized_status = _coerce_optional_text(row.get("visit_status"), "active").lower() or "active"
                 if normalized_status not in VISIT_STATUS_OPTIONS:
                     normalized_status = "active"
+                normalized_culture = _normalize_visit_culture_fields(
+                    culture_status=row.get("culture_status"),
+                    culture_confirmed=row.get("culture_confirmed"),
+                    culture_category=row.get("culture_category"),
+                    culture_species=row.get("culture_species"),
+                    additional_organisms=[],
+                    polymicrobial=row.get("polymicrobial"),
+                )
                 visit_record = {
                     "visit_id": make_id("visit"),
                     "site_id": self.site_id,
@@ -2713,18 +2922,14 @@ class SiteStore:
                     "visit_date": normalized_visit_date,
                     "visit_index": visit_index_from_label(normalized_visit_date),
                     "actual_visit_date": None,
-                    "culture_confirmed": _coerce_optional_bool(row.get("culture_confirmed"), True),
-                    "culture_category": _coerce_optional_text(row.get("culture_category"), "bacterial").lower() or "bacterial",
-                    "culture_species": _coerce_optional_text(row.get("culture_species"), "Other") or "Other",
+                    **normalized_culture,
                     "contact_lens_use": _coerce_optional_text(row.get("contact_lens_use"), "unknown") or "unknown",
                     "predisposing_factor": _parse_manifest_pipe_list(row.get("predisposing_factor")),
-                    "additional_organisms": [],
                     "other_history": _coerce_optional_text(row.get("other_history")),
                     "visit_status": normalized_status,
                     "active_stage": normalized_status == "active",
                     "is_initial_visit": normalized_visit_date == "Initial",
                     "smear_result": _coerce_optional_text(row.get("smear_result"), "not done") or "not done",
-                    "polymicrobial": _coerce_optional_bool(row.get("polymicrobial"), False),
                     "research_registry_status": "analysis_only",
                     "research_registry_updated_at": timestamp,
                     "research_registry_updated_by": None,
@@ -2786,8 +2991,8 @@ class SiteStore:
         self.export_metadata_backup()
         return result
 
-    def generate_manifest(self) -> pd.DataFrame:
-        data_frame = pd.DataFrame(self.dataset_records(), columns=MANIFEST_COLUMNS)
+    def generate_manifest(self, *, positive_only: bool = True) -> pd.DataFrame:
+        data_frame = pd.DataFrame(self.dataset_records(positive_only=positive_only), columns=MANIFEST_COLUMNS)
         write_csv(self.manifest_path, data_frame)
         return data_frame
 

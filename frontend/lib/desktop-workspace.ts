@@ -235,6 +235,7 @@ export async function createDesktopVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -252,7 +253,8 @@ export async function createDesktopVisit(
     payload: {
       site_id: siteId,
       ...desktopAuth(token),
-      culture_confirmed: true,
+      culture_status: "unknown",
+      culture_confirmed: false,
       actual_visit_date: null,
       predisposing_factor: [],
       other_history: "",
@@ -277,6 +279,7 @@ export async function updateDesktopVisit(
     patient_id: string;
     visit_date: string;
     actual_visit_date?: string | null;
+    culture_status?: string;
     culture_confirmed?: boolean;
     culture_category: string;
     culture_species: string;
@@ -296,7 +299,8 @@ export async function updateDesktopVisit(
       ...desktopAuth(token),
       target_patient_id: payload.patient_id,
       target_visit_date: payload.visit_date,
-      culture_confirmed: true,
+      culture_status: "unknown",
+      culture_confirmed: false,
       actual_visit_date: null,
       predisposing_factor: [],
       other_history: "",

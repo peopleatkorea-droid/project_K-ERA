@@ -80,4 +80,50 @@ describe("desktop workspace upload transport", () => {
     expect(Array.isArray(uploadArgs.payload.bytes)).toBe(false);
     expect(Array.from(uploadArgs.payload.bytes)).toEqual([1, 2, 3, 4]);
   });
+
+  it("defaults created desktop visits to an unknown culture state until the caller overrides it", async () => {
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({});
+    const mod = await import("./desktop-workspace");
+
+    await mod.createDesktopVisit("SITE_A", "desktop-token", {
+      patient_id: "P-001",
+      visit_date: "Initial",
+      culture_category: "",
+      culture_species: "",
+      contact_lens_use: "none",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("create_visit", {
+      payload: expect.objectContaining({
+        site_id: "SITE_A",
+        user_id: "user_desktop",
+        user_role: "admin",
+        culture_status: "unknown",
+        culture_confirmed: false,
+      }),
+    });
+  });
+
+  it("defaults updated desktop visits to an unknown culture state until the caller overrides it", async () => {
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({});
+    const mod = await import("./desktop-workspace");
+
+    await mod.updateDesktopVisit("SITE_A", "desktop-token", "P-001", "Initial", {
+      patient_id: "P-001",
+      visit_date: "FU #1",
+      culture_category: "",
+      culture_species: "",
+      contact_lens_use: "none",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("update_visit", {
+      payload: expect.objectContaining({
+        site_id: "SITE_A",
+        user_id: "user_desktop",
+        user_role: "admin",
+        culture_status: "unknown",
+        culture_confirmed: false,
+      }),
+    });
+  });
 });

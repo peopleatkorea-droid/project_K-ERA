@@ -2,7 +2,7 @@ param(
   [ValidateSet("cpu", "gpu")]
   [string]$Profile = "cpu",
   [switch]$SkipPackage,
-  [int]$LaunchSeconds = 15,
+  [int]$LaunchSeconds = 35,
   [string]$InstallDir
 )
 

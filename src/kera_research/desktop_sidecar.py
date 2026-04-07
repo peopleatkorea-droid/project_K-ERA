@@ -252,7 +252,7 @@ def _run_case_validation(params: dict[str, Any]) -> dict[str, Any]:
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     case_prediction = case_predictions[0] if case_predictions else None
     post_mortem = None
-    if case_prediction is not None:
+    if case_prediction is not None and summary.get("validation_mode") != "inference_only":
         case_reference_id = (
             str(case_prediction.get("case_reference_id") or "").strip()
             or cp.case_reference_id(site_id, patient_id, visit_date)
@@ -389,6 +389,7 @@ def _run_case_ai_clinic(params: dict[str, Any]) -> dict[str, Any]:
         execution_device=execution_device,
         top_k=int(params.get("top_k") or 3),
         retrieval_backend=str(params.get("retrieval_backend") or "standard"),
+        retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     return {
@@ -415,7 +416,8 @@ def _run_case_ai_clinic_similar_cases(params: dict[str, Any]) -> dict[str, Any]:
         model_version=model_version,
         execution_device=execution_device,
         top_k=int(params.get("top_k") or 3),
-        retrieval_backend=str(params.get("retrieval_backend") or "classifier"),
+        retrieval_backend=str(params.get("retrieval_backend") or "standard"),
+        retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
     _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     return {
@@ -441,11 +443,14 @@ def _run_case_contribution(params: dict[str, Any]) -> dict[str, Any]:
     workflow = _ensure_shared_workflow(cp)
     patient_id = str(params.get("patient_id") or "").strip()
     visit_date = str(params.get("visit_date") or "").strip()
-    visit = site_store.get_visit(patient_id, visit_date)
-    if visit is None:
-        raise HTTPException(status_code=404, detail="Visit not found.")
-    visit_status = visit.get("visit_status", "active" if visit.get("active_stage") else "scar")
-    if visit_status != "active":
+    try:
+        policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    visit_status = str(policy_state.get("visit_status") or "active")
+    if cp.get_registry_consent(user["user_id"], site_id) is None:
+        raise HTTPException(status_code=409, detail="Join the research registry before contributing this case.")
+    if not policy_state.get("is_active"):
         raise HTTPException(status_code=400, detail="Only active visits are enabled for contribution under the current policy.")
     contribution_models = resolve_requested_contribution_models(
         cp,
@@ -470,6 +475,7 @@ def _run_case_contribution(params: dict[str, Any]) -> dict[str, Any]:
                     user_id=user["user_id"],
                     user_public_alias=str(user.get("public_alias") or "").strip() or None,
                     contribution_group_id=contribution_group_id,
+                    registry_consent_granted=True,
                 )
             )
         except ValueError as exc:

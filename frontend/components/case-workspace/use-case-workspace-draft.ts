@@ -25,6 +25,7 @@ type DraftState = {
   age: string;
   actual_visit_date: string;
   follow_up_number: string;
+  culture_status: string;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];

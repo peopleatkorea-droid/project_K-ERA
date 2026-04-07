@@ -12,11 +12,19 @@ import {
   desktopShellPaths,
   resetDesktopShellOutput,
 } from "./desktop-shell-build-lib.mjs";
+import {
+  DEFAULT_DESKTOP_SHELL_DEV_HOST,
+  DEFAULT_DESKTOP_SHELL_DEV_PORT,
+  resolveDesktopShellDevPort,
+} from "./desktop-dev-port-lib.mjs";
 
 const frontendRoot = process.cwd();
 const repoRoot = path.resolve(frontendRoot, "..");
-const port = Number.parseInt(process.env.KERA_DESKTOP_SHELL_DEV_PORT ?? "3001", 10);
-const host = "127.0.0.1";
+const requestedPort = Number.parseInt(
+  process.env.KERA_DESKTOP_SHELL_DEV_PORT ?? String(DEFAULT_DESKTOP_SHELL_DEV_PORT),
+  10,
+);
+const host = DEFAULT_DESKTOP_SHELL_DEV_HOST;
 const paths = desktopShellPaths(frontendRoot);
 const cssWatchTargets = [
   path.join(frontendRoot, "desktop-shell", "desktop.css"),
@@ -31,7 +39,7 @@ loadEnvIfPresent(path.join(frontendRoot, ".env"));
 loadEnvIfPresent(path.join(repoRoot, ".env.local"));
 loadEnvIfPresent(path.join(repoRoot, ".env"));
 
-if (!Number.isInteger(port) || port <= 0) {
+if (!Number.isInteger(requestedPort) || requestedPort <= 0) {
   console.error("[desktop-shell-dev] Invalid port.");
   process.exit(1);
 }
@@ -41,6 +49,10 @@ let jsWatcher = null;
 let server = null;
 let refreshTimer = null;
 let refreshQueue = Promise.resolve();
+const { port, usedFallback, fallbackReason } = await resolveDesktopShellDevPort({
+  host,
+  preferredPort: requestedPort,
+});
 
 await resetDesktopShellOutput(frontendRoot);
 await refreshDesktopShell("initial");
@@ -56,6 +68,11 @@ jsWatcher = await createDesktopShellJsWatcher(frontendRoot, {
 });
 server = http.createServer(handleRequest);
 server.listen(port, host, () => {
+  if (usedFallback) {
+    console.warn(
+      `[desktop-shell-dev] Port ${requestedPort} was unavailable (${fallbackReason ?? "unknown"}); using ${port} instead.`,
+    );
+  }
   console.log(`[desktop-shell-dev] Ready on http://${host}:${port}`);
 });
 

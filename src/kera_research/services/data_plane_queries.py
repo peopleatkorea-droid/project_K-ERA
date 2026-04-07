@@ -52,6 +52,7 @@ def _case_summary_record(row: dict[str, Any]) -> dict[str, Any]:
         "local_case_code": row["local_case_code"] or "",
         "sex": row["sex"] or "",
         "age": row["age"],
+        "culture_status": row.get("culture_status") or ("positive" if row["culture_confirmed"] else "unknown"),
         "culture_category": row["culture_category"] or "",
         "culture_species": row["culture_species"] or "",
         "additional_organisms": row["additional_organisms"] or [],
@@ -61,6 +62,7 @@ def _case_summary_record(row: dict[str, Any]) -> dict[str, Any]:
         "visit_status": row["visit_status"] or "active",
         "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
         "is_initial_visit": bool(row["is_initial_visit"]),
+        "culture_confirmed": bool(row["culture_confirmed"]),
         "smear_result": row["smear_result"] or "",
         "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
         "research_registry_status": row["research_registry_status"] or "analysis_only",
@@ -99,6 +101,7 @@ def list_case_summaries(
             visit_table.c.visit_date,
             visit_table.c.visit_index,
             visit_table.c.actual_visit_date,
+            visit_table.c.culture_status,
             visit_table.c.culture_category,
             visit_table.c.culture_species,
             visit_table.c.additional_organisms,
@@ -108,6 +111,7 @@ def list_case_summaries(
             visit_table.c.visit_status,
             visit_table.c.active_stage,
             visit_table.c.is_initial_visit,
+            visit_table.c.culture_confirmed,
             visit_table.c.smear_result,
             visit_table.c.polymicrobial,
             visit_table.c.research_registry_status,
@@ -137,7 +141,7 @@ def list_case_summaries(
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
             .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.culture_confirmed == True))
+        .where(visit_table.c.site_id == store.site_id)
         .order_by(
             dp.desc(visit_table.c.visit_index),
             dp.desc(image_stats.c.latest_image_uploaded_at),
@@ -159,6 +163,11 @@ def list_case_summaries(
         record["research_registry_updated_at"] = row["research_registry_updated_at"]
         record["research_registry_updated_by"] = row["research_registry_updated_by"]
         record["research_registry_source"] = row["research_registry_source"]
+        if (
+            str(record.get("research_registry_source") or "").strip().lower() == "raw_inventory_sync"
+            and str(record.get("culture_status") or "").strip().lower() != "positive"
+        ):
+            continue
         records.append(record)
     return records
 
@@ -179,6 +188,11 @@ def list_patient_case_rows(
     patient_table = dp.db_patients.alias("p")
     visit_table = dp.db_visits.alias("v")
     image_table = dp.db_images.alias("i")
+    visible_case_condition = dp.or_(
+        visit_table.c.research_registry_source.is_(None),
+        visit_table.c.research_registry_source != "raw_inventory_sync",
+        visit_table.c.culture_status == "positive",
+    )
 
     image_stats = _image_stats_subquery(dp, store, image_table)
     representative_images = _representative_images_subquery(dp, store, image_table)
@@ -192,7 +206,7 @@ def list_patient_case_rows(
                 + dp.func.coalesce(dp.func.length(visit_table.c.created_at), 0)
             ).label("sort_key"),
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.culture_confirmed == True))
+        .where(visit_table.c.site_id == store.site_id)
         .group_by(visit_table.c.patient_id)
         .subquery("patient_latest")
     )
@@ -245,7 +259,7 @@ def list_patient_case_rows(
                 ),
             )
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.culture_confirmed == True))
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_case_condition))
     )
     if created_by_user_id:
         count_base = count_base.where(patient_table.c.created_by_user_id == created_by_user_id)
@@ -272,7 +286,8 @@ def list_patient_case_rows(
             .join(patient_latest, patient_table.c.patient_id == patient_latest.c.patient_id)
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
         )
-        .where(dp.and_(patient_table.c.site_id == store.site_id, visit_table.c.culture_confirmed == True))
+        .where(patient_table.c.site_id == store.site_id)
+        .where(visible_case_condition)
         .group_by(patient_table.c.patient_id, patient_latest.c.case_count)
     )
     if created_by_user_id:
@@ -288,6 +303,7 @@ def list_patient_case_rows(
             visit_table.c.visit_date,
             visit_table.c.visit_index,
             visit_table.c.actual_visit_date,
+            visit_table.c.culture_status,
             visit_table.c.culture_category,
             visit_table.c.culture_species,
             visit_table.c.additional_organisms,
@@ -297,6 +313,7 @@ def list_patient_case_rows(
             visit_table.c.visit_status,
             visit_table.c.active_stage,
             visit_table.c.is_initial_visit,
+            visit_table.c.culture_confirmed,
             visit_table.c.smear_result,
             visit_table.c.polymicrobial,
             visit_table.c.research_registry_status,
@@ -323,7 +340,7 @@ def list_patient_case_rows(
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
             .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.culture_confirmed == True))
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_case_condition))
         .order_by(
             dp.desc(image_stats.c.latest_image_uploaded_at),
             dp.desc(visit_table.c.created_at),

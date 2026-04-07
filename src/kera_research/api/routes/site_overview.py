@@ -14,6 +14,7 @@ from kera_research.api.control_plane_proxy import (
     remote_control_plane_is_primary,
     site_record_for_request,
 )
+from kera_research.db import DATABASE_TOPOLOGY
 from kera_research.api.routes.site_shared import (
     ResearchRegistryConsentRequest,
     ResearchRegistrySettingsRequest,
@@ -24,6 +25,14 @@ from kera_research.api.routes.site_shared import (
 
 logger = logging.getLogger(__name__)
 TIMING_LOGS_ENABLED = str(os.getenv("KERA_BOOTSTRAP_TIMING_LOGS") or "").strip() == "1"
+
+
+def _local_only_split_mode() -> bool:
+    return (
+        bool(DATABASE_TOPOLOGY.get("control_plane_split_enabled"))
+        and str(DATABASE_TOPOLOGY.get("control_plane_connection_mode") or "").strip().lower() != "remote_api_cache"
+        and bool(tuple(DATABASE_TOPOLOGY.get("split_database_env_names") or ()))
+    )
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _CLUSTER_VIZ_DIR = _REPO_ROOT / "artifacts" / "dinov2_cluster_3d"
@@ -174,6 +183,8 @@ def build_site_overview_router(support: Any) -> APIRouter:
         authorization: str | None = Header(default=None),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> list[dict[str, Any]]:
+        if _local_only_split_mode():
+            return local_site_records_for_user(user)
         remote_sites = call_remote_control_plane_method(
             cp,
             authorization=authorization,
@@ -204,6 +215,8 @@ def build_site_overview_router(support: Any) -> APIRouter:
         ) -> dict[str, Any]:
         started_at = time.perf_counter()
         site_store = require_site_access(cp, user, site_id)
+        if _local_only_split_mode():
+            return build_local_summary(site_store, site_id)
         stats_started_at = time.perf_counter()
         stats = site_store.site_summary_stats()
         stats_elapsed_ms = (time.perf_counter() - stats_started_at) * 1000.0
@@ -378,6 +391,13 @@ def build_site_overview_router(support: Any) -> APIRouter:
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         assert_site_access_only(user, site_id, user_can_access_site=user_can_access_site)
+        if _local_only_split_mode():
+            return {
+                "pending_updates": 0,
+                "recent_validations": [],
+                "recent_contributions": [],
+                "contribution_leaderboard": [],
+            }
         return build_site_activity(cp, site_id, current_user_id=user["user_id"])
 
     @router.get("/api/sites/{site_id}/explore/cluster-visualization/status")

@@ -68,10 +68,11 @@ COMPONENT_ORDER = {
     "official_dinov2_mil": 2,
     "dinov2_retrieval_guided_lesion_mil_top2": 3,
     "efficientnet_v2_s_mil_full": 4,
-    "efficientnet_v2_s_dinov2_lesion_mil": 5,
-    "convnext_tiny_mil_full": 6,
-    "densenet121_mil_cornea": 7,
-    "densenet121_mil_full": 8,
+    "efficientnet_v2_s_mil_lesion": 5,
+    "efficientnet_v2_s_dinov2_lesion_mil": 6,
+    "convnext_tiny_mil_full": 7,
+    "densenet121_mil_cornea": 8,
+    "densenet121_mil_full": 9,
 }
 
 
@@ -224,6 +225,20 @@ def build_components(epochs_override: int | None, lesion_top_k: int, selected_na
                 name="efficientnet_v2_s_mil_full",
                 architecture="efficientnet_v2_s_mil",
                 crop_mode="raw",
+                epochs_override=epochs_override,
+            ),
+        },
+        {
+            "kind": "mil_custom",
+            "name": "efficientnet_v2_s_mil_lesion",
+            "order": COMPONENT_ORDER["efficientnet_v2_s_mil_lesion"],
+            "label": "EfficientNetV2-S MIL (Lesion Crop)",
+            "family": "MIL",
+            "include_in_summary": True,
+            "spec": base_mil_experiment(
+                name="efficientnet_v2_s_mil_lesion",
+                architecture="efficientnet_v2_s_mil",
+                crop_mode="manual",
                 epochs_override=epochs_override,
             ),
         },

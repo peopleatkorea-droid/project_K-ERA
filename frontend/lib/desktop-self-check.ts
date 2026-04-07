@@ -224,17 +224,29 @@ export async function runDesktopSelfCheck(
       blocking: controlPlaneCacheRequired,
     });
 
+    let controlPlaneStatus: DesktopSelfCheckItemStatus = "pass";
+    let controlPlaneDetail = "The desktop node reached the central control plane successfully.";
+    let controlPlaneBlocking = true;
+    if (!localCheck.control_plane.node_sync_enabled) {
+      controlPlaneStatus = "warn";
+      controlPlaneBlocking = false;
+      controlPlaneDetail = firstDetail(
+        localCheck.control_plane.detail,
+        "This desktop is not linked to a hospital server yet. Complete node registration to enable federation.",
+      );
+    } else if (!localCheck.control_plane.ready) {
+      controlPlaneStatus = "fail";
+      controlPlaneDetail = firstDetail(
+        localCheck.control_plane.detail,
+        "The desktop node could not complete its control-plane bootstrap.",
+      );
+    }
     items.push({
       id: "controlPlane",
       label: "Hospital server handshake",
-      status: localCheck.control_plane.ready ? "pass" : "fail",
-      detail: localCheck.control_plane.ready
-        ? "The desktop node reached the central control plane successfully."
-        : firstDetail(
-            localCheck.control_plane.detail,
-            "The desktop node could not complete its control-plane bootstrap.",
-          ),
-      blocking: true,
+      status: controlPlaneStatus,
+      detail: controlPlaneDetail,
+      blocking: controlPlaneBlocking,
     });
 
     let modelStatus: DesktopSelfCheckItemStatus = "pass";

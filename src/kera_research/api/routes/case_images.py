@@ -59,6 +59,47 @@ def build_case_images_router(support: Any) -> APIRouter:
     max_image_bytes = support.max_image_bytes
     InvalidImageUploadError = support.InvalidImageUploadError
 
+    def _workspace_visit_culture_status(visit: dict[str, Any]) -> str:
+        normalized_status = str(visit.get("culture_status") or "").strip().lower()
+        if normalized_status:
+            return normalized_status
+        if (
+            bool(visit.get("culture_confirmed"))
+            or str(visit.get("culture_category") or "").strip()
+            or str(visit.get("culture_species") or "").strip()
+        ):
+            return "positive"
+        return "unknown"
+
+    def _workspace_visit_visible(visit: dict[str, Any]) -> bool:
+        source = str(visit.get("research_registry_source") or "").strip().lower()
+        return source != "raw_inventory_sync" or _workspace_visit_culture_status(visit) == "positive"
+
+    def _visible_workspace_case_keys(site_store: Any, patient_id: str | None = None) -> set[tuple[str, str]]:
+        visits = (
+            site_store.list_visits_for_patient(patient_id)
+            if str(patient_id or "").strip()
+            else site_store.list_visits()
+        )
+        return {
+            (str(visit.get("patient_id") or "").strip(), str(visit.get("visit_date") or "").strip())
+            for visit in visits
+            if _workspace_visit_visible(visit)
+        }
+
+    def _filter_visible_workspace_images(
+        site_store: Any,
+        images: list[dict[str, Any]],
+        *,
+        patient_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        allowed_case_keys = _visible_workspace_case_keys(site_store, patient_id=patient_id)
+        return [
+            image
+            for image in images
+            if (str(image.get("patient_id") or "").strip(), str(image.get("visit_date") or "").strip()) in allowed_case_keys
+        ]
+
     @router.get("/api/sites/{site_id}/medsam-artifacts/status")
     def get_medsam_artifact_status(
         site_id: str,
@@ -178,6 +219,7 @@ def build_case_images_router(support: Any) -> APIRouter:
             payload = attach_image_quality_scores(site_store.list_images_for_patient(patient_id))
         else:
             payload = attach_image_quality_scores(site_store.list_images())
+        payload = _filter_visible_workspace_images(site_store, payload, patient_id=patient_id)
         schedule_image_derivative_backfill(
             site_store,
             [str(item.get("image_id") or "").strip() for item in payload],
@@ -763,7 +805,10 @@ def build_case_images_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query must not be empty.")
         try:
             workflow = get_workflow(cp)
-            all_images = site_store.list_images()
+            all_images = _filter_visible_workspace_images(
+                site_store,
+                site_store.list_images(),
+            )
             persistence_dir = site_store.embedding_dir / "biomedclip"
             result = workflow.text_retriever.retrieve_images(
                 query_text=query,

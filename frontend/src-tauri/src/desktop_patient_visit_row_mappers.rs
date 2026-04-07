@@ -23,16 +23,26 @@ pub(super) fn visit_record_from_row(
         parse_organism_array(row.get::<_, Option<String>>("additional_organisms")?);
     let predisposing_factor =
         parse_json_string_array(row.get::<_, Option<String>>("predisposing_factor")?);
-    let visit_status = row
-        .get::<_, Option<String>>("visit_status")?
-        .unwrap_or_else(|| "active".to_string());
+    let stored_active_stage = row
+        .get::<_, Option<i64>>("active_stage")?
+        .map(|value| value != 0);
+    let visit_status = normalize_visit_status(
+        row.get::<_, Option<String>>("visit_status")?.as_deref(),
+        stored_active_stage.unwrap_or(true),
+    );
+    let stored_culture_confirmed = row.get::<_, Option<i64>>("culture_confirmed")?.unwrap_or(0) != 0;
+    let culture_status = normalize_culture_status(
+        row.get::<_, Option<String>>("culture_status")?.as_deref(),
+        stored_culture_confirmed,
+    );
     Ok(VisitRecord {
         visit_id: row.get("visit_id")?,
         patient_id: row.get("patient_id")?,
         created_by_user_id: row.get("created_by_user_id")?,
         visit_date: row.get("visit_date")?,
         actual_visit_date: row.get("actual_visit_date")?,
-        culture_confirmed: row.get::<_, Option<i64>>("culture_confirmed")?.unwrap_or(1) != 0,
+        culture_status: culture_status.clone(),
+        culture_confirmed: culture_status == "positive",
         culture_category: row
             .get::<_, Option<String>>("culture_category")?
             .unwrap_or_default(),
@@ -48,10 +58,7 @@ pub(super) fn visit_record_from_row(
             .get::<_, Option<String>>("other_history")?
             .unwrap_or_default(),
         visit_status: visit_status.clone(),
-        active_stage: row
-            .get::<_, Option<i64>>("active_stage")?
-            .map(|value| value != 0)
-            .unwrap_or_else(|| visit_status == "active"),
+        active_stage: stored_active_stage.unwrap_or_else(|| visit_status == "active"),
         is_initial_visit: row.get::<_, Option<i64>>("is_initial_visit")?.unwrap_or(0) != 0,
         smear_result: row
             .get::<_, Option<String>>("smear_result")?

@@ -39,6 +39,7 @@ type DraftState = {
   age: string;
   actual_visit_date: string;
   follow_up_number: string;
+  culture_status: string;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];
@@ -289,6 +290,8 @@ export async function handleSaveCase({
   displayVisitReference,
   computeNextFollowUpNumber,
 }: HandleSaveCaseArgs) {
+  const draftNeedsPrimaryOrganism =
+    String(draft.culture_status || "").trim().toLowerCase() === "positive";
   const requestedVisitReference = buildVisitReference(draft);
   const patientId = draft.patient_id.trim();
   const editingSourceCase = editingCaseContext;
@@ -324,9 +327,13 @@ export async function handleSaveCase({
     patient_id: patientId,
     visit_date: visitReference,
     actual_visit_date: draft.actual_visit_date.trim() || null,
-    culture_category: draft.culture_category,
-    culture_species: draft.culture_species.trim(),
-    additional_organisms: additionalOrganisms,
+    culture_status: draft.culture_status,
+    culture_confirmed:
+      draftNeedsPrimaryOrganism &&
+      Boolean(draft.culture_category && draft.culture_species.trim()),
+    culture_category: draftNeedsPrimaryOrganism ? draft.culture_category : "",
+    culture_species: draftNeedsPrimaryOrganism ? draft.culture_species.trim() : "",
+    additional_organisms: draftNeedsPrimaryOrganism ? additionalOrganisms : [],
     contact_lens_use: draft.contact_lens_use,
     predisposing_factor: draft.predisposing_factor,
     other_history: draft.other_history.trim(),
@@ -416,9 +423,13 @@ export async function handleSaveCase({
       local_case_code: patientPayload.local_case_code,
       sex: draft.sex,
       age: draft.age.trim().length > 0 ? Number(draft.age) : null,
-      culture_category: draft.culture_category,
-      culture_species: draft.culture_species.trim(),
-      additional_organisms: additionalOrganisms,
+      culture_status: draft.culture_status,
+      culture_confirmed:
+        draftNeedsPrimaryOrganism &&
+        Boolean(draft.culture_category && draft.culture_species.trim()),
+      culture_category: draftNeedsPrimaryOrganism ? draft.culture_category : "",
+      culture_species: draftNeedsPrimaryOrganism ? draft.culture_species.trim() : "",
+      additional_organisms: draftNeedsPrimaryOrganism ? additionalOrganisms : [],
       contact_lens_use: draft.contact_lens_use,
       predisposing_factor: draft.predisposing_factor,
       other_history: draft.other_history.trim(),
@@ -426,7 +437,7 @@ export async function handleSaveCase({
       active_stage: draft.visit_status === "active",
       is_initial_visit: /^initial$/i.test(visitReference),
       smear_result: visitRecord.smear_result ?? "not done",
-      polymicrobial: additionalOrganisms.length > 0,
+      polymicrobial: draftNeedsPrimaryOrganism && additionalOrganisms.length > 0,
       image_count: uploadedImages.length,
       representative_image_id: representativeImage?.image_id ?? null,
       representative_view: representativeImage?.view ?? null,
@@ -655,7 +666,7 @@ export async function handleSaveCase({
     setToast({ tone: "error", message: copy.patientIdRequired });
     return;
   }
-  if (!draft.culture_species.trim()) {
+  if (draftNeedsPrimaryOrganism && !draft.culture_species.trim()) {
     setToast({ tone: "error", message: copy.cultureSpeciesRequired });
     return;
   }

@@ -14,6 +14,9 @@ pub(super) async fn run_case_ai_clinic(payload: CaseAiClinicCommandRequest) -> R
     let retrieval_backend = payload
         .retrieval_backend
         .unwrap_or_else(|| "standard".to_string());
+    let retrieval_profile = payload
+        .retrieval_profile
+        .unwrap_or_else(|| "dinov2_lesion_crop".to_string());
     tauri::async_runtime::spawn_blocking(move || {
         let request_payload = json!({
             "site_id": site_id.clone(),
@@ -25,6 +28,7 @@ pub(super) async fn run_case_ai_clinic(payload: CaseAiClinicCommandRequest) -> R
             "model_version_ids": model_version_ids,
             "top_k": top_k,
             "retrieval_backend": retrieval_backend,
+            "retrieval_profile": retrieval_profile,
         });
         if ml_sidecar_should_be_used() {
             return request_ml_sidecar_json("run_case_ai_clinic", request_payload);
@@ -45,6 +49,7 @@ pub(super) async fn run_case_ai_clinic(payload: CaseAiClinicCommandRequest) -> R
                 "model_version_ids": request_payload.get("model_version_ids").cloned().unwrap_or(JsonValue::Null),
                 "top_k": request_payload.get("top_k").cloned().unwrap_or(JsonValue::Null),
                 "retrieval_backend": request_payload.get("retrieval_backend").cloned().unwrap_or(JsonValue::Null),
+                "retrieval_profile": request_payload.get("retrieval_profile").cloned().unwrap_or(JsonValue::Null),
             })),
         )
     })
@@ -69,7 +74,10 @@ pub(super) async fn run_case_ai_clinic_similar_cases(
     let top_k = payload.top_k.unwrap_or(3);
     let retrieval_backend = payload
         .retrieval_backend
-        .unwrap_or_else(|| "classifier".to_string());
+        .unwrap_or_else(|| "standard".to_string());
+    let retrieval_profile = payload
+        .retrieval_profile
+        .unwrap_or_else(|| "dinov2_lesion_crop".to_string());
     tauri::async_runtime::spawn_blocking(move || {
         let request_payload = json!({
             "site_id": site_id.clone(),
@@ -81,6 +89,7 @@ pub(super) async fn run_case_ai_clinic_similar_cases(
             "model_version_ids": model_version_ids,
             "top_k": top_k,
             "retrieval_backend": retrieval_backend,
+            "retrieval_profile": retrieval_profile,
         });
         if ml_sidecar_should_be_used() {
             return request_ml_sidecar_json("run_case_ai_clinic_similar_cases", request_payload);
@@ -101,6 +110,7 @@ pub(super) async fn run_case_ai_clinic_similar_cases(
                 "model_version_ids": request_payload.get("model_version_ids").cloned().unwrap_or(JsonValue::Null),
                 "top_k": request_payload.get("top_k").cloned().unwrap_or(JsonValue::Null),
                 "retrieval_backend": request_payload.get("retrieval_backend").cloned().unwrap_or(JsonValue::Null),
+                "retrieval_profile": request_payload.get("retrieval_profile").cloned().unwrap_or(JsonValue::Null),
             })),
         )
     })

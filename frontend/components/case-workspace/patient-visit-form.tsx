@@ -42,6 +42,7 @@ type DraftState = {
   age: string;
   actual_visit_date: string;
   follow_up_number: string;
+  culture_status: string;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];
@@ -62,6 +63,7 @@ type Props = {
   contactLensOptions: string[];
   predisposingFactorOptions: string[];
   visitStatusOptions: string[];
+  cultureStatusOptions: string[];
   cultureSpecies: Record<string, string[]>;
   speciesOptions: string[];
   pendingOrganism: OrganismRecord;
@@ -119,6 +121,7 @@ export function PatientVisitForm({
   contactLensOptions,
   predisposingFactorOptions,
   visitStatusOptions,
+  cultureStatusOptions,
   cultureSpecies,
   speciesOptions,
   pendingOrganism,
@@ -145,17 +148,27 @@ export function PatientVisitForm({
     draft.predisposing_factor.length > 0
       ? draft.predisposing_factor.map((factor) => translateOption(locale, "predisposing", factor)).join(" / ")
       : pick(locale, "No predisposing factor selected", "선행 인자 없음");
+  const needsPrimaryOrganism =
+    String(draft.culture_status || "").trim().toLowerCase() === "positive";
   const organismToneCopy =
-    draft.additional_organisms.length > 0
+    !needsPrimaryOrganism
+      ? translateOption(locale, "cultureStatus", draft.culture_status)
+      : draft.additional_organisms.length > 0
       ? pick(locale, "Polymicrobial", "혼합 균주")
       : pick(locale, "Single organism", "단일 균주");
-  const organismCategorySummary = draft.culture_category
-    ? translateOption(locale, "cultureCategory", draft.culture_category)
-    : notAvailableLabel;
-  const primaryOrganismLabel = primaryOrganismSummary || draft.culture_species || notAvailableLabel;
+  const organismCategorySummary = needsPrimaryOrganism
+    ? draft.culture_category
+      ? translateOption(locale, "cultureCategory", draft.culture_category)
+      : notAvailableLabel
+    : translateOption(locale, "cultureStatus", draft.culture_status);
+  const primaryOrganismLabel = needsPrimaryOrganism
+    ? primaryOrganismSummary || draft.culture_species || notAvailableLabel
+    : pick(locale, "No primary organism required", "기본 원인균 입력 불필요");
   const identityComplete = Boolean(draft.patient_id.trim() && draft.age.trim());
   const visitComplete = Boolean(draft.visit_status && draft.contact_lens_use);
-  const organismComplete = Boolean(draft.culture_category && draft.culture_species.trim());
+  const organismComplete = needsPrimaryOrganism
+    ? Boolean(draft.culture_category && draft.culture_species.trim())
+    : Boolean(draft.culture_status);
   const lockedPatientSummary = draft.patient_id.trim() || notAvailableLabel;
   const lockedVisitSummary = [
     resolvedVisitReferenceLabel,
@@ -249,7 +262,7 @@ export function PatientVisitForm({
             </span>
           </div>
         </div>
-        {draft.additional_organisms.length > 0 ? (
+        {needsPrimaryOrganism && draft.additional_organisms.length > 0 ? (
           <div className={organismChipRowClass}>
             {intakeOrganisms.slice(1).map((organism, index) => (
               <span
@@ -375,19 +388,49 @@ export function PatientVisitForm({
 
       <CanvasBlock
         eyebrow={pick(locale, "Organism", "원인균")}
-        title={pick(locale, "Choose the primary organism first", "기본 원인균부터 명확히 정합니다")}
+        title={pick(locale, "Set culture status before the primary organism", "배양 상태를 먼저 정하고 기본 원인균을 입력합니다")}
         summary={pick(
           locale,
-          "Start with one primary label. Add mixed organisms only when they meaningfully change the case.",
-          "먼저 하나의 기본 라벨을 정하고, 혼합 균주는 케이스 해석이 실제로 달라질 때만 추가합니다."
+          "Positive cultures require a primary organism. Negative, not-done, and unknown visits can still be saved for analysis without forcing a label.",
+          "배양 양성은 기본 원인균이 필요하지만, 배양 음성/미실시/미상 케이스도 라벨 강제 없이 분석용으로 저장할 수 있습니다."
         )}
         statusLabel={organismComplete ? organismToneCopy : pick(locale, "Choose organism", "원인균 선택")}
         statusTone={organismComplete ? "complete" : "active"}
       >
         <div className={canvasPropertyGridClass}>
+          <Field className={canvasPropertyCardClass} label={pick(locale, "Culture status", "배양 상태")}>
+            <select
+              value={draft.culture_status}
+              onChange={(event) => {
+                const nextStatus = event.target.value;
+                setDraft((current) => ({
+                  ...current,
+                  culture_status: nextStatus,
+                  culture_category:
+                    nextStatus === "positive" ? current.culture_category : "",
+                  culture_species:
+                    nextStatus === "positive" ? current.culture_species : "",
+                  additional_organisms:
+                    nextStatus === "positive"
+                      ? current.additional_organisms
+                      : [],
+                }));
+                if (nextStatus !== "positive") {
+                  setShowAdditionalOrganismForm(false);
+                }
+              }}
+            >
+              {cultureStatusOptions.map((option) => (
+                <option key={`culture-status-${option}`} value={option}>
+                  {translateOption(locale, "cultureStatus", option)}
+                </option>
+              ))}
+            </select>
+          </Field>
           <Field className={canvasPropertyCardClass} label={pick(locale, "Category", "분류")}>
             <select
               value={draft.culture_category}
+              disabled={!needsPrimaryOrganism}
               onChange={(event) => {
                 updatePrimaryOrganism(event.target.value, "");
               }}
@@ -403,7 +446,7 @@ export function PatientVisitForm({
           <Field className={canvasPropertyCardClass} label={pick(locale, "Species", "균종")}>
             <select
               value={draft.culture_species}
-              disabled={!draft.culture_category}
+              disabled={!needsPrimaryOrganism || !draft.culture_category}
               onChange={(event) => updatePrimaryOrganism(draft.culture_category, event.target.value)}
             >
               <option value="">{pick(locale, "Select species", "균종 선택")}</option>
@@ -417,6 +460,7 @@ export function PatientVisitForm({
           <div className={`${canvasPropertyCardClass} ${supportFieldClass}`}>
             <span className={supportLabelClass}>{pick(locale, "Mixed organisms", "혼합 균주")}</span>
             <Button
+              disabled={!needsPrimaryOrganism}
               className={showAdditionalOrganismForm ? "border-brand/20 bg-brand-soft text-brand" : ""}
               type="button"
               size="sm"
@@ -426,16 +470,22 @@ export function PatientVisitForm({
               {showAdditionalOrganismForm ? pick(locale, "Hide mixed", "혼합 균주 닫기") : pick(locale, "Add mixed", "혼합 균주 추가")}
             </Button>
             <div className={supportHintClass}>
-              {pick(
-                locale,
-                "Open this only when more than one organism should survive into review.",
-                "둘 이상의 균주를 리뷰 단계까지 유지해야 할 때만 여세요."
-              )}
+              {needsPrimaryOrganism
+                ? pick(
+                    locale,
+                    "Open this only when more than one organism should survive into review.",
+                    "둘 이상의 균주를 리뷰 단계까지 유지해야 할 때만 여세요."
+                  )
+                : pick(
+                    locale,
+                    "Mixed-organism labeling is only available for culture-positive visits.",
+                    "혼합 균주 입력은 배양 양성 케이스에서만 사용합니다."
+                  )}
             </div>
           </div>
         </div>
 
-        {showAdditionalOrganismForm ? (
+        {showAdditionalOrganismForm && needsPrimaryOrganism ? (
           <div className="grid gap-4 rounded-[18px] border border-border/70 bg-white/55 p-4 dark:bg-white/4">
             <div className={canvasPropertyGridClass}>
               <Field className={canvasPropertyCardClass} label={pick(locale, "Category", "분류")}>
@@ -491,7 +541,7 @@ export function PatientVisitForm({
         ) : null}
 
         <div className={organismChipRowClass}>
-          {intakeOrganisms.map((organism, index) => (
+          {(needsPrimaryOrganism ? intakeOrganisms : []).map((organism, index) => (
             <div key={`${organism.culture_category}-${organism.culture_species}-${index}`} className={organismChipClass}>
               <div className={organismChipCopyClass}>
                 <strong>{organism.culture_species}</strong>

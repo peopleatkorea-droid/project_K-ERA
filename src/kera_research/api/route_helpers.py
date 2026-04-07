@@ -109,6 +109,18 @@ def validation_case_rows(
     misclassified_only: bool = False,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
+    def _normalized_is_correct(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        return None
+
+    def _sort_rank(value: bool | None) -> int:
+        if value is False:
+            return 0
+        if value is None:
+            return 1
+        return 2
+
     central_cases = cp.list_validation_cases(validation_id=validation_id)
     predictions = cp.load_case_predictions(validation_id)
     predictions_by_case_reference = {
@@ -120,7 +132,8 @@ def validation_case_rows(
     rows: list[dict[str, Any]] = []
     source_rows = central_cases or predictions
     for prediction in source_rows:
-        if misclassified_only and prediction.get("is_correct", False):
+        is_correct = _normalized_is_correct(prediction.get("is_correct"))
+        if misclassified_only and is_correct is not False:
             continue
         case_reference_id = str(prediction.get("case_reference_id") or "").strip()
         file_prediction = predictions_by_case_reference.get(case_reference_id, {})
@@ -146,7 +159,7 @@ def validation_case_rows(
                 "true_label": prediction.get("true_label"),
                 "predicted_label": prediction.get("predicted_label"),
                 "prediction_probability": prediction.get("prediction_probability"),
-                "is_correct": bool(prediction.get("is_correct", False)),
+                "is_correct": is_correct,
                 "roi_crop_available": bool(
                     (file_prediction.get("roi_crop_path") and Path(file_prediction["roi_crop_path"]).exists())
                     or prediction.get("has_roi_crop")
@@ -182,7 +195,7 @@ def validation_case_rows(
             }
         )
     rows.sort(
-        key=lambda item: (item.get("is_correct", False), float(item.get("prediction_probability") or 0.0)),
+        key=lambda item: (_sort_rank(item.get("is_correct")), float(item.get("prediction_probability") or 0.0)),
     )
     if limit is not None and limit >= 0:
         return rows[:limit]

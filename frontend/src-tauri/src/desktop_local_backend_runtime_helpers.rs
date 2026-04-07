@@ -82,6 +82,12 @@ pub(super) fn apply_runtime_env_to_command(command: &mut Command, python_path_en
             command.env(key, value);
         }
     }
+    if let Some(resource_dir) = desktop_resource_dir_candidates()
+        .into_iter()
+        .find(|candidate| candidate.exists())
+    {
+        command.env("KERA_DESKTOP_RESOURCE_DIR", resource_dir);
+    }
     command
         .env("KERA_SKIP_LOCAL_ENV_FILE", "1")
         .env("KERA_LLM_RELAY_ONLY", "1")

@@ -121,10 +121,76 @@ pub(super) fn normalize_additional_organisms(
     normalized
 }
 
+pub(super) fn normalize_culture_status(
+    value: Option<&str>,
+    culture_confirmed: bool,
+) -> String {
+    let normalized = value
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    match normalized.as_str() {
+        "positive" | "negative" | "unknown" => normalized,
+        "not_done" => "not_done".to_string(),
+        _ => {
+            if culture_confirmed {
+                "positive".to_string()
+            } else {
+                "unknown".to_string()
+            }
+        }
+    }
+}
+
+pub(super) fn normalize_visit_culture_fields(
+    culture_status: Option<&str>,
+    culture_confirmed: bool,
+    culture_category: &str,
+    culture_species: &str,
+    additional_organisms: &[OrganismRecord],
+    polymicrobial: bool,
+) -> Result<(String, bool, String, String, Vec<OrganismRecord>, bool), String> {
+    let normalized_status = normalize_culture_status(culture_status, culture_confirmed);
+    if normalized_status == "positive" {
+        let normalized_category = culture_category.trim().to_lowercase();
+        let normalized_species = culture_species.trim().to_string();
+        if normalized_category.is_empty() || normalized_species.is_empty() {
+            return Err("Culture-positive cases require category and species.".to_string());
+        }
+        let normalized_additional_organisms = normalize_additional_organisms(
+            &normalized_category,
+            &normalized_species,
+            additional_organisms,
+        );
+        let normalized_polymicrobial =
+            polymicrobial || !normalized_additional_organisms.is_empty();
+        return Ok((
+            normalized_status,
+            true,
+            normalized_category,
+            normalized_species,
+            normalized_additional_organisms,
+            normalized_polymicrobial,
+        ));
+    }
+
+    Ok((
+        normalized_status,
+        false,
+        String::new(),
+        String::new(),
+        Vec::new(),
+        false,
+    ))
+}
+
 pub(super) fn normalize_visit_status(value: Option<&str>, active_stage: bool) -> String {
     let normalized = value.unwrap_or("").trim().to_lowercase();
     match normalized.as_str() {
-        "active" | "scar" | "healed" => normalized,
+        "active" | "improving" | "scar" => normalized,
+        "healed" => "scar".to_string(),
         _ => {
             if active_stage {
                 "active".to_string()
@@ -132,5 +198,24 @@ pub(super) fn normalize_visit_status(value: Option<&str>, active_stage: bool) ->
                 "scar".to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_culture_status, normalize_visit_status};
+
+    #[test]
+    fn normalize_culture_status_preserves_not_done() {
+        assert_eq!(normalize_culture_status(Some("not done"), false), "not_done");
+        assert_eq!(normalize_culture_status(Some("not_done"), false), "not_done");
+    }
+
+    #[test]
+    fn normalize_visit_status_accepts_improving_and_maps_healed_to_scar() {
+        assert_eq!(normalize_visit_status(Some("improving"), false), "improving");
+        assert_eq!(normalize_visit_status(Some("healed"), false), "scar");
+        assert_eq!(normalize_visit_status(Some("unknown"), true), "active");
+        assert_eq!(normalize_visit_status(Some("unknown"), false), "scar");
     }
 }

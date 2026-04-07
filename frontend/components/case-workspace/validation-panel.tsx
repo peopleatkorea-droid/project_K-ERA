@@ -194,6 +194,17 @@ function formatScore(
   return value >= 10 ? value.toFixed(1) : value.toFixed(2);
 }
 
+function isInferenceOnlyValidation(
+  validationMode: string | null | undefined,
+  trueLabel: string | null | undefined,
+): boolean {
+  return (
+    String(validationMode || "")
+      .trim()
+      .toLowerCase() === "inference_only" || trueLabel == null
+  );
+}
+
 function ValidationPanelInner({
   locale,
   common,
@@ -291,6 +302,19 @@ function ValidationPanelInner({
       ? probabilityValues.reduce((total, value) => total + value, 0) /
         probabilityValues.length
       : null;
+  const inferenceOnlyValidation = isInferenceOnlyValidation(
+    validationResult?.summary.validation_mode,
+    validationResult?.summary.true_label,
+  );
+  const predictedLabelTitle = inferenceOnlyValidation
+    ? pick(locale, "Pattern support", "패턴 지지")
+    : pick(locale, "Predicted", "예측");
+  const predictionConfidenceTitle = inferenceOnlyValidation
+    ? pick(locale, "Support score", "지지 점수")
+    : pick(locale, "Model confidence", "모델 신뢰도");
+  const cultureLabelPlaceholder = inferenceOnlyValidation
+    ? pick(locale, "Unavailable for inference-only analysis", "추론 전용 분석에서는 제공되지 않음")
+    : pick(locale, "Pending or unrecorded", "미확정 또는 미기록");
 
   return (
     <>
@@ -338,15 +362,17 @@ function ValidationPanelInner({
           <div className="grid gap-4">
             <div className="rounded-[22px] border border-border bg-surface-muted/80 p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                    validationResult.summary.is_correct ? "match" : "mismatch",
-                  )}`}
-                >
-                  {validationResult.summary.is_correct
-                    ? pick(locale, "Match", "일치")
-                    : pick(locale, "Mismatch", "불일치")}
-                </span>
+                {!inferenceOnlyValidation ? (
+                  <span
+                    className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                      validationResult.summary.is_correct ? "match" : "mismatch",
+                    )}`}
+                  >
+                    {validationResult.summary.is_correct
+                      ? pick(locale, "Match", "일치")
+                      : pick(locale, "Mismatch", "불일치")}
+                  </span>
+                ) : null}
                 <span
                   className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
                     validationConfidenceTone,
@@ -366,25 +392,36 @@ function ValidationPanelInner({
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
                   <span className="block text-xs uppercase tracking-[0.08em] text-muted">
-                    {pick(locale, "Predicted", "예측")}
+                    {predictedLabelTitle}
                   </span>
                   <strong className="mt-2 block text-lg font-semibold text-ink">
                     {validationResult.summary.predicted_label}
                   </strong>
                 </div>
-                <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
-                  <span className="block text-xs uppercase tracking-[0.08em] text-muted">
-                    {pick(locale, "Culture label", "배양 라벨")}
-                  </span>
-                  <strong className="mt-2 block text-lg font-semibold text-ink">
-                    {validationResult.summary.true_label}
-                  </strong>
-                </div>
+                {!inferenceOnlyValidation ? (
+                  <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
+                    <span className="block text-xs uppercase tracking-[0.08em] text-muted">
+                      {pick(locale, "Culture label", "배양 라벨")}
+                    </span>
+                    <strong className="mt-2 block text-lg font-semibold text-ink">
+                      {validationResult.summary.true_label}
+                    </strong>
+                  </div>
+                ) : (
+                  <div className="rounded-[18px] border border-border bg-dashed bg-surface-muted/30 px-4 py-3">
+                    <span className="block text-xs uppercase tracking-[0.08em] text-muted">
+                      {pick(locale, "Culture label", "배양 라벨")}
+                    </span>
+                    <strong className="mt-2 block text-sm font-medium text-muted">
+                      {cultureLabelPlaceholder}
+                    </strong>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 flex items-center justify-between gap-3 text-sm">
                 <span className="text-muted">
-                  {pick(locale, "Model confidence", "모델 신뢰도")}
+                  {predictionConfidenceTitle}
                 </span>
                 <strong className="text-ink">
                   {formatProbability(
@@ -414,10 +451,14 @@ function ValidationPanelInner({
             <MetricGrid className={panelMetricGridClass}>
               <MetricItem
                 value={validationResult.summary.predicted_label}
-                label={pick(locale, "predicted", "예측값")}
+                label={predictedLabelTitle}
               />
               <MetricItem
-                value={validationResult.summary.true_label}
+                value={
+                  inferenceOnlyValidation
+                    ? cultureLabelPlaceholder
+                    : validationResult.summary.true_label
+                }
                 label={pick(locale, "culture label", "배양 라벨")}
               />
               <MetricItem
@@ -425,7 +466,11 @@ function ValidationPanelInner({
                   validationPredictedConfidence,
                   common.notAvailable,
                 )}
-                label={pick(locale, "confidence", "신뢰도")}
+                label={
+                  inferenceOnlyValidation
+                    ? pick(locale, "support score", "지지 점수")
+                    : pick(locale, "confidence", "신뢰도")
+                }
               />
               <MetricItem
                 value={validationResult.execution_device}
@@ -468,17 +513,23 @@ function ValidationPanelInner({
                     validationResult.model_version.case_aggregation
                   } · `
                 : ""}
-              {validationResult.summary.is_correct
+              {inferenceOnlyValidation
                 ? pick(
                     locale,
-                    "prediction matched culture",
-                    "예측이 배양 결과와 일치합니다.",
+                    `${validationResult.summary.predicted_label} pattern support was estimated without a recorded culture label.`,
+                    `기록된 배양 라벨 없이 ${validationResult.summary.predicted_label} 패턴 지지도를 추정한 결과입니다.`,
                   )
-                : pick(
-                    locale,
-                    "prediction diverged from culture",
-                    "예측이 배양 결과와 다릅니다.",
-                  )}
+                : validationResult.summary.is_correct
+                  ? pick(
+                      locale,
+                      "prediction matched culture",
+                      "예측이 배양 결과와 일치합니다.",
+                    )
+                  : pick(
+                      locale,
+                      "prediction diverged from culture",
+                      "예측이 배양 결과와 다릅니다.",
+                    )}
             </p>
 
             {artifactContent}
@@ -1205,14 +1256,16 @@ function ValidationPanelInner({
             ) : null}
             {modelCompareResult.comparisons.map((item, index) => {
               const validationTone =
+                item.summary?.validation_mode === "inference_only" ||
                 item.summary?.is_correct == null
                   ? "neutral"
                   : item.summary.is_correct
                     ? "match"
                     : "mismatch";
               const validationLabel =
-                item.summary?.is_correct == null
-                  ? pick(locale, "Pending", "대기 중")
+                item.summary?.validation_mode === "inference_only" ||
+                  item.summary?.is_correct == null
+                  ? pick(locale, "Inference-only", "추론 전용")
                   : item.summary.is_correct
                     ? pick(locale, "Match", "일치")
                     : pick(locale, "Mismatch", "불일치");
@@ -1270,11 +1323,17 @@ function ValidationPanelInner({
                           value={
                             item.summary?.predicted_label ?? common.notAvailable
                           }
-                          label={pick(locale, "Predicted", "예측")}
+                          label={
+                            item.summary?.validation_mode === "inference_only"
+                              ? pick(locale, "Pattern support", "패턴 지지")
+                              : pick(locale, "Predicted", "예측")
+                          }
                         />
                         <MetricItem
                           value={
-                            item.summary?.true_label ?? common.notAvailable
+                            item.summary?.validation_mode === "inference_only"
+                              ? pick(locale, "Unavailable", "제공되지 않음")
+                              : item.summary?.true_label ?? common.notAvailable
                           }
                           label={pick(locale, "Culture", "배양")}
                         />
@@ -1283,7 +1342,11 @@ function ValidationPanelInner({
                             item.summary?.prediction_probability,
                             common.notAvailable,
                           )}
-                          label={pick(locale, "Confidence", "신뢰도")}
+                          label={
+                            item.summary?.validation_mode === "inference_only"
+                              ? pick(locale, "Support", "지지")
+                              : pick(locale, "Confidence", "신뢰도")
+                          }
                         />
                         <MetricItem
                           value={

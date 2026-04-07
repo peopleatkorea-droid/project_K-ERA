@@ -79,12 +79,52 @@ export function ContributionHistoryPanel({
 }: Props) {
   const validationCount = caseHistory?.validations.length ?? 0;
   const contributionCount = caseHistory?.contributions.length ?? 0;
+  const isPositiveCase =
+    String(selectedCase.culture_status || "").trim().toLowerCase() ===
+    "positive";
+  const hasSavedImages = Number(selectedCase.image_count ?? 0) > 0;
+  const researchRegistryStatus = selectedCase.research_registry_status ?? "analysis_only";
+  const canIncludeResearchCase =
+    researchRegistryEnabled &&
+    researchRegistryUserEnrolled &&
+    selectedCase.visit_status === "active" &&
+    isPositiveCase &&
+    hasSavedImages &&
+    researchRegistryStatus !== "included";
   const contributionMessages = [
+    !isPositiveCase
+      ? pick(
+          locale,
+          "Only culture-positive cases can move into the shared research and contribution flow.",
+          "공유 연구 및 기여 흐름에는 배양 양성 케이스만 들어갈 수 있습니다."
+        )
+      : null,
     selectedCase.visit_status !== "active"
       ? pick(
           locale,
           "Only active visits are enabled for contribution under the current training policy.",
           "현재 학습 정책에서는 active 방문만 기여 대상으로 허용됩니다."
+        )
+      : null,
+    !hasSavedImages
+      ? pick(
+          locale,
+          "At least one saved image is required before registry inclusion or contribution.",
+          "레지스트리 포함이나 기여를 하려면 최소 1장의 저장 이미지가 필요합니다."
+        )
+      : null,
+    researchRegistryUserEnrolled && researchRegistryStatus !== "included"
+      ? pick(
+          locale,
+          "Include this case in the research registry before contributing it.",
+          "기여하기 전에 이 케이스를 연구 레지스트리에 먼저 포함해 주세요."
+        )
+      : null,
+    !researchRegistryUserEnrolled
+      ? pick(
+          locale,
+          "Join the research registry before contributing this case.",
+          "이 케이스를 기여하기 전에 연구 레지스트리에 가입해 주세요."
         )
       : null,
     selectedCase.visit_status === "active" && !hasValidationResult
@@ -118,7 +158,6 @@ export function ContributionHistoryPanel({
   const organismModeLabel = selectedCase.polymicrobial
     ? pick(locale, "Polymicrobial", "다균종")
     : pick(locale, "Single organism", "단일 균종");
-  const researchRegistryStatus = selectedCase.research_registry_status ?? "analysis_only";
   const researchRegistryStatusLabel =
     {
       analysis_only: pick(locale, "Analysis only", "분석 전용"),
@@ -186,7 +225,7 @@ export function ContributionHistoryPanel({
             variant="ghost"
             size="sm"
             onClick={onIncludeResearchCase}
-            disabled={researchRegistryBusy || !researchRegistryEnabled || !researchRegistryUserEnrolled || researchRegistryStatus === "included"}
+            disabled={researchRegistryBusy || !canIncludeResearchCase}
           >
             {researchRegistryBusy ? pick(locale, "Updating...", "업데이트 중...") : pick(locale, "Include this case", "이 케이스 포함")}
           </Button>
@@ -399,8 +438,18 @@ export function ContributionHistoryPanel({
                       <span>{formatProbability(item.prediction_probability, notAvailableLabel)}</span>
                     </div>
                     <div className={historyEntryMetaClass}>
-                      <span>{item.true_label}</span>
-                      <span>{item.is_correct ? pick(locale, "match", "일치") : pick(locale, "mismatch", "불일치")}</span>
+                      <span>
+                        {item.validation_mode === "inference_only" || item.true_label == null
+                          ? pick(locale, "Culture unavailable", "배양 라벨 없음")
+                          : item.true_label}
+                      </span>
+                      <span>
+                        {item.validation_mode === "inference_only" || item.is_correct == null
+                          ? pick(locale, "Inference-only", "추론 전용")
+                          : item.is_correct
+                            ? pick(locale, "match", "일치")
+                            : pick(locale, "mismatch", "불일치")}
+                      </span>
                     </div>
                     {item.post_mortem?.summary ? (
                       <p className="m-0 text-sm leading-6 text-muted">{item.post_mortem.summary}</p>

@@ -26,6 +26,32 @@ function Resolve-ExistingPath([string[]]$Candidates) {
   return $null
 }
 
+function Wait-ForExistingPath {
+  param(
+    [string]$Path,
+    [int]$TimeoutSeconds = 0
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $false
+  }
+  if (Test-Path $Path) {
+    return $true
+  }
+  if ($TimeoutSeconds -le 0) {
+    return $false
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    if (Test-Path $Path) {
+      return $true
+    }
+  }
+  return (Test-Path $Path)
+}
+
 $installCandidates = @()
 if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
   $installCandidates += $InstallDir
@@ -58,25 +84,40 @@ Write-Ok "desktop executable: $resolvedExe"
 
 $layoutCandidates = @(
   @{
-    Name = "resources"
+    Name = "resources-extracted"
     ResourceDir = Join-Path $resolvedInstallDir "resources"
     BackendRoot = Join-Path $resolvedInstallDir "resources\\backend"
     PythonRuntimeDir = Join-Path $resolvedInstallDir "resources\\python-runtime"
+    PythonRuntimeArchive = $null
+  },
+  @{
+    Name = "install-root-archive"
+    ResourceDir = $resolvedInstallDir
+    BackendRoot = Join-Path $resolvedInstallDir "backend"
+    PythonRuntimeDir = $null
+    PythonRuntimeArchive = Join-Path $resolvedInstallDir "python-runtime.zip"
   },
   @{
     Name = "updater-bundle"
     ResourceDir = $null
     BackendRoot = Join-Path $resolvedInstallDir "backend"
     PythonRuntimeDir = Join-Path $resolvedInstallDir "_up_\\.desktop-runtime-bundle\\python-runtime"
+    PythonRuntimeArchive = $null
   }
 )
 
 $resolvedLayout = $null
 foreach ($layout in $layoutCandidates) {
+  $pythonRuntimeReady = $false
+  if (-not [string]::IsNullOrWhiteSpace($layout.PythonRuntimeDir) -and (Test-Path $layout.PythonRuntimeDir)) {
+    $pythonRuntimeReady = $true
+  }
+  if (-not $pythonRuntimeReady -and -not [string]::IsNullOrWhiteSpace($layout.PythonRuntimeArchive) -and (Test-Path $layout.PythonRuntimeArchive)) {
+    $pythonRuntimeReady = $true
+  }
   $requiredPaths = @(
     (Join-Path $layout.BackendRoot "app.py"),
-    (Join-Path $layout.BackendRoot "src"),
-    $layout.PythonRuntimeDir
+    (Join-Path $layout.BackendRoot "src")
   )
   $allPresent = $true
   foreach ($requiredPath in $requiredPaths) {
@@ -85,7 +126,7 @@ foreach ($layout in $layoutCandidates) {
       break
     }
   }
-  if ($allPresent) {
+  if ($allPresent -and $pythonRuntimeReady) {
     $resolvedLayout = $layout
     break
   }
@@ -96,7 +137,8 @@ if (-not $resolvedLayout) {
     @(
       (Join-Path $_.BackendRoot "app.py"),
       (Join-Path $_.BackendRoot "src"),
-      $_.PythonRuntimeDir
+      $_.PythonRuntimeDir,
+      $_.PythonRuntimeArchive
     ) -join ", "
   }
   throw "Could not resolve the installed runtime layout under $resolvedInstallDir. Checked: $($checkedPaths -join ' | ')"
@@ -112,12 +154,17 @@ if ($resolvedLayout.ResourceDir) {
 
 $requiredRuntimePaths = @(
   (Join-Path $resolvedLayout.BackendRoot "app.py"),
-  (Join-Path $resolvedLayout.BackendRoot "src"),
-  $resolvedLayout.PythonRuntimeDir
+  (Join-Path $resolvedLayout.BackendRoot "src")
 )
 
 foreach ($requiredPath in $requiredRuntimePaths) {
   Write-Ok "runtime resource: $requiredPath"
+}
+if (-not [string]::IsNullOrWhiteSpace($resolvedLayout.PythonRuntimeDir) -and (Test-Path $resolvedLayout.PythonRuntimeDir)) {
+  Write-Ok "runtime resource: $($resolvedLayout.PythonRuntimeDir)"
+}
+if (-not [string]::IsNullOrWhiteSpace($resolvedLayout.PythonRuntimeArchive) -and (Test-Path $resolvedLayout.PythonRuntimeArchive)) {
+  Write-Ok "runtime archive: $($resolvedLayout.PythonRuntimeArchive)"
 }
 
 if (Test-Path $AppDataDir) {
@@ -134,16 +181,25 @@ if ($LaunchSeconds -gt 0) {
   Write-Host "Launching installed desktop runtime for $LaunchSeconds second(s)..."
   $process = Start-Process -FilePath $resolvedExe -PassThru
   try {
-    Start-Sleep -Seconds $LaunchSeconds
-    if (-not (Test-Path $AppDataDir)) {
-      Write-WarnLine "app data dir was not created during launch smoke: $AppDataDir"
+    $appDataReady = Wait-ForExistingPath -Path $AppDataDir -TimeoutSeconds $LaunchSeconds
+    if (-not $appDataReady) {
+      throw "app data dir was not created during launch smoke: $AppDataDir"
     } else {
       Write-Ok "app data dir after launch: $AppDataDir"
     }
-    if (Test-Path $runtimeDir) {
+    $runtimeReady = Wait-ForExistingPath -Path $runtimeDir -TimeoutSeconds $LaunchSeconds
+    if ($runtimeReady) {
       Write-Ok "runtime dir after launch: $runtimeDir"
     } else {
-      Write-WarnLine "runtime dir not created during launch smoke: $runtimeDir"
+      throw "runtime dir was not created during launch smoke: $runtimeDir"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedLayout.PythonRuntimeArchive)) {
+      $runtimePython = Join-Path $runtimeDir "python\\python.exe"
+      if (Wait-ForExistingPath -Path $runtimePython -TimeoutSeconds $LaunchSeconds) {
+        Write-Ok "runtime python after launch: $runtimePython"
+      } else {
+        throw "runtime python was not prepared during launch smoke: $runtimePython"
+      }
     }
     if (Test-Path $configPath) {
       Write-Ok "desktop config file: $configPath"

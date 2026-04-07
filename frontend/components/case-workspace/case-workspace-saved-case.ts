@@ -32,6 +32,7 @@ type DraftState = {
   age: string;
   actual_visit_date: string;
   follow_up_number: string;
+  culture_status: string;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];
@@ -61,6 +62,55 @@ type PendingOrganism = Pick<
 >;
 
 type LocalePick = (locale: Locale, en: string, ko: string) => string;
+
+const CULTURE_STATUS_OPTIONS = new Set([
+  "positive",
+  "negative",
+  "not_done",
+  "unknown",
+]);
+
+function normalizeCultureStatus(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return CULTURE_STATUS_OPTIONS.has(normalized) ? normalized : "unknown";
+}
+
+function normalizeDraftCultureFields(
+  cultureStatus: string | null | undefined,
+  cultureCategory: string | null | undefined,
+  cultureSpecies: string | null | undefined,
+  additionalOrganisms: OrganismRecord[] | undefined,
+  normalizeAdditionalOrganisms: (
+    primaryCategory: string,
+    primarySpecies: string,
+    organisms: OrganismRecord[] | undefined,
+  ) => OrganismRecord[],
+): Pick<
+  DraftState,
+  "culture_status" | "culture_category" | "culture_species" | "additional_organisms"
+> {
+  const normalizedCultureStatus = normalizeCultureStatus(cultureStatus);
+  if (normalizedCultureStatus !== "positive") {
+    return {
+      culture_status: normalizedCultureStatus,
+      culture_category: "",
+      culture_species: "",
+      additional_organisms: [],
+    };
+  }
+  const normalizedCultureCategory = String(cultureCategory ?? "").trim();
+  const normalizedCultureSpecies = String(cultureSpecies ?? "").trim();
+  return {
+    culture_status: normalizedCultureStatus,
+    culture_category: normalizedCultureCategory,
+    culture_species: normalizedCultureSpecies,
+    additional_organisms: normalizeAdditionalOrganisms(
+      normalizedCultureCategory,
+      normalizedCultureSpecies,
+      additionalOrganisms,
+    ),
+  };
+}
 
 type OpenSavedCaseArgs = {
   caseRecord: CaseSummaryRecord;
@@ -264,6 +314,13 @@ export async function startFollowUpDraftFromSelectedCase({
   const applyFallbackDraft = (followUpNumber: string) => {
     setDraft((current) => ({
       ...current,
+      ...normalizeDraftCultureFields(
+        selectedCase.culture_status || current.culture_status,
+        selectedCase.culture_category || current.culture_category,
+        selectedCase.culture_species || current.culture_species,
+        selectedCase.additional_organisms,
+        normalizeAdditionalOrganisms,
+      ),
       patient_id: selectedCase.patient_id,
       sex: selectedCase.sex || current.sex,
       age: String(selectedCase.age ?? current.age),
@@ -271,15 +328,6 @@ export async function startFollowUpDraftFromSelectedCase({
       local_case_code:
         selectedCase.local_case_code ?? current.local_case_code,
       actual_visit_date: "",
-      culture_category:
-        selectedCase.culture_category || current.culture_category,
-      culture_species:
-        selectedCase.culture_species || current.culture_species,
-      additional_organisms: normalizeAdditionalOrganisms(
-        selectedCase.culture_category,
-        selectedCase.culture_species,
-        selectedCase.additional_organisms,
-      ),
       contact_lens_use:
         selectedCase.contact_lens_use || current.contact_lens_use,
       visit_status: selectedCase.visit_status || current.visit_status,
@@ -287,13 +335,21 @@ export async function startFollowUpDraftFromSelectedCase({
       follow_up_number: followUpNumber,
       intake_completed: true,
     }));
+    const pendingCultureStatus = normalizeCultureStatus(
+      selectedCase.culture_status,
+    );
+    const pendingCultureCategory =
+      pendingCultureStatus === "positive"
+        ? selectedCase.culture_category || "bacterial"
+        : "bacterial";
     setPendingOrganism({
-      culture_category: selectedCase.culture_category || "bacterial",
+      culture_category: pendingCultureCategory,
       culture_species:
-        selectedCase.additional_organisms?.[0]?.culture_species ||
-        selectedCase.culture_species ||
-        (cultureSpecies[selectedCase.culture_category || "bacterial"]?.[0] ??
-          ""),
+        pendingCultureStatus === "positive"
+          ? selectedCase.additional_organisms?.[0]?.culture_species ||
+            selectedCase.culture_species ||
+            (cultureSpecies[pendingCultureCategory]?.[0] ?? "")
+          : (cultureSpecies[pendingCultureCategory]?.[0] ?? ""),
     });
     setShowAdditionalOrganismForm(false);
   };
@@ -320,6 +376,19 @@ export async function startFollowUpDraftFromSelectedCase({
     }
     setDraft((current) => ({
       ...current,
+      ...normalizeDraftCultureFields(
+        latestVisit.culture_status ||
+          selectedCase.culture_status ||
+          current.culture_status,
+        latestVisit.culture_category ||
+          selectedCase.culture_category ||
+          current.culture_category,
+        latestVisit.culture_species ||
+          selectedCase.culture_species ||
+          current.culture_species,
+        latestVisit.additional_organisms ?? selectedCase.additional_organisms,
+        normalizeAdditionalOrganisms,
+      ),
       patient_id: selectedCase.patient_id,
       sex: selectedCase.sex || current.sex,
       age: String(selectedCase.age ?? current.age),
@@ -327,19 +396,6 @@ export async function startFollowUpDraftFromSelectedCase({
       local_case_code:
         selectedCase.local_case_code ?? current.local_case_code,
       actual_visit_date: "",
-      culture_category:
-        latestVisit.culture_category ||
-        selectedCase.culture_category ||
-        current.culture_category,
-      culture_species:
-        latestVisit.culture_species ||
-        selectedCase.culture_species ||
-        current.culture_species,
-      additional_organisms: normalizeAdditionalOrganisms(
-        latestVisit.culture_category || selectedCase.culture_category,
-        latestVisit.culture_species || selectedCase.culture_species,
-        latestVisit.additional_organisms ?? selectedCase.additional_organisms,
-      ),
       contact_lens_use:
         latestVisit.contact_lens_use ||
         selectedCase.contact_lens_use ||
@@ -355,21 +411,24 @@ export async function startFollowUpDraftFromSelectedCase({
       other_history: latestVisit.other_history ?? current.other_history,
       intake_completed: true,
     }));
+    const pendingCultureStatus = normalizeCultureStatus(
+      latestVisit.culture_status || selectedCase.culture_status,
+    );
+    const pendingCultureCategory =
+      pendingCultureStatus === "positive"
+        ? latestVisit.culture_category ||
+          selectedCase.culture_category ||
+          "bacterial"
+        : "bacterial";
     setPendingOrganism({
-      culture_category:
-        latestVisit.culture_category ||
-        selectedCase.culture_category ||
-        "bacterial",
+      culture_category: pendingCultureCategory,
       culture_species:
-        latestVisit.additional_organisms?.[0]?.culture_species ||
-        latestVisit.culture_species ||
-        selectedCase.culture_species ||
-        (cultureSpecies[
-          latestVisit.culture_category ||
-            selectedCase.culture_category ||
-            "bacterial"
-        ]?.[0] ??
-          ""),
+        pendingCultureStatus === "positive"
+          ? latestVisit.additional_organisms?.[0]?.culture_species ||
+            latestVisit.culture_species ||
+            selectedCase.culture_species ||
+            (cultureSpecies[pendingCultureCategory]?.[0] ?? "")
+          : (cultureSpecies[pendingCultureCategory]?.[0] ?? ""),
     });
     setShowAdditionalOrganismForm(false);
   } catch (nextError) {
@@ -494,21 +553,22 @@ export async function startEditDraftFromSelectedCase({
     setDraftLesionPromptBoxes(nextDraftBoxes);
     setDraft((current) => ({
       ...current,
+      ...normalizeDraftCultureFields(
+        selectedVisit?.culture_status ||
+          caseToEdit.culture_status ||
+          current.culture_status,
+        caseToEdit.culture_category || current.culture_category,
+        caseToEdit.culture_species || current.culture_species,
+        selectedVisit?.additional_organisms ??
+          caseToEdit.additional_organisms,
+        normalizeAdditionalOrganisms,
+      ),
       patient_id: caseToEdit.patient_id,
       sex: caseToEdit.sex || current.sex,
       age: String(caseToEdit.age ?? current.age),
       chart_alias: caseToEdit.chart_alias ?? current.chart_alias,
       local_case_code: caseToEdit.local_case_code ?? current.local_case_code,
       actual_visit_date: caseToEdit.actual_visit_date?.trim() || "",
-      culture_category:
-        caseToEdit.culture_category || current.culture_category,
-      culture_species: caseToEdit.culture_species || current.culture_species,
-      additional_organisms: normalizeAdditionalOrganisms(
-        caseToEdit.culture_category,
-        caseToEdit.culture_species,
-        selectedVisit?.additional_organisms ??
-          caseToEdit.additional_organisms,
-      ),
       contact_lens_use:
         selectedVisit?.contact_lens_use ||
         caseToEdit.contact_lens_use ||
@@ -531,13 +591,21 @@ export async function startEditDraftFromSelectedCase({
       other_history: selectedVisit?.other_history ?? current.other_history,
       intake_completed: false,
     }));
+    const pendingCultureStatus = normalizeCultureStatus(
+      selectedVisit?.culture_status || caseToEdit.culture_status,
+    );
+    const pendingCultureCategory =
+      pendingCultureStatus === "positive"
+        ? caseToEdit.culture_category || "bacterial"
+        : "bacterial";
     setPendingOrganism({
-      culture_category: caseToEdit.culture_category || "bacterial",
+      culture_category: pendingCultureCategory,
       culture_species:
-        caseToEdit.additional_organisms?.[0]?.culture_species ||
-        caseToEdit.culture_species ||
-        (cultureSpecies[caseToEdit.culture_category || "bacterial"]?.[0] ??
-          ""),
+        pendingCultureStatus === "positive"
+          ? caseToEdit.additional_organisms?.[0]?.culture_species ||
+            caseToEdit.culture_species ||
+            (cultureSpecies[pendingCultureCategory]?.[0] ?? "")
+          : (cultureSpecies[pendingCultureCategory]?.[0] ?? ""),
     });
     setShowAdditionalOrganismForm(false);
   } catch (nextError) {

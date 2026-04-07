@@ -7,16 +7,22 @@ pub(super) fn case_summary_from_row(
         parse_json_array(row.get::<_, Option<String>>("additional_organisms")?);
     let predisposing_factor =
         parse_json_array(row.get::<_, Option<String>>("predisposing_factor")?);
-    let visit_status = row
-        .get::<_, Option<String>>("visit_status")?
-        .unwrap_or_else(|| "active".to_string());
+    let stored_active_stage = row
+        .get::<_, Option<i64>>("active_stage")?
+        .map(|value| value != 0);
+    let visit_status = normalize_visit_status(
+        row.get::<_, Option<String>>("visit_status")?.as_deref(),
+        stored_active_stage.unwrap_or(true),
+    );
     let research_registry_status = row
         .get::<_, Option<String>>("research_registry_status")?
         .unwrap_or_else(|| "analysis_only".to_string());
-    let active_stage = row
-        .get::<_, Option<i64>>("active_stage")?
-        .map(|value| value != 0)
-        .unwrap_or_else(|| visit_status == "active");
+    let active_stage = stored_active_stage.unwrap_or_else(|| visit_status == "active");
+    let stored_culture_confirmed = row.get::<_, Option<i64>>("culture_confirmed")?.unwrap_or(0) != 0;
+    let culture_status = normalize_culture_status(
+        row.get::<_, Option<String>>("culture_status")?.as_deref(),
+        stored_culture_confirmed,
+    );
     let polymicrobial = row.get::<_, Option<i64>>("polymicrobial")?.unwrap_or(0) != 0
         || !additional_organisms.is_empty();
 
@@ -36,6 +42,8 @@ pub(super) fn case_summary_from_row(
             .unwrap_or_default(),
         sex: row.get::<_, Option<String>>("sex")?.unwrap_or_default(),
         age: row.get("age")?,
+        culture_status: culture_status.clone(),
+        culture_confirmed: culture_status == "positive",
         culture_category: row
             .get::<_, Option<String>>("culture_category")?
             .unwrap_or_default(),

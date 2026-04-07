@@ -242,6 +242,14 @@ const PREDISPOSING_FACTOR_OPTIONS = [
   "unknown",
 ];
 const VISIT_STATUS_OPTIONS = ["active", "improving", "scar"];
+const CULTURE_STATUS_OPTIONS = [
+  "positive",
+  "negative",
+  "not_done",
+  "unknown",
+];
+const CULTURE_STATUS_SET = new Set(CULTURE_STATUS_OPTIONS);
+const DEFAULT_CULTURE_STATUS = "unknown";
 const MAX_MODEL_COMPARE_SELECTIONS = 8;
 const PATIENT_LIST_PAGE_SIZE = 25;
 const SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
@@ -355,6 +363,7 @@ type DraftState = {
   age: string;
   actual_visit_date: string;
   follow_up_number: string;
+  culture_status: string;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];
@@ -511,6 +520,7 @@ function createDraft(): DraftState {
     age: "65",
     actual_visit_date: "",
     follow_up_number: "1",
+    culture_status: DEFAULT_CULTURE_STATUS,
     culture_category: "",
     culture_species: "",
     additional_organisms: [],
@@ -521,6 +531,40 @@ function createDraft(): DraftState {
     other_history: "",
     intake_completed: false,
   };
+}
+
+function normalizeCultureStatus(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return CULTURE_STATUS_SET.has(normalized) ? normalized : DEFAULT_CULTURE_STATUS;
+}
+
+function isPositiveCultureStatus(value: string | null | undefined): boolean {
+  return normalizeCultureStatus(value) === "positive";
+}
+
+function cultureStatusNeedsOrganism(value: string | null | undefined): boolean {
+  return isPositiveCultureStatus(value);
+}
+
+function isResearchRegistryIncluded(value: string | null | undefined): boolean {
+  return String(value || "").trim().toLowerCase() === "included";
+}
+
+function isResearchEligibleCase(
+  caseRecord:
+    | Pick<
+        CaseSummaryRecord,
+        "visit_status" | "culture_status" | "image_count"
+      >
+    | null
+    | undefined,
+): boolean {
+  return (
+    Boolean(caseRecord) &&
+    caseRecord?.visit_status === "active" &&
+    isPositiveCultureStatus(caseRecord?.culture_status) &&
+    Number(caseRecord?.image_count ?? 0) > 0
+  );
 }
 
 function createDraftId(): string {
@@ -819,13 +863,101 @@ function sortCompareModelVersions(
   );
 }
 
+function modelVersionSearchText(modelVersion: ModelVersionRecord): string {
+  return [
+    modelVersion.version_id,
+    modelVersion.version_name,
+    modelVersion.architecture,
+    modelVersion.crop_mode,
+    modelVersion.case_aggregation,
+    modelVersion.training_input_policy,
+    modelVersion.notes,
+    modelVersion.notes_en,
+    modelVersion.notes_ko,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value) => value.length > 0)
+    .join(" ");
+}
+
+function pickPreferredCompareModel(
+  modelVersions: ModelVersionRecord[],
+  matcher: (modelVersion: ModelVersionRecord, searchText: string) => boolean,
+  selectedIds: Set<string>,
+): ModelVersionRecord | null {
+  return (
+    modelVersions.find((modelVersion) => {
+      if (!isSelectableCompareModelVersion(modelVersion)) {
+        return false;
+      }
+      if (selectedIds.has(modelVersion.version_id)) {
+        return false;
+      }
+      return matcher(modelVersion, modelVersionSearchText(modelVersion));
+    }) ?? null
+  );
+}
+
 function defaultModelCompareSelection(
   modelVersions: ModelVersionRecord[],
 ): string[] {
+  const sortedModelVersions = sortCompareModelVersions(modelVersions);
   const selected: string[] = [];
+  const selectedIds = new Set<string>();
   const seenArchitectures = new Set<string>();
-  for (const modelVersion of sortCompareModelVersions(modelVersions)) {
+  const preferredMatchers: Array<
+    (modelVersion: ModelVersionRecord, searchText: string) => boolean
+  > = [
+    (modelVersion, searchText) =>
+      (searchText.includes("efficientnet_v2_s_mil_full") ||
+        searchText.includes("efficientnetv2-s mil") ||
+        searchText.includes("efficientnet_v2_s mil")) &&
+      !searchText.includes("lesion_guided_fusion"),
+    (modelVersion, searchText) =>
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s" &&
+      !searchText.includes("lesion_guided_fusion") &&
+      !searchText.includes("ensemble"),
+    (modelVersion, searchText) =>
+      searchText.includes("dinov2") &&
+      (searchText.includes("retrieval") || searchText.includes("similar case")) &&
+      (searchText.includes("lesion") || searchText.includes("manual")),
+    (modelVersion, searchText) =>
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "dinov2" &&
+      !searchText.includes("mil"),
+    (modelVersion, searchText) =>
+      searchText.includes("convnext_tiny_full") ||
+      searchText.includes("convnext-tiny full") ||
+      (String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "convnext_tiny" &&
+        !searchText.includes("mil")),
+  ];
+
+  for (const matcher of preferredMatchers) {
+    const match = pickPreferredCompareModel(
+      sortedModelVersions,
+      matcher,
+      selectedIds,
+    );
+    if (!match) {
+      continue;
+    }
+    selected.push(match.version_id);
+    selectedIds.add(match.version_id);
+    const architecture =
+      String(match.architecture || "").trim().toLowerCase() || match.version_id;
+    seenArchitectures.add(architecture);
+    if (selected.length >= 3) {
+      return selected;
+    }
+  }
+
+  for (const modelVersion of sortedModelVersions) {
     if (!isSelectableCompareModelVersion(modelVersion)) {
+      continue;
+    }
+    if (selectedIds.has(modelVersion.version_id)) {
       continue;
     }
     const architecture =
@@ -837,7 +969,8 @@ function defaultModelCompareSelection(
     }
     seenArchitectures.add(architecture);
     selected.push(modelVersion.version_id);
-    if (selected.length >= MAX_MODEL_COMPARE_SELECTIONS) {
+    selectedIds.add(modelVersion.version_id);
+    if (selected.length >= 3) {
       break;
     }
   }
@@ -956,16 +1089,28 @@ function displayVisitReference(
 
 function normalizeRecoveredDraft(draft: DraftState): DraftState {
   const recoveredDraft = draft as DraftState & { visit_date?: string };
+  const normalizedCultureStatus = normalizeCultureStatus(draft.culture_status);
+  const normalizedCultureCategory = cultureStatusNeedsOrganism(normalizedCultureStatus)
+    ? draft.culture_category
+    : "";
+  const normalizedCultureSpecies = cultureStatusNeedsOrganism(normalizedCultureStatus)
+    ? draft.culture_species
+    : "";
   const normalizedAdditionalOrganisms = normalizeAdditionalOrganisms(
-    draft.culture_category,
-    draft.culture_species,
-    draft.additional_organisms,
+    normalizedCultureCategory,
+    normalizedCultureSpecies,
+    cultureStatusNeedsOrganism(normalizedCultureStatus)
+      ? draft.additional_organisms
+      : [],
   );
   const visitReference = String(recoveredDraft.visit_date ?? "").trim();
   const followUpMatch = visitReference.match(FOLLOW_UP_VISIT_PATTERN);
   if (followUpMatch) {
     return {
       ...draft,
+      culture_status: normalizedCultureStatus,
+      culture_category: normalizedCultureCategory,
+      culture_species: normalizedCultureSpecies,
       additional_organisms: normalizedAdditionalOrganisms,
       follow_up_number: String(Number(followUpMatch[1]) || 1),
       is_initial_visit: false,
@@ -974,6 +1119,9 @@ function normalizeRecoveredDraft(draft: DraftState): DraftState {
   if (/^(initial|초진|珥덉쭊)$/i.test(visitReference)) {
     return {
       ...draft,
+      culture_status: normalizedCultureStatus,
+      culture_category: normalizedCultureCategory,
+      culture_species: normalizedCultureSpecies,
       additional_organisms: normalizedAdditionalOrganisms,
       follow_up_number: draft.follow_up_number || "1",
       is_initial_visit: true,
@@ -981,6 +1129,9 @@ function normalizeRecoveredDraft(draft: DraftState): DraftState {
   }
   return {
     ...draft,
+    culture_status: normalizedCultureStatus,
+    culture_category: normalizedCultureCategory,
+    culture_species: normalizedCultureSpecies,
     additional_organisms: normalizedAdditionalOrganisms,
     actual_visit_date:
       String(recoveredDraft.actual_visit_date ?? "").trim() ||
@@ -1001,6 +1152,7 @@ function hasDraftContent(draft: DraftState): boolean {
     draft.age !== emptyDraft.age ||
     draft.actual_visit_date !== emptyDraft.actual_visit_date ||
     draft.follow_up_number !== emptyDraft.follow_up_number ||
+    draft.culture_status !== emptyDraft.culture_status ||
     draft.culture_category !== emptyDraft.culture_category ||
     draft.culture_species !== emptyDraft.culture_species ||
     draft.additional_organisms.length > 0 ||
@@ -1809,6 +1961,9 @@ export function CaseWorkspace({
     onValidationCompleted: async ({ siteId, selectedCase: validatedCase }) => {
       const registry = summary?.research_registry;
       if (!registry?.site_enabled) {
+        return;
+      }
+      if (!isResearchEligibleCase(validatedCase)) {
         return;
       }
       if (
@@ -2630,7 +2785,10 @@ export function CaseWorkspace({
       setToast({ tone: "error", message: copy.patientIdRequired });
       return;
     }
-    if (!draft.culture_species.trim()) {
+    if (
+      cultureStatusNeedsOrganism(draft.culture_status) &&
+      !draft.culture_species.trim()
+    ) {
       setToast({ tone: "error", message: copy.cultureSpeciesRequired });
       return;
     }
@@ -3497,16 +3655,17 @@ export function CaseWorkspace({
       ),
     [siteModelVersions],
   );
-  const canContributeSelectedCase =
-    canRunValidation &&
-    Boolean(selectedCase) &&
-    selectedCase?.visit_status === "active";
   const researchRegistryEnabled = Boolean(
     summary?.research_registry?.site_enabled,
   );
   const researchRegistryUserEnrolled = Boolean(
     summary?.research_registry?.user_enrolled,
   );
+  const canContributeSelectedCase =
+    canRunValidation &&
+    researchRegistryUserEnrolled &&
+    isResearchEligibleCase(selectedCase) &&
+    isResearchRegistryIncluded(selectedCase?.research_registry_status);
   const latestSiteValidation = siteValidationRuns[0] ?? null;
   const validationPredictedConfidence = predictedClassConfidence(
     validationResult?.summary.predicted_label,
@@ -3573,10 +3732,15 @@ export function CaseWorkspace({
   const draftRepresentativeCount = draftImages.filter(
     (image) => image.is_representative,
   ).length;
+  const draftNeedsPrimaryOrganism = cultureStatusNeedsOrganism(
+    draft.culture_status,
+  );
   const draftChecklist = [
     Boolean(draft.patient_id.trim() && draft.age.trim()),
     Boolean(draft.visit_status && draft.contact_lens_use),
-    Boolean(draft.culture_category && draft.culture_species.trim()),
+    draftNeedsPrimaryOrganism
+      ? Boolean(draft.culture_category && draft.culture_species.trim())
+      : Boolean(draft.culture_status),
     draftImages.length > 0,
   ];
   const draftCompletionCount = draftChecklist.filter(Boolean).length;
@@ -3598,7 +3762,7 @@ export function CaseWorkspace({
       pick(locale, "Add a patient identifier.", "환자 식별자를 입력하세요."),
     );
   }
-  if (!draft.culture_species.trim()) {
+  if (draftNeedsPrimaryOrganism && !draft.culture_species.trim()) {
     draftPendingItems.push(
       pick(locale, "Choose the primary organism.", "기본 원인균을 선택하세요."),
     );
@@ -4373,6 +4537,7 @@ export function CaseWorkspace({
                   contactLensOptions={CONTACT_LENS_OPTIONS}
                   predisposingFactorOptions={PREDISPOSING_FACTOR_OPTIONS}
                   visitStatusOptions={VISIT_STATUS_OPTIONS}
+                  cultureStatusOptions={CULTURE_STATUS_OPTIONS}
                   cultureSpecies={CULTURE_SPECIES}
                   speciesOptions={speciesOptions}
                   pendingOrganism={pendingOrganism}

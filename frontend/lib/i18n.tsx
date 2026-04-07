@@ -235,6 +235,14 @@ const apiErrorExact = {
     "No ready model version is available for site validation.": "병원 검증에 사용할 준비된 모델 버전이 없습니다.",
     "Visit not found.": "방문 기록을 찾을 수 없습니다.",
     "Only active visits are enabled for contribution under the current policy.": "현재 정책에서는 활동성 방문만 기여 대상으로 허용됩니다.",
+    "Only culture-positive cases can be included in the research registry.": "배양 양성 케이스만 연구 레지스트리에 포함할 수 있습니다.",
+    "Only active visits can be included in the research registry.": "활동성 방문만 연구 레지스트리에 포함할 수 있습니다.",
+    "At least one image is required.": "최소 1장의 이미지가 필요합니다.",
+    "Federated learning contribution is restricted to culture-positive cases.": "연합 학습 기여는 배양 양성 케이스만 허용됩니다.",
+    "Federated learning contribution is restricted to active visits.": "연합 학습 기여는 활동성 방문만 허용됩니다.",
+    "Federated learning contribution requires at least one saved image.": "연합 학습 기여에는 저장된 이미지가 최소 1장 필요합니다.",
+    "Join the research registry before contributing this case.": "이 케이스를 기여하기 전에 연구 레지스트리에 가입해 주세요.",
+    "Include this case in the research registry before contributing it.": "이 케이스를 기여하기 전에 연구 레지스트리에 먼저 포함해 주세요.",
     "No ready model version is available for contribution.": "기여에 사용할 준비된 모델 버전이 없습니다.",
     "Image not found for this case.": "이 케이스의 이미지를 찾을 수 없습니다.",
     "ROI preview record not found.": "각막 crop 미리보기 기록을 찾을 수 없습니다.",
@@ -426,6 +434,12 @@ const optionLabels = {
       bacterial: "bacterial",
       fungal: "fungal",
     },
+    cultureStatus: {
+      positive: "positive",
+      negative: "negative",
+      not_done: "not done",
+      unknown: "unknown",
+    },
   },
   ko: {
     sex: {
@@ -470,6 +484,12 @@ const optionLabels = {
     cultureCategory: {
       bacterial: "세균",
       fungal: "진균",
+    },
+    cultureStatus: {
+      positive: "양성",
+      negative: "음성",
+      not_done: "미시행",
+      unknown: "모름",
     },
   },
 } as const;

@@ -104,7 +104,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
 
         case_prediction = case_predictions[0] if case_predictions else None
         post_mortem = None
-        if case_prediction is not None:
+        if case_prediction is not None and summary.get("validation_mode") != "inference_only":
             case_reference_id = (
                 str(case_prediction.get("case_reference_id") or "").strip()
                 or cp.case_reference_id(site_id, payload.patient_id, payload.visit_date)
@@ -282,6 +282,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 execution_device=execution_device,
                 top_k=payload.top_k,
                 retrieval_backend=payload.retrieval_backend,
+                retrieval_profile=payload.retrieval_profile,
             )
             sync_case_artifact_cache_best_effort(
                 workflow,
@@ -336,6 +337,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 execution_device=execution_device,
                 top_k=payload.top_k,
                 retrieval_backend=payload.retrieval_backend,
+                retrieval_profile=payload.retrieval_profile,
             )
             sync_case_artifact_cache_best_effort(
                 workflow,
@@ -374,14 +376,15 @@ def build_case_analysis_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
 
-        visit = site_store.get_visit(payload.patient_id, payload.visit_date)
-        if visit is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found.")
-        visit_status = visit.get("visit_status", "active" if visit.get("active_stage") else "scar")
-        if visit_status != "active":
+        try:
+            policy_state = site_store.case_research_policy_state(payload.patient_id, payload.visit_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        visit_status = str(policy_state.get("visit_status") or "active")
+        if cp.get_registry_consent(user["user_id"], site_id) is None:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only active visits are enabled for contribution under the current policy.",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Join the research registry before contributing this case.",
             )
 
         try:
@@ -416,6 +419,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                         user_id=user["user_id"],
                         user_public_alias=str(user.get("public_alias") or "").strip() or None,
                         contribution_group_id=contribution_group_id,
+                        registry_consent_granted=True,
                     )
                 )
             except ValueError as exc:

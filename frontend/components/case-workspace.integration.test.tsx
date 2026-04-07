@@ -231,6 +231,7 @@ describe("CaseWorkspace integration", () => {
         case_id: "case_1",
         patient_id: "KERA-2026-001",
         chart_alias: "",
+        culture_status: "positive",
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
         additional_organisms: [],
@@ -265,6 +266,7 @@ describe("CaseWorkspace integration", () => {
             patient_id: "KERA-2026-001",
             chart_alias: "",
             local_case_code: "",
+            culture_status: "positive",
             culture_category: "bacterial",
             culture_species: "Staphylococcus aureus",
             additional_organisms: [],
@@ -348,6 +350,7 @@ describe("CaseWorkspace integration", () => {
         patient_id: "KERA-2026-001",
         visit_date: "Initial",
         actual_visit_date: null,
+        culture_status: "positive",
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
         additional_organisms: [],
@@ -1207,7 +1210,14 @@ describe("CaseWorkspace integration", () => {
   });
 
   it("hydrates hospital fungal and bacterial counts from loaded cases when the incoming summary omits them", async () => {
-    renderWorkspace();
+    renderWorkspace(vi.fn(async () => undefined), {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 1,
+        excluded_cases: 0,
+      },
+    });
 
     const hospitalSection = screen.getByText("Hospital").closest("section");
     if (!hospitalSection) {
@@ -1849,7 +1859,14 @@ describe("CaseWorkspace integration", () => {
   });
 
   it("keeps BiomedCLIP analysis on the source image even when the saved image mode changes", async () => {
-    renderWorkspace();
+    renderWorkspace(vi.fn(async () => undefined), {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 1,
+        excluded_cases: 0,
+      },
+    });
     await openSavedCase();
 
     fireEvent.change(await screen.findByLabelText("Saved image mode"), {
@@ -2324,6 +2341,7 @@ describe("CaseWorkspace integration", () => {
         case_id: "case_1",
         patient_id: "KERA-2026-001",
         chart_alias: "",
+        culture_status: "positive",
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
         additional_organisms: [],
@@ -2336,8 +2354,56 @@ describe("CaseWorkspace integration", () => {
         age: 0,
         sex: "female",
         visit_status: "active",
+        research_registry_status: "included",
       },
     ]);
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_status: "positive",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-15T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_1",
+            representative_view: "white",
+            age: 0,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+            research_registry_status: "included",
+          },
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
 
     renderWorkspace();
     await openSavedCase();
@@ -2711,7 +2777,14 @@ describe("CaseWorkspace integration", () => {
   });
 
   it("shows patient timeline images even when image records only match by visit date", async () => {
-    renderWorkspace();
+    renderWorkspace(vi.fn(async () => undefined), {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 1,
+        excluded_cases: 0,
+      },
+    });
     await openSavedCase();
 
     await waitFor(() => {
@@ -3914,6 +3987,7 @@ describe("CaseWorkspace integration", () => {
         case_id: "case_1",
         patient_id: "KERA-2026-001",
         chart_alias: "",
+        culture_status: "positive",
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
         additional_organisms: [],
@@ -4150,14 +4224,9 @@ describe("CaseWorkspace integration", () => {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
           model_version_ids: [
-            "model_vit",
-            "model_swin",
-            "model_dinov2",
-            "model_dinov2_mil",
-            "model_convnext",
-            "model_dense",
             "model_eff",
-            "model_lgf_eff",
+            "model_dinov2",
+            "model_convnext",
           ],
           execution_mode: "auto",
         },
@@ -4172,7 +4241,7 @@ describe("CaseWorkspace integration", () => {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
           execution_mode: "cpu",
-          model_version_id: "model_vit",
+          model_version_id: "model_eff",
         },
       );
     });
@@ -4341,7 +4410,8 @@ describe("CaseWorkspace integration", () => {
           execution_mode: "cpu",
           model_version_id: "model_vit",
           top_k: 3,
-          retrieval_backend: "classifier",
+          retrieval_backend: "standard",
+          retrieval_profile: "dinov2_lesion_crop",
         },
       );
     });
@@ -4361,7 +4431,8 @@ describe("CaseWorkspace integration", () => {
           execution_mode: "cpu",
           model_version_id: "model_vit",
           top_k: 3,
-          retrieval_backend: "classifier",
+          retrieval_backend: "standard",
+          retrieval_profile: "dinov2_lesion_crop",
         },
       );
     });
@@ -4375,13 +4446,14 @@ describe("CaseWorkspace integration", () => {
     expect(screen.getByText("Workflow recommendation")).toBeInTheDocument();
   });
 
-  it("submits contribution with the selected five-model set", async () => {
+  it("submits contribution with the default three-model set", async () => {
     apiMocks.fetchCases.mockReset();
     apiMocks.fetchCases.mockResolvedValue([
       {
         case_id: "case_1",
         patient_id: "KERA-2026-001",
         chart_alias: "",
+        culture_status: "positive",
         culture_category: "bacterial",
         culture_species: "Staphylococcus aureus",
         additional_organisms: [],
@@ -4394,8 +4466,56 @@ describe("CaseWorkspace integration", () => {
         age: 0,
         sex: "female",
         visit_status: "active",
+        research_registry_status: "included",
       },
     ]);
+    apiMocks.fetchPatientListPage.mockResolvedValue({
+      items: [
+        {
+          patient_id: "KERA-2026-001",
+          latest_case: {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            chart_alias: "",
+            local_case_code: "",
+            culture_status: "positive",
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            additional_organisms: [],
+            visit_date: "Initial",
+            actual_visit_date: null,
+            created_by_user_id: "user_researcher",
+            created_at: "2026-03-15T00:00:00Z",
+            latest_image_uploaded_at: "2026-03-15T00:00:00Z",
+            image_count: 1,
+            representative_image_id: "image_1",
+            representative_view: "white",
+            age: 0,
+            sex: "female",
+            visit_status: "active",
+            is_initial_visit: true,
+            smear_result: "not done",
+            polymicrobial: false,
+            research_registry_status: "included",
+          },
+          case_count: 1,
+          organism_summary: "Staphylococcus aureus",
+          representative_thumbnails: [
+            {
+              case_id: "case_1",
+              image_id: "image_1",
+              view: "white",
+              preview_url: "/preview/image_1",
+              fallback_url: "/content/image_1",
+            },
+          ],
+        },
+      ],
+      page: 1,
+      page_size: 25,
+      total_count: 1,
+      total_pages: 1,
+    });
     apiMocks.fetchSiteModelVersions.mockResolvedValue([
       {
         version_id: "model_vit",
@@ -4502,7 +4622,14 @@ describe("CaseWorkspace integration", () => {
       },
     });
 
-    renderWorkspace();
+    renderWorkspace(vi.fn(async () => undefined), {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 1,
+        excluded_cases: 0,
+      },
+    });
 
     expect(apiMocks.fetchSiteModelVersions).not.toHaveBeenCalled();
     await openSavedCase();
@@ -4516,9 +4643,11 @@ describe("CaseWorkspace integration", () => {
     });
     expect(await screen.findByText("vit")).toBeInTheDocument();
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Contribute case update" }),
-    );
+    const contributeButton = await screen.findByRole("button", {
+      name: "Contribute case update",
+    });
+    expect(contributeButton).toBeEnabled();
+    fireEvent.click(contributeButton);
 
     await waitFor(() => {
       expect(apiMocks.runCaseContribution).toHaveBeenCalledWith(
@@ -4530,16 +4659,34 @@ describe("CaseWorkspace integration", () => {
           execution_mode: "auto",
           model_version_id: undefined,
           model_version_ids: [
-            "model_vit",
-            "model_swin",
-            "model_dinov2",
-            "model_dinov2_mil",
-            "model_convnext",
-            "model_dense",
             "model_eff",
+            "model_dinov2",
+            "model_convnext",
           ],
         },
       );
     });
+  });
+
+  it("keeps contribution disabled until the case is included in the research registry", async () => {
+    renderWorkspace(vi.fn(async () => undefined), {
+      research_registry: {
+        site_enabled: true,
+        user_enrolled: true,
+        included_cases: 0,
+        excluded_cases: 0,
+      },
+    });
+
+    await openSavedCase();
+
+    expect(
+      await screen.findByRole("button", { name: "Contribute case update" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Include this case in the research registry before contributing it.",
+      ),
+    ).toBeInTheDocument();
   });
 });

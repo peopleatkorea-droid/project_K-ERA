@@ -5,6 +5,8 @@ from typing import Any, TypeVar
 
 from fastapi import HTTPException, status
 
+from kera_research.db import DATABASE_TOPOLOGY
+
 T = TypeVar("T")
 
 
@@ -23,6 +25,16 @@ def prefer_local_control_plane(control_plane_owner: str | None) -> bool:
 def remote_control_plane_client(cp: Any, *, control_plane_owner: str | None) -> Any | None:
     if prefer_local_control_plane(control_plane_owner):
         return None
+    resolved_store = getattr(cp, "_store", None)
+    if resolved_store is None and type(cp).__name__ != "_LazyControlPlaneStore":
+        resolved_store = cp
+    connection_mode = str(DATABASE_TOPOLOGY.get("control_plane_connection_mode") or "").strip().lower()
+    if connection_mode != "remote_api_cache":
+        if resolved_store is None:
+            return None
+        if not resolved_store.remote_control_plane_enabled():
+            return None
+        return resolved_store.remote_control_plane
     if not cp.remote_control_plane_enabled():
         return None
     return cp.remote_control_plane

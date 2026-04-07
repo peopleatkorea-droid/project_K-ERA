@@ -154,6 +154,7 @@ export type VisitRecord = {
   created_by_user_id?: string | null;
   visit_date: string;
   actual_visit_date?: string | null;
+  culture_status: string;
   culture_confirmed: boolean;
   culture_category: string;
   culture_species: string;
@@ -270,6 +271,8 @@ export type CaseSummaryRecord = {
   local_case_code: string;
   sex: string;
   age: number | null;
+  culture_status: string;
+  culture_confirmed: boolean;
   culture_category: string;
   culture_species: string;
   additional_organisms: OrganismRecord[];
@@ -406,14 +409,15 @@ export type CaseValidationSummary = {
   model_version: string;
   model_version_id: string;
   model_architecture: string;
+  validation_mode?: "labeled" | "inference_only" | string | null;
   case_aggregation?: string | null;
   run_date: string;
   patient_id: string;
   visit_date: string;
   n_images: number;
   predicted_label: string;
-  true_label: string;
-  is_correct: boolean;
+  true_label: string | null;
+  is_correct: boolean | null;
   prediction_probability: number;
 };
 
@@ -421,10 +425,11 @@ export type CaseValidationPrediction = {
   validation_id: string;
   patient_id: string;
   visit_date: string;
-  true_label: string;
+  validation_mode?: "labeled" | "inference_only" | string | null;
+  true_label: string | null;
   predicted_label: string;
   prediction_probability: number;
-  is_correct: boolean;
+  is_correct: boolean | null;
   decision_threshold?: number | null;
   crop_mode?: "automated" | "manual" | "both" | "paired";
   case_aggregation?: string | null;
@@ -743,7 +748,9 @@ export type AiClinicResponse = {
     profile_id: string;
     label: string;
     description: string;
+    requested_backend?: string | null;
     effective_retrieval_backend?: string | null;
+    retrieval_profile_label?: string | null;
     workflow_guidance_provider?: string | null;
   } | null;
   technical_details?: {
@@ -962,10 +969,11 @@ export type CaseHistoryValidationRecord = {
   model_version_id: string;
   model_architecture: string;
   run_scope: string;
+  validation_mode?: "labeled" | "inference_only" | string | null;
   predicted_label: string;
-  true_label: string;
+  true_label: string | null;
   prediction_probability: number;
-  is_correct: boolean;
+  is_correct: boolean | null;
   prediction_snapshot?: PredictionPostMortemSnapshot | null;
   post_mortem?: PredictionPostMortem | null;
 };
@@ -1630,10 +1638,10 @@ export type ValidationCasePredictionRecord = {
   validation_id: string;
   patient_id: string;
   visit_date: string;
-  true_label: string;
+  true_label: string | null;
   predicted_label: string;
   prediction_probability: number;
-  is_correct: boolean;
+  is_correct: boolean | null;
   roi_crop_available: boolean;
   gradcam_available: boolean;
   medsam_mask_available: boolean;

@@ -553,6 +553,7 @@ visits = Table(
     Column("visit_date", String(32), nullable=False, index=True),
     Column("visit_index", Integer, nullable=True, index=True),
     Column("actual_visit_date", String(32), nullable=True),
+    Column("culture_status", String(32), nullable=False, default="unknown", index=True),
     Column("culture_confirmed", Boolean, nullable=False),
     Column("culture_category", String(32), nullable=False, index=True),
     Column("culture_species", String(255), nullable=False),
@@ -1006,6 +1007,20 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN additional_organisms JSON NOT NULL DEFAULT '[]'"))
             if "actual_visit_date" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN actual_visit_date VARCHAR(32)"))
+            if "culture_status" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN culture_status VARCHAR(32) NOT NULL DEFAULT 'unknown'"))
+                conn.execute(
+                    text(
+                        "UPDATE visits "
+                        "SET culture_status = CASE "
+                        "WHEN culture_confirmed = 1 THEN 'positive' "
+                        "WHEN TRIM(COALESCE(culture_category, '')) <> '' THEN 'positive' "
+                        "WHEN TRIM(COALESCE(culture_species, '')) <> '' THEN 'positive' "
+                        "ELSE 'unknown' "
+                        "END "
+                        "WHERE culture_status IS NULL OR TRIM(COALESCE(culture_status, '')) = ''"
+                    )
+                )
             if "research_registry_status" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_status VARCHAR(32) NOT NULL DEFAULT 'analysis_only'"))
             if "research_registry_updated_at" not in visit_columns:
@@ -1019,6 +1034,12 @@ def _migrate_data_plane_schema() -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_visits_site_patient_reference "
                     "ON visits (site_id, patient_reference_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_visits_site_culture_status "
+                    "ON visits (site_id, culture_status)"
                 )
             )
             conn.execute(

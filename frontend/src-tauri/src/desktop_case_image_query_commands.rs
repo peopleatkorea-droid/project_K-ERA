@@ -1,3 +1,83 @@
+fn desktop_image_workspace_visit_condition(alias: &str) -> String {
+    format!(
+        "
+        (
+          {alias}.research_registry_source is null
+          or {alias}.research_registry_source != 'raw_inventory_sync'
+          or lower(
+            trim(
+              coalesce(
+                {alias}.culture_status,
+                case
+                  when {alias}.culture_confirmed = 1
+                    or trim(coalesce({alias}.culture_category, '')) != ''
+                    or trim(coalesce({alias}.culture_species, '')) != ''
+                  then 'positive'
+                  else 'unknown'
+                end
+              )
+            )
+          ) = 'positive'
+        )
+        "
+    )
+}
+
+fn query_visible_workspace_images(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: Option<&str>,
+    visit_date: Option<&str>,
+    preview_max_side: Option<u32>,
+) -> Result<Vec<DesktopImageRecord>, String> {
+    let visible_visit_condition = desktop_image_workspace_visit_condition("v");
+    let mut sql = format!(
+        "
+      select
+        i.image_id,
+        i.visit_id,
+        i.patient_id,
+        i.visit_date,
+        i.view,
+        i.image_path,
+        i.is_representative,
+        i.lesion_prompt_box,
+        i.uploaded_at,
+        i.quality_scores
+      from images i
+      join visits v on i.site_id = v.site_id and i.visit_id = v.visit_id
+      where i.site_id = ?
+        and {visible_visit_condition}
+    "
+    );
+    let mut params = vec![Value::Text(site_id.to_string())];
+    if let Some(value) = patient_id {
+        sql.push_str(" and i.patient_id = ?");
+        params.push(Value::Text(value.to_string()));
+    }
+    if let Some(value) = visit_date {
+        sql.push_str(" and i.visit_date = ?");
+        params.push(Value::Text(value.to_string()));
+    }
+    sql.push_str(" order by i.patient_id asc, i.visit_date asc, i.uploaded_at asc");
+    let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut rows = stmt
+        .query(params_from_iter(params))
+        .map_err(|error| error.to_string())?;
+    let mut images = Vec::new();
+    let mut warm_preview_jobs = Vec::new();
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        let (image, warm_preview_job) =
+            desktop_image_record_from_row(row, site_id, preview_max_side)?;
+        if let Some(job) = warm_preview_job {
+            warm_preview_jobs.push(job);
+        }
+        images.push(image);
+    }
+    queue_preview_generation_batch(warm_preview_jobs);
+    Ok(images)
+}
+
 #[tauri::command]
 pub(super) fn list_images(payload: ListImagesRequest) -> Result<Vec<DesktopImageRecord>, String> {
     let site_id = payload.site_id.trim().to_string();
@@ -24,7 +104,7 @@ pub(super) fn list_images(payload: ListImagesRequest) -> Result<Vec<DesktopImage
         None
     };
     let conn = open_data_plane_db()?;
-    query_images(
+    query_visible_workspace_images(
         &conn,
         &site_id,
         patient_id.as_deref(),
@@ -42,7 +122,7 @@ pub(super) fn get_visit_images(payload: VisitImagesRequest) -> Result<Vec<Deskto
         return Err("site_id is required.".to_string());
     }
     let conn = open_data_plane_db()?;
-    list_images_for_visit(&conn, &site_id, &patient_id, &visit_date)
+    query_visible_workspace_images(&conn, &site_id, Some(&patient_id), Some(&visit_date), Some(640))
 }
 
 #[tauri::command]
@@ -113,4 +193,200 @@ pub(super) fn ensure_image_previews(
         });
     }
     Ok(records)
+}
+
+#[cfg(test)]
+mod desktop_case_image_query_command_tests {
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rusqlite::{params, Connection};
+
+    use super::query_visible_workspace_images;
+
+    fn temp_image_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = env::temp_dir().join(format!("kera_image_query_test_{suffix}_{name}.png"));
+        fs::write(&path, b"test-image").expect("write image");
+        path
+    }
+
+    fn setup_image_query_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            "
+            create table visits (
+              site_id text not null,
+              visit_id text not null,
+              patient_id text not null,
+              created_by_user_id text,
+              visit_date text not null,
+              actual_visit_date text,
+              culture_status text,
+              culture_confirmed integer,
+              culture_category text,
+              culture_species text,
+              additional_organisms text,
+              contact_lens_use text,
+              predisposing_factor text,
+              other_history text,
+              visit_status text,
+              active_stage integer,
+              is_initial_visit integer,
+              smear_result text,
+              polymicrobial integer,
+              created_at text,
+              patient_reference_id text,
+              visit_index integer,
+              research_registry_status text,
+              research_registry_updated_at text,
+              research_registry_updated_by text,
+              research_registry_source text
+            );
+            create table images (
+              site_id text not null,
+              visit_id text not null,
+              image_id text not null,
+              patient_id text not null,
+              visit_date text not null,
+              view text,
+              image_path text,
+              is_representative integer,
+              uploaded_at text,
+              lesion_prompt_box text,
+              quality_scores text
+            );
+            ",
+        )
+        .expect("schema");
+        conn
+    }
+
+    #[test]
+    fn list_images_hides_raw_inventory_sync_non_positive_rows() {
+        let conn = setup_image_query_test_db();
+        let hidden_path = temp_image_path("hidden");
+        let visible_path = temp_image_path("visible");
+        let visits = [
+            (
+                "visit_hidden",
+                "PAT-001",
+                "Initial",
+                "unknown",
+                0_i64,
+                "",
+                "",
+                Some("raw_inventory_sync"),
+                1_i64,
+                "2026-04-07T00:00:00+00:00",
+            ),
+            (
+                "visit_visible",
+                "PAT-001",
+                "FU #1",
+                "negative",
+                0_i64,
+                "",
+                "",
+                None,
+                2_i64,
+                "2026-04-07T01:00:00+00:00",
+            ),
+        ];
+        for (
+            visit_id,
+            patient_id,
+            visit_date,
+            culture_status,
+            culture_confirmed,
+            culture_category,
+            culture_species,
+            research_registry_source,
+            visit_index,
+            created_at,
+        ) in visits
+        {
+            conn.execute(
+                "insert into visits (
+                   site_id, visit_id, patient_id, created_by_user_id, visit_date, actual_visit_date,
+                   culture_status, culture_confirmed, culture_category, culture_species, additional_organisms,
+                   contact_lens_use, predisposing_factor, other_history, visit_status, active_stage, is_initial_visit,
+                   smear_result, polymicrobial, created_at, patient_reference_id, visit_index,
+                   research_registry_status, research_registry_updated_at, research_registry_updated_by, research_registry_source
+                 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    "site_a",
+                    visit_id,
+                    patient_id,
+                    "user_a",
+                    visit_date,
+                    Option::<&str>::None,
+                    culture_status,
+                    culture_confirmed,
+                    culture_category,
+                    culture_species,
+                    "[]",
+                    "none",
+                    "[]",
+                    "",
+                    "active",
+                    1_i64,
+                    0_i64,
+                    "",
+                    0_i64,
+                    created_at,
+                    Option::<&str>::None,
+                    visit_index,
+                    "analysis_only",
+                    Option::<&str>::None,
+                    Option::<&str>::None,
+                    research_registry_source,
+                ],
+            )
+            .expect("insert visit");
+        }
+        let images = [
+            ("img_hidden", "visit_hidden", "Initial", hidden_path.clone()),
+            ("img_visible", "visit_visible", "FU #1", visible_path.clone()),
+        ];
+        for (image_id, visit_id, visit_date, image_path) in images {
+            conn.execute(
+                "insert into images (
+                   site_id, visit_id, image_id, patient_id, visit_date, view, image_path, is_representative,
+                   uploaded_at, lesion_prompt_box, quality_scores
+                 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    "site_a",
+                    visit_id,
+                    image_id,
+                    "PAT-001",
+                    visit_date,
+                    "slit",
+                    image_path.to_string_lossy().to_string(),
+                    1_i64,
+                    "2026-04-07T00:00:00+00:00",
+                    Option::<&str>::None,
+                    Option::<&str>::None,
+                ],
+            )
+            .expect("insert image");
+        }
+
+        let images =
+            query_visible_workspace_images(&conn, "site_a", Some("PAT-001"), None, None).expect("visible images");
+        let visit_dates = images
+            .iter()
+            .map(|image| image.visit_date.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visit_dates, vec!["FU #1"]);
+
+        fs::remove_file(hidden_path).ok();
+        fs::remove_file(visible_path).ok();
+    }
 }

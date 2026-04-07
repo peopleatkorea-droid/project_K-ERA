@@ -353,9 +353,10 @@ class ResearchWorkflowService:
                 prepared_records,
                 image_predictions,
                 case_aggregation,
-            )
+        )
         predicted_probability = float(aggregated_prediction["predicted_probability"])
-        true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
+        culture_category = str(case_records[0].get("culture_category") or "unknown").strip().lower()
+        true_index = LABEL_TO_INDEX.get(culture_category, -1)
         decision_threshold = self._resolve_model_threshold(model_version)
         return {
             "patient_id": str(case_records[0]["patient_id"]),
@@ -947,7 +948,8 @@ class ResearchWorkflowService:
         model_version: dict[str, Any],
         execution_device: str,
         top_k: int = 3,
-        retrieval_backend: str = "classifier",
+        retrieval_backend: str = "standard",
+        retrieval_profile: str = "dinov2_lesion_crop",
     ) -> dict[str, Any]:
         return self.ai_clinic_workflow.run_ai_clinic_similar_cases(
             site_store,
@@ -957,6 +959,7 @@ class ResearchWorkflowService:
             execution_device=execution_device,
             top_k=top_k,
             retrieval_backend=retrieval_backend,
+            retrieval_profile=retrieval_profile,
         )
 
     def _query_image_paths_for_text_retrieval(
@@ -1109,7 +1112,8 @@ class ResearchWorkflowService:
         model_version: dict[str, Any],
         execution_device: str,
         top_k: int = 3,
-        retrieval_backend: str = "classifier",
+        retrieval_backend: str = "standard",
+        retrieval_profile: str = "dinov2_lesion_crop",
     ) -> dict[str, Any]:
         return self.ai_clinic_workflow.run_ai_clinic_report(
             site_store,
@@ -1119,6 +1123,7 @@ class ResearchWorkflowService:
             execution_device=execution_device,
             top_k=top_k,
             retrieval_backend=retrieval_backend,
+            retrieval_profile=retrieval_profile,
         )
 
     def run_case_postmortem(
@@ -1294,7 +1299,8 @@ class ResearchWorkflowService:
             quality_weights = aggregated_prediction.get("quality_weights")
         decision_threshold = self._resolve_model_threshold(model_version)
         predicted_index = 1 if predicted_probability >= decision_threshold else 0
-        true_index = LABEL_TO_INDEX[str(case_records[0]["culture_category"])]
+        culture_category = str(case_records[0].get("culture_category") or "unknown").strip().lower()
+        true_index = LABEL_TO_INDEX.get(culture_category, -1)
 
         artifact_refs = self._artifact_refs_for_case(
             site_store,

@@ -40,7 +40,8 @@ export type WorkspaceSection =
   | "ssl"
   | "registry"
   | "management"
-  | "federation";
+  | "federation"
+  | "explore";
 
 export type ReviewDraft = {
   assigned_role: string;

@@ -190,7 +190,8 @@ export function useCaseWorkspaceAnalysis({
   onValidationCompleted,
   onArtifactsChanged,
 }: Args) {
-  const AI_CLINIC_LITE_RETRIEVAL_BACKEND = "classifier";
+  const AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND = "standard" as const;
+  const AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE = "dinov2_lesion_crop" as const;
   const maxCompareSelections = 8;
   const [validationBusy, setValidationBusy] = useState(false);
   const [validationResult, setValidationResult] =
@@ -2182,7 +2183,8 @@ export function useCaseWorkspaceAnalysis({
         ),
         model_version_id: validationResult.model_version.version_id,
         top_k: 3,
-        retrieval_backend: AI_CLINIC_LITE_RETRIEVAL_BACKEND,
+        retrieval_backend: AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND,
+        retrieval_profile: AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE,
       });
       if (aiClinicRequestRef.current !== requestId) {
         return;
@@ -2240,7 +2242,8 @@ export function useCaseWorkspaceAnalysis({
         ),
         model_version_id: validationResult.model_version.version_id,
         top_k: 3,
-        retrieval_backend: AI_CLINIC_LITE_RETRIEVAL_BACKEND,
+        retrieval_backend: AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND,
+        retrieval_profile: AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE,
       });
       if (aiClinicRequestRef.current !== requestId) {
         return;
