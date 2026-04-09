@@ -29,6 +29,7 @@ def build_admin_management_router(support: Any) -> APIRouter:
     UserUpsertRequest = support.UserUpsertRequest
     SiteStorageRootUpdateRequest = support.SiteStorageRootUpdateRequest
     SiteMetadataRecoveryRequest = support.SiteMetadataRecoveryRequest
+    RetainedCaseRestoreRequest = support.RetainedCaseRestoreRequest
 
     @router.get("/api/admin/projects")
     def list_projects(
@@ -409,6 +410,49 @@ def build_admin_management_router(support: Any) -> APIRouter:
             "raw_dir": str(site_store.raw_dir),
             "manifest_path": str(site_store.manifest_path),
             "metadata_backup_path": str(site_store.metadata_backup_path()),
+            **result,
+        }
+
+    @router.get("/api/admin/sites/{site_id}/retained-cases")
+    def list_retained_cases(
+        site_id: str,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> list[dict[str, Any]]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        return site_store.list_retained_case_archive()
+
+    @router.post("/api/admin/sites/{site_id}/retained-cases/restore")
+    def restore_retained_case(
+        site_id: str,
+        payload: RetainedCaseRestoreRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+    ) -> dict[str, Any]:
+        require_admin_workspace_permission(user)
+        site_store = require_site_access(cp, user, site_id)
+        try:
+            result = site_store.restore_retained_case(
+                payload.patient_id,
+                payload.visit_date,
+                restore_images_only=payload.mode == "images",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
+            trigger="retained_case_restore",
+        )
+        queue_ai_clinic_embedding_backfill(
+            cp,
+            site_store,
+            trigger="retained_case_restore",
+        )
+        return {
+            "site_id": site_store.site_id,
+            "mode": payload.mode,
             **result,
         }
 

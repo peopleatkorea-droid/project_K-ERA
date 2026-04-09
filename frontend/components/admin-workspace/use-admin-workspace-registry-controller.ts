@@ -9,16 +9,12 @@ import {
   autoPublishModelVersion,
   createReleaseRollout,
   deleteModelVersion,
-  fetchFederatedRetrievalCorpusStatus,
   fetchFederationMonitoring,
   fetchAggregations,
-  fetchAiClinicEmbeddingStatus,
-  fetchImageLevelFederatedRoundStatus,
   fetchModelUpdateArtifactBlob,
   fetchModelUpdates,
   fetchModelVersions,
   fetchReleaseRollouts,
-  fetchVisitLevelFederatedRoundStatus,
   publishModelUpdate,
   publishModelVersion,
   reviewModelUpdate,
@@ -54,7 +50,6 @@ type RegistryControllerCopy = {
 type UseAdminWorkspaceRegistryControllerOptions = {
   state: AdminWorkspaceState;
   token: string;
-  selectedSiteId: string | null;
   locale: Locale;
   canAggregate: boolean;
   autoPublishEnabled: boolean;
@@ -75,7 +70,6 @@ type UseAdminWorkspaceRegistryControllerOptions = {
 export function useAdminWorkspaceRegistryController({
   state,
   token,
-  selectedSiteId,
   locale,
   canAggregate,
   autoPublishEnabled,
@@ -99,10 +93,6 @@ export function useAdminWorkspaceRegistryController({
     setPublishingModelVersionId,
     setPublishingModelUpdateId,
     setAggregationBusy,
-    setImageLevelFederatedStatus,
-    setVisitLevelFederatedStatus,
-    setFederatedRetrievalStatus,
-    setEmbeddingStatus,
     setFederationStatusBusy,
     releaseRolloutForm,
     setReleaseRolloutForm,
@@ -119,32 +109,26 @@ export function useAdminWorkspaceRegistryController({
   async function loadRegistrySectionData() {
     const [nextVersions, nextUpdates] = await Promise.all([
       fetchModelVersions(token),
-      fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+      fetchModelUpdates(token),
     ]);
     setModelVersions(nextVersions);
     applyModelUpdateData(nextUpdates);
   }
 
   async function loadFederationSectionData() {
-    const [nextUpdates, nextAggregations, nextRollouts, nextMonitoring, nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
-      fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+    const [nextVersions, nextUpdates, nextAggregations, nextRollouts, nextMonitoring] = await Promise.all([
+      fetchModelVersions(token),
+      fetchModelUpdates(token),
       fetchAggregations(token),
       fetchReleaseRollouts(token).catch(() => []),
       fetchFederationMonitoring(token).catch(() => null),
-      selectedSiteId ? fetchImageLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-      selectedSiteId ? fetchVisitLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-      selectedSiteId ? fetchFederatedRetrievalCorpusStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-      selectedSiteId ? fetchAiClinicEmbeddingStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
     ]);
+    setModelVersions(nextVersions);
     applyModelUpdateData(nextUpdates);
     setAggregations(nextAggregations);
     setReleaseRollouts(nextRollouts);
     setFederationMonitoring(nextMonitoring);
     setRecentAuditEvents(nextMonitoring?.recent_audit_events ?? []);
-    setImageLevelFederatedStatus(nextImageLevelStatus);
-    setVisitLevelFederatedStatus(nextVisitLevelStatus);
-    setFederatedRetrievalStatus(nextRetrievalStatus);
-    setEmbeddingStatus(nextEmbeddingStatus);
   }
 
   useEffect(() => {
@@ -164,7 +148,7 @@ export function useAdminWorkspaceRegistryController({
       try {
         const [nextVersions, nextUpdates] = await Promise.all([
           fetchModelVersions(token),
-          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+          fetchModelUpdates(token),
         ]);
         if (cancelled) {
           return;
@@ -181,7 +165,7 @@ export function useAdminWorkspaceRegistryController({
     return () => {
       cancelled = true;
     };
-  }, [applyModelUpdateData, copy.updateReviewFailed, describeError, overview, section, selectedSiteId, setModelVersions, setToast, token]);
+  }, [applyModelUpdateData, copy.updateReviewFailed, describeError, overview, section, setModelVersions, setToast, token]);
 
   useEffect(() => {
     if (!overview || section !== "federation" || !canAggregate) {
@@ -192,28 +176,22 @@ export function useAdminWorkspaceRegistryController({
       try {
         setFederationStatusBusy(true);
         setFederationMonitoringBusy(true);
-        const [nextUpdates, nextAggregations, nextRollouts, nextMonitoring, nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
-          fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
+        const [nextVersions, nextUpdates, nextAggregations, nextRollouts, nextMonitoring] = await Promise.all([
+          fetchModelVersions(token),
+          fetchModelUpdates(token),
           fetchAggregations(token),
           fetchReleaseRollouts(token).catch(() => []),
           fetchFederationMonitoring(token).catch(() => null),
-          selectedSiteId ? fetchImageLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-          selectedSiteId ? fetchVisitLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-          selectedSiteId ? fetchFederatedRetrievalCorpusStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
-          selectedSiteId ? fetchAiClinicEmbeddingStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
         ]);
         if (cancelled) {
           return;
         }
+        setModelVersions(nextVersions);
         applyModelUpdateData(nextUpdates);
         setAggregations(nextAggregations);
         setReleaseRollouts(nextRollouts);
         setFederationMonitoring(nextMonitoring);
         setRecentAuditEvents(nextMonitoring?.recent_audit_events ?? []);
-        setImageLevelFederatedStatus(nextImageLevelStatus);
-        setVisitLevelFederatedStatus(nextVisitLevelStatus);
-        setFederatedRetrievalStatus(nextRetrievalStatus);
-        setEmbeddingStatus(nextEmbeddingStatus);
       } catch (nextError) {
         if (!cancelled) {
           setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
@@ -229,7 +207,7 @@ export function useAdminWorkspaceRegistryController({
     return () => {
       cancelled = true;
     };
-  }, [applyModelUpdateData, canAggregate, copy.aggregationFailed, describeError, overview, section, selectedSiteId, setAggregations, setToast, token]);
+  }, [applyModelUpdateData, canAggregate, copy.aggregationFailed, describeError, overview, section, setAggregations, setModelVersions, setToast, token]);
 
   useEffect(() => {
     if (!modelUpdates.length) {
@@ -289,7 +267,7 @@ export function useAdminWorkspaceRegistryController({
       });
       setNewVersionName("");
       await refreshWorkspace();
-      setSection("registry");
+      setSection("federation");
       setToast({ tone: "success", message: copy.createdVersion(result.aggregation.new_version_name) });
     } catch (nextError) {
       setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
@@ -322,11 +300,11 @@ export function useAdminWorkspaceRegistryController({
       }
       setNewVersionName("");
       await refreshWorkspace();
-      setSection("registry");
+      setSection("federation");
       setToast({ tone: "success", message: copy.createdBatchVersions(completedCount) });
     } catch (nextError) {
       await refreshWorkspace();
-      setSection("registry");
+      setSection("federation");
       if (completedCount > 0) {
         setToast({
           tone: "error",

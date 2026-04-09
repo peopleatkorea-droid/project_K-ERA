@@ -7,22 +7,25 @@ fn query_patient_board_page_ids(
 ) -> Result<(Vec<String>, HashMap<String, i64>, u32, u32), String> {
     let visible_case_condition = "
       (
-        v.research_registry_source is null
-        or v.research_registry_source != 'raw_inventory_sync'
-        or lower(
-          trim(
-            coalesce(
-              v.culture_status,
-              case
-                when v.culture_confirmed = 1
-                  or trim(coalesce(v.culture_category, '')) != ''
-                  or trim(coalesce(v.culture_species, '')) != ''
-                then 'positive'
-                else 'unknown'
-              end
+        v.soft_deleted_at is null
+        and (
+          v.research_registry_source is null
+          or v.research_registry_source != 'raw_inventory_sync'
+          or lower(
+            trim(
+              coalesce(
+                v.culture_status,
+                case
+                  when v.culture_confirmed = 1
+                    or trim(coalesce(v.culture_category, '')) != ''
+                    or trim(coalesce(v.culture_species, '')) != ''
+                  then 'positive'
+                  else 'unknown'
+                end
+              )
             )
-          )
-        ) = 'positive'
+          ) = 'positive'
+        )
       )
     ";
     let mine_user_id = payload
@@ -62,7 +65,7 @@ fn query_patient_board_page_ids(
         image_stats as (
           select visit_id, max(uploaded_at) as latest_image_uploaded_at
           from images
-          where site_id = ? and visit_id in (select visit_id from filtered_visits)
+          where site_id = ? and soft_deleted_at is null and visit_id in (select visit_id from filtered_visits)
           group by visit_id
         ),
         all_patients as (
@@ -165,7 +168,8 @@ mod desktop_patient_board_page_query_tests {
               research_registry_updated_at text,
               research_registry_updated_by text,
               research_registry_source text,
-              created_at text
+              created_at text,
+              soft_deleted_at text
             );
             create table images (
               site_id text not null,
@@ -178,7 +182,8 @@ mod desktop_patient_board_page_query_tests {
               is_representative integer,
               uploaded_at text,
               lesion_prompt_box text,
-              quality_scores text
+              quality_scores text,
+              soft_deleted_at text
             );
             ",
         )
@@ -275,6 +280,111 @@ mod desktop_patient_board_page_query_tests {
             )
             .expect("insert visit");
         }
+
+        let payload = ListPatientBoardRequest {
+            site_id: "site_a".to_string(),
+            created_by_user_id: None,
+            page: Some(1),
+            page_size: Some(10),
+            search: None,
+        };
+        let (patient_ids, case_counts, total_count, safe_page) =
+            query_patient_board_page_ids(&conn, &payload, "site_a", 1, 10).expect("page ids");
+
+        assert_eq!(patient_ids, vec!["PAT-VISIBLE".to_string()]);
+        assert_eq!(case_counts, HashMap::from([(String::from("PAT-VISIBLE"), 1_i64)]));
+        assert_eq!(total_count, 1);
+        assert_eq!(safe_page, 1);
+    }
+
+    #[test]
+    fn query_patient_board_page_ids_excludes_soft_deleted_cases() {
+        let conn = setup_patient_board_page_test_db();
+        let patients = [("PAT-SOFT", "2026-04-07T00:00:00+00:00"), ("PAT-VISIBLE", "2026-04-07T01:00:00+00:00")];
+        for (patient_id, created_at) in patients {
+            conn.execute(
+                "insert into patients (site_id, patient_id, created_by_user_id, sex, age, chart_alias, local_case_code, created_at)
+                 values (?, ?, ?, ?, ?, ?, ?, ?)",
+                params!["site_a", patient_id, "user_a", "female", 63_i64, patient_id, patient_id, created_at],
+            )
+            .expect("insert patient");
+        }
+        conn.execute(
+            "insert into visits (
+               site_id, visit_id, patient_id, patient_reference_id, visit_date, visit_index, actual_visit_date,
+               culture_status, culture_confirmed, culture_category, culture_species, additional_organisms,
+               contact_lens_use, predisposing_factor, other_history, visit_status, active_stage, is_initial_visit,
+               smear_result, polymicrobial, research_registry_status, research_registry_updated_at,
+               research_registry_updated_by, research_registry_source, created_at, soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_soft_deleted",
+                "PAT-SOFT",
+                Option::<&str>::None,
+                "SoftDeleted",
+                1_i64,
+                Option::<&str>::None,
+                "positive",
+                1_i64,
+                "fungal",
+                "Fusarium",
+                "[]",
+                "none",
+                "[]",
+                "",
+                "active",
+                1_i64,
+                0_i64,
+                "",
+                0_i64,
+                "included",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                "2026-04-07T00:00:00+00:00",
+                "2026-04-08T00:00:00+00:00",
+            ],
+        )
+        .expect("insert soft-deleted visit");
+        conn.execute(
+            "insert into visits (
+               site_id, visit_id, patient_id, patient_reference_id, visit_date, visit_index, actual_visit_date,
+               culture_status, culture_confirmed, culture_category, culture_species, additional_organisms,
+               contact_lens_use, predisposing_factor, other_history, visit_status, active_stage, is_initial_visit,
+               smear_result, polymicrobial, research_registry_status, research_registry_updated_at,
+               research_registry_updated_by, research_registry_source, created_at, soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_visible",
+                "PAT-VISIBLE",
+                Option::<&str>::None,
+                "Visible",
+                1_i64,
+                Option::<&str>::None,
+                "negative",
+                0_i64,
+                "",
+                "",
+                "[]",
+                "none",
+                "[]",
+                "",
+                "active",
+                1_i64,
+                0_i64,
+                "",
+                0_i64,
+                "analysis_only",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                "2026-04-07T01:00:00+00:00",
+                Option::<&str>::None,
+            ],
+        )
+        .expect("insert visible visit");
 
         let payload = ListPatientBoardRequest {
             site_id: "site_a".to_string(),

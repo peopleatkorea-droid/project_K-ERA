@@ -2,22 +2,25 @@ fn desktop_image_workspace_visit_condition(alias: &str) -> String {
     format!(
         "
         (
-          {alias}.research_registry_source is null
-          or {alias}.research_registry_source != 'raw_inventory_sync'
-          or lower(
-            trim(
-              coalesce(
-                {alias}.culture_status,
-                case
-                  when {alias}.culture_confirmed = 1
-                    or trim(coalesce({alias}.culture_category, '')) != ''
-                    or trim(coalesce({alias}.culture_species, '')) != ''
-                  then 'positive'
-                  else 'unknown'
-                end
+          {alias}.soft_deleted_at is null
+          and (
+            {alias}.research_registry_source is null
+            or {alias}.research_registry_source != 'raw_inventory_sync'
+            or lower(
+              trim(
+                coalesce(
+                  {alias}.culture_status,
+                  case
+                    when {alias}.culture_confirmed = 1
+                      or trim(coalesce({alias}.culture_category, '')) != ''
+                      or trim(coalesce({alias}.culture_species, '')) != ''
+                    then 'positive'
+                    else 'unknown'
+                  end
+                )
               )
-            )
-          ) = 'positive'
+            ) = 'positive'
+          )
         )
         "
     )
@@ -47,6 +50,7 @@ fn query_visible_workspace_images(
       from images i
       join visits v on i.site_id = v.site_id and i.visit_id = v.visit_id
       where i.site_id = ?
+        and i.soft_deleted_at is null
         and {visible_visit_condition}
     "
     );
@@ -151,7 +155,7 @@ pub(super) fn ensure_image_previews(
         .collect::<Vec<_>>()
         .join(", ");
     let batch_sql = format!(
-        "select image_id, image_path from images where site_id = ? and image_id in ({placeholders})"
+        "select image_id, image_path from images where site_id = ? and soft_deleted_at is null and image_id in ({placeholders})"
     );
     let mut batch_params: Vec<Value> = vec![Value::Text(site_id.clone())];
     for id in &unique_ids {
@@ -246,7 +250,8 @@ mod desktop_case_image_query_command_tests {
               research_registry_status text,
               research_registry_updated_at text,
               research_registry_updated_by text,
-              research_registry_source text
+              research_registry_source text,
+              soft_deleted_at text
             );
             create table images (
               site_id text not null,
@@ -259,7 +264,8 @@ mod desktop_case_image_query_command_tests {
               is_representative integer,
               uploaded_at text,
               lesion_prompt_box text,
-              quality_scores text
+              quality_scores text,
+              soft_deleted_at text
             );
             ",
         )
@@ -385,6 +391,107 @@ mod desktop_case_image_query_command_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(visit_dates, vec!["FU #1"]);
+
+        fs::remove_file(hidden_path).ok();
+        fs::remove_file(visible_path).ok();
+    }
+
+    #[test]
+    fn list_images_hides_soft_deleted_rows() {
+        let conn = setup_image_query_test_db();
+        let hidden_path = temp_image_path("soft_deleted_hidden");
+        let visible_path = temp_image_path("soft_deleted_visible");
+        conn.execute(
+            "insert into visits (
+               site_id, visit_id, patient_id, created_by_user_id, visit_date, actual_visit_date,
+               culture_status, culture_confirmed, culture_category, culture_species, additional_organisms,
+               contact_lens_use, predisposing_factor, other_history, visit_status, active_stage, is_initial_visit,
+               smear_result, polymicrobial, created_at, patient_reference_id, visit_index,
+               research_registry_status, research_registry_updated_at, research_registry_updated_by, research_registry_source,
+               soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_visible",
+                "PAT-001",
+                "user_a",
+                "Visible",
+                Option::<&str>::None,
+                "negative",
+                0_i64,
+                "",
+                "",
+                "[]",
+                "none",
+                "[]",
+                "",
+                "active",
+                1_i64,
+                0_i64,
+                "",
+                0_i64,
+                "2026-04-07T01:00:00+00:00",
+                Option::<&str>::None,
+                1_i64,
+                "analysis_only",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+            ],
+        )
+        .expect("insert visit");
+        conn.execute(
+            "insert into images (
+               site_id, visit_id, image_id, patient_id, visit_date, view, image_path, is_representative,
+               uploaded_at, lesion_prompt_box, quality_scores, soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_visible",
+                "img_hidden",
+                "PAT-001",
+                "Visible",
+                "slit",
+                hidden_path.to_string_lossy().to_string(),
+                0_i64,
+                "2026-04-07T01:00:00+00:00",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                "2026-04-08T00:00:00+00:00",
+            ],
+        )
+        .expect("insert soft-deleted image");
+        conn.execute(
+            "insert into images (
+               site_id, visit_id, image_id, patient_id, visit_date, view, image_path, is_representative,
+               uploaded_at, lesion_prompt_box, quality_scores, soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_visible",
+                "img_visible",
+                "PAT-001",
+                "Visible",
+                "white",
+                visible_path.to_string_lossy().to_string(),
+                1_i64,
+                "2026-04-07T02:00:00+00:00",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+            ],
+        )
+        .expect("insert visible image");
+
+        let images =
+            query_visible_workspace_images(&conn, "site_a", Some("PAT-001"), None, None).expect("visible images");
+        let image_ids = images
+            .iter()
+            .map(|image| image.image_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(image_ids, vec!["img_visible"]);
 
         fs::remove_file(hidden_path).ok();
         fs::remove_file(visible_path).ok();

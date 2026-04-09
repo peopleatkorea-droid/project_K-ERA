@@ -14,9 +14,6 @@ import {
   railActivityItemClass,
   railActivityListClass,
   railSiteButtonClass,
-  researchLaunchActionsClass,
-  researchLaunchCopyClass,
-  researchLaunchStripClass,
   workspaceHeaderClass,
   workspaceKickerClass,
   workspaceMainClass,
@@ -282,6 +279,9 @@ export function AdminWorkspace({
     storageSettingsBusy,
     setStorageSettingsBusy,
     metadataRecoveryBusy,
+    retainedCaseArchive,
+    retainedCaseArchiveBusy,
+    retainedCaseRestoreBusyKey,
     newVersionName,
     setNewVersionName,
     initialForm,
@@ -372,6 +372,8 @@ export function AdminWorkspace({
     handleSaveSelectedSiteStorageRoot,
     handleMigrateSelectedSiteStorageRoot,
     handleRecoverSelectedSiteMetadata,
+    handleRefreshRetainedCaseArchive,
+    handleRestoreRetainedCase,
     handleResetUserForm,
     handleSaveUser,
     handleDeleteUser,
@@ -400,6 +402,36 @@ export function AdminWorkspace({
     clearAlerts: pick(locale, "Clear alerts", "알림 비우기"),
     alertsKept: pick(locale, "kept", "보관"),
   };
+  const sectionGroups: Array<{
+    title: string;
+    items: Array<{ value: WorkspaceSection; label: string; badge?: string | number | null }>;
+  }> = [
+    {
+      title: pick(locale, "Site Operations", "병원 운영"),
+      items: [
+        { value: "dashboard", label: pick(locale, "Dashboard", "대시보드") },
+        { value: "imports", label: pick(locale, "Bulk import", "대량 임포트") },
+        { value: "training", label: pick(locale, "Initial training", "초기 학습") },
+        { value: "cross_validation", label: pick(locale, "Cross-validation", "교차 검증") },
+        { value: "ssl", label: pick(locale, "SSL pretraining", "SSL 사전학습") },
+        { value: "explore", label: pick(locale, "Explore", "탐색") },
+      ],
+    },
+    {
+      title: pick(locale, "Global Model Ops", "글로벌 모델 운영"),
+      items: [
+        { value: "registry", label: pick(locale, "Model registry", "모델 레지스트리") },
+        ...(canAggregate ? [{ value: "federation" as const, label: pick(locale, "Federation", "연합학습") }] : []),
+      ],
+    },
+    {
+      title: pick(locale, "Platform Admin", "플랫폼 관리"),
+      items: [
+        { value: "requests", label: pick(locale, "Access requests", "접근 요청"), badge: requestActivityCount > 0 ? requestActivityCount : null },
+        { value: "management", label: pick(locale, "Management", "관리") },
+      ],
+    },
+  ];
 
   useEffect(() => {
     if (!alertsPanelOpen) {
@@ -498,39 +530,31 @@ export function AdminWorkspace({
           <Card as="section" variant="nested" className="grid gap-4 p-4">
             <SectionHeader
               eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Sections", "?뱀뀡")}</div>}
-              title={pick(locale, "Operations flow", "?댁쁺 ?먮쫫")}
+              title={pick(locale, "Workspace map", "워크스페이스 구조")}
               titleAs="h4"
             />
-            <div className="grid gap-2">
-            {[
-              ["dashboard", pick(locale, "Dashboard", "대시보드")],
-              ["imports", pick(locale, "Bulk import", "대량 임포트")],
-              ["requests", pick(locale, "Access requests", "?묎렐 ?붿껌")],
-              ["training", pick(locale, "Initial training", "珥덇린 ?숈뒿")],
-              ["cross_validation", pick(locale, "Cross-validation", "교차 검증")],
-              ["ssl", pick(locale, "SSL pretraining", "SSL 사전학습")],
-              ["registry", pick(locale, "Model registry", "모델 레지스트리")],
-              ["management", pick(locale, "Management", "관리")],
-              ...(canAggregate ? [["federation", pick(locale, "Federation", "?고빀?숈뒿")]] : []),
-              ["explore", pick(locale, "Explore", "탐색")],
-            ].map(([value, label]) => (
-              <button
-                key={value}
-                className={cn(
-                  "w-full rounded-[18px] border border-border bg-white/6 px-4 py-3 text-left text-sm font-medium text-ink transition duration-150 ease-out hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted/80",
-                  section === value && "active",
-                  section === value && "border-brand/20 bg-brand-soft/70 shadow-card"
-                )}
-                type="button"
-                onClick={() => setSection(value as typeof section)}
-              >
-                <span className="flex items-center justify-between gap-3">
-                  <span>{label}</span>
-                  {value === "requests" && requestActivityCount > 0 ? (
-                    <span className={docSiteBadgeClass}>{requestActivityCount}</span>
-                  ) : null}
-                </span>
-              </button>
+            <div className="grid gap-4">
+            {sectionGroups.map((group) => (
+              <div key={group.title} className="grid gap-2">
+                <div className={docSectionLabelClass}>{group.title}</div>
+                {group.items.map((item) => (
+                  <button
+                    key={item.value}
+                    className={cn(
+                      "w-full rounded-[18px] border border-border bg-white/6 px-4 py-3 text-left text-sm font-medium text-ink transition duration-150 ease-out hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted/80",
+                      section === item.value && "active",
+                      section === item.value && "border-brand/20 bg-brand-soft/70 shadow-card"
+                    )}
+                    type="button"
+                    onClick={() => setSection(item.value)}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span>{item.label}</span>
+                      {item.badge ? <span className={docSiteBadgeClass}>{item.badge}</span> : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
             ))}
             </div>
           </Card>
@@ -705,30 +729,6 @@ export function AdminWorkspace({
             </div>
           }
         />
-        <Card as="section" variant="nested" className={researchLaunchStripClass}>
-          <div className={researchLaunchCopyClass}>
-            <div className={docSectionLabelClass}>{pick(locale, "Research runs", "연구 실행")}</div>
-            <strong>{pick(locale, "Open training and validation tools directly", "학습과 검증 도구를 바로 열기")}</strong>
-            <span>{pick(locale, "You no longer need to find the Python CLI manually.", "You no longer need to find the Python CLI manually.")}</span>
-          </div>
-          <div className={researchLaunchActionsClass}>
-            <Button variant="ghost" type="button" onClick={() => setSection("training")}>
-              {pick(locale, "Initial training", "초기 학습")}
-            </Button>
-            <Button variant="ghost" type="button" onClick={() => setSection("cross_validation")}>
-              {pick(locale, "Cross-validation", "교차 검증")}
-            </Button>
-            <Button variant="ghost" type="button" onClick={() => setSection("ssl")}>
-              {pick(locale, "SSL pretraining", "SSL 사전학습")}
-            </Button>
-            <Button variant="ghost" type="button" onClick={() => setSection("dashboard")}>
-              {pick(locale, "Hospital validation", "병원 검증")}
-            </Button>
-            <Button variant="ghost" type="button" onClick={() => setSection("cross_validation")}>
-              {pick(locale, "Report export", "Report export")}
-            </Button>
-          </div>
-        </Card>
         <div className="grid gap-4">
           {section === "explore" ? (
             <ExploreSection
@@ -751,7 +751,11 @@ export function AdminWorkspace({
               siteValidationBusy={siteValidationBusy}
               siteComparison={siteComparison}
               embeddingStatus={embeddingStatus}
+              imageLevelFederatedStatus={imageLevelFederatedStatus}
+              visitLevelFederatedStatus={visitLevelFederatedStatus}
+              federatedRetrievalStatus={federatedRetrievalStatus}
               embeddingStatusBusy={embeddingStatusBusy}
+              siteAiReadinessBusy={federationStatusBusy}
               embeddingBackfillBusy={embeddingBackfillBusy}
               currentModelVersionName={currentModel?.version_name ?? overview?.current_model_version ?? null}
               modelComparisonRows={modelComparisonRows}
@@ -926,12 +930,6 @@ export function AdminWorkspace({
               onPublishModelVersion={(version) => void handlePublishModelVersion(version)}
               onModelUpdateReview={(decision) => void handleModelUpdateReview(decision)}
               onPublishModelUpdate={() => void handlePublishModelUpdate()}
-              releaseRollouts={releaseRollouts}
-              releaseRolloutBusy={releaseRolloutBusy}
-              releaseRolloutForm={releaseRolloutForm}
-              selectedSiteId={selectedSiteId}
-              setReleaseRolloutForm={setReleaseRolloutForm}
-              onCreateReleaseRollout={() => void handleCreateReleaseRollout()}
             />
           ) : null}
           {section === "management" ? (
@@ -953,6 +951,9 @@ export function AdminWorkspace({
               projects={projects}
               managedSites={managedSites}
               managedUsers={managedUsers}
+              retainedCaseArchive={retainedCaseArchive}
+              retainedCaseArchiveBusy={retainedCaseArchiveBusy}
+              retainedCaseRestoreBusyKey={retainedCaseRestoreBusyKey}
               siteForm={siteForm}
               editingSiteId={editingSiteId}
               projectForm={projectForm}
@@ -967,6 +968,8 @@ export function AdminWorkspace({
               onSaveSelectedSiteStorageRoot={() => void handleSaveSelectedSiteStorageRoot()}
               onMigrateSelectedSiteStorageRoot={() => void handleMigrateSelectedSiteStorageRoot()}
               onRecoverSelectedSiteMetadata={() => void handleRecoverSelectedSiteMetadata()}
+              onRefreshRetainedCaseArchive={() => void handleRefreshRetainedCaseArchive()}
+              onRestoreRetainedCase={(patientId, visitDate, mode) => void handleRestoreRetainedCase(patientId, visitDate, mode)}
               onInstitutionSync={() => void handleInstitutionSync()}
               onCreateProject={() => void handleCreateProject()}
               onEditSite={handleEditSite}
@@ -984,24 +987,23 @@ export function AdminWorkspace({
               approvedUpdates={approvedUpdates}
               updateThresholdAlerts={updateThresholdAlerts}
               aggregations={aggregations}
-              selectedSiteId={selectedSiteId}
-              selectedSiteLabel={selectedSiteLabel}
-              embeddingStatus={embeddingStatus}
-              imageLevelFederatedStatus={imageLevelFederatedStatus}
-              visitLevelFederatedStatus={visitLevelFederatedStatus}
-              federatedRetrievalStatus={federatedRetrievalStatus}
               federationStatusBusy={federationStatusBusy}
               federationMonitoring={federationMonitoring}
               federationMonitoringBusy={federationMonitoringBusy}
               recentAuditEvents={recentAuditEvents}
               modelVersions={modelVersions}
+              releaseRollouts={releaseRollouts}
+              releaseRolloutBusy={releaseRolloutBusy}
+              releaseRolloutForm={releaseRolloutForm}
+              selectedSiteId={selectedSiteId}
               newVersionName={newVersionName}
               aggregationBusy={aggregationBusy}
+              setReleaseRolloutForm={setReleaseRolloutForm}
               setNewVersionName={setNewVersionName}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
-              formatEmbeddingStage={formatEmbeddingStage}
               onAggregation={(updateIds) => void handleAggregation(updateIds)}
               onAggregationAllReady={() => void handleAggregationAllReady()}
+              onCreateReleaseRollout={() => void handleCreateReleaseRollout()}
               onRefreshFederationStatus={() => void handleRefreshFederationStatus()}
             />
           ) : null}

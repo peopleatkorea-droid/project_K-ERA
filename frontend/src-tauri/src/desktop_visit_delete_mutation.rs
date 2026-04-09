@@ -16,6 +16,41 @@ pub(super) fn delete_visit(payload: DeleteVisitRequest) -> Result<DeleteVisitRes
     }
     require_visit_write_access(&conn, &auth, &site_id, &patient_id, &visit_date)?;
     let existing_images = list_images_for_visit(&conn, &site_id, &patient_id, &visit_date)?;
+    if visit_fl_retained(&conn, &site_id, &patient_id, &visit_date)? {
+        for image in &existing_images {
+            let _ = delete_image_preview_cache(&site_id, &image.image_id)?;
+        }
+        let deleted_images = soft_delete_visit_images(
+            &conn,
+            &site_id,
+            &patient_id,
+            &visit_date,
+            "federated_retention_soft_delete",
+        )?;
+        let _ = soft_delete_visit_row(
+            &conn,
+            &site_id,
+            &patient_id,
+            &visit_date,
+            "federated_retention_soft_delete",
+        )?;
+        let remaining_visit_count = conn
+            .query_row(
+                "select count(*) from visits where site_id = ? and patient_id = ? and soft_deleted_at is null",
+                params![payload.site_id, patient_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        schedule_ai_clinic_vector_index_rebuild(&site_id, "visit_delete");
+        schedule_federated_retrieval_corpus_sync(&site_id, "visit_delete");
+        return Ok(DeleteVisitResponse {
+            patient_id,
+            visit_date,
+            deleted_images,
+            deleted_patient: false,
+            remaining_visit_count,
+        });
+    }
     for image in &existing_images {
         let _ = delete_image_preview_cache(&site_id, &image.image_id)?;
         let source_path = PathBuf::from(&image.image_path);
@@ -39,7 +74,7 @@ pub(super) fn delete_visit(payload: DeleteVisitRequest) -> Result<DeleteVisitRes
     .map_err(|error| error.to_string())?;
     let remaining_visit_count = conn
         .query_row(
-            "select count(*) from visits where site_id = ? and patient_id = ?",
+            "select count(*) from visits where site_id = ? and patient_id = ? and soft_deleted_at is null",
             params![payload.site_id, patient_id],
             |row| row.get::<_, i64>(0),
         )

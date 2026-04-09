@@ -41,7 +41,7 @@ pub(super) fn get_visit(
         polymicrobial,
         created_at
       from visits
-      where site_id = ? and patient_id = ? and visit_date = ?
+      where site_id = ? and patient_id = ? and visit_date = ? and soft_deleted_at is null
     ";
     conn.query_row(
         sql,
@@ -72,7 +72,7 @@ pub(super) fn query_images(
         uploaded_at,
         quality_scores
       from images
-      where site_id = ?
+      where site_id = ? and soft_deleted_at is null
     "
     .to_string();
     let mut params = vec![Value::Text(site_id.to_string())];
@@ -120,35 +120,38 @@ pub(super) fn query_case_summaries(
 ) -> Result<Vec<CaseSummaryRecord>, String> {
     let visible_case_condition = "
       (
-        v.research_registry_source is null
-        or v.research_registry_source != 'raw_inventory_sync'
-        or lower(
-          trim(
-            coalesce(
-              v.culture_status,
-              case
-                when v.culture_confirmed = 1
-                  or trim(coalesce(v.culture_category, '')) != ''
-                  or trim(coalesce(v.culture_species, '')) != ''
-                then 'positive'
-                else 'unknown'
-              end
+        v.soft_deleted_at is null
+        and (
+          v.research_registry_source is null
+          or v.research_registry_source != 'raw_inventory_sync'
+          or lower(
+            trim(
+              coalesce(
+                v.culture_status,
+                case
+                  when v.culture_confirmed = 1
+                    or trim(coalesce(v.culture_category, '')) != ''
+                    or trim(coalesce(v.culture_species, '')) != ''
+                  then 'positive'
+                  else 'unknown'
+                end
+              )
             )
-          )
-        ) = 'positive'
+          ) = 'positive'
+        )
       )
     ";
     let mut sql = "
       with image_stats as (
         select visit_id, count(image_id) as image_count, max(uploaded_at) as latest_image_uploaded_at
         from images
-        where site_id = ?
+        where site_id = ? and soft_deleted_at is null
         group by visit_id
       ),
       representative_images as (
         select visit_id, image_id as representative_image_id, view as representative_view
         from images
-        where site_id = ? and is_representative = 1
+        where site_id = ? and is_representative = 1 and soft_deleted_at is null
       )
       select
         v.visit_id,
@@ -270,7 +273,8 @@ mod desktop_case_lookup_query_tests {
               research_registry_updated_at text,
               research_registry_updated_by text,
               research_registry_source text,
-              created_at text
+              created_at text,
+              soft_deleted_at text
             );
             create table images (
               site_id text not null,
@@ -283,7 +287,8 @@ mod desktop_case_lookup_query_tests {
               is_representative integer,
               uploaded_at text,
               lesion_prompt_box text,
-              quality_scores text
+              quality_scores text,
+              soft_deleted_at text
             );
             ",
         )

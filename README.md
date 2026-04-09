@@ -91,6 +91,10 @@
   - 집계 가중치는 `n_cases`
 - 집계 시에는 `same architecture + same base model + same federated_round_type`만 함께 aggregate됩니다.
 
+### 운영 / 복구 문서
+
+- 연합학습 운영 및 rollback / 재집계 / 재학습 절차 초안: [docs/fl_operation_sop_ko.md](docs/fl_operation_sop_ko.md)
+
 ---
 
 ## 요구사항

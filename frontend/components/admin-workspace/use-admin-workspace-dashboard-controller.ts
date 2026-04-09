@@ -7,12 +7,15 @@ import {
   backfillAiClinicEmbeddings,
   downloadImportTemplate,
   fetchAiClinicEmbeddingStatus,
+  fetchFederatedRetrievalCorpusStatus,
   fetchImageBlob,
+  fetchImageLevelFederatedRoundStatus,
   fetchSiteActivity,
   fetchSiteComparison,
   fetchSiteValidations,
   fetchValidationArtifactBlob,
   fetchValidationCases,
+  fetchVisitLevelFederatedRoundStatus,
   runBulkImport,
   runSiteValidation,
 } from "../../lib/api";
@@ -26,6 +29,7 @@ type DashboardControllerCopy = {
   unableLoadSiteActivity: string;
   unableLoadMisclassified: string;
   unableLoadEmbeddingStatus: string;
+  unableLoadSiteAiStatus: string;
   selectSiteForEmbedding: string;
   embeddingBackfillQueued: string;
   embeddingBackfillFailed: string;
@@ -74,6 +78,9 @@ export function useAdminWorkspaceDashboardController({
     bulkCsvFile,
     bulkFiles,
     embeddingStatus,
+    imageLevelFederatedStatus,
+    visitLevelFederatedStatus,
+    federatedRetrievalStatus,
     selectedValidationId,
     selectedValidationRun,
     siteValidationRuns,
@@ -91,6 +98,10 @@ export function useAdminWorkspaceDashboardController({
     setEmbeddingStatus,
     setEmbeddingStatusBusy,
     setEmbeddingBackfillBusy,
+    setImageLevelFederatedStatus,
+    setVisitLevelFederatedStatus,
+    setFederatedRetrievalStatus,
+    setFederationStatusBusy,
     setDashboardBusy,
     setValidationExportBusy,
     setBulkImportBusy,
@@ -119,6 +130,26 @@ export function useAdminWorkspaceDashboardController({
     } finally {
       setSiteValidationBusy(false);
     }
+  }
+
+  async function loadDashboardSiteAiReadinessData() {
+    if (!selectedSiteId) {
+      setImageLevelFederatedStatus(null);
+      setVisitLevelFederatedStatus(null);
+      setFederatedRetrievalStatus(null);
+      setEmbeddingStatus(null);
+      return;
+    }
+    const [nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
+      fetchImageLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null),
+      fetchVisitLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null),
+      fetchFederatedRetrievalCorpusStatus(selectedSiteId, token).catch(() => null),
+      fetchAiClinicEmbeddingStatus(selectedSiteId, token).catch(() => null),
+    ]);
+    setImageLevelFederatedStatus(nextImageLevelStatus);
+    setVisitLevelFederatedStatus(nextVisitLevelStatus);
+    setFederatedRetrievalStatus(nextRetrievalStatus);
+    setEmbeddingStatus(nextEmbeddingStatus);
   }
 
   useEffect(() => {
@@ -276,55 +307,96 @@ export function useAdminWorkspaceDashboardController({
 
   useEffect(() => {
     if (section !== "dashboard" || !selectedSiteId) {
+      setImageLevelFederatedStatus(null);
+      setVisitLevelFederatedStatus(null);
+      setFederatedRetrievalStatus(null);
       setEmbeddingStatus(null);
+      setFederationStatusBusy(false);
+      setEmbeddingStatusBusy(false);
       return;
     }
     const currentSiteId = selectedSiteId;
     let cancelled = false;
-    async function loadEmbeddingStatus() {
+    async function loadSiteAiReadiness() {
+      setFederationStatusBusy(true);
       setEmbeddingStatusBusy(true);
       try {
-        const nextStatus = await fetchAiClinicEmbeddingStatus(currentSiteId, token);
-        if (!cancelled) {
-          setEmbeddingStatus(nextStatus);
+        const [nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
+          fetchImageLevelFederatedRoundStatus(currentSiteId, token).catch(() => null),
+          fetchVisitLevelFederatedRoundStatus(currentSiteId, token).catch(() => null),
+          fetchFederatedRetrievalCorpusStatus(currentSiteId, token).catch(() => null),
+          fetchAiClinicEmbeddingStatus(currentSiteId, token).catch(() => null),
+        ]);
+        if (cancelled) {
+          return;
         }
+        setImageLevelFederatedStatus(nextImageLevelStatus);
+        setVisitLevelFederatedStatus(nextVisitLevelStatus);
+        setFederatedRetrievalStatus(nextRetrievalStatus);
+        setEmbeddingStatus(nextEmbeddingStatus);
       } catch (nextError) {
         if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadEmbeddingStatus) });
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteAiStatus) });
         }
       } finally {
         if (!cancelled) {
+          setFederationStatusBusy(false);
           setEmbeddingStatusBusy(false);
         }
       }
     }
-    void loadEmbeddingStatus();
+    void loadSiteAiReadiness();
     return () => {
       cancelled = true;
     };
-  }, [copy.unableLoadEmbeddingStatus, describeError, section, selectedSiteId, setEmbeddingStatus, setEmbeddingStatusBusy, setToast, token]);
+  }, [
+    copy.unableLoadSiteAiStatus,
+    describeError,
+    section,
+    selectedSiteId,
+    setEmbeddingStatus,
+    setEmbeddingStatusBusy,
+    setFederatedRetrievalStatus,
+    setFederationStatusBusy,
+    setImageLevelFederatedStatus,
+    setToast,
+    setVisitLevelFederatedStatus,
+    token,
+  ]);
 
   useEffect(() => {
     if (
       section !== "dashboard" ||
       !selectedSiteId ||
-      !embeddingStatus?.active_job ||
-      !["queued", "running"].includes(embeddingStatus.active_job.status)
+      !(
+        (embeddingStatus?.active_job && isActiveJobStatus(embeddingStatus.active_job.status)) ||
+        (imageLevelFederatedStatus?.active_job && isActiveJobStatus(imageLevelFederatedStatus.active_job.status)) ||
+        (visitLevelFederatedStatus?.active_job && isActiveJobStatus(visitLevelFederatedStatus.active_job.status)) ||
+        (federatedRetrievalStatus?.active_job && isActiveJobStatus(federatedRetrievalStatus.active_job.status))
+      )
     ) {
       return;
     }
     const currentSiteId = selectedSiteId;
     let cancelled = false;
     const intervalId = window.setInterval(() => {
-      void fetchAiClinicEmbeddingStatus(currentSiteId, token)
-        .then((nextStatus) => {
+      void Promise.all([
+        fetchImageLevelFederatedRoundStatus(currentSiteId, token).catch(() => null),
+        fetchVisitLevelFederatedRoundStatus(currentSiteId, token).catch(() => null),
+        fetchFederatedRetrievalCorpusStatus(currentSiteId, token).catch(() => null),
+        fetchAiClinicEmbeddingStatus(currentSiteId, token).catch(() => null),
+      ])
+        .then(([nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus]) => {
           if (!cancelled) {
-            setEmbeddingStatus(nextStatus);
+            setImageLevelFederatedStatus(nextImageLevelStatus);
+            setVisitLevelFederatedStatus(nextVisitLevelStatus);
+            setFederatedRetrievalStatus(nextRetrievalStatus);
+            setEmbeddingStatus(nextEmbeddingStatus);
           }
         })
         .catch(() => {
           if (!cancelled) {
-            setToast({ tone: "error", message: copy.unableLoadEmbeddingStatus });
+            setToast({ tone: "error", message: copy.unableLoadSiteAiStatus });
           }
         });
     }, 4000);
@@ -332,7 +404,26 @@ export function useAdminWorkspaceDashboardController({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [copy.unableLoadEmbeddingStatus, embeddingStatus?.active_job?.job_id, embeddingStatus?.active_job?.status, section, selectedSiteId, setEmbeddingStatus, setToast, token]);
+  }, [
+    copy.unableLoadSiteAiStatus,
+    embeddingStatus?.active_job?.job_id,
+    embeddingStatus?.active_job?.status,
+    federatedRetrievalStatus?.active_job?.job_id,
+    federatedRetrievalStatus?.active_job?.status,
+    imageLevelFederatedStatus?.active_job?.job_id,
+    imageLevelFederatedStatus?.active_job?.status,
+    isActiveJobStatus,
+    section,
+    selectedSiteId,
+    setEmbeddingStatus,
+    setFederatedRetrievalStatus,
+    setImageLevelFederatedStatus,
+    setToast,
+    setVisitLevelFederatedStatus,
+    token,
+    visitLevelFederatedStatus?.active_job?.job_id,
+    visitLevelFederatedStatus?.active_job?.status,
+  ]);
 
   useEffect(() => {
     for (const url of dashboardPreviewUrlsRef.current) {
@@ -461,15 +552,14 @@ export function useAdminWorkspaceDashboardController({
       setToast({ tone: "error", message: copy.selectSiteForEmbedding });
       return;
     }
+    setFederationStatusBusy(true);
     setEmbeddingStatusBusy(true);
     try {
-      const nextStatus = await fetchAiClinicEmbeddingStatus(selectedSiteId, token, {
-        model_version_id: embeddingStatus?.model_version.version_id,
-      });
-      setEmbeddingStatus(nextStatus);
+      await loadDashboardSiteAiReadinessData();
     } catch (nextError) {
-      setToast({ tone: "error", message: describeError(nextError, copy.unableLoadEmbeddingStatus) });
+      setToast({ tone: "error", message: describeError(nextError, copy.unableLoadSiteAiStatus) });
     } finally {
+      setFederationStatusBusy(false);
       setEmbeddingStatusBusy(false);
     }
   }
@@ -571,6 +661,7 @@ export function useAdminWorkspaceDashboardController({
   return {
     loadDashboardComparisonData,
     loadDashboardValidationRuns,
+    loadDashboardSiteAiReadinessData,
     handleSiteValidation,
     handleRefreshEmbeddingStatus,
     handleEmbeddingBackfill,

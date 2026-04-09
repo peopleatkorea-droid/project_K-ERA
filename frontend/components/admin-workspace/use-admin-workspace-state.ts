@@ -24,6 +24,7 @@ import {
   type ModelUpdateRecord,
   type ModelVersionRecord,
   type ProjectRecord,
+  type RetainedCaseArchiveRecord,
   type ReleaseRolloutRecord,
   type SiteComparisonRecord,
   type SiteActivityResponse,
@@ -372,6 +373,9 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [aggregationBusy, setAggregationBusy] = useState(false);
   const [storageSettingsBusy, setStorageSettingsBusy] = useState(initialSection === "management");
   const [metadataRecoveryBusy, setMetadataRecoveryBusy] = useState(false);
+  const [retainedCaseArchive, setRetainedCaseArchive] = useState<RetainedCaseArchiveRecord[]>([]);
+  const [retainedCaseArchiveBusy, setRetainedCaseArchiveBusy] = useState(false);
+  const [retainedCaseRestoreBusyKey, setRetainedCaseRestoreBusyKey] = useState<string | null>(null);
   const [newVersionName, setNewVersionName] = useState("");
   const [initialForm, setInitialForm] = useState({
     architecture: "convnext_tiny",
@@ -743,6 +747,12 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setStorageSettingsBusy,
     metadataRecoveryBusy,
     setMetadataRecoveryBusy,
+    retainedCaseArchive,
+    setRetainedCaseArchive,
+    retainedCaseArchiveBusy,
+    setRetainedCaseArchiveBusy,
+    retainedCaseRestoreBusyKey,
+    setRetainedCaseRestoreBusyKey,
     newVersionName,
     setNewVersionName,
     initialForm,

@@ -1,3 +1,24 @@
+fn ensure_data_plane_column(
+    conn: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
+) -> Result<(), String> {
+    let pragma = format!("PRAGMA table_info({table_name})");
+    let mut stmt = conn.prepare(&pragma).map_err(|error| error.to_string())?;
+    let column_names = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if column_names.iter().any(|value| value == column_name) {
+        return Ok(());
+    }
+    let sql = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}");
+    conn.execute(&sql, []).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(super) fn open_data_plane_db() -> Result<Connection, String> {
     let path = sqlite_database_path()?;
     if let Some(parent) = path.parent() {
@@ -12,6 +33,14 @@ pub(super) fn ensure_data_plane_indexes() {
     let Ok(conn) = open_data_plane_db() else {
         return;
     };
+    let _ = ensure_data_plane_column(&conn, "visits", "fl_retained", "INTEGER NOT NULL DEFAULT 0");
+    let _ = ensure_data_plane_column(&conn, "visits", "fl_retained_at", "TEXT");
+    let _ = ensure_data_plane_column(&conn, "visits", "fl_retention_scopes", "TEXT NOT NULL DEFAULT '[]'");
+    let _ = ensure_data_plane_column(&conn, "visits", "fl_retention_last_update_id", "TEXT");
+    let _ = ensure_data_plane_column(&conn, "visits", "soft_deleted_at", "TEXT");
+    let _ = ensure_data_plane_column(&conn, "visits", "soft_delete_reason", "TEXT");
+    let _ = ensure_data_plane_column(&conn, "images", "soft_deleted_at", "TEXT");
+    let _ = ensure_data_plane_column(&conn, "images", "soft_delete_reason", "TEXT");
     let _ = conn.execute_batch(
         "
         CREATE INDEX IF NOT EXISTS idx_images_site_visit
@@ -24,6 +53,12 @@ pub(super) fn ensure_data_plane_indexes() {
           ON visits(site_id, patient_id);
         CREATE INDEX IF NOT EXISTS idx_visits_site_visit_id
           ON visits(site_id, visit_id);
+        CREATE INDEX IF NOT EXISTS idx_visits_site_fl_retained
+          ON visits(site_id, fl_retained);
+        CREATE INDEX IF NOT EXISTS idx_visits_site_soft_deleted
+          ON visits(site_id, soft_deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_images_site_soft_deleted
+          ON images(site_id, soft_deleted_at);
         CREATE INDEX IF NOT EXISTS idx_patients_site_patient
           ON patients(site_id, patient_id);
     ",

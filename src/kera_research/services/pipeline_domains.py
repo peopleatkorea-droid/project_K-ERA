@@ -476,6 +476,12 @@ class ResearchContributionWorkflow:
                 "base_model_version_id": update_metadata.get("base_model_version_id"),
             },
         )
+        site_store.mark_visit_fl_retained(
+            patient_id,
+            visit_date,
+            scope="case_contribution_single_case",
+            update_id=str(update_metadata.get("update_id") or "").strip() or None,
+        )
         return update_metadata
 
 
@@ -787,6 +793,24 @@ class ResearchTrainingWorkflow:
             "status": "pending_review",
         }
         update_metadata = service.control_plane.register_model_update(update_metadata)
+        retained_cases: set[tuple[str, str]] = set()
+        for records in eligible_case_groups:
+            if not records:
+                continue
+            retained_cases.add(
+                (
+                    str(records[0].get("patient_id") or "").strip(),
+                    str(records[0].get("visit_date") or "").strip(),
+                )
+            )
+        for retained_patient_id, retained_visit_date in retained_cases:
+            if retained_patient_id and retained_visit_date:
+                site_store.mark_visit_fl_retained(
+                    retained_patient_id,
+                    retained_visit_date,
+                    scope="image_level_site_round",
+                    update_id=str(update_metadata.get("update_id") or "").strip() or None,
+                )
         update_metadata["experiment"] = service._register_experiment(
             site_store,
             experiment_type="image_level_federated_round",
@@ -1042,6 +1066,24 @@ class ResearchTrainingWorkflow:
             "status": "pending_review",
         }
         update_metadata = service.control_plane.register_model_update(update_metadata)
+        retained_cases: set[tuple[str, str]] = set()
+        for records in eligible_case_groups:
+            if not records:
+                continue
+            retained_cases.add(
+                (
+                    str(records[0].get("patient_id") or "").strip(),
+                    str(records[0].get("visit_date") or "").strip(),
+                )
+            )
+        for retained_patient_id, retained_visit_date in retained_cases:
+            if retained_patient_id and retained_visit_date:
+                site_store.mark_visit_fl_retained(
+                    retained_patient_id,
+                    retained_visit_date,
+                    scope="visit_level_site_round",
+                    update_id=str(update_metadata.get("update_id") or "").strip() or None,
+                )
         update_metadata["experiment"] = service._register_experiment(
             site_store,
             experiment_type="visit_level_federated_round",

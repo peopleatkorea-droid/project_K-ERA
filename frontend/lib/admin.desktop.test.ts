@@ -383,4 +383,40 @@ describe("admin desktop wiring", () => {
     );
     expect(mainControlPlaneMocks.requestMainControlPlane).not.toHaveBeenCalled();
   });
+
+  it("uses the desktop local API bridge for retained-case archive and restore", async () => {
+    desktopLocalApiMocks.canUseDesktopLocalApiTransport.mockReturnValue(true);
+    desktopLocalApiMocks.requestDesktopLocalApiJson.mockResolvedValue({});
+
+    const mod = await import("./admin");
+    await mod.fetchRetainedCaseArchive("SITE_A", "desktop-token");
+    await mod.restoreRetainedCase("SITE_A", "desktop-token", {
+      patient_id: "HTTP-001",
+      visit_date: "Initial",
+      mode: "images",
+    });
+
+    expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
+      1,
+      "/api/admin/sites/SITE_A/retained-cases",
+      "desktop-token",
+      {
+        controlPlaneOwner: "local",
+      },
+    );
+    expect(desktopLocalApiMocks.requestDesktopLocalApiJson).toHaveBeenNthCalledWith(
+      2,
+      "/api/admin/sites/SITE_A/retained-cases/restore",
+      "desktop-token",
+      {
+        method: "POST",
+        body: {
+          patient_id: "HTTP-001",
+          visit_date: "Initial",
+          mode: "images",
+        },
+        controlPlaneOwner: "local",
+      },
+    );
+  });
 });

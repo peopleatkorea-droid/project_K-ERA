@@ -304,6 +304,12 @@ class SiteMetadataRecoveryRequest(BaseModel):
     backup_path: str | None = None
 
 
+class RetainedCaseRestoreRequest(BaseModel):
+    patient_id: str
+    visit_date: str
+    mode: Literal["visit", "images"] = "visit"
+
+
 class UserUpsertRequest(BaseModel):
     user_id: str | None = None
     username: str

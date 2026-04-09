@@ -10,17 +10,14 @@ import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
 import type {
   AggregationRecord,
-  AiClinicEmbeddingStatusResponse,
   AuditEventRecord,
-  FederatedRetrievalCorpusStatusResponse,
   FederationMonitoringSummaryResponse,
-  ImageLevelFederatedRoundStatusResponse,
   ModelUpdateRecord,
   ModelVersionRecord,
-  VisitLevelFederatedRoundStatusResponse,
+  ReleaseRolloutRecord,
 } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
-import type { UpdateThresholdAlert } from "./use-admin-workspace-state";
+import type { ReleaseRolloutFormState, UpdateThresholdAlert } from "./use-admin-workspace-state";
 
 type AggregationLane = {
   lane_key: string;
@@ -39,24 +36,23 @@ type Props = {
   approvedUpdates: ModelUpdateRecord[];
   updateThresholdAlerts: UpdateThresholdAlert[];
   aggregations: AggregationRecord[];
-  selectedSiteId: string | null;
-  selectedSiteLabel: string | null;
-  embeddingStatus: AiClinicEmbeddingStatusResponse | null;
-  imageLevelFederatedStatus: ImageLevelFederatedRoundStatusResponse | null;
-  visitLevelFederatedStatus: VisitLevelFederatedRoundStatusResponse | null;
-  federatedRetrievalStatus: FederatedRetrievalCorpusStatusResponse | null;
   federationStatusBusy: boolean;
   federationMonitoring: FederationMonitoringSummaryResponse | null;
   federationMonitoringBusy: boolean;
   recentAuditEvents: AuditEventRecord[];
   modelVersions: ModelVersionRecord[];
+  releaseRollouts: ReleaseRolloutRecord[];
+  releaseRolloutBusy: boolean;
+  releaseRolloutForm: ReleaseRolloutFormState;
+  selectedSiteId: string | null;
   newVersionName: string;
   aggregationBusy: boolean;
+  setReleaseRolloutForm: Dispatch<SetStateAction<ReleaseRolloutFormState>>;
   setNewVersionName: Dispatch<SetStateAction<string>>;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
-  formatEmbeddingStage: (stage: string | null | undefined) => string;
   onAggregation: (updateIds: string[]) => void;
   onAggregationAllReady: () => void;
+  onCreateReleaseRollout: () => void;
   onRefreshFederationStatus: () => void;
 };
 
@@ -115,78 +111,29 @@ function buildAggregationLanes(approvedUpdates: ModelUpdateRecord[]): Aggregatio
     .sort((left, right) => right.total_cases - left.total_cases || right.update_count - left.update_count);
 }
 
-function formatCount(value: number | null | undefined) {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
-}
-
-function SectionMetricGrid({
-  locale,
-  items,
-}: {
-  locale: Locale;
-  items: Array<{ labelEn: string; labelKo: string; value: string }>;
-}) {
-  return (
-    <MetricGrid columns={3}>
-      {items.map((item) => (
-        <MetricItem key={`${item.labelEn}:${item.value}`} value={item.value} label={pick(locale, item.labelEn, item.labelKo)} />
-      ))}
-    </MetricGrid>
-  );
-}
-
-function StatusCard({
-  locale,
-  titleEn,
-  titleKo,
-  description,
-  badge,
-  metrics,
-}: {
-  locale: Locale;
-  titleEn: string;
-  titleKo: string;
-  description: string;
-  badge: string;
-  metrics: Array<{ labelEn: string; labelKo: string; value: string }>;
-}) {
-  return (
-    <Card as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
-      <SectionHeader
-        title={pick(locale, titleEn, titleKo)}
-        titleAs="h4"
-        description={description}
-        aside={<span className={docSiteBadgeClass}>{badge}</span>}
-      />
-      <SectionMetricGrid locale={locale} items={metrics} />
-    </Card>
-  );
-}
-
 export function FederationSection({
   locale,
   notAvailableLabel,
   approvedUpdates,
   updateThresholdAlerts,
   aggregations,
-  selectedSiteId,
-  selectedSiteLabel,
-  embeddingStatus,
-  imageLevelFederatedStatus,
-  visitLevelFederatedStatus,
-  federatedRetrievalStatus,
   federationStatusBusy,
   federationMonitoring,
   federationMonitoringBusy,
   recentAuditEvents,
   modelVersions,
+  releaseRollouts,
+  releaseRolloutBusy,
+  releaseRolloutForm,
+  selectedSiteId,
   newVersionName,
   aggregationBusy,
+  setReleaseRolloutForm,
   setNewVersionName,
   formatDateTime,
-  formatEmbeddingStage,
   onAggregation,
   onAggregationAllReady,
+  onCreateReleaseRollout,
   onRefreshFederationStatus,
 }: Props) {
   const aggregationLanes = buildAggregationLanes(approvedUpdates);
@@ -197,116 +144,141 @@ export function FederationSection({
     <Card as="section" variant="surface" className="grid gap-5 p-6">
       <SectionHeader
         eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Federation", "연합학습")}</div>}
-        title={pick(locale, "Aggregate approved hospital deltas", "승인된 병원 델타 집계")}
+        title={pick(locale, "Global aggregation, rollout, and monitoring", "글로벌 집계, rollout, 모니터링")}
         titleAs="h3"
         description={pick(
           locale,
-          "Aggregate the approved queue into a new global model version while preserving site-level traceability.",
-          "승인된 큐를 새로운 글로벌 모델 버전으로 집계하면서 병원 단위 추적성은 유지합니다."
+          "Review approved update lanes, create staged release rollout plans, and monitor node adoption from one global operations surface.",
+          "승인된 업데이트 lane을 검토하고 staged release rollout을 만들며 node adoption을 한 화면에서 모니터링합니다."
         )}
         aside={<span className={docSiteBadgeClass}>{`${approvedUpdates.length} ${pick(locale, "approved", "승인")}`}</span>}
       />
 
       <Card as="section" variant="nested" className="grid gap-4 p-5">
         <SectionHeader
-          title={pick(locale, "Selected hospital federation status", "선택 병원 연합 상태")}
+          title={pick(locale, "Release rollout", "릴리스 rollout")}
           titleAs="h4"
           description={pick(
             locale,
-            "Track FL eligibility, AI Clinic embedding readiness, and retrieval sync state for the currently selected hospital.",
-            "현재 선택된 병원의 FL 적격성, AI Clinic 임베딩 준비, retrieval sync 상태를 함께 확인합니다."
+            "Create pilot, partial, full, or rollback release plans from approved global model versions.",
+            "승인된 글로벌 모델 버전에서 pilot, partial, full, rollback rollout 계획을 만듭니다."
           )}
           aside={
             <div className="flex flex-wrap items-center gap-2">
-              <span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "No site selected", "선택된 병원 없음")}</span>
+              <span className={docSiteBadgeClass}>{releaseRollouts.length}</span>
               <Button type="button" variant="ghost" size="sm" disabled={federationStatusBusy} onClick={onRefreshFederationStatus}>
-                {federationStatusBusy ? pick(locale, "Refreshing...", "새로고침 중...") : pick(locale, "Refresh status", "상태 새로고침")}
+                {federationStatusBusy ? pick(locale, "Refreshing...", "새로고침 중...") : pick(locale, "Refresh", "새로고침")}
               </Button>
             </div>
           }
         />
-        {!selectedSiteId ? (
-          <div className={emptySurfaceClass}>
-            {pick(locale, "Select a hospital to inspect FL and retrieval readiness.", "FL 및 retrieval 준비 상태를 보려면 병원을 선택하세요.")}
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+          <div className="grid gap-4">
+            <Field label={pick(locale, "Target model version", "대상 모델 버전")}>
+              <select
+                value={releaseRolloutForm.version_id}
+                onChange={(event) =>
+                  setReleaseRolloutForm((current) => ({
+                    ...current,
+                    version_id: event.target.value,
+                  }))
+                }
+              >
+                <option value="">{pick(locale, "Select a ready model", "준비된 모델 선택")}</option>
+                {readyModelVersions.map((item) => (
+                  <option key={item.version_id} value={item.version_id}>
+                    {`${item.version_name} / ${item.architecture}`}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={pick(locale, "Rollout stage", "rollout 단계")}>
+                <select
+                  value={releaseRolloutForm.stage}
+                  onChange={(event) =>
+                    setReleaseRolloutForm((current) => ({
+                      ...current,
+                      stage: event.target.value as ReleaseRolloutFormState["stage"],
+                    }))
+                  }
+                >
+                  <option value="pilot">{pick(locale, "Pilot", "Pilot")}</option>
+                  <option value="partial">{pick(locale, "Partial", "Partial")}</option>
+                  <option value="full">{pick(locale, "Full", "Full")}</option>
+                  <option value="rollback">{pick(locale, "Rollback", "Rollback")}</option>
+                </select>
+              </Field>
+              <Field label={pick(locale, "Target hospitals", "대상 병원")}>
+                <input
+                  value={releaseRolloutForm.target_site_ids_text}
+                  onChange={(event) =>
+                    setReleaseRolloutForm((current) => ({
+                      ...current,
+                      target_site_ids_text: event.target.value,
+                    }))
+                  }
+                  placeholder={selectedSiteId ?? "SITE_A,SITE_B"}
+                />
+              </Field>
+            </div>
+            <Field label={pick(locale, "Operator note", "운영 메모")}>
+              <textarea
+                rows={3}
+                value={releaseRolloutForm.notes}
+                onChange={(event) =>
+                  setReleaseRolloutForm((current) => ({
+                    ...current,
+                    notes: event.target.value,
+                  }))
+                }
+              />
+            </Field>
+            <div className="text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Pilot and partial rollout require comma-separated site IDs. Full rollout promotes the selected version as the current global release. Rollback uses the selected version as the recovery target.",
+                "pilot/partial rollout은 쉼표로 구분한 site ID가 필요합니다. full rollout은 선택한 버전을 현재 글로벌 릴리스로 승격하고, rollback은 선택한 버전을 복구 대상으로 사용합니다."
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button type="button" variant="primary" disabled={releaseRolloutBusy} onClick={onCreateReleaseRollout}>
+                {releaseRolloutBusy
+                  ? pick(locale, "Saving rollout...", "rollout 저장 중...")
+                  : pick(locale, "Save rollout plan", "rollout 계획 저장")}
+              </Button>
+            </div>
           </div>
-        ) : (
-          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
-            <StatusCard
-              locale={locale}
-              titleEn="Visit-level FL"
-              titleKo="Visit-level FL"
-              description={visitLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
-              badge={
-                visitLevelFederatedStatus?.active_job
-                  ? formatEmbeddingStage(visitLevelFederatedStatus.active_job.status)
-                  : pick(locale, "Idle", "유휴")
-              }
-              metrics={[
-                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(visitLevelFederatedStatus?.eligible_case_count) },
-                { labelEn: "Eligible images", labelKo: "적격 이미지", value: formatCount(visitLevelFederatedStatus?.eligible_image_count) },
-                { labelEn: "Not included", labelKo: "미포함", value: formatCount(visitLevelFederatedStatus?.skipped.not_included) },
-              ]}
+
+          <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+            <SectionHeader
+              title={pick(locale, "Recent rollout history", "최근 rollout 이력")}
+              titleAs="h4"
+              aside={<span className={docSiteBadgeClass}>{releaseRollouts.length}</span>}
             />
-            <StatusCard
-              locale={locale}
-              titleEn="Image-level FL"
-              titleKo="Image-level FL"
-              description={imageLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
-              badge={
-                imageLevelFederatedStatus?.active_job
-                  ? formatEmbeddingStage(imageLevelFederatedStatus.active_job.status)
-                  : pick(locale, "Idle", "유휴")
-              }
-              metrics={[
-                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(imageLevelFederatedStatus?.eligible_case_count) },
-                { labelEn: "Eligible images", labelKo: "적격 이미지", value: formatCount(imageLevelFederatedStatus?.eligible_image_count) },
-                { labelEn: "Not positive", labelKo: "비양성", value: formatCount(imageLevelFederatedStatus?.skipped.not_positive) },
-              ]}
-            />
-            <StatusCard
-              locale={locale}
-              titleEn="Retrieval corpus sync"
-              titleKo="Retrieval corpus sync"
-              description={federatedRetrievalStatus?.retrieval_profile ?? "dinov2_lesion_crop"}
-              badge={
-                federatedRetrievalStatus?.active_job
-                  ? formatEmbeddingStage(federatedRetrievalStatus.active_job.status)
-                  : pick(locale, "Idle", "유휴")
-              }
-              metrics={[
-                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(federatedRetrievalStatus?.eligible_case_count) },
-                { labelEn: "Not included", labelKo: "미포함", value: formatCount(federatedRetrievalStatus?.skipped.not_included) },
-                {
-                  labelEn: "Remote sync",
-                  labelKo: "원격 sync",
-                  value: federatedRetrievalStatus?.remote_node_sync_enabled ? pick(locale, "Enabled", "활성") : pick(locale, "Disabled", "비활성"),
-                },
-              ]}
-            />
-            <StatusCard
-              locale={locale}
-              titleEn="Embedding readiness"
-              titleKo="임베딩 준비 상태"
-              description={embeddingStatus?.model_version.version_name ?? notAvailableLabel}
-              badge={
-                embeddingStatus?.active_job
-                  ? formatEmbeddingStage(embeddingStatus.active_job.status)
-                  : embeddingStatus?.needs_backfill
-                    ? pick(locale, "Needs backfill", "백필 필요")
-                    : pick(locale, "Ready", "준비됨")
-              }
-              metrics={[
-                { labelEn: "Missing cases", labelKo: "누락 케이스", value: formatCount(embeddingStatus?.missing_case_count) },
-                { labelEn: "Missing images", labelKo: "누락 이미지", value: formatCount(embeddingStatus?.missing_image_count) },
-                {
-                  labelEn: "DINO index",
-                  labelKo: "DINO 인덱스",
-                  value: embeddingStatus?.vector_index?.dinov2_index_available ? pick(locale, "Available", "사용 가능") : pick(locale, "Missing", "없음"),
-                },
-              ]}
-            />
-          </div>
-        )}
+            {releaseRollouts.length === 0 ? (
+              <div className={emptySurfaceClass}>
+                {pick(locale, "No rollout history is recorded yet.", "아직 기록된 rollout 이력이 없습니다.")}
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {releaseRollouts.slice(0, 6).map((item) => (
+                  <Card key={item.rollout_id} as="article" variant="nested" className="grid gap-2 border border-border/80 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <strong className="text-sm text-ink">{item.version_name}</strong>
+                      <span className={docSiteBadgeClass}>{`${item.stage} / ${item.status}`}</span>
+                    </div>
+                    <div className="text-xs leading-5 text-muted">{item.architecture}</div>
+                    <div className="text-xs leading-5 text-muted">{formatDateTime(item.created_at, notAvailableLabel)}</div>
+                    {item.target_site_ids.length > 0 ? (
+                      <div className="text-xs leading-5 text-muted">{item.target_site_ids.join(", ")}</div>
+                    ) : null}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
       </Card>
 
       <div className="grid gap-4 xl:grid-cols-2">

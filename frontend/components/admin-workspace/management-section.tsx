@@ -8,7 +8,7 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
-import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecord, type ProjectRecord, type PublicInstitutionRecord, type SiteSummary, type StorageSettingsRecord } from "../../lib/api";
+import { searchPublicInstitutions, type ManagedSiteRecord, type ManagedUserRecord, type ProjectRecord, type PublicInstitutionRecord, type RetainedCaseArchiveRecord, type SiteSummary, type StorageSettingsRecord } from "../../lib/api";
 import { pick, translateApiError, translateRole, type Locale } from "../../lib/i18n";
 import { filterVisibleSiteIds, filterVisibleSites, getSiteAlias, getSiteDisplayName } from "../../lib/site-labels";
 import { toStorageRootDisplayPath } from "../../lib/storage-paths";
@@ -42,6 +42,9 @@ type Props = {
   projects: ProjectRecord[];
   managedSites: ManagedSiteRecord[];
   managedUsers: ManagedUserRecord[];
+  retainedCaseArchive: RetainedCaseArchiveRecord[];
+  retainedCaseArchiveBusy: boolean;
+  retainedCaseRestoreBusyKey: string | null;
   siteForm: SiteFormState;
   editingSiteId: string | null;
   projectForm: { name: string; description: string };
@@ -56,6 +59,8 @@ type Props = {
   onSaveSelectedSiteStorageRoot: () => void;
   onMigrateSelectedSiteStorageRoot: () => void;
   onRecoverSelectedSiteMetadata: () => void;
+  onRefreshRetainedCaseArchive: () => void;
+  onRestoreRetainedCase: (patientId: string, visitDate: string, mode: "visit" | "images") => void;
   onInstitutionSync: () => void;
   onCreateProject: () => void;
   onEditSite: (site: ManagedSiteRecord) => void;
@@ -240,6 +245,9 @@ export function ManagementSection({
   projects,
   managedSites,
   managedUsers,
+  retainedCaseArchive,
+  retainedCaseArchiveBusy,
+  retainedCaseRestoreBusyKey,
   siteForm,
   editingSiteId,
   projectForm,
@@ -254,6 +262,8 @@ export function ManagementSection({
   onSaveSelectedSiteStorageRoot,
   onMigrateSelectedSiteStorageRoot,
   onRecoverSelectedSiteMetadata,
+  onRefreshRetainedCaseArchive,
+  onRestoreRetainedCase,
   onInstitutionSync,
   onCreateProject,
   onEditSite,
@@ -414,6 +424,8 @@ export function ManagementSection({
       cancelled = true;
     };
   }, [deferredUserInstitutionQuery, locale]);
+
+  const archiveLoadingLabel = pick(locale, "Loading retained cases...", "보존 케이스를 불러오는 중...");
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -578,6 +590,121 @@ export function ManagementSection({
                   "Choose a hospital from the rail before running metadata recovery.",
                   "메타데이터 복구를 실행하려면 먼저 좌측에서 병원을 선택하세요.",
                 )}
+              </div>
+            )}
+          </Card>
+
+          <Card as="section" variant="nested" className="grid gap-4 p-5">
+            <SectionHeader
+              title={pick(locale, "Retained case restore", "보존 케이스 복구")}
+              titleAs="h4"
+              description={pick(
+                locale,
+                "Federated-retained cases stay hidden instead of being hard-deleted. Restore the whole visit or just hidden images from this archive.",
+                "연합학습 보존 케이스는 완전 삭제 대신 숨김 처리됩니다. 이 보관함에서 방문 전체 또는 숨겨진 이미지만 다시 복구할 수 있습니다."
+              )}
+              aside={
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={docSiteBadgeClass}>{selectedSiteLabel ?? notAvailableLabel}</span>
+                  <Button type="button" variant="ghost" size="sm" disabled={retainedCaseArchiveBusy || !selectedManagedSite} onClick={onRefreshRetainedCaseArchive}>
+                    {retainedCaseArchiveBusy ? pick(locale, "Refreshing...", "새로고침 중...") : pick(locale, "Refresh", "새로고침")}
+                  </Button>
+                </div>
+              }
+            />
+            {!selectedManagedSite ? (
+              <div className={emptySurfaceClass}>
+                {pick(
+                  locale,
+                  "Choose a hospital from the rail before reviewing retained-case recovery options.",
+                  "보존 케이스 복구를 검토하려면 먼저 왼쪽 레일에서 병원을 선택하세요."
+                )}
+              </div>
+            ) : retainedCaseArchiveBusy && retainedCaseArchive.length === 0 ? (
+              <div className={emptySurfaceClass}>{archiveLoadingLabel}</div>
+            ) : retainedCaseArchive.length === 0 ? (
+              <div className={emptySurfaceClass}>
+                {pick(
+                  locale,
+                  "No retained case is waiting for restore at this hospital.",
+                  "현재 병원에는 복구 대기 중인 보존 케이스가 없습니다."
+                )}
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {retainedCaseArchive.map((item) => {
+                  const caseLabel = item.local_case_code || item.chart_alias || item.patient_id;
+                  const restoreVisitBusy = retainedCaseRestoreBusyKey === `${item.patient_id}:${item.visit_date}:visit`;
+                  const restoreImagesBusy = retainedCaseRestoreBusyKey === `${item.patient_id}:${item.visit_date}:images`;
+                  const anyRestoreBusy = retainedCaseRestoreBusyKey !== null;
+                  return (
+                    <Card key={`${item.patient_id}:${item.visit_date}`} as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                      <SectionHeader
+                        title={caseLabel}
+                        titleAs="h4"
+                        description={`${item.patient_id} / ${item.visit_date}`}
+                        aside={
+                          <div className="flex flex-wrap gap-2">
+                            <span className={docSiteBadgeClass}>
+                              {item.can_restore_visit
+                                ? pick(locale, "Visit archived", "방문 숨김")
+                                : pick(locale, "Images archived", "이미지 숨김")}
+                            </span>
+                            <span className={docSiteBadgeClass}>{item.culture_status || "unknown"}</span>
+                          </div>
+                        }
+                      />
+                      <MetricGrid columns={4}>
+                        <MetricItem value={item.total_image_count} label={pick(locale, "Total images", "전체 이미지")} />
+                        <MetricItem value={item.visible_image_count} label={pick(locale, "Visible", "보이는 수")} />
+                        <MetricItem value={item.soft_deleted_image_count} label={pick(locale, "Hidden", "숨김 수")} />
+                        <MetricItem value={formatDateTime(item.fl_retained_at, notAvailableLabel)} label={pick(locale, "Retained", "보존 시각")} />
+                      </MetricGrid>
+                      <div className="flex flex-wrap gap-2 text-xs leading-5 text-muted">
+                        {item.culture_category ? <span className={docSiteBadgeClass}>{item.culture_category}</span> : null}
+                        {item.culture_species ? <span className={docSiteBadgeClass}>{item.culture_species}</span> : null}
+                        {item.fl_retention_scopes.length ? <span className={docSiteBadgeClass}>{item.fl_retention_scopes.join(", ")}</span> : null}
+                      </div>
+                      <div className="text-sm leading-6 text-muted">
+                        {item.can_restore_visit
+                          ? pick(
+                              locale,
+                              "The visit row is hidden and all archived images will come back together when you restore the visit.",
+                              "이 방문 row가 숨겨진 상태이며, 방문을 복구하면 보관된 이미지도 함께 다시 표시됩니다."
+                            )
+                          : pick(
+                              locale,
+                              "The visit is still visible, but some images are hidden for federated-retention safety.",
+                              "방문은 보이지만 연합학습 보존 정책 때문에 일부 이미지가 숨겨져 있습니다."
+                            )}
+                      </div>
+                      <div className="flex flex-wrap justify-end gap-3">
+                        {item.can_restore_images ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={anyRestoreBusy}
+                            loading={restoreImagesBusy}
+                            onClick={() => onRestoreRetainedCase(item.patient_id, item.visit_date, "images")}
+                          >
+                            {pick(locale, "Restore images", "이미지 복구")}
+                          </Button>
+                        ) : null}
+                        {item.can_restore_visit ? (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            disabled={anyRestoreBusy}
+                            loading={restoreVisitBusy}
+                            onClick={() => onRestoreRetainedCase(item.patient_id, item.visit_date, "visit")}
+                          >
+                            {pick(locale, "Restore visit", "방문 복구")}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </Card>
+                  );
+                })}
               </div>
             )}
           </Card>

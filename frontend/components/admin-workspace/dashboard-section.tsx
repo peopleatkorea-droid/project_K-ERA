@@ -6,10 +6,13 @@ import { cn } from "../../lib/cn";
 import { pick, type Locale } from "../../lib/i18n";
 import {
   type AiClinicEmbeddingStatusResponse,
+  type FederatedRetrievalCorpusStatusResponse,
+  type ImageLevelFederatedRoundStatusResponse,
   type SiteComparisonRecord,
   type SiteActivityResponse,
   type SiteValidationRunRecord,
   type ValidationCasePredictionRecord,
+  type VisitLevelFederatedRoundStatusResponse,
 } from "../../lib/api";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -57,7 +60,11 @@ type DashboardSectionProps = {
   siteValidationBusy: boolean;
   siteComparison: SiteComparisonRecord[];
   embeddingStatus: AiClinicEmbeddingStatusResponse | null;
+  imageLevelFederatedStatus: ImageLevelFederatedRoundStatusResponse | null;
+  visitLevelFederatedStatus: VisitLevelFederatedRoundStatusResponse | null;
+  federatedRetrievalStatus: FederatedRetrievalCorpusStatusResponse | null;
   embeddingStatusBusy: boolean;
+  siteAiReadinessBusy: boolean;
   embeddingBackfillBusy: boolean;
   currentModelVersionName: string | null;
   modelComparisonRows: DashboardModelComparisonRow[];
@@ -187,6 +194,42 @@ function Metrics({
   );
 }
 
+function formatCount(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
+}
+
+function ReadinessCard({
+  title,
+  description,
+  badge,
+  metrics,
+}: {
+  title: string;
+  description: string;
+  badge: string;
+  metrics: Array<{ label: string; value: string }>;
+}) {
+  return (
+    <Card as="article" variant="panel" className="grid gap-3 p-4">
+      <SectionHeader
+        title={title}
+        titleAs="h4"
+        description={description}
+        aside={
+          <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-white/55 px-3 text-[0.72rem] font-medium text-muted dark:bg-white/4">
+            {badge}
+          </span>
+        }
+      />
+      <MetricGrid columns={3}>
+        {metrics.map((metric) => (
+          <MetricItem key={`${title}-${metric.label}`} value={metric.value} label={metric.label} />
+        ))}
+      </MetricGrid>
+    </Card>
+  );
+}
+
 export function DashboardSection({
   locale,
   loadingLabel,
@@ -200,7 +243,11 @@ export function DashboardSection({
   siteValidationBusy,
   siteComparison,
   embeddingStatus,
+  imageLevelFederatedStatus,
+  visitLevelFederatedStatus,
+  federatedRetrievalStatus,
   embeddingStatusBusy,
+  siteAiReadinessBusy,
   embeddingBackfillBusy,
   currentModelVersionName,
   modelComparisonRows,
@@ -243,8 +290,8 @@ export function DashboardSection({
         title={pick(locale, "Validation trends, comparison, and misclassifications", "검증 추이, 비교, 오분류 사례")}
         description={pick(
           locale,
-          "Track the current hospital's validation history, ROC behavior, and AI Clinic embedding readiness in one view.",
-          "현재 병원의 검증 이력, ROC 비교, AI Clinic 임베딩 상태를 한 화면에서 확인합니다."
+          "Track the current hospital's validation history, ROC behavior, and AI readiness in one view.",
+          "현재 병원의 검증 이력, ROC 비교, AI 준비 상태를 한 화면에서 확인합니다."
         )}
         aside={
           <span className="inline-flex min-h-10 items-center rounded-full border border-border bg-white/55 px-4 text-sm font-medium text-muted dark:bg-white/4">
@@ -350,6 +397,105 @@ export function DashboardSection({
             </Panel>
           </div>
           <Panel
+            title={pick(locale, "Site AI readiness", "병원 AI 준비 상태")}
+            subtitle={pick(locale, "FL, retrieval, and embedding", "FL, retrieval, embedding")}
+            actions={
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={siteAiReadinessBusy || !selectedSiteId}
+                  onClick={onRefreshEmbeddingStatus}
+                >
+                  {siteAiReadinessBusy ? loadingLabel : pick(locale, "Refresh readiness", "준비 상태 새로고침")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  disabled={embeddingBackfillBusy || !selectedSiteId || !(embeddingStatus?.needs_backfill ?? false)}
+                  onClick={onEmbeddingBackfill}
+                >
+                  {embeddingBackfillBusy
+                    ? pick(locale, "Queuing...", "대기열 등록 중...")
+                    : pick(locale, "Backfill embeddings", "임베딩 백필")}
+                </Button>
+              </>
+            }
+          >
+            <div className="grid gap-3 xl:grid-cols-2">
+              <ReadinessCard
+                title={pick(locale, "Visit-level FL", "Visit-level FL")}
+                description={visitLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
+                badge={
+                  visitLevelFederatedStatus?.active_job
+                    ? formatEmbeddingStage(visitLevelFederatedStatus.active_job.status)
+                    : pick(locale, "Idle", "유휴")
+                }
+                metrics={[
+                  { label: pick(locale, "eligible cases", "적격 케이스"), value: formatCount(visitLevelFederatedStatus?.eligible_case_count) },
+                  { label: pick(locale, "eligible images", "적격 이미지"), value: formatCount(visitLevelFederatedStatus?.eligible_image_count) },
+                  { label: pick(locale, "not included", "미포함"), value: formatCount(visitLevelFederatedStatus?.skipped.not_included) },
+                ]}
+              />
+              <ReadinessCard
+                title={pick(locale, "Image-level FL", "Image-level FL")}
+                description={imageLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
+                badge={
+                  imageLevelFederatedStatus?.active_job
+                    ? formatEmbeddingStage(imageLevelFederatedStatus.active_job.status)
+                    : pick(locale, "Idle", "유휴")
+                }
+                metrics={[
+                  { label: pick(locale, "eligible cases", "적격 케이스"), value: formatCount(imageLevelFederatedStatus?.eligible_case_count) },
+                  { label: pick(locale, "eligible images", "적격 이미지"), value: formatCount(imageLevelFederatedStatus?.eligible_image_count) },
+                  { label: pick(locale, "not positive", "비양성"), value: formatCount(imageLevelFederatedStatus?.skipped.not_positive) },
+                ]}
+              />
+              <ReadinessCard
+                title={pick(locale, "Retrieval corpus sync", "Retrieval corpus sync")}
+                description={federatedRetrievalStatus?.retrieval_profile ?? "dinov2_lesion_crop"}
+                badge={
+                  federatedRetrievalStatus?.active_job
+                    ? formatEmbeddingStage(federatedRetrievalStatus.active_job.status)
+                    : pick(locale, "Idle", "유휴")
+                }
+                metrics={[
+                  { label: pick(locale, "eligible cases", "적격 케이스"), value: formatCount(federatedRetrievalStatus?.eligible_case_count) },
+                  { label: pick(locale, "not included", "미포함"), value: formatCount(federatedRetrievalStatus?.skipped.not_included) },
+                  {
+                    label: pick(locale, "remote sync", "원격 sync"),
+                    value: federatedRetrievalStatus?.remote_node_sync_enabled
+                      ? pick(locale, "Enabled", "활성")
+                      : pick(locale, "Disabled", "비활성"),
+                  },
+                ]}
+              />
+              <ReadinessCard
+                title={pick(locale, "AI Clinic embeddings", "AI Clinic 임베딩")}
+                description={embeddingStatus?.model_version.version_name ?? currentModelVersionName ?? notAvailableLabel}
+                badge={
+                  embeddingStatus?.active_job
+                    ? formatEmbeddingStage(embeddingStatus.active_job.status)
+                    : embeddingStatus?.needs_backfill
+                      ? pick(locale, "Needs backfill", "백필 필요")
+                      : pick(locale, "Ready", "준비됨")
+                }
+                metrics={[
+                  { label: pick(locale, "missing cases", "누락 케이스"), value: formatCount(embeddingStatus?.missing_case_count) },
+                  { label: pick(locale, "missing images", "누락 이미지"), value: formatCount(embeddingStatus?.missing_image_count) },
+                  {
+                    label: pick(locale, "DINO index", "DINO 인덱스"),
+                    value: embeddingStatus?.vector_index?.dinov2_index_available
+                      ? pick(locale, "Available", "사용 가능")
+                      : pick(locale, "Missing", "없음"),
+                  },
+                ]}
+              />
+            </div>
+          </Panel>
+          <Panel
             title={pick(locale, "Hospital activity", "병원 활동")}
             subtitle={
               siteActivityBusy
@@ -416,32 +562,8 @@ export function DashboardSection({
             )}
           </Panel>
           <Panel
-            title={pick(locale, "AI Clinic embedding status", "AI Clinic 임베딩 상태")}
+            title={pick(locale, "Embedding cache detail", "임베딩 캐시 상세")}
             subtitle={embeddingStatus?.model_version.version_name ?? currentModelVersionName ?? notAvailableLabel}
-            actions={
-              <>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={embeddingStatusBusy || !selectedSiteId}
-                  onClick={onRefreshEmbeddingStatus}
-                >
-                  {embeddingStatusBusy ? loadingLabel : pick(locale, "Refresh status", "상태 새로고침")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="sm"
-                  disabled={embeddingBackfillBusy || !selectedSiteId || !(embeddingStatus?.needs_backfill ?? false)}
-                  onClick={onEmbeddingBackfill}
-                >
-                  {embeddingBackfillBusy
-                    ? pick(locale, "Queuing...", "대기열 등록 중...")
-                    : pick(locale, "Backfill missing embeddings", "누락 임베딩 채우기")}
-                </Button>
-              </>
-            }
           >
             {embeddingStatus ? (
               <div className="grid gap-4">

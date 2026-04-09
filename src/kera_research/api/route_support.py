@@ -73,6 +73,7 @@ class AdminRouteSupport:
     AggregationRunRequest: Any
     ReleaseRolloutRequest: Any
     ProjectCreateRequest: Any
+    RetainedCaseRestoreRequest: Any
     SiteCreateRequest: Any
     SiteUpdateRequest: Any
     UserUpsertRequest: Any
@@ -240,6 +241,7 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             AggregationRunRequest=deps["AggregationRunRequest"],
             ReleaseRolloutRequest=deps["ReleaseRolloutRequest"],
             ProjectCreateRequest=deps["ProjectCreateRequest"],
+            RetainedCaseRestoreRequest=deps["RetainedCaseRestoreRequest"],
             SiteCreateRequest=deps["SiteCreateRequest"],
             SiteUpdateRequest=deps["SiteUpdateRequest"],
             UserUpsertRequest=deps["UserUpsertRequest"],

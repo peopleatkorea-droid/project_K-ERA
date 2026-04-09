@@ -14,6 +14,8 @@ import type {
   ModelUpdateRecord,
   ModelVersionRecord,
   ProjectRecord,
+  RetainedCaseArchiveRecord,
+  RetainedCaseRestoreResponse,
   ReleaseRolloutRecord,
   ResearchRegistrySettingsResponse,
   SiteComparisonRecord,
@@ -392,6 +394,42 @@ export async function recoverAdminSiteMetadata(
         force_replace: true,
         ...payload,
       }),
+    },
+    token,
+  );
+}
+
+export async function fetchRetainedCaseArchive(siteId: string, token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<RetainedCaseArchiveRecord[]>(`/api/admin/sites/${siteId}/retained-cases`, token);
+  }
+  return request<RetainedCaseArchiveRecord[]>(`/api/admin/sites/${siteId}/retained-cases`, {}, token);
+}
+
+export async function restoreRetainedCase(
+  siteId: string,
+  token: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    mode?: "visit" | "images";
+  },
+) {
+  const body = {
+    mode: "visit" as const,
+    ...payload,
+  };
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<RetainedCaseRestoreResponse>(`/api/admin/sites/${siteId}/retained-cases/restore`, token, {
+      method: "POST",
+      body,
+    });
+  }
+  return request<RetainedCaseRestoreResponse>(
+    `/api/admin/sites/${siteId}/retained-cases/restore`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
     },
     token,
   );

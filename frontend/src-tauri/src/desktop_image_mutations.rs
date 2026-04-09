@@ -109,6 +109,23 @@ pub(super) fn delete_visit_images(
     let conn = open_data_plane_db()?;
     require_visit_image_write_access(&conn, &auth, &site_id, &patient_id, &visit_date)?;
     let existing_images = list_images_for_visit(&conn, &site_id, &patient_id, &visit_date)?;
+    if visit_fl_retained(&conn, &site_id, &patient_id, &visit_date)? {
+        for image in &existing_images {
+            let _ = delete_image_preview_cache(&site_id, &image.image_id)?;
+        }
+        let deleted_count = soft_delete_visit_images(
+            &conn,
+            &site_id,
+            &patient_id,
+            &visit_date,
+            "federated_retention_soft_delete",
+        )?;
+        schedule_ai_clinic_vector_index_rebuild(&site_id, "delete_images");
+        schedule_federated_retrieval_corpus_sync(&site_id, "delete_images");
+        return Ok(DeleteImagesResponse {
+            deleted_count,
+        });
+    }
     for image in &existing_images {
         let _ = delete_image_preview_cache(&site_id, &image.image_id)?;
         let source_path = PathBuf::from(&image.image_path);

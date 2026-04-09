@@ -438,6 +438,7 @@ export function useAdminWorkspaceController({
     unableLoadStorageSettings: pick(locale, "Unable to load storage settings.", "저장 경로 설정을 불러오지 못했습니다."),
     unableLoadMisclassified: pick(locale, "Unable to load misclassified cases.", "오분류 케이스를 불러오지 못했습니다."),
     unableLoadEmbeddingStatus: pick(locale, "Unable to load embedding status.", "임베딩 상태를 불러오지 못했습니다."),
+    unableLoadSiteAiStatus: pick(locale, "Unable to load site AI readiness.", "병원 AI 준비 상태를 불러오지 못했습니다."),
     unableLoadSiteActivity: pick(locale, "Unable to load hospital activity.", "병원 활동을 불러오지 못했습니다."),
     institutionSyncSucceeded: (count: number, pages?: number | null) =>
       pages && pages > 0
@@ -545,6 +546,29 @@ export function useAdminWorkspaceController({
         `${siteLabel} 메타데이터를 ${source} 기준으로 복구했습니다 (${counts}).`,
       ),
     unableRecoverSelectedSiteMetadata: pick(locale, "Unable to recover the selected hospital metadata.", "선택 병원 메타데이터 복구에 실패했습니다."),
+    selectSiteForRetainedArchive: pick(locale, "Select a hospital before opening retained-case restore.", "보존 케이스 복구를 열기 전에 병원을 먼저 선택하세요."),
+    retainedCaseRestoreConfirm: (siteLabel: string, mode: "visit" | "images", caseLabel: string) =>
+      pick(
+        locale,
+        mode === "visit"
+          ? `Restore archived visit ${caseLabel} at ${siteLabel}? Hidden images for that visit will return together.`
+          : `Restore hidden images for ${caseLabel} at ${siteLabel}? The visit itself will stay visible.`,
+        mode === "visit"
+          ? `${siteLabel}의 ${caseLabel} 보관 방문을 복구할까요? 숨겨진 이미지도 함께 다시 표시됩니다.`
+          : `${siteLabel}의 ${caseLabel} 숨김 이미지를 복구할까요? 방문 자체는 그대로 유지됩니다.`,
+      ),
+    retainedCaseRestored: (siteLabel: string, mode: "visit" | "images", caseLabel: string, counts: string) =>
+      pick(
+        locale,
+        mode === "visit"
+          ? `Restored archived visit ${caseLabel} at ${siteLabel} (${counts}).`
+          : `Restored hidden images for ${caseLabel} at ${siteLabel} (${counts}).`,
+        mode === "visit"
+          ? `${siteLabel}의 ${caseLabel} 보관 방문을 복구했습니다 (${counts}).`
+          : `${siteLabel}의 ${caseLabel} 숨김 이미지를 복구했습니다 (${counts}).`,
+      ),
+    unableLoadRetainedArchive: pick(locale, "Unable to load retained-case recovery data.", "보존 케이스 복구 데이터를 불러오지 못했습니다."),
+    unableRestoreRetainedCase: pick(locale, "Unable to restore the retained case.", "보존 케이스 복구에 실패했습니다."),
     selectSiteForStorageRoot: pick(locale, "Select a hospital before changing its storage root.", "저장 경로를 바꾸려면 먼저 병원을 선택하세요."),
     usernameRequired: pick(locale, "Username is required.", "아이디는 필수입니다."),
     assignSiteRequired: pick(locale, "Assign at least one hospital for non-admin users.", "관리자가 아닌 사용자는 최소 한 개 이상의 병원을 지정해야 합니다."),
@@ -592,7 +616,6 @@ export function useAdminWorkspaceController({
   const registryController = useAdminWorkspaceRegistryController({
     state,
     token,
-    selectedSiteId,
     locale,
     canAggregate,
     autoPublishEnabled,
@@ -633,6 +656,7 @@ export function useAdminWorkspaceController({
       unableLoadSiteActivity: copy.unableLoadSiteActivity,
       unableLoadMisclassified: copy.unableLoadMisclassified,
       unableLoadEmbeddingStatus: copy.unableLoadEmbeddingStatus,
+      unableLoadSiteAiStatus: copy.unableLoadSiteAiStatus,
       selectSiteForEmbedding: copy.selectSiteForEmbedding,
       embeddingBackfillQueued: copy.embeddingBackfillQueued,
       embeddingBackfillFailed: copy.embeddingBackfillFailed,
@@ -682,6 +706,11 @@ export function useAdminWorkspaceController({
       recoverSelectedSiteMetadataConfirm: copy.recoverSelectedSiteMetadataConfirm,
       selectedSiteMetadataRecovered: copy.selectedSiteMetadataRecovered,
       unableRecoverSelectedSiteMetadata: copy.unableRecoverSelectedSiteMetadata,
+      selectSiteForRetainedArchive: copy.selectSiteForRetainedArchive,
+      retainedCaseRestoreConfirm: copy.retainedCaseRestoreConfirm,
+      retainedCaseRestored: copy.retainedCaseRestored,
+      unableLoadRetainedArchive: copy.unableLoadRetainedArchive,
+      unableRestoreRetainedCase: copy.unableRestoreRetainedCase,
       selectSiteForStorageRoot: copy.selectSiteForStorageRoot,
       usernameRequired: copy.usernameRequired,
       assignSiteRequired: copy.assignSiteRequired,
@@ -976,6 +1005,7 @@ export function useAdminWorkspaceController({
       await Promise.all([
         dashboardController.loadDashboardComparisonData(),
         dashboardController.loadDashboardValidationRuns(),
+        dashboardController.loadDashboardSiteAiReadinessData(),
       ]);
     } else if (section === "cross_validation") {
       await trainingController.loadCrossValidationSectionData();
@@ -1877,6 +1907,8 @@ export function useAdminWorkspaceController({
     handleSaveSelectedSiteStorageRoot: managementController.handleSaveSelectedSiteStorageRoot,
     handleMigrateSelectedSiteStorageRoot: managementController.handleMigrateSelectedSiteStorageRoot,
     handleRecoverSelectedSiteMetadata: managementController.handleRecoverSelectedSiteMetadata,
+    handleRefreshRetainedCaseArchive: managementController.handleRefreshRetainedCaseArchive,
+    handleRestoreRetainedCase: managementController.handleRestoreRetainedCase,
     handleResetUserForm: managementController.handleResetUserForm,
     handleSaveUser: managementController.handleSaveUser,
     handleDeleteUser: managementController.handleDeleteUser,

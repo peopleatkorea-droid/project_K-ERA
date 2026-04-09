@@ -8,7 +8,7 @@ pub(super) fn read_image_blob(payload: ImageBlobRequest) -> Result<ImageBinaryRe
     let conn = open_data_plane_db()?;
     let stored_image_path = conn
         .query_row(
-            "select image_path from images where site_id = ? and image_id = ?",
+            "select image_path from images where site_id = ? and image_id = ? and soft_deleted_at is null",
             params![site_id, image_id],
             |row| row.get::<_, String>(0),
         )

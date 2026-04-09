@@ -299,7 +299,20 @@ def _hydrate_visit_culture_fields(record: dict[str, Any]) -> dict[str, Any]:
         polymicrobial=normalized.get("polymicrobial"),
     )
     normalized.update(culture_fields)
+    scopes = normalized.get("fl_retention_scopes")
+    if not isinstance(scopes, list):
+        scopes = []
+    normalized["fl_retention_scopes"] = [str(item or "").strip() for item in scopes if str(item or "").strip()]
+    normalized["fl_retained"] = bool(normalized.get("fl_retained"))
     return normalized
+
+
+def _visit_visible_clause(visit_table: Any) -> Any:
+    return visit_table.c.soft_deleted_at.is_(None)
+
+
+def _image_visible_clause(image_table: Any) -> Any:
+    return image_table.c.soft_deleted_at.is_(None)
 
 
 def _list_organisms(
@@ -984,19 +997,13 @@ class SiteStore:
             raise ValueError(f"Patient {normalized_patient_id} does not exist.")
         return refreshed
 
-    def list_visits(self) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        query = (
-            select(db_visits)
-            .where(db_visits.c.site_id == self.site_id)
-            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
-
-    def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
-        self._sync_raw_inventory_metadata_if_due()
+    def _get_visit_row(
+        self,
+        patient_id: str,
+        visit_date: str,
+        *,
+        include_soft_deleted: bool = False,
+    ) -> dict[str, Any] | None:
         normalized_patient_id = normalize_patient_pseudonym(patient_id)
         requested_visit_date = _coerce_optional_text(visit_date)
         if not requested_visit_date:
@@ -1008,12 +1015,13 @@ class SiteStore:
             normalized_visit_date = None
             normalized_visit_index = None
 
-        base_query = select(db_visits).where(
-            and_(
-                db_visits.c.site_id == self.site_id,
-                db_visits.c.patient_id == normalized_patient_id,
-            )
-        )
+        predicates = [
+            db_visits.c.site_id == self.site_id,
+            db_visits.c.patient_id == normalized_patient_id,
+        ]
+        if not include_soft_deleted:
+            predicates.append(_visit_visible_clause(db_visits))
+        base_query = select(db_visits).where(and_(*predicates))
         with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(base_query.where(db_visits.c.visit_date == requested_visit_date)).mappings().first()
             if row is not None:
@@ -1032,6 +1040,146 @@ class SiteStore:
                 if row is not None:
                     return _hydrate_visit_culture_fields(dict(row))
         return None
+
+    def _is_visit_fl_retained(self, visit: dict[str, Any] | None) -> bool:
+        return bool(visit and visit.get("fl_retained"))
+
+    def mark_visit_fl_retained(
+        self,
+        patient_id: str,
+        visit_date: str,
+        *,
+        scope: str,
+        update_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_scope = str(scope or "").strip()
+        if not normalized_scope:
+            raise ValueError("Retention scope is required.")
+        existing = self._get_visit_row(patient_id, visit_date, include_soft_deleted=True)
+        if existing is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        scopes = [str(item or "").strip() for item in existing.get("fl_retention_scopes") or [] if str(item or "").strip()]
+        if normalized_scope not in scopes:
+            scopes.append(normalized_scope)
+        retained_at = _coerce_optional_text(existing.get("fl_retained_at")) or utc_now()
+        with DATA_PLANE_ENGINE.begin() as conn:
+            conn.execute(
+                update(db_visits)
+                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing["visit_id"]))
+                .values(
+                    fl_retained=True,
+                    fl_retained_at=retained_at,
+                    fl_retention_scopes=scopes,
+                    fl_retention_last_update_id=str(update_id or "").strip() or existing.get("fl_retention_last_update_id"),
+                )
+            )
+        refreshed = self._get_visit_row(
+            _coerce_optional_text(existing.get("patient_id")) or patient_id,
+            _coerce_optional_text(existing.get("visit_date")) or visit_date,
+            include_soft_deleted=True,
+        )
+        if refreshed is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        return refreshed
+
+    def list_retained_case_archive(self) -> list[dict[str, Any]]:
+        image_counts = (
+            select(
+                db_images.c.visit_id.label("visit_id"),
+                func.count().label("total_image_count"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (db_images.c.soft_deleted_at.is_(None), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("visible_image_count"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (db_images.c.soft_deleted_at.is_not(None), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("soft_deleted_image_count"),
+            )
+            .where(db_images.c.site_id == self.site_id)
+            .group_by(db_images.c.visit_id)
+            .subquery()
+        )
+        query = (
+            select(
+                db_visits,
+                db_patients.c.chart_alias.label("chart_alias"),
+                db_patients.c.local_case_code.label("local_case_code"),
+                func.coalesce(image_counts.c.total_image_count, 0).label("total_image_count"),
+                func.coalesce(image_counts.c.visible_image_count, 0).label("visible_image_count"),
+                func.coalesce(image_counts.c.soft_deleted_image_count, 0).label("soft_deleted_image_count"),
+            )
+            .select_from(
+                db_visits.outerjoin(
+                    db_patients,
+                    and_(
+                        db_patients.c.site_id == db_visits.c.site_id,
+                        db_patients.c.patient_id == db_visits.c.patient_id,
+                    ),
+                ).outerjoin(
+                    image_counts,
+                    image_counts.c.visit_id == db_visits.c.visit_id,
+                )
+            )
+            .where(
+                and_(
+                    db_visits.c.site_id == self.site_id,
+                    db_visits.c.fl_retained.is_(True),
+                    or_(
+                        db_visits.c.soft_deleted_at.is_not(None),
+                        func.coalesce(image_counts.c.soft_deleted_image_count, 0) > 0,
+                    ),
+                )
+            )
+            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
+        )
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        archive_records: list[dict[str, Any]] = []
+        for row in rows:
+            record = _hydrate_visit_culture_fields(dict(row))
+            visit_soft_deleted_at = _coerce_optional_text(record.get("soft_deleted_at"))
+            soft_deleted_image_count = int(record.get("soft_deleted_image_count") or 0)
+            archive_records.append(
+                {
+                    **record,
+                    "chart_alias": _coerce_optional_text(record.get("chart_alias")),
+                    "local_case_code": _coerce_optional_text(record.get("local_case_code")),
+                    "total_image_count": int(record.get("total_image_count") or 0),
+                    "visible_image_count": int(record.get("visible_image_count") or 0),
+                    "soft_deleted_image_count": soft_deleted_image_count,
+                    "visit_soft_deleted_at": visit_soft_deleted_at,
+                    "visit_soft_delete_reason": _coerce_optional_text(record.get("soft_delete_reason")),
+                    "can_restore_visit": bool(visit_soft_deleted_at),
+                    "can_restore_images": not bool(visit_soft_deleted_at) and soft_deleted_image_count > 0,
+                }
+            )
+        return archive_records
+
+    def list_visits(self) -> list[dict[str, Any]]:
+        self._sync_raw_inventory_metadata_if_due()
+        query = (
+            select(db_visits)
+            .where(and_(db_visits.c.site_id == self.site_id, _visit_visible_clause(db_visits)))
+            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
+        )
+        with DATA_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
+
+    def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
+        self._sync_raw_inventory_metadata_if_due()
+        return self._get_visit_row(patient_id, visit_date, include_soft_deleted=False)
 
     def create_visit(
         self,
@@ -1233,7 +1381,7 @@ class SiteStore:
         self._sync_raw_inventory_metadata_if_due()
         query = (
             select(db_images)
-            .where(db_images.c.site_id == self.site_id)
+            .where(and_(db_images.c.site_id == self.site_id, _image_visible_clause(db_images)))
             .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -1242,7 +1390,13 @@ class SiteStore:
 
     def get_image(self, image_id: str) -> dict[str, Any] | None:
         self._sync_raw_inventory_metadata_if_due()
-        query = select(db_images).where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
+        query = select(db_images).where(
+            and_(
+                db_images.c.site_id == self.site_id,
+                db_images.c.image_id == image_id,
+                _image_visible_clause(db_images),
+            )
+        )
         with DATA_PLANE_ENGINE.begin() as conn:
             row = conn.execute(query).mappings().first()
         return self._resolve_image_record_path(dict(row)) if row else None
@@ -1256,6 +1410,7 @@ class SiteStore:
             and_(
                 db_images.c.site_id == self.site_id,
                 db_images.c.image_id.in_(requested_ids),
+                _image_visible_clause(db_images),
             )
         )
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -1318,6 +1473,28 @@ class SiteStore:
             _coerce_optional_text(existing_visit.get("patient_id")),
             _coerce_optional_text(existing_visit.get("visit_date")),
         )
+        if self._is_visit_fl_retained(existing_visit):
+            deleted_at = utc_now()
+            with DATA_PLANE_ENGINE.begin() as conn:
+                for image in existing_images:
+                    image_id = str(image.get("image_id") or "").strip()
+                    if image_id:
+                        self.delete_image_preview_cache(image_id)
+                conn.execute(
+                    update(db_images)
+                    .where(
+                        and_(
+                            db_images.c.site_id == self.site_id,
+                            db_images.c.visit_id == existing_visit["visit_id"],
+                            _image_visible_clause(db_images),
+                        )
+                    )
+                    .values(
+                        soft_deleted_at=deleted_at,
+                        soft_delete_reason="federated_retention_soft_delete",
+                    )
+                )
+            return len(existing_images)
         for image in existing_images:
             image_id = str(image.get("image_id") or "").strip()
             if image_id:
@@ -1337,13 +1514,37 @@ class SiteStore:
         return len(existing_images)
 
     def delete_visit(self, patient_id: str, visit_date: str) -> dict[str, Any]:
-        existing_visit = self.get_visit(patient_id, visit_date)
+        existing_visit = self._get_visit_row(patient_id, visit_date, include_soft_deleted=False)
         if existing_visit is None:
             raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
 
         existing_patient_id = _coerce_optional_text(existing_visit.get("patient_id")) or normalize_patient_pseudonym(patient_id)
         existing_visit_date = _coerce_optional_text(existing_visit.get("visit_date")) or _coerce_optional_text(visit_date)
         deleted_images = self.delete_images_for_visit(existing_patient_id, existing_visit_date)
+        if self._is_visit_fl_retained(existing_visit):
+            with DATA_PLANE_ENGINE.begin() as conn:
+                conn.execute(
+                    update(db_visits)
+                    .where(
+                        and_(
+                            db_visits.c.site_id == self.site_id,
+                            db_visits.c.visit_id == existing_visit["visit_id"],
+                            _visit_visible_clause(db_visits),
+                        )
+                    )
+                    .values(
+                        soft_deleted_at=utc_now(),
+                        soft_delete_reason="federated_retention_soft_delete",
+                    )
+                )
+            remaining_visits = self.list_visits_for_patient(existing_patient_id)
+            return {
+                "patient_id": existing_patient_id,
+                "visit_date": existing_visit_date,
+                "deleted_images": deleted_images,
+                "deleted_patient": False,
+                "remaining_visit_count": len(remaining_visits),
+            }
         history_path = self._case_history_path(existing_patient_id, existing_visit_date)
         history_path.unlink(missing_ok=True)
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -1367,9 +1568,102 @@ class SiteStore:
             "remaining_visit_count": len(remaining_visits),
         }
 
+    def restore_retained_case(
+        self,
+        patient_id: str,
+        visit_date: str,
+        *,
+        restore_images_only: bool = False,
+    ) -> dict[str, Any]:
+        existing_visit = self._get_visit_row(patient_id, visit_date, include_soft_deleted=True)
+        if existing_visit is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        if not self._is_visit_fl_retained(existing_visit):
+            raise ValueError("Only federated-retained visits can be restored.")
+        visit_id = _coerce_optional_text(existing_visit.get("visit_id"))
+        if not visit_id:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        visit_soft_deleted = bool(_coerce_optional_text(existing_visit.get("soft_deleted_at")))
+        if restore_images_only and visit_soft_deleted:
+            raise ValueError("Restore the retained visit before restoring its images.")
+
+        restored_visit = 0
+        restored_images = 0
+        remaining_soft_deleted_image_count = 0
+        with DATA_PLANE_ENGINE.begin() as conn:
+            if visit_soft_deleted and not restore_images_only:
+                visit_result = conn.execute(
+                    update(db_visits)
+                    .where(
+                        and_(
+                            db_visits.c.site_id == self.site_id,
+                            db_visits.c.visit_id == visit_id,
+                            db_visits.c.soft_deleted_at.is_not(None),
+                        )
+                    )
+                    .values(
+                        soft_deleted_at=None,
+                        soft_delete_reason=None,
+                    )
+                )
+                restored_visit = int(visit_result.rowcount or 0)
+            image_result = conn.execute(
+                update(db_images)
+                .where(
+                    and_(
+                        db_images.c.site_id == self.site_id,
+                        db_images.c.visit_id == visit_id,
+                        db_images.c.soft_deleted_at.is_not(None),
+                    )
+                )
+                .values(
+                    soft_deleted_at=None,
+                    soft_delete_reason=None,
+                )
+            )
+            restored_images = int(image_result.rowcount or 0)
+            remaining_soft_deleted_image_count = int(
+                conn.execute(
+                    select(func.count())
+                    .select_from(db_images)
+                    .where(
+                        and_(
+                            db_images.c.site_id == self.site_id,
+                            db_images.c.visit_id == visit_id,
+                            db_images.c.soft_deleted_at.is_not(None),
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+
+        refreshed_visit = self._get_visit_row(patient_id, visit_date, include_soft_deleted=True)
+        if refreshed_visit is None:
+            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
+        visible_images = self.list_images_for_visit(
+            _coerce_optional_text(refreshed_visit.get("patient_id")) or patient_id,
+            _coerce_optional_text(refreshed_visit.get("visit_date")) or visit_date,
+        )
+        return {
+            "patient_id": _coerce_optional_text(refreshed_visit.get("patient_id")) or patient_id,
+            "visit_date": _coerce_optional_text(refreshed_visit.get("visit_date")) or visit_date,
+            "visit_id": visit_id,
+            "restored_visit": restored_visit,
+            "restored_images": restored_images,
+            "visible_image_count": len(visible_images),
+            "visit_soft_deleted_at": _coerce_optional_text(refreshed_visit.get("soft_deleted_at")),
+            "remaining_soft_deleted_image_count": remaining_soft_deleted_image_count,
+        }
+
     def _delete_patient_if_empty(self, patient_id: str) -> bool:
-        remaining_visits = self.list_visits_for_patient(patient_id)
-        if remaining_visits:
+        remaining_visit_count_query = (
+            select(func.count())
+            .select_from(db_visits)
+            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
+        )
+        with DATA_PLANE_ENGINE.begin() as conn:
+            remaining_visit_count = int(conn.execute(remaining_visit_count_query).scalar() or 0)
+        if remaining_visit_count > 0:
             return False
         with DATA_PLANE_ENGINE.begin() as conn:
             conn.execute(
@@ -1603,7 +1897,13 @@ class SiteStore:
     def list_visits_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
         query = (
             select(db_visits)
-            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
+            .where(
+                and_(
+                    db_visits.c.site_id == self.site_id,
+                    db_visits.c.patient_id == patient_id,
+                    _visit_visible_clause(db_visits),
+                )
+            )
             .order_by(db_visits.c.visit_index, db_visits.c.visit_date)
         )
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -1621,6 +1921,7 @@ class SiteStore:
                 and_(
                     db_images.c.site_id == self.site_id,
                     db_images.c.visit_id == existing_visit["visit_id"],
+                    _image_visible_clause(db_images),
                 )
             )
             .order_by(db_images.c.uploaded_at)
@@ -1718,6 +2019,7 @@ class SiteStore:
                 and_(
                     db_images.c.site_id == self.site_id,
                     db_images.c.patient_id == patient_id,
+                    _image_visible_clause(db_images),
                 )
             )
             .order_by(db_images.c.uploaded_at)

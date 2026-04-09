@@ -1766,6 +1766,217 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(include_response.status_code, 200, include_response.text)
 
+    def test_delete_visit_soft_deletes_federated_retained_case_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token)
+        visit_before = self.site_store.get_visit("HTTP-001", "Initial")
+        self.assertIsNotNone(visit_before)
+        image_before = self.site_store.list_images_for_visit("HTTP-001", "Initial")[0]
+        image_path = Path(str(image_before["image_path"]))
+        self.assertTrue(image_path.exists())
+        self.site_store.mark_visit_fl_retained(
+            "HTTP-001",
+            "Initial",
+            scope="case_contribution_single_case",
+            update_id="update_soft_delete_test",
+        )
+
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"patient_id": "HTTP-001", "visit_date": "Initial"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+        self.assertEqual(delete_response.json()["deleted_images"], 1)
+        self.assertFalse(delete_response.json()["deleted_patient"])
+        self.assertEqual(delete_response.json()["remaining_visit_count"], 0)
+        self.assertTrue(image_path.exists())
+        self.assertIsNone(self.site_store.get_visit("HTTP-001", "Initial"))
+
+        cases_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(cases_response.status_code, 200, cases_response.text)
+        self.assertEqual(cases_response.json(), [])
+
+        data_plane_db_path = Path(str(self.db_module.DATA_PLANE_DATABASE_URL).replace("sqlite:///", "", 1))
+        with sqlite3.connect(data_plane_db_path) as conn:
+            visit_row = conn.execute(
+                "select fl_retained, soft_deleted_at, soft_delete_reason from visits where site_id = ? and patient_id = ? and visit_date = ?",
+                (self.site_id, "HTTP-001", "Initial"),
+            ).fetchone()
+            image_row = conn.execute(
+                "select soft_deleted_at, soft_delete_reason from images where site_id = ? and patient_id = ? and visit_date = ?",
+                (self.site_id, "HTTP-001", "Initial"),
+            ).fetchone()
+        self.assertIsNotNone(visit_row)
+        self.assertEqual(int(visit_row[0] or 0), 1)
+        self.assertTrue(str(visit_row[1] or "").strip())
+        self.assertEqual(str(visit_row[2] or ""), "federated_retention_soft_delete")
+        self.assertIsNotNone(image_row)
+        self.assertTrue(str(image_row[0] or "").strip())
+        self.assertEqual(str(image_row[1] or ""), "federated_retention_soft_delete")
+
+    def test_delete_images_soft_deletes_visible_images_for_federated_retained_case_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token)
+        image_before = self.site_store.list_images_for_visit("HTTP-001", "Initial")[0]
+        image_path = Path(str(image_before["image_path"]))
+        self.assertTrue(image_path.exists())
+        self.site_store.mark_visit_fl_retained(
+            "HTTP-001",
+            "Initial",
+            scope="image_level_site_round",
+            update_id="update_soft_delete_images_test",
+        )
+
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"patient_id": "HTTP-001", "visit_date": "Initial"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+        self.assertEqual(delete_response.json()["deleted_count"], 1)
+        self.assertTrue(image_path.exists())
+        self.assertIsNotNone(self.site_store.get_visit("HTTP-001", "Initial"))
+        self.assertEqual(self.site_store.list_images_for_visit("HTTP-001", "Initial"), [])
+
+        cases_response = self.client.get(
+            f"/api/sites/{self.site_id}/cases",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(cases_response.status_code, 200, cases_response.text)
+        self.assertEqual(len(cases_response.json()), 1)
+        self.assertEqual(cases_response.json()[0]["image_count"], 0)
+
+        data_plane_db_path = Path(str(self.db_module.DATA_PLANE_DATABASE_URL).replace("sqlite:///", "", 1))
+        with sqlite3.connect(data_plane_db_path) as conn:
+            image_rows = conn.execute(
+                "select count(*), max(soft_deleted_at), max(soft_delete_reason) from images where site_id = ? and patient_id = ? and visit_date = ?",
+                (self.site_id, "HTTP-001", "Initial"),
+            ).fetchone()
+        self.assertEqual(int(image_rows[0] or 0), 1)
+        self.assertTrue(str(image_rows[1] or "").strip())
+        self.assertEqual(str(image_rows[2] or ""), "federated_retention_soft_delete")
+
+    def test_admin_retained_case_archive_and_restore_visit_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token)
+        self.site_store.mark_visit_fl_retained(
+            "HTTP-001",
+            "Initial",
+            scope="visit_level_site_round",
+            update_id="update_restore_visit_test",
+        )
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/visits",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"patient_id": "HTTP-001", "visit_date": "Initial"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+
+        archive_response = self.client.get(
+            f"/api/admin/sites/{self.site_id}/retained-cases",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(archive_response.status_code, 200, archive_response.text)
+        archive_payload = archive_response.json()
+        self.assertEqual(len(archive_payload), 1)
+        self.assertTrue(bool(archive_payload[0]["can_restore_visit"]))
+        self.assertEqual(int(archive_payload[0]["soft_deleted_image_count"] or 0), 1)
+
+        lazy_cp = self.app_module.get_control_plane()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                    "KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                            with patch.object(self.app_module, "_latest_embedding_backfill_job", return_value=None):
+                                with patch.object(
+                                    self.app_module,
+                                    "_queue_site_embedding_backfill_impl",
+                                    return_value={"job_id": "job-retained-restore", "status": "running"},
+                                ) as queue_mock:
+                                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                                        restore_response = self.client.post(
+                                            f"/api/admin/sites/{self.site_id}/retained-cases/restore",
+                                            headers={"Authorization": f"Bearer {admin_token}"},
+                                            json={
+                                                "patient_id": "HTTP-001",
+                                                "visit_date": "Initial",
+                                                "mode": "visit",
+                                            },
+                                        )
+
+            self.assertEqual(restore_response.status_code, 200, restore_response.text)
+            restore_payload = restore_response.json()
+            self.assertEqual(restore_payload["mode"], "visit")
+            self.assertEqual(int(restore_payload["restored_visit"] or 0), 1)
+            self.assertEqual(int(restore_payload["restored_images"] or 0), 1)
+            self.assertEqual(queue_mock.call_count, 1)
+            self.assertEqual(queue_mock.call_args.kwargs["trigger"], "retained_case_restore")
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
+        restored_visit = self.site_store.get_visit("HTTP-001", "Initial")
+        self.assertIsNotNone(restored_visit)
+        self.assertEqual(len(self.site_store.list_images_for_visit("HTTP-001", "Initial")), 1)
+
+    def test_admin_retained_case_archive_and_restore_images_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token)
+        self.site_store.mark_visit_fl_retained(
+            "HTTP-001",
+            "Initial",
+            scope="image_level_site_round",
+            update_id="update_restore_images_test",
+        )
+        delete_response = self.client.delete(
+            f"/api/sites/{self.site_id}/images",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"patient_id": "HTTP-001", "visit_date": "Initial"},
+        )
+        self.assertEqual(delete_response.status_code, 200, delete_response.text)
+
+        archive_response = self.client.get(
+            f"/api/admin/sites/{self.site_id}/retained-cases",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(archive_response.status_code, 200, archive_response.text)
+        archive_payload = archive_response.json()
+        self.assertEqual(len(archive_payload), 1)
+        self.assertFalse(bool(archive_payload[0]["can_restore_visit"]))
+        self.assertTrue(bool(archive_payload[0]["can_restore_images"]))
+
+        restore_response = self.client.post(
+            f"/api/admin/sites/{self.site_id}/retained-cases/restore",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "patient_id": "HTTP-001",
+                "visit_date": "Initial",
+                "mode": "images",
+            },
+        )
+        self.assertEqual(restore_response.status_code, 200, restore_response.text)
+        restore_payload = restore_response.json()
+        self.assertEqual(restore_payload["mode"], "images")
+        self.assertEqual(int(restore_payload["restored_visit"] or 0), 0)
+        self.assertEqual(int(restore_payload["restored_images"] or 0), 1)
+        self.assertEqual(len(self.site_store.list_images_for_visit("HTTP-001", "Initial")), 1)
+
     def test_public_sites_and_accessible_site_list_http(self):
         public_response = self.client.get("/api/public/sites")
         self.assertEqual(public_response.status_code, 200, public_response.text)

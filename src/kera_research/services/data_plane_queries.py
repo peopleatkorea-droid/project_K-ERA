@@ -16,7 +16,7 @@ def _image_stats_subquery(dp: Any, store: Any, image_table: Any) -> Any:
             dp.func.count(image_table.c.image_id).label("image_count"),
             dp.func.max(image_table.c.uploaded_at).label("latest_image_uploaded_at"),
         )
-        .where(image_table.c.site_id == store.site_id)
+        .where(dp.and_(image_table.c.site_id == store.site_id, image_table.c.soft_deleted_at.is_(None)))
         .group_by(image_table.c.visit_id)
         .subquery("image_stats")
     )
@@ -33,6 +33,7 @@ def _representative_images_subquery(dp: Any, store: Any, image_table: Any) -> An
             dp.and_(
                 image_table.c.site_id == store.site_id,
                 image_table.c.is_representative == True,
+                image_table.c.soft_deleted_at.is_(None),
             )
         )
         .subquery("representative_images")
@@ -141,7 +142,7 @@ def list_case_summaries(
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
             .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
         )
-        .where(visit_table.c.site_id == store.site_id)
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.soft_deleted_at.is_(None)))
         .order_by(
             dp.desc(visit_table.c.visit_index),
             dp.desc(image_stats.c.latest_image_uploaded_at),
@@ -193,6 +194,7 @@ def list_patient_case_rows(
         visit_table.c.research_registry_source != "raw_inventory_sync",
         visit_table.c.culture_status == "positive",
     )
+    visible_visit_condition = dp.and_(visit_table.c.soft_deleted_at.is_(None), visible_case_condition)
 
     image_stats = _image_stats_subquery(dp, store, image_table)
     representative_images = _representative_images_subquery(dp, store, image_table)
@@ -206,7 +208,7 @@ def list_patient_case_rows(
                 + dp.func.coalesce(dp.func.length(visit_table.c.created_at), 0)
             ).label("sort_key"),
         )
-        .where(visit_table.c.site_id == store.site_id)
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visit_table.c.soft_deleted_at.is_(None)))
         .group_by(visit_table.c.patient_id)
         .subquery("patient_latest")
     )
@@ -259,7 +261,7 @@ def list_patient_case_rows(
                 ),
             )
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_case_condition))
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_visit_condition))
     )
     if created_by_user_id:
         count_base = count_base.where(patient_table.c.created_by_user_id == created_by_user_id)
@@ -287,7 +289,7 @@ def list_patient_case_rows(
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
         )
         .where(patient_table.c.site_id == store.site_id)
-        .where(visible_case_condition)
+        .where(visible_visit_condition)
         .group_by(patient_table.c.patient_id, patient_latest.c.case_count)
     )
     if created_by_user_id:
@@ -340,7 +342,7 @@ def list_patient_case_rows(
             .outerjoin(image_stats, visit_table.c.visit_id == image_stats.c.visit_id)
             .outerjoin(representative_images, visit_table.c.visit_id == representative_images.c.visit_id)
         )
-        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_case_condition))
+        .where(dp.and_(visit_table.c.site_id == store.site_id, visible_visit_condition))
         .order_by(
             dp.desc(image_stats.c.latest_image_uploaded_at),
             dp.desc(visit_table.c.created_at),

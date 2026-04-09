@@ -76,6 +76,42 @@ export type SiteMetadataRecoveryResponse = {
   restored_images: number;
 };
 
+export type RetainedCaseArchiveRecord = {
+  visit_id: string;
+  patient_id: string;
+  visit_date: string;
+  chart_alias?: string | null;
+  local_case_code?: string | null;
+  culture_status: string;
+  culture_confirmed: boolean;
+  culture_category: string;
+  culture_species: string;
+  fl_retained: boolean;
+  fl_retained_at?: string | null;
+  fl_retention_scopes: string[];
+  fl_retention_last_update_id?: string | null;
+  visit_soft_deleted_at?: string | null;
+  visit_soft_delete_reason?: string | null;
+  total_image_count: number;
+  visible_image_count: number;
+  soft_deleted_image_count: number;
+  can_restore_visit: boolean;
+  can_restore_images: boolean;
+};
+
+export type RetainedCaseRestoreResponse = {
+  site_id: string;
+  mode: "visit" | "images";
+  patient_id: string;
+  visit_date: string;
+  visit_id: string;
+  restored_visit: number;
+  restored_images: number;
+  visible_image_count: number;
+  visit_soft_deleted_at?: string | null;
+  remaining_soft_deleted_image_count: number;
+};
+
 export type AdminWorkspaceBootstrapResponse = {
   overview: AdminOverviewResponse;
   pending_requests: AccessRequestRecord[];

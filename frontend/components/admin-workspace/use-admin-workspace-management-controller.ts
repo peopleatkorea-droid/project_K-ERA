@@ -9,10 +9,12 @@ import {
   deleteManagedUser,
   fetchAccessRequests,
   fetchInstitutionDirectoryStatus,
+  fetchRetainedCaseArchive,
   fetchStorageSettings,
   fetchUsers,
   migrateAdminSiteStorageRoot,
   recoverAdminSiteMetadata,
+  restoreRetainedCase,
   reviewAccessRequest,
   syncInstitutionDirectory,
   updateAdminSite,
@@ -52,6 +54,11 @@ type ManagementControllerCopy = {
   selectedSiteMetadataRecovered: (siteLabel: string, source: string, counts: string) => string;
   unableRecoverSelectedSiteMetadata: string;
   selectSiteForStorageRoot: string;
+  selectSiteForRetainedArchive: string;
+  retainedCaseRestoreConfirm: (siteLabel: string, mode: "visit" | "images", caseLabel: string) => string;
+  retainedCaseRestored: (siteLabel: string, mode: "visit" | "images", caseLabel: string, counts: string) => string;
+  unableLoadRetainedArchive: string;
+  unableRestoreRetainedCase: string;
   usernameRequired: string;
   assignSiteRequired: string;
   userSaved: string;
@@ -124,6 +131,9 @@ export function useAdminWorkspaceManagementController({
     setEditingSiteId,
     setStorageSettingsBusy,
     setMetadataRecoveryBusy,
+    setRetainedCaseArchive,
+    setRetainedCaseArchiveBusy,
+    setRetainedCaseRestoreBusyKey,
     setUserForm,
     setSection,
   } = state;
@@ -141,16 +151,20 @@ export function useAdminWorkspaceManagementController({
 
   async function loadManagementSectionData() {
     setStorageSettingsBusy(true);
+    setRetainedCaseArchiveBusy(true);
     try {
-      const [nextStorageSettings, nextManagedUsers] = await Promise.all([
+      const [nextStorageSettings, nextManagedUsers, nextRetainedCaseArchive] = await Promise.all([
         fetchStorageSettings(token),
         canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+        selectedSiteId ? fetchRetainedCaseArchive(selectedSiteId, token) : Promise.resolve([]),
       ]);
       setStorageSettings(nextStorageSettings);
       setManagedUsers(nextManagedUsers);
+      setRetainedCaseArchive(nextRetainedCaseArchive);
       setInstanceStorageRootForm(toStorageRootDisplayPath(nextStorageSettings.storage_root));
     } finally {
       setStorageSettingsBusy(false);
+      setRetainedCaseArchiveBusy(false);
     }
   }
 
@@ -202,23 +216,27 @@ export function useAdminWorkspaceManagementController({
     async function loadManagement() {
       try {
         setStorageSettingsBusy(true);
-        const [nextStorageSettings, nextManagedUsers] = await Promise.all([
+        setRetainedCaseArchiveBusy(true);
+        const [nextStorageSettings, nextManagedUsers, nextRetainedCaseArchive] = await Promise.all([
           fetchStorageSettings(token),
           canManagePlatform ? fetchUsers(token) : Promise.resolve([]),
+          selectedSiteId ? fetchRetainedCaseArchive(selectedSiteId, token) : Promise.resolve([]),
         ]);
         if (cancelled) {
           return;
         }
         setStorageSettings(nextStorageSettings);
         setManagedUsers(nextManagedUsers);
+        setRetainedCaseArchive(nextRetainedCaseArchive);
         setInstanceStorageRootForm(toStorageRootDisplayPath(nextStorageSettings.storage_root));
       } catch (nextError) {
         if (!cancelled) {
-          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadStorageSettings) });
+          setToast({ tone: "error", message: describeError(nextError, copy.unableLoadRetainedArchive) });
         }
       } finally {
         if (!cancelled) {
           setStorageSettingsBusy(false);
+          setRetainedCaseArchiveBusy(false);
         }
       }
     }
@@ -226,7 +244,7 @@ export function useAdminWorkspaceManagementController({
     return () => {
       cancelled = true;
     };
-  }, [canManagePlatform, copy.unableLoadStorageSettings, describeError, section, setInstanceStorageRootForm, setManagedUsers, setStorageSettings, setStorageSettingsBusy, setToast, token]);
+  }, [canManagePlatform, copy.unableLoadRetainedArchive, describeError, section, selectedSiteId, setInstanceStorageRootForm, setManagedUsers, setRetainedCaseArchive, setRetainedCaseArchiveBusy, setStorageSettings, setStorageSettingsBusy, setToast, token]);
 
   useEffect(() => {
     if (storageSettings) {
@@ -481,6 +499,57 @@ export function useAdminWorkspaceManagementController({
     }
   }
 
+  async function handleRefreshRetainedCaseArchive() {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForRetainedArchive });
+      return;
+    }
+    setRetainedCaseArchiveBusy(true);
+    try {
+      setRetainedCaseArchive(await fetchRetainedCaseArchive(selectedSiteId, token));
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableLoadRetainedArchive) });
+    } finally {
+      setRetainedCaseArchiveBusy(false);
+    }
+  }
+
+  async function handleRestoreRetainedCase(patientId: string, visitDate: string, mode: "visit" | "images") {
+    if (!selectedSiteId) {
+      setToast({ tone: "error", message: copy.selectSiteForRetainedArchive });
+      return;
+    }
+    const siteLabel = selectedSiteLabel || selectedSiteId;
+    const caseLabel = `${patientId} / ${visitDate}`;
+    const confirmed = window.confirm(copy.retainedCaseRestoreConfirm(siteLabel, mode, caseLabel));
+    if (!confirmed) {
+      return;
+    }
+    const busyKey = `${patientId}:${visitDate}:${mode}`;
+    setRetainedCaseRestoreBusyKey(busyKey);
+    try {
+      const result = await restoreRetainedCase(selectedSiteId, token, {
+        patient_id: patientId,
+        visit_date: visitDate,
+        mode,
+      });
+      await refreshWorkspace(true);
+      setToast({
+        tone: "success",
+        message: copy.retainedCaseRestored(
+          siteLabel,
+          mode,
+          caseLabel,
+          `${result.restored_visit}/${result.restored_images}/${result.visible_image_count}`,
+        ),
+      });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.unableRestoreRetainedCase) });
+    } finally {
+      setRetainedCaseRestoreBusyKey(null);
+    }
+  }
+
   function handleResetUserForm() {
     setUserForm(createUserForm());
   }
@@ -540,6 +609,8 @@ export function useAdminWorkspaceManagementController({
     handleSaveSelectedSiteStorageRoot,
     handleMigrateSelectedSiteStorageRoot,
     handleRecoverSelectedSiteMetadata,
+    handleRefreshRetainedCaseArchive,
+    handleRestoreRetainedCase,
     handleResetUserForm,
     handleSaveUser,
     handleDeleteUser,

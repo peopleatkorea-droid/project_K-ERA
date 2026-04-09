@@ -570,6 +570,12 @@ visits = Table(
     Column("research_registry_updated_at", String(64), nullable=True),
     Column("research_registry_updated_by", String(64), nullable=True),
     Column("research_registry_source", String(64), nullable=True),
+    Column("fl_retained", Boolean, nullable=False, default=False, index=True),
+    Column("fl_retained_at", String(64), nullable=True),
+    Column("fl_retention_scopes", JSON, nullable=False, default=list),
+    Column("fl_retention_last_update_id", String(64), nullable=True),
+    Column("soft_deleted_at", String(64), nullable=True, index=True),
+    Column("soft_delete_reason", String(128), nullable=True),
     Column("created_at", String(64), nullable=False),
     UniqueConstraint("site_id", "patient_id", "visit_date", name="uq_visits_site_patient_date"),
 )
@@ -594,6 +600,8 @@ images = Table(
     Column("has_lesion_mask", Boolean, nullable=False, default=False),
     Column("quality_scores", JSON, nullable=True),
     Column("artifact_status_updated_at", String(64), nullable=True),
+    Column("soft_deleted_at", String(64), nullable=True, index=True),
+    Column("soft_delete_reason", String(128), nullable=True),
     Column("uploaded_at", String(64), nullable=False),
 )
 
@@ -1029,6 +1037,21 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_updated_by VARCHAR(64)"))
             if "research_registry_source" not in visit_columns:
                 conn.execute(text("ALTER TABLE visits ADD COLUMN research_registry_source VARCHAR(64)"))
+            if "fl_retained" not in visit_columns:
+                if DATA_PLANE_ENGINE.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN fl_retained BOOLEAN NOT NULL DEFAULT 0"))
+                else:
+                    conn.execute(text("ALTER TABLE visits ADD COLUMN fl_retained BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "fl_retained_at" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN fl_retained_at VARCHAR(64)"))
+            if "fl_retention_scopes" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN fl_retention_scopes JSON NOT NULL DEFAULT '[]'"))
+            if "fl_retention_last_update_id" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN fl_retention_last_update_id VARCHAR(64)"))
+            if "soft_deleted_at" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN soft_deleted_at VARCHAR(64)"))
+            if "soft_delete_reason" not in visit_columns:
+                conn.execute(text("ALTER TABLE visits ADD COLUMN soft_delete_reason VARCHAR(128)"))
             _backfill_visit_reference_columns(conn)
             conn.execute(
                 text(
@@ -1046,6 +1069,18 @@ def _migrate_data_plane_schema() -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_visits_site_visit_index "
                     "ON visits (site_id, visit_index)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_visits_site_fl_retained "
+                    "ON visits (site_id, fl_retained)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_visits_site_soft_deleted "
+                    "ON visits (site_id, soft_deleted_at)"
                 )
             )
 
@@ -1089,6 +1124,16 @@ def _migrate_data_plane_schema() -> None:
                 conn.execute(text("ALTER TABLE images ADD COLUMN quality_scores JSON"))
             if "artifact_status_updated_at" not in image_columns:
                 conn.execute(text("ALTER TABLE images ADD COLUMN artifact_status_updated_at VARCHAR(64)"))
+            if "soft_deleted_at" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN soft_deleted_at VARCHAR(64)"))
+            if "soft_delete_reason" not in image_columns:
+                conn.execute(text("ALTER TABLE images ADD COLUMN soft_delete_reason VARCHAR(128)"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_images_site_soft_deleted "
+                    "ON images (site_id, soft_deleted_at)"
+                )
+            )
             conn.execute(
                 text(
                     "UPDATE images "

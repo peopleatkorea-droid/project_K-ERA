@@ -22,6 +22,26 @@ fn visit_owner_user_id(
     .map_err(|error| error.to_string())
 }
 
+fn visit_fl_retained(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+) -> Result<bool, String> {
+    conn.query_row(
+        "
+        select coalesce(fl_retained, 0)
+        from visits
+        where site_id = ? and patient_id = ? and visit_date = ?
+        ",
+        params![site_id, patient_id, visit_date],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map(|value| value.unwrap_or(0) != 0)
+    .map_err(|error| error.to_string())
+}
+
 fn require_visit_write_access(
     conn: &Connection,
     auth: &MutationAuth,
@@ -49,7 +69,7 @@ fn require_visit_image_write_access(
     let sql = "
       select created_by_user_id
       from images
-      where site_id = ? and patient_id = ? and visit_date = ?
+      where site_id = ? and patient_id = ? and visit_date = ? and soft_deleted_at is null
       order by uploaded_at asc
     ";
     let mut stmt = conn.prepare(sql).map_err(|error| error.to_string())?;
@@ -78,6 +98,46 @@ fn require_visit_image_write_access(
         require_visit_write_access(conn, auth, site_id, patient_id, visit_date)?;
     }
     Ok(())
+}
+
+fn soft_delete_visit_images(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+    reason: &str,
+) -> Result<i64, String> {
+    let deleted_at = utc_now();
+    conn.execute(
+        "
+        update images
+        set soft_deleted_at = ?, soft_delete_reason = ?
+        where site_id = ? and patient_id = ? and visit_date = ? and soft_deleted_at is null
+        ",
+        params![deleted_at, reason, site_id, patient_id, visit_date],
+    )
+    .map(|count| count as i64)
+    .map_err(|error| error.to_string())
+}
+
+fn soft_delete_visit_row(
+    conn: &Connection,
+    site_id: &str,
+    patient_id: &str,
+    visit_date: &str,
+    reason: &str,
+) -> Result<i64, String> {
+    let deleted_at = utc_now();
+    conn.execute(
+        "
+        update visits
+        set soft_deleted_at = ?, soft_delete_reason = ?
+        where site_id = ? and patient_id = ? and visit_date = ? and soft_deleted_at is null
+        ",
+        params![deleted_at, reason, site_id, patient_id, visit_date],
+    )
+    .map(|count| count as i64)
+    .map_err(|error| error.to_string())
 }
 
 fn delete_image_preview_cache(site_id: &str, image_id: &str) -> Result<i64, String> {
