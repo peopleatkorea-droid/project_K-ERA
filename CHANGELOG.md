@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-04-07 ~ 2026-04-09
+
+### CPU 배포 안정화
+
+- CPU 설치형 배포본 기준으로 `Next production build`, `desktop:smoke-installed:cpu`, packaged backend self-check, 주요 Python 회귀를 다시 녹색으로 맞췄습니다.
+- 설치형 smoke script와 packaged runtime layout 인식을 정리해, installed desktop smoke가 실제 배포 산출물 구조를 따라가도록 수정했습니다.
+- packaged seed model / bundled model registration 경로를 정리해 clean install 기준 분석 모델 초기화가 안정적으로 동작하도록 맞췄습니다.
+
+### 케이스 정책 분리 및 분석 전용 흐름
+
+- `culture_confirmed` 중심 정책을 `culture_status = positive / negative / not_done / unknown` 중심으로 재정리했습니다.
+- 모든 사용자는 케이스를 저장하고 분석할 수 있게 유지하면서, `positive` 케이스만 학습/기여에 사용하도록 백엔드 정책을 분리했습니다.
+- `registry include` / `contribution`은 `positive + active + images>0 + consent + included` 조건을 모두 만족할 때만 허용하도록 강제했습니다.
+- validation은 `labeled validation`과 `inference-only`를 분리했고, inference-only 결과는 정답 판정이 아니라 pattern support 성격으로 반환하도록 맞췄습니다.
+
+### 운영 기본 AI 구성 정리
+
+- 운영 기본 분석 모델을 `EfficientNetV2-S MIL (full)`로 정리했습니다.
+- 보조 image-level support 모델을 `ConvNeXt-Tiny (full)`로 추가했습니다.
+- AI Clinic similar case retrieval 기본값은 `DINOv2 lesion-crop`으로 고정했습니다.
+- retrieval은 analysis model에서 분리된 `retrieval_profile`로 운영되도록 정리했습니다.
+
+### Federated Retrieval Corpus Expansion
+
+- DINO retrieval을 full FL 대신 `federated retrieval corpus expansion` 구조로 확장했습니다.
+- 각 병원은 같은 retrieval profile / preprocessing / normalization 기준으로 positive registry case embedding을 생성하고, 중앙 control plane retrieval corpus로 sync할 수 있습니다.
+- 중앙 corpus는 `retrieval_signature`를 기준으로 profile 호환성을 강제합니다.
+- AI Clinic은 로컬 query case를 기준으로 cross-site similar case를 검색할 수 있고, remote case에 site label / preview thumbnail / culture metadata를 함께 반환할 수 있습니다.
+- retrieval corpus sync는 background site job으로 동작하고, bulk import / metadata recover / raw sync / visit/image mutation 뒤 auto sync가 이어지도록 연결했습니다.
+
+### Image-level Federated Learning
+
+- `ConvNeXt-Tiny (full)` 기준 image-level federated learning을 추가했습니다.
+- 구조는 `site-round background job -> pending_review model update -> FedAvg`입니다.
+- eligible policy는 `positive + active + included + images>0`이고, aggregation weight는 `n_images`를 사용합니다.
+- web API, desktop sidecar, Tauri transport, job runner, aggregation metadata까지 end-to-end로 연결했습니다.
+- image-level round progress에는 eligible case/image 수, epoch progress, aggregation metadata를 포함하도록 확장했습니다.
+
+### Visit-level Federated Learning
+
+- `EfficientNetV2-S MIL (full)` 기준 visit-level federated learning을 추가했습니다.
+- `ModelManager.fine_tune()`가 image-level 루프가 아니라 visit bag MIL 경로를 타도록 branch를 추가했습니다.
+- 구조는 `site-round background job -> pending_review model update -> FedAvg`이고, aggregation weight는 `n_cases`를 사용합니다.
+- image-level round, single-case contribution delta와 섞여 aggregate되지 않도록 `federated_round_type` guard를 추가했습니다.
+- preferred operating model 선택, API route, desktop sidecar, Tauri command, TypeScript transport까지 모두 연결했습니다.
+
+### 운영 상태 / 회귀 정리
+
+- FL / embedding / federated retrieval status 응답의 `active_job` semantics를 정리했습니다.
+  - `queued/running`만 active로 간주
+  - completed job은 `active_job: null`
+- 같은 모델이라도 `epochs / learning_rate / batch_size / execution_device`가 다르면 기존 active FL job을 재사용하지 않도록 수정했습니다.
+- 회귀 테스트를 보강해 image-level FL, visit-level FL, retrieval status, embedding status, aggregation guard를 계속 검증하도록 추가했습니다.
+
 ## 2026-03-22 ~ 2026-03-24
 
 ### Tauri 데스크탑 앱 대규모 모듈화 (v0.6 → v0.69)

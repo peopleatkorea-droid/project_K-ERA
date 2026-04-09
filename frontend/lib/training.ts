@@ -16,6 +16,10 @@ import type {
   CrossValidationJobResponse,
   CrossValidationReport,
   EmbeddingBackfillJobResponse,
+  FederatedRetrievalCorpusStatusResponse,
+  FederatedRetrievalSyncJobResponse,
+  ImageLevelFederatedRoundJobResponse,
+  ImageLevelFederatedRoundStatusResponse,
   InitialTrainingBenchmarkJobResponse,
   InitialTrainingJobResponse,
   ModelVersionRecord,
@@ -25,6 +29,8 @@ import type {
   SiteValidationJobResponse,
   SiteValidationRunRecord,
   ValidationCasePredictionRecord,
+  VisitLevelFederatedRoundJobResponse,
+  VisitLevelFederatedRoundStatusResponse,
 } from "./types";
 
 function canUseDesktopTrainingTransport() {
@@ -221,6 +227,68 @@ export async function backfillAiClinicEmbeddings(
   );
 }
 
+export async function syncFederatedRetrievalCorpus(
+  siteId: string,
+  token: string,
+  payload?: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
+    force_refresh?: boolean;
+  },
+) {
+  if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Federated retrieval corpus sync is unavailable");
+    return invokeDesktop<FederatedRetrievalSyncJobResponse>("sync_federated_retrieval_corpus", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  return request<FederatedRetrievalSyncJobResponse>(
+    `/api/sites/${siteId}/ai-clinic/retrieval-corpus/sync`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        retrieval_profile: "dinov2_lesion_crop",
+        force_refresh: false,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function fetchFederatedRetrievalCorpusStatus(
+  siteId: string,
+  token: string,
+  options?: {
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
+  },
+) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<FederatedRetrievalCorpusStatusResponse>("fetch_federated_retrieval_corpus_status", {
+      payload: {
+        site_id: siteId,
+        token,
+        retrieval_profile: options?.retrieval_profile,
+      },
+    });
+  }
+  const params = new URLSearchParams();
+  if (options?.retrieval_profile) {
+    params.set("retrieval_profile", options.retrieval_profile);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<FederatedRetrievalCorpusStatusResponse>(
+    `/api/sites/${siteId}/ai-clinic/retrieval-corpus/status${suffix}`,
+    {},
+    token,
+  );
+}
+
 export async function fetchAiClinicEmbeddingStatus(
   siteId: string,
   token: string,
@@ -342,6 +410,136 @@ export async function runInitialTraining(
         ...payload,
       }),
     },
+    token,
+  );
+}
+
+export async function runImageLevelFederatedRound(
+  siteId: string,
+  token: string,
+  payload: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    epochs?: number;
+    learning_rate?: number;
+    batch_size?: number;
+  } = {},
+) {
+  if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Image-level federated learning is unavailable");
+    return invokeDesktop<ImageLevelFederatedRoundJobResponse>("run_image_level_federated_round", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  return request<ImageLevelFederatedRoundJobResponse>(
+    `/api/sites/${siteId}/training/federated/image-level`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        epochs: 1,
+        learning_rate: 5e-5,
+        batch_size: 8,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function fetchImageLevelFederatedRoundStatus(
+  siteId: string,
+  token: string,
+  options?: {
+    model_version_id?: string;
+  },
+) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<ImageLevelFederatedRoundStatusResponse>("fetch_image_level_federated_round_status", {
+      payload: {
+        site_id: siteId,
+        token,
+        model_version_id: options?.model_version_id,
+      },
+    });
+  }
+  const params = new URLSearchParams();
+  if (options?.model_version_id) {
+    params.set("model_version_id", options.model_version_id);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<ImageLevelFederatedRoundStatusResponse>(
+    `/api/sites/${siteId}/training/federated/image-level/status${suffix}`,
+    {},
+    token,
+  );
+}
+
+export async function runVisitLevelFederatedRound(
+  siteId: string,
+  token: string,
+  payload: {
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    epochs?: number;
+    learning_rate?: number;
+    batch_size?: number;
+  } = {},
+) {
+  if (canUseDesktopTrainingTransport()) {
+    await ensureDesktopTrainingWorker("Visit-level federated learning is unavailable");
+    return invokeDesktop<VisitLevelFederatedRoundJobResponse>("run_visit_level_federated_round", {
+      payload: {
+        site_id: siteId,
+        token,
+        ...payload,
+      },
+    });
+  }
+  return request<VisitLevelFederatedRoundJobResponse>(
+    `/api/sites/${siteId}/training/federated/visit-level`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        epochs: 1,
+        learning_rate: 5e-5,
+        batch_size: 4,
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function fetchVisitLevelFederatedRoundStatus(
+  siteId: string,
+  token: string,
+  options?: {
+    model_version_id?: string;
+  },
+) {
+  if (canUseDesktopTrainingTransport()) {
+    return invokeDesktop<VisitLevelFederatedRoundStatusResponse>("fetch_visit_level_federated_round_status", {
+      payload: {
+        site_id: siteId,
+        token,
+        model_version_id: options?.model_version_id,
+      },
+    });
+  }
+  const params = new URLSearchParams();
+  if (options?.model_version_id) {
+    params.set("model_version_id", options.model_version_id);
+  }
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<VisitLevelFederatedRoundStatusResponse>(
+    `/api/sites/${siteId}/training/federated/visit-level/status${suffix}`,
+    {},
     token,
   );
 }

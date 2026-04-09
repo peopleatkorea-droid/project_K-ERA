@@ -1,15 +1,14 @@
 import { NextRequest } from "next/server";
 
 import { jsonError, requireControlPlaneNode } from "../../../../../lib/control-plane/http";
-import { currentReleaseManifest } from "../../../../../lib/control-plane/store";
+import { currentReleaseManifestForSite } from "../../../../../lib/control-plane/store";
 
 export async function GET(request: NextRequest) {
   try {
-    await requireControlPlaneNode(request);
-    return Response.json(await currentReleaseManifest());
+    const node = await requireControlPlaneNode(request);
+    return Response.json(await currentReleaseManifestForSite(node.site_id));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load the current release.";
     return jsonError(message, 401);
   }
 }
-

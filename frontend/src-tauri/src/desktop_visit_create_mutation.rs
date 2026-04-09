@@ -103,7 +103,7 @@ pub(super) fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, S
         ],
     )
     .map_err(|error| error.to_string())?;
-    get_visit(
+    let created_visit = get_visit(
         &conn,
         &payload.site_id,
         &normalized_patient_id,
@@ -111,5 +111,7 @@ pub(super) fn create_visit(payload: CreateVisitRequest) -> Result<VisitRecord, S
     )?
     .ok_or_else(|| {
         format!("Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
-    })
+    })?;
+    schedule_federated_retrieval_corpus_sync(&site_id, "visit_create");
+    Ok(created_visit)
 }

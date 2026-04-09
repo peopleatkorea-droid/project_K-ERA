@@ -178,7 +178,15 @@ class RemoteControlPlaneClient:
         payload = self._request_json("GET", "/nodes/bootstrap", headers=self._node_headers())
         return dict(payload)
 
-    def heartbeat(self, *, app_version: str = "", os_info: str = "", status: str = "ok") -> dict[str, Any]:
+    def heartbeat(
+        self,
+        *,
+        app_version: str = "",
+        os_info: str = "",
+        status: str = "ok",
+        current_model_version_id: str = "",
+        current_model_version_name: str = "",
+    ) -> dict[str, Any]:
         payload = self._request_json(
             "POST",
             "/nodes/heartbeat",
@@ -186,6 +194,8 @@ class RemoteControlPlaneClient:
                 "app_version": app_version,
                 "os_info": os_info,
                 "status": status,
+                "current_model_version_id": current_model_version_id,
+                "current_model_version_name": current_model_version_name,
             },
             headers=self._node_headers(),
         )
@@ -228,6 +238,56 @@ class RemoteControlPlaneClient:
             headers=self._node_headers(),
         )
         return dict(payload)
+
+    def upload_retrieval_corpus_entries(
+        self,
+        *,
+        profile_id: str,
+        retrieval_signature: str,
+        entries: list[dict[str, Any]],
+        profile_metadata_json: dict[str, Any] | None = None,
+        replace_site_profile_scope: bool = False,
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/nodes/retrieval-corpus",
+            json_body={
+                "profile_id": profile_id,
+                "retrieval_signature": retrieval_signature,
+                "profile_metadata_json": profile_metadata_json or {},
+                "replace_site_profile_scope": bool(replace_site_profile_scope),
+                "entries": entries,
+            },
+            headers=self._node_headers(),
+            timeout_seconds=max(self.timeout_seconds, 120.0),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def search_retrieval_corpus(
+        self,
+        *,
+        profile_id: str,
+        retrieval_signature: str,
+        query_embedding: list[float],
+        top_k: int = 3,
+        exclude_site_id: str | None = None,
+        exclude_case_reference_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "POST",
+            "/nodes/retrieval-corpus/search",
+            json_body={
+                "profile_id": profile_id,
+                "retrieval_signature": retrieval_signature,
+                "query_embedding": query_embedding,
+                "top_k": top_k,
+                "exclude_site_id": exclude_site_id,
+                "exclude_case_reference_id": exclude_case_reference_id,
+            },
+            headers=self._node_headers(),
+            timeout_seconds=max(self.timeout_seconds, 60.0),
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
 
     def relay_ai_clinic(
         self,
@@ -397,6 +457,36 @@ class RemoteControlPlaneClient:
             headers=self._user_headers(user_bearer_token),
         )
         return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_release_rollouts(self, *, user_bearer_token: str) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/release-rollouts",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return [dict(item) for item in payload] if isinstance(payload, list) else []
+
+    def main_admin_create_release_rollout(
+        self,
+        *,
+        user_bearer_token: str,
+        payload_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/main/admin/release-rollouts",
+            headers=self._user_headers(user_bearer_token),
+            json_body=payload_json,
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def main_admin_federation_monitoring(self, *, user_bearer_token: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/federation/monitoring",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
 
     def main_admin_review_access_request(
         self,

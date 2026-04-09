@@ -56,8 +56,229 @@ def latest_embedding_backfill_job(site_store: Any) -> dict[str, Any] | None:
     jobs = [job for job in site_store.list_jobs() if job.get("job_type") == "ai_clinic_embedding_backfill"]
     if not jobs:
         return None
-    active = next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
-    return active or jobs[0]
+    return next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+
+
+def latest_federated_retrieval_sync_job(
+    site_store: Any,
+    *,
+    retrieval_profile: str | None = None,
+) -> dict[str, Any] | None:
+    normalized_profile = str(retrieval_profile or "").strip().lower()
+    jobs = [job for job in site_store.list_jobs() if job.get("job_type") == "federated_retrieval_corpus_sync"]
+    if normalized_profile:
+        jobs = [
+            job
+            for job in jobs
+            if str((job.get("payload") or {}).get("retrieval_profile") or "").strip().lower() == normalized_profile
+        ]
+    if not jobs:
+        return None
+    return next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+
+
+def latest_image_level_federated_round_job(
+    site_store: Any,
+    *,
+    model_version_id: str | None = None,
+    execution_device: str | None = None,
+    epochs: int | None = None,
+    learning_rate: float | None = None,
+    batch_size: int | None = None,
+) -> dict[str, Any] | None:
+    normalized_model_version_id = str(model_version_id or "").strip()
+    normalized_execution_device = str(execution_device or "").strip().lower()
+    jobs = [job for job in site_store.list_jobs() if job.get("job_type") == "image_level_federated_round"]
+    if normalized_model_version_id:
+        jobs = [
+            job
+            for job in jobs
+            if str((job.get("payload") or {}).get("model_version_id") or "").strip() == normalized_model_version_id
+        ]
+    if normalized_execution_device:
+        jobs = [
+            job
+            for job in jobs
+            if str((job.get("payload") or {}).get("execution_device") or "").strip().lower() == normalized_execution_device
+        ]
+    if epochs is not None:
+        jobs = [
+            job
+            for job in jobs
+            if int(((job.get("payload") or {}).get("epochs") or 0)) == int(epochs)
+        ]
+    if learning_rate is not None:
+        jobs = [
+            job
+            for job in jobs
+            if abs(float(((job.get("payload") or {}).get("learning_rate") or 0.0)) - float(learning_rate)) < 1e-12
+        ]
+    if batch_size is not None:
+        jobs = [
+            job
+            for job in jobs
+            if int(((job.get("payload") or {}).get("batch_size") or 0)) == int(batch_size)
+        ]
+    if not jobs:
+        return None
+    return next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+
+
+def latest_visit_level_federated_round_job(
+    site_store: Any,
+    *,
+    model_version_id: str | None = None,
+    execution_device: str | None = None,
+    epochs: int | None = None,
+    learning_rate: float | None = None,
+    batch_size: int | None = None,
+) -> dict[str, Any] | None:
+    normalized_model_version_id = str(model_version_id or "").strip()
+    normalized_execution_device = str(execution_device or "").strip().lower()
+    jobs = [job for job in site_store.list_jobs() if job.get("job_type") == "visit_level_federated_round"]
+    if normalized_model_version_id:
+        jobs = [
+            job
+            for job in jobs
+            if str((job.get("payload") or {}).get("model_version_id") or "").strip() == normalized_model_version_id
+        ]
+    if normalized_execution_device:
+        jobs = [
+            job
+            for job in jobs
+            if str((job.get("payload") or {}).get("execution_device") or "").strip().lower() == normalized_execution_device
+        ]
+    if epochs is not None:
+        jobs = [
+            job
+            for job in jobs
+            if int(((job.get("payload") or {}).get("epochs") or 0)) == int(epochs)
+        ]
+    if learning_rate is not None:
+        jobs = [
+            job
+            for job in jobs
+            if abs(float(((job.get("payload") or {}).get("learning_rate") or 0.0)) - float(learning_rate)) < 1e-12
+        ]
+    if batch_size is not None:
+        jobs = [
+            job
+            for job in jobs
+            if int(((job.get("payload") or {}).get("batch_size") or 0)) == int(batch_size)
+        ]
+    if not jobs:
+        return None
+    return next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+
+
+def build_image_level_federated_round_status(
+    site_store: Any,
+    *,
+    model_version: dict[str, Any],
+) -> dict[str, Any]:
+    eligible_case_count = 0
+    eligible_image_count = 0
+    skipped_not_positive = 0
+    skipped_not_active = 0
+    skipped_not_included = 0
+    skipped_no_images = 0
+    for summary in site_store.list_case_summaries():
+        patient_id = str(summary.get("patient_id") or "").strip()
+        visit_date = str(summary.get("visit_date") or "").strip()
+        if not patient_id or not visit_date:
+            continue
+        try:
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        except ValueError:
+            continue
+        if not bool(policy_state.get("is_positive")):
+            skipped_not_positive += 1
+            continue
+        if not bool(policy_state.get("is_active")):
+            skipped_not_active += 1
+            continue
+        if not bool(policy_state.get("is_registry_included")):
+            skipped_not_included += 1
+            continue
+        image_count = int(policy_state.get("image_count") or 0)
+        if image_count <= 0:
+            skipped_no_images += 1
+            continue
+        eligible_case_count += 1
+        eligible_image_count += image_count
+
+    active_job = latest_image_level_federated_round_job(
+        site_store,
+        model_version_id=str(model_version.get("version_id") or ""),
+    )
+    return {
+        "site_id": site_store.site_id,
+        "model_version": serialize_site_model_version(model_version),
+        "eligible_case_count": eligible_case_count,
+        "eligible_image_count": eligible_image_count,
+        "skipped": {
+            "not_positive": skipped_not_positive,
+            "not_active": skipped_not_active,
+            "not_included": skipped_not_included,
+            "no_images": skipped_no_images,
+        },
+        "active_job": active_job,
+    }
+
+
+def build_visit_level_federated_round_status(
+    site_store: Any,
+    *,
+    model_version: dict[str, Any],
+) -> dict[str, Any]:
+    eligible_case_count = 0
+    eligible_image_count = 0
+    skipped_not_positive = 0
+    skipped_not_active = 0
+    skipped_not_included = 0
+    skipped_no_images = 0
+    for summary in site_store.list_case_summaries():
+        patient_id = str(summary.get("patient_id") or "").strip()
+        visit_date = str(summary.get("visit_date") or "").strip()
+        if not patient_id or not visit_date:
+            continue
+        try:
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        except ValueError:
+            continue
+        if not bool(policy_state.get("is_positive")):
+            skipped_not_positive += 1
+            continue
+        if not bool(policy_state.get("is_active")):
+            skipped_not_active += 1
+            continue
+        if not bool(policy_state.get("is_registry_included")):
+            skipped_not_included += 1
+            continue
+        image_count = int(policy_state.get("image_count") or 0)
+        if image_count <= 0:
+            skipped_no_images += 1
+            continue
+        eligible_case_count += 1
+        eligible_image_count += image_count
+
+    active_job = latest_visit_level_federated_round_job(
+        site_store,
+        model_version_id=str(model_version.get("version_id") or ""),
+    )
+    return {
+        "site_id": site_store.site_id,
+        "model_version": serialize_site_model_version(model_version),
+        "eligible_case_count": eligible_case_count,
+        "eligible_image_count": eligible_image_count,
+        "skipped": {
+            "not_positive": skipped_not_positive,
+            "not_active": skipped_not_active,
+            "not_included": skipped_not_included,
+            "no_images": skipped_no_images,
+        },
+        "active_job": active_job,
+    }
 
 
 def build_embedding_backfill_status(
@@ -278,6 +499,49 @@ def queue_site_embedding_backfill(
     return site_store.get_job(job["job_id"]) or job
 
 
+def start_federated_retrieval_corpus_sync(
+    site_store: Any,
+    *,
+    site_id: str,
+    payload: Any,
+    execution_device: str,
+    queue_name_for_job_type: Callable[[str], str],
+) -> dict[str, Any]:
+    retrieval_profile = str(getattr(payload, "retrieval_profile", "dinov2_lesion_crop") or "dinov2_lesion_crop")
+    force_refresh = bool(getattr(payload, "force_refresh", False))
+    job = site_store.enqueue_job(
+        "federated_retrieval_corpus_sync",
+        {
+            "execution_mode": getattr(payload, "execution_mode", "auto"),
+            "execution_device": execution_device,
+            "retrieval_profile": retrieval_profile,
+            "force_refresh": force_refresh,
+            "total_cases": len(site_store.list_case_summaries()),
+        },
+        queue_name=queue_name_for_job_type("federated_retrieval_corpus_sync"),
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "queued",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "Federated retrieval corpus sync queued.",
+                "percent": 0,
+                "retrieval_profile": retrieval_profile,
+                "force_refresh": force_refresh,
+            }
+        },
+    )
+    return {
+        "site_id": site_id,
+        "execution_device": execution_device,
+        "retrieval_profile": retrieval_profile,
+        "force_refresh": force_refresh,
+        "job": site_store.get_job(job["job_id"]) or job,
+    }
+
+
 def start_site_validation(
     site_store: Any,
     *,
@@ -369,6 +633,96 @@ def start_initial_training(
         "site_id": site_id,
         "execution_device": execution_device,
         "job": site_store.get_job(job["job_id"]) or job,
+    }
+
+
+def start_image_level_federated_round(
+    site_store: Any,
+    *,
+    site_id: str,
+    model_version: dict[str, Any],
+    payload: Any,
+    execution_device: str,
+    queue_name_for_job_type: Callable[[str], str],
+) -> dict[str, Any]:
+    job = site_store.enqueue_job(
+        "image_level_federated_round",
+        {
+            "model_version_id": model_version.get("version_id"),
+            "model_version_name": model_version.get("version_name"),
+            "architecture": model_version.get("architecture"),
+            "execution_mode": getattr(payload, "execution_mode", "auto"),
+            "execution_device": execution_device,
+            "epochs": int(getattr(payload, "epochs", 1) or 1),
+            "learning_rate": float(getattr(payload, "learning_rate", 5e-5) or 5e-5),
+            "batch_size": int(getattr(payload, "batch_size", 8) or 8),
+        },
+        queue_name=queue_name_for_job_type("image_level_federated_round"),
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "queued",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "Image-level federated training round queued.",
+                "percent": 0,
+                "architecture": model_version.get("architecture"),
+                "model_version_id": model_version.get("version_id"),
+                "epochs": int(getattr(payload, "epochs", 1) or 1),
+            }
+        },
+    )
+    return {
+        "site_id": site_id,
+        "execution_device": execution_device,
+        "job": site_store.get_job(job["job_id"]) or job,
+        "model_version": serialize_site_model_version(model_version),
+    }
+
+
+def start_visit_level_federated_round(
+    site_store: Any,
+    *,
+    site_id: str,
+    model_version: dict[str, Any],
+    payload: Any,
+    execution_device: str,
+    queue_name_for_job_type: Callable[[str], str],
+) -> dict[str, Any]:
+    job = site_store.enqueue_job(
+        "visit_level_federated_round",
+        {
+            "model_version_id": model_version.get("version_id"),
+            "model_version_name": model_version.get("version_name"),
+            "architecture": model_version.get("architecture"),
+            "execution_mode": getattr(payload, "execution_mode", "auto"),
+            "execution_device": execution_device,
+            "epochs": int(getattr(payload, "epochs", 1) or 1),
+            "learning_rate": float(getattr(payload, "learning_rate", 5e-5) or 5e-5),
+            "batch_size": int(getattr(payload, "batch_size", 4) or 4),
+        },
+        queue_name=queue_name_for_job_type("visit_level_federated_round"),
+    )
+    site_store.update_job_status(
+        job["job_id"],
+        "queued",
+        {
+            "progress": {
+                "stage": "queued",
+                "message": "Visit-level federated training round queued.",
+                "percent": 0,
+                "architecture": model_version.get("architecture"),
+                "model_version_id": model_version.get("version_id"),
+                "epochs": int(getattr(payload, "epochs", 1) or 1),
+            }
+        },
+    )
+    return {
+        "site_id": site_id,
+        "execution_device": execution_device,
+        "job": site_store.get_job(job["job_id"]) or job,
+        "model_version": serialize_site_model_version(model_version),
     }
 
 

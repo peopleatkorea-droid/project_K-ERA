@@ -34,10 +34,13 @@ export {
 export {
   autoPublishMainModelUpdate,
   autoPublishMainModelVersion,
+  createMainReleaseRollout,
   deleteMainModelVersion,
+  fetchMainFederationMonitoring,
   listMainAggregations,
   listMainModelUpdates,
   listMainModelVersions,
+  listMainReleaseRollouts,
   publishMainModelUpdate,
   publishMainModelVersion,
   reviewMainModelUpdate,

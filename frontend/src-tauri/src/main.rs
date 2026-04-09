@@ -156,6 +156,10 @@ fn main() {
             fetch_site_model_versions,
             run_site_validation,
             run_initial_training,
+            run_image_level_federated_round,
+            fetch_image_level_federated_round_status,
+            run_visit_level_federated_round,
+            fetch_visit_level_federated_round_status,
             run_initial_training_benchmark,
             resume_initial_training_benchmark,
             cancel_site_job,
@@ -165,7 +169,9 @@ fn main() {
             run_ssl_pretraining,
             run_retrieval_baseline,
             fetch_ai_clinic_embedding_status,
+            fetch_federated_retrieval_corpus_status,
             backfill_ai_clinic_embeddings,
+            sync_federated_retrieval_corpus,
             list_cases,
             get_site_activity,
             list_patients,
@@ -199,7 +205,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running K-ERA desktop shell");
 }
-
-
-
-

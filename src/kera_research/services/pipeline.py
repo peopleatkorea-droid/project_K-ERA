@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,9 @@ from kera_research.services.pipeline_domains import (
     ResearchValidationWorkflow,
 )
 from kera_research.services.pipeline_embedding_workflow import ResearchEmbeddingWorkflow
+from kera_research.services.pipeline_federated_retrieval_workflow import ResearchFederatedRetrievalWorkflow
 from kera_research.services.pipeline_postmortem_workflow import ResearchPostmortemWorkflow
+from kera_research.services.preferred_operating_models import preferred_operating_model_versions
 from kera_research.services.pipeline_review_support import ResearchReviewSupport
 from kera_research.services.prediction_postmortem_analyzer import PredictionPostmortemAnalyzer
 from kera_research.services.prediction_postmortem_advisor import PredictionPostmortemAdvisor
@@ -30,6 +32,7 @@ from kera_research.services.quality import score_slit_lamp_image
 from kera_research.services.retrieval import BiomedClipTextRetriever, Dinov2ImageRetriever
 from kera_research.services.vector_index import FaissCaseIndexManager
 from kera_research.storage import ensure_dir, read_json, write_json
+from kera_research.config import DEFAULT_GLOBAL_MODELS
 
 
 class ResearchWorkflowService:
@@ -48,6 +51,7 @@ class ResearchWorkflowService:
         self.contribution_workflow = ResearchContributionWorkflow(self)
         self.training_workflow = ResearchTrainingWorkflow(self)
         self.embedding_workflow = ResearchEmbeddingWorkflow(self)
+        self.federated_retrieval_workflow = ResearchFederatedRetrievalWorkflow(self)
         self.ai_clinic_workflow = ResearchAiClinicWorkflow(self)
         self.postmortem_workflow = ResearchPostmortemWorkflow(self)
         self.case_support = ResearchCaseSupport(self)
@@ -77,6 +81,28 @@ class ResearchWorkflowService:
 
         for baseline in self.model_manager.ensure_baseline_models():
             self.control_plane.ensure_model_version(baseline)
+        fallback_version_ids = {
+            str(item.get("version_id") or "").strip()
+            for item in DEFAULT_GLOBAL_MODELS
+            if str(item.get("version_id") or "").strip()
+        }
+        existing_versions = [
+            item
+            for item in self.control_plane.list_model_versions()
+            if item.get("stage") == "global" and item.get("ready", True)
+        ]
+        current_version = next((item for item in existing_versions if item.get("is_current")), None)
+        current_version_id = str(current_version.get("version_id") or "").strip() if isinstance(current_version, dict) else ""
+        preserve_existing_current = bool(current_version_id) and current_version_id not in fallback_version_ids
+        for preferred_model in preferred_operating_model_versions():
+            seeded_model = dict(preferred_model)
+            if (
+                preserve_existing_current
+                and seeded_model.get("is_current")
+                and str(seeded_model.get("version_id") or "").strip() != current_version_id
+            ):
+                seeded_model["is_current"] = False
+            self.control_plane.ensure_model_version(seeded_model)
 
     def _normalize_crop_mode(self, crop_mode: str | None) -> str:
         normalized = str(crop_mode or "automated").strip().lower()
@@ -922,6 +948,49 @@ class ResearchWorkflowService:
             update_index=update_index,
         )
 
+    def retrieval_signature(self, retrieval_profile: str = "dinov2_lesion_crop") -> dict[str, Any]:
+        return self.federated_retrieval_workflow.retrieval_signature(retrieval_profile)
+
+    def sync_remote_retrieval_corpus(
+        self,
+        site_store: SiteStore,
+        *,
+        execution_device: str,
+        retrieval_profile: str = "dinov2_lesion_crop",
+        force_refresh: bool = False,
+        batch_size: int = 32,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        return self.federated_retrieval_workflow.sync_remote_retrieval_corpus(
+            site_store,
+            execution_device=execution_device,
+            retrieval_profile=retrieval_profile,
+            force_refresh=force_refresh,
+            batch_size=batch_size,
+            progress_callback=progress_callback,
+        )
+
+    def search_remote_retrieval_corpus(
+        self,
+        site_store: SiteStore,
+        *,
+        query_embedding: np.ndarray,
+        query_metadata: dict[str, Any],
+        patient_id: str,
+        visit_date: str,
+        retrieval_profile: str = "dinov2_lesion_crop",
+        top_k: int = 3,
+    ) -> list[dict[str, Any]]:
+        return self.federated_retrieval_workflow.search_remote_retrieval_corpus(
+            site_store,
+            query_embedding=query_embedding,
+            query_metadata=query_metadata,
+            patient_id=patient_id,
+            visit_date=visit_date,
+            retrieval_profile=retrieval_profile,
+            top_k=top_k,
+        )
+
     def _faiss_backend_hits(
         self,
         site_store: SiteStore,
@@ -1751,6 +1820,48 @@ class ResearchWorkflowService:
             warmup_epochs=warmup_epochs,
             early_stop_patience=early_stop_patience,
             partial_unfreeze_blocks=partial_unfreeze_blocks,
+        )
+
+    def run_image_level_federated_round(
+        self,
+        site_store: SiteStore,
+        model_version: dict[str, Any],
+        execution_device: str,
+        *,
+        epochs: int = 1,
+        learning_rate: float = 5e-5,
+        batch_size: int = 8,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        return self.training_workflow.run_image_level_federated_round(
+            site_store,
+            model_version,
+            execution_device,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            progress_callback=progress_callback,
+        )
+
+    def run_visit_level_federated_round(
+        self,
+        site_store: SiteStore,
+        model_version: dict[str, Any],
+        execution_device: str,
+        *,
+        epochs: int = 1,
+        learning_rate: float = 5e-5,
+        batch_size: int = 4,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        return self.training_workflow.run_visit_level_federated_round(
+            site_store,
+            model_version,
+            execution_device,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            progress_callback=progress_callback,
         )
 
     def run_retrieval_baseline(

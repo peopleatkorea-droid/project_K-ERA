@@ -56,6 +56,14 @@ class FaissCaseIndexManager:
         faiss = self._ensure_faiss()
         embedding_root = site_store.embedding_dir / model_version_id / self._backend_key(backend)
         index_path, metadata_path = self._index_paths(site_store, model_version_id, backend)
+        valid_case_keys = {
+            (
+                str(record.get("patient_id") or "").strip(),
+                str(record.get("visit_date") or "").strip(),
+            )
+            for record in site_store.dataset_records()
+            if str(record.get("patient_id") or "").strip() and str(record.get("visit_date") or "").strip()
+        }
 
         rows: list[dict[str, Any]] = []
         vectors: list[np.ndarray] = []
@@ -63,6 +71,13 @@ class FaissCaseIndexManager:
             for meta_path in sorted(embedding_root.glob("*.json")):
                 payload = read_json(meta_path, {})
                 vector_path = meta_path.with_suffix(".npy")
+                patient_id = str(payload.get("patient_id") or "").strip()
+                visit_date = str(payload.get("visit_date") or "").strip()
+                case_key = (patient_id, visit_date)
+                if not patient_id or not visit_date or case_key not in valid_case_keys:
+                    meta_path.unlink(missing_ok=True)
+                    vector_path.unlink(missing_ok=True)
+                    continue
                 if not vector_path.exists():
                     continue
                 try:
@@ -71,9 +86,9 @@ class FaissCaseIndexManager:
                     continue
                 rows.append(
                     {
-                        "case_id": f"{payload.get('patient_id', '')}::{payload.get('visit_date', '')}",
-                        "patient_id": payload.get("patient_id"),
-                        "visit_date": payload.get("visit_date"),
+                        "case_id": f"{patient_id}::{visit_date}",
+                        "patient_id": patient_id,
+                        "visit_date": visit_date,
                         "vector_path": str(vector_path),
                         "metadata_path": str(meta_path),
                     }

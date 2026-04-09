@@ -129,6 +129,78 @@ fn delete_patient_if_empty(
     Ok(true)
 }
 
+fn schedule_federated_retrieval_corpus_sync(site_id: &str, trigger: &str) {
+    let normalized_site_id = site_id.trim().to_string();
+    let normalized_trigger = trigger.trim().to_string();
+    if normalized_site_id.is_empty() || normalized_trigger.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = request_local_api_json_owned(
+            HttpMethod::POST,
+            &format!(
+                "/api/desktop/internal/sites/{}/ai-clinic/retrieval-corpus/queue",
+                normalized_site_id
+            ),
+            "",
+            vec![("trigger".to_string(), normalized_trigger)],
+            Some(json!({
+                "retrieval_profile": "dinov2_lesion_crop",
+                "force_refresh": false,
+            })),
+            Some(desktop_runtime_owner()),
+        );
+    });
+}
+
+fn schedule_case_embedding_refresh(site_id: &str, patient_id: &str, visit_date: &str, trigger: &str) {
+    let normalized_site_id = site_id.trim().to_string();
+    let normalized_patient_id = patient_id.trim().to_string();
+    let normalized_visit_date = visit_date.trim().to_string();
+    let normalized_trigger = trigger.trim().to_string();
+    if normalized_site_id.is_empty()
+        || normalized_patient_id.is_empty()
+        || normalized_visit_date.is_empty()
+        || normalized_trigger.is_empty()
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = request_local_api_json_owned(
+            HttpMethod::POST,
+            &format!(
+                "/api/desktop/internal/sites/{}/cases/{}/visits/{}/ai-clinic/embeddings/queue",
+                normalized_site_id, normalized_patient_id, normalized_visit_date
+            ),
+            "",
+            vec![("trigger".to_string(), normalized_trigger)],
+            None,
+            Some(desktop_runtime_owner()),
+        );
+    });
+}
+
+fn schedule_ai_clinic_vector_index_rebuild(site_id: &str, trigger: &str) {
+    let normalized_site_id = site_id.trim().to_string();
+    let normalized_trigger = trigger.trim().to_string();
+    if normalized_site_id.is_empty() || normalized_trigger.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _ = request_local_api_json_owned(
+            HttpMethod::POST,
+            &format!(
+                "/api/desktop/internal/sites/{}/ai-clinic/vector-index/queue",
+                normalized_site_id
+            ),
+            "",
+            vec![("trigger".to_string(), normalized_trigger)],
+            None,
+            Some(desktop_runtime_owner()),
+        );
+    });
+}
+
 const MAX_UPLOAD_IMAGE_PIXELS: u64 = 40_000_000;
 
 enum JpegFastPathOutcome {

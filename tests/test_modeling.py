@@ -4,18 +4,103 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from PIL import Image
+
 from kera_research.cli import build_parser
+from kera_research.domain import LABEL_TO_INDEX
 from kera_research.services.modeling import ModelManager, torch
 
 
 @unittest.skipIf(torch is None, "PyTorch is required for modeling tests.")
 class ModelManagerTests(unittest.TestCase):
+    def test_fine_tune_uses_attention_mil_visit_bag_path_for_mil_models(self):
+        class TinyAttentionMil(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.backbone = torch.nn.Sequential(
+                    torch.nn.Flatten(),
+                    torch.nn.Linear(3 * 224 * 224, 16),
+                    torch.nn.ReLU(),
+                )
+                self.attention_pool = torch.nn.Linear(16, 1)
+                self.classifier = torch.nn.Linear(16, len(LABEL_TO_INDEX))
+
+            def forward(self, inputs, bag_mask=None, return_attention=False):
+                batch_size, bag_size = inputs.shape[:2]
+                features = self.backbone(inputs.reshape(batch_size * bag_size, -1)).reshape(batch_size, bag_size, -1)
+                attention_logits = self.attention_pool(features).squeeze(-1)
+                if bag_mask is not None:
+                    attention_logits = attention_logits.masked_fill(~bag_mask, -1e9)
+                attention = torch.softmax(attention_logits, dim=1)
+                pooled = torch.sum(features * attention.unsqueeze(-1), dim=1)
+                logits = self.classifier(pooled)
+                if return_attention:
+                    return logits, attention
+                return logits
+
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            records = []
+            for patient_id, visit_date, label, color in (
+                ("P-001", "Initial", "bacterial", (255, 0, 0)),
+                ("P-002", "Initial", "fungal", (0, 255, 0)),
+            ):
+                for image_index in range(2):
+                    image_path = temp_path / f"{patient_id}_{image_index}.png"
+                    Image.new("RGB", (32, 32), color).save(image_path)
+                    records.append(
+                        {
+                            "patient_id": patient_id,
+                            "visit_date": visit_date,
+                            "culture_category": label,
+                            "image_path": str(image_path),
+                            "source_image_path": str(image_path),
+                            "view": "white",
+                        }
+                    )
+
+            output_model_path = temp_path / "visit_mil_finetuned.pth"
+            base_model_reference = {
+                "architecture": "efficientnet_v2_s_mil",
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": manager.preprocess_signature(),
+                "num_classes": 2,
+            }
+
+            with patch.object(manager, "load_model", return_value=TinyAttentionMil()):
+                result = manager.fine_tune(
+                    records=records,
+                    base_model_reference=base_model_reference,
+                    output_model_path=output_model_path,
+                    device="cpu",
+                    full_finetune=False,
+                    epochs=1,
+                    batch_size=2,
+                )
+
+            self.assertTrue(output_model_path.exists())
+            self.assertTrue(result["bag_level"])
+            self.assertEqual(result["case_aggregation"], "attention_mil")
+            self.assertEqual(result["n_train_cases"], 2)
+            self.assertEqual(result["n_train_images"], 4)
+            self.assertEqual(result["batch_size"], 2)
+
+            checkpoint = torch.load(output_model_path, map_location="cpu")
+            self.assertEqual(checkpoint["architecture"], "efficientnet_v2_s_mil")
+            self.assertTrue(checkpoint["artifact_metadata"]["bag_level"])
+            self.assertEqual(checkpoint["artifact_metadata"]["case_aggregation"], "attention_mil")
+
     def test_cli_parser_exposes_research_commands(self):
         parser = build_parser()
         help_text = parser.format_help()

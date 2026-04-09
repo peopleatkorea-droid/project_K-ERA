@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "version_id": "model_global_efficientnet_v2_s_mil_full_p101_fold01",
+      "version_name": "global-efficientnet-v2-s-mil-full-p101-fold01",
+      "architecture": "efficientnet_v2_s_mil",
+      "relative_model_path": "artifacts/mil_backbone_ablation_cv_20260403_p101_5fold/fold_01/efficientnet_v2_s_mil_full/efficientnet_v2_s_mil_full.pth",
+      "relative_result_path": "artifacts/mil_backbone_ablation_cv_20260403_p101_5fold/fold_01/efficientnet_v2_s_mil_full/result.json",
+      "requires_medsam_crop": false,
+      "crop_mode": "raw",
+      "case_aggregation": "attention_mil",
+      "bag_level": true,
+      "training_input_policy": "raw_or_model_defined",
+      "is_current": true,
+      "notes": "Preferred operating visit-level model from the p101 cross-validation suite. Fold 01 is the ship candidate because it had the best validation balanced accuracy among EfficientNetV2-S MIL full checkpoints.",
+      "notes_ko": "p101 교차검증 suite에서 선택한 운영용 visit-level 모델입니다. EfficientNetV2-S MIL full 체크포인트 중 validation balanced accuracy가 가장 높았던 fold 01을 배포 후보로 사용합니다.",
+      "notes_en": "Preferred operating visit-level model from the p101 cross-validation suite. Fold 01 is the ship candidate because it had the best validation balanced accuracy among EfficientNetV2-S MIL full checkpoints."
+    },
+    {
+      "version_id": "model_global_convnext_tiny_full_p101_fold01",
+      "version_name": "global-convnext-tiny-full-p101-fold01",
+      "architecture": "convnext_tiny",
+      "relative_model_path": "artifacts/final_white_summary_cv_20260402_p101_5fold/fold_01/convnext_tiny_full/convnext_tiny_full.pth",
+      "relative_result_path": "artifacts/final_white_summary_cv_20260402_p101_5fold/fold_01/convnext_tiny_full/result.json",
+      "requires_medsam_crop": false,
+      "crop_mode": "raw",
+      "case_aggregation": "mean",
+      "bag_level": false,
+      "training_input_policy": "raw_or_model_defined",
+      "is_current": false,
+      "notes": "Preferred image-level companion CNN from the p101 cross-validation suite. Fold 01 is bundled as the representative ConvNeXt-Tiny support model.",
+      "notes_ko": "p101 교차검증 suite에서 선택한 image-level 보조 CNN입니다. 대표 ConvNeXt-Tiny support 모델로 fold 01을 함께 제공합니다.",
+      "notes_en": "Preferred image-level companion CNN from the p101 cross-validation suite. Fold 01 is bundled as the representative ConvNeXt-Tiny support model."
+    }
+  ]
+}

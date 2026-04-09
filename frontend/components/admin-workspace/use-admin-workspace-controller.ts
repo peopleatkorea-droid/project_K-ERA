@@ -1860,6 +1860,8 @@ export function useAdminWorkspaceController({
     handleExportCrossValidationReport: trainingController.handleExportCrossValidationReport,
     handleAggregation: registryController.handleAggregation,
     handleAggregationAllReady: registryController.handleAggregationAllReady,
+    handleRefreshFederationStatus: registryController.handleRefreshFederationStatus,
+    handleCreateReleaseRollout: registryController.handleCreateReleaseRollout,
     handleDeleteModelVersion: registryController.handleDeleteModelVersion,
     handleActivateLocalModelVersion: registryController.handleActivateLocalModelVersion,
     handlePublishModelVersion: registryController.handlePublishModelVersion,

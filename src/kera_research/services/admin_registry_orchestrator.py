@@ -283,6 +283,17 @@ class AdminRegistryOrchestrator:
             )
         architecture = next(iter(architectures))
 
+        normalized_round_types = {
+            str(item.get("federated_round_type") or "case_contribution_single_case").strip().lower()
+            or "case_contribution_single_case"
+            for item in approved_updates
+        }
+        if len(normalized_round_types) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only updates from the same federated round type can be aggregated together.",
+            )
+
         base_model_ids = {item.get("base_model_version_id") for item in approved_updates}
         if len(base_model_ids) != 1:
             raise HTTPException(
@@ -312,9 +323,18 @@ class AdminRegistryOrchestrator:
         delta_weights: list[int] = []
         for update_record in approved_updates:
             site_key = str(update_record.get("site_id") or "unknown")
-            n_cases = max(1, int(update_record.get("n_cases", 1) or 1))
-            site_weights[site_key] = site_weights.get(site_key, 0) + n_cases
-            delta_weights.append(n_cases)
+            aggregation_weight = max(
+                1,
+                int(
+                    update_record.get(
+                        "aggregation_weight",
+                        update_record.get("n_cases", 1),
+                    )
+                    or 1
+                ),
+            )
+            site_weights[site_key] = site_weights.get(site_key, 0) + aggregation_weight
+            delta_weights.append(aggregation_weight)
 
         resolved_version_name = (new_version_name or "").strip() or f"global-{architecture}-fedavg-{self.make_id('v')[:6]}"
         output_path = self.model_dir / f"global_{architecture}_{self.make_id('agg')}.pth"

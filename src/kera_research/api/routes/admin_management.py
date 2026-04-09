@@ -20,6 +20,8 @@ def build_admin_management_router(support: Any) -> APIRouter:
     site_comparison_rows = support.site_comparison_rows
     hash_password = support.hash_password
     make_id = support.make_id
+    queue_ai_clinic_embedding_backfill = support.queue_ai_clinic_embedding_backfill
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
 
     ProjectCreateRequest = support.ProjectCreateRequest
     SiteCreateRequest = support.SiteCreateRequest
@@ -361,6 +363,16 @@ def build_admin_management_router(support: Any) -> APIRouter:
                 )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
+            trigger="metadata_recover",
+        )
+        queue_ai_clinic_embedding_backfill(
+            cp,
+            site_store,
+            trigger="metadata_recover",
+        )
         return {
             "site_id": site_store.site_id,
             "site_dir": str(site_store.site_dir),
@@ -381,6 +393,16 @@ def build_admin_management_router(support: Any) -> APIRouter:
         if any(int(result.get(key) or 0) > 0 for key in ("created_patients", "created_visits", "created_images")):
             site_store.generate_manifest()
             site_store.export_metadata_backup()
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
+            trigger="raw_inventory_sync",
+        )
+        queue_ai_clinic_embedding_backfill(
+            cp,
+            site_store,
+            trigger="raw_inventory_sync",
+        )
         return {
             "site_id": site_store.site_id,
             "site_dir": str(site_store.site_dir),

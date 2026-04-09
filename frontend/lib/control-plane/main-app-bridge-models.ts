@@ -2,11 +2,25 @@ import "server-only";
 
 import { NextRequest } from "next/server";
 
-import type { AggregationRecord, AggregationRunResponse, AuthUser, ModelUpdateRecord, ModelVersionRecord } from "../types";
+import type {
+  AggregationRecord,
+  AggregationRunResponse,
+  AuthUser,
+  FederationMonitoringSummaryResponse,
+  ModelUpdateRecord,
+  ModelVersionRecord,
+  ReleaseRolloutRecord,
+} from "../types";
 import { makeControlPlaneId } from "./crypto";
 import { controlPlaneSql } from "./db";
 import { requireMainAppBridgeUser } from "./main-app-bridge-users";
 import { normalizeStringArray, rowValue, trimText } from "./main-app-bridge-shared";
+import {
+  appendAuditEvent,
+  createReleaseRollout as createStoreReleaseRollout,
+  federationMonitoringSummary,
+  listReleaseRollouts as listStoreReleaseRollouts,
+} from "./store";
 
 function assertAdminWorkspacePermission(user: AuthUser): void {
   if (user.role !== "admin" && user.role !== "site_admin") {
@@ -285,7 +299,7 @@ export async function deleteMainModelVersion(
   request: NextRequest,
   versionId: string,
 ): Promise<{ model_version: ModelVersionRecord }> {
-  const { user } = await requireMainAppBridgeUser(request);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedVersionId = trimText(versionId);
   if (!normalizedVersionId) {
@@ -327,7 +341,7 @@ export async function publishMainModelVersion(
     set_current?: boolean;
   },
 ): Promise<{ model_version: ModelVersionRecord }> {
-  const { user } = await requireMainAppBridgeUser(request);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedVersionId = trimText(versionId);
   if (!normalizedVersionId) {
@@ -368,7 +382,19 @@ export async function publishMainModelVersion(
   if (!rows[0]) {
     throw new Error("Model version not found.");
   }
-  return { model_version: serializeMainModelVersionRow(rows[0] as Record<string, unknown>) };
+  const modelVersion = serializeMainModelVersionRow(rows[0] as Record<string, unknown>);
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "model_version.published",
+    targetType: "model_version",
+    targetId: modelVersion.version_id,
+    payload: {
+      is_current: modelVersion.is_current ?? false,
+      download_url: modelVersion.download_url ?? "",
+    },
+  });
+  return { model_version: modelVersion };
 }
 
 export async function autoPublishMainModelVersion(
@@ -436,7 +462,18 @@ export async function reviewMainModelUpdate(
   if (!rows[0]) {
     throw new Error("Model update not found.");
   }
-  return { update: serializeMainModelUpdateRow(rows[0] as Record<string, unknown>) };
+  const update = serializeMainModelUpdateRow(rows[0] as Record<string, unknown>);
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "model_update.reviewed",
+    targetType: "model_update",
+    targetId: update.update_id,
+    payload: {
+      decision: update.status ?? null,
+    },
+  });
+  return { update };
 }
 
 export async function publishMainModelUpdate(
@@ -446,7 +483,7 @@ export async function publishMainModelUpdate(
     download_url?: string;
   },
 ): Promise<{ update: ModelUpdateRecord }> {
-  const { user } = await requireMainAppBridgeUser(request);
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
   assertPlatformAdmin(user);
   const normalizedUpdateId = trimText(updateId);
   if (!normalizedUpdateId) {
@@ -499,7 +536,18 @@ export async function publishMainModelUpdate(
     where update_id = ${normalizedUpdateId}
     limit 1
   `;
-  return { update: serializeMainModelUpdateRow(refreshedRows[0] as Record<string, unknown>) };
+  const update = serializeMainModelUpdateRow(refreshedRows[0] as Record<string, unknown>);
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "model_update.published",
+    targetType: "model_update",
+    targetId: update.update_id,
+    payload: {
+      artifact_download_url: update.artifact_download_url ?? null,
+    },
+  });
+  return { update };
 }
 
 export async function autoPublishMainModelUpdate(
@@ -593,9 +641,84 @@ export async function runMainFederatedAggregation(
   if (!aggregationRows[0]) {
     throw new Error("Unable to create aggregation.");
   }
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "aggregation.created",
+    targetType: "aggregation",
+    targetId: aggregationId,
+    payload: {
+      update_ids: selectedUpdateIds,
+      new_version_name: newVersionName,
+    },
+  });
   return {
     aggregation: serializeMainAggregationRow(aggregationRows[0] as Record<string, unknown>),
     model_version: null,
     aggregated_update_ids: selectedUpdateIds,
+  };
+}
+
+export async function listMainReleaseRollouts(request: NextRequest): Promise<ReleaseRolloutRecord[]> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+  return listStoreReleaseRollouts();
+}
+
+export async function createMainReleaseRollout(
+  request: NextRequest,
+  payload: {
+    version_id?: string;
+    stage?: "pilot" | "partial" | "full" | "rollback";
+    target_site_ids?: string[];
+    notes?: string;
+  },
+): Promise<{ rollout: ReleaseRolloutRecord }> {
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+  const versionId = trimText(payload.version_id);
+  const stage = payload.stage;
+  if (!versionId) {
+    throw new Error("Model version id is required.");
+  }
+  if (stage !== "pilot" && stage !== "partial" && stage !== "full" && stage !== "rollback") {
+    throw new Error("Rollout stage is required.");
+  }
+  const rollout = await createStoreReleaseRollout({
+    actorUserId: canonicalUserId,
+    versionId,
+    stage,
+    targetSiteIds: normalizeStringArray(payload.target_site_ids),
+    notes: trimText(payload.notes) || "",
+  });
+  return { rollout };
+}
+
+export async function fetchMainFederationMonitoring(
+  request: NextRequest,
+): Promise<FederationMonitoringSummaryResponse> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+  const summary = await federationMonitoringSummary();
+  return {
+    current_release: summary.current_release
+      ? {
+          version_id: summary.current_release.version_id,
+          version_name: summary.current_release.version_name,
+          architecture: summary.current_release.architecture,
+          created_at: summary.current_release.created_at,
+          ready: summary.current_release.ready,
+          is_current: summary.current_release.is_current,
+          download_url: summary.current_release.download_url,
+          source_provider: summary.current_release.source_provider,
+          size_bytes: summary.current_release.size_bytes,
+          sha256: summary.current_release.sha256,
+        }
+      : null,
+    active_rollout: summary.active_rollout,
+    recent_rollouts: summary.recent_rollouts,
+    recent_audit_events: summary.recent_audit_events,
+    node_summary: summary.node_summary,
+    site_adoption: summary.site_adoption,
   };
 }

@@ -7,11 +7,18 @@ import {
   activateLocalModelVersion,
   autoPublishModelUpdate,
   autoPublishModelVersion,
+  createReleaseRollout,
   deleteModelVersion,
+  fetchFederatedRetrievalCorpusStatus,
+  fetchFederationMonitoring,
   fetchAggregations,
+  fetchAiClinicEmbeddingStatus,
+  fetchImageLevelFederatedRoundStatus,
   fetchModelUpdateArtifactBlob,
   fetchModelUpdates,
   fetchModelVersions,
+  fetchReleaseRollouts,
+  fetchVisitLevelFederatedRoundStatus,
   publishModelUpdate,
   publishModelVersion,
   reviewModelUpdate,
@@ -92,6 +99,18 @@ export function useAdminWorkspaceRegistryController({
     setPublishingModelVersionId,
     setPublishingModelUpdateId,
     setAggregationBusy,
+    setImageLevelFederatedStatus,
+    setVisitLevelFederatedStatus,
+    setFederatedRetrievalStatus,
+    setEmbeddingStatus,
+    setFederationStatusBusy,
+    releaseRolloutForm,
+    setReleaseRolloutForm,
+    setReleaseRolloutBusy,
+    setReleaseRollouts,
+    setFederationMonitoring,
+    setFederationMonitoringBusy,
+    setRecentAuditEvents,
     newVersionName,
     setNewVersionName,
   } = state;
@@ -107,12 +126,25 @@ export function useAdminWorkspaceRegistryController({
   }
 
   async function loadFederationSectionData() {
-    const [nextUpdates, nextAggregations] = await Promise.all([
+    const [nextUpdates, nextAggregations, nextRollouts, nextMonitoring, nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
       fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
       fetchAggregations(token),
+      fetchReleaseRollouts(token).catch(() => []),
+      fetchFederationMonitoring(token).catch(() => null),
+      selectedSiteId ? fetchImageLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+      selectedSiteId ? fetchVisitLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+      selectedSiteId ? fetchFederatedRetrievalCorpusStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+      selectedSiteId ? fetchAiClinicEmbeddingStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
     ]);
     applyModelUpdateData(nextUpdates);
     setAggregations(nextAggregations);
+    setReleaseRollouts(nextRollouts);
+    setFederationMonitoring(nextMonitoring);
+    setRecentAuditEvents(nextMonitoring?.recent_audit_events ?? []);
+    setImageLevelFederatedStatus(nextImageLevelStatus);
+    setVisitLevelFederatedStatus(nextVisitLevelStatus);
+    setFederatedRetrievalStatus(nextRetrievalStatus);
+    setEmbeddingStatus(nextEmbeddingStatus);
   }
 
   useEffect(() => {
@@ -158,18 +190,38 @@ export function useAdminWorkspaceRegistryController({
     let cancelled = false;
     async function loadFederation() {
       try {
-        const [nextUpdates, nextAggregations] = await Promise.all([
+        setFederationStatusBusy(true);
+        setFederationMonitoringBusy(true);
+        const [nextUpdates, nextAggregations, nextRollouts, nextMonitoring, nextImageLevelStatus, nextVisitLevelStatus, nextRetrievalStatus, nextEmbeddingStatus] = await Promise.all([
           fetchModelUpdates(token, { site_id: selectedSiteId ?? undefined }),
           fetchAggregations(token),
+          fetchReleaseRollouts(token).catch(() => []),
+          fetchFederationMonitoring(token).catch(() => null),
+          selectedSiteId ? fetchImageLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+          selectedSiteId ? fetchVisitLevelFederatedRoundStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+          selectedSiteId ? fetchFederatedRetrievalCorpusStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
+          selectedSiteId ? fetchAiClinicEmbeddingStatus(selectedSiteId, token).catch(() => null) : Promise.resolve(null),
         ]);
         if (cancelled) {
           return;
         }
         applyModelUpdateData(nextUpdates);
         setAggregations(nextAggregations);
+        setReleaseRollouts(nextRollouts);
+        setFederationMonitoring(nextMonitoring);
+        setRecentAuditEvents(nextMonitoring?.recent_audit_events ?? []);
+        setImageLevelFederatedStatus(nextImageLevelStatus);
+        setVisitLevelFederatedStatus(nextVisitLevelStatus);
+        setFederatedRetrievalStatus(nextRetrievalStatus);
+        setEmbeddingStatus(nextEmbeddingStatus);
       } catch (nextError) {
         if (!cancelled) {
           setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
+        }
+      } finally {
+        if (!cancelled) {
+          setFederationStatusBusy(false);
+          setFederationMonitoringBusy(false);
         }
       }
     }
@@ -386,6 +438,66 @@ export function useAdminWorkspaceRegistryController({
     }
   }
 
+  async function handleRefreshFederationStatus() {
+    setFederationStatusBusy(true);
+    setFederationMonitoringBusy(true);
+    try {
+      await loadFederationSectionData();
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.aggregationFailed) });
+    } finally {
+      setFederationStatusBusy(false);
+      setFederationMonitoringBusy(false);
+    }
+  }
+
+  async function handleCreateReleaseRollout() {
+    const versionId = releaseRolloutForm.version_id.trim();
+    if (!versionId) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Select a ready model version before starting rollout.", "rollout을 시작하려면 준비된 모델 버전을 선택하세요."),
+      });
+      return;
+    }
+    const targetSiteIds = releaseRolloutForm.target_site_ids_text
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if ((releaseRolloutForm.stage === "pilot" || releaseRolloutForm.stage === "partial") && targetSiteIds.length === 0) {
+      setToast({
+        tone: "error",
+        message: pick(locale, "Pilot and partial rollout require at least one target hospital.", "pilot/partial rollout에는 최소 한 개의 대상 병원이 필요합니다."),
+      });
+      return;
+    }
+    setReleaseRolloutBusy(true);
+    try {
+      await createReleaseRollout(token, {
+        version_id: versionId,
+        stage: releaseRolloutForm.stage,
+        target_site_ids: targetSiteIds,
+        notes: releaseRolloutForm.notes.trim(),
+      });
+      setReleaseRolloutForm((current) => ({
+        ...current,
+        notes: "",
+      }));
+      await handleRefreshFederationStatus();
+      setToast({
+        tone: "success",
+        message: pick(locale, "Release rollout saved.", "릴리스 rollout을 저장했습니다."),
+      });
+    } catch (nextError) {
+      setToast({
+        tone: "error",
+        message: describeError(nextError, pick(locale, "Unable to create the release rollout.", "릴리스 rollout 생성에 실패했습니다.")),
+      });
+    } finally {
+      setReleaseRolloutBusy(false);
+    }
+  }
+
   return {
     loadRegistrySectionData,
     loadFederationSectionData,
@@ -396,5 +508,7 @@ export function useAdminWorkspaceRegistryController({
     handlePublishModelVersion,
     handleModelUpdateReview,
     handlePublishModelUpdate,
+    handleRefreshFederationStatus,
+    handleCreateReleaseRollout,
   };
 }

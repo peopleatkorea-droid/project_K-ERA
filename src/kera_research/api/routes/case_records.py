@@ -30,6 +30,9 @@ def build_case_records_router(support: Any) -> APIRouter:
     require_visit_write_access = support.require_visit_write_access
     require_record_owner = support.require_record_owner
     build_patient_trajectory = support.build_patient_trajectory
+    queue_case_embedding_refresh = support.queue_case_embedding_refresh
+    queue_ai_clinic_vector_index_rebuild = support.queue_ai_clinic_vector_index_rebuild
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
 
     PatientCreateRequest = support.PatientCreateRequest
     PatientUpdateRequest = support.PatientUpdateRequest
@@ -257,7 +260,7 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         site_store = require_site_access(cp, user, site_id)
         try:
-            return site_store.create_visit(
+            created_visit = site_store.create_visit(
                 patient_id=payload.patient_id,
                 visit_date=payload.visit_date,
                 actual_visit_date=payload.actual_visit_date,
@@ -276,6 +279,12 @@ def build_case_records_router(support: Any) -> APIRouter:
                 polymicrobial=payload.polymicrobial,
                 created_by_user_id=user["user_id"],
             )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="visit_create",
+            )
+            return created_visit
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -302,7 +311,7 @@ def build_case_records_router(support: Any) -> APIRouter:
                 detail="Only the creator or a site admin can move a visit into this patient.",
             )
         try:
-            return site_store.update_visit(
+            updated_visit = site_store.update_visit(
                 patient_id=patient_id,
                 visit_date=visit_date,
                 target_patient_id=payload.patient_id,
@@ -322,6 +331,20 @@ def build_case_records_router(support: Any) -> APIRouter:
                 smear_result=payload.smear_result,
                 polymicrobial=payload.polymicrobial,
             )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="visit_update",
+            )
+            if site_store.list_images_for_visit(payload.patient_id, payload.visit_date):
+                queue_case_embedding_refresh(
+                    cp,
+                    site_store,
+                    patient_id=payload.patient_id,
+                    visit_date=payload.visit_date,
+                    trigger="visit_update",
+                )
+            return updated_visit
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -336,7 +359,18 @@ def build_case_records_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         require_visit_write_access(site_store, user, patient_id, visit_date)
         try:
-            return site_store.delete_visit(patient_id, visit_date)
+            deleted_visit = site_store.delete_visit(patient_id, visit_date)
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="visit_delete",
+            )
+            queue_ai_clinic_vector_index_rebuild(
+                cp,
+                site_store,
+                trigger="visit_delete",
+            )
+            return deleted_visit
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -446,6 +480,11 @@ def build_case_records_router(support: Any) -> APIRouter:
             status_value=next_status,
             updated_by_user_id=user["user_id"],
             source=payload.source,
+        )
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
+            trigger=f"registry_{action}",
         )
         return {
             "patient_id": payload.patient_id,

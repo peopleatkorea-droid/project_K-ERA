@@ -15,6 +15,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import jwt
@@ -53,7 +54,9 @@ def reload_app_module(
         "KERA_CASE_REFERENCE_SALT",
         "KERA_PATIENT_REFERENCE_SALT",
         "KERA_DISABLE_CASE_EMBEDDING_REFRESH",
+        "KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC",
         "KERA_MODEL_DISTRIBUTION_MODE",
+        "KERA_RUNTIME_OWNER",
         "KERA_ONEDRIVE_TENANT_ID",
         "KERA_ONEDRIVE_CLIENT_ID",
         "KERA_ONEDRIVE_CLIENT_SECRET",
@@ -101,7 +104,18 @@ def reload_app_module(
 
 
 class FakeModelManager:
+    def __init__(self) -> None:
+        self.aggregate_calls: list[dict[str, object]] = []
+
     def aggregate_weight_deltas(self, delta_paths, output_path, weights=None, base_model_path=None):
+        self.aggregate_calls.append(
+            {
+                "delta_paths": list(delta_paths),
+                "output_path": str(output_path),
+                "weights": list(weights) if weights is not None else None,
+                "base_model_path": base_model_path,
+            }
+        )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"aggregated")
 
@@ -561,6 +575,158 @@ class FakeWorkflow:
             }
         )
         return result
+
+    def run_image_level_federated_round(
+        self,
+        site_store,
+        model_version,
+        execution_device,
+        epochs=1,
+        learning_rate=5e-5,
+        batch_size=8,
+        progress_callback=None,
+    ):
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "training",
+                    "message": "Running local ConvNeXt-Tiny image-level update.",
+                    "percent": 50,
+                    "epoch": 1,
+                    "epochs": int(epochs),
+                    "train_loss": 0.1234,
+                }
+            )
+        delta_path = site_store.update_dir / f"{self.app_module.make_id('delta')}.pth"
+        delta_path.parent.mkdir(parents=True, exist_ok=True)
+        delta_path.write_bytes(b"delta")
+        update = self.control_plane.register_model_update(
+            {
+                "update_id": self.app_module.make_id("update"),
+                "site_id": site_store.site_id,
+                "base_model_version_id": model_version["version_id"],
+                "architecture": "convnext_tiny",
+                "upload_type": "weight delta",
+                "execution_device": execution_device,
+                "artifact_path": str(delta_path),
+                "n_cases": 2,
+                "n_images": 5,
+                "aggregation_weight": 5,
+                "aggregation_weight_unit": "images",
+                "federated_round_type": "image_level_site_round",
+                "training_summary": {
+                    "epochs": int(epochs),
+                    "learning_rate": float(learning_rate),
+                    "batch_size": int(batch_size),
+                    "fine_tuning_mode": "full",
+                },
+                "approval_report": {
+                    "case_summary": {
+                        "eligible_case_count": 2,
+                        "eligible_image_count": 5,
+                        "is_single_case_delta": False,
+                    }
+                },
+                "quality_summary": {"quality_score": 82},
+                "status": "pending_review",
+                "created_at": "2026-04-08T00:00:00+00:00",
+            }
+        )
+        return {
+            "site_id": site_store.site_id,
+            "execution_device": execution_device,
+            "model_version": {
+                "version_id": model_version["version_id"],
+                "version_name": model_version["version_name"],
+                "architecture": model_version["architecture"],
+            },
+            "update": update,
+            "eligible_case_count": 2,
+            "eligible_image_count": 5,
+            "skipped": {
+                "not_positive": 0,
+                "not_active": 0,
+                "not_included": 0,
+                "no_images": 0,
+            },
+        }
+
+    def run_visit_level_federated_round(
+        self,
+        site_store,
+        model_version,
+        execution_device,
+        epochs=1,
+        learning_rate=5e-5,
+        batch_size=4,
+        progress_callback=None,
+    ):
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "training",
+                    "message": "Running local EfficientNetV2-S MIL visit-level update.",
+                    "percent": 50,
+                    "epoch": 1,
+                    "epochs": int(epochs),
+                    "train_loss": 0.2345,
+                }
+            )
+        delta_path = site_store.update_dir / f"{self.app_module.make_id('delta')}.pth"
+        delta_path.parent.mkdir(parents=True, exist_ok=True)
+        delta_path.write_bytes(b"delta")
+        update = self.control_plane.register_model_update(
+            {
+                "update_id": self.app_module.make_id("update"),
+                "site_id": site_store.site_id,
+                "base_model_version_id": model_version["version_id"],
+                "architecture": "efficientnet_v2_s_mil",
+                "upload_type": "weight delta",
+                "execution_device": execution_device,
+                "artifact_path": str(delta_path),
+                "n_cases": 2,
+                "n_images": 5,
+                "aggregation_weight": 2,
+                "aggregation_weight_unit": "cases",
+                "federated_round_type": "visit_level_site_round",
+                "training_summary": {
+                    "epochs": int(epochs),
+                    "learning_rate": float(learning_rate),
+                    "batch_size": int(batch_size),
+                    "fine_tuning_mode": "full",
+                    "bag_level": True,
+                    "case_aggregation": "attention_mil",
+                },
+                "approval_report": {
+                    "case_summary": {
+                        "eligible_case_count": 2,
+                        "eligible_image_count": 5,
+                        "is_single_case_delta": False,
+                    }
+                },
+                "quality_summary": {"quality_score": 83},
+                "status": "pending_review",
+                "created_at": "2026-04-08T00:00:00+00:00",
+            }
+        )
+        return {
+            "site_id": site_store.site_id,
+            "execution_device": execution_device,
+            "model_version": {
+                "version_id": model_version["version_id"],
+                "version_name": model_version["version_name"],
+                "architecture": model_version["architecture"],
+            },
+            "update": update,
+            "eligible_case_count": 2,
+            "eligible_image_count": 5,
+            "skipped": {
+                "not_positive": 0,
+                "not_active": 0,
+                "not_included": 0,
+                "no_images": 0,
+            },
+        }
 
     def run_cross_validation(
         self,
@@ -2115,6 +2281,477 @@ class ApiHttpTests(unittest.TestCase):
                 break
             time.sleep(0.1)
 
+    def test_federated_retrieval_sync_route_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        self._join_and_include_research_case(
+            admin_token,
+            patient_id="HTTP-001",
+            visit_date="Initial",
+        )
+
+        class FederatedRetrievalWorkflow(FakeWorkflow):
+            def __init__(self, app_module, control_plane):
+                super().__init__(app_module, control_plane)
+                self.sync_calls: list[dict[str, Any]] = []
+
+            def sync_remote_retrieval_corpus(
+                self,
+                site_store,
+                *,
+                execution_device,
+                retrieval_profile="dinov2_lesion_crop",
+                force_refresh=False,
+                progress_callback=None,
+            ):
+                self.sync_calls.append(
+                    {
+                        "site_id": site_store.site_id,
+                        "execution_device": execution_device,
+                        "retrieval_profile": retrieval_profile,
+                        "force_refresh": force_refresh,
+                    }
+                )
+                if callable(progress_callback):
+                    progress_callback({"stage": "uploading_entries", "message": "Uploading.", "percent": 75})
+                return {
+                    "site_id": site_store.site_id,
+                    "profile_id": retrieval_profile,
+                    "retrieval_signature": "abc123def4567890",
+                    "eligible_case_count": 1,
+                    "prepared_entry_count": 1,
+                    "remote_sync": {
+                        "inserted_count": 1,
+                        "updated_count": 0,
+                        "deleted_count": 0,
+                        "batch_size": 32,
+                        "batches": [{"inserted_count": 1, "updated_count": 0, "deleted_count": 0, "batch_size": 1}],
+                    },
+                }
+
+        fake_workflow = FederatedRetrievalWorkflow(self.app_module, self.cp)
+        lazy_cp = self.app_module.get_control_plane()
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow), patch.object(
+            lazy_cp,
+            "remote_node_sync_enabled",
+            return_value=True,
+        ):
+            response = self.client.post(
+                f"/api/sites/{self.site_id}/ai-clinic/retrieval-corpus/sync",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "execution_mode": "cpu",
+                    "retrieval_profile": "dinov2_lesion_crop",
+                    "force_refresh": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["retrieval_profile"], "dinov2_lesion_crop")
+        self.assertEqual(payload["job"]["job_type"], "federated_retrieval_corpus_sync")
+        self.assertEqual(payload["job"]["status"], "queued")
+        self.assertEqual(len(fake_workflow.sync_calls), 0)
+
+        processed = self._run_site_jobs(workflow=fake_workflow)
+        self.assertEqual(processed, 1)
+        self.assertEqual(len(fake_workflow.sync_calls), 1)
+        self.assertEqual(fake_workflow.sync_calls[0]["execution_device"], "cpu")
+        self.assertTrue(fake_workflow.sync_calls[0]["force_refresh"])
+
+        job = self.site_store.get_job(payload["job"]["job_id"])
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["result"]["response"]["profile_id"], "dinov2_lesion_crop")
+        self.assertEqual(job["result"]["response"]["remote_sync"]["inserted_count"], 1)
+        self.assertEqual(job["result"]["response"]["remote_sync"]["deleted_count"], 0)
+
+    def test_federated_retrieval_status_route_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-002", visit_date="Initial")
+        self._join_and_include_research_case(
+            admin_token,
+            patient_id="HTTP-002",
+            visit_date="Initial",
+        )
+
+        class FederatedRetrievalStatusWorkflow(FakeWorkflow):
+            def retrieval_signature(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "retrieval_signature": "statussig12345678",
+                    "profile_metadata": {
+                        "label": "DINOv2 lesion-crop retrieval",
+                    },
+                    "model_version": {
+                        "version_id": "retrieval_profile_dinov2_lesion_crop",
+                        "architecture": "retrieval_dinov2",
+                    },
+                }
+
+        fake_workflow = FederatedRetrievalStatusWorkflow(self.app_module, self.cp)
+        lazy_cp = self.app_module.get_control_plane()
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow), patch.object(
+            lazy_cp,
+            "remote_node_sync_enabled",
+            return_value=True,
+        ):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/ai-clinic/retrieval-corpus/status?retrieval_profile=dinov2_lesion_crop",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["retrieval_profile"], "dinov2_lesion_crop")
+        self.assertEqual(payload["profile_id"], "dinov2_lesion_crop")
+        self.assertEqual(payload["retrieval_signature"], "statussig12345678")
+        self.assertEqual(payload["eligible_case_count"], 1)
+        self.assertEqual(payload["skipped"]["not_positive"], 0)
+        self.assertTrue(payload["remote_node_sync_enabled"])
+        self.assertIsNone(payload["active_job"])
+
+    def test_federated_retrieval_status_clears_active_job_after_completion_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-RETR-STATUS-CLEAR-001", visit_date="Initial")
+        self._join_and_include_research_case(
+            admin_token,
+            patient_id="HTTP-RETR-STATUS-CLEAR-001",
+            visit_date="Initial",
+        )
+        retrieval_job = self.site_store.enqueue_job(
+            "federated_retrieval_corpus_sync",
+            {
+                "retrieval_profile": "dinov2_lesion_crop",
+                "execution_device": "cpu",
+                "force_refresh": True,
+            },
+            queue_name="training",
+        )
+        self.site_store.update_job_status(
+            retrieval_job["job_id"],
+            "completed",
+            {"progress": {"stage": "completed", "message": "done", "percent": 100}},
+        )
+
+        class FederatedRetrievalStatusWorkflow(FakeWorkflow):
+            def retrieval_signature(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "retrieval_signature": "statussig12345678",
+                    "profile_metadata": {
+                        "label": "DINOv2 lesion-crop retrieval",
+                    },
+                    "model_version": {
+                        "version_id": "retrieval_profile_dinov2_lesion_crop",
+                        "architecture": "retrieval_dinov2",
+                    },
+                }
+
+        fake_workflow = FederatedRetrievalStatusWorkflow(self.app_module, self.cp)
+        lazy_cp = self.app_module.get_control_plane()
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow), patch.object(
+            lazy_cp,
+            "remote_node_sync_enabled",
+            return_value=True,
+        ):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/ai-clinic/retrieval-corpus/status?retrieval_profile=dinov2_lesion_crop",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["active_job"])
+
+    def test_federated_retrieval_auto_sync_delays_image_upload_trigger_http(self):
+        job_key = (self.site_id, "dinov2_lesion_crop")
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_FEDERATED_RETRIEVAL_SYNC_UPLOAD_DELAY_SECONDS": "11",
+                    "KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        result = self.app_module._queue_federated_retrieval_corpus_sync(
+                            self.cp,
+                            self.site_store,
+                            trigger="image_upload",
+                        )
+
+            self.assertTrue(result["queued"])
+            self.assertEqual(fake_executor.submit.call_count, 1)
+            submitted_fn, submitted_key, submitted_profile, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            self.assertTrue(callable(submitted_fn))
+            self.assertEqual(submitted_key, job_key)
+            self.assertEqual(submitted_profile, "dinov2_lesion_crop")
+            self.assertEqual(submitted_trigger, "image_upload")
+            self.assertEqual(submitted_delay, 11.0)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
+    def test_desktop_internal_federated_retrieval_queue_route_http(self):
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            lazy_cp = self.app_module.get_control_plane()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_RUNTIME_OWNER": "desktop-owner-test",
+                    "KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        response = self.client.post(
+                            f"/api/desktop/internal/sites/{self.site_id}/ai-clinic/retrieval-corpus/queue?trigger=visit_update",
+                            headers={"x-kera-control-plane-owner": "desktop-owner-test"},
+                            json={"retrieval_profile": "dinov2_lesion_crop"},
+                        )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["retrieval_profile"], "dinov2_lesion_crop")
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
+    def test_desktop_internal_case_embedding_queue_route_http(self):
+        self.app_module._PENDING_EMBEDDING_JOBS.clear()
+        self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_RUNTIME_OWNER": "desktop-owner-test",
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                            response = self.client.post(
+                                f"/api/desktop/internal/sites/{self.site_id}/cases/HTTP-001/visits/Initial/ai-clinic/embeddings/queue?trigger=image_upload",
+                                headers={"x-kera-control-plane-owner": "desktop-owner-test"},
+                            )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["patient_id"], "HTTP-001")
+            self.assertEqual(payload["visit_date"], "Initial")
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_EMBEDDING_JOBS.clear()
+            self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
+
+    def test_delete_images_queues_ai_clinic_vector_index_rebuild_http(self):
+        token = self._token_for_username("http_researcher")
+        self._seed_case(token, patient_id="HTTP-VECTOR-001", visit_date="Initial")
+
+        self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
+        self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            lazy_cp = self.app_module.get_control_plane()
+            with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                        with patch.object(self.app_module, "_VECTOR_INDEX_REBUILD_EXECUTOR", fake_executor):
+                            response = self.client.delete(
+                                f"/api/sites/{self.site_id}/images?patient_id=HTTP-VECTOR-001&visit_date=Initial",
+                                headers={"Authorization": f"Bearer {token}"},
+                            )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
+            self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
+
+    def test_bulk_import_queues_ai_clinic_embedding_backfill_http(self):
+        admin_token = self._token_for_username("admin")
+        lazy_cp = self.app_module.get_control_plane()
+
+        projects_response = self.client.get("/api/admin/projects", headers={"Authorization": f"Bearer {admin_token}"})
+        self.assertEqual(projects_response.status_code, 200, projects_response.text)
+        project_id = projects_response.json()[0]["project_id"]
+
+        create_site_response = self.client.post(
+            "/api/admin/sites",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "project_id": project_id,
+                "hospital_name": "Import Backfill Hospital",
+                "source_institution_id": "OPS_HTTP_BACKFILL",
+            },
+        )
+        self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+        site_id = create_site_response.json()["site_id"]
+
+        csv_content = (
+            "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_status,culture_category,culture_species,"
+            "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative\n"
+            "OPS-B-001,OPS-B-001,CASE-B-001,female,49,Initial,2026-03-11,positive,fungal,Fusarium,none,trauma,active,TRUE,unknown,FALSE,,ops_b_001_white.jpg,white,TRUE\n"
+        ).encode("utf-8")
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("ops_b_001_white.jpg", self._make_test_image_bytes("JPEG", (110, 90, 40)))
+
+        with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
+            with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                    with patch.object(self.app_module, "_latest_embedding_backfill_job", return_value=None):
+                        with patch.object(
+                            self.app_module,
+                            "_queue_site_embedding_backfill_impl",
+                            return_value={"job_id": "job-backfill-1", "status": "running"},
+                        ) as queue_mock:
+                            import_response = self.client.post(
+                                f"/api/sites/{site_id}/import/bulk",
+                                headers={"Authorization": f"Bearer {admin_token}"},
+                                files=[
+                                    ("csv_file", ("ops_import_backfill.csv", csv_content, "text/csv")),
+                                    ("files", ("ops_backfill_images.zip", archive_buffer.getvalue(), "application/zip")),
+                                ],
+                            )
+
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+        self.assertEqual(queue_mock.call_count, 1)
+        self.assertEqual(queue_mock.call_args.kwargs["trigger"], "bulk_import")
+
+    def test_site_admin_recover_metadata_queues_ai_clinic_embedding_backfill_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        patient_id = "00324194"
+        self.site_store.create_patient(patient_id, "female", 54, created_by_user_id="owner")
+        self.site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="Initial",
+            actual_visit_date="2026-03-17",
+            culture_confirmed=True,
+            culture_category="bacterial",
+            culture_species="Bacillus",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        self.site_store.generate_manifest()
+        self.site_store.export_metadata_backup()
+        self.site_store._clear_site_metadata_rows()
+
+        lazy_cp = self.app_module.get_control_plane()
+        with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
+            with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                    with patch.object(self.app_module, "_latest_embedding_backfill_job", return_value=None):
+                        with patch.object(
+                            self.app_module,
+                            "_queue_site_embedding_backfill_impl",
+                            return_value={"job_id": "job-backfill-2", "status": "running"},
+                        ) as queue_mock:
+                            response = self.client.post(
+                                f"/api/admin/sites/{self.site_id}/metadata/recover",
+                                headers={"Authorization": f"Bearer {site_admin_token}"},
+                                json={"source": "auto", "force_replace": True},
+                            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(queue_mock.call_count, 1)
+        self.assertEqual(queue_mock.call_args.kwargs["trigger"], "metadata_recover")
+
+    def test_site_admin_sync_raw_inventory_queues_ai_clinic_embedding_backfill_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        visit_dir = self.site_store.raw_dir / "00415031" / "Initial"
+        visit_dir.mkdir(parents=True, exist_ok=True)
+        (visit_dir / "http_sync_slit.png").write_bytes(self._make_test_image_bytes())
+
+        lazy_cp = self.app_module.get_control_plane()
+        with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
+            with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
+                    with patch.object(self.app_module, "_latest_embedding_backfill_job", return_value=None):
+                        with patch.object(
+                            self.app_module,
+                            "_queue_site_embedding_backfill_impl",
+                            return_value={"job_id": "job-backfill-3", "status": "running"},
+                        ) as queue_mock:
+                            response = self.client.post(
+                                f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+                                headers={"Authorization": f"Bearer {site_admin_token}"},
+                            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(queue_mock.call_count, 1)
+        self.assertEqual(queue_mock.call_args.kwargs["trigger"], "raw_inventory_sync")
+
+    def test_create_visit_queues_federated_retrieval_auto_sync_http(self):
+        token = self._token_for_username("http_researcher")
+        create_patient_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-AUTO-SYNC-001",
+                "sex": "female",
+                "age": 47,
+                "chart_alias": "",
+                "local_case_code": "",
+            },
+        )
+        self.assertEqual(create_patient_response.status_code, 200, create_patient_response.text)
+
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            lazy_cp = self.app_module.get_control_plane()
+            with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
+                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        response = self.client.post(
+                            f"/api/sites/{self.site_id}/visits",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={
+                                "patient_id": "HTTP-AUTO-SYNC-001",
+                                "visit_date": "Initial",
+                                "culture_status": "unknown",
+                                "culture_confirmed": False,
+                                "culture_category": "",
+                                "culture_species": "",
+                                "additional_organisms": [],
+                                "contact_lens_use": "none",
+                                "predisposing_factor": [],
+                                "other_history": "",
+                                "visit_status": "active",
+                                "is_initial_visit": True,
+                                "smear_result": "not done",
+                                "polymicrobial": False,
+                            },
+                        )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
     def test_case_embedding_refresh_delays_image_upload_trigger_http(self):
         job_key = (self.site_id, "HTTP-001", "Initial")
         self.app_module._PENDING_EMBEDDING_JOBS.clear()
@@ -2317,6 +2954,44 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(payload["vector_index"]["classifier_available"])
         self.assertFalse(payload["vector_index"]["dinov2_embedding_available"])
         self.assertIsNone(payload["active_job"])
+
+    def test_embedding_status_clears_active_job_after_completion_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-EMBED-STATUS-CLEAR-001", visit_date="Initial")
+        current_model = self.cp.current_global_model()
+        self.assertIsNotNone(current_model)
+        backfill_job = self.site_store.enqueue_job(
+            "ai_clinic_embedding_backfill",
+            {
+                "model_version_id": current_model["version_id"],
+                "model_version_name": current_model.get("version_name"),
+                "execution_mode": "cpu",
+                "execution_device": "cpu",
+                "force_refresh": False,
+            },
+            queue_name="analysis",
+        )
+        self.site_store.update_job_status(
+            backfill_job["job_id"],
+            "completed",
+            {"progress": {"stage": "completed", "message": "done", "percent": 100}},
+        )
+
+        class FakeEmbeddingWorkflow:
+            def list_cases_requiring_embedding(self, site_store, *, model_version, backend="classifier"):
+                return []
+
+            def case_vector_index_exists(self, site_store, *, model_version, backend):
+                return backend == "classifier"
+
+        with patch.object(self.app_module, "_get_workflow", return_value=FakeEmbeddingWorkflow()):
+            response = self.client.get(
+                f"/api/sites/{self.site_id}/ai-clinic/embeddings/status",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["active_job"])
 
     def test_invalid_image_upload_is_rejected_http(self):
         token = self._token_for_username("http_researcher")
@@ -3897,6 +4572,785 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(aggregations_response.status_code, 200, aggregations_response.text)
             self.assertEqual(len(aggregations_response.json()), 1)
 
+    def test_image_level_federated_round_job_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-001", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-FL-002", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-002", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_round.pth"
+        convnext_path.write_bytes(b"convnext")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_test",
+                "version_name": "global-convnext-tiny-full-http-test",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:00:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/image-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "model_version_id": convnext_model["version_id"],
+                    "execution_mode": "cpu",
+                    "epochs": 1,
+                    "learning_rate": 5e-5,
+                    "batch_size": 4,
+                },
+            )
+            self.assertEqual(start_response.status_code, 200, start_response.text)
+            start_payload = start_response.json()
+            job_id = start_payload["job"]["job_id"]
+            self.assertEqual(start_payload["model_version"]["architecture"], "convnext_tiny")
+
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
+
+            job_response = self.client.get(
+                f"/api/sites/{self.site_id}/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(job_response.status_code, 200, job_response.text)
+            job_payload = job_response.json()
+            self.assertEqual(job_payload["status"], "completed")
+            response_payload = job_payload["result"]["response"]
+            self.assertEqual(response_payload["model_version"]["version_id"], convnext_model["version_id"])
+            self.assertEqual(response_payload["eligible_case_count"], 2)
+            self.assertEqual(response_payload["eligible_image_count"], 5)
+            self.assertEqual(response_payload["update"]["aggregation_weight"], 5)
+            self.assertEqual(response_payload["update"]["aggregation_weight_unit"], "images")
+            self.assertEqual(response_payload["update"]["status"], "pending_review")
+
+    def test_image_level_federated_round_status_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-STATUS-001", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-FL-STATUS-002", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-FL-STATUS-003", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-STATUS-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-STATUS-002", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_status.pth"
+        convnext_path.write_bytes(b"convnext-status")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_status",
+                "version_name": "global-convnext-tiny-full-http-status",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:05:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/image-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "execution_mode": "cpu",
+            },
+        )
+        self.assertEqual(start_response.status_code, 200, start_response.text)
+        start_payload = start_response.json()
+        self.assertEqual(start_payload["model_version"]["version_id"], convnext_model["version_id"])
+
+        status_response = self.client.get(
+            f"/api/sites/{self.site_id}/training/federated/image-level/status",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        payload = status_response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["model_version"]["version_id"], convnext_model["version_id"])
+        self.assertEqual(payload["model_version"]["architecture"], "convnext_tiny")
+        self.assertEqual(payload["eligible_case_count"], 2)
+        self.assertEqual(payload["eligible_image_count"], 2)
+        self.assertEqual(payload["skipped"]["not_positive"], 0)
+        self.assertEqual(payload["skipped"]["not_active"], 0)
+        self.assertEqual(payload["skipped"]["not_included"], 1)
+        self.assertEqual(payload["skipped"]["no_images"], 0)
+        self.assertIsNotNone(payload["active_job"])
+        self.assertEqual(payload["active_job"]["job_id"], start_payload["job"]["job_id"])
+
+    def test_image_level_federated_round_does_not_reuse_active_job_with_different_hyperparameters_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-DIFFCFG-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-DIFFCFG-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_diffcfg.pth"
+        convnext_path.write_bytes(b"convnext-diffcfg")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_diffcfg",
+                "version_name": "global-convnext-tiny-full-http-diffcfg",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:05:30+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        first_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/image-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": convnext_model["version_id"],
+                "execution_mode": "cpu",
+                "epochs": 1,
+                "learning_rate": 5e-5,
+                "batch_size": 4,
+            },
+        )
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        first_job_id = first_response.json()["job"]["job_id"]
+
+        second_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/image-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": convnext_model["version_id"],
+                "execution_mode": "cpu",
+                "epochs": 2,
+                "learning_rate": 5e-5,
+                "batch_size": 4,
+            },
+        )
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        self.assertNotEqual(second_response.json()["job"]["job_id"], first_job_id)
+
+    def test_image_level_federated_round_status_clears_active_job_after_completion_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-ACTIVE-CLEAR-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-ACTIVE-CLEAR-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_active_clear.pth"
+        convnext_path.write_bytes(b"convnext-active-clear")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_active_clear",
+                "version_name": "global-convnext-tiny-full-http-active-clear",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:05:40+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/image-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"model_version_id": convnext_model["version_id"], "execution_mode": "cpu"},
+            )
+            self.assertEqual(start_response.status_code, 200, start_response.text)
+
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
+
+        status_response = self.client.get(
+            f"/api/sites/{self.site_id}/training/federated/image-level/status?model_version_id={convnext_model['version_id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        self.assertIsNone(status_response.json()["active_job"])
+
+    def test_image_level_federated_round_requires_eligible_cases_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-NOELIGIBLE-001", visit_date="Initial")
+
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_noeligible.pth"
+        convnext_path.write_bytes(b"convnext-noeligible")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_noeligible",
+                "version_name": "global-convnext-tiny-full-http-noeligible",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:06:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/image-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"model_version_id": convnext_model["version_id"], "execution_mode": "cpu"},
+        )
+        self.assertEqual(start_response.status_code, 409, start_response.text)
+        self.assertIn("requires at least one positive, active, included case", start_response.json()["detail"])
+
+    def test_visit_level_federated_round_job_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-001", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-002", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-002", visit_date="Initial")
+
+        effnet_path = Path(self.tempdir.name) / "effnet_visit_fl_round.pth"
+        effnet_path.write_bytes(b"effnet-mil")
+        effnet_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_test",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-test",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:30:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/visit-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "model_version_id": effnet_model["version_id"],
+                    "execution_mode": "cpu",
+                    "epochs": 1,
+                    "learning_rate": 5e-5,
+                    "batch_size": 2,
+                },
+            )
+            self.assertEqual(start_response.status_code, 200, start_response.text)
+            start_payload = start_response.json()
+            job_id = start_payload["job"]["job_id"]
+            self.assertEqual(start_payload["model_version"]["architecture"], "efficientnet_v2_s_mil")
+
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
+
+            job_response = self.client.get(
+                f"/api/sites/{self.site_id}/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(job_response.status_code, 200, job_response.text)
+            job_payload = job_response.json()
+            self.assertEqual(job_payload["status"], "completed")
+            response_payload = job_payload["result"]["response"]
+            self.assertEqual(response_payload["model_version"]["version_id"], effnet_model["version_id"])
+            self.assertEqual(response_payload["eligible_case_count"], 2)
+            self.assertEqual(response_payload["eligible_image_count"], 5)
+            self.assertEqual(response_payload["update"]["aggregation_weight"], 2)
+            self.assertEqual(response_payload["update"]["aggregation_weight_unit"], "cases")
+            self.assertEqual(response_payload["update"]["federated_round_type"], "visit_level_site_round")
+            self.assertEqual(response_payload["update"]["status"], "pending_review")
+
+    def test_visit_level_federated_round_status_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-STATUS-001", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-STATUS-002", visit_date="Initial")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-STATUS-003", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-STATUS-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-STATUS-002", visit_date="Initial")
+
+        effnet_path = Path(self.tempdir.name) / "effnet_visit_fl_status.pth"
+        effnet_path.write_bytes(b"effnet-mil-status")
+        effnet_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_status",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-status",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:35:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": effnet_model["version_id"],
+                "execution_mode": "cpu",
+            },
+        )
+        self.assertEqual(start_response.status_code, 200, start_response.text)
+        start_payload = start_response.json()
+        self.assertEqual(start_payload["model_version"]["version_id"], effnet_model["version_id"])
+
+        status_response = self.client.get(
+            f"/api/sites/{self.site_id}/training/federated/visit-level/status?model_version_id={effnet_model['version_id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        payload = status_response.json()
+        self.assertEqual(payload["site_id"], self.site_id)
+        self.assertEqual(payload["model_version"]["version_id"], effnet_model["version_id"])
+        self.assertEqual(payload["model_version"]["architecture"], "efficientnet_v2_s_mil")
+        self.assertEqual(payload["model_version"]["case_aggregation"], "attention_mil")
+        self.assertTrue(payload["model_version"]["bag_level"])
+        self.assertEqual(payload["eligible_case_count"], 2)
+        self.assertEqual(payload["eligible_image_count"], 2)
+        self.assertEqual(payload["skipped"]["not_positive"], 0)
+        self.assertEqual(payload["skipped"]["not_active"], 0)
+        self.assertEqual(payload["skipped"]["not_included"], 1)
+        self.assertEqual(payload["skipped"]["no_images"], 0)
+        self.assertIsNotNone(payload["active_job"])
+        self.assertEqual(payload["active_job"]["job_id"], start_payload["job"]["job_id"])
+
+    def test_visit_level_federated_round_does_not_reuse_active_job_with_different_hyperparameters_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-DIFFCFG-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-DIFFCFG-001", visit_date="Initial")
+
+        effnet_path = Path(self.tempdir.name) / "effnet_visit_fl_diffcfg.pth"
+        effnet_path.write_bytes(b"effnet-mil-diffcfg")
+        effnet_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_diffcfg",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-diffcfg",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:35:30+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        first_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": effnet_model["version_id"],
+                "execution_mode": "cpu",
+                "epochs": 1,
+                "learning_rate": 5e-5,
+                "batch_size": 2,
+            },
+        )
+        self.assertEqual(first_response.status_code, 200, first_response.text)
+        first_job_id = first_response.json()["job"]["job_id"]
+
+        second_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": effnet_model["version_id"],
+                "execution_mode": "cpu",
+                "epochs": 2,
+                "learning_rate": 5e-5,
+                "batch_size": 2,
+            },
+        )
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        self.assertNotEqual(second_response.json()["job"]["job_id"], first_job_id)
+
+    def test_visit_level_federated_round_status_clears_active_job_after_completion_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-ACTIVE-CLEAR-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-ACTIVE-CLEAR-001", visit_date="Initial")
+
+        effnet_path = Path(self.tempdir.name) / "effnet_visit_fl_active_clear.pth"
+        effnet_path.write_bytes(b"effnet-active-clear")
+        effnet_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_active_clear",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-active-clear",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:35:40+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/visit-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"model_version_id": effnet_model["version_id"], "execution_mode": "cpu"},
+            )
+            self.assertEqual(start_response.status_code, 200, start_response.text)
+
+            self._run_site_jobs(workflow=fake_workflow, max_jobs=1, site_id=self.site_id)
+
+        status_response = self.client.get(
+            f"/api/sites/{self.site_id}/training/federated/visit-level/status?model_version_id={effnet_model['version_id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(status_response.status_code, 200, status_response.text)
+        self.assertIsNone(status_response.json()["active_job"])
+
+    def test_visit_level_federated_round_auto_selects_preferred_mil_model_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-AUTO-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-AUTO-001", visit_date="Initial")
+
+        baseline_path = Path(self.tempdir.name) / "auto_select_baseline.pth"
+        baseline_path.write_bytes(b"baseline")
+        self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_densenet_http_auto_select",
+                "version_name": "global-densenet-http-auto-select",
+                "architecture": "densenet121",
+                "stage": "global",
+                "model_path": str(baseline_path),
+                "created_at": "2026-04-08T00:33:00+00:00",
+                "ready": True,
+                "is_current": True,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        effnet_path = Path(self.tempdir.name) / "auto_select_effnet_mil.pth"
+        effnet_path.write_bytes(b"effnet-mil-auto-select")
+        preferred_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_autoselect",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-autoselect",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:34:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"execution_mode": "cpu"},
+        )
+        self.assertEqual(start_response.status_code, 200, start_response.text)
+        self.assertEqual(start_response.json()["model_version"]["version_id"], preferred_model["version_id"])
+
+    def test_visit_level_federated_round_rejects_image_level_model_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-BADMODEL-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-VISIT-FL-BADMODEL-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "badmodel_convnext.pth"
+        convnext_path.write_bytes(b"convnext")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_bad_visit_fl",
+                "version_name": "global-convnext-tiny-full-http-bad-visit-fl",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-08T00:37:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "model_version_id": convnext_model["version_id"],
+                "execution_mode": "cpu",
+            },
+        )
+        self.assertEqual(start_response.status_code, 400, start_response.text)
+        self.assertIn("supports only EfficientNetV2-S MIL", start_response.json()["detail"])
+
+    def test_visit_level_federated_round_requires_eligible_cases_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-NOELIGIBLE-001", visit_date="Initial")
+
+        consent_response = self.client.post(
+            f"/api/sites/{self.site_id}/research-registry/consent",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"version": "v1"},
+        )
+        self.assertEqual(consent_response.status_code, 200, consent_response.text)
+
+        effnet_path = Path(self.tempdir.name) / "effnet_visit_fl_noeligible.pth"
+        effnet_path.write_bytes(b"effnet-mil-noeligible")
+        effnet_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_noeligible",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-noeligible",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(effnet_path),
+                "created_at": "2026-04-08T00:36:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        start_response = self.client.post(
+            f"/api/sites/{self.site_id}/training/federated/visit-level",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"model_version_id": effnet_model["version_id"], "execution_mode": "cpu"},
+        )
+        self.assertEqual(start_response.status_code, 409, start_response.text)
+        self.assertIn("requires at least one positive, active, included case", start_response.json()["detail"])
+
+    def test_aggregation_prefers_visit_level_aggregation_weight_http(self):
+        admin_token = self._login("admin", "admin123")
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        base_model_path = Path(self.tempdir.name) / "effnet_visit_agg_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_efficientnet_v2_s_mil_full_http_agg",
+                "version_name": "global-efficientnet-v2-s-mil-full-http-agg",
+                "architecture": "efficientnet_v2_s_mil",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-08T00:40:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "attention_mil",
+                "bag_level": True,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        for site_id, n_cases, aggregation_weight in (("SITE-A", 2, 7), ("SITE-B", 4, 13)):
+            delta_path = self.site_store.update_dir / f"{site_id}_visit_fl_delta.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": site_id,
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": n_cases,
+                    "aggregation_weight": aggregation_weight,
+                    "aggregation_weight_unit": "cases",
+                    "federated_round_type": "visit_level_site_round",
+                    "created_at": f"2026-04-08T00:4{n_cases}:00+00:00",
+                    "status": "approved",
+                }
+            )
+
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            aggregation_response = self.client.post(
+                "/api/admin/aggregations/run",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={},
+            )
+
+        self.assertEqual(aggregation_response.status_code, 200, aggregation_response.text)
+        self.assertTrue(fake_workflow.model_manager.aggregate_calls)
+        self.assertEqual(sorted(fake_workflow.model_manager.aggregate_calls[-1]["weights"]), [7, 13])
+
+    def test_aggregation_prefers_image_level_aggregation_weight_http(self):
+        admin_token = self._login("admin", "admin123")
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        base_model_path = Path(self.tempdir.name) / "convnext_agg_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_agg",
+                "version_name": "global-convnext-tiny-full-http-agg",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-08T00:10:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        for site_id, n_cases, aggregation_weight in (("SITE-A", 2, 11), ("SITE-B", 4, 29)):
+            delta_path = self.site_store.update_dir / f"{site_id}_image_fl_delta.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": site_id,
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": n_cases,
+                    "aggregation_weight": aggregation_weight,
+                    "aggregation_weight_unit": "images",
+                    "created_at": f"2026-04-08T00:1{n_cases}:00+00:00",
+                    "status": "approved",
+                }
+            )
+
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            aggregation_response = self.client.post(
+                "/api/admin/aggregations/run",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={},
+            )
+
+        self.assertEqual(aggregation_response.status_code, 200, aggregation_response.text)
+        self.assertTrue(fake_workflow.model_manager.aggregate_calls)
+        self.assertEqual(sorted(fake_workflow.model_manager.aggregate_calls[-1]["weights"]), [11, 29])
+
+    def test_aggregation_rejects_mixed_federated_round_types_http(self):
+        admin_token = self._login("admin", "admin123")
+        base_model_path = Path(self.tempdir.name) / "convnext_mixed_rounds_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_mixed",
+                "version_name": "global-convnext-tiny-full-http-mixed",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-08T00:20:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        update_ids: list[str] = []
+        for site_id, round_type in (("SITE-A", None), ("SITE-B", "image_level_site_round")):
+            delta_path = self.site_store.update_dir / f"{site_id}_mixed_round_delta.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            update = self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": site_id,
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": 2,
+                    "aggregation_weight": 2,
+                    "aggregation_weight_unit": "images" if round_type else "cases",
+                    "federated_round_type": round_type,
+                    "created_at": "2026-04-08T00:21:00+00:00",
+                    "status": "approved",
+                }
+            )
+            update_ids.append(update["update_id"])
+
+        aggregation_response = self.client.post(
+            "/api/admin/aggregations/run",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"update_ids": update_ids},
+        )
+        self.assertEqual(aggregation_response.status_code, 400, aggregation_response.text)
+        self.assertIn("same federated round type", aggregation_response.json()["detail"])
+
     def test_aggregation_rejects_multiple_updates_from_same_site_http(self):
         admin_token = self._login("admin", "admin123")
         base_model = self.cp.current_global_model()
@@ -4149,6 +5603,89 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["artifact_source_provider"], "onedrive_sharepoint")
         self.assertEqual(payload["onedrive_item_id"], "item_delta")
         self.assertEqual(payload["onedrive_drive_id"], "drive_delta")
+
+    def test_release_rollout_local_fallback_activates_selected_model_http(self):
+        admin_token = self._login("admin", "admin123")
+        rollout_model_path = Path(self.tempdir.name) / "rollout_model.pth"
+        rollout_model_path.write_bytes(b"rollout-model")
+        candidate = self.cp.ensure_model_version(
+            {
+                "version_id": self.app_module.make_id("model"),
+                "version_name": "visit-effnet-mil-rollout",
+                "architecture": "efficientnet_v2_s_mil_full",
+                "stage": "global",
+                "model_path": str(rollout_model_path),
+                "created_at": "2026-04-09T00:00:00+00:00",
+                "ready": True,
+                "is_current": False,
+            }
+        )
+
+        response = self.client.post(
+            "/api/admin/release-rollouts",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "version_id": candidate["version_id"],
+                "stage": "full",
+                "notes": "Promote trained MIL model",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["rollout"]
+        self.assertEqual(payload["version_id"], candidate["version_id"])
+        self.assertEqual(payload["stage"], "full")
+        self.assertEqual(payload["status"], "active")
+        current_model = self.cp.current_global_model()
+        self.assertEqual(current_model["version_id"], candidate["version_id"])
+
+    def test_release_rollout_local_fallback_rejects_pilot_stage_http(self):
+        admin_token = self._login("admin", "admin123")
+        rollout_model_path = Path(self.tempdir.name) / "pilot_rollout_model.pth"
+        rollout_model_path.write_bytes(b"pilot-rollout-model")
+        candidate = self.cp.ensure_model_version(
+            {
+                "version_id": self.app_module.make_id("model"),
+                "version_name": "visit-effnet-mil-pilot",
+                "architecture": "efficientnet_v2_s_mil_full",
+                "stage": "global",
+                "model_path": str(rollout_model_path),
+                "created_at": "2026-04-09T00:00:00+00:00",
+                "ready": True,
+                "is_current": False,
+            }
+        )
+
+        response = self.client.post(
+            "/api/admin/release-rollouts",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "version_id": candidate["version_id"],
+                "stage": "pilot",
+                "target_site_ids": [self.site_id],
+                "notes": "Pilot rollout should require central control plane",
+            },
+        )
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["detail"], "Staged rollout requires the central control plane.")
+
+    def test_federation_monitoring_local_fallback_reports_current_release_http(self):
+        admin_token = self._login("admin", "admin123")
+
+        monitoring_response = self.client.get(
+            "/api/admin/federation/monitoring",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(monitoring_response.status_code, 200, monitoring_response.text)
+        payload = monitoring_response.json()
+        self.assertEqual(payload["current_release"]["version_id"], "model_http_seed")
+        self.assertIsNone(payload["active_rollout"])
+        self.assertEqual(payload["node_summary"]["total_nodes"], 0)
+        self.assertEqual(payload["node_summary"]["aligned_nodes"], 0)
+        self.assertEqual(len(payload["site_adoption"]), 1)
+        site_summary = payload["site_adoption"][0]
+        self.assertEqual(site_summary["site_id"], self.site_id)
+        self.assertEqual(site_summary["expected_version_id"], "model_http_seed")
+        self.assertIsNone(site_summary["latest_reported_version_id"])
 
     def test_access_request_auto_approval_http(self):
         requester_token = self._token_for_username("http_viewer")
@@ -4928,6 +6465,47 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(len(recovered_images), 1)
         self.assertTrue(Path(recovered_images[0]["image_path"]).exists())
 
+    def test_site_admin_recover_metadata_queues_federated_retrieval_auto_sync_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        patient_id = "00324193"
+        self.site_store.create_patient(patient_id, "female", 54, created_by_user_id="owner")
+        self.site_store.create_visit(
+            patient_id=patient_id,
+            visit_date="Initial",
+            actual_visit_date="2026-03-17",
+            culture_confirmed=True,
+            culture_category="bacterial",
+            culture_species="Bacillus",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        self.site_store.generate_manifest()
+        self.site_store.export_metadata_backup()
+        self.site_store._clear_site_metadata_rows()
+
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            lazy_cp = self.app_module.get_control_plane()
+            with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
+                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        response = self.client.post(
+                            f"/api/admin/sites/{self.site_id}/metadata/recover",
+                            headers={"Authorization": f"Bearer {site_admin_token}"},
+                            json={"source": "auto", "force_replace": True},
+                        )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
     def test_site_admin_can_sync_raw_inventory_metadata_http(self):
         site_admin_token = self._token_for_username("http_site_admin")
         visit_dir = self.site_store.raw_dir / "00415029" / "Initial"
@@ -4959,6 +6537,31 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(Path(images[0]["image_path"]).resolve(), image_path.resolve())
         self.assertEqual(images[0]["view"], "slit")
         self.assertEqual(self.site_store.dataset_records(), [])
+
+    def test_site_admin_sync_raw_inventory_queues_federated_retrieval_auto_sync_http(self):
+        site_admin_token = self._token_for_username("http_site_admin")
+        visit_dir = self.site_store.raw_dir / "00415030" / "Initial"
+        visit_dir.mkdir(parents=True, exist_ok=True)
+        (visit_dir / "http_sync_slit.png").write_bytes(self._make_test_image_bytes())
+
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            lazy_cp = self.app_module.get_control_plane()
+            with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
+                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        response = self.client.post(
+                            f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+                            headers={"Authorization": f"Bearer {site_admin_token}"},
+                        )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(fake_executor.submit.call_count, 1)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
 
     def test_workspace_lookup_visit_list_and_image_queries_hide_raw_inventory_placeholder_http(self):
         site_admin_token = self._token_for_username("http_site_admin")

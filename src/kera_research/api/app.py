@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import google.auth.transport.requests
@@ -40,7 +41,9 @@ from kera_research.api.models import (
     CaseValidationRequest,
     CrossValidationRunRequest,
     EmbeddingBackfillRequest,
+    FederatedRetrievalSyncRequest,
     GoogleLoginRequest,
+    ImageLevelFederatedRoundRequest,
     InitialTrainingBenchmarkRequest,
     RetrievalBaselineRequest,
     InitialTrainingRequest,
@@ -55,6 +58,7 @@ from kera_research.api.models import (
     PatientCreateRequest,
     PatientUpdateRequest,
     ProjectCreateRequest,
+    ReleaseRolloutRequest,
     RepresentativeImageRequest,
     ResumeBenchmarkRequest,
     SiteCreateRequest,
@@ -65,6 +69,7 @@ from kera_research.api.models import (
     SSLPretrainingRunRequest,
     StorageSettingsUpdateRequest,
     UserUpsertRequest,
+    VisitLevelFederatedRoundRequest,
     VisitCreateRequest,
 )
 from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
@@ -116,7 +121,9 @@ from kera_research.api.routes.sites import build_sites_router
 from kera_research.api.site_jobs import (
     build_embedding_backfill_status as _build_embedding_backfill_status_impl,
     latest_embedding_backfill_job as _latest_embedding_backfill_job,
+    latest_federated_retrieval_sync_job as _latest_federated_retrieval_sync_job_impl,
     queue_site_embedding_backfill as _queue_site_embedding_backfill_impl,
+    start_federated_retrieval_corpus_sync as _start_federated_retrieval_corpus_sync_impl,
 )
 
 
@@ -824,6 +831,14 @@ _EMBEDDING_INDEX_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _PENDING_EMBEDDING_JOBS: dict[tuple[str, str, str], bool] = {}
 _PENDING_EMBEDDING_TRIGGERS: dict[tuple[str, str, str], str] = {}
 _EMBEDDING_JOB_LOCK = threading.Lock()
+_FEDERATED_RETRIEVAL_SYNC_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS: dict[tuple[str, str], bool] = {}
+_PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS: dict[tuple[str, str], str] = {}
+_FEDERATED_RETRIEVAL_SYNC_JOB_LOCK = threading.Lock()
+_VECTOR_INDEX_REBUILD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+_PENDING_VECTOR_INDEX_REBUILD_JOBS: dict[tuple[str, str], bool] = {}
+_PENDING_VECTOR_INDEX_REBUILD_TRIGGERS: dict[tuple[str, str], str] = {}
+_VECTOR_INDEX_REBUILD_JOB_LOCK = threading.Lock()
 
 
 def _parse_nonnegative_delay_seconds(env_name: str, default_seconds: float) -> float:
@@ -870,6 +885,51 @@ def _case_vector_index_refresh_delay_seconds(
             60.0 if gpu_available else 90.0,
         )
     return 0.0
+
+
+def _federated_retrieval_sync_delay_seconds(trigger: str, *, execution_device: str) -> float:
+    normalized_trigger = str(trigger or "").strip().lower()
+    normalized_device = str(execution_device or "cpu").strip().lower()
+    gpu_available = normalized_device.startswith("cuda")
+    if normalized_trigger == "image_upload":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_FEDERATED_RETRIEVAL_SYNC_UPLOAD_DELAY_SECONDS",
+            20.0 if gpu_available else 30.0,
+        )
+    if normalized_trigger == "representative_change":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_FEDERATED_RETRIEVAL_SYNC_REPRESENTATIVE_DELAY_SECONDS",
+            30.0 if gpu_available else 45.0,
+        )
+    if normalized_trigger == "bulk_import":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_FEDERATED_RETRIEVAL_SYNC_IMPORT_DELAY_SECONDS",
+            10.0 if gpu_available else 15.0,
+        )
+    return _parse_nonnegative_delay_seconds(
+        "KERA_FEDERATED_RETRIEVAL_SYNC_DEFAULT_DELAY_SECONDS",
+        10.0 if gpu_available else 15.0,
+    )
+
+
+def _ai_clinic_vector_index_rebuild_delay_seconds(trigger: str, *, execution_device: str) -> float:
+    normalized_trigger = str(trigger or "").strip().lower()
+    normalized_device = str(execution_device or "cpu").strip().lower()
+    gpu_available = normalized_device.startswith("cuda")
+    if normalized_trigger in {"delete_images", "visit_delete"}:
+        return _parse_nonnegative_delay_seconds(
+            "KERA_CASE_VECTOR_INDEX_DELETE_DELAY_SECONDS",
+            5.0 if gpu_available else 8.0,
+        )
+    if normalized_trigger == "visit_update":
+        return _parse_nonnegative_delay_seconds(
+            "KERA_CASE_VECTOR_INDEX_VISIT_UPDATE_DELAY_SECONDS",
+            8.0 if gpu_available else 12.0,
+        )
+    return _parse_nonnegative_delay_seconds(
+        "KERA_CASE_VECTOR_INDEX_DEFAULT_DELAY_SECONDS",
+        10.0 if gpu_available else 15.0,
+    )
 
 
 def _queue_case_embedding_refresh(
@@ -1138,6 +1198,351 @@ def _queue_case_embedding_refresh(
         embedding_delay_seconds,
         index_delay_seconds,
     )
+
+
+def _queue_ai_clinic_embedding_backfill(
+    cp: ControlPlaneStore,
+    site_store: SiteStore,
+    *,
+    trigger: str,
+    force_refresh: bool = False,
+    case_summaries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if control_plane_split_enabled():
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "control_plane_split_enabled",
+        }
+    disable_refresh = os.getenv("KERA_DISABLE_CASE_EMBEDDING_REFRESH", "").strip().lower()
+    if disable_refresh in {"1", "true", "yes", "on"}:
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "disabled",
+        }
+    model_version = cp.current_global_model()
+    if model_version is None or not model_version.get("ready", True):
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "model_unavailable",
+        }
+
+    execution_device = _preferred_embedding_execution_device()
+    job = _queue_site_embedding_backfill_impl(
+        cp,
+        site_store,
+        model_version=model_version,
+        execution_device=execution_device,
+        force_refresh=bool(force_refresh),
+        case_summaries=case_summaries,
+        trigger=trigger,
+    )
+    return {
+        "site_id": site_store.site_id,
+        "queued": True,
+        "job": job,
+        "model_version_id": model_version.get("version_id"),
+        "execution_device": execution_device,
+    }
+
+
+def _queue_federated_retrieval_corpus_sync(
+    cp: ControlPlaneStore,
+    site_store: SiteStore,
+    *,
+    trigger: str,
+    retrieval_profile: str = "dinov2_lesion_crop",
+) -> dict[str, Any]:
+    disable_refresh = os.getenv("KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC", "").strip().lower()
+    if disable_refresh in {"1", "true", "yes", "on"}:
+        return {
+            "site_id": site_store.site_id,
+            "retrieval_profile": retrieval_profile,
+            "queued": False,
+            "reason": "disabled",
+        }
+    if not cp.remote_node_sync_enabled():
+        return {
+            "site_id": site_store.site_id,
+            "retrieval_profile": retrieval_profile,
+            "queued": False,
+            "reason": "remote_node_sync_disabled",
+        }
+
+    normalized_profile = str(retrieval_profile or "dinov2_lesion_crop").strip() or "dinov2_lesion_crop"
+    execution_device = _preferred_embedding_execution_device()
+    delay_seconds = _federated_retrieval_sync_delay_seconds(
+        trigger,
+        execution_device=execution_device,
+    )
+    job_key = (site_store.site_id, normalized_profile)
+    with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
+        _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS[job_key] = trigger
+        if job_key in _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS:
+            _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[job_key] = True
+            return {
+                "site_id": site_store.site_id,
+                "retrieval_profile": normalized_profile,
+                "queued": True,
+                "deduped": True,
+                "trigger": trigger,
+                "delay_seconds": float(delay_seconds),
+            }
+        _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[job_key] = False
+
+    poll_seconds = _parse_nonnegative_delay_seconds("KERA_FEDERATED_RETRIEVAL_SYNC_POLL_SECONDS", 3.0)
+    max_wait_seconds = _parse_nonnegative_delay_seconds("KERA_FEDERATED_RETRIEVAL_SYNC_MAX_WAIT_SECONDS", 300.0)
+
+    def run_sync_job_safe(
+        key: tuple[str, str],
+        profile: str,
+        job_trigger: str,
+        job_delay_seconds: float,
+    ) -> None:
+        try:
+            if job_delay_seconds > 0:
+                # Keep case-save and image-save UX responsive by letting the write
+                # and navigation path settle before we enqueue site-level sync work.
+                time.sleep(job_delay_seconds)
+            with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
+                if _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.get(key, False):
+                    return
+
+            job = _latest_federated_retrieval_sync_job_impl(site_store, retrieval_profile=profile)
+            job_status = str((job or {}).get("status") or "").strip().lower()
+            if job_status not in {"queued", "running"}:
+                queued = _start_federated_retrieval_corpus_sync_impl(
+                    site_store,
+                    site_id=key[0],
+                    payload=SimpleNamespace(
+                        execution_mode="auto",
+                        retrieval_profile=profile,
+                        force_refresh=False,
+                    ),
+                    execution_device=_preferred_embedding_execution_device(),
+                    queue_name_for_job_type=queue_name_for_job_type,
+                )
+                job = dict(queued.get("job") or {})
+
+            job_id = str((job or {}).get("job_id") or "").strip()
+            wait_started_at = time.monotonic()
+            while job_id:
+                current_job = site_store.get_job(job_id) or job
+                current_status = str(current_job.get("status") or "").strip().lower()
+                if current_status not in {"queued", "running"}:
+                    break
+                if max_wait_seconds > 0 and (time.monotonic() - wait_started_at) >= max_wait_seconds:
+                    break
+                time.sleep(poll_seconds)
+        except Exception as exc:
+            try:
+                print(f"Federated retrieval auto-sync failed for {key}: {exc}")
+            except Exception:
+                pass
+        finally:
+            with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
+                is_dirty = _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.get(key, False)
+                latest_trigger = _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.get(key, job_trigger)
+                if is_dirty:
+                    _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[key] = False
+                    latest_execution_device = _preferred_embedding_execution_device()
+                    latest_delay_seconds = _federated_retrieval_sync_delay_seconds(
+                        latest_trigger,
+                        execution_device=latest_execution_device,
+                    )
+                    _FEDERATED_RETRIEVAL_SYNC_EXECUTOR.submit(
+                        run_sync_job_safe,
+                        key,
+                        profile,
+                        latest_trigger,
+                        latest_delay_seconds,
+                    )
+                else:
+                    _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.pop(key, None)
+                    _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.pop(key, None)
+
+    _FEDERATED_RETRIEVAL_SYNC_EXECUTOR.submit(
+        run_sync_job_safe,
+        job_key,
+        normalized_profile,
+        trigger,
+        delay_seconds,
+    )
+    return {
+        "site_id": site_store.site_id,
+        "retrieval_profile": normalized_profile,
+        "queued": True,
+        "trigger": trigger,
+        "delay_seconds": float(delay_seconds),
+    }
+
+
+def _queue_ai_clinic_vector_index_rebuild(
+    cp: ControlPlaneStore,
+    site_store: SiteStore,
+    *,
+    trigger: str,
+) -> dict[str, Any]:
+    if control_plane_split_enabled():
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "control_plane_split_enabled",
+        }
+    disable_refresh = os.getenv("KERA_DISABLE_CASE_EMBEDDING_REFRESH", "").strip().lower()
+    if disable_refresh in {"1", "true", "yes", "on"}:
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "disabled",
+        }
+    model_version = cp.current_global_model()
+    if model_version is None or not model_version.get("ready", True):
+        return {
+            "site_id": site_store.site_id,
+            "queued": False,
+            "reason": "model_unavailable",
+        }
+
+    model_version_id = str(model_version.get("version_id") or "").strip() or "unknown"
+    job_key = (site_store.site_id, model_version_id)
+    with _VECTOR_INDEX_REBUILD_JOB_LOCK:
+        _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS[job_key] = trigger
+        if job_key in _PENDING_VECTOR_INDEX_REBUILD_JOBS:
+            _PENDING_VECTOR_INDEX_REBUILD_JOBS[job_key] = True
+            return {
+                "site_id": site_store.site_id,
+                "model_version_id": model_version_id,
+                "queued": True,
+                "deduped": True,
+                "trigger": trigger,
+            }
+        _PENDING_VECTOR_INDEX_REBUILD_JOBS[job_key] = False
+
+    execution_device = _preferred_embedding_execution_device()
+    delay_seconds = _ai_clinic_vector_index_rebuild_delay_seconds(
+        trigger,
+        execution_device=execution_device,
+    )
+
+    def run_rebuild_job_safe(
+        key: tuple[str, str],
+        job_trigger: str,
+        job_delay_seconds: float,
+    ) -> None:
+        job: dict[str, Any] | None = None
+        try:
+            if job_delay_seconds > 0:
+                time.sleep(job_delay_seconds)
+            with _VECTOR_INDEX_REBUILD_JOB_LOCK:
+                if _PENDING_VECTOR_INDEX_REBUILD_JOBS.get(key, False):
+                    return
+            workflow = _get_workflow(cp)
+            job = site_store.enqueue_job(
+                "ai_clinic_vector_index_rebuild",
+                {
+                    "trigger": job_trigger,
+                    "model_version_id": model_version.get("version_id"),
+                    "execution_device": execution_device,
+                },
+            )
+            site_store.update_job_status(
+                job["job_id"],
+                "running",
+                {
+                    "progress": {
+                        "stage": "index",
+                        "message": "Rebuilding AI Clinic vector index.",
+                        "percent": 50,
+                    }
+                },
+            )
+            vector_index = {
+                "classifier": workflow.rebuild_case_vector_index(
+                    site_store,
+                    model_version=model_version,
+                    backend="classifier",
+                )
+            }
+            version_id = str(model_version.get("version_id") or "unknown")
+            for backend in ("dinov2", "biomedclip"):
+                backend_dir = site_store.embedding_dir / version_id / backend
+                if backend_dir.exists():
+                    vector_index[backend] = workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend=backend,
+                    )
+            site_store.update_job_status(
+                job["job_id"],
+                "completed",
+                {
+                    "progress": {
+                        "stage": "completed",
+                        "message": "AI Clinic vector index rebuild completed.",
+                        "percent": 100,
+                    },
+                    "response": {
+                        "model_version_id": model_version.get("version_id"),
+                        "execution_device": execution_device,
+                        "vector_index": vector_index,
+                    },
+                },
+            )
+        except Exception as exc:
+            if job is not None:
+                site_store.update_job_status(
+                    job["job_id"],
+                    "failed",
+                    {
+                        "progress": {
+                            "stage": "failed",
+                            "message": "AI Clinic vector index rebuild failed.",
+                            "percent": 100,
+                        },
+                        "error": str(exc),
+                    },
+                )
+            try:
+                print(f"AI Clinic vector index rebuild failed for {key}: {exc}")
+            except Exception:
+                pass
+        finally:
+            with _VECTOR_INDEX_REBUILD_JOB_LOCK:
+                is_dirty = _PENDING_VECTOR_INDEX_REBUILD_JOBS.get(key, False)
+                latest_trigger = _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.get(key, job_trigger)
+                if is_dirty:
+                    _PENDING_VECTOR_INDEX_REBUILD_JOBS[key] = False
+                    latest_execution_device = _preferred_embedding_execution_device()
+                    latest_delay_seconds = _ai_clinic_vector_index_rebuild_delay_seconds(
+                        latest_trigger,
+                        execution_device=latest_execution_device,
+                    )
+                    _VECTOR_INDEX_REBUILD_EXECUTOR.submit(
+                        run_rebuild_job_safe,
+                        key,
+                        latest_trigger,
+                        latest_delay_seconds,
+                    )
+                else:
+                    _PENDING_VECTOR_INDEX_REBUILD_JOBS.pop(key, None)
+                    _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.pop(key, None)
+
+    _VECTOR_INDEX_REBUILD_EXECUTOR.submit(
+        run_rebuild_job_safe,
+        job_key,
+        trigger,
+        delay_seconds,
+    )
+    return {
+        "site_id": site_store.site_id,
+        "model_version_id": model_version_id,
+        "queued": True,
+        "trigger": trigger,
+        "delay_seconds": float(delay_seconds),
+    }
 
 
 def _queue_site_embedding_backfill(
@@ -1438,6 +1843,7 @@ def create_app() -> FastAPI:
         queue_name_for_job_type=queue_name_for_job_type,
         get_embedding_backfill_status=_build_embedding_backfill_status,
         latest_embedding_backfill_job=_latest_embedding_backfill_job,
+        queue_ai_clinic_embedding_backfill=_queue_ai_clinic_embedding_backfill,
         queue_site_embedding_backfill=_queue_site_embedding_backfill,
         bool_from_value=_bool_from_value,
         coerce_text=_coerce_text,
@@ -1453,6 +1859,8 @@ def create_app() -> FastAPI:
         training_architectures=TRAINING_ARCHITECTURES,
         load_cross_validation_reports=_load_cross_validation_reports,
         queue_case_embedding_refresh=_queue_case_embedding_refresh,
+        queue_ai_clinic_vector_index_rebuild=_queue_ai_clinic_vector_index_rebuild,
+        queue_federated_retrieval_corpus_sync=_queue_federated_retrieval_corpus_sync,
         normalize_storage_root=_normalize_storage_root,
         normalize_default_storage_root=_normalize_default_storage_root,
         invalidate_site_storage_root_cache=invalidate_site_storage_root_cache,
@@ -1484,11 +1892,14 @@ def create_app() -> FastAPI:
         InitialTrainingRequest=InitialTrainingRequest,
         InitialTrainingBenchmarkRequest=InitialTrainingBenchmarkRequest,
         ResumeBenchmarkRequest=ResumeBenchmarkRequest,
+        ImageLevelFederatedRoundRequest=ImageLevelFederatedRoundRequest,
+        VisitLevelFederatedRoundRequest=VisitLevelFederatedRoundRequest,
         CrossValidationRunRequest=CrossValidationRunRequest,
         SSLPretrainingRunRequest=SSLPretrainingRunRequest,
         RetrievalBaselineRequest=RetrievalBaselineRequest,
         CaseValidationCompareRequest=CaseValidationCompareRequest,
         EmbeddingBackfillRequest=EmbeddingBackfillRequest,
+        FederatedRetrievalSyncRequest=FederatedRetrievalSyncRequest,
         LoginRequest=LoginRequest,
         GoogleLoginRequest=GoogleLoginRequest,
         AccessRequestCreateRequest=AccessRequestCreateRequest,
@@ -1498,6 +1909,7 @@ def create_app() -> FastAPI:
         ModelVersionPublishRequest=ModelVersionPublishRequest,
         ModelVersionAutoPublishRequest=ModelVersionAutoPublishRequest,
         AggregationRunRequest=AggregationRunRequest,
+        ReleaseRolloutRequest=ReleaseRolloutRequest,
         ProjectCreateRequest=ProjectCreateRequest,
         SiteCreateRequest=SiteCreateRequest,
         SiteUpdateRequest=SiteUpdateRequest,

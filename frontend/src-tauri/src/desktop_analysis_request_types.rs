@@ -208,6 +208,42 @@ struct InitialTrainingCommandRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct ImageLevelFederatedRoundCommandRequest {
+    site_id: String,
+    token: String,
+    execution_mode: Option<String>,
+    model_version_id: Option<String>,
+    epochs: Option<i64>,
+    learning_rate: Option<f64>,
+    batch_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageLevelFederatedRoundStatusCommandRequest {
+    site_id: String,
+    token: String,
+    model_version_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VisitLevelFederatedRoundCommandRequest {
+    site_id: String,
+    token: String,
+    execution_mode: Option<String>,
+    model_version_id: Option<String>,
+    epochs: Option<i64>,
+    learning_rate: Option<f64>,
+    batch_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VisitLevelFederatedRoundStatusCommandRequest {
+    site_id: String,
+    token: String,
+    model_version_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct InitialTrainingBenchmarkCommandRequest {
     site_id: String,
     token: String,
@@ -298,11 +334,27 @@ struct AiClinicEmbeddingStatusCommandRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct FederatedRetrievalStatusCommandRequest {
+    site_id: String,
+    token: String,
+    retrieval_profile: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct EmbeddingBackfillCommandRequest {
     site_id: String,
     token: String,
     execution_mode: Option<String>,
     model_version_id: Option<String>,
+    force_refresh: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FederatedRetrievalSyncCommandRequest {
+    site_id: String,
+    token: String,
+    execution_mode: Option<String>,
+    retrieval_profile: Option<String>,
     force_refresh: Option<bool>,
 }
 

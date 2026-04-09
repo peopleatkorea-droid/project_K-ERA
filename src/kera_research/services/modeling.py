@@ -2154,6 +2154,9 @@ class ModelManager:
         device: str,
         full_finetune: bool,
         epochs: int,
+        learning_rate: float = 1e-3,
+        batch_size: int = 8,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
         require_torch()
         if not records:
@@ -2161,6 +2164,19 @@ class ModelManager:
 
         model = self.load_model(base_model_reference, device)
         architecture = base_model_reference.get("architecture", "densenet121")
+        if is_attention_mil_architecture(architecture):
+            return self._fine_tune_attention_mil(
+                records=records,
+                base_model_reference=base_model_reference,
+                model=model,
+                output_model_path=output_model_path,
+                device=device,
+                full_finetune=full_finetune,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                progress_callback=progress_callback,
+            )
         preprocess_metadata = self.resolve_preprocess_metadata(base_model_reference)
         if self.is_dual_input_architecture(architecture):
             dataset = (
@@ -2177,19 +2193,20 @@ class ModelManager:
                 records,
                 preprocess_metadata=preprocess_metadata,
             )
-        loader = DataLoader(dataset, batch_size=min(8, len(records)), shuffle=True)
+        loader = DataLoader(dataset, batch_size=max(1, min(int(batch_size), len(records))), shuffle=True)
         if not full_finetune:
             self._freeze_backbone(model, architecture)
 
         optimizer = torch.optim.Adam(
             [param for param in model.parameters() if param.requires_grad],
-            lr=1e-3,
+            lr=float(learning_rate),
         )
         loss_fn = nn.CrossEntropyLoss()
 
         model.train()
         epoch_losses: list[float] = []
-        for _ in range(max(1, epochs)):
+        total_epochs = max(1, int(epochs))
+        for epoch in range(1, total_epochs + 1):
             batch_losses: list[float] = []
             if self.is_dual_input_architecture(architecture):
                 for batch in loader:
@@ -2209,7 +2226,10 @@ class ModelManager:
                     loss.backward()
                     optimizer.step()
                     batch_losses.append(float(loss.item()))
-            epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else math.nan)
+            train_loss = float(np.mean(batch_losses)) if batch_losses else math.nan
+            epoch_losses.append(train_loss)
+            if progress_callback is not None:
+                progress_callback(epoch, total_epochs, train_loss, None)
 
         output = Path(output_model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -2234,9 +2254,111 @@ class ModelManager:
             "training_id": make_id("train"),
             "output_model_path": str(output),
             "architecture": architecture,
-            "epochs": int(max(1, epochs)),
+            "epochs": total_epochs,
             "full_finetune": bool(full_finetune),
+            "learning_rate": float(learning_rate),
+            "batch_size": max(1, min(int(batch_size), len(records))),
             "average_loss": float(np.nanmean(epoch_losses)),
+        }
+
+    def _fine_tune_attention_mil(
+        self,
+        *,
+        records: list[dict[str, Any]],
+        base_model_reference: dict[str, Any],
+        model: nn.Module,
+        output_model_path: str | Path,
+        device: str,
+        full_finetune: bool,
+        epochs: int,
+        learning_rate: float,
+        batch_size: int,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        require_torch()
+        architecture = str(base_model_reference.get("architecture") or "efficientnet_v2_s_mil")
+        preprocess_metadata = self.resolve_preprocess_metadata(base_model_reference)
+        dataset_cls = VisitPairedBagDataset if is_paired_attention_mil_architecture(architecture) else VisitBagDataset
+        collate_fn = collate_visit_paired_bags if is_paired_attention_mil_architecture(architecture) else collate_visit_bags
+        train_ds = dataset_cls(records, augment=True, preprocess_metadata=preprocess_metadata)
+        train_case_count = len(train_ds)
+        if train_case_count <= 0:
+            raise ValueError("No visit-level MIL bags are available for fine-tuning.")
+
+        effective_batch_size = max(1, min(int(batch_size), train_case_count))
+        train_loader = DataLoader(train_ds, batch_size=effective_batch_size, shuffle=True, collate_fn=collate_fn)
+        if not full_finetune:
+            self._freeze_backbone(model, architecture)
+
+        optimizer = torch.optim.Adam(
+            [param for param in model.parameters() if param.requires_grad],
+            lr=float(learning_rate),
+        )
+        train_case_labels = [LABEL_TO_INDEX[str(visit_records[0]["culture_category"])] for visit_records in train_ds.visit_records]
+        class_counts = np.bincount(train_case_labels, minlength=len(LABEL_TO_INDEX))
+        class_weights = np.array(
+            [0.0 if count == 0 else len(train_case_labels) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+            dtype=np.float32,
+        )
+        loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
+
+        model.train()
+        epoch_losses: list[float] = []
+        total_epochs = max(1, int(epochs))
+        for epoch in range(1, total_epochs + 1):
+            batch_losses: list[float] = []
+            for batch_inputs, batch_mask, batch_labels in train_loader:
+                batch_inputs = self._bag_inputs_to_device(batch_inputs, device)
+                batch_mask = batch_mask.to(device)
+                batch_labels = batch_labels.to(device)
+                optimizer.zero_grad()
+                logits = self._bag_forward(model, batch_inputs, batch_mask)
+                loss = loss_fn(logits, batch_labels)
+                loss.backward()
+                optimizer.step()
+                batch_losses.append(float(loss.item()))
+            train_loss = float(np.mean(batch_losses)) if batch_losses else math.nan
+            epoch_losses.append(train_loss)
+            if progress_callback is not None:
+                progress_callback(epoch, total_epochs, train_loss, None)
+
+        output = Path(output_model_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "architecture": architecture,
+                "state_dict": model.state_dict(),
+                "artifact_metadata": self.build_artifact_metadata(
+                    architecture=architecture,
+                    artifact_type="model",
+                    crop_mode=str(base_model_reference.get("crop_mode") or ""),
+                    case_aggregation=str(
+                        base_model_reference.get("case_aggregation") or self.normalize_case_aggregation(None, architecture)
+                    ),
+                    bag_level=bool(base_model_reference.get("bag_level", is_attention_mil_architecture(architecture))),
+                    training_input_policy=str(base_model_reference.get("training_input_policy") or ""),
+                    preprocess_metadata=preprocess_metadata,
+                ),
+            },
+            output,
+        )
+
+        return {
+            "training_id": make_id("train"),
+            "output_model_path": str(output),
+            "architecture": architecture,
+            "epochs": total_epochs,
+            "full_finetune": bool(full_finetune),
+            "learning_rate": float(learning_rate),
+            "batch_size": effective_batch_size,
+            "average_loss": float(np.nanmean(epoch_losses)),
+            "n_train": len(records),
+            "n_train_cases": train_case_count,
+            "n_train_images": len(records),
+            "case_aggregation": str(
+                base_model_reference.get("case_aggregation") or self.normalize_case_aggregation(None, architecture)
+            ),
+            "bag_level": True,
         }
 
     def _freeze_backbone(self, model: nn.Module, architecture: str) -> None:

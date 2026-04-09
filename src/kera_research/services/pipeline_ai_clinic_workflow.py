@@ -348,6 +348,22 @@ class ResearchAiClinicWorkflow:
                     }
                 )
 
+        if query_dinov2_embedding is not None:
+            try:
+                remote_candidates = service.search_remote_retrieval_corpus(
+                    site_store,
+                    query_embedding=query_dinov2_embedding,
+                    query_metadata=query_metadata,
+                    patient_id=patient_id,
+                    visit_date=visit_date,
+                    retrieval_profile=retrieval_profile_record["profile_id"],
+                    top_k=search_limit,
+                )
+                candidates.extend(remote_candidates)
+            except Exception as exc:
+                warning = f"Cross-site retrieval is unavailable and AI Clinic continued with local candidates only. {exc}"
+                retrieval_warning = f"{retrieval_warning} {warning}".strip() if retrieval_warning else warning
+
         candidates.sort(key=lambda item: item["similarity"], reverse=True)
         unique_patient_candidates: list[dict[str, Any]] = []
         seen_patient_ids: set[str] = set()

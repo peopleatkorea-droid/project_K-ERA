@@ -29,6 +29,9 @@ class ControlPlaneModelFacade:
             return reference_matches_bundled_seed(normalized_remote_release) or normalized_remote_release
         return ensure_bundled_current_model(self.store)
 
+    def local_current_model(self) -> dict[str, Any] | None:
+        return ensure_bundled_current_model(self.store)
+
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
         return self.store.registry.archive_model_version(version_id)
 

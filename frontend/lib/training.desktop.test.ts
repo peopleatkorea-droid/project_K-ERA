@@ -119,6 +119,100 @@ describe("training desktop routing", () => {
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });
 
+  it("uses the desktop image-level federated round runner when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_fl_1" } });
+
+    const mod = await import("./training");
+    await mod.runImageLevelFederatedRound("SITE_A", "desktop-token", {
+      execution_mode: "cpu",
+      model_version_id: "model_convnext_1",
+      epochs: 1,
+      learning_rate: 5e-5,
+      batch_size: 4,
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_image_level_federated_round", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        execution_mode: "cpu",
+        model_version_id: "model_convnext_1",
+        epochs: 1,
+        learning_rate: 5e-5,
+        batch_size: 4,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop image-level federated status reader when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ eligible_case_count: 2, active_job: null });
+
+    const mod = await import("./training");
+    await mod.fetchImageLevelFederatedRoundStatus("SITE_A", "desktop-token", {
+      model_version_id: "model_convnext_1",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("fetch_image_level_federated_round_status", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        model_version_id: "model_convnext_1",
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop visit-level federated round runner when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_visit_fl_1" } });
+
+    const mod = await import("./training");
+    await mod.runVisitLevelFederatedRound("SITE_A", "desktop-token", {
+      execution_mode: "cpu",
+      model_version_id: "model_effnet_mil_1",
+      epochs: 1,
+      learning_rate: 5e-5,
+      batch_size: 2,
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_visit_level_federated_round", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        execution_mode: "cpu",
+        model_version_id: "model_effnet_mil_1",
+        epochs: 1,
+        learning_rate: 5e-5,
+        batch_size: 2,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop visit-level federated status reader when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ eligible_case_count: 2, active_job: null });
+
+    const mod = await import("./training");
+    await mod.fetchVisitLevelFederatedRoundStatus("SITE_A", "desktop-token", {
+      model_version_id: "model_effnet_mil_1",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("fetch_visit_level_federated_round_status", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        model_version_id: "model_effnet_mil_1",
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
   it("passes SSL benchmark metadata through the desktop benchmark runner", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_bench_1" } });
@@ -202,6 +296,49 @@ describe("training desktop routing", () => {
         token: "desktop-token",
         model_version_id: "model_1",
         force_refresh: true,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop federated retrieval sync command when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ job: { job_id: "job_sync_1" } });
+
+    const mod = await import("./training");
+    await mod.syncFederatedRetrievalCorpus("SITE_A", "desktop-token", {
+      execution_mode: "cpu",
+      retrieval_profile: "dinov2_lesion_crop",
+      force_refresh: true,
+    });
+
+    expect(desktopDiagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("sync_federated_retrieval_corpus", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        execution_mode: "cpu",
+        retrieval_profile: "dinov2_lesion_crop",
+        force_refresh: true,
+      },
+    });
+    expect(apiCoreMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("uses the desktop federated retrieval status command when the desktop runtime is available", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ eligible_case_count: 3, active_job: null });
+
+    const mod = await import("./training");
+    await mod.fetchFederatedRetrievalCorpusStatus("SITE_A", "desktop-token", {
+      retrieval_profile: "dinov2_lesion_crop",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("fetch_federated_retrieval_corpus_status", {
+      payload: {
+        site_id: "SITE_A",
+        token: "desktop-token",
+        retrieval_profile: "dinov2_lesion_crop",
       },
     });
     expect(apiCoreMocks.request).not.toHaveBeenCalled();

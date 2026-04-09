@@ -250,6 +250,17 @@ export function AdminWorkspace({
     setEmbeddingStatusBusy,
     embeddingBackfillBusy,
     setEmbeddingBackfillBusy,
+    imageLevelFederatedStatus,
+    visitLevelFederatedStatus,
+    federatedRetrievalStatus,
+    federationStatusBusy,
+    releaseRollouts,
+    releaseRolloutBusy,
+    releaseRolloutForm,
+    setReleaseRolloutForm,
+    federationMonitoring,
+    federationMonitoringBusy,
+    recentAuditEvents,
     validationExportBusy,
     setValidationExportBusy,
     crossValidationExportBusy,
@@ -344,6 +355,8 @@ export function AdminWorkspace({
     handleExportCrossValidationReport,
     handleAggregation,
     handleAggregationAllReady,
+    handleRefreshFederationStatus,
+    handleCreateReleaseRollout,
     handleDeleteModelVersion,
     handleActivateLocalModelVersion,
     handlePublishModelVersion,
@@ -913,6 +926,12 @@ export function AdminWorkspace({
               onPublishModelVersion={(version) => void handlePublishModelVersion(version)}
               onModelUpdateReview={(decision) => void handleModelUpdateReview(decision)}
               onPublishModelUpdate={() => void handlePublishModelUpdate()}
+              releaseRollouts={releaseRollouts}
+              releaseRolloutBusy={releaseRolloutBusy}
+              releaseRolloutForm={releaseRolloutForm}
+              selectedSiteId={selectedSiteId}
+              setReleaseRolloutForm={setReleaseRolloutForm}
+              onCreateReleaseRollout={() => void handleCreateReleaseRollout()}
             />
           ) : null}
           {section === "management" ? (
@@ -965,12 +984,25 @@ export function AdminWorkspace({
               approvedUpdates={approvedUpdates}
               updateThresholdAlerts={updateThresholdAlerts}
               aggregations={aggregations}
+              selectedSiteId={selectedSiteId}
+              selectedSiteLabel={selectedSiteLabel}
+              embeddingStatus={embeddingStatus}
+              imageLevelFederatedStatus={imageLevelFederatedStatus}
+              visitLevelFederatedStatus={visitLevelFederatedStatus}
+              federatedRetrievalStatus={federatedRetrievalStatus}
+              federationStatusBusy={federationStatusBusy}
+              federationMonitoring={federationMonitoring}
+              federationMonitoringBusy={federationMonitoringBusy}
+              recentAuditEvents={recentAuditEvents}
+              modelVersions={modelVersions}
               newVersionName={newVersionName}
               aggregationBusy={aggregationBusy}
               setNewVersionName={setNewVersionName}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
+              formatEmbeddingStage={formatEmbeddingStage}
               onAggregation={(updateIds) => void handleAggregation(updateIds)}
               onAggregationAllReady={() => void handleAggregationAllReady()}
+              onRefreshFederationStatus={() => void handleRefreshFederationStatus()}
             />
           ) : null}
         </div>

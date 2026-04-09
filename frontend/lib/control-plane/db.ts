@@ -7,7 +7,7 @@ export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
 const CONTROL_PLANE_SCHEMA_NAME = "control_plane";
-const CONTROL_PLANE_SCHEMA_VERSION = 1;
+const CONTROL_PLANE_SCHEMA_VERSION = 2;
 const SYSTEM_PROJECT_OWNER_ID = "system";
 const DEFAULT_PROJECT_ID = "project_default";
 const DEFAULT_PROJECT_NAME = "K-ERA Default Project";
@@ -219,6 +219,20 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
       reviewer_notes = coalesce(reviewer_notes, '')
   `;
 
+  await sql`alter table if exists nodes add column if not exists current_model_version_id text`;
+  await sql`alter table if exists nodes add column if not exists current_model_version_name text default ''`;
+  await sql.unsafe(`
+    do $$
+    begin
+      if to_regclass('nodes') is not null then
+        update nodes
+        set
+          current_model_version_name = coalesce(current_model_version_name, ''),
+          updated_at = now();
+      end if;
+    end $$;
+  `);
+
   await sql`alter table if exists model_versions add column if not exists stage text`;
   await sql`alter table if exists model_versions add column if not exists payload_json jsonb default '{}'::jsonb`;
   await sql`alter table if exists model_versions add column if not exists source_provider text`;
@@ -282,6 +296,33 @@ async function reconcileLegacySchema(sql: ControlPlaneSql): Promise<void> {
       summary_json = coalesce(summary_json, payload_json::jsonb, '{}'::jsonb),
       updated_at = now()
   `;
+
+  await sql`alter table if exists release_rollouts add column if not exists previous_version_id text`;
+  await sql`alter table if exists release_rollouts add column if not exists previous_version_name text default ''`;
+  await sql`alter table if exists release_rollouts add column if not exists target_site_ids jsonb default '[]'::jsonb`;
+  await sql`alter table if exists release_rollouts add column if not exists notes text default ''`;
+  await sql`alter table if exists release_rollouts add column if not exists metadata_json jsonb default '{}'::jsonb`;
+  await sql`alter table if exists release_rollouts add column if not exists created_by_user_id text`;
+  await sql`alter table if exists release_rollouts add column if not exists activated_at timestamptz`;
+  await sql`alter table if exists release_rollouts add column if not exists superseded_at timestamptz`;
+  await sql`alter table if exists release_rollouts add column if not exists created_at timestamptz default now()`;
+  await sql`alter table if exists release_rollouts add column if not exists updated_at timestamptz default now()`;
+  await ensureJsonbColumn(sql, "release_rollouts", "target_site_ids", "'[]'::jsonb");
+  await ensureJsonbColumn(sql, "release_rollouts", "metadata_json", "'{}'::jsonb");
+  await sql.unsafe(`
+    do $$
+    begin
+      if to_regclass('release_rollouts') is not null then
+        update release_rollouts
+        set
+          previous_version_name = coalesce(previous_version_name, ''),
+          target_site_ids = coalesce(target_site_ids, '[]'::jsonb),
+          notes = coalesce(notes, ''),
+          metadata_json = coalesce(metadata_json, '{}'::jsonb),
+          updated_at = now();
+      end if;
+    end $$;
+  `);
 
   await sql`alter table if exists validation_runs add column if not exists project_id text default 'project_default'`;
   await sql`alter table if exists validation_runs add column if not exists model_version text default ''`;
@@ -525,6 +566,8 @@ export async function ensureControlPlaneSchema(): Promise<void> {
         device_name text not null,
         os_info text not null default '',
         app_version text not null default '',
+        current_model_version_id text,
+        current_model_version_name text not null default '',
         token_hash text not null,
         status text not null default 'active',
         last_seen_at timestamptz,
@@ -591,6 +634,29 @@ export async function ensureControlPlaneSchema(): Promise<void> {
     await createIndex(sql, "aggregations", "status", "(status, created_at desc)");
 
     await sql`
+      create table if not exists release_rollouts (
+        rollout_id text primary key,
+        version_id text not null references model_versions (version_id) on delete cascade,
+        version_name text not null,
+        architecture text not null,
+        previous_version_id text references model_versions (version_id) on delete set null,
+        previous_version_name text not null default '',
+        stage text not null,
+        status text not null default 'active',
+        target_site_ids jsonb not null default '[]'::jsonb,
+        notes text not null default '',
+        metadata_json jsonb not null default '{}'::jsonb,
+        created_by_user_id text references users (user_id) on delete set null,
+        activated_at timestamptz,
+        superseded_at timestamptz,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `;
+    await createIndex(sql, "release_rollouts", "status", "(status, created_at desc)");
+    await createIndex(sql, "release_rollouts", "version", "(version_id, created_at desc)");
+
+    await sql`
       create table if not exists validation_runs (
         validation_id text primary key,
         project_id text not null default 'project_default',
@@ -613,6 +679,39 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createIndex(sql, "validation_runs", "site_run_date", "(site_id, run_date desc)");
+
+    await sql`
+      create table if not exists retrieval_corpus_profiles (
+        profile_id text primary key,
+        retrieval_signature text not null,
+        metadata_json jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `;
+    await createIndex(sql, "retrieval_corpus_profiles", "signature", "(retrieval_signature)");
+
+    await sql`
+      create table if not exists retrieval_corpus_entries (
+        entry_id text primary key,
+        site_id text references sites (site_id) on delete cascade,
+        node_id text references nodes (node_id) on delete set null,
+        profile_id text not null references retrieval_corpus_profiles (profile_id) on delete cascade,
+        retrieval_signature text not null,
+        case_reference_id text not null,
+        culture_category text not null,
+        culture_species text not null default '',
+        embedding_dim integer not null,
+        embedding_json jsonb not null default '[]'::jsonb,
+        thumbnail_url text,
+        metadata_json jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `;
+    await createUniqueIndex(sql, "retrieval_corpus_entries", "site_profile_case", "(site_id, profile_id, case_reference_id)");
+    await createIndex(sql, "retrieval_corpus_entries", "profile_signature", "(profile_id, retrieval_signature)");
+    await createIndex(sql, "retrieval_corpus_entries", "site_created", "(site_id, created_at desc)");
 
     await sql`
       create table if not exists audit_events (

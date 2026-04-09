@@ -25,6 +25,7 @@ def build_admin_registry_router(support: Any) -> APIRouter:
     ModelVersionPublishRequest = support.ModelVersionPublishRequest
     ModelVersionAutoPublishRequest = support.ModelVersionAutoPublishRequest
     AggregationRunRequest = support.AggregationRunRequest
+    ReleaseRolloutRequest = support.ReleaseRolloutRequest
 
     @router.get("/api/admin/model-versions")
     def list_model_versions(
@@ -268,8 +269,128 @@ def build_admin_registry_router(support: Any) -> APIRouter:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Central control plane aggregations are unavailable.",
-            )
+        )
         return cp.list_aggregations()
+
+    @router.get("/api/admin/release-rollouts")
+    def list_release_rollouts(
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> list[dict[str, Any]]:
+        require_platform_admin(user)
+        remote_rollouts = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_release_rollouts",
+        )
+        if remote_rollouts is not None:
+            return remote_rollouts
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane release rollouts are unavailable.",
+            )
+        return []
+
+    @router.post("/api/admin/release-rollouts")
+    def create_release_rollout(
+        payload: ReleaseRolloutRequest,
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        remote_rollout = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_create_release_rollout",
+            payload_json=payload.model_dump(),
+        )
+        if remote_rollout is not None:
+            return remote_rollout
+        if payload.stage in {"pilot", "partial"}:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Staged rollout requires the central control plane.",
+            )
+        activated = registry_orchestrator.activate_local_model_version(cp, version_id=payload.version_id)
+        return {
+            "rollout": {
+                "rollout_id": f"local_rollout_{payload.version_id}",
+                "version_id": payload.version_id,
+                "version_name": activated["model_version"].get("version_name") or payload.version_id,
+                "architecture": activated["model_version"].get("architecture") or "unknown",
+                "previous_version_id": None,
+                "previous_version_name": None,
+                "stage": payload.stage,
+                "status": "active",
+                "target_site_ids": [],
+                "notes": payload.notes,
+                "created_by_user_id": user.get("user_id"),
+                "created_at": activated["model_version"].get("created_at"),
+                "activated_at": activated["model_version"].get("created_at"),
+                "superseded_at": None,
+                "metadata_json": {"fallback": "local_only"},
+            }
+        }
+
+    @router.get("/api/admin/federation/monitoring")
+    def get_federation_monitoring(
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        remote_summary = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_federation_monitoring",
+        )
+        if remote_summary is not None:
+            return remote_summary
+        current_model = cp.current_global_model()
+        visible_sites = cp.list_sites()
+        site_adoption = [
+            {
+                "site_id": str(site.get("site_id") or ""),
+                "site_display_name": str(site.get("hospital_name") or site.get("display_name") or site.get("site_id") or ""),
+                "node_count": 0,
+                "active_node_count": 0,
+                "aligned_node_count": 0,
+                "unknown_node_count": 0,
+                "lagging_node_count": 0,
+                "expected_version_id": current_model.get("version_id") if isinstance(current_model, dict) else None,
+                "expected_version_name": current_model.get("version_name") if isinstance(current_model, dict) else None,
+                "latest_reported_version_id": None,
+                "latest_reported_version_name": None,
+                "latest_validation_version_id": None,
+                "latest_validation_version_name": None,
+                "latest_validation_run_date": None,
+                "last_seen_at": None,
+            }
+            for site in visible_sites
+        ]
+        return {
+            "current_release": current_model,
+            "active_rollout": None,
+            "recent_rollouts": [],
+            "recent_audit_events": [],
+            "node_summary": {
+                "total_nodes": 0,
+                "active_nodes": 0,
+                "aligned_nodes": 0,
+                "lagging_nodes": 0,
+                "unknown_nodes": 0,
+            },
+            "site_adoption": site_adoption,
+        }
 
     @router.post("/api/admin/aggregations/run")
     def run_federated_aggregation(

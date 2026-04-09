@@ -8,10 +8,14 @@ import {
   type AdminOverviewResponse,
   type AggregationRecord,
   type AiClinicEmbeddingStatusResponse,
+  type AuditEventRecord,
   type AuthUser,
   type BulkImportResponse,
   type CrossValidationFoldRecord,
   type CrossValidationReport,
+  type FederatedRetrievalCorpusStatusResponse,
+  type FederationMonitoringSummaryResponse,
+  type ImageLevelFederatedRoundStatusResponse,
   type InstitutionDirectorySyncResponse,
   type InitialTrainingBenchmarkResponse,
   type InitialTrainingResponse,
@@ -20,12 +24,14 @@ import {
   type ModelUpdateRecord,
   type ModelVersionRecord,
   type ProjectRecord,
+  type ReleaseRolloutRecord,
   type SiteComparisonRecord,
   type SiteActivityResponse,
   type SiteJobRecord,
   type SiteValidationRunRecord,
   type SslPretrainingResponse,
   type StorageSettingsRecord,
+  type VisitLevelFederatedRoundStatusResponse,
 } from "../../lib/api";
 import { type DashboardCasePreview } from "./dashboard-section";
 
@@ -88,6 +94,13 @@ export type UpdateThresholdAlert = {
   update_count: number;
   site_count: number;
   duplicate_site_count: number;
+};
+
+export type ReleaseRolloutFormState = {
+  version_id: string;
+  stage: "pilot" | "partial" | "full" | "rollback";
+  target_site_ids_text: string;
+  notes: string;
 };
 
 type UseAdminWorkspaceStateOptions = {
@@ -328,6 +341,21 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [embeddingStatus, setEmbeddingStatus] = useState<AiClinicEmbeddingStatusResponse | null>(null);
   const [embeddingStatusBusy, setEmbeddingStatusBusy] = useState(false);
   const [embeddingBackfillBusy, setEmbeddingBackfillBusy] = useState(false);
+  const [imageLevelFederatedStatus, setImageLevelFederatedStatus] = useState<ImageLevelFederatedRoundStatusResponse | null>(null);
+  const [visitLevelFederatedStatus, setVisitLevelFederatedStatus] = useState<VisitLevelFederatedRoundStatusResponse | null>(null);
+  const [federatedRetrievalStatus, setFederatedRetrievalStatus] = useState<FederatedRetrievalCorpusStatusResponse | null>(null);
+  const [federationStatusBusy, setFederationStatusBusy] = useState(false);
+  const [releaseRollouts, setReleaseRollouts] = useState<ReleaseRolloutRecord[]>([]);
+  const [releaseRolloutBusy, setReleaseRolloutBusy] = useState(false);
+  const [releaseRolloutForm, setReleaseRolloutForm] = useState<ReleaseRolloutFormState>({
+    version_id: "",
+    stage: "pilot",
+    target_site_ids_text: selectedSiteId ?? "",
+    notes: "",
+  });
+  const [federationMonitoring, setFederationMonitoring] = useState<FederationMonitoringSummaryResponse | null>(null);
+  const [federationMonitoringBusy, setFederationMonitoringBusy] = useState(false);
+  const [recentAuditEvents, setRecentAuditEvents] = useState<AuditEventRecord[]>([]);
   const [validationExportBusy, setValidationExportBusy] = useState(false);
   const [crossValidationExportBusy, setCrossValidationExportBusy] = useState(false);
   const [crossValidationReports, setCrossValidationReports] = useState<CrossValidationReport[]>([]);
@@ -671,6 +699,26 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setEmbeddingStatusBusy,
     embeddingBackfillBusy,
     setEmbeddingBackfillBusy,
+    imageLevelFederatedStatus,
+    setImageLevelFederatedStatus,
+    visitLevelFederatedStatus,
+    setVisitLevelFederatedStatus,
+    federatedRetrievalStatus,
+    setFederatedRetrievalStatus,
+    federationStatusBusy,
+    setFederationStatusBusy,
+    releaseRollouts,
+    setReleaseRollouts,
+    releaseRolloutBusy,
+    setReleaseRolloutBusy,
+    releaseRolloutForm,
+    setReleaseRolloutForm,
+    federationMonitoring,
+    setFederationMonitoring,
+    federationMonitoringBusy,
+    setFederationMonitoringBusy,
+    recentAuditEvents,
+    setRecentAuditEvents,
     validationExportBusy,
     setValidationExportBusy,
     crossValidationExportBusy,

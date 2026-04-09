@@ -80,6 +80,17 @@ function FieldGrid({ items }: { items: FieldItem[] }) {
   );
 }
 
+function resolvePreviewImageSrc(previewUrl: string | null | undefined, token: string) {
+  const normalized = String(previewUrl || "").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.startsWith("data:")) {
+    return normalized;
+  }
+  return `${normalized}${normalized.includes("?") ? "&" : "?"}token=${token}`;
+}
+
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
     <Card as="section" variant="nested" className="grid gap-4 p-5">
@@ -489,7 +500,7 @@ function AiClinicResultInner({
                     {item.preview_url ? (
                       <Card as="div" variant="panel" className="overflow-hidden">
                         <img
-                          src={item.preview_url ? `${item.preview_url}${item.preview_url.includes("?") ? "&" : "?"}token=${token}` : undefined}
+                          src={resolvePreviewImageSrc(item.preview_url, token)}
                           alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
                           className="aspect-[4/3] w-full object-cover"
                           loading="lazy"

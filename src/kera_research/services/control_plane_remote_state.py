@@ -108,6 +108,8 @@ class ControlPlaneRemoteState:
         app_version: str = "",
         os_info: str = "",
         status: str = "ok",
+        current_model_version_id: str = "",
+        current_model_version_name: str = "",
     ) -> dict[str, Any] | None:
         if not self._remote_node_sync_enabled():
             return None
@@ -116,6 +118,8 @@ class ControlPlaneRemoteState:
                 app_version=app_version,
                 os_info=os_info or self.remote_node_os_info(),
                 status=status,
+                current_model_version_id=current_model_version_id,
+                current_model_version_name=current_model_version_name,
             )
         except (requests.RequestException, RuntimeError):
             return None

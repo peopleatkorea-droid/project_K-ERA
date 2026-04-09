@@ -7,12 +7,14 @@ import type {
   AdminWorkspaceBootstrapResponse,
   AggregationRecord,
   AggregationRunResponse,
+  FederationMonitoringSummaryResponse,
   InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
   ManagedUserRecord,
   ModelUpdateRecord,
   ModelVersionRecord,
   ProjectRecord,
+  ReleaseRolloutRecord,
   ResearchRegistrySettingsResponse,
   SiteComparisonRecord,
   SiteMetadataRecoveryResponse,
@@ -707,6 +709,53 @@ export async function fetchAggregations(token: string) {
     return requestDesktopLocalAdminJson<AggregationRecord[]>("/api/admin/aggregations", token);
   }
   return requestMainControlPlane<AggregationRecord[]>("/admin/aggregations", {}, token);
+}
+
+export async function fetchReleaseRollouts(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<ReleaseRolloutRecord[]>("/api/admin/release-rollouts", token);
+  }
+  return requestMainControlPlane<ReleaseRolloutRecord[]>("/admin/release-rollouts", {}, token);
+}
+
+export async function createReleaseRollout(
+  token: string,
+  payload: {
+    version_id: string;
+    stage: "pilot" | "partial" | "full" | "rollback";
+    target_site_ids?: string[];
+    notes?: string;
+  },
+) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<{ rollout: ReleaseRolloutRecord }>("/api/admin/release-rollouts", token, {
+      method: "POST",
+      body: {
+        target_site_ids: [],
+        notes: "",
+        ...payload,
+      },
+    });
+  }
+  return requestMainControlPlane<{ rollout: ReleaseRolloutRecord }>(
+    "/admin/release-rollouts",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        target_site_ids: [],
+        notes: "",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
+export async function fetchFederationMonitoring(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<FederationMonitoringSummaryResponse>("/api/admin/federation/monitoring", token);
+  }
+  return requestMainControlPlane<FederationMonitoringSummaryResponse>("/admin/federation/monitoring", {}, token);
 }
 
 export async function fetchSiteComparison(token: string) {

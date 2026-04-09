@@ -20,7 +20,10 @@ WorkflowFactory = Callable[[ControlPlaneStore], Any]
 QUEUE_BY_JOB_TYPE = {
     "initial_training": "training",
     "initial_training_benchmark": "training",
+    "image_level_federated_round": "training",
+    "visit_level_federated_round": "training",
     "retrieval_baseline": "training",
+    "federated_retrieval_corpus_sync": "training",
     "cross_validation": "training",
     "ssl_pretraining": "training",
     "site_validation": "validation",
@@ -530,6 +533,71 @@ class SiteJobWorker:
         }
         return response
 
+    def _handle_image_level_federated_round(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        workflow = self._workflow_service()
+        execution_device = str(payload["execution_device"])
+        model_version = self._resolve_model_version(payload.get("model_version_id"))
+
+        def update_progress(progress_payload: dict[str, Any]) -> None:
+            self._raise_if_cancel_requested(site_store, job["job_id"], "Image-level federated training cancelled.")
+            self._update_progress(site_store, job["job_id"], progress_payload)
+
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Image-level federated training cancelled.")
+        return self._call_with_supported_kwargs(
+            workflow.run_image_level_federated_round,
+            site_store=site_store,
+            model_version=model_version,
+            execution_device=execution_device,
+            epochs=int(payload.get("epochs") or 1),
+            learning_rate=float(payload.get("learning_rate") or 5e-5),
+            batch_size=int(payload.get("batch_size") or 8),
+            progress_callback=update_progress,
+        )
+
+    def _handle_visit_level_federated_round(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        workflow = self._workflow_service()
+        execution_device = str(payload["execution_device"])
+        model_version = self._resolve_model_version(payload.get("model_version_id"))
+
+        def update_progress(progress_payload: dict[str, Any]) -> None:
+            self._raise_if_cancel_requested(site_store, job["job_id"], "Visit-level federated training cancelled.")
+            self._update_progress(site_store, job["job_id"], progress_payload)
+
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Visit-level federated training cancelled.")
+        return self._call_with_supported_kwargs(
+            workflow.run_visit_level_federated_round,
+            site_store=site_store,
+            model_version=model_version,
+            execution_device=execution_device,
+            epochs=int(payload.get("epochs") or 1),
+            learning_rate=float(payload.get("learning_rate") or 5e-5),
+            batch_size=int(payload.get("batch_size") or 4),
+            progress_callback=update_progress,
+        )
+
+    def _handle_federated_retrieval_corpus_sync(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job.get("payload") or {})
+        workflow = self._workflow_service()
+        execution_device = str(payload["execution_device"])
+        retrieval_profile = str(payload.get("retrieval_profile") or "dinov2_lesion_crop")
+
+        def update_progress(progress_payload: dict[str, Any]) -> None:
+            self._raise_if_cancel_requested(site_store, job["job_id"], "Federated retrieval corpus sync cancelled.")
+            self._update_progress(site_store, job["job_id"], progress_payload)
+
+        self._raise_if_cancel_requested(site_store, job["job_id"], "Federated retrieval corpus sync cancelled.")
+        result = self._call_with_supported_kwargs(
+            workflow.sync_remote_retrieval_corpus,
+            site_store=site_store,
+            execution_device=execution_device,
+            retrieval_profile=retrieval_profile,
+            force_refresh=bool(payload.get("force_refresh", False)),
+            progress_callback=update_progress,
+        )
+        return result
+
     def _dispatch_job(self, site_store: SiteStore, job: dict[str, Any]) -> dict[str, Any]:
         job_type = str(job.get("job_type") or "")
         if job_type == "initial_training":
@@ -538,6 +606,12 @@ class SiteJobWorker:
             return self._handle_initial_training_benchmark(site_store, job)
         if job_type == "retrieval_baseline":
             return self._handle_retrieval_baseline(site_store, job)
+        if job_type == "image_level_federated_round":
+            return self._handle_image_level_federated_round(site_store, job)
+        if job_type == "visit_level_federated_round":
+            return self._handle_visit_level_federated_round(site_store, job)
+        if job_type == "federated_retrieval_corpus_sync":
+            return self._handle_federated_retrieval_corpus_sync(site_store, job)
         if job_type == "cross_validation":
             return self._handle_cross_validation(site_store, job)
         if job_type == "ssl_pretraining":

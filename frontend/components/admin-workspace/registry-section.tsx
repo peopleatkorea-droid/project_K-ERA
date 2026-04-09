@@ -8,8 +8,9 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass, panelImageFallbackClass } from "../ui/workspace-patterns";
-import type { ModelUpdateRecord, ModelVersionRecord } from "../../lib/api";
+import type { ModelUpdateRecord, ModelVersionRecord, ReleaseRolloutRecord } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
+import type { ReleaseRolloutFormState } from "./use-admin-workspace-state";
 
 type Props = {
   locale: Locale;
@@ -25,8 +26,13 @@ type Props = {
   publishingModelVersionId: string | null;
   publishingModelUpdateId: string | null;
   modelUpdateReviewNotes: Record<string, string>;
+  releaseRollouts: ReleaseRolloutRecord[];
+  releaseRolloutBusy: boolean;
+  releaseRolloutForm: ReleaseRolloutFormState;
+  selectedSiteId: string | null;
   setSelectedModelUpdateId: Dispatch<SetStateAction<string | null>>;
   setModelUpdateReviewNotes: Dispatch<SetStateAction<Record<string, string>>>;
+  setReleaseRolloutForm: Dispatch<SetStateAction<ReleaseRolloutFormState>>;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
   formatWeightPercent: (value: number | null | undefined) => string;
   formatMetric: (value: number | null | undefined, emptyLabel?: string) => string;
@@ -37,6 +43,7 @@ type Props = {
   onPublishModelVersion: (version: ModelVersionRecord) => void;
   onModelUpdateReview: (decision: "approved" | "rejected") => void;
   onPublishModelUpdate: () => void;
+  onCreateReleaseRollout: () => void;
 };
 
 function PreviewCard({
@@ -74,8 +81,13 @@ export function RegistrySection({
   publishingModelVersionId,
   publishingModelUpdateId,
   modelUpdateReviewNotes,
+  releaseRollouts,
+  releaseRolloutBusy,
+  releaseRolloutForm,
+  selectedSiteId,
   setSelectedModelUpdateId,
   setModelUpdateReviewNotes,
+  setReleaseRolloutForm,
   formatDateTime,
   formatWeightPercent,
   formatMetric,
@@ -86,7 +98,10 @@ export function RegistrySection({
   onPublishModelVersion,
   onModelUpdateReview,
   onPublishModelUpdate,
+  onCreateReleaseRollout,
 }: Props) {
+  const readyVersions = modelVersions.filter((item) => item.ready);
+
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
       <SectionHeader
@@ -242,6 +257,127 @@ export function RegistrySection({
           )}
         </Card>
       </div>
+
+      {canManagePlatform ? (
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Release rollout", "릴리스 rollout")}
+            titleAs="h4"
+            description={pick(
+              locale,
+              "Use pilot or partial rollout to target specific hospitals before promoting a model to the full current release.",
+              "pilot/partial rollout으로 특정 병원에 먼저 배포한 뒤, 전체 current release로 승격하세요."
+            )}
+          />
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)]">
+            <div className="grid gap-4">
+              <Field label={pick(locale, "Target model version", "대상 모델 버전")}>
+                <select
+                  value={releaseRolloutForm.version_id}
+                  onChange={(event) =>
+                    setReleaseRolloutForm((current) => ({
+                      ...current,
+                      version_id: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">{pick(locale, "Select a ready model", "준비된 모델 선택")}</option>
+                  {readyVersions.map((item) => (
+                    <option key={item.version_id} value={item.version_id}>
+                      {`${item.version_name} / ${item.architecture}`}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label={pick(locale, "Rollout stage", "rollout 단계")}>
+                  <select
+                    value={releaseRolloutForm.stage}
+                    onChange={(event) =>
+                      setReleaseRolloutForm((current) => ({
+                        ...current,
+                        stage: event.target.value as ReleaseRolloutFormState["stage"],
+                      }))
+                    }
+                  >
+                    <option value="pilot">{pick(locale, "Pilot", "Pilot")}</option>
+                    <option value="partial">{pick(locale, "Partial", "Partial")}</option>
+                    <option value="full">{pick(locale, "Full", "Full")}</option>
+                    <option value="rollback">{pick(locale, "Rollback", "Rollback")}</option>
+                  </select>
+                </Field>
+                <Field label={pick(locale, "Target hospitals", "대상 병원")}>
+                  <input
+                    value={releaseRolloutForm.target_site_ids_text}
+                    onChange={(event) =>
+                      setReleaseRolloutForm((current) => ({
+                        ...current,
+                        target_site_ids_text: event.target.value,
+                      }))
+                    }
+                    placeholder={selectedSiteId ?? "SITE_A,SITE_B"}
+                  />
+                </Field>
+              </div>
+              <Field label={pick(locale, "Operator note", "운영 메모")}>
+                <textarea
+                  rows={3}
+                  value={releaseRolloutForm.notes}
+                  onChange={(event) =>
+                    setReleaseRolloutForm((current) => ({
+                      ...current,
+                      notes: event.target.value,
+                    }))
+                  }
+                />
+              </Field>
+              <div className="text-sm leading-6 text-muted">
+                {pick(
+                  locale,
+                  "For pilot or partial rollout, enter comma-separated site IDs. Full rollout ignores the target list and promotes the selected version as the new global release. Rollback uses the selected version as the recovery target.",
+                  "pilot/partial rollout은 쉼표로 구분한 site ID를 사용합니다. full rollout은 대상 목록을 무시하고 선택한 버전을 전체 글로벌 릴리스로 승격합니다. rollback은 선택한 버전을 복구 대상 버전으로 사용합니다."
+                )}
+              </div>
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button type="button" variant="primary" disabled={releaseRolloutBusy} onClick={onCreateReleaseRollout}>
+                  {releaseRolloutBusy
+                    ? pick(locale, "Saving rollout...", "rollout 저장 중...")
+                    : pick(locale, "Save rollout plan", "rollout 계획 저장")}
+                </Button>
+              </div>
+            </div>
+
+            <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+              <SectionHeader
+                title={pick(locale, "Recent rollout history", "최근 rollout 이력")}
+                titleAs="h4"
+                aside={<span className={docSiteBadgeClass}>{releaseRollouts.length}</span>}
+              />
+              {releaseRollouts.length === 0 ? (
+                <div className={emptySurfaceClass}>
+                  {pick(locale, "No rollout history is recorded yet.", "아직 기록된 rollout 이력이 없습니다.")}
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {releaseRollouts.slice(0, 4).map((item) => (
+                    <Card key={item.rollout_id} as="article" variant="nested" className="grid gap-2 border border-border/80 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <strong className="text-sm text-ink">{item.version_name}</strong>
+                        <span className={docSiteBadgeClass}>{`${item.stage} / ${item.status}`}</span>
+                      </div>
+                      <div className="text-xs leading-5 text-muted">{item.architecture}</div>
+                      <div className="text-xs leading-5 text-muted">{formatDateTime(item.created_at, notAvailableLabel)}</div>
+                      {item.target_site_ids.length > 0 ? (
+                        <div className="text-xs leading-5 text-muted">{item.target_site_ids.join(", ")}</div>
+                      ) : null}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+        </Card>
+      ) : null}
 
       {selectedModelUpdate ? (
         <Card as="section" variant="nested" className="grid gap-5 p-5">

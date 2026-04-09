@@ -19,6 +19,8 @@ def build_site_imports_router(support: Any) -> APIRouter:
     require_admin_workspace_permission = support.require_admin_workspace_permission
     require_site_access = support.require_site_access
     user_can_access_site = support.user_can_access_site
+    queue_ai_clinic_embedding_backfill = support.queue_ai_clinic_embedding_backfill
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
     bool_from_value = support.bool_from_value
     coerce_text = support.coerce_text
     import_template_rows = support.import_template_rows
@@ -201,6 +203,18 @@ def build_site_imports_router(support: Any) -> APIRouter:
             except Exception as exc:
                 skipped_images += 1
                 errors.append(f"Row {row_index + 2}: {exc}")
+
+        if created_visits > 0 or imported_images > 0:
+            queue_ai_clinic_embedding_backfill(
+                cp,
+                site_store,
+                trigger="bulk_import",
+            )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="bulk_import",
+            )
 
         return {
             "site_id": site_id,

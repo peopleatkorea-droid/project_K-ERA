@@ -54,6 +54,45 @@
 
 ---
 
+## 현재 AI / 연합학습 구성
+
+- **주 분석 모델**: `EfficientNetV2-S MIL (full)`
+  - visit-level bag inference / validation / visit-level federated round의 기본 모델입니다.
+- **보조 image-level 모델**: `ConvNeXt-Tiny (full)`
+  - image-level support와 image-level federated round의 기본 모델입니다.
+- **similar case retrieval**: `DINOv2 lesion-crop retrieval`
+  - AI Clinic similar case 검색용 retrieval profile이며, analysis model과 분리되어 동작합니다.
+
+### 학습 / 기여 정책
+
+- 모든 사용자는 케이스를 저장하고 분석할 수 있습니다.
+- `culture_status`는 `positive / negative / not_done / unknown`을 사용합니다.
+- 연합학습 기여와 연구 registry 포함은 아래 조건을 모두 만족할 때만 허용합니다.
+  - `positive`
+  - `active`
+  - `images > 0`
+  - `research registry consent`
+  - `registry included`
+
+### 다기관 similar case 확장
+
+- DINO retrieval은 현재 **full federated learning**이 아니라 **federated retrieval corpus expansion** 방식으로 운영합니다.
+- 각 병원은 같은 retrieval profile / preprocessing / normalization 기준으로 positive case embedding을 생성합니다.
+- 중앙 control plane에는 embedding과 최소 메타데이터, 선택적으로 thumbnail만 업로드합니다.
+- AI Clinic은 로컬 케이스를 query로 사용하되, cross-site positive corpus에서 top-k similar case를 검색할 수 있습니다.
+
+### 연합학습 round 구조
+
+- **Image-level FL**: `ConvNeXt-Tiny (full)`
+  - `site-round background job -> pending_review model update -> FedAvg`
+  - 집계 가중치는 `n_images`
+- **Visit-level FL**: `EfficientNetV2-S MIL (full)`
+  - `site-round background job -> pending_review model update -> FedAvg`
+  - 집계 가중치는 `n_cases`
+- 집계 시에는 `same architecture + same base model + same federated_round_type`만 함께 aggregate됩니다.
+
+---
+
 ## 요구사항
 
 - Windows PowerShell
@@ -252,6 +291,40 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 - 데스크탑 패키지 빌드에서 CPU / GPU 두 가지 배포판을 지원합니다.
 - GitHub Actions `desktop-release` 워크플로(`v*` 태그 기반)와 `desktop-verify` 워크플로(PR 검증)가 추가되었습니다.
 - SQLite N+1 쿼리 수정, CTE 최적화, 인덱스 추가 등 성능 개선이 적용되었습니다.
+
+### 10. 2026-04-07 ~ 2026-04-09 업데이트
+
+- CPU 배포본 안정화 작업을 진행했습니다.
+  - `Next production build`
+  - `desktop:smoke-installed:cpu`
+  - 주요 Python 회귀
+  - packaged backend self-check
+- 케이스 정책을 `culture_confirmed bool` 중심에서 `culture_status` 중심으로 정리했습니다.
+  - `positive / negative / not_done / unknown`
+  - 모든 사용자는 저장/분석 가능
+  - `positive`일 때만 category/species가 학습/기여에 사용
+- validation을 `labeled validation`과 `inference-only`로 분리했습니다.
+  - inference-only는 `true_label / is_correct` 없이 pattern support 성격으로 반환합니다.
+- AI Clinic retrieval을 analysis model과 분리된 `retrieval_profile` 구조로 고정했습니다.
+- 운영 기본 AI 구성을 아래처럼 정리했습니다.
+  - 주 분석: `EfficientNetV2-S MIL (full)`
+  - 보조 image-level: `ConvNeXt-Tiny (full)`
+  - similar case retrieval: `DINOv2 lesion-crop`
+- 다기관 similar case 공유를 위해 `federated retrieval corpus expansion`을 추가했습니다.
+  - 각 병원 positive / included case embedding을 중앙 retrieval corpus로 sync
+  - AI Clinic이 cross-site similar case를 검색 가능
+  - retrieval signature 검증으로 동일 profile만 같은 corpus에 포함
+- image-level federated learning을 `ConvNeXt-Tiny (full)` 기준으로 추가했습니다.
+  - site-round background job
+  - pending review update
+  - FedAvg aggregation
+- visit-level federated learning을 `EfficientNetV2-S MIL (full)` 기준으로 추가했습니다.
+  - true MIL bag fine-tune 경로
+  - site-round background job
+  - pending review update
+  - FedAvg aggregation
+- 연합학습 / retrieval / embedding status 응답의 `active_job` semantics를 정리했습니다.
+  - 완료된 job은 더 이상 `active_job`으로 보이지 않습니다.
 
 ---
 

@@ -45,6 +45,8 @@ pub(super) fn delete_visit(payload: DeleteVisitRequest) -> Result<DeleteVisitRes
         )
         .map_err(|error| error.to_string())?;
     let deleted_patient = delete_patient_if_empty(&conn, &payload.site_id, &patient_id)?;
+    schedule_ai_clinic_vector_index_rebuild(&site_id, "visit_delete");
+    schedule_federated_retrieval_corpus_sync(&site_id, "visit_delete");
     Ok(DeleteVisitResponse {
         patient_id,
         visit_date,

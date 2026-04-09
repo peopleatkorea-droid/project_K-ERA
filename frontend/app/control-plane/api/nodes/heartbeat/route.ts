@@ -10,11 +10,15 @@ export async function POST(request: NextRequest) {
       app_version?: string;
       os_info?: string;
       status?: string;
+      current_model_version_id?: string;
+      current_model_version_name?: string;
     };
     const refreshed = await recordNodeHeartbeat(node.node_id, {
       appVersion: body.app_version?.trim() || "",
       osInfo: body.os_info?.trim() || "",
       status: body.status?.trim() || "ok",
+      currentModelVersionId: body.current_model_version_id?.trim() || "",
+      currentModelVersionName: body.current_model_version_name?.trim() || "",
     });
     return Response.json(refreshed);
   } catch (error) {
@@ -22,4 +26,3 @@ export async function POST(request: NextRequest) {
     return jsonError(message, 401);
   }
 }
-

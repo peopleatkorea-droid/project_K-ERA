@@ -639,9 +639,13 @@ export type AiClinicSimilarCaseRecord = {
   visit_date: string;
   case_id: string;
   representative_image_id: string | null;
+  preview_url?: string | null;
   representative_view?: string | null;
   chart_alias?: string;
   local_case_code?: string;
+  source_site_id?: string | null;
+  source_site_display_name?: string | null;
+  source_site_hospital_name?: string | null;
   sex?: string | null;
   age?: number | null;
   culture_category: string;
@@ -1149,8 +1153,14 @@ export type ModelUpdateRecord = {
   artifact_source_provider?: string | null;
   artifact_storage?: string | null;
   n_cases?: number | null;
+  n_images?: number | null;
+  aggregation_weight?: number | null;
+  aggregation_weight_unit?: string | null;
+  federated_round_type?: string | null;
   contributed_by?: string | null;
   case_reference_id?: string | null;
+  representative_case_reference_id?: string | null;
+  representative_patient_reference_id?: string | null;
   created_at?: string | null;
   training_input_policy?: string | null;
   training_summary?: Record<string, unknown>;
@@ -1167,12 +1177,30 @@ export type ModelUpdateRecord = {
     generated_at?: string;
     case_summary?: {
       image_count?: number;
+      eligible_case_count?: number | null;
+      eligible_image_count?: number | null;
       representative_view?: string | null;
       views?: string[];
       culture_category?: string | null;
       culture_species?: string | null;
+      representative_case_reference_id?: string | null;
+      representative_patient_reference_id?: string | null;
       is_single_case_delta?: boolean;
+      scope?: string | null;
     };
+    round_scope?: {
+      round_type?: string | null;
+      architecture?: string | null;
+      base_model_version_id?: string | null;
+      eligible_case_count?: number | null;
+      eligible_image_count?: number | null;
+      skipped?: {
+        not_positive?: number | null;
+        not_active?: number | null;
+        not_included?: number | null;
+        no_images?: number | null;
+      } | null;
+    } | null;
     qa_metrics?: {
       source?: Record<string, number>;
       roi_crop?: Record<string, number>;
@@ -1262,6 +1290,68 @@ export type AggregationRecord = {
   site_weights?: Record<string, number>;
   total_cases?: number | null;
   created_at?: string | null;
+};
+
+export type ReleaseRolloutRecord = {
+  rollout_id: string;
+  version_id: string;
+  version_name: string;
+  architecture: string;
+  previous_version_id?: string | null;
+  previous_version_name?: string | null;
+  stage: "pilot" | "partial" | "full" | "rollback";
+  status: "active" | "superseded";
+  target_site_ids: string[];
+  notes: string;
+  created_by_user_id?: string | null;
+  created_at: string;
+  activated_at?: string | null;
+  superseded_at?: string | null;
+  metadata_json?: Record<string, unknown>;
+};
+
+export type AuditEventRecord = {
+  event_id: string;
+  actor_type: string;
+  actor_id?: string | null;
+  action: string;
+  target_type: string;
+  target_id?: string | null;
+  payload_json?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type FederationMonitoringSiteAdoptionRecord = {
+  site_id: string;
+  site_display_name: string;
+  node_count: number;
+  active_node_count: number;
+  aligned_node_count: number;
+  unknown_node_count: number;
+  lagging_node_count: number;
+  expected_version_id?: string | null;
+  expected_version_name?: string | null;
+  latest_reported_version_id?: string | null;
+  latest_reported_version_name?: string | null;
+  latest_validation_version_id?: string | null;
+  latest_validation_version_name?: string | null;
+  latest_validation_run_date?: string | null;
+  last_seen_at?: string | null;
+};
+
+export type FederationMonitoringSummaryResponse = {
+  current_release: ModelVersionRecord | null;
+  active_rollout: ReleaseRolloutRecord | null;
+  recent_rollouts: ReleaseRolloutRecord[];
+  recent_audit_events: AuditEventRecord[];
+  node_summary: {
+    total_nodes: number;
+    active_nodes: number;
+    aligned_nodes: number;
+    lagging_nodes: number;
+    unknown_nodes: number;
+  };
+  site_adoption: FederationMonitoringSiteAdoptionRecord[];
 };
 
 export type InitialTrainingPredictionRecord = {
@@ -1383,6 +1473,7 @@ export type TrainingJobProgress = {
   message?: string | null;
   percent?: number | null;
   architecture?: string | null;
+  model_version_id?: string | null;
   init_mode?: string | null;
   method?: string | null;
   archive_base_dir?: string | null;
@@ -1405,6 +1496,8 @@ export type TrainingJobProgress = {
   global_step?: number | null;
   train_loss?: number | null;
   val_acc?: number | null;
+  eligible_case_count?: number | null;
+  eligible_image_count?: number | null;
   last_loss?: number | null;
   batch_size?: number | null;
   learning_rate?: number | null;
@@ -1480,6 +1573,8 @@ export type SiteJobRecord = {
   result?: {
     progress?: TrainingJobProgress | null;
     response?:
+      | ImageLevelFederatedRoundResponse
+      | VisitLevelFederatedRoundResponse
       | InitialTrainingResponse
       | InitialTrainingBenchmarkResponse
       | CrossValidationRunResponse
@@ -1496,6 +1591,98 @@ export type InitialTrainingJobResponse = {
   site_id: string;
   execution_device: string;
   job: SiteJobRecord;
+};
+
+export type ImageLevelFederatedRoundJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version?: ModelVersionRecord;
+  job: SiteJobRecord;
+};
+
+export type VisitLevelFederatedRoundJobResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version?: ModelVersionRecord;
+  job: SiteJobRecord;
+};
+
+export type ImageLevelFederatedRoundResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  update: ModelUpdateRecord;
+  eligible_case_count: number;
+  eligible_image_count: number;
+  skipped: {
+    not_positive: number;
+    not_active: number;
+    not_included: number;
+    no_images: number;
+  };
+};
+
+export type VisitLevelFederatedRoundResponse = {
+  site_id: string;
+  execution_device: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+  };
+  update: ModelUpdateRecord;
+  eligible_case_count: number;
+  eligible_image_count: number;
+  skipped: {
+    not_positive: number;
+    not_active: number;
+    not_included: number;
+    no_images: number;
+  };
+};
+
+export type ImageLevelFederatedRoundStatusResponse = {
+  site_id: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+    case_aggregation?: string | null;
+    bag_level?: boolean | null;
+  };
+  eligible_case_count: number;
+  eligible_image_count: number;
+  skipped: {
+    not_positive: number;
+    not_active: number;
+    not_included: number;
+    no_images: number;
+  };
+  active_job: SiteJobRecord | null;
+};
+
+export type VisitLevelFederatedRoundStatusResponse = {
+  site_id: string;
+  model_version: {
+    version_id: string;
+    version_name: string;
+    architecture: string;
+    case_aggregation?: string | null;
+    bag_level?: boolean | null;
+  };
+  eligible_case_count: number;
+  eligible_image_count: number;
+  skipped: {
+    not_positive: number;
+    not_active: number;
+    not_included: number;
+    no_images: number;
+  };
+  active_job: SiteJobRecord | null;
 };
 
 export type InitialTrainingBenchmarkJobResponse = {
@@ -1531,6 +1718,31 @@ export type EmbeddingBackfillJobResponse = {
     architecture?: string | null;
   };
   job: SiteJobRecord;
+};
+
+export type FederatedRetrievalSyncJobResponse = {
+  site_id: string;
+  execution_device: string;
+  retrieval_profile: string;
+  force_refresh: boolean;
+  job: SiteJobRecord;
+};
+
+export type FederatedRetrievalCorpusStatusResponse = {
+  site_id: string;
+  retrieval_profile: string;
+  profile_id: string;
+  retrieval_signature: string;
+  profile_metadata: Record<string, unknown>;
+  model_version: Record<string, unknown>;
+  remote_node_sync_enabled: boolean;
+  eligible_case_count: number;
+  skipped: {
+    not_positive: number;
+    not_included: number;
+    no_images: number;
+  };
+  active_job: SiteJobRecord | null;
 };
 
 export type AiClinicEmbeddingStatusResponse = {

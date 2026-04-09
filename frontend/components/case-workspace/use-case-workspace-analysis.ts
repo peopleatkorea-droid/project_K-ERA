@@ -523,7 +523,7 @@ export function useCaseWorkspaceAnalysis({
       ...result,
       similar_cases: result.similar_cases.map((item) => ({
         ...item,
-        preview_url: previewByCaseKey.get(aiClinicSimilarCaseKey(item)) ?? null,
+        preview_url: previewByCaseKey.get(aiClinicSimilarCaseKey(item)) ?? item.preview_url ?? null,
       })),
     };
   }

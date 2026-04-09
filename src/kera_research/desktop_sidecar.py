@@ -27,15 +27,25 @@ from kera_research.api.app import (
 )
 from kera_research.api.case_model_versions import (
     resolve_requested_contribution_models,
+    resolve_requested_image_level_federated_model,
     resolve_requested_model_version,
+    resolve_requested_visit_level_federated_model,
     serialize_case_artifact_availability,
     serialize_case_model_version,
 )
 from kera_research.api.route_helpers import load_cross_validation_reports, site_level_validation_runs, validation_case_rows
 from kera_research.api.site_jobs import (
+    build_image_level_federated_round_status,
+    build_visit_level_federated_round_status,
+    latest_federated_retrieval_sync_job,
+    latest_image_level_federated_round_job,
+    latest_visit_level_federated_round_job,
     require_ready_model_version,
     resolve_execution_device_or_raise,
     serialize_site_model_version,
+    start_federated_retrieval_corpus_sync,
+    start_image_level_federated_round,
+    start_visit_level_federated_round,
     start_cross_validation,
     start_initial_training,
     start_initial_training_benchmark,
@@ -943,6 +953,182 @@ def _run_initial_training(params: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _run_image_level_federated_round(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    if cp.get_registry_consent(user["user_id"], site_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Research registry consent is required before running image-level federated learning.",
+        )
+    try:
+        model_version = resolve_requested_image_level_federated_model(
+            cp,
+            get_model_version=_get_model_version,
+            model_version_id=str(params.get("model_version_id") or "").strip() or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    execution_device = resolve_execution_device_or_raise(
+        resolve_execution_device=_resolve_execution_device,
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        unavailable_label="Image-level federated learning",
+    )
+    requested_epochs = int(params.get("epochs") or 1)
+    requested_learning_rate = float(params.get("learning_rate") or 5e-5)
+    requested_batch_size = int(params.get("batch_size") or 8)
+    active_job = latest_image_level_federated_round_job(
+        site_store,
+        model_version_id=str(model_version.get("version_id") or ""),
+        execution_device=execution_device,
+        epochs=requested_epochs,
+        learning_rate=requested_learning_rate,
+        batch_size=requested_batch_size,
+    )
+    if active_job is not None and active_job.get("status") in {"queued", "running"}:
+        active_payload = dict(active_job.get("payload") or {})
+        return {
+            "site_id": site_id,
+            "execution_device": active_payload.get("execution_device", execution_device),
+            "job": active_job,
+            "model_version": serialize_site_model_version(model_version),
+        }
+    status_snapshot = build_image_level_federated_round_status(site_store, model_version=model_version)
+    if int(status_snapshot.get("eligible_case_count") or 0) <= 0:
+        skipped = dict(status_snapshot.get("skipped") or {})
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Image-level federated learning requires at least one positive, active, included case with saved images. "
+                f"Skipped: positive={int(skipped.get('not_positive') or 0)}, "
+                f"active={int(skipped.get('not_active') or 0)}, "
+                f"included={int(skipped.get('not_included') or 0)}, "
+                f"images={int(skipped.get('no_images') or 0)}."
+            ),
+        )
+    payload = SimpleNamespace(
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        epochs=int(params.get("epochs") or 1),
+        learning_rate=float(params.get("learning_rate") or 5e-5),
+        batch_size=int(params.get("batch_size") or 8),
+    )
+    return start_image_level_federated_round(
+        site_store,
+        site_id=site_id,
+        model_version=model_version,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=_queue_name_for_job_type,
+    )
+
+
+def _fetch_image_level_federated_round_status(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_store = _require_site_access(cp, user, str(params.get("site_id") or "").strip())
+    try:
+        model_version = resolve_requested_image_level_federated_model(
+            cp,
+            get_model_version=_get_model_version,
+            model_version_id=str(params.get("model_version_id") or "").strip() or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return build_image_level_federated_round_status(site_store, model_version=model_version)
+
+
+def _run_visit_level_federated_round(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    if cp.get_registry_consent(user["user_id"], site_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Research registry consent is required before running visit-level federated learning.",
+        )
+    try:
+        model_version = resolve_requested_visit_level_federated_model(
+            cp,
+            get_model_version=_get_model_version,
+            model_version_id=str(params.get("model_version_id") or "").strip() or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    execution_device = resolve_execution_device_or_raise(
+        resolve_execution_device=_resolve_execution_device,
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        unavailable_label="Visit-level federated learning",
+    )
+    requested_epochs = int(params.get("epochs") or 1)
+    requested_learning_rate = float(params.get("learning_rate") or 5e-5)
+    requested_batch_size = int(params.get("batch_size") or 4)
+    active_job = latest_visit_level_federated_round_job(
+        site_store,
+        model_version_id=str(model_version.get("version_id") or ""),
+        execution_device=execution_device,
+        epochs=requested_epochs,
+        learning_rate=requested_learning_rate,
+        batch_size=requested_batch_size,
+    )
+    if active_job is not None and active_job.get("status") in {"queued", "running"}:
+        active_payload = dict(active_job.get("payload") or {})
+        return {
+            "site_id": site_id,
+            "execution_device": active_payload.get("execution_device", execution_device),
+            "job": active_job,
+            "model_version": serialize_site_model_version(model_version),
+        }
+    status_snapshot = build_visit_level_federated_round_status(site_store, model_version=model_version)
+    if int(status_snapshot.get("eligible_case_count") or 0) <= 0:
+        skipped = dict(status_snapshot.get("skipped") or {})
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Visit-level federated learning requires at least one positive, active, included case with saved images. "
+                f"Skipped: positive={int(skipped.get('not_positive') or 0)}, "
+                f"active={int(skipped.get('not_active') or 0)}, "
+                f"included={int(skipped.get('not_included') or 0)}, "
+                f"images={int(skipped.get('no_images') or 0)}."
+            ),
+        )
+    payload = SimpleNamespace(
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        epochs=int(params.get("epochs") or 1),
+        learning_rate=float(params.get("learning_rate") or 5e-5),
+        batch_size=int(params.get("batch_size") or 4),
+    )
+    return start_visit_level_federated_round(
+        site_store,
+        site_id=site_id,
+        model_version=model_version,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=_queue_name_for_job_type,
+    )
+
+
+def _fetch_visit_level_federated_round_status(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_store = _require_site_access(cp, user, str(params.get("site_id") or "").strip())
+    try:
+        model_version = resolve_requested_visit_level_federated_model(
+            cp,
+            get_model_version=_get_model_version,
+            model_version_id=str(params.get("model_version_id") or "").strip() or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return build_visit_level_federated_round_status(site_store, model_version=model_version)
+
+
 def _run_initial_training_benchmark(params: dict[str, Any]) -> dict[str, Any]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -1212,6 +1398,57 @@ def _fetch_ai_clinic_embedding_status(params: dict[str, Any]) -> dict[str, Any]:
     return _build_embedding_backfill_status(cp, site_store, model_version=model_version)
 
 
+def _fetch_federated_retrieval_corpus_status(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    retrieval_profile = str(params.get("retrieval_profile") or "dinov2_lesion_crop")
+    site_store = _require_site_access(cp, user, site_id)
+    workflow = _get_workflow(cp)
+    signature_record = workflow.retrieval_signature(retrieval_profile)
+    active_job = latest_federated_retrieval_sync_job(site_store, retrieval_profile=retrieval_profile)
+
+    eligible_case_count = 0
+    skipped_not_positive = 0
+    skipped_not_included = 0
+    skipped_no_images = 0
+    for summary in site_store.list_case_summaries():
+        patient_id = str(summary.get("patient_id") or "").strip()
+        visit_date = str(summary.get("visit_date") or "").strip()
+        if not patient_id or not visit_date:
+            continue
+        try:
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        except ValueError:
+            continue
+        if not bool(policy_state.get("is_positive")):
+            skipped_not_positive += 1
+        elif not bool(policy_state.get("is_registry_included")):
+            skipped_not_included += 1
+        elif not bool(policy_state.get("has_images")):
+            skipped_no_images += 1
+        else:
+            eligible_case_count += 1
+
+    return {
+        "site_id": site_id,
+        "retrieval_profile": retrieval_profile,
+        "profile_id": signature_record.get("profile_id"),
+        "retrieval_signature": signature_record.get("retrieval_signature"),
+        "profile_metadata": dict(signature_record.get("profile_metadata") or {}),
+        "model_version": dict(signature_record.get("model_version") or {}),
+        "remote_node_sync_enabled": bool(cp.remote_node_sync_enabled()),
+        "eligible_case_count": eligible_case_count,
+        "skipped": {
+            "not_positive": skipped_not_positive,
+            "not_included": skipped_not_included,
+            "no_images": skipped_no_images,
+        },
+        "active_job": active_job,
+    }
+
+
 def _backfill_ai_clinic_embeddings(params: dict[str, Any]) -> dict[str, Any]:
     cp = get_control_plane()
     user = _approved_user(str(params.get("token") or ""))
@@ -1258,6 +1495,52 @@ def _backfill_ai_clinic_embeddings(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sync_federated_retrieval_corpus(params: dict[str, Any]) -> dict[str, Any]:
+    cp = get_control_plane()
+    user = _approved_user(str(params.get("token") or ""))
+    _require_admin_workspace_permission(user)
+    site_id = str(params.get("site_id") or "").strip()
+    site_store = _require_site_access(cp, user, site_id)
+    if cp.get_registry_consent(user["user_id"], site_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Research registry consent is required before syncing retrieval corpus entries.",
+        )
+    if not cp.remote_node_sync_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Remote control-plane node sync is not configured.",
+        )
+    retrieval_profile = str(params.get("retrieval_profile") or "dinov2_lesion_crop")
+    active_job = latest_federated_retrieval_sync_job(site_store, retrieval_profile=retrieval_profile)
+    execution_device = resolve_execution_device_or_raise(
+        resolve_execution_device=_resolve_execution_device,
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        unavailable_label="Federated retrieval corpus sync",
+    )
+    if active_job is not None and active_job.get("status") in {"queued", "running"}:
+        active_payload = dict(active_job.get("payload") or {})
+        return {
+            "site_id": site_id,
+            "execution_device": active_payload.get("execution_device", execution_device),
+            "retrieval_profile": active_payload.get("retrieval_profile", retrieval_profile),
+            "force_refresh": bool(active_payload.get("force_refresh", False)),
+            "job": active_job,
+        }
+    payload = SimpleNamespace(
+        execution_mode=str(params.get("execution_mode") or "auto"),
+        retrieval_profile=retrieval_profile,
+        force_refresh=bool(params.get("force_refresh", False)),
+    )
+    return start_federated_retrieval_corpus_sync(
+        site_store,
+        site_id=site_id,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=_queue_name_for_job_type,
+    )
+
+
 _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "ping": lambda _params: {"status": "ok"},
     "warm_workflow": lambda _params: _start_shared_workflow_warmup(),
@@ -1279,6 +1562,10 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fetch_site_model_versions": _fetch_site_model_versions,
     "run_site_validation": _run_site_validation,
     "run_initial_training": _run_initial_training,
+    "run_image_level_federated_round": _run_image_level_federated_round,
+    "fetch_image_level_federated_round_status": _fetch_image_level_federated_round_status,
+    "run_visit_level_federated_round": _run_visit_level_federated_round,
+    "fetch_visit_level_federated_round_status": _fetch_visit_level_federated_round_status,
     "run_initial_training_benchmark": _run_initial_training_benchmark,
     "run_retrieval_baseline": _run_retrieval_baseline,
     "resume_initial_training_benchmark": _resume_initial_training_benchmark,
@@ -1288,7 +1575,9 @@ _METHODS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "run_cross_validation": _run_cross_validation,
     "run_ssl_pretraining": _run_ssl_pretraining,
     "fetch_ai_clinic_embedding_status": _fetch_ai_clinic_embedding_status,
+    "fetch_federated_retrieval_corpus_status": _fetch_federated_retrieval_corpus_status,
     "backfill_ai_clinic_embeddings": _backfill_ai_clinic_embeddings,
+    "sync_federated_retrieval_corpus": _sync_federated_retrieval_corpus,
 }
 
 

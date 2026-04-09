@@ -30,7 +30,9 @@ const runtimeBundleRoot = path.join(frontendRoot, ".desktop-runtime-bundle");
 const runtimeArchivePath = path.join(runtimeBundleRoot, "python-runtime.zip");
 const bundledModelRoot = path.join(runtimeBundleRoot, "seed-model");
 const bundledModelReferencePath = path.join(bundledModelRoot, "model-reference.json");
+const bundledModelSuiteReferencePath = path.join(bundledModelRoot, "model-suite-reference.json");
 const repoPythonSourceDir = path.resolve(frontendRoot, "..", "src");
+const preferredOperatingModelsManifestPath = path.resolve(frontendRoot, "..", "src", "kera_research", "preferred_operating_models.json");
 const devCargoTargetDir = path.join(os.tmpdir(), "kera-tauri-dev", "target");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
 const generatedConfigPath = path.join(srcTauriDir, "tauri.build.generated.conf.json");
@@ -247,6 +249,85 @@ function bundledModelReferenceFromEnv() {
   };
 }
 
+function bundledModelSuiteFromPreferredManifest() {
+  if (!fs.existsSync(preferredOperatingModelsManifestPath)) {
+    return null;
+  }
+  const manifest = safeJsonParse(fs.readFileSync(preferredOperatingModelsManifestPath, "utf8"), {});
+  const rawModels = Array.isArray(manifest.models) ? manifest.models : [];
+  const suite = [];
+  for (const rawModel of rawModels) {
+    if (!rawModel || typeof rawModel !== "object") {
+      continue;
+    }
+    const relativeModelPath = String(rawModel.relative_model_path ?? "").trim();
+    if (!relativeModelPath) {
+      continue;
+    }
+    const modelPath = path.resolve(frontendRoot, "..", relativeModelPath);
+    if (!fs.existsSync(modelPath)) {
+      continue;
+    }
+
+    let resultPayload = {};
+    const relativeResultPath = String(rawModel.relative_result_path ?? "").trim();
+    if (relativeResultPath) {
+      const resultPath = path.resolve(frontendRoot, "..", relativeResultPath);
+      if (fs.existsSync(resultPath)) {
+        resultPayload = safeJsonParse(fs.readFileSync(resultPath, "utf8"), {});
+      }
+    }
+    const resultRecord = resultPayload && typeof resultPayload.result === "object" ? resultPayload.result : {};
+    const patientSplit = resultRecord && typeof resultRecord.patient_split === "object" ? resultRecord.patient_split : {};
+    suite.push({
+      version_id: String(rawModel.version_id ?? "").trim(),
+      version_name: String(rawModel.version_name ?? "").trim(),
+      architecture: String(rawModel.architecture ?? "").trim(),
+      model_name: "keratitis_cls",
+      model_path: modelPath,
+      requires_medsam_crop: Boolean(rawModel.requires_medsam_crop ?? false),
+      crop_mode: String(rawModel.crop_mode ?? "").trim() || undefined,
+      case_aggregation: String(rawModel.case_aggregation ?? "").trim() || undefined,
+      bag_level: Boolean(rawModel.bag_level ?? false),
+      training_input_policy: String(rawModel.training_input_policy ?? "").trim() || undefined,
+      decision_threshold: Number(resultRecord.decision_threshold ?? 0.5),
+      threshold_selection_metric: String(resultRecord.threshold_selection_metric ?? "").trim() || undefined,
+      threshold_selection_metrics:
+        resultRecord.threshold_selection_metrics && typeof resultRecord.threshold_selection_metrics === "object"
+          ? resultRecord.threshold_selection_metrics
+          : undefined,
+      created_at:
+        String(resultRecord.created_at ?? "").trim() ||
+        String(patientSplit.updated_at ?? "").trim() ||
+        String(patientSplit.created_at ?? "").trim() ||
+        new Date(fs.statSync(modelPath).mtimeMs).toISOString(),
+      notes: String(rawModel.notes ?? "").trim() || "Bundled preferred operating model.",
+      notes_ko: String(rawModel.notes_ko ?? rawModel.notes ?? "").trim() || "Bundled preferred operating model.",
+      notes_en: String(rawModel.notes_en ?? rawModel.notes ?? "").trim() || "Bundled preferred operating model.",
+      stage: "global",
+      ready: true,
+      is_current: Boolean(rawModel.is_current ?? false),
+    });
+  }
+  if (!suite.length) {
+    return null;
+  }
+  const currentCount = suite.filter((item) => item.is_current).length;
+  if (currentCount === 0) {
+    suite[0].is_current = true;
+  } else if (currentCount > 1) {
+    let foundCurrent = false;
+    for (const item of suite) {
+      if (item.is_current && !foundCurrent) {
+        foundCurrent = true;
+        continue;
+      }
+      item.is_current = false;
+    }
+  }
+  return suite;
+}
+
 function bundledModelReferenceFromCurrentDb() {
   const dbPath = resolveBundledModelDbPath();
   if (!dbPath || !fs.existsSync(dbPath)) {
@@ -293,8 +374,63 @@ function bundledModelReferenceFromCurrentDb() {
 
 function prepareBundledModelSeed() {
   fs.rmSync(bundledModelRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
-  const modelReference = bundledModelReferenceFromEnv() ?? bundledModelReferenceFromCurrentDb();
   bundledModelPrepared = false;
+  const modelSuite = bundledModelSuiteFromPreferredManifest();
+  if (modelSuite && modelSuite.length > 0) {
+    fs.mkdirSync(bundledModelRoot, { recursive: true });
+    const normalizedSuite = [];
+    for (const modelReference of modelSuite) {
+      const sourceModelPath = resolveMaybePath(modelReference.model_path);
+      if (!sourceModelPath || !fs.existsSync(sourceModelPath)) {
+        process.stdout.write(
+          `[run-tauri-build] preferred bundled model skipped because the source file was not found: ${sourceModelPath}\n`,
+        );
+        continue;
+      }
+      const filename = String(modelReference.filename ?? "").trim() || path.basename(sourceModelPath);
+      const targetModelPath = path.join(bundledModelRoot, filename);
+      fs.copyFileSync(sourceModelPath, targetModelPath);
+      const sizeBytes =
+        Number(modelReference.size_bytes ?? modelReference.sizeBytes ?? fs.statSync(sourceModelPath).size) || 0;
+      const normalizedReference = {
+        ...modelReference,
+        filename,
+        version_id: String(modelReference.version_id ?? "").trim() || `model_bundled_${path.parse(filename).name}`,
+        version_name: String(modelReference.version_name ?? "").trim() || path.parse(filename).name,
+        architecture: String(modelReference.architecture ?? "").trim() || "densenet121",
+        model_name: String(modelReference.model_name ?? "keratitis_cls").trim() || "keratitis_cls",
+        source_provider: "bundled",
+        stage: "global",
+        ready: true,
+        is_current: Boolean(modelReference.is_current),
+        size_bytes: sizeBytes,
+        sha256: String(modelReference.sha256 ?? "").trim().toLowerCase() || sha256File(sourceModelPath),
+        created_at: String(modelReference.created_at ?? new Date().toISOString()).trim() || new Date().toISOString(),
+      };
+      delete normalizedReference.model_path;
+      delete normalizedReference.local_path;
+      delete normalizedReference.download_url;
+      normalizedSuite.push(normalizedReference);
+    }
+    if (normalizedSuite.length > 0) {
+      const currentReference = normalizedSuite.find((item) => item.is_current) ?? normalizedSuite[0];
+      fs.writeFileSync(
+        bundledModelSuiteReferencePath,
+        `${JSON.stringify({ version: 1, models: normalizedSuite }, null, 2)}\n`,
+        "utf8",
+      );
+      fs.writeFileSync(bundledModelReferencePath, `${JSON.stringify(currentReference, null, 2)}\n`, "utf8");
+      bundledModelPrepared = true;
+      process.stdout.write(
+        `[run-tauri-build] bundled preferred model suite prepared: ${normalizedSuite
+          .map((item) => item.version_id)
+          .join(", ")}\n`,
+      );
+      return;
+    }
+  }
+
+  const modelReference = bundledModelReferenceFromEnv() ?? bundledModelReferenceFromCurrentDb();
   if (!modelReference) {
     process.stdout.write("[run-tauri-build] no bundled model seed was configured or auto-detected.\n");
     return;

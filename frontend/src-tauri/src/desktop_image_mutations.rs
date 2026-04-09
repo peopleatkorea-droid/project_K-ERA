@@ -87,6 +87,8 @@ pub(super) fn upload_image(payload: UploadImageRequest) -> Result<DesktopImageRe
             params![quality_payload, derivative_site_id, derivative_image_id],
         );
     });
+    schedule_case_embedding_refresh(&site_id, &patient_id, &visit_date, "image_upload");
+    schedule_federated_retrieval_corpus_sync(&site_id, "image_upload");
     Ok(record)
 }
 
@@ -119,6 +121,8 @@ pub(super) fn delete_visit_images(
         params![payload.site_id, patient_id, visit_date],
     )
     .map_err(|error| error.to_string())?;
+    schedule_ai_clinic_vector_index_rebuild(&site_id, "delete_images");
+    schedule_federated_retrieval_corpus_sync(&site_id, "delete_images");
     Ok(DeleteImagesResponse {
         deleted_count: existing_images.len() as i64,
     })
@@ -169,6 +173,8 @@ pub(super) fn set_representative_image(
         )
         .map_err(|error| error.to_string())?;
     }
+    schedule_case_embedding_refresh(&site_id, &patient_id, &visit_date, "representative_change");
+    schedule_federated_retrieval_corpus_sync(&site_id, "representative_change");
     Ok(RepresentativeImageResponse {
         images: list_images_for_visit(&conn, &payload.site_id, &patient_id, &visit_date)?,
     })

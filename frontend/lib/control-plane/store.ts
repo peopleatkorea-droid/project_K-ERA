@@ -7,6 +7,8 @@ import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 import type {
   ControlPlaneAggregation,
   ControlPlaneAggregationStatus,
+  ControlPlaneAuditEvent,
+  ControlPlaneFederationMonitoringSummary,
   ControlPlaneGlobalRole,
   ControlPlaneBootstrap,
   ControlPlaneIdentity,
@@ -18,6 +20,13 @@ import type {
   ControlPlaneNode,
   ControlPlaneOverview,
   ControlPlaneReleaseManifest,
+  ControlPlaneReleaseRollout,
+  ControlPlaneReleaseRolloutStage,
+  ControlPlaneReleaseRolloutStatus,
+  ControlPlaneRolloutSiteAdoption,
+  ControlPlaneRetrievalCorpusEntry,
+  ControlPlaneRetrievalCorpusProfile,
+  ControlPlaneRetrievalCorpusSearchHit,
   ControlPlaneSite,
   ControlPlaneSiteRole,
   ControlPlaneUser,
@@ -93,6 +102,8 @@ function serializeNode(row: Row): ControlPlaneNode {
     device_name: rowValue<string>(row, "device_name"),
     os_info: rowValue<string>(row, "os_info"),
     app_version: rowValue<string>(row, "app_version"),
+    current_model_version_id: rowValue<string | null>(row, "current_model_version_id"),
+    current_model_version_name: rowValue<string | null>(row, "current_model_version_name"),
     status: rowValue<"active" | "revoked">(row, "status"),
     last_seen_at: rowValue<string | Date | null>(row, "last_seen_at")
       ? new Date(rowValue<string | Date>(row, "last_seen_at")).toISOString()
@@ -151,6 +162,45 @@ function serializeAggregation(row: Row): ControlPlaneAggregation {
   };
 }
 
+function serializeReleaseRollout(row: Row): ControlPlaneReleaseRollout {
+  return {
+    rollout_id: rowValue<string>(row, "rollout_id"),
+    version_id: rowValue<string>(row, "version_id"),
+    version_name: rowValue<string>(row, "version_name"),
+    architecture: rowValue<string>(row, "architecture"),
+    previous_version_id: rowValue<string | null>(row, "previous_version_id"),
+    previous_version_name: rowValue<string | null>(row, "previous_version_name"),
+    stage: rowValue<ControlPlaneReleaseRolloutStage>(row, "stage"),
+    status: rowValue<ControlPlaneReleaseRolloutStatus>(row, "status"),
+    target_site_ids: Array.isArray(rowValue<unknown>(row, "target_site_ids"))
+      ? (rowValue<unknown[]>(row, "target_site_ids").filter((item): item is string => typeof item === "string"))
+      : [],
+    notes: rowValue<string>(row, "notes"),
+    metadata_json: rowValue<Record<string, unknown> | null>(row, "metadata_json") || {},
+    created_by_user_id: rowValue<string | null>(row, "created_by_user_id"),
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    activated_at: rowValue<string | Date | null>(row, "activated_at")
+      ? new Date(rowValue<string | Date>(row, "activated_at")).toISOString()
+      : null,
+    superseded_at: rowValue<string | Date | null>(row, "superseded_at")
+      ? new Date(rowValue<string | Date>(row, "superseded_at")).toISOString()
+      : null,
+  };
+}
+
+function serializeAuditEvent(row: Row): ControlPlaneAuditEvent {
+  return {
+    event_id: rowValue<string>(row, "event_id"),
+    actor_type: rowValue<string>(row, "actor_type"),
+    actor_id: rowValue<string | null>(row, "actor_id"),
+    action: rowValue<string>(row, "action"),
+    target_type: rowValue<string>(row, "target_type"),
+    target_id: rowValue<string | null>(row, "target_id"),
+    payload_json: rowValue<Record<string, unknown> | null>(row, "payload_json") || {},
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+  };
+}
+
 function serializeValidationRun(row: Row): ControlPlaneValidationRun {
   return {
     validation_id: rowValue<string>(row, "validation_id"),
@@ -163,6 +213,64 @@ function serializeValidationRun(row: Row): ControlPlaneValidationRun {
     summary_json: rowValue<Record<string, unknown> | null>(row, "summary_json") || {},
     created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
   };
+}
+
+function serializeRetrievalCorpusProfile(row: Row): ControlPlaneRetrievalCorpusProfile {
+  return {
+    profile_id: rowValue<string>(row, "profile_id"),
+    retrieval_signature: rowValue<string>(row, "retrieval_signature"),
+    metadata_json: rowValue<Record<string, unknown> | null>(row, "metadata_json") || {},
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    updated_at: new Date(rowValue<string | Date>(row, "updated_at")).toISOString(),
+  };
+}
+
+function serializeRetrievalCorpusEntry(row: Row): ControlPlaneRetrievalCorpusEntry {
+  return {
+    entry_id: rowValue<string>(row, "entry_id"),
+    site_id: rowValue<string | null>(row, "site_id"),
+    node_id: rowValue<string | null>(row, "node_id"),
+    profile_id: rowValue<string>(row, "profile_id"),
+    retrieval_signature: rowValue<string>(row, "retrieval_signature"),
+    case_reference_id: rowValue<string>(row, "case_reference_id"),
+    culture_category: rowValue<string>(row, "culture_category"),
+    culture_species: rowValue<string>(row, "culture_species"),
+    embedding_dim: Number(rowValue<number | string>(row, "embedding_dim") || 0),
+    thumbnail_url: rowValue<string | null>(row, "thumbnail_url"),
+    metadata_json: rowValue<Record<string, unknown> | null>(row, "metadata_json") || {},
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    updated_at: new Date(rowValue<string | Date>(row, "updated_at")).toISOString(),
+  };
+}
+
+function normalizeEmbedding(values: unknown): number[] {
+  if (!Array.isArray(values)) {
+    throw new Error("Embedding must be an array.");
+  }
+  const normalized = values
+    .map((item) => (typeof item === "number" ? item : Number(item)))
+    .filter((item) => Number.isFinite(item));
+  if (normalized.length === 0) {
+    throw new Error("Embedding must contain at least one finite number.");
+  }
+  return normalized;
+}
+
+function normalizeVectorForCosine(vector: number[]): number[] {
+  const norm = Math.sqrt(vector.reduce((sum, value) => sum + (value * value), 0));
+  if (!Number.isFinite(norm) || norm <= 1e-12) {
+    throw new Error("Embedding norm is invalid.");
+  }
+  return vector.map((value) => value / norm);
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length !== right.length || left.length === 0) {
+    throw new Error("Embedding dimensions do not match.");
+  }
+  const lhs = normalizeVectorForCosine(left);
+  const rhs = normalizeVectorForCosine(right);
+  return lhs.reduce((sum, value, index) => sum + (value * rhs[index]), 0);
 }
 
 async function membershipsForUser(userId: string): Promise<ControlPlaneMembership[]> {
@@ -244,6 +352,24 @@ async function writeAuditEvent(
       ${JSON.stringify(payload)}::jsonb
     )
   `;
+}
+
+export async function appendAuditEvent(input: {
+  actorType: string;
+  actorId?: string | null;
+  action: string;
+  targetType: string;
+  targetId?: string | null;
+  payload?: Record<string, unknown>;
+}): Promise<void> {
+  await writeAuditEvent(
+    input.actorType,
+    input.actorId ?? null,
+    input.action,
+    input.targetType,
+    input.targetId ?? null,
+    input.payload ?? {},
+  );
 }
 
 function shouldPromoteToAdmin(email: string): boolean {
@@ -459,6 +585,309 @@ export async function currentReleaseManifest(): Promise<ControlPlaneReleaseManif
   return rows[0] ? serializeModelVersion(rows[0]) : null;
 }
 
+async function latestApplicableActiveRollout(siteId?: string | null): Promise<ControlPlaneReleaseRollout | null> {
+  const sql = await controlPlaneSql();
+  const normalizedSiteId = siteId?.trim() || "";
+  const rows = normalizedSiteId
+    ? await sql`
+        select
+          rollout_id,
+          version_id,
+          version_name,
+          architecture,
+          previous_version_id,
+          previous_version_name,
+          stage,
+          status,
+          target_site_ids,
+          notes,
+          metadata_json,
+          created_by_user_id,
+          activated_at,
+          superseded_at,
+          created_at
+        from release_rollouts
+        where
+          status = 'active'
+          and stage in ('pilot', 'partial', 'rollback')
+          and exists (
+            select 1
+            from jsonb_array_elements_text(target_site_ids) as target_site(target_site_id)
+            where target_site.target_site_id = ${normalizedSiteId}
+          )
+        order by created_at desc
+        limit 1
+      `
+    : await sql`
+        select
+          rollout_id,
+          version_id,
+          version_name,
+          architecture,
+          previous_version_id,
+          previous_version_name,
+          stage,
+          status,
+          target_site_ids,
+          notes,
+          metadata_json,
+          created_by_user_id,
+          activated_at,
+          superseded_at,
+          created_at
+        from release_rollouts
+        where
+          status = 'active'
+          and stage in ('full', 'rollback')
+          and jsonb_array_length(target_site_ids) = 0
+        order by created_at desc
+        limit 1
+      `;
+  return rows[0] ? serializeReleaseRollout(rows[0]) : null;
+}
+
+async function latestActiveReleaseRollout(): Promise<ControlPlaneReleaseRollout | null> {
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      rollout_id,
+      version_id,
+      version_name,
+      architecture,
+      previous_version_id,
+      previous_version_name,
+      stage,
+      status,
+      target_site_ids,
+      notes,
+      metadata_json,
+      created_by_user_id,
+      activated_at,
+      superseded_at,
+      created_at
+    from release_rollouts
+    where status = 'active'
+    order by created_at desc
+    limit 1
+  `;
+  return rows[0] ? serializeReleaseRollout(rows[0]) : null;
+}
+
+export async function currentReleaseManifestForSite(siteId?: string | null): Promise<ControlPlaneReleaseManifest | null> {
+  const activeRollout = await latestApplicableActiveRollout(siteId);
+  if (!activeRollout) {
+    return currentReleaseManifest();
+  }
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      version_id,
+      version_name,
+      architecture,
+      source_provider,
+      download_url,
+      sha256,
+      size_bytes,
+      ready,
+      is_current,
+      metadata_json,
+      created_at
+    from model_versions
+    where version_id = ${activeRollout.version_id}
+    limit 1
+  `;
+  return rows[0] ? serializeModelVersion(rows[0]) : currentReleaseManifest();
+}
+
+export async function listReleaseRollouts(): Promise<ControlPlaneReleaseRollout[]> {
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      rollout_id,
+      version_id,
+      version_name,
+      architecture,
+      previous_version_id,
+      previous_version_name,
+      stage,
+      status,
+      target_site_ids,
+      notes,
+      metadata_json,
+      created_by_user_id,
+      activated_at,
+      superseded_at,
+      created_at
+    from release_rollouts
+    order by created_at desc
+  `;
+  return rows.map((row) => serializeReleaseRollout(row));
+}
+
+export async function createReleaseRollout(input: {
+  actorUserId: string;
+  versionId: string;
+  stage: ControlPlaneReleaseRolloutStage;
+  targetSiteIds?: string[];
+  notes?: string;
+}): Promise<ControlPlaneReleaseRollout> {
+  const sql = await controlPlaneSql();
+  const normalizedVersionId = input.versionId.trim();
+  if (!normalizedVersionId) {
+    throw new Error("Model version id is required.");
+  }
+  const normalizedStage = input.stage;
+  const normalizedTargetSiteIds = Array.from(
+    new Set((input.targetSiteIds ?? []).map((value) => value.trim()).filter(Boolean)),
+  );
+  if ((normalizedStage === "pilot" || normalizedStage === "partial") && normalizedTargetSiteIds.length === 0) {
+    throw new Error("Pilot and partial rollout require at least one target site.");
+  }
+  if (normalizedTargetSiteIds.length > 0) {
+    const siteRows = await sql`
+      select site_id
+      from sites
+      where site_id = any(${normalizedTargetSiteIds})
+    `;
+    const knownSiteIds = new Set(siteRows.map((row) => rowValue<string>(row, "site_id")));
+    const unknownSiteIds = normalizedTargetSiteIds.filter((siteId) => !knownSiteIds.has(siteId));
+    if (unknownSiteIds.length > 0) {
+      throw new Error(`Unknown site ids: ${unknownSiteIds.join(", ")}`);
+    }
+  }
+
+  const versionRows = await sql`
+    select
+      version_id,
+      version_name,
+      architecture,
+      source_provider,
+      download_url,
+      sha256,
+      size_bytes,
+      ready,
+      is_current,
+      metadata_json,
+      created_at
+    from model_versions
+    where version_id = ${normalizedVersionId}
+    limit 1
+  `;
+  const version = versionRows[0] ? serializeModelVersion(versionRows[0]) : null;
+  if (!version) {
+    throw new Error("Model version not found.");
+  }
+  if (!version.ready) {
+    throw new Error("Only ready model versions can be rolled out.");
+  }
+
+  const previousCurrent = await currentReleaseManifest();
+  await sql`
+    update release_rollouts
+    set
+      status = 'superseded',
+      superseded_at = now(),
+      updated_at = now()
+    where status = 'active' and architecture = ${version.architecture}
+  `;
+  if ((normalizedStage === "full" || normalizedStage === "rollback") && normalizedTargetSiteIds.length === 0) {
+    await sql`update model_versions set is_current = false, updated_at = now() where is_current = true`;
+    await sql`
+      update model_versions
+      set
+        is_current = true,
+        updated_at = now()
+      where version_id = ${normalizedVersionId}
+    `;
+  }
+
+  const rolloutId = makeControlPlaneId("rollout");
+  const rows = await sql`
+    insert into release_rollouts (
+      rollout_id,
+      version_id,
+      version_name,
+      architecture,
+      previous_version_id,
+      previous_version_name,
+      stage,
+      status,
+      target_site_ids,
+      notes,
+      metadata_json,
+      created_by_user_id,
+      activated_at,
+      created_at,
+      updated_at
+    ) values (
+      ${rolloutId},
+      ${version.version_id},
+      ${version.version_name},
+      ${version.architecture},
+      ${previousCurrent?.version_id ?? null},
+      ${previousCurrent?.version_name ?? ""},
+      ${normalizedStage},
+      ${"active"},
+      ${JSON.stringify(normalizedTargetSiteIds)}::jsonb,
+      ${input.notes?.trim() || ""},
+      ${JSON.stringify({
+        target_scope: normalizedTargetSiteIds.length > 0 ? "site_subset" : "all_sites",
+        previous_is_current: previousCurrent?.version_id === version.version_id,
+      })}::jsonb,
+      ${input.actorUserId},
+      now(),
+      now(),
+      now()
+    )
+    returning
+      rollout_id,
+      version_id,
+      version_name,
+      architecture,
+      previous_version_id,
+      previous_version_name,
+      stage,
+      status,
+      target_site_ids,
+      notes,
+      metadata_json,
+      created_by_user_id,
+      activated_at,
+      superseded_at,
+      created_at
+  `;
+  const rollout = rows[0] ? serializeReleaseRollout(rows[0]) : null;
+  if (!rollout) {
+    throw new Error("Unable to create release rollout.");
+  }
+  await writeAuditEvent("user", input.actorUserId, "release_rollout.created", "release_rollout", rollout.rollout_id, {
+    version_id: rollout.version_id,
+    stage: rollout.stage,
+    target_site_ids: rollout.target_site_ids,
+  });
+  return rollout;
+}
+
+export async function listAuditEvents(options: { limit?: number } = {}): Promise<ControlPlaneAuditEvent[]> {
+  const sql = await controlPlaneSql();
+  const limit = Math.max(1, Math.min(options.limit ?? 12, 100));
+  const rows = await sql`
+    select
+      event_id,
+      actor_type,
+      actor_id,
+      action,
+      target_type,
+      target_id,
+      payload_json,
+      created_at
+    from audit_events
+    order by created_at desc
+    limit ${limit}
+  `;
+  return rows.map((row) => serializeAuditEvent(row));
+}
+
 export async function listModelVersions(): Promise<ControlPlaneModelVersion[]> {
   const sql = await controlPlaneSql();
   const rows = await sql`
@@ -665,6 +1094,8 @@ export async function registerNodeForUser(input: {
       device_name,
       os_info,
       app_version,
+      current_model_version_id,
+      current_model_version_name,
       status,
       last_seen_at,
       created_at
@@ -697,6 +1128,8 @@ export async function authenticateNode(nodeId: string, nodeToken: string): Promi
       device_name,
       os_info,
       app_version,
+      current_model_version_id,
+      current_model_version_name,
       status,
       last_seen_at,
       created_at,
@@ -722,6 +1155,8 @@ export async function recordNodeHeartbeat(nodeId: string, payload: {
   appVersion?: string;
   osInfo?: string;
   status?: string;
+  currentModelVersionId?: string;
+  currentModelVersionName?: string;
 }): Promise<ControlPlaneNode> {
   const sql = await controlPlaneSql();
   await sql`
@@ -729,6 +1164,14 @@ export async function recordNodeHeartbeat(nodeId: string, payload: {
     set
       app_version = case when ${payload.appVersion?.trim() || ""} = '' then app_version else ${payload.appVersion?.trim() || ""} end,
       os_info = case when ${payload.osInfo?.trim() || ""} = '' then os_info else ${payload.osInfo?.trim() || ""} end,
+      current_model_version_id = case
+        when ${payload.currentModelVersionId?.trim() || ""} = '' then current_model_version_id
+        else ${payload.currentModelVersionId?.trim() || ""}
+      end,
+      current_model_version_name = case
+        when ${payload.currentModelVersionName?.trim() || ""} = '' then current_model_version_name
+        else ${payload.currentModelVersionName?.trim() || ""}
+      end,
       last_seen_at = now(),
       updated_at = now()
     where node_id = ${nodeId}
@@ -741,6 +1184,8 @@ export async function recordNodeHeartbeat(nodeId: string, payload: {
       device_name,
       os_info,
       app_version,
+      current_model_version_id,
+      current_model_version_name,
       status,
       last_seen_at,
       created_at
@@ -754,6 +1199,7 @@ export async function recordNodeHeartbeat(nodeId: string, payload: {
   }
   await writeAuditEvent("node", node.node_id, "node.heartbeat", "node", node.node_id, {
     status: payload.status || "ok",
+    current_model_version_id: payload.currentModelVersionId?.trim() || null,
   });
   return node;
 }
@@ -780,7 +1226,7 @@ export async function buildBootstrapForNode(nodeId: string, nodeToken: string): 
     memberships: user.memberships,
     site,
     node,
-    current_release: await currentReleaseManifest(),
+    current_release: await currentReleaseManifestForSite(node.site_id),
     settings: {
       llm_relay_enabled: Boolean(controlPlaneLlmApiKey()),
     },
@@ -915,6 +1361,366 @@ export async function createValidationRunFromNode(input: {
     model_version_id: modelVersionId,
   });
   return mergedSummary;
+}
+
+async function ensureRetrievalCorpusProfile(input: {
+  profileId: string;
+  retrievalSignature: string;
+  metadataJson?: Record<string, unknown>;
+}): Promise<ControlPlaneRetrievalCorpusProfile> {
+  const sql = await controlPlaneSql();
+  const profileId = input.profileId.trim();
+  const retrievalSignature = input.retrievalSignature.trim();
+  if (!profileId) {
+    throw new Error("retrieval profile id is required.");
+  }
+  if (!retrievalSignature) {
+    throw new Error("retrieval signature is required.");
+  }
+
+  const existingRows = await sql`
+    select
+      profile_id,
+      retrieval_signature,
+      metadata_json,
+      created_at,
+      updated_at
+    from retrieval_corpus_profiles
+    where profile_id = ${profileId}
+    limit 1
+  `;
+  const existing = existingRows[0] ? serializeRetrievalCorpusProfile(existingRows[0]) : null;
+  if (existing && existing.retrieval_signature !== retrievalSignature) {
+    throw new Error(
+      `Retrieval signature mismatch for profile ${profileId}. Expected ${existing.retrieval_signature}, received ${retrievalSignature}.`,
+    );
+  }
+
+  await sql`
+    insert into retrieval_corpus_profiles (
+      profile_id,
+      retrieval_signature,
+      metadata_json,
+      created_at,
+      updated_at
+    ) values (
+      ${profileId},
+      ${retrievalSignature},
+      ${JSON.stringify(input.metadataJson || {})}::jsonb,
+      now(),
+      now()
+    )
+    on conflict (profile_id) do update set
+      metadata_json = case
+        when retrieval_corpus_profiles.metadata_json = '{}'::jsonb
+          and excluded.metadata_json <> '{}'::jsonb
+        then excluded.metadata_json
+        else retrieval_corpus_profiles.metadata_json
+      end,
+      updated_at = now()
+  `;
+
+  const rows = await sql`
+    select
+      profile_id,
+      retrieval_signature,
+      metadata_json,
+      created_at,
+      updated_at
+    from retrieval_corpus_profiles
+    where profile_id = ${profileId}
+    limit 1
+  `;
+  const profile = rows[0] ? serializeRetrievalCorpusProfile(rows[0]) : null;
+  if (!profile) {
+    throw new Error("Unable to upsert retrieval corpus profile.");
+  }
+  return profile;
+}
+
+export async function createRetrievalCorpusEntriesFromNode(input: {
+  nodeId: string;
+  profileId: string;
+  retrievalSignature: string;
+  profileMetadataJson?: Record<string, unknown>;
+  replaceSiteProfileScope?: boolean;
+  entries: Array<{
+    entry_id?: string;
+    case_reference_id?: string;
+    culture_category?: string;
+    culture_species?: string;
+    embedding?: unknown;
+    thumbnail_url?: string | null;
+    metadata_json?: Record<string, unknown>;
+  }>;
+}): Promise<{
+  profile: ControlPlaneRetrievalCorpusProfile;
+  entries: ControlPlaneRetrievalCorpusEntry[];
+  inserted_count: number;
+  updated_count: number;
+  deleted_count: number;
+}> {
+  const sql = await controlPlaneSql();
+  const nodeRows = await sql`select site_id from nodes where node_id = ${input.nodeId} limit 1`;
+  const siteId = nodeRows[0] ? rowValue<string>(nodeRows[0], "site_id") : null;
+  if (!siteId) {
+    throw new Error("Node site is unavailable.");
+  }
+  const profile = await ensureRetrievalCorpusProfile({
+    profileId: input.profileId,
+    retrievalSignature: input.retrievalSignature,
+    metadataJson: input.profileMetadataJson,
+  });
+
+  const savedEntries: ControlPlaneRetrievalCorpusEntry[] = [];
+  let insertedCount = 0;
+  let updatedCount = 0;
+  let deletedCount = 0;
+  const retainedCaseReferenceIds = new Set<string>();
+
+  for (const rawEntry of input.entries) {
+    const caseReferenceId = String(rawEntry.case_reference_id || "").trim();
+    const cultureCategory = String(rawEntry.culture_category || "").trim().toLowerCase();
+    const cultureSpecies = String(rawEntry.culture_species || "").trim();
+    if (!caseReferenceId) {
+      throw new Error("case_reference_id is required for retrieval corpus upload.");
+    }
+    retainedCaseReferenceIds.add(caseReferenceId);
+    if (!cultureCategory) {
+      throw new Error("culture_category is required for retrieval corpus upload.");
+    }
+    const embedding = normalizeEmbedding(rawEntry.embedding);
+    const metadataJson = rawEntry.metadata_json || {};
+    const thumbnailUrl = rawEntry.thumbnail_url?.trim() || null;
+
+    const existingRows = await sql`
+      select
+        entry_id,
+        site_id,
+        node_id,
+        profile_id,
+        retrieval_signature,
+        case_reference_id,
+        culture_category,
+        culture_species,
+        embedding_dim,
+        thumbnail_url,
+        metadata_json,
+        created_at,
+        updated_at
+      from retrieval_corpus_entries
+      where site_id = ${siteId}
+        and profile_id = ${profile.profile_id}
+        and case_reference_id = ${caseReferenceId}
+      limit 1
+    `;
+    const existing = existingRows[0] ? serializeRetrievalCorpusEntry(existingRows[0]) : null;
+    const entryId = existing?.entry_id || String(rawEntry.entry_id || "").trim() || makeControlPlaneId("retrieval");
+
+    await sql`
+      insert into retrieval_corpus_entries (
+        entry_id,
+        site_id,
+        node_id,
+        profile_id,
+        retrieval_signature,
+        case_reference_id,
+        culture_category,
+        culture_species,
+        embedding_dim,
+        embedding_json,
+        thumbnail_url,
+        metadata_json,
+        created_at,
+        updated_at
+      ) values (
+        ${entryId},
+        ${siteId},
+        ${input.nodeId},
+        ${profile.profile_id},
+        ${profile.retrieval_signature},
+        ${caseReferenceId},
+        ${cultureCategory},
+        ${cultureSpecies},
+        ${embedding.length},
+        ${JSON.stringify(embedding)}::jsonb,
+        ${thumbnailUrl},
+        ${JSON.stringify(metadataJson)}::jsonb,
+        now(),
+        now()
+      )
+      on conflict (site_id, profile_id, case_reference_id) do update set
+        node_id = excluded.node_id,
+        retrieval_signature = excluded.retrieval_signature,
+        culture_category = excluded.culture_category,
+        culture_species = excluded.culture_species,
+        embedding_dim = excluded.embedding_dim,
+        embedding_json = excluded.embedding_json,
+        thumbnail_url = coalesce(excluded.thumbnail_url, retrieval_corpus_entries.thumbnail_url),
+        metadata_json = excluded.metadata_json,
+        updated_at = now()
+    `;
+
+    const rows = await sql`
+      select
+        entry_id,
+        site_id,
+        node_id,
+        profile_id,
+        retrieval_signature,
+        case_reference_id,
+        culture_category,
+        culture_species,
+        embedding_dim,
+        thumbnail_url,
+        metadata_json,
+        created_at,
+        updated_at
+      from retrieval_corpus_entries
+      where site_id = ${siteId}
+        and profile_id = ${profile.profile_id}
+        and case_reference_id = ${caseReferenceId}
+      limit 1
+    `;
+    const savedEntry = rows[0] ? serializeRetrievalCorpusEntry(rows[0]) : null;
+    if (!savedEntry) {
+      throw new Error("Unable to save retrieval corpus entry.");
+    }
+    if (existing) {
+      updatedCount += 1;
+    } else {
+      insertedCount += 1;
+    }
+    savedEntries.push(savedEntry);
+  }
+
+  if (input.replaceSiteProfileScope) {
+    const existingRows = await sql`
+      select
+        case_reference_id
+      from retrieval_corpus_entries
+      where site_id = ${siteId}
+        and profile_id = ${profile.profile_id}
+    `;
+    for (const row of existingRows) {
+      const caseReferenceId = rowValue<string>(row, "case_reference_id");
+      if (retainedCaseReferenceIds.has(caseReferenceId)) {
+        continue;
+      }
+      await sql`
+        delete from retrieval_corpus_entries
+        where site_id = ${siteId}
+          and profile_id = ${profile.profile_id}
+          and case_reference_id = ${caseReferenceId}
+      `;
+      deletedCount += 1;
+    }
+  }
+
+  await writeAuditEvent("node", input.nodeId, "retrieval_corpus.synced", "retrieval_profile", profile.profile_id, {
+    site_id: siteId,
+    inserted_count: insertedCount,
+    updated_count: updatedCount,
+    deleted_count: deletedCount,
+  });
+
+  return {
+    profile,
+    entries: savedEntries,
+    inserted_count: insertedCount,
+    updated_count: updatedCount,
+    deleted_count: deletedCount,
+  };
+}
+
+export async function searchRetrievalCorpusEntries(input: {
+  profileId: string;
+  retrievalSignature: string;
+  queryEmbedding: unknown;
+  topK?: number;
+  excludeSiteId?: string | null;
+  excludeCaseReferenceId?: string | null;
+}): Promise<ControlPlaneRetrievalCorpusSearchHit[]> {
+  const sql = await controlPlaneSql();
+  const profileId = input.profileId.trim();
+  const retrievalSignature = input.retrievalSignature.trim();
+  if (!profileId) {
+    throw new Error("profile_id is required for retrieval search.");
+  }
+  if (!retrievalSignature) {
+    throw new Error("retrieval_signature is required for retrieval search.");
+  }
+
+  const profileRows = await sql`
+    select
+      profile_id,
+      retrieval_signature,
+      metadata_json,
+      created_at,
+      updated_at
+    from retrieval_corpus_profiles
+    where profile_id = ${profileId}
+    limit 1
+  `;
+  const profile = profileRows[0] ? serializeRetrievalCorpusProfile(profileRows[0]) : null;
+  if (!profile) {
+    return [];
+  }
+  if (profile.retrieval_signature !== retrievalSignature) {
+    throw new Error(
+      `Retrieval signature mismatch for profile ${profileId}. Expected ${profile.retrieval_signature}, received ${retrievalSignature}.`,
+    );
+  }
+
+  const queryEmbedding = normalizeEmbedding(input.queryEmbedding);
+  const topK = Math.max(1, Math.min(Number(input.topK || 3), 20));
+  const rows = await sql`
+    select
+      e.entry_id,
+      e.site_id,
+      e.node_id,
+      e.profile_id,
+      e.retrieval_signature,
+      e.case_reference_id,
+      e.culture_category,
+      e.culture_species,
+      e.embedding_dim,
+      e.embedding_json,
+      e.thumbnail_url,
+      e.metadata_json,
+      e.created_at,
+      e.updated_at,
+      s.display_name as source_site_display_name,
+      s.hospital_name as source_site_hospital_name
+    from retrieval_corpus_entries e
+    left join sites s on s.site_id = e.site_id
+    where e.profile_id = ${profileId}
+      and e.retrieval_signature = ${retrievalSignature}
+  `;
+
+  const hits: ControlPlaneRetrievalCorpusSearchHit[] = [];
+  for (const row of rows) {
+    const entry = serializeRetrievalCorpusEntry(row);
+    if (input.excludeSiteId && entry.site_id === input.excludeSiteId) {
+      continue;
+    }
+    if (input.excludeCaseReferenceId && entry.case_reference_id === input.excludeCaseReferenceId) {
+      continue;
+    }
+    const embedding = normalizeEmbedding(rowValue<unknown>(row, "embedding_json"));
+    if (embedding.length !== queryEmbedding.length) {
+      continue;
+    }
+    const similarity = cosineSimilarity(queryEmbedding, embedding);
+    hits.push({
+      ...entry,
+      similarity: Math.round(similarity * 10000) / 10000,
+      source_site_display_name: rowValue<string>(row, "source_site_display_name"),
+      source_site_hospital_name: rowValue<string>(row, "source_site_hospital_name"),
+    });
+  }
+  hits.sort((left, right) => right.similarity - left.similarity);
+  return hits.slice(0, topK);
 }
 
 export async function listModelUpdates(): Promise<ControlPlaneModelUpdate[]> {
@@ -1156,6 +1962,8 @@ export async function listRegisteredNodes(): Promise<ControlPlaneNode[]> {
       device_name,
       os_info,
       app_version,
+      current_model_version_id,
+      current_model_version_name,
       status,
       last_seen_at,
       created_at
@@ -1163,4 +1971,134 @@ export async function listRegisteredNodes(): Promise<ControlPlaneNode[]> {
     order by created_at desc
   `;
   return rows.map((row) => serializeNode(row));
+}
+
+function isRecentlySeen(timestamp: string | null, thresholdMs = 24 * 60 * 60 * 1000): boolean {
+  if (!timestamp) {
+    return false;
+  }
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+  return (Date.now() - parsed.getTime()) <= thresholdMs;
+}
+
+export async function federationMonitoringSummary(): Promise<ControlPlaneFederationMonitoringSummary> {
+  const [currentRelease, activeRollout, recentRollouts, recentAuditEvents, nodes] = await Promise.all([
+    currentReleaseManifest(),
+    latestActiveReleaseRollout(),
+    listReleaseRollouts().then((items) => items.slice(0, 8)),
+    listAuditEvents({ limit: 12 }),
+    listRegisteredNodes(),
+  ]);
+  const sql = await controlPlaneSql();
+  const siteRows = await sql`
+    select
+      sites.site_id,
+      sites.display_name,
+      sites.hospital_name,
+      coalesce(site_directory.name, source_directory.name) as source_institution_name
+    from sites
+    left join institution_directory as site_directory
+      on site_directory.institution_id = sites.site_id
+    left join institution_directory as source_directory
+      on source_directory.institution_id = nullif(sites.source_institution_id, '')
+    where sites.status = 'active'
+    order by sites.site_id asc
+  `;
+  const latestValidationRows = await sql`
+    select distinct on (site_id)
+      site_id,
+      model_version_id,
+      model_version,
+      run_date
+    from validation_runs
+    order by site_id asc, run_date desc nulls last, created_at desc
+  `;
+  const latestValidationBySite = new Map(
+    latestValidationRows.map((row) => [
+      rowValue<string>(row, "site_id"),
+      {
+        model_version_id: rowValue<string | null>(row, "model_version_id"),
+        model_version: rowValue<string | null>(row, "model_version"),
+        run_date: rowValue<string | Date | null>(row, "run_date")
+          ? new Date(rowValue<string | Date>(row, "run_date")).toISOString()
+          : null,
+      },
+    ]),
+  );
+
+  const siteAdoption: ControlPlaneRolloutSiteAdoption[] = siteRows.map((row) => {
+    const siteId = rowValue<string>(row, "site_id");
+    const site = serializeSite(row) ?? {
+      site_id: siteId,
+      display_name: siteId,
+      hospital_name: siteId,
+      source_institution_id: null,
+      status: "active",
+      created_at: new Date().toISOString(),
+    };
+    const siteNodes = nodes.filter((item) => item.site_id === siteId);
+    const activeNodes = siteNodes.filter((item) => isRecentlySeen(item.last_seen_at));
+    const targetedByRollout = Boolean(
+      activeRollout &&
+        activeRollout.target_site_ids.length > 0 &&
+        activeRollout.target_site_ids.includes(siteId),
+    );
+    const expectedVersionId = targetedByRollout
+      ? activeRollout?.version_id ?? null
+      : currentRelease?.version_id ?? null;
+    const expectedVersionName = targetedByRollout
+      ? activeRollout?.version_name ?? null
+      : currentRelease?.version_name ?? null;
+    const alignedNodeCount = activeNodes.filter((item) => item.current_model_version_id === expectedVersionId).length;
+    const unknownNodeCount = activeNodes.filter((item) => !item.current_model_version_id).length;
+    const laggingNodeCount = Math.max(0, activeNodes.length - alignedNodeCount - unknownNodeCount);
+    const latestNode = siteNodes
+      .slice()
+      .sort((left, right) => {
+        const leftValue = left.last_seen_at ? new Date(left.last_seen_at).getTime() : 0;
+        const rightValue = right.last_seen_at ? new Date(right.last_seen_at).getTime() : 0;
+        return rightValue - leftValue;
+      })[0] ?? null;
+    const latestValidation = latestValidationBySite.get(siteId);
+    return {
+      site_id: siteId,
+      site_display_name: site.hospital_name || site.display_name || siteId,
+      node_count: siteNodes.length,
+      active_node_count: activeNodes.length,
+      aligned_node_count: alignedNodeCount,
+      unknown_node_count: unknownNodeCount,
+      lagging_node_count: laggingNodeCount,
+      expected_version_id: expectedVersionId,
+      expected_version_name: expectedVersionName,
+      latest_reported_version_id: latestNode?.current_model_version_id ?? null,
+      latest_reported_version_name: latestNode?.current_model_version_name ?? null,
+      latest_validation_version_id: latestValidation?.model_version_id ?? null,
+      latest_validation_version_name: latestValidation?.model_version ?? null,
+      latest_validation_run_date: latestValidation?.run_date ?? null,
+      last_seen_at: latestNode?.last_seen_at ?? null,
+    };
+  });
+
+  const activeNodes = nodes.filter((item) => isRecentlySeen(item.last_seen_at));
+  const alignedNodes = siteAdoption.reduce((sum, item) => sum + item.aligned_node_count, 0);
+  const laggingNodes = siteAdoption.reduce((sum, item) => sum + item.lagging_node_count, 0);
+  const unknownNodes = siteAdoption.reduce((sum, item) => sum + item.unknown_node_count, 0);
+
+  return {
+    current_release: currentRelease,
+    active_rollout: activeRollout,
+    recent_rollouts: recentRollouts,
+    recent_audit_events: recentAuditEvents,
+    node_summary: {
+      total_nodes: nodes.length,
+      active_nodes: activeNodes.length,
+      aligned_nodes: alignedNodes,
+      lagging_nodes: laggingNodes,
+      unknown_nodes: unknownNodes,
+    },
+    site_adoption: siteAdoption,
+  };
 }

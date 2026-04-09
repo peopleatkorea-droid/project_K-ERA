@@ -52,6 +52,8 @@ def build_case_images_router(support: Any) -> APIRouter:
     get_semantic_prompt_scorer = support.get_semantic_prompt_scorer
     serialize_lesion_preview_job = support.serialize_lesion_preview_job
     queue_case_embedding_refresh = support.queue_case_embedding_refresh
+    queue_ai_clinic_vector_index_rebuild = support.queue_ai_clinic_vector_index_rebuild
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
     attach_image_quality_scores = support.attach_image_quality_scores
     make_id = support.make_id
     lesion_preview_jobs = support.lesion_preview_jobs
@@ -281,6 +283,11 @@ def build_case_images_router(support: Any) -> APIRouter:
                     visit_date=visit_date,
                     trigger="image_upload",
                 )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="image_upload",
+            )
             return saved_image
         except InvalidImageUploadError as exc:
             raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
@@ -298,6 +305,16 @@ def build_case_images_router(support: Any) -> APIRouter:
         site_store = require_site_access(cp, user, site_id)
         require_visit_image_write_access(site_store, user, patient_id=patient_id, visit_date=visit_date)
         deleted_count = site_store.delete_images_for_visit(patient_id, visit_date)
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
+            trigger="delete_images",
+        )
+        queue_ai_clinic_vector_index_rebuild(
+            cp,
+            site_store,
+            trigger="delete_images",
+        )
         return {"deleted_count": deleted_count}
 
     @router.post("/api/sites/{site_id}/images/representative")
@@ -331,6 +348,11 @@ def build_case_images_router(support: Any) -> APIRouter:
             site_store,
             patient_id=parsed.patient_id,
             visit_date=parsed.visit_date,
+            trigger="representative_change",
+        )
+        queue_federated_retrieval_corpus_sync(
+            cp,
+            site_store,
             trigger="representative_change",
         )
         return {
@@ -474,6 +496,11 @@ def build_case_images_router(support: Any) -> APIRouter:
                 visit_date=str(updated.get("visit_date") or image.get("visit_date") or ""),
                 trigger="lesion_box_update",
             )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="lesion_box_update",
+            )
             return updated
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -490,7 +517,20 @@ def build_case_images_router(support: Any) -> APIRouter:
         if image is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
         try:
-            return site_store.update_lesion_prompt_box(image_id, None)
+            updated = site_store.update_lesion_prompt_box(image_id, None)
+            queue_case_embedding_refresh(
+                cp,
+                site_store,
+                patient_id=str(updated.get("patient_id") or image.get("patient_id") or ""),
+                visit_date=str(updated.get("visit_date") or image.get("visit_date") or ""),
+                trigger="lesion_box_update",
+            )
+            queue_federated_retrieval_corpus_sync(
+                cp,
+                site_store,
+                trigger="lesion_box_update",
+            )
+            return updated
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

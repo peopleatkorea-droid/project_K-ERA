@@ -57,6 +57,8 @@ export type ControlPlaneNode = {
   device_name: string;
   os_info: string;
   app_version: string;
+  current_model_version_id?: string | null;
+  current_model_version_name?: string | null;
   status: ControlPlaneNodeStatus;
   last_seen_at: string | null;
   created_at: string;
@@ -66,6 +68,7 @@ export type ControlPlaneReleaseManifest = {
   version_id: string;
   version_name: string;
   architecture: string;
+  source_provider?: string;
   download_url: string;
   sha256: string;
   size_bytes: number;
@@ -103,6 +106,36 @@ export type ControlPlaneValidationRun = {
   created_at: string;
 };
 
+export type ControlPlaneRetrievalCorpusProfile = {
+  profile_id: string;
+  retrieval_signature: string;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ControlPlaneRetrievalCorpusEntry = {
+  entry_id: string;
+  site_id: string | null;
+  node_id: string | null;
+  profile_id: string;
+  retrieval_signature: string;
+  case_reference_id: string;
+  culture_category: string;
+  culture_species: string;
+  embedding_dim: number;
+  thumbnail_url: string | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ControlPlaneRetrievalCorpusSearchHit = ControlPlaneRetrievalCorpusEntry & {
+  similarity: number;
+  source_site_display_name?: string | null;
+  source_site_hospital_name?: string | null;
+};
+
 export type ControlPlaneOverview = {
   user_count: number;
   site_count: number;
@@ -120,6 +153,71 @@ export type ControlPlaneAggregation = {
   summary_json: Record<string, unknown>;
   created_at: string;
   finished_at: string | null;
+};
+
+export type ControlPlaneReleaseRolloutStage = "pilot" | "partial" | "full" | "rollback";
+export type ControlPlaneReleaseRolloutStatus = "active" | "superseded";
+
+export type ControlPlaneReleaseRollout = {
+  rollout_id: string;
+  version_id: string;
+  version_name: string;
+  architecture: string;
+  previous_version_id: string | null;
+  previous_version_name: string | null;
+  stage: ControlPlaneReleaseRolloutStage;
+  status: ControlPlaneReleaseRolloutStatus;
+  target_site_ids: string[];
+  notes: string;
+  created_by_user_id: string | null;
+  created_at: string;
+  activated_at: string | null;
+  superseded_at: string | null;
+  metadata_json: Record<string, unknown>;
+};
+
+export type ControlPlaneAuditEvent = {
+  event_id: string;
+  actor_type: string;
+  actor_id: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  payload_json: Record<string, unknown>;
+  created_at: string;
+};
+
+export type ControlPlaneRolloutSiteAdoption = {
+  site_id: string;
+  site_display_name: string;
+  node_count: number;
+  active_node_count: number;
+  aligned_node_count: number;
+  unknown_node_count: number;
+  lagging_node_count: number;
+  expected_version_id: string | null;
+  expected_version_name: string | null;
+  latest_reported_version_id: string | null;
+  latest_reported_version_name: string | null;
+  latest_validation_version_id: string | null;
+  latest_validation_version_name: string | null;
+  latest_validation_run_date: string | null;
+  last_seen_at: string | null;
+};
+
+export type ControlPlaneFederationMonitoringSummary = {
+  current_release: ControlPlaneReleaseManifest | null;
+  active_rollout: ControlPlaneReleaseRollout | null;
+  recent_rollouts: ControlPlaneReleaseRollout[];
+  recent_audit_events: ControlPlaneAuditEvent[];
+  node_summary: {
+    total_nodes: number;
+    active_nodes: number;
+    aligned_nodes: number;
+    lagging_nodes: number;
+    unknown_nodes: number;
+  };
+  site_adoption: ControlPlaneRolloutSiteAdoption[];
 };
 
 export type ControlPlaneBootstrap = {

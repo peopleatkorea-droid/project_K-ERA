@@ -8,7 +8,17 @@ import { Field } from "../ui/field";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, docSiteBadgeClass, emptySurfaceClass } from "../ui/workspace-patterns";
-import type { AggregationRecord, ModelUpdateRecord } from "../../lib/api";
+import type {
+  AggregationRecord,
+  AiClinicEmbeddingStatusResponse,
+  AuditEventRecord,
+  FederatedRetrievalCorpusStatusResponse,
+  FederationMonitoringSummaryResponse,
+  ImageLevelFederatedRoundStatusResponse,
+  ModelUpdateRecord,
+  ModelVersionRecord,
+  VisitLevelFederatedRoundStatusResponse,
+} from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
 import type { UpdateThresholdAlert } from "./use-admin-workspace-state";
 
@@ -29,12 +39,25 @@ type Props = {
   approvedUpdates: ModelUpdateRecord[];
   updateThresholdAlerts: UpdateThresholdAlert[];
   aggregations: AggregationRecord[];
+  selectedSiteId: string | null;
+  selectedSiteLabel: string | null;
+  embeddingStatus: AiClinicEmbeddingStatusResponse | null;
+  imageLevelFederatedStatus: ImageLevelFederatedRoundStatusResponse | null;
+  visitLevelFederatedStatus: VisitLevelFederatedRoundStatusResponse | null;
+  federatedRetrievalStatus: FederatedRetrievalCorpusStatusResponse | null;
+  federationStatusBusy: boolean;
+  federationMonitoring: FederationMonitoringSummaryResponse | null;
+  federationMonitoringBusy: boolean;
+  recentAuditEvents: AuditEventRecord[];
+  modelVersions: ModelVersionRecord[];
   newVersionName: string;
   aggregationBusy: boolean;
   setNewVersionName: Dispatch<SetStateAction<string>>;
   formatDateTime: (value: string | null | undefined, emptyLabel?: string) => string;
+  formatEmbeddingStage: (stage: string | null | undefined) => string;
   onAggregation: (updateIds: string[]) => void;
   onAggregationAllReady: () => void;
+  onRefreshFederationStatus: () => void;
 };
 
 function buildAggregationLanes(approvedUpdates: ModelUpdateRecord[]): AggregationLane[] {
@@ -92,21 +115,83 @@ function buildAggregationLanes(approvedUpdates: ModelUpdateRecord[]): Aggregatio
     .sort((left, right) => right.total_cases - left.total_cases || right.update_count - left.update_count);
 }
 
+function formatCount(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
+}
+
+function SectionMetricGrid({
+  locale,
+  items,
+}: {
+  locale: Locale;
+  items: Array<{ labelEn: string; labelKo: string; value: string }>;
+}) {
+  return (
+    <MetricGrid columns={3}>
+      {items.map((item) => (
+        <MetricItem key={`${item.labelEn}:${item.value}`} value={item.value} label={pick(locale, item.labelEn, item.labelKo)} />
+      ))}
+    </MetricGrid>
+  );
+}
+
+function StatusCard({
+  locale,
+  titleEn,
+  titleKo,
+  description,
+  badge,
+  metrics,
+}: {
+  locale: Locale;
+  titleEn: string;
+  titleKo: string;
+  description: string;
+  badge: string;
+  metrics: Array<{ labelEn: string; labelKo: string; value: string }>;
+}) {
+  return (
+    <Card as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+      <SectionHeader
+        title={pick(locale, titleEn, titleKo)}
+        titleAs="h4"
+        description={description}
+        aside={<span className={docSiteBadgeClass}>{badge}</span>}
+      />
+      <SectionMetricGrid locale={locale} items={metrics} />
+    </Card>
+  );
+}
+
 export function FederationSection({
   locale,
   notAvailableLabel,
   approvedUpdates,
   updateThresholdAlerts,
   aggregations,
+  selectedSiteId,
+  selectedSiteLabel,
+  embeddingStatus,
+  imageLevelFederatedStatus,
+  visitLevelFederatedStatus,
+  federatedRetrievalStatus,
+  federationStatusBusy,
+  federationMonitoring,
+  federationMonitoringBusy,
+  recentAuditEvents,
+  modelVersions,
   newVersionName,
   aggregationBusy,
   setNewVersionName,
   formatDateTime,
+  formatEmbeddingStage,
   onAggregation,
   onAggregationAllReady,
+  onRefreshFederationStatus,
 }: Props) {
   const aggregationLanes = buildAggregationLanes(approvedUpdates);
   const readyAggregationLanes = aggregationLanes.filter((lane) => lane.duplicate_site_count === 0);
+  const readyModelVersions = modelVersions.filter((item) => item.ready);
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -121,6 +206,210 @@ export function FederationSection({
         )}
         aside={<span className={docSiteBadgeClass}>{`${approvedUpdates.length} ${pick(locale, "approved", "승인")}`}</span>}
       />
+
+      <Card as="section" variant="nested" className="grid gap-4 p-5">
+        <SectionHeader
+          title={pick(locale, "Selected hospital federation status", "선택 병원 연합 상태")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Track FL eligibility, AI Clinic embedding readiness, and retrieval sync state for the currently selected hospital.",
+            "현재 선택된 병원의 FL 적격성, AI Clinic 임베딩 준비, retrieval sync 상태를 함께 확인합니다."
+          )}
+          aside={
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={docSiteBadgeClass}>{selectedSiteLabel ?? pick(locale, "No site selected", "선택된 병원 없음")}</span>
+              <Button type="button" variant="ghost" size="sm" disabled={federationStatusBusy} onClick={onRefreshFederationStatus}>
+                {federationStatusBusy ? pick(locale, "Refreshing...", "새로고침 중...") : pick(locale, "Refresh status", "상태 새로고침")}
+              </Button>
+            </div>
+          }
+        />
+        {!selectedSiteId ? (
+          <div className={emptySurfaceClass}>
+            {pick(locale, "Select a hospital to inspect FL and retrieval readiness.", "FL 및 retrieval 준비 상태를 보려면 병원을 선택하세요.")}
+          </div>
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
+            <StatusCard
+              locale={locale}
+              titleEn="Visit-level FL"
+              titleKo="Visit-level FL"
+              description={visitLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
+              badge={
+                visitLevelFederatedStatus?.active_job
+                  ? formatEmbeddingStage(visitLevelFederatedStatus.active_job.status)
+                  : pick(locale, "Idle", "유휴")
+              }
+              metrics={[
+                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(visitLevelFederatedStatus?.eligible_case_count) },
+                { labelEn: "Eligible images", labelKo: "적격 이미지", value: formatCount(visitLevelFederatedStatus?.eligible_image_count) },
+                { labelEn: "Not included", labelKo: "미포함", value: formatCount(visitLevelFederatedStatus?.skipped.not_included) },
+              ]}
+            />
+            <StatusCard
+              locale={locale}
+              titleEn="Image-level FL"
+              titleKo="Image-level FL"
+              description={imageLevelFederatedStatus?.model_version.version_name ?? notAvailableLabel}
+              badge={
+                imageLevelFederatedStatus?.active_job
+                  ? formatEmbeddingStage(imageLevelFederatedStatus.active_job.status)
+                  : pick(locale, "Idle", "유휴")
+              }
+              metrics={[
+                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(imageLevelFederatedStatus?.eligible_case_count) },
+                { labelEn: "Eligible images", labelKo: "적격 이미지", value: formatCount(imageLevelFederatedStatus?.eligible_image_count) },
+                { labelEn: "Not positive", labelKo: "비양성", value: formatCount(imageLevelFederatedStatus?.skipped.not_positive) },
+              ]}
+            />
+            <StatusCard
+              locale={locale}
+              titleEn="Retrieval corpus sync"
+              titleKo="Retrieval corpus sync"
+              description={federatedRetrievalStatus?.retrieval_profile ?? "dinov2_lesion_crop"}
+              badge={
+                federatedRetrievalStatus?.active_job
+                  ? formatEmbeddingStage(federatedRetrievalStatus.active_job.status)
+                  : pick(locale, "Idle", "유휴")
+              }
+              metrics={[
+                { labelEn: "Eligible cases", labelKo: "적격 케이스", value: formatCount(federatedRetrievalStatus?.eligible_case_count) },
+                { labelEn: "Not included", labelKo: "미포함", value: formatCount(federatedRetrievalStatus?.skipped.not_included) },
+                {
+                  labelEn: "Remote sync",
+                  labelKo: "원격 sync",
+                  value: federatedRetrievalStatus?.remote_node_sync_enabled ? pick(locale, "Enabled", "활성") : pick(locale, "Disabled", "비활성"),
+                },
+              ]}
+            />
+            <StatusCard
+              locale={locale}
+              titleEn="Embedding readiness"
+              titleKo="임베딩 준비 상태"
+              description={embeddingStatus?.model_version.version_name ?? notAvailableLabel}
+              badge={
+                embeddingStatus?.active_job
+                  ? formatEmbeddingStage(embeddingStatus.active_job.status)
+                  : embeddingStatus?.needs_backfill
+                    ? pick(locale, "Needs backfill", "백필 필요")
+                    : pick(locale, "Ready", "준비됨")
+              }
+              metrics={[
+                { labelEn: "Missing cases", labelKo: "누락 케이스", value: formatCount(embeddingStatus?.missing_case_count) },
+                { labelEn: "Missing images", labelKo: "누락 이미지", value: formatCount(embeddingStatus?.missing_image_count) },
+                {
+                  labelEn: "DINO index",
+                  labelKo: "DINO 인덱스",
+                  value: embeddingStatus?.vector_index?.dinov2_index_available ? pick(locale, "Available", "사용 가능") : pick(locale, "Missing", "없음"),
+                },
+              ]}
+            />
+          </div>
+        )}
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Release rollout monitor", "릴리스 rollout 모니터")}
+            titleAs="h4"
+            description={pick(
+              locale,
+              "Watch the current release, active staged rollout, and node-level alignment against the expected version.",
+              "현재 릴리스, 활성 staged rollout, 기대 버전 대비 노드 정렬 상태를 함께 확인합니다."
+            )}
+            aside={<span className={docSiteBadgeClass}>{readyModelVersions.length}</span>}
+          />
+          {federationMonitoringBusy ? (
+            <div className={emptySurfaceClass}>{pick(locale, "Loading monitoring summary...", "모니터링 요약을 불러오는 중...")}</div>
+          ) : federationMonitoring ? (
+            <div className="grid gap-4">
+              <MetricGrid columns={4}>
+                <MetricItem value={federationMonitoring.current_release?.version_name ?? notAvailableLabel} label={pick(locale, "Current release", "현재 릴리스")} />
+                <MetricItem value={String(federationMonitoring.node_summary.total_nodes)} label={pick(locale, "Nodes", "노드")} />
+                <MetricItem value={String(federationMonitoring.node_summary.aligned_nodes)} label={pick(locale, "Aligned", "정렬")} />
+                <MetricItem value={String(federationMonitoring.node_summary.lagging_nodes)} label={pick(locale, "Lagging", "지연")} />
+              </MetricGrid>
+              <Card as="article" variant="nested" className="grid gap-3 border border-border/80 p-4">
+                <SectionHeader
+                  title={
+                    federationMonitoring.active_rollout?.version_name ??
+                    pick(locale, "No active staged rollout", "활성 staged rollout 없음")
+                  }
+                  titleAs="h4"
+                  description={
+                    federationMonitoring.active_rollout
+                      ? `${federationMonitoring.active_rollout.stage} / ${federationMonitoring.active_rollout.architecture}`
+                      : pick(locale, "The current release is serving as the only active model target.", "현재 릴리스만 활성 모델 대상으로 사용 중입니다.")
+                  }
+                  aside={
+                    <span className={docSiteBadgeClass}>
+                      {federationMonitoring.active_rollout?.status ?? pick(locale, "steady", "안정")}
+                    </span>
+                  }
+                />
+                {federationMonitoring.active_rollout?.target_site_ids?.length ? (
+                  <div className="text-sm leading-6 text-muted">{federationMonitoring.active_rollout.target_site_ids.join(", ")}</div>
+                ) : null}
+                {federationMonitoring.site_adoption.length === 0 ? (
+                  <div className={emptySurfaceClass}>
+                    {pick(locale, "No site adoption record is available yet.", "아직 site adoption 기록이 없습니다.")}
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    {federationMonitoring.site_adoption.slice(0, 4).map((site) => (
+                      <Card key={site.site_id} as="div" variant="nested" className="grid gap-2 border border-border/80 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <strong className="text-sm text-ink">{site.site_display_name}</strong>
+                          <span className={docSiteBadgeClass}>{`${site.aligned_node_count}/${site.active_node_count}`}</span>
+                        </div>
+                        <MetricGrid columns={4}>
+                          <MetricItem value={String(site.node_count)} label={pick(locale, "Nodes", "노드")} />
+                          <MetricItem value={String(site.lagging_node_count)} label={pick(locale, "Lagging", "지연")} />
+                          <MetricItem value={site.expected_version_name ?? notAvailableLabel} label={pick(locale, "Expected", "기대 버전")} />
+                          <MetricItem value={formatDateTime(site.last_seen_at, notAvailableLabel)} label={pick(locale, "Last seen", "최근 신호")} />
+                        </MetricGrid>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+          ) : (
+            <div className={emptySurfaceClass}>
+              {pick(locale, "Monitoring summary is not available yet.", "모니터링 요약이 아직 없습니다.")}
+            </div>
+          )}
+        </Card>
+
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Recent audit trail", "최근 감사 로그")}
+            titleAs="h4"
+            aside={<span className={docSiteBadgeClass}>{recentAuditEvents.length}</span>}
+          />
+          {recentAuditEvents.length === 0 ? (
+            <div className={emptySurfaceClass}>
+              {pick(locale, "No recent control-plane audit event is available.", "최근 control-plane 감사 이벤트가 없습니다.")}
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {recentAuditEvents.slice(0, 6).map((item) => (
+                <Card key={item.event_id} as="article" variant="nested" className="grid gap-2 border border-border/80 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <strong className="text-sm text-ink">{item.action}</strong>
+                    <span className={docSiteBadgeClass}>{formatDateTime(item.created_at, notAvailableLabel)}</span>
+                  </div>
+                  <div className="text-xs leading-5 text-muted">
+                    {`${item.actor_type}${item.actor_id ? ` / ${item.actor_id}` : ""} -> ${item.target_type}${item.target_id ? ` / ${item.target_id}` : ""}`}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
 
       {updateThresholdAlerts.length > 0 ? (
         <Card as="section" variant="nested" className="grid gap-4 border border-amber-300/80 bg-amber-50/80 p-5 dark:border-amber-500/40 dark:bg-amber-500/10">
@@ -242,11 +531,7 @@ export function FederationSection({
                         type="button"
                         size="sm"
                         variant="primary"
-                        aria-label={pick(
-                          locale,
-                          `Aggregate ${lane.architecture} lane`,
-                          `${lane.architecture} lane 집계`
-                        )}
+                        aria-label={pick(locale, `Aggregate ${lane.architecture} lane`, `${lane.architecture} lane 집계`)}
                         disabled={aggregationBusy || lane.duplicate_site_count > 0}
                         onClick={() => onAggregation(lane.update_ids)}
                       >

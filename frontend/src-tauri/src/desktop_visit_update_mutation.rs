@@ -147,7 +147,7 @@ pub(super) fn update_visit(payload: UpdateVisitRequest) -> Result<VisitRecord, S
             let _ = delete_patient_if_empty(&conn, &payload.site_id, &normalized_patient_id)?;
         }
     }
-    get_visit(
+    let updated_visit = get_visit(
         &conn,
         &payload.site_id,
         &normalized_target_patient_id,
@@ -157,5 +157,22 @@ pub(super) fn update_visit(payload: UpdateVisitRequest) -> Result<VisitRecord, S
         format!(
             "Visit {normalized_target_patient_id} / {normalized_target_visit_date} does not exist."
         )
-    })
+    })?;
+    if !list_images_for_visit(
+        &conn,
+        &site_id,
+        &normalized_target_patient_id,
+        &normalized_target_visit_date,
+    )?
+    .is_empty()
+    {
+        schedule_case_embedding_refresh(
+            &site_id,
+            &normalized_target_patient_id,
+            &normalized_target_visit_date,
+            "visit_update",
+        );
+    }
+    schedule_federated_retrieval_corpus_sync(&site_id, "visit_update");
+    Ok(updated_visit)
 }

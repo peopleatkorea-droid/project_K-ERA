@@ -19,6 +19,9 @@ class DesktopRouteSupport:
     case_reference_salt_fingerprint: Any
     make_id: Any
     get_app_version: Any
+    queue_case_embedding_refresh: Any
+    queue_ai_clinic_vector_index_rebuild: Any
+    queue_federated_retrieval_corpus_sync: Any
     RemoteControlPlaneClient: Any
     LocalControlPlaneNodeRegisterRequest: Any
     LocalControlPlaneNodeCredentialsRequest: Any
@@ -58,6 +61,9 @@ class AdminRouteSupport:
     hash_password: Any
     registry_orchestrator: Any
     make_id: Any
+    queue_ai_clinic_embedding_backfill: Any
+    queue_ai_clinic_vector_index_rebuild: Any
+    queue_federated_retrieval_corpus_sync: Any
     case_reference_salt_fingerprint: Any
     AccessRequestReviewRequest: Any
     StorageSettingsUpdateRequest: Any
@@ -65,6 +71,7 @@ class AdminRouteSupport:
     ModelVersionPublishRequest: Any
     ModelVersionAutoPublishRequest: Any
     AggregationRunRequest: Any
+    ReleaseRolloutRequest: Any
     ProjectCreateRequest: Any
     SiteCreateRequest: Any
     SiteUpdateRequest: Any
@@ -89,7 +96,9 @@ class SitesRouteSupport:
     queue_name_for_job_type: Any
     get_embedding_backfill_status: Any
     latest_embedding_backfill_job: Any
+    queue_ai_clinic_embedding_backfill: Any
     queue_site_embedding_backfill: Any
+    queue_federated_retrieval_corpus_sync: Any
     bool_from_value: Any
     coerce_text: Any
     site_level_validation_runs: Any
@@ -106,7 +115,10 @@ class SitesRouteSupport:
     InitialTrainingRequest: Any
     InitialTrainingBenchmarkRequest: Any
     ResumeBenchmarkRequest: Any
+    ImageLevelFederatedRoundRequest: Any
+    VisitLevelFederatedRoundRequest: Any
     EmbeddingBackfillRequest: Any
+    FederatedRetrievalSyncRequest: Any
     CrossValidationRunRequest: Any
     SSLPretrainingRunRequest: Any
     RetrievalBaselineRequest: Any
@@ -131,6 +143,8 @@ class CasesRouteSupport:
     resolve_execution_device: Any
     project_id_for_site: Any
     queue_case_embedding_refresh: Any
+    queue_ai_clinic_vector_index_rebuild: Any
+    queue_federated_retrieval_corpus_sync: Any
     attach_image_quality_scores: Any
     build_case_history: Any
     build_patient_trajectory: Any
@@ -176,6 +190,9 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             case_reference_salt_fingerprint=deps["case_reference_salt_fingerprint"],
             make_id=deps["make_id"],
             get_app_version=deps["get_app_version"],
+            queue_case_embedding_refresh=deps["queue_case_embedding_refresh"],
+            queue_ai_clinic_vector_index_rebuild=deps["queue_ai_clinic_vector_index_rebuild"],
+            queue_federated_retrieval_corpus_sync=deps["queue_federated_retrieval_corpus_sync"],
             RemoteControlPlaneClient=deps["RemoteControlPlaneClient"],
             LocalControlPlaneNodeRegisterRequest=deps["LocalControlPlaneNodeRegisterRequest"],
             LocalControlPlaneNodeCredentialsRequest=deps["LocalControlPlaneNodeCredentialsRequest"],
@@ -211,6 +228,9 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             hash_password=deps["hash_password"],
             registry_orchestrator=deps["registry_orchestrator"],
             make_id=deps["make_id"],
+            queue_ai_clinic_embedding_backfill=deps["queue_ai_clinic_embedding_backfill"],
+            queue_ai_clinic_vector_index_rebuild=deps["queue_ai_clinic_vector_index_rebuild"],
+            queue_federated_retrieval_corpus_sync=deps["queue_federated_retrieval_corpus_sync"],
             case_reference_salt_fingerprint=deps["case_reference_salt_fingerprint"],
             AccessRequestReviewRequest=deps["AccessRequestReviewRequest"],
             StorageSettingsUpdateRequest=deps["StorageSettingsUpdateRequest"],
@@ -218,6 +238,7 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             ModelVersionPublishRequest=deps["ModelVersionPublishRequest"],
             ModelVersionAutoPublishRequest=deps["ModelVersionAutoPublishRequest"],
             AggregationRunRequest=deps["AggregationRunRequest"],
+            ReleaseRolloutRequest=deps["ReleaseRolloutRequest"],
             ProjectCreateRequest=deps["ProjectCreateRequest"],
             SiteCreateRequest=deps["SiteCreateRequest"],
             SiteUpdateRequest=deps["SiteUpdateRequest"],
@@ -240,7 +261,9 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             queue_name_for_job_type=deps["queue_name_for_job_type"],
             get_embedding_backfill_status=deps["get_embedding_backfill_status"],
             latest_embedding_backfill_job=deps["latest_embedding_backfill_job"],
+            queue_ai_clinic_embedding_backfill=deps["queue_ai_clinic_embedding_backfill"],
             queue_site_embedding_backfill=deps["queue_site_embedding_backfill"],
+            queue_federated_retrieval_corpus_sync=deps["queue_federated_retrieval_corpus_sync"],
             bool_from_value=deps["bool_from_value"],
             coerce_text=deps["coerce_text"],
             site_level_validation_runs=deps["site_level_validation_runs"],
@@ -257,7 +280,10 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             InitialTrainingRequest=deps["InitialTrainingRequest"],
             InitialTrainingBenchmarkRequest=deps["InitialTrainingBenchmarkRequest"],
             ResumeBenchmarkRequest=deps["ResumeBenchmarkRequest"],
+            ImageLevelFederatedRoundRequest=deps["ImageLevelFederatedRoundRequest"],
+            VisitLevelFederatedRoundRequest=deps["VisitLevelFederatedRoundRequest"],
             EmbeddingBackfillRequest=deps["EmbeddingBackfillRequest"],
+            FederatedRetrievalSyncRequest=deps["FederatedRetrievalSyncRequest"],
             CrossValidationRunRequest=deps["CrossValidationRunRequest"],
             SSLPretrainingRunRequest=deps["SSLPretrainingRunRequest"],
             RetrievalBaselineRequest=deps["RetrievalBaselineRequest"],
@@ -280,6 +306,8 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             resolve_execution_device=deps["resolve_execution_device"],
             project_id_for_site=deps["project_id_for_site"],
             queue_case_embedding_refresh=deps["queue_case_embedding_refresh"],
+            queue_ai_clinic_vector_index_rebuild=deps["queue_ai_clinic_vector_index_rebuild"],
+            queue_federated_retrieval_corpus_sync=deps["queue_federated_retrieval_corpus_sync"],
             attach_image_quality_scores=deps["attach_image_quality_scores"],
             build_case_history=deps["build_case_history"],
             build_patient_trajectory=deps["build_patient_trajectory"],

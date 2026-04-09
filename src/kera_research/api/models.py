@@ -221,9 +221,38 @@ class EmbeddingBackfillRequest(BaseModel):
     force_refresh: bool = False
 
 
+class FederatedRetrievalSyncRequest(BaseModel):
+    execution_mode: str = "auto"
+    retrieval_profile: str = "dinov2_lesion_crop"
+    force_refresh: bool = False
+
+
+class ImageLevelFederatedRoundRequest(BaseModel):
+    execution_mode: str = "auto"
+    model_version_id: str | None = None
+    epochs: int = 1
+    learning_rate: float = 5e-5
+    batch_size: int = 8
+
+
+class VisitLevelFederatedRoundRequest(BaseModel):
+    execution_mode: str = "auto"
+    model_version_id: str | None = None
+    epochs: int = 1
+    learning_rate: float = 5e-5
+    batch_size: int = 4
+
+
 class AggregationRunRequest(BaseModel):
     update_ids: list[str] = Field(default_factory=list)
     new_version_name: str | None = None
+
+
+class ReleaseRolloutRequest(BaseModel):
+    version_id: str
+    stage: Literal["pilot", "partial", "full", "rollback"]
+    target_site_ids: list[str] = Field(default_factory=list)
+    notes: str = ""
 
 
 class ModelUpdateReviewRequest(BaseModel):

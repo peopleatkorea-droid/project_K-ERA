@@ -506,11 +506,15 @@ class ControlPlaneStore:
         app_version: str = "",
         os_info: str = "",
         status: str = "ok",
+        current_model_version_id: str = "",
+        current_model_version_name: str = "",
     ) -> dict[str, Any] | None:
         return self.remote_state.record_node_heartbeat(
             app_version=app_version,
             os_info=os_info,
             status=status,
+            current_model_version_id=current_model_version_id,
+            current_model_version_name=current_model_version_name,
         )
 
     def _remote_current_release_manifest(self, *, force_refresh: bool = False) -> dict[str, Any] | None:
@@ -960,6 +964,9 @@ class ControlPlaneStore:
 
     def current_global_model(self) -> dict[str, Any] | None:
         return self.models.current_global_model()
+
+    def local_current_model(self) -> dict[str, Any] | None:
+        return self.models.local_current_model()
 
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
         return self.models.archive_model_version(version_id)

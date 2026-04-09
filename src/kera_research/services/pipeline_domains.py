@@ -508,6 +508,587 @@ class ResearchTrainingWorkflow:
             return "full-frame source images"
         return "MedSAM cornea crops"
 
+    def _eligible_image_level_federated_rows(
+        self,
+        site_store: SiteStore,
+    ) -> tuple[Any, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+        manifest_df = site_store.generate_manifest()
+        if manifest_df.empty:
+            raise ValueError("No manifest records are available for image-level federated learning.")
+
+        eligible_case_keys: set[tuple[str, str]] = set()
+        eligible_summaries: list[dict[str, Any]] = []
+        skipped = {
+            "not_positive": 0,
+            "not_active": 0,
+            "not_included": 0,
+            "no_images": 0,
+        }
+        for summary in site_store.list_case_summaries():
+            patient_id = str(summary.get("patient_id") or "").strip()
+            visit_date = str(summary.get("visit_date") or "").strip()
+            if not patient_id or not visit_date:
+                continue
+            try:
+                policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+            except ValueError:
+                continue
+            if not bool(policy_state.get("is_positive")):
+                skipped["not_positive"] += 1
+                continue
+            if not bool(policy_state.get("is_active")):
+                skipped["not_active"] += 1
+                continue
+            if not bool(policy_state.get("is_registry_included")):
+                skipped["not_included"] += 1
+                continue
+            if not bool(policy_state.get("has_images")):
+                skipped["no_images"] += 1
+                continue
+            eligible_case_keys.add((patient_id, visit_date))
+            eligible_summaries.append(summary)
+
+        if not eligible_case_keys:
+            raise ValueError(
+                "No eligible culture-positive active registry-included cases with saved images are available for image-level federated learning."
+            )
+
+        manifest_rows = [
+            row
+            for row in manifest_df.to_dict("records")
+            if (str(row.get("patient_id") or "").strip(), str(row.get("visit_date") or "").strip()) in eligible_case_keys
+        ]
+        if not manifest_rows:
+            raise ValueError("Eligible federated learning cases do not have manifest rows yet.")
+
+        eligible_manifest_df = manifest_df[
+            manifest_df.apply(
+                lambda row: (
+                    str(row.get("patient_id") or "").strip(),
+                    str(row.get("visit_date") or "").strip(),
+                )
+                in eligible_case_keys,
+                axis=1,
+            )
+        ].copy()
+        return eligible_manifest_df, manifest_rows, skipped, eligible_summaries
+
+    def _eligible_visit_level_federated_rows(
+        self,
+        site_store: SiteStore,
+    ) -> tuple[Any, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+        return self._eligible_image_level_federated_rows(site_store)
+
+    def run_image_level_federated_round(
+        self,
+        site_store: SiteStore,
+        model_version: dict[str, Any],
+        execution_device: str,
+        *,
+        epochs: int = 1,
+        learning_rate: float = 5e-5,
+        batch_size: int = 8,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        service = self.service
+        architecture = str(model_version.get("architecture") or "").strip().lower()
+        if architecture != "convnext_tiny":
+            raise ValueError("Image-level federated learning currently supports only ConvNeXt-Tiny.")
+        if bool(model_version.get("bag_level", False)):
+            raise ValueError("Image-level federated learning requires an image-level ConvNeXt-Tiny model.")
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                    "architecture": "convnext_tiny",
+                    "model_version_id": model_version.get("version_id"),
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "train_loss": payload.get("train_loss"),
+                    "eligible_case_count": payload.get("eligible_case_count"),
+                    "eligible_image_count": payload.get("eligible_image_count"),
+                }
+            )
+
+        emit_progress(stage="preparing_data", message="Collecting eligible image-level FL cases.", percent=5)
+        eligible_manifest_df, manifest_rows, skipped, eligible_summaries = self._eligible_image_level_federated_rows(site_store)
+        crop_mode = service._resolve_model_crop_mode(model_version)
+        if crop_mode == "both":
+            raise ValueError("Ensemble models are not supported for image-level federated learning.")
+
+        records = service._prepare_records_for_model(
+            site_store,
+            manifest_rows,
+            crop_mode=crop_mode,
+        )
+        if not records:
+            raise ValueError("No prepared image records are available for image-level federated learning.")
+
+        eligible_case_count = int(len({(str(row.get("patient_id") or ""), str(row.get("visit_date") or "")) for row in manifest_rows}))
+        eligible_image_count = int(len(records))
+        if eligible_case_count < 1 or eligible_image_count < 1:
+            raise ValueError("Image-level federated learning requires at least one eligible case and one image.")
+
+        representative_summary = sorted(
+            eligible_summaries,
+            key=lambda item: (
+                -int(item.get("image_count") or 0),
+                str(item.get("patient_id") or ""),
+                str(item.get("visit_date") or ""),
+            ),
+        )[0]
+        representative_patient_id = str(representative_summary.get("patient_id") or "").strip()
+        representative_visit_date = str(representative_summary.get("visit_date") or "").strip()
+        representative_case_records = site_store.case_records_for_visit(representative_patient_id, representative_visit_date)
+        representative_prepared_records = [
+            item
+            for item in records
+            if str(item.get("patient_id") or "").strip() == representative_patient_id
+            and str(item.get("visit_date") or "").strip() == representative_visit_date
+        ]
+        if not representative_case_records or not representative_prepared_records:
+            raise ValueError("Representative case artifacts are unavailable for review packaging.")
+
+        output_model_path = site_store.update_dir / f"{make_id('convnext_tiny_fl_round')}_weights.pth"
+
+        def local_progress(epoch: int, total_epochs: int, train_loss: float, _val_acc: float | None = None) -> None:
+            emit_progress(
+                stage="training",
+                message="Running local ConvNeXt-Tiny image-level update.",
+                percent=10 + int(70 * (epoch / max(1, total_epochs))),
+                epoch=epoch,
+                epochs=total_epochs,
+                train_loss=round(float(train_loss), 4),
+                eligible_case_count=eligible_case_count,
+                eligible_image_count=eligible_image_count,
+            )
+
+        result = service.model_manager.fine_tune(
+            records=records,
+            base_model_reference=model_version,
+            output_model_path=output_model_path,
+            device=execution_device,
+            full_finetune=True,
+            epochs=max(1, int(epochs)),
+            learning_rate=float(learning_rate),
+            batch_size=int(batch_size),
+            progress_callback=local_progress,
+        )
+
+        emit_progress(
+            stage="packaging_delta",
+            message="Packaging weight delta and review bundle.",
+            percent=85,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
+        base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
+        service.model_manager.save_weight_delta(
+            base_model_path,
+            result["output_model_path"],
+            delta_path,
+        )
+
+        update_id = make_id("update")
+        artifact_metadata = service.control_plane.store_model_update_artifact(
+            delta_path,
+            update_id=update_id,
+            artifact_kind="delta",
+        )
+        approval_report, approval_report_path = service._build_approval_report(
+            site_store,
+            representative_case_records,
+            representative_prepared_records,
+            update_id,
+            representative_patient_id,
+            representative_visit_date,
+        )
+        approval_report["case_summary"] = {
+            **dict(approval_report.get("case_summary") or {}),
+            "image_count": eligible_image_count,
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "representative_patient_reference_id": service.control_plane.patient_reference_id(
+                site_store.site_id,
+                representative_patient_id,
+            ),
+            "representative_case_reference_id": service.control_plane.case_reference_id(
+                site_store.site_id,
+                representative_patient_id,
+                representative_visit_date,
+            ),
+            "is_single_case_delta": False,
+            "scope": "site_image_level_round",
+        }
+        approval_report["round_scope"] = {
+            "round_type": "image_level_site_round",
+            "architecture": "convnext_tiny",
+            "base_model_version_id": model_version.get("version_id"),
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "skipped": skipped,
+        }
+        write_json(approval_report_path, approval_report)
+        quality_summary = service._build_update_quality_summary(
+            site_store,
+            representative_case_records,
+            model_version,
+            execution_device,
+            delta_path,
+            approval_report,
+        )
+
+        emit_progress(
+            stage="registering_update",
+            message="Registering image-level federated update.",
+            percent=95,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        update_metadata: dict[str, Any] = {
+            "update_id": update_id,
+            "site_id": site_store.site_id,
+            "base_model_version_id": model_version["version_id"],
+            "architecture": "convnext_tiny",
+            "upload_type": "weight delta",
+            "execution_device": execution_device,
+            "artifact_path": str(delta_path),
+            **artifact_metadata,
+            "n_cases": eligible_case_count,
+            "n_images": eligible_image_count,
+            "aggregation_weight": eligible_image_count,
+            "aggregation_weight_unit": "images",
+            "federated_round_type": "image_level_site_round",
+            "representative_case_reference_id": approval_report["case_summary"].get("representative_case_reference_id"),
+            "representative_patient_reference_id": approval_report["case_summary"].get("representative_patient_reference_id"),
+            "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
+            "created_at": utc_now(),
+            "preprocess_signature": service.model_manager.preprocess_signature(),
+            "num_classes": len(LABEL_TO_INDEX),
+            "crop_mode": crop_mode,
+            "training_input_policy": self._training_input_policy_for_crop_mode(crop_mode),
+            "training_summary": {
+                **result,
+                "eligible_case_count": eligible_case_count,
+                "eligible_image_count": eligible_image_count,
+                "epochs": max(1, int(epochs)),
+                "learning_rate": float(learning_rate),
+                "batch_size": int(batch_size),
+                "fine_tuning_mode": "full",
+            },
+            "approval_report": approval_report,
+            "quality_summary": quality_summary,
+            "status": "pending_review",
+        }
+        update_metadata = service.control_plane.register_model_update(update_metadata)
+        update_metadata["experiment"] = service._register_experiment(
+            site_store,
+            experiment_type="image_level_federated_round",
+            status="completed",
+            created_at=str(update_metadata["created_at"]),
+            execution_device=execution_device,
+            manifest_df=eligible_manifest_df,
+            parameters={
+                "base_model_version_id": model_version["version_id"],
+                "architecture": "convnext_tiny",
+                "epochs": max(1, int(epochs)),
+                "learning_rate": float(learning_rate),
+                "batch_size": int(batch_size),
+                "fine_tuning_mode": "full",
+                "crop_mode": crop_mode,
+                "aggregation_weight_unit": "images",
+            },
+            metrics={
+                "average_loss": result.get("average_loss"),
+                "eligible_case_count": eligible_case_count,
+                "eligible_image_count": eligible_image_count,
+                "quality_score": quality_summary.get("quality_score") if isinstance(quality_summary, dict) else None,
+            },
+            report_payload=update_metadata,
+            model_version=model_version,
+        )
+        emit_progress(
+            stage="completed",
+            message="Image-level federated round completed.",
+            percent=100,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        return {
+            "site_id": site_store.site_id,
+            "execution_device": execution_device,
+            "model_version": {
+                "version_id": model_version.get("version_id"),
+                "version_name": model_version.get("version_name"),
+                "architecture": model_version.get("architecture"),
+            },
+            "update": update_metadata,
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "skipped": skipped,
+        }
+
+    def run_visit_level_federated_round(
+        self,
+        site_store: SiteStore,
+        model_version: dict[str, Any],
+        execution_device: str,
+        *,
+        epochs: int = 1,
+        learning_rate: float = 5e-5,
+        batch_size: int = 4,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        service = self.service
+        architecture = str(model_version.get("architecture") or "").strip().lower()
+        if architecture != "efficientnet_v2_s_mil":
+            raise ValueError("Visit-level federated learning currently supports only EfficientNetV2-S MIL.")
+        if not bool(model_version.get("bag_level", False)):
+            raise ValueError("Visit-level federated learning requires a bag-level EfficientNetV2-S MIL model.")
+
+        def emit_progress(**payload: Any) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "stage": payload.get("stage"),
+                    "message": payload.get("message"),
+                    "percent": int(payload.get("percent", 0)),
+                    "architecture": "efficientnet_v2_s_mil",
+                    "model_version_id": model_version.get("version_id"),
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "train_loss": payload.get("train_loss"),
+                    "eligible_case_count": payload.get("eligible_case_count"),
+                    "eligible_image_count": payload.get("eligible_image_count"),
+                }
+            )
+
+        emit_progress(stage="preparing_data", message="Collecting eligible visit-level FL cases.", percent=5)
+        eligible_manifest_df, manifest_rows, skipped, eligible_summaries = self._eligible_visit_level_federated_rows(site_store)
+        crop_mode = service._resolve_model_crop_mode(model_version)
+        if crop_mode == "both":
+            raise ValueError("Ensemble models are not supported for visit-level federated learning.")
+
+        records = service._prepare_records_for_model(
+            site_store,
+            manifest_rows,
+            crop_mode=crop_mode,
+        )
+        if not records:
+            raise ValueError("No prepared visit records are available for visit-level federated learning.")
+
+        eligible_case_count = int(len({(str(row.get("patient_id") or ""), str(row.get("visit_date") or "")) for row in manifest_rows}))
+        eligible_image_count = int(len(records))
+        if eligible_case_count < 1 or eligible_image_count < 1:
+            raise ValueError("Visit-level federated learning requires at least one eligible case and one image.")
+
+        representative_summary = sorted(
+            eligible_summaries,
+            key=lambda item: (
+                -int(item.get("image_count") or 0),
+                str(item.get("patient_id") or ""),
+                str(item.get("visit_date") or ""),
+            ),
+        )[0]
+        representative_patient_id = str(representative_summary.get("patient_id") or "").strip()
+        representative_visit_date = str(representative_summary.get("visit_date") or "").strip()
+        representative_case_records = site_store.case_records_for_visit(representative_patient_id, representative_visit_date)
+        representative_prepared_records = [
+            item
+            for item in records
+            if str(item.get("patient_id") or "").strip() == representative_patient_id
+            and str(item.get("visit_date") or "").strip() == representative_visit_date
+        ]
+        if not representative_case_records or not representative_prepared_records:
+            raise ValueError("Representative case artifacts are unavailable for review packaging.")
+
+        output_model_path = site_store.update_dir / f"{make_id('efficientnet_v2_s_mil_fl_round')}_weights.pth"
+
+        def local_progress(epoch: int, total_epochs: int, train_loss: float, _val_acc: float | None = None) -> None:
+            emit_progress(
+                stage="training",
+                message="Running local EfficientNetV2-S MIL visit-level update.",
+                percent=10 + int(70 * (epoch / max(1, total_epochs))),
+                epoch=epoch,
+                epochs=total_epochs,
+                train_loss=round(float(train_loss), 4),
+                eligible_case_count=eligible_case_count,
+                eligible_image_count=eligible_image_count,
+            )
+
+        result = service.model_manager.fine_tune(
+            records=records,
+            base_model_reference=model_version,
+            output_model_path=output_model_path,
+            device=execution_device,
+            full_finetune=True,
+            epochs=max(1, int(epochs)),
+            learning_rate=float(learning_rate),
+            batch_size=int(batch_size),
+            progress_callback=local_progress,
+        )
+
+        emit_progress(
+            stage="packaging_delta",
+            message="Packaging visit-level weight delta and review bundle.",
+            percent=85,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
+        base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
+        service.model_manager.save_weight_delta(
+            base_model_path,
+            result["output_model_path"],
+            delta_path,
+        )
+
+        update_id = make_id("update")
+        artifact_metadata = service.control_plane.store_model_update_artifact(
+            delta_path,
+            update_id=update_id,
+            artifact_kind="delta",
+        )
+        approval_report, approval_report_path = service._build_approval_report(
+            site_store,
+            representative_case_records,
+            representative_prepared_records,
+            update_id,
+            representative_patient_id,
+            representative_visit_date,
+        )
+        approval_report["case_summary"] = {
+            **dict(approval_report.get("case_summary") or {}),
+            "image_count": eligible_image_count,
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "representative_patient_reference_id": service.control_plane.patient_reference_id(
+                site_store.site_id,
+                representative_patient_id,
+            ),
+            "representative_case_reference_id": service.control_plane.case_reference_id(
+                site_store.site_id,
+                representative_patient_id,
+                representative_visit_date,
+            ),
+            "is_single_case_delta": False,
+            "scope": "site_visit_level_round",
+        }
+        approval_report["round_scope"] = {
+            "round_type": "visit_level_site_round",
+            "architecture": "efficientnet_v2_s_mil",
+            "base_model_version_id": model_version.get("version_id"),
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "skipped": skipped,
+        }
+        write_json(approval_report_path, approval_report)
+        quality_summary = service._build_update_quality_summary(
+            site_store,
+            representative_case_records,
+            model_version,
+            execution_device,
+            delta_path,
+            approval_report,
+        )
+
+        emit_progress(
+            stage="registering_update",
+            message="Registering visit-level federated update.",
+            percent=95,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        update_metadata: dict[str, Any] = {
+            "update_id": update_id,
+            "site_id": site_store.site_id,
+            "base_model_version_id": model_version["version_id"],
+            "architecture": "efficientnet_v2_s_mil",
+            "upload_type": "weight delta",
+            "execution_device": execution_device,
+            "artifact_path": str(delta_path),
+            **artifact_metadata,
+            "n_cases": eligible_case_count,
+            "n_images": eligible_image_count,
+            "aggregation_weight": eligible_case_count,
+            "aggregation_weight_unit": "cases",
+            "federated_round_type": "visit_level_site_round",
+            "representative_case_reference_id": approval_report["case_summary"].get("representative_case_reference_id"),
+            "representative_patient_reference_id": approval_report["case_summary"].get("representative_patient_reference_id"),
+            "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
+            "created_at": utc_now(),
+            "preprocess_signature": service.model_manager.preprocess_signature(),
+            "num_classes": len(LABEL_TO_INDEX),
+            "crop_mode": crop_mode,
+            "training_input_policy": self._training_input_policy_for_crop_mode(crop_mode),
+            "training_summary": {
+                **result,
+                "eligible_case_count": eligible_case_count,
+                "eligible_image_count": eligible_image_count,
+                "epochs": max(1, int(epochs)),
+                "learning_rate": float(learning_rate),
+                "batch_size": int(batch_size),
+                "fine_tuning_mode": "full",
+            },
+            "approval_report": approval_report,
+            "quality_summary": quality_summary,
+            "status": "pending_review",
+        }
+        update_metadata = service.control_plane.register_model_update(update_metadata)
+        update_metadata["experiment"] = service._register_experiment(
+            site_store,
+            experiment_type="visit_level_federated_round",
+            status="completed",
+            created_at=str(update_metadata["created_at"]),
+            execution_device=execution_device,
+            manifest_df=eligible_manifest_df,
+            parameters={
+                "base_model_version_id": model_version["version_id"],
+                "architecture": "efficientnet_v2_s_mil",
+                "epochs": max(1, int(epochs)),
+                "learning_rate": float(learning_rate),
+                "batch_size": int(batch_size),
+                "fine_tuning_mode": "full",
+                "crop_mode": crop_mode,
+                "aggregation_weight_unit": "cases",
+            },
+            metrics={
+                "average_loss": result.get("average_loss"),
+                "eligible_case_count": eligible_case_count,
+                "eligible_image_count": eligible_image_count,
+                "quality_score": quality_summary.get("quality_score") if isinstance(quality_summary, dict) else None,
+            },
+            report_payload=update_metadata,
+            model_version=model_version,
+        )
+        emit_progress(
+            stage="completed",
+            message="Visit-level federated round completed.",
+            percent=100,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
+        return {
+            "site_id": site_store.site_id,
+            "execution_device": execution_device,
+            "model_version": {
+                "version_id": model_version.get("version_id"),
+                "version_name": model_version.get("version_name"),
+                "architecture": model_version.get("architecture"),
+            },
+            "update": update_metadata,
+            "eligible_case_count": eligible_case_count,
+            "eligible_image_count": eligible_image_count,
+            "skipped": skipped,
+        }
+
     def run_initial_training(
         self,
         site_store: SiteStore,

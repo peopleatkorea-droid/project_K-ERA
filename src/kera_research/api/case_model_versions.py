@@ -11,6 +11,18 @@ _PREFERRED_ANALYSIS_MODEL_PATTERNS = (
     "efficientnetv2-s mil",
     "efficientnet_v2_s_mil",
 )
+_PREFERRED_IMAGE_FL_MODEL_PATTERNS = (
+    "convnext_tiny_full",
+    "convnext-tiny-full",
+    "convnext tiny full",
+    "convnext_tiny",
+)
+_PREFERRED_VISIT_FL_MODEL_PATTERNS = (
+    "efficientnet_v2_s_mil_full",
+    "efficientnet-v2-s-mil-full",
+    "efficientnet v2 s mil full",
+    "efficientnet_v2_s_mil",
+)
 
 
 def _preferred_operating_model(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -18,6 +30,74 @@ def _preferred_operating_model(versions: list[dict[str, Any]]) -> dict[str, Any]
     if not ready_versions:
         return None
     for pattern in _PREFERRED_ANALYSIS_MODEL_PATTERNS:
+        match = next(
+            (
+                item
+                for item in ready_versions
+                if pattern
+                in " ".join(
+                    [
+                        str(item.get("version_id") or "").strip().lower(),
+                        str(item.get("version_name") or "").strip().lower(),
+                        str(item.get("architecture") or "").strip().lower(),
+                    ]
+                )
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+    current_versions = [item for item in ready_versions if item.get("is_current")]
+    if current_versions:
+        return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
+    return sorted(ready_versions, key=lambda item: item.get("created_at", ""))[-1]
+
+
+def _preferred_image_level_federated_model(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ready_versions = [
+        item
+        for item in versions
+        if item.get("ready", True)
+        and str(item.get("architecture") or "").strip().lower() == "convnext_tiny"
+        and not bool(item.get("bag_level", False))
+    ]
+    if not ready_versions:
+        return None
+    for pattern in _PREFERRED_IMAGE_FL_MODEL_PATTERNS:
+        match = next(
+            (
+                item
+                for item in ready_versions
+                if pattern
+                in " ".join(
+                    [
+                        str(item.get("version_id") or "").strip().lower(),
+                        str(item.get("version_name") or "").strip().lower(),
+                        str(item.get("architecture") or "").strip().lower(),
+                    ]
+                )
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+    current_versions = [item for item in ready_versions if item.get("is_current")]
+    if current_versions:
+        return sorted(current_versions, key=lambda item: item.get("created_at", ""))[-1]
+    return sorted(ready_versions, key=lambda item: item.get("created_at", ""))[-1]
+
+
+def _preferred_visit_level_federated_model(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ready_versions = [
+        item
+        for item in versions
+        if item.get("ready", True)
+        and str(item.get("architecture") or "").strip().lower() == "efficientnet_v2_s_mil"
+        and bool(item.get("bag_level", False))
+    ]
+    if not ready_versions:
+        return None
+    for pattern in _PREFERRED_VISIT_FL_MODEL_PATTERNS:
         match = next(
             (
                 item
@@ -201,6 +281,50 @@ def resolve_requested_contribution_models(
     if not expanded_models:
         raise ValueError("No contribution-ready model version is available.")
     return expanded_models
+
+
+def resolve_requested_image_level_federated_model(
+    cp: Any,
+    *,
+    get_model_version: Callable[[Any, str | None], dict[str, Any] | None],
+    model_version_id: str | None,
+) -> dict[str, Any]:
+    ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
+    model_version = (
+        get_model_version(cp, model_version_id)
+        if model_version_id
+        else _preferred_image_level_federated_model(ready_versions)
+    )
+    if model_version is None or not model_version.get("ready", True):
+        raise ValueError("No ready ConvNeXt-Tiny model version is available for image-level federated learning.")
+    if str(model_version.get("architecture") or "").strip().lower() != "convnext_tiny":
+        raise ValueError("Image-level federated learning currently supports only ConvNeXt-Tiny models.")
+    if bool(model_version.get("bag_level", False)):
+        raise ValueError("Image-level federated learning requires an image-level ConvNeXt-Tiny model, not a bag-level model.")
+    return model_version
+
+
+def resolve_requested_visit_level_federated_model(
+    cp: Any,
+    *,
+    get_model_version: Callable[[Any, str | None], dict[str, Any] | None],
+    model_version_id: str | None,
+) -> dict[str, Any]:
+    ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
+    model_version = (
+        get_model_version(cp, model_version_id)
+        if model_version_id
+        else _preferred_visit_level_federated_model(ready_versions)
+    )
+    if model_version is None or not model_version.get("ready", True):
+        raise ValueError(
+            "No ready EfficientNetV2-S MIL model version is available for visit-level federated learning."
+        )
+    if str(model_version.get("architecture") or "").strip().lower() != "efficientnet_v2_s_mil":
+        raise ValueError("Visit-level federated learning currently supports only EfficientNetV2-S MIL models.")
+    if not bool(model_version.get("bag_level", False)):
+        raise ValueError("Visit-level federated learning requires a bag-level EfficientNetV2-S MIL model.")
+    return model_version
 
 
 def serialize_case_model_version(model_version: dict[str, Any]) -> dict[str, Any]:
