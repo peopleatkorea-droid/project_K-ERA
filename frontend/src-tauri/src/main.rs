@@ -107,8 +107,9 @@ fn main() {
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.maximize();
             }
-            ensure_bundled_python_runtime_ready()
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+            if let Err(error) = ensure_bundled_python_runtime_ready() {
+                eprintln!("[kera-desktop-bundled-runtime] {error}");
+            }
             // Ensure SQLite performance indexes exist (no-op if already present)
             ensure_data_plane_indexes();
             Ok(())

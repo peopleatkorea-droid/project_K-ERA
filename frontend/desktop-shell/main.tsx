@@ -67,6 +67,10 @@ function createEmptyConfigForm(): ConfigFormState {
   };
 }
 
+function formatApproxGiB(bytes: number) {
+  return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+}
+
 function DesktopShellApp() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
@@ -137,8 +141,8 @@ function DesktopShellApp() {
     storageTitle: pick(locale, "Storage", "저장소"),
     storageDescription: pick(
       locale,
-      "Choose where this PC stores images, SQLite data, models, and logs. Leave it blank to keep using the current default location.",
-      "이 PC가 이미지, SQLite 데이터, 모델, 로그를 저장할 위치를 정합니다. 비워 두면 현재 기본 위치를 계속 사용합니다.",
+      "Choose where this PC stores images, SQLite data, models, and logs. The CPU desktop build uses about 2.3 GB total after first launch, including the bundled runtime under AppData. Leave it blank to keep using the current default location.",
+      "이 PC가 이미지, SQLite 데이터, 모델, 로그를 저장할 위치를 정합니다. CPU 데스크톱 배포본은 첫 실행 후 AppData 아래 번들 런타임까지 포함해 총 약 2.3 GB를 사용합니다. 비워 두면 현재 기본 위치를 계속 사용합니다.",
     ),
     storageDir: pick(locale, "Data folder", "데이터 폴더"),
     storageDirHint: pick(
@@ -157,6 +161,18 @@ function DesktopShellApp() {
       "Open these only when support asks for them or something is broken.",
       "지원 담당자가 요청하거나 문제가 있을 때만 여세요.",
     ),
+    diskNoticeTitle: pick(locale, "CPU desktop storage footprint", "CPU 데스크톱 저장 공간 안내"),
+    diskNoticeBody: pick(
+      locale,
+      "This installed CPU build uses about {total} total disk after first launch. The app itself occupies about {install}, and first launch unpacks about {runtime} more under {runtimeDir}.",
+      "설치된 CPU 배포본은 첫 실행 후 총 {total} 정도의 디스크를 사용합니다. 설치 직후 앱 자체가 약 {install}를 차지하고, 첫 실행 때 {runtimeDir} 아래로 약 {runtime}를 추가로 풉니다.",
+    ),
+    diskNoticeBlocking: pick(
+      locale,
+      "Only {free} is currently free on the runtime drive. Free at least {required} there before starting local services.",
+      "현재 런타임 드라이브 여유 공간은 {free}뿐입니다. 로컬 서비스를 시작하기 전에 해당 드라이브에 최소 {required} 이상을 확보해야 합니다.",
+    ),
+    diskNoticeRuntimeLabel: pick(locale, "First launch runtime folder", "첫 실행 런타임 폴더"),
     configPath: pick(locale, "Config file", "설정 파일"),
     appDataDir: pick(locale, "App data", "앱 데이터"),
     runtimeLogs: pick(locale, "Logs", "로그"),
@@ -218,6 +234,9 @@ function DesktopShellApp() {
       const nextConfig = await fetchDesktopAppConfig();
       setConfig(nextConfig);
       setConfigForm(nextConfig.values);
+      if (nextConfig.runtime_contract.errors.length > 0) {
+        setRuntimeError(describeError(nextConfig.runtime_contract.errors[0], copy.runtimeFailed));
+      }
       if (autoStart && nextConfig.setup_ready) {
         await ensureDesktopLocalBackendReady();
         setRuntimeReadyCycle((current) => current + 1);
@@ -604,6 +623,20 @@ function DesktopShellApp() {
   if (approvedWorkspaceSession && workspaceSettingsOpen) {
     const runtimeContract = config?.runtime_contract ?? null;
     const storageValue = configForm.storage_dir || config?.values.storage_dir || "";
+    const diskNotice = runtimeContract?.disk_notice ?? null;
+    const settingsDiskBody = diskNotice
+      ? copy.diskNoticeBody
+          .replace("{total}", formatApproxGiB(diskNotice.estimated_total_after_first_launch_bytes))
+          .replace("{install}", formatApproxGiB(diskNotice.estimated_install_footprint_bytes))
+          .replace("{runtime}", formatApproxGiB(diskNotice.estimated_first_launch_runtime_bytes))
+          .replace("{runtimeDir}", runtimeContract?.runtime_dir || "the desktop runtime folder")
+      : null;
+    const settingsDiskBlocking =
+      diskNotice?.runtime_space_ok === false && diskNotice.runtime_drive_free_bytes != null
+        ? copy.diskNoticeBlocking
+            .replace("{free}", formatApproxGiB(diskNotice.runtime_drive_free_bytes))
+            .replace("{required}", formatApproxGiB(diskNotice.recommended_runtime_free_bytes))
+        : null;
 
     return (
       <main className="min-h-screen bg-[#0d0f14] px-4 py-8 sm:px-6 lg:px-8">
@@ -631,6 +664,26 @@ function DesktopShellApp() {
           <Card as="section" variant="surface" className="grid gap-5 p-6">
             <form className="grid gap-5" onSubmit={handleSaveSettings}>
               <SectionHeader title={copy.storageTitle} description={copy.storageDescription} />
+              {diskNotice ? (
+                <div
+                  className={`rounded-[18px] border px-4 py-3 ${
+                    settingsDiskBlocking
+                      ? "border-danger/25 bg-danger/8 text-danger"
+                      : "border-[rgba(224,183,88,0.28)] bg-[rgba(255,248,220,0.96)] text-[#5f4f17]"
+                  }`}
+                >
+                  <div className="grid gap-2 text-sm leading-6">
+                    <strong className="font-semibold">{copy.diskNoticeTitle}</strong>
+                    {settingsDiskBody ? <p className="m-0">{settingsDiskBody}</p> : null}
+                    {runtimeContract?.runtime_dir ? (
+                      <p className="m-0">
+                        {copy.diskNoticeRuntimeLabel}: <code className="font-mono">{runtimeContract.runtime_dir}</code>
+                      </p>
+                    ) : null}
+                    {settingsDiskBlocking ? <p className="m-0 font-medium">{settingsDiskBlocking}</p> : null}
+                  </div>
+                </div>
+              ) : null}
               <Field as="div" label={copy.storageDir} hint={copy.storageDirHint} htmlFor="desktop-storage-dir" unstyledControl>
                 <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                   <input
@@ -788,7 +841,15 @@ function DesktopShellApp() {
   }
 
   if (!token) {
-    return <DesktopLandingScreen authBusy={authBusy} error={screenError} onGoogleLaunch={() => void handleGoogleLogin()} onAdminLaunch={() => setAdminLoginOpen(true)} />;
+    return (
+      <DesktopLandingScreen
+        authBusy={authBusy}
+        error={screenError}
+        config={config}
+        onGoogleLaunch={() => void handleGoogleLogin()}
+        onAdminLaunch={() => setAdminLoginOpen(true)}
+      />
+    );
   }
 
   if (!user || bootstrapBusy) {

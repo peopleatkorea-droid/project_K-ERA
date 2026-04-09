@@ -25,6 +25,7 @@ pub(super) struct DesktopRuntimeContractResponse {
     pub(super) backend_candidates: Vec<String>,
     pub(super) python_candidates: Vec<String>,
     pub(super) python_preflight: Option<DesktopPythonRuntimePreflight>,
+    pub(super) disk_notice: Option<DesktopBundledRuntimeDiskNotice>,
     pub(super) errors: Vec<String>,
     pub(super) warnings: Vec<String>,
 }

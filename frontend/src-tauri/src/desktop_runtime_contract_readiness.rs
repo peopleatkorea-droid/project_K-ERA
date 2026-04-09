@@ -196,6 +196,15 @@ fn desktop_runtime_readiness(
         .iter()
         .map(|candidate| format!("{} -> {}", candidate.source, candidate.value))
         .collect::<Vec<_>>();
+    let bundled_runtime_notice = bundled_runtime_disk_notice();
+    let bundled_runtime_pending = bundled_runtime_notice
+        .as_ref()
+        .map(|notice| notice.first_launch_runtime_pending)
+        .unwrap_or(false);
+    let bundled_runtime_space_blocked = bundled_runtime_notice
+        .as_ref()
+        .map(|notice| notice.runtime_space_ok == Some(false))
+        .unwrap_or(false);
     let python_preflight = if config_values.local_backend_mode != "external"
         || config_values.ml_transport == "sidecar"
     {
@@ -227,7 +236,17 @@ fn desktop_runtime_readiness(
         }
     }
 
-    if config_values.local_backend_mode != "external" && python_candidate_infos.is_empty() {
+    if let Some(error) = last_bundled_runtime_prep_error() {
+        let is_low_space_error = error.starts_with(LOW_SPACE_ERROR_PREFIX);
+        if (!is_low_space_error || bundled_runtime_space_blocked) && !errors.iter().any(|existing| existing == &error) {
+            errors.push(error);
+        }
+    }
+
+    if config_values.local_backend_mode != "external"
+        && python_candidate_infos.is_empty()
+        && !(desktop_packaged_mode() && bundled_runtime_pending && !bundled_runtime_space_blocked)
+    {
         errors.push(if desktop_packaged_mode() {
             "Packaged managed runtime did not find a bundled Python interpreter.".to_string()
         } else {
@@ -246,7 +265,10 @@ fn desktop_runtime_readiness(
         errors.push(message);
     }
 
-    if config_values.ml_transport == "sidecar" && python_candidate_infos.is_empty() {
+    if config_values.ml_transport == "sidecar"
+        && python_candidate_infos.is_empty()
+        && !(desktop_packaged_mode() && bundled_runtime_pending && !bundled_runtime_space_blocked)
+    {
         let message =
             if desktop_packaged_mode() {
                 "Desktop ML sidecar requires a bundled Python interpreter."
@@ -278,6 +300,7 @@ fn desktop_runtime_readiness(
 }
 
 pub(super) fn ensure_desktop_runtime_readiness_for_backend() -> Result<DesktopPythonRuntimePreflight, String> {
+    ensure_bundled_python_runtime_ready()?;
     let values = resolved_env_values();
     let config_values = desktop_config_values_from_env(&values);
     let backend = resolve_desktop_backend_target(&values);
@@ -291,6 +314,7 @@ pub(super) fn ensure_desktop_runtime_readiness_for_backend() -> Result<DesktopPy
 }
 
 pub(super) fn ensure_desktop_runtime_readiness_for_sidecar() -> Result<DesktopPythonRuntimePreflight, String> {
+    ensure_bundled_python_runtime_ready()?;
     let values = resolved_env_values();
     let mut config_values = desktop_config_values_from_env(&values);
     config_values.ml_transport = "sidecar".to_string();

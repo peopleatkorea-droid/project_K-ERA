@@ -12,6 +12,7 @@ tauri-build = { version = "2.0", features = [] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock"] }
 dotenvy = "0.15"
+fs4 = "0.13"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rfd = "0.15"

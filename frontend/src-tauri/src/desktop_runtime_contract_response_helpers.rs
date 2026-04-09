@@ -23,6 +23,7 @@ fn desktop_runtime_contract_response(
         backend_candidates: readiness.backend_candidates,
         python_candidates: readiness.python_candidates,
         python_preflight: readiness.python_preflight,
+        disk_notice: bundled_runtime_disk_notice(),
         errors: readiness.errors,
         warnings: readiness.warnings,
     }

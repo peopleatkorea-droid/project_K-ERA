@@ -23,6 +23,9 @@ describe("desktop-app-config", () => {
     await expect(mod.fetchDesktopAppConfig()).resolves.toMatchObject({
       runtime: "web",
       setup_ready: false,
+      runtime_contract: {
+        disk_notice: null,
+      },
     });
     expect(desktopIpcMocks.invokeDesktop).not.toHaveBeenCalled();
   });

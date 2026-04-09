@@ -32,6 +32,16 @@ export type DesktopRuntimeContractState = {
     cuda_available?: boolean | null;
     gpu_name?: string | null;
   } | null;
+  disk_notice?: {
+    estimated_install_footprint_bytes: number;
+    estimated_first_launch_runtime_bytes: number;
+    estimated_total_after_first_launch_bytes: number;
+    recommended_runtime_free_bytes: number;
+    runtime_drive_free_bytes?: number | null;
+    runtime_probe_path?: string | null;
+    first_launch_runtime_pending: boolean;
+    runtime_space_ok?: boolean | null;
+  } | null;
   errors: string[];
   warnings: string[];
 };
@@ -81,6 +91,7 @@ function webFallback(): DesktopAppConfigState {
       backend_candidates: [],
       python_candidates: [],
       python_preflight: null,
+      disk_notice: null,
       errors: [],
       warnings: [],
     },
