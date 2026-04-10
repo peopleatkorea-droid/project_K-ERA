@@ -143,7 +143,7 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
         onGoogleReady={() => undefined}
         onGoogleLaunch={props.onGoogleLaunch}
         connectingLabel={pick(locale, "Connecting...", "연결 중...")}
-        googleLoginLabel={pick(locale, "Institution Google login", "기관 Google 로그인")}
+        googleLoginLabel={pick(locale, "Sign in with Google", "Google로 로그인")}
         googleDisabledLabel={pick(
           locale,
           "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` or `NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID` is set.",

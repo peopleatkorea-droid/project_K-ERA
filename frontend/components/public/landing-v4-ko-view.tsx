@@ -37,22 +37,22 @@ const koPainItems = [
 const koFeatures = [
   {
     title: "MedSAM 기반 반자동 병변 분할",
-    body: "병변 주변에 box만 그리면 MedSAM이 정밀한 ROI를 자동 생성합니다. 수시간의 수동 annotation이 몇 초로 줄어듭니다.",
+    body: "병변 주변에 box를 그리면 MedSAM이 ROI preview와 lesion crop을 준비합니다. 현재 논문에서 lesion-centered 비교는 manual prompt 기반이었고, 앱은 그 과정을 반자동 워크플로로 정리합니다.",
     chip: "MedSAM",
     previewSrc: "/landing/medSAM.png",
     previewAlt: "MedSAM 기반 반자동 병변 분할을 보여주는 이미지",
   },
   {
     title: "Visit 단위 멀티모달 판독",
-    body: "White · Fluorescein · Slit 세 가지 view를 통합 분석합니다. 사진 한 장의 품질에 흔들리지 않습니다.",
-    chip: "Ensemble",
+    body: "플랫폼은 White · Fluorescein · Slit 이미지를 함께 저장하고 검토합니다. 다만 현재 공개 benchmark는 white-light 기준이며, visit 단위 판독과 유사 증례 탐색이 그 다음 확장 축입니다.",
+    chip: "Visit-level",
     previewSrc: "/landing/multi_modal.png",
     previewAlt: "Visit 단위 멀티모달 종합 판독을 보여주는 이미지",
   },
   {
-    title: "Federated Learning",
-    body: "원본 이미지는 병원 밖으로 나가지 않습니다. Weight delta만 암호화해 전달하고, 집계된 모델을 공유합니다.",
-    chip: "Privacy",
+    title: "연합학습 확장",
+    body: "이미지-level과 visit-level site round, pending review, FedAvg 집계가 구현돼 있습니다. Retrieval은 별도 federated corpus expansion 레일로 분리해 운영합니다.",
+    chip: "Federated",
     previewSrc: "/landing/federated.png",
     previewAlt: "Federated Learning 다기관 협력을 보여주는 이미지",
   },
@@ -70,42 +70,42 @@ const koFeaturePreviewOptions = [
 ];
 
 const koFedPoints = [
-  "중앙에 올라가는 것: 저해상도 각막 미리보기(최대 128px), 가중치 변화량",
-  "병원 밖으로 나가지 않는 것: 원본 이미지, 환자 ID, full-size crop, 임상 기록",
-  "참여 병원이 늘어날수록: 새로운 병원의 합류 자체가 자연스러운 external validation이 됩니다",
+  "중앙에 올라가는 것: weight delta, 비식별 메타데이터, 검토용 저해상도 thumbnail",
+  "병원 밖으로 나가지 않는 것: 원본 이미지, 환자 ID, full-size crop, 상세 임상 기록",
+  "현재 운영 방식: image-level FL, visit-level FL, retrieval 확장을 서로 다른 레일로 분리합니다",
 ];
 
 const koStats = [
-  { number: "77%", label: "단일 기관 초기 모델\n5-fold cross-validation accuracy", context: "단일 기관의 한계가 그대로 보이는 숫자입니다" },
-  { number: "85%+", label: "BK · FK 각 5,000장 규모\n달성 시 예상 accuracy", context: "참여 병원이 늘어야 도달할 수 있는 목표입니다" },
-  { number: "3종", label: "White · Fluorescein · Slit\n멀티모달 이미지 지원", context: "세 장을 함께 봐야 흔들리지 않습니다" },
-  { number: "0건", label: "원본 데이터 외부 유출\n(Federated 구조 보장)", context: "약속이 아니라 구조로 보장합니다" },
+  { number: "101명", label: "제주 단일기관\nfeasibility cohort", context: "현재 공개 근거의 출발점입니다" },
+  { number: "258", label: "Culture-confirmed visits\npatient-disjoint 5-fold", context: "누수 통제를 강하게 둔 평가입니다" },
+  { number: "658", label: "White-light slit-lamp images\n현재 논문 benchmark", context: "공개 결과는 white-light 기준입니다" },
+  { number: "0.677", label: "Best visit-level AUROC\nleakage-aware evaluation", context: "아직 modest해서 더 큰 다기관 검증이 필요합니다" },
 ];
 
 const koFaqs = [
   {
     q: "K-ERA는 AI 모델을 대신 만들어 주나요?",
-    a: "'이게 BK 같은데 FL 소견도 있네'라고 생각하는 순간, K-ERA가 두 번째 의견을 줍니다. 케이스 등록·병변 분할·학습 실행 같은 반복 작업은 자동화하되, 최종 처방은 선생님 몫입니다.",
+    a: "아닙니다. K-ERA는 케이스 등록, 병변 ROI 준비, 학습 실행 같은 반복 작업을 줄여 주는 연구 워크플로입니다. 최종 판단과 처방은 여전히 임상 의사의 몫입니다.",
   },
   {
     q: "코딩을 전혀 몰라도 쓸 수 있나요?",
-    a: "물론입니다. Python 설치도, CSV 작성도 필요 없습니다. Google 계정으로 로그인 후 웹 UI에서 모든 기능을 사용할 수 있습니다.",
+    a: "가능합니다. Python 설치도, CSV 작성도 필요 없습니다. Google 로그인으로 시작할 수 있지만, 연구 기여와 기관 워크스페이스 사용은 승인 절차를 거쳐야 합니다.",
   },
   {
     q: "환자 데이터가 외부로 유출되지 않나요?",
-    a: "원본 이미지와 환자 정보는 병원 내부에만 존재합니다. 중앙 서버로는 가중치 변화량과 저해상도 각막 미리보기(최대 128px)만 전송되며, SHA256 해시와 EXIF 제거로 보안을 강화합니다.",
+    a: "원본 이미지와 환자 정보는 병원 내부에만 남습니다. 중앙으로는 weight delta, 비식별 메타데이터, 검토용 저해상도 thumbnail만 올라가며, review 이후에만 집계가 진행됩니다.",
   },
   {
     q: "참여하면 어떤 이점이 있나요?",
-    a: "참여 기관의 케이스는 전국 규모 AI의 external validation 데이터가 되며, 집계된 글로벌 모델의 혜택을 공유받습니다. 각 기관의 참여는 연구 데이터 축적과 모델 개선에 기여합니다.",
+    a: "현재 단일기관 feasibility를 다기관 validation infrastructure로 확장하는 데 직접 기여하게 됩니다. 참여 기관은 더 큰 검증 코호트와 집계 모델 개선의 일부가 됩니다.",
   },
   {
     q: "어떤 진단 범주를 지원하나요?",
-    a: "현재 Bacterial keratitis vs Fungal keratitis 이진 분류를 중심으로 합니다. DenseNet, ConvNeXt-Tiny, ViT 등 여러 모델 아키텍처를 지원하며 향후 확장 예정입니다.",
+    a: "현재 공개 benchmark는 culture-confirmed BK vs FK, white-light slit-lamp 이미지 기준입니다. 앱은 White · Fluorescein · Slit 저장과 visit-level review를 지원하지만, 그 전체가 아직 같은 수준으로 검증된 것은 아닙니다.",
   },
   {
     q: "병원 IT 인프라가 복잡해야 하나요?",
-    a: "아닙니다. 내부 노드는 병원 내부 PC 한 대로 구동 가능하도록 설계되었습니다. 설치 스크립트(PowerShell)와 웹 UI로 기술적 장벽을 최소화했습니다.",
+    a: "아닙니다. 내부 노드는 병원 내부 PC 한 대로 시작할 수 있게 설계돼 있습니다. 설치 스크립트와 웹 UI를 제공하고, site round 이후에는 중앙 review와 집계 절차가 이어집니다.",
   },
 ];
 
@@ -119,15 +119,15 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
     alt: string;
   } | null>(null);
 
-  const hospitals = props.publicSites.slice(0, 5).map((site) => {
-    const label = getSiteDisplayName(site);
-
-    if (label === "제주대학교병원" || label === "제주대병원") {
-      return { label: "다음 참여 기관을 기다립니다", active: false };
-    }
-
-    return { label, active: true };
-  });
+  const activeHospitals = props.publicSites.slice(0, 5).map((site) => ({
+    label: getSiteDisplayName(site),
+    active: true,
+  }));
+  const openHospitalSlots = Array.from({ length: Math.max(0, 5 - activeHospitals.length) }, () => ({
+    label: "추가 참여 기관 모집 중",
+    active: false,
+  }));
+  const hospitals = [...activeHospitals, ...openHospitalSlots];
 
   useEffect(() => {
     const html = document.documentElement;
@@ -378,10 +378,10 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <span className="text-[#2dd4c0]">"임상 워크플로"</span>로
               </h2>
               <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-                K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI를 학습·검증·공유할 수 있도록 설계된 연구 플랫폼입니다. Google 계정으로 로그인하면, 사진 업로드부터 AI 분석까지 <strong className="font-medium text-[#e4e8f5]">웹 브라우저 하나</strong>로 처리됩니다.
+                K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI를 학습·검증·공유할 수 있도록 설계된 연구 플랫폼입니다. Google 로그인과 웹 브라우저만으로 케이스 등록, 이미지 검토, 연구 준비를 이어갈 수 있습니다.
               </p>
               <p className="text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-                오늘 진료한 환자를 등록하는 순간, 그 케이스가 연구 데이터가 됩니다. 참여 병원이 늘어날수록 AI는 더 다양한 임상 환경을 학습합니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 절대 병원 밖으로 나가지 않습니다.</strong>
+                현재 공개 근거는 제주 단일기관 white-light benchmark입니다. 그 위에서 참여 병원이 늘어날수록 더 넓은 external validation이 가능해지고, 문헌 전반에서 기대되는 것처럼 CNN 계열이 더 큰 데이터에서 좋아지는지 직접 검증할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
               </p>
             </div>
           </div>
@@ -398,7 +398,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 반나절 쓰셨다면
               </h2>
-              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나면 MedSAM이 경계를 잡습니다. 나머지 반복 작업은 K-ERA가 처리합니다.</p>
+              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나로 ROI 초안을 만들고, 케이스 정리와 review 흐름은 K-ERA가 이어받습니다.</p>
             </div>
             <div
               className="landing-reveal justify-self-center w-full max-w-[460px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[320px]"
@@ -473,8 +473,8 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 모델만 함께 키웁니다
               </h2>
-              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">기존 다기관 AI 연구의 가장 큰 벽은 <strong className="font-medium text-[#e4e8f5]">데이터를 꺼낼 수 없다는 것</strong>이었습니다. K-ERA는 다른 방법을 선택했습니다.</p>
-              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">가중치 변화량만 SHA256 해시와 함께 암호화해 전송</strong>합니다.</p>
+              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">다기관 AI 연구의 가장 큰 벽은 <strong className="font-medium text-[#e4e8f5]">데이터를 꺼낼 수 없다는 것</strong>이었습니다. K-ERA는 raw data 이동 대신 review-first federated workflow를 선택했습니다.</p>
+              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">가중치 변화량과 검토용 요약 자산만 중앙으로 전달</strong>합니다. 이후 pending review를 거친 뒤에만 집계가 진행됩니다.</p>
               <div className="mt-1 flex flex-col gap-3.5">
                 {koFedPoints.map((point) => {
                   const [strong, rest] = point.split(": ");
@@ -504,11 +504,11 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             <div className="text-center">
               <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">지금까지</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                제주에서 시작된 가능성,
+                제주에서 시작된 benchmark,
                 <br />
-                더 많은 진료에
+                더 많은 병원에서
                 <br />
-                닿도록 준비합니다
+                검증할 준비를 합니다
               </h2>
             </div>
             <div className="landing-reveal justify-self-center w-full max-w-[420px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[280px]" data-reveal="" data-reveal-order={0}>
@@ -553,11 +553,11 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <p className="mx-auto mb-11 max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">
                 한국의 안과의사들이 각자의 케이스를 기여할 때마다,
                 <br />
-                그것은 동시에 실제 임상 환경에서의 External Validation이 됩니다.
+                그것은 동시에 실제 임상 환경에서의 external validation 후보가 됩니다.
                 <br />
-                논문을 직접 쓰지 않아도, 코딩을 몰라도,
+                현재는 single-center 근거를 다기관 검증으로 넓히는 단계입니다.
                 <br />
-                참여 자체가 연구 데이터와 모델 개선에 기여합니다.
+                논문을 직접 쓰지 않아도, 참여 자체가 연구 데이터와 모델 개선에 기여합니다.
               </p>
             </div>
             <div
@@ -595,9 +595,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
               slotClassName="rounded-[8px]"
             >
-              {props.authBusy ? props.connectingLabel : "병원 참여 신청하기 →"}
+              {props.authBusy ? props.connectingLabel : "기관 참여 신청하기 →"}
             </LandingGoogleCta>
-            <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">임상 안과의사라면 누구나 · Google 계정 1개로 시작</p>
+            <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">Google 로그인으로 시작 · 연구 기여는 기관 승인 후 진행</p>
           </div>
         </div>
       </section>
@@ -656,7 +656,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             >
               {props.authBusy ? props.connectingLabel : "Google 로그인하여 연구 참여하기"}
             </LandingGoogleCta>
-            <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">Research begins with one case.</p>
+            <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">한 케이스로 시작하고, 여러 병원이 검증합니다.</p>
           </div>
           <div className="justify-self-center grid w-full max-w-[500px] gap-5 lg:max-w-[360px]">
             <div className="landing-reveal overflow-hidden rounded-[28px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_24px_56px_rgba(6,10,20,0.28)]" data-reveal="" data-reveal-order={0}>
