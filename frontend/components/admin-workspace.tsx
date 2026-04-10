@@ -420,15 +420,15 @@ export function AdminWorkspace({
     {
       title: pick(locale, "Global Model Ops", "글로벌 모델 운영"),
       items: [
-        { value: "registry", label: pick(locale, "Model registry", "모델 레지스트리") },
-        ...(canAggregate ? [{ value: "federation" as const, label: pick(locale, "Federation", "연합학습") }] : []),
+        { value: "registry", label: pick(locale, "Model review", "모델 검토") },
+        ...(canAggregate ? [{ value: "federation" as const, label: pick(locale, "Rollout & monitoring", "배포 및 모니터링") }] : []),
       ],
     },
     {
       title: pick(locale, "Platform Admin", "플랫폼 관리"),
       items: [
         { value: "requests", label: pick(locale, "Access requests", "접근 요청"), badge: requestActivityCount > 0 ? requestActivityCount : null },
-        { value: "management", label: pick(locale, "Management", "관리") },
+        { value: "management", label: pick(locale, "Sites & users", "병원 및 사용자") },
       ],
     },
   ];
@@ -472,17 +472,17 @@ export function AdminWorkspace({
       <aside className={workspaceRailClass}>
         <div className="grid gap-5">
           <div className="grid gap-3">
-            <div className={workspaceKickerClass}>{pick(locale, "Operations", "?댁쁺")}</div>
+            <div className={workspaceKickerClass}>{pick(locale, "Operations console", "운영 콘솔")}</div>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h1 className="m-0 font-serif text-[1.95rem] leading-none tracking-[-0.05em] text-ink">
-                  {pick(locale, "K-ERA Control", "K-ERA ?댁쁺")}
+                  {pick(locale, "K-ERA Operations", "K-ERA 운영")}
                 </h1>
                 <p className="mt-2 text-sm leading-6 text-muted">
                   {pick(
                     locale,
-                    "Review import, approval, training, and model movement from one operations rail.",
-                    "?꾪룷?? ?뱀씤, ?숈뒿, 紐⑤뜽 ?대룞???섎굹???댁쁺 ?덉씪?먯꽌 ?ㅻ９?덈떎."
+                    "Review site readiness, model updates, rollout plans, and platform access from one operations rail.",
+                    "한 화면에서 병원 준비 상태, 모델 업데이트, 배포 계획, 접근 권한을 함께 운영합니다."
                   )}
                 </p>
               </div>
@@ -615,7 +615,7 @@ export function AdminWorkspace({
                   {pick(
                     locale,
                     "Open Federation to review architecture lanes that have reached 10 or more contributed cases.",
-                    "Federation에서 10개 이상 기여 케이스가 쌓인 아키텍처 lane을 확인하세요."
+                    "배포 및 모니터링 화면에서 10개 이상 기여 케이스가 쌓인 아키텍처 lane을 확인하세요."
                   )}
                 </div>
               </div>
@@ -629,11 +629,11 @@ export function AdminWorkspace({
         </div>
       </aside>
       <section className={workspaceMainClass}>
-        <SectionHeader
-          className={workspaceHeaderClass}
-          eyebrow={<div className={workspaceKickerClass}>{pick(locale, "Control plane", "운영 허브")}</div>}
-          title={pick(locale, "Operate import, review, training, and model movement from the web workspace", "???뚰겕?ㅽ럹?댁뒪?먯꽌 ?꾪룷?? ?뱀씤 寃?? ?숈뒿, 紐⑤뜽 ?대룞???댁쁺")}
-          titleAs="h2"
+          <SectionHeader
+            className={workspaceHeaderClass}
+            eyebrow={<div className={workspaceKickerClass}>{pick(locale, "Control plane", "운영 허브")}</div>}
+            title={pick(locale, "Operate site readiness, model review, and rollout from the web workspace", "웹 워크스페이스에서 병원 준비 상태, 모델 검토, 배포를 운영합니다")}
+            titleAs="h2"
           description={pick(
             locale,
             `Logged in as ${user.full_name} (${translateRole(locale, user.role)}). Admin and hospital operations now stay in this web workspace.`,

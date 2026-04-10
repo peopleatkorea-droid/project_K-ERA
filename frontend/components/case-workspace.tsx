@@ -4200,7 +4200,7 @@ export function CaseWorkspace({
                 type="button"
                 onClick={() => onOpenOperations()}
               >
-                {pick(locale, "Admin", "관리자")}
+                {pick(locale, "Operations", "운영")}
               </Button>
             ) : null}
             {onOpenDesktopSettings ? (

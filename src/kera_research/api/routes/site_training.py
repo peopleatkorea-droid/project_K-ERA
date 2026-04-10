@@ -9,6 +9,7 @@ from kera_research.api.case_model_versions import (
 )
 from kera_research.api.routes.site_shared import assert_site_access_only
 from kera_research.api.site_jobs import (
+    build_federated_retrieval_corpus_status,
     build_image_level_federated_round_status,
     build_visit_level_federated_round_status,
     latest_federated_retrieval_sync_job,
@@ -203,7 +204,7 @@ def build_site_training_router(support: Any) -> APIRouter:
                 "job": active_job,
                 "model_version": serialize_site_model_version(model_version),
             }
-        status_snapshot = build_image_level_federated_round_status(site_store, model_version=model_version)
+        status_snapshot = build_image_level_federated_round_status(site_store, model_version=model_version, cp=cp)
         if int(status_snapshot.get("eligible_case_count") or 0) <= 0:
             skipped = dict(status_snapshot.get("skipped") or {})
             raise HTTPException(
@@ -242,7 +243,7 @@ def build_site_training_router(support: Any) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return build_image_level_federated_round_status(site_store, model_version=model_version)
+        return build_image_level_federated_round_status(site_store, model_version=model_version, cp=cp)
 
     @router.post("/api/sites/{site_id}/training/federated/visit-level")
     def run_visit_level_federated_round(
@@ -290,7 +291,7 @@ def build_site_training_router(support: Any) -> APIRouter:
                 "job": active_job,
                 "model_version": serialize_site_model_version(model_version),
             }
-        status_snapshot = build_visit_level_federated_round_status(site_store, model_version=model_version)
+        status_snapshot = build_visit_level_federated_round_status(site_store, model_version=model_version, cp=cp)
         if int(status_snapshot.get("eligible_case_count") or 0) <= 0:
             skipped = dict(status_snapshot.get("skipped") or {})
             raise HTTPException(
@@ -329,7 +330,7 @@ def build_site_training_router(support: Any) -> APIRouter:
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return build_visit_level_federated_round_status(site_store, model_version=model_version)
+        return build_visit_level_federated_round_status(site_store, model_version=model_version, cp=cp)
 
     @router.post("/api/sites/{site_id}/training/initial/benchmark")
     def run_initial_training_benchmark(
@@ -538,48 +539,12 @@ def build_site_training_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         site_store = require_site_access(cp, user, site_id)
-        workflow = support.get_workflow(cp)
-        signature_record = workflow.retrieval_signature(retrieval_profile)
-        active_job = latest_federated_retrieval_sync_job(site_store, retrieval_profile=retrieval_profile)
-
-        eligible_case_count = 0
-        skipped_not_positive = 0
-        skipped_not_included = 0
-        skipped_no_images = 0
-        for summary in site_store.list_case_summaries():
-            patient_id = str(summary.get("patient_id") or "").strip()
-            visit_date = str(summary.get("visit_date") or "").strip()
-            if not patient_id or not visit_date:
-                continue
-            try:
-                policy_state = site_store.case_research_policy_state(patient_id, visit_date)
-            except ValueError:
-                continue
-            if not bool(policy_state.get("is_positive")):
-                skipped_not_positive += 1
-            elif not bool(policy_state.get("is_registry_included")):
-                skipped_not_included += 1
-            elif not bool(policy_state.get("has_images")):
-                skipped_no_images += 1
-            else:
-                eligible_case_count += 1
-
-        return {
-            "site_id": site_id,
-            "retrieval_profile": retrieval_profile,
-            "profile_id": signature_record.get("profile_id"),
-            "retrieval_signature": signature_record.get("retrieval_signature"),
-            "profile_metadata": dict(signature_record.get("profile_metadata") or {}),
-            "model_version": dict(signature_record.get("model_version") or {}),
-            "remote_node_sync_enabled": bool(cp.remote_node_sync_enabled()),
-            "eligible_case_count": eligible_case_count,
-            "skipped": {
-                "not_positive": skipped_not_positive,
-                "not_included": skipped_not_included,
-                "no_images": skipped_no_images,
-            },
-            "active_job": active_job,
-        }
+        return build_federated_retrieval_corpus_status(
+            cp,
+            site_store,
+            retrieval_profile=retrieval_profile,
+            workflow_factory=support.get_workflow,
+        )
 
     @router.post("/api/sites/{site_id}/ai-clinic/embeddings/backfill")
     def backfill_ai_clinic_embeddings(

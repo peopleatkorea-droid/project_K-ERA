@@ -36,8 +36,10 @@ const preferredOperatingModelsManifestPath = path.resolve(frontendRoot, "..", "s
 const devCargoTargetDir = path.join(os.tmpdir(), "kera-tauri-dev", "target");
 const tauriConfigPath = path.join(srcTauriDir, "tauri.conf.json");
 const generatedConfigPath = path.join(srcTauriDir, "tauri.build.generated.conf.json");
+const wixNoticeGeneratorPath = path.join(srcTauriDir, "wix", "generate_notice_bitmaps.py");
 const hasUpdaterSigningKey = Boolean(String(env.TAURI_SIGNING_PRIVATE_KEY ?? "").trim());
 const buildVariant = String(env.KERA_DESKTOP_BUILD_VARIANT ?? "cpu").trim().toLowerCase() || "cpu";
+const uvCommand = env.UV_BIN || (process.platform === "win32" ? "uv.exe" : "uv");
 let bundledModelPrepared = false;
 
 function candidateBundledModelDbPaths() {
@@ -526,6 +528,7 @@ stopRunningReleaseArtifacts();
 removePythonBytecodeCaches(repoPythonSourceDir);
 cleanupBuildArtifacts();
 runChecked(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "desktop:bundle"]);
+runChecked(uvCommand, ["run", "python", path.relative(frontendRoot, wixNoticeGeneratorPath)]);
 removePythonBytecodeCaches(runtimeCacheDir);
 prepareBundledModelSeed();
 prepareBuildConfig();

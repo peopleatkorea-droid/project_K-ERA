@@ -10,6 +10,7 @@ import { Field } from "../../components/ui/field";
 import { SectionHeader } from "../../components/ui/section-header";
 import { devLogin, fetchSites, login } from "../../lib/api";
 import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
+import { isOperatorUiEnabled } from "../../lib/ui-mode";
 import { cacheSiteRecords } from "../home-page-auth-shared";
 
 const TOKEN_KEY = "kera_web_token";
@@ -30,6 +31,7 @@ function getSafePostLoginPath() {
 export default function AdminLoginPage() {
   const router = useRouter();
   const { locale } = useI18n();
+  const operatorUiEnabled = isOperatorUiEnabled();
   const [authBusy, setAuthBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
@@ -71,6 +73,41 @@ export default function AdminLoginPage() {
 
   const describeError = (nextError: unknown, fallback: string) =>
     nextError instanceof Error ? translateApiError(locale, nextError.message) : fallback;
+
+  if (!operatorUiEnabled) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_36%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-4xl justify-end">
+          <LocaleToggle />
+        </div>
+        <section className="mx-auto mt-6 grid w-full max-w-4xl gap-5">
+          <Card as="section" variant="surface" className="grid gap-5 p-6 sm:p-8">
+            <SectionHeader
+              eyebrow={
+                <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
+                  {pick(locale, "Researcher build", "연구자 전용 빌드")}
+                </span>
+              }
+              title={pick(locale, "Operator sign-in is hidden in this build", "이 빌드에서는 운영 계정 로그인을 숨겼습니다")}
+              description={pick(
+                locale,
+                "This installer exposes only the researcher workspace. Use the full operator build when admin or site admin access is required.",
+                "이 설치본은 연구자 워크스페이스만 노출합니다. admin 또는 site admin 접근이 필요하면 전체 운영 빌드를 사용하세요."
+              )}
+            />
+            <div className="flex justify-start">
+              <Link
+                href="/"
+                className="inline-flex min-h-11 items-center justify-center rounded-full border border-border bg-white/55 px-[18px] text-sm font-semibold tracking-[-0.01em] text-ink transition duration-150 ease-out hover:-translate-y-0.5 hover:border-brand/20 hover:bg-surface-muted dark:bg-white/4"
+              >
+                {pick(locale, "Back to main sign-in", "메인 로그인으로 돌아가기")}
+              </Link>
+            </div>
+          </Card>
+        </section>
+      </main>
+    );
+  }
 
   async function warmApprovedSiteCache(token: string) {
     try {

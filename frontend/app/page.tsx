@@ -35,6 +35,7 @@ import { canUseDesktopTransport } from "../lib/desktop-transport";
 import { LocaleToggle, pick, translateApiError, translateRole, translateStatus, useI18n } from "../lib/i18n";
 import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
 import { useTheme } from "../lib/theme";
+import { isOperatorUiEnabled } from "../lib/ui-mode";
 import {
   createPatient,
   downloadManifest,
@@ -214,6 +215,7 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
 export default function HomePage() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
+  const operatorUiEnabled = isOperatorUiEnabled();
   const [nativeDesktopGoogleAuth, setNativeDesktopGoogleAuth] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
   const [googleButtonWidth, setGoogleButtonWidth] = useState(360);
@@ -705,21 +707,25 @@ export default function HomePage() {
       ),
     },
   ];
-  const adminRecoveryLinkLabel = pick(locale, "Open operator password sign-in", "운영 계정 비밀번호 로그인 열기");
-  const adminLaunchLinks = [
-    {
-      label: pick(locale, "Admin training", "愿由ъ옄 ?숈뒿"),
-      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining",
-    },
-    {
-      label: pick(locale, "Admin cross-validation", "관리자 교차 검증"),
-      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dcross_validation",
-    },
-    {
-      label: pick(locale, "Admin hospital validation", "관리자 병원 검증"),
-      href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard",
-    },
-  ];
+  const adminRecoveryLinkLabel = operatorUiEnabled
+    ? pick(locale, "Open operator password sign-in", "운영 계정 비밀번호 로그인 열기")
+    : "";
+  const adminLaunchLinks = operatorUiEnabled
+    ? [
+        {
+          label: pick(locale, "Admin training", "관리자 학습"),
+          href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dtraining",
+        },
+        {
+          label: pick(locale, "Admin cross-validation", "관리자 교차 검증"),
+          href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Dcross_validation",
+        },
+        {
+          label: pick(locale, "Admin hospital validation", "관리자 병원 검증"),
+          href: "/admin-login?next=%2F%3Fworkspace%3Doperations%26section%3Ddashboard",
+        },
+      ]
+    : [];
   function describeUnknownError(nextError: unknown, fallback: string): string {
     if (nextError instanceof Error) {
       return translateApiError(locale, nextError.message);
@@ -785,7 +791,7 @@ export default function HomePage() {
     requestForm,
     setRequestForm,
   });
-  const canOpenOperations = Boolean(approved && user && ["admin", "site_admin"].includes(user.role));
+  const canOpenOperations = Boolean(operatorUiEnabled && approved && user && ["admin", "site_admin"].includes(user.role));
   const desktopWorkspaceRuntime = canUseDesktopTransport();
   const errorMessage = siteError ?? error;
   const filteredExistingSites = publicSites.filter((site) =>

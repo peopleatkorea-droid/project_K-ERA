@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -486,6 +488,8 @@ class ResearchContributionWorkflow:
 
 
 class ResearchTrainingWorkflow:
+    FEDERATED_ROUND_POLICY_VERSION = "site_round_policy_v1"
+
     def __init__(self, service: ResearchWorkflowService) -> None:
         self.service = service
 
@@ -585,6 +589,57 @@ class ResearchTrainingWorkflow:
     ) -> tuple[Any, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
         return self._eligible_image_level_federated_rows(site_store)
 
+    def _federated_round_lineage_metadata(
+        self,
+        site_store: SiteStore,
+        *,
+        model_version: dict[str, Any],
+        round_type: str,
+        eligible_summaries: list[dict[str, Any]],
+        eligible_case_count: int,
+        eligible_image_count: int,
+    ) -> dict[str, Any]:
+        case_snapshot_entries: list[dict[str, Any]] = []
+        for summary in sorted(
+            eligible_summaries,
+            key=lambda item: (
+                str(item.get("patient_id") or ""),
+                str(item.get("visit_date") or ""),
+            ),
+        ):
+            patient_id = str(summary.get("patient_id") or "").strip()
+            visit_date = str(summary.get("visit_date") or "").strip()
+            if not patient_id or not visit_date:
+                continue
+            case_snapshot_entries.append(
+                {
+                    "case_reference_id": self.service.control_plane.case_reference_id(
+                        site_store.site_id,
+                        patient_id,
+                        visit_date,
+                    ),
+                    "image_count": int(summary.get("image_count") or 0),
+                    "culture_category": str(summary.get("culture_category") or "").strip().lower() or None,
+                    "visit_status": str(summary.get("visit_status") or "").strip().lower() or None,
+                }
+            )
+        snapshot_hash = hashlib.sha1(
+            json.dumps(case_snapshot_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return {
+            "parent_model_version_id": str(model_version.get("version_id") or "").strip() or None,
+            "policy_version": self.FEDERATED_ROUND_POLICY_VERSION,
+            "eligible_snapshot": {
+                "round_type": round_type,
+                "captured_at": utc_now(),
+                "case_count": eligible_case_count,
+                "image_count": eligible_image_count,
+                "case_reference_ids": [entry["case_reference_id"] for entry in case_snapshot_entries],
+                "case_entries": case_snapshot_entries,
+                "snapshot_hash": snapshot_hash,
+            },
+        }
+
     def run_image_level_federated_round(
         self,
         site_store: SiteStore,
@@ -639,6 +694,14 @@ class ResearchTrainingWorkflow:
         eligible_image_count = int(len(records))
         if eligible_case_count < 1 or eligible_image_count < 1:
             raise ValueError("Image-level federated learning requires at least one eligible case and one image.")
+        lineage_metadata = self._federated_round_lineage_metadata(
+            site_store,
+            model_version=model_version,
+            round_type="image_level_site_round",
+            eligible_summaries=eligible_summaries,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
 
         representative_summary = sorted(
             eligible_summaries,
@@ -736,9 +799,12 @@ class ResearchTrainingWorkflow:
             "round_type": "image_level_site_round",
             "architecture": "convnext_tiny",
             "base_model_version_id": model_version.get("version_id"),
+            "parent_model_version_id": lineage_metadata.get("parent_model_version_id"),
+            "policy_version": lineage_metadata.get("policy_version"),
             "eligible_case_count": eligible_case_count,
             "eligible_image_count": eligible_image_count,
             "skipped": skipped,
+            "eligible_snapshot": dict(lineage_metadata.get("eligible_snapshot") or {}),
         }
         write_json(approval_report_path, approval_report)
         quality_summary = service._build_update_quality_summary(
@@ -771,6 +837,9 @@ class ResearchTrainingWorkflow:
             "aggregation_weight": eligible_image_count,
             "aggregation_weight_unit": "images",
             "federated_round_type": "image_level_site_round",
+            "parent_model_version_id": lineage_metadata.get("parent_model_version_id"),
+            "policy_version": lineage_metadata.get("policy_version"),
+            "eligible_snapshot": dict(lineage_metadata.get("eligible_snapshot") or {}),
             "representative_case_reference_id": approval_report["case_summary"].get("representative_case_reference_id"),
             "representative_patient_reference_id": approval_report["case_summary"].get("representative_patient_reference_id"),
             "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
@@ -793,16 +862,14 @@ class ResearchTrainingWorkflow:
             "status": "pending_review",
         }
         update_metadata = service.control_plane.register_model_update(update_metadata)
-        retained_cases: set[tuple[str, str]] = set()
-        for records in eligible_case_groups:
-            if not records:
-                continue
-            retained_cases.add(
-                (
-                    str(records[0].get("patient_id") or "").strip(),
-                    str(records[0].get("visit_date") or "").strip(),
-                )
+        retained_cases: set[tuple[str, str]] = {
+            (
+                str(summary.get("patient_id") or "").strip(),
+                str(summary.get("visit_date") or "").strip(),
             )
+            for summary in eligible_summaries
+            if str(summary.get("patient_id") or "").strip() and str(summary.get("visit_date") or "").strip()
+        }
         for retained_patient_id, retained_visit_date in retained_cases:
             if retained_patient_id and retained_visit_date:
                 site_store.mark_visit_fl_retained(
@@ -827,6 +894,8 @@ class ResearchTrainingWorkflow:
                 "fine_tuning_mode": "full",
                 "crop_mode": crop_mode,
                 "aggregation_weight_unit": "images",
+                "policy_version": lineage_metadata.get("policy_version"),
+                "eligible_snapshot_hash": ((lineage_metadata.get("eligible_snapshot") or {}).get("snapshot_hash")),
             },
             metrics={
                 "average_loss": result.get("average_loss"),
@@ -912,6 +981,14 @@ class ResearchTrainingWorkflow:
         eligible_image_count = int(len(records))
         if eligible_case_count < 1 or eligible_image_count < 1:
             raise ValueError("Visit-level federated learning requires at least one eligible case and one image.")
+        lineage_metadata = self._federated_round_lineage_metadata(
+            site_store,
+            model_version=model_version,
+            round_type="visit_level_site_round",
+            eligible_summaries=eligible_summaries,
+            eligible_case_count=eligible_case_count,
+            eligible_image_count=eligible_image_count,
+        )
 
         representative_summary = sorted(
             eligible_summaries,
@@ -1009,9 +1086,12 @@ class ResearchTrainingWorkflow:
             "round_type": "visit_level_site_round",
             "architecture": "efficientnet_v2_s_mil",
             "base_model_version_id": model_version.get("version_id"),
+            "parent_model_version_id": lineage_metadata.get("parent_model_version_id"),
+            "policy_version": lineage_metadata.get("policy_version"),
             "eligible_case_count": eligible_case_count,
             "eligible_image_count": eligible_image_count,
             "skipped": skipped,
+            "eligible_snapshot": dict(lineage_metadata.get("eligible_snapshot") or {}),
         }
         write_json(approval_report_path, approval_report)
         quality_summary = service._build_update_quality_summary(
@@ -1044,6 +1124,9 @@ class ResearchTrainingWorkflow:
             "aggregation_weight": eligible_case_count,
             "aggregation_weight_unit": "cases",
             "federated_round_type": "visit_level_site_round",
+            "parent_model_version_id": lineage_metadata.get("parent_model_version_id"),
+            "policy_version": lineage_metadata.get("policy_version"),
+            "eligible_snapshot": dict(lineage_metadata.get("eligible_snapshot") or {}),
             "representative_case_reference_id": approval_report["case_summary"].get("representative_case_reference_id"),
             "representative_patient_reference_id": approval_report["case_summary"].get("representative_patient_reference_id"),
             "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
@@ -1066,16 +1149,14 @@ class ResearchTrainingWorkflow:
             "status": "pending_review",
         }
         update_metadata = service.control_plane.register_model_update(update_metadata)
-        retained_cases: set[tuple[str, str]] = set()
-        for records in eligible_case_groups:
-            if not records:
-                continue
-            retained_cases.add(
-                (
-                    str(records[0].get("patient_id") or "").strip(),
-                    str(records[0].get("visit_date") or "").strip(),
-                )
+        retained_cases: set[tuple[str, str]] = {
+            (
+                str(summary.get("patient_id") or "").strip(),
+                str(summary.get("visit_date") or "").strip(),
             )
+            for summary in eligible_summaries
+            if str(summary.get("patient_id") or "").strip() and str(summary.get("visit_date") or "").strip()
+        }
         for retained_patient_id, retained_visit_date in retained_cases:
             if retained_patient_id and retained_visit_date:
                 site_store.mark_visit_fl_retained(
@@ -1100,6 +1181,8 @@ class ResearchTrainingWorkflow:
                 "fine_tuning_mode": "full",
                 "crop_mode": crop_mode,
                 "aggregation_weight_unit": "cases",
+                "policy_version": lineage_metadata.get("policy_version"),
+                "eligible_snapshot_hash": ((lineage_metadata.get("eligible_snapshot") or {}).get("snapshot_hash")),
             },
             metrics={
                 "average_loss": result.get("average_loss"),

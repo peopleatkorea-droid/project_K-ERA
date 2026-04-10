@@ -195,13 +195,79 @@ export type ControlPlaneRolloutSiteAdoption = {
   aligned_node_count: number;
   unknown_node_count: number;
   lagging_node_count: number;
+  adoption_ratio: number | null;
+  adoption_status: "aligned" | "lagging" | "unknown" | null;
   expected_version_id: string | null;
   expected_version_name: string | null;
   latest_reported_version_id: string | null;
   latest_reported_version_name: string | null;
+  validation_alignment_status: "aligned" | "mismatch" | "unknown" | null;
   latest_validation_version_id: string | null;
   latest_validation_version_name: string | null;
   latest_validation_run_date: string | null;
+  latest_validation?: {
+    validation_id?: string | null;
+    model_version_id?: string | null;
+    model_version_name?: string | null;
+    run_date?: string | null;
+    n_cases?: number | null;
+    n_images?: number | null;
+    accuracy?: number | null;
+    sensitivity?: number | null;
+    specificity?: number | null;
+    F1?: number | null;
+    AUROC?: number | null;
+  } | null;
+  previous_validation?: {
+    validation_id?: string | null;
+    model_version_id?: string | null;
+    model_version_name?: string | null;
+    run_date?: string | null;
+    n_cases?: number | null;
+    n_images?: number | null;
+    accuracy?: number | null;
+    sensitivity?: number | null;
+    specificity?: number | null;
+    F1?: number | null;
+    AUROC?: number | null;
+  } | null;
+  validation_delta?: {
+    accuracy?: number | null;
+    sensitivity?: number | null;
+    specificity?: number | null;
+    F1?: number | null;
+    AUROC?: number | null;
+  } | null;
+  latest_round?: {
+    update_id?: string | null;
+    status?: string | null;
+    created_at?: string | null;
+    federated_round_type?: string | null;
+    n_cases?: number | null;
+    n_images?: number | null;
+    aggregation_weight?: number | null;
+    aggregation_weight_unit?: string | null;
+    quality_score?: number | null;
+    validation_consistency_score?: number | null;
+    validation_consistency_status?: string | null;
+    risk_flags?: string[] | null;
+    outlier_detected?: boolean | null;
+    outlier_reasons?: string[] | null;
+    lineage?: {
+      parent_model_version_id?: string | null;
+      policy_version?: string | null;
+      training_input_policy?: string | null;
+      preprocess_signature?: string | null;
+      eligible_snapshot?: {
+        round_type?: string | null;
+        captured_at?: string | null;
+        case_count?: number | null;
+        image_count?: number | null;
+        case_reference_ids?: string[] | null;
+        snapshot_hash?: string | null;
+      } | null;
+    } | null;
+  } | null;
   last_seen_at: string | null;
 };
 

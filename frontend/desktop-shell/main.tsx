@@ -49,6 +49,7 @@ import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "
 import { prewarmDesktopWorker } from "../lib/desktop-runtime-prewarm";
 import { isTokenExpired, readTokenExpiresAt } from "../lib/token-payload";
 import { ThemeProvider, useTheme } from "../lib/theme";
+import { isOperatorUiEnabled } from "../lib/ui-mode";
 import { DesktopLandingScreen } from "./desktop-landing";
 
 type ConfigFormState = DesktopAppConfigValues;
@@ -74,6 +75,7 @@ function formatApproxGiB(bytes: number) {
 function DesktopShellApp() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
+  const operatorUiEnabled = isOperatorUiEnabled();
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [sites, setSites] = useState<SiteRecord[]>([]);
@@ -567,7 +569,9 @@ function DesktopShellApp() {
 
   const screenError = error ?? runtimeError;
   const approvedWorkspaceSession = token && user && user.approval_status === "approved";
-  const canOpenOperations = Boolean(approvedWorkspaceSession && user && ["admin", "site_admin"].includes(user.role));
+  const canOpenOperations = Boolean(
+    operatorUiEnabled && approvedWorkspaceSession && user && ["admin", "site_admin"].includes(user.role)
+  );
 
   if (approvedWorkspaceSession && workspaceMode === "operations" && canOpenOperations && !workspaceSettingsOpen) {
     return (
@@ -842,14 +846,18 @@ function DesktopShellApp() {
 
   if (!token) {
     return (
-      <DesktopLandingScreen
-        authBusy={authBusy}
-        error={screenError}
-        config={config}
-        onGoogleLaunch={() => void handleGoogleLogin()}
-        onAdminLaunch={() => setAdminLoginOpen(true)}
-      />
-    );
+        <DesktopLandingScreen
+          authBusy={authBusy}
+          error={screenError}
+          config={config}
+          onGoogleLaunch={() => void handleGoogleLogin()}
+          onAdminLaunch={() => {
+            if (operatorUiEnabled) {
+              setAdminLoginOpen(true);
+            }
+          }}
+        />
+      );
   }
 
   if (!user || bootstrapBusy) {

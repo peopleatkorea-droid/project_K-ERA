@@ -1984,13 +1984,119 @@ function isRecentlySeen(timestamp: string | null, thresholdMs = 24 * 60 * 60 * 1
   return (Date.now() - parsed.getTime()) <= thresholdMs;
 }
 
+function monitoringNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.round(value * 10000) / 10000;
+  }
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? Math.round(normalized * 10000) / 10000 : null;
+}
+
+function serializeMonitoringValidation(row: Row): NonNullable<ControlPlaneRolloutSiteAdoption["latest_validation"]> {
+  return {
+    validation_id: rowValue<string>(row, "validation_id"),
+    model_version_id: rowValue<string | null>(row, "model_version_id"),
+    model_version_name: rowValue<string | null>(row, "model_version"),
+    run_date: rowValue<string | Date | null>(row, "run_date")
+      ? new Date(rowValue<string | Date>(row, "run_date")).toISOString()
+      : null,
+    accuracy: monitoringNumber(rowValue<number | string | null>(row, "accuracy")),
+    sensitivity: monitoringNumber(rowValue<number | string | null>(row, "sensitivity")),
+    specificity: monitoringNumber(rowValue<number | string | null>(row, "specificity")),
+    F1: monitoringNumber(rowValue<number | string | null>(row, "f1")),
+    AUROC: monitoringNumber(rowValue<number | string | null>(row, "auroc")),
+    n_cases: monitoringNumber(rowValue<number | string | null>(row, "n_cases")),
+    n_images: monitoringNumber(rowValue<number | string | null>(row, "n_images")),
+  };
+}
+
+function validationDelta(
+  latest: ControlPlaneRolloutSiteAdoption["latest_validation"] | null | undefined,
+  previous: ControlPlaneRolloutSiteAdoption["previous_validation"] | null | undefined,
+): ControlPlaneRolloutSiteAdoption["validation_delta"] {
+  if (!latest || !previous) {
+    return null;
+  }
+  const delta: NonNullable<ControlPlaneRolloutSiteAdoption["validation_delta"]> = {};
+  for (const key of ["accuracy", "sensitivity", "specificity", "F1", "AUROC"] as const) {
+    const latestValue = monitoringNumber(latest[key]);
+    const previousValue = monitoringNumber(previous[key]);
+    if (latestValue === null || previousValue === null) {
+      continue;
+    }
+    delta[key] = Math.round((latestValue - previousValue) * 10000) / 10000;
+  }
+  return Object.keys(delta).length ? delta : null;
+}
+
+function latestRoundMonitoringFromUpdate(update: ControlPlaneModelUpdate | null): ControlPlaneRolloutSiteAdoption["latest_round"] {
+  if (!update) {
+    return null;
+  }
+  const payload = update.payload_json || {};
+  const qualitySummary = (payload.quality_summary && typeof payload.quality_summary === "object" && !Array.isArray(payload.quality_summary))
+    ? (payload.quality_summary as Record<string, unknown>)
+    : {};
+  const validationConsistency = (qualitySummary.validation_consistency && typeof qualitySummary.validation_consistency === "object" && !Array.isArray(qualitySummary.validation_consistency))
+    ? (qualitySummary.validation_consistency as Record<string, unknown>)
+    : {};
+  const riskFlags = Array.isArray(qualitySummary.risk_flags)
+    ? qualitySummary.risk_flags.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const qualityScore = monitoringNumber(qualitySummary.quality_score);
+  const validationConsistencyScore = monitoringNumber(validationConsistency.score);
+  const outlierReasons = [...riskFlags];
+  if (qualityScore !== null && qualityScore < 60) {
+    outlierReasons.push("quality_score_below_60");
+  }
+  if (validationConsistencyScore !== null && validationConsistencyScore < 50) {
+    outlierReasons.push("validation_consistency_below_50");
+  }
+  const eligibleSnapshot = (payload.eligible_snapshot && typeof payload.eligible_snapshot === "object" && !Array.isArray(payload.eligible_snapshot))
+    ? (payload.eligible_snapshot as Record<string, unknown>)
+    : {};
+  return {
+    update_id: update.update_id,
+    status: update.status,
+    created_at: update.created_at,
+    federated_round_type: typeof payload.federated_round_type === "string" ? payload.federated_round_type : null,
+    n_cases: monitoringNumber(payload.n_cases),
+    n_images: monitoringNumber(payload.n_images),
+    aggregation_weight: monitoringNumber(payload.aggregation_weight),
+    aggregation_weight_unit: typeof payload.aggregation_weight_unit === "string" ? payload.aggregation_weight_unit : null,
+    quality_score: qualityScore,
+    validation_consistency_score: validationConsistencyScore,
+    validation_consistency_status: typeof validationConsistency.status === "string" ? validationConsistency.status : null,
+    risk_flags: riskFlags,
+    outlier_detected: outlierReasons.length > 0,
+    outlier_reasons: outlierReasons,
+    lineage: {
+      parent_model_version_id: typeof payload.parent_model_version_id === "string" ? payload.parent_model_version_id : null,
+      policy_version: typeof payload.policy_version === "string" ? payload.policy_version : null,
+      training_input_policy: typeof payload.training_input_policy === "string" ? payload.training_input_policy : null,
+      preprocess_signature: typeof payload.preprocess_signature === "string" ? payload.preprocess_signature : null,
+      eligible_snapshot: {
+        round_type: typeof eligibleSnapshot.round_type === "string" ? eligibleSnapshot.round_type : null,
+        captured_at: typeof eligibleSnapshot.captured_at === "string" ? eligibleSnapshot.captured_at : null,
+        case_count: monitoringNumber(eligibleSnapshot.case_count),
+        image_count: monitoringNumber(eligibleSnapshot.image_count),
+        case_reference_ids: Array.isArray(eligibleSnapshot.case_reference_ids)
+          ? eligibleSnapshot.case_reference_ids.filter((item): item is string => typeof item === "string")
+          : null,
+        snapshot_hash: typeof eligibleSnapshot.snapshot_hash === "string" ? eligibleSnapshot.snapshot_hash : null,
+      },
+    },
+  };
+}
+
 export async function federationMonitoringSummary(): Promise<ControlPlaneFederationMonitoringSummary> {
-  const [currentRelease, activeRollout, recentRollouts, recentAuditEvents, nodes] = await Promise.all([
+  const [currentRelease, activeRollout, recentRollouts, recentAuditEvents, nodes, modelUpdates] = await Promise.all([
     currentReleaseManifest(),
     latestActiveReleaseRollout(),
     listReleaseRollouts().then((items) => items.slice(0, 8)),
     listAuditEvents({ limit: 12 }),
     listRegisteredNodes(),
+    listModelUpdates(),
   ]);
   const sql = await controlPlaneSql();
   const siteRows = await sql`
@@ -2008,26 +2114,49 @@ export async function federationMonitoringSummary(): Promise<ControlPlaneFederat
     order by sites.site_id asc
   `;
   const latestValidationRows = await sql`
-    select distinct on (site_id)
+    select
       site_id,
+      validation_id,
       model_version_id,
       model_version,
-      run_date
+      run_date,
+      n_cases,
+      n_images,
+      accuracy,
+      sensitivity,
+      specificity,
+      F1 as f1,
+      AUROC as auroc,
+      row_number() over (partition by site_id order by run_date desc nulls last, created_at desc) as row_number
     from validation_runs
-    order by site_id asc, run_date desc nulls last, created_at desc
   `;
-  const latestValidationBySite = new Map(
-    latestValidationRows.map((row) => [
-      rowValue<string>(row, "site_id"),
-      {
-        model_version_id: rowValue<string | null>(row, "model_version_id"),
-        model_version: rowValue<string | null>(row, "model_version"),
-        run_date: rowValue<string | Date | null>(row, "run_date")
-          ? new Date(rowValue<string | Date>(row, "run_date")).toISOString()
-          : null,
-      },
-    ]),
-  );
+  const recentValidationBySite = new Map<string, Array<NonNullable<ControlPlaneRolloutSiteAdoption["latest_validation"]>>>();
+  for (const row of latestValidationRows) {
+    const siteId = rowValue<string>(row, "site_id");
+    const rank = Number(rowValue<number | string>(row, "row_number") || 0);
+    if (!siteId || rank < 1 || rank > 2) {
+      continue;
+    }
+    const current = recentValidationBySite.get(siteId) || [];
+    current.push(serializeMonitoringValidation(row));
+    recentValidationBySite.set(siteId, current);
+  }
+  const latestRoundUpdateBySite = new Map<string, ControlPlaneModelUpdate>();
+  for (const update of modelUpdates) {
+    const siteId = (update.site_id || "").trim();
+    if (!siteId) {
+      continue;
+    }
+    const roundType = typeof update.payload_json?.federated_round_type === "string"
+      ? update.payload_json.federated_round_type.trim()
+      : "";
+    if (!roundType) {
+      continue;
+    }
+    if (!latestRoundUpdateBySite.has(siteId)) {
+      latestRoundUpdateBySite.set(siteId, update);
+    }
+  }
 
   const siteAdoption: ControlPlaneRolloutSiteAdoption[] = siteRows.map((row) => {
     const siteId = rowValue<string>(row, "site_id");
@@ -2062,7 +2191,14 @@ export async function federationMonitoringSummary(): Promise<ControlPlaneFederat
         const rightValue = right.last_seen_at ? new Date(right.last_seen_at).getTime() : 0;
         return rightValue - leftValue;
       })[0] ?? null;
-    const latestValidation = latestValidationBySite.get(siteId);
+    const recentValidations = recentValidationBySite.get(siteId) || [];
+    const latestValidation = recentValidations[0] ?? null;
+    const previousValidation = recentValidations[1] ?? null;
+    const validationAlignmentStatus = latestValidation?.model_version_id
+      ? (latestValidation.model_version_id === expectedVersionId ? "aligned" : "mismatch")
+      : "unknown";
+    const adoptionRatio = activeNodes.length > 0 ? Math.round((alignedNodeCount / activeNodes.length) * 10000) / 10000 : null;
+    const latestRound = latestRoundMonitoringFromUpdate(latestRoundUpdateBySite.get(siteId) || null);
     return {
       site_id: siteId,
       site_display_name: site.hospital_name || site.display_name || siteId,
@@ -2071,13 +2207,20 @@ export async function federationMonitoringSummary(): Promise<ControlPlaneFederat
       aligned_node_count: alignedNodeCount,
       unknown_node_count: unknownNodeCount,
       lagging_node_count: laggingNodeCount,
+      adoption_ratio: adoptionRatio,
+      adoption_status: activeNodes.length === 0 ? "unknown" : (laggingNodeCount > 0 ? "lagging" : "aligned"),
       expected_version_id: expectedVersionId,
       expected_version_name: expectedVersionName,
       latest_reported_version_id: latestNode?.current_model_version_id ?? null,
       latest_reported_version_name: latestNode?.current_model_version_name ?? null,
+      validation_alignment_status: validationAlignmentStatus,
       latest_validation_version_id: latestValidation?.model_version_id ?? null,
-      latest_validation_version_name: latestValidation?.model_version ?? null,
+      latest_validation_version_name: latestValidation?.model_version_name ?? null,
       latest_validation_run_date: latestValidation?.run_date ?? null,
+      latest_validation: latestValidation,
+      previous_validation: previousValidation,
+      validation_delta: validationDelta(latestValidation, previousValidation),
+      latest_round: latestRound,
       last_seen_at: latestNode?.last_seen_at ?? null,
     };
   });

@@ -143,26 +143,26 @@ export function FederationSection({
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
       <SectionHeader
-        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Federation", "연합학습")}</div>}
-        title={pick(locale, "Global aggregation, rollout, and monitoring", "글로벌 집계, rollout, 모니터링")}
+        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Model rollout", "모델 배포")}</div>}
+        title={pick(locale, "Global aggregation, rollout, and monitoring", "글로벌 집계, 배포, 모니터링")}
         titleAs="h3"
         description={pick(
           locale,
-          "Review approved update lanes, create staged release rollout plans, and monitor node adoption from one global operations surface.",
-          "승인된 업데이트 lane을 검토하고 staged release rollout을 만들며 node adoption을 한 화면에서 모니터링합니다."
+          "Review approved update lanes, create staged release plans, and monitor node adoption from one global operations surface.",
+          "승인된 업데이트 lane을 검토하고 단계별 배포 계획을 만들며 node adoption을 한 화면에서 모니터링합니다."
         )}
         aside={<span className={docSiteBadgeClass}>{`${approvedUpdates.length} ${pick(locale, "approved", "승인")}`}</span>}
       />
 
-      <Card as="section" variant="nested" className="grid gap-4 p-5">
-        <SectionHeader
-          title={pick(locale, "Release rollout", "릴리스 rollout")}
-          titleAs="h4"
-          description={pick(
-            locale,
-            "Create pilot, partial, full, or rollback release plans from approved global model versions.",
-            "승인된 글로벌 모델 버전에서 pilot, partial, full, rollback rollout 계획을 만듭니다."
-          )}
+        <Card as="section" variant="nested" className="grid gap-4 p-5">
+          <SectionHeader
+            title={pick(locale, "Staged rollout plan", "단계별 배포 계획")}
+            titleAs="h4"
+            description={pick(
+              locale,
+              "Create pilot, partial, full, or rollback plans from approved global model versions.",
+              "승인된 글로벌 모델 버전에서 pilot, partial, full, rollback 계획을 만듭니다."
+            )}
           aside={
             <div className="flex flex-wrap items-center gap-2">
               <span className={docSiteBadgeClass}>{releaseRollouts.length}</span>
@@ -193,7 +193,7 @@ export function FederationSection({
               </select>
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={pick(locale, "Rollout stage", "rollout 단계")}>
+              <Field label={pick(locale, "Rollout stage", "배포 단계")}>
                 <select
                   value={releaseRolloutForm.stage}
                   onChange={(event) =>
@@ -244,21 +244,21 @@ export function FederationSection({
             <div className="flex flex-wrap justify-end gap-3">
               <Button type="button" variant="primary" disabled={releaseRolloutBusy} onClick={onCreateReleaseRollout}>
                 {releaseRolloutBusy
-                  ? pick(locale, "Saving rollout...", "rollout 저장 중...")
-                  : pick(locale, "Save rollout plan", "rollout 계획 저장")}
+                  ? pick(locale, "Saving rollout...", "배포 계획 저장 중...")
+                  : pick(locale, "Save rollout plan", "배포 계획 저장")}
               </Button>
             </div>
           </div>
 
           <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
             <SectionHeader
-              title={pick(locale, "Recent rollout history", "최근 rollout 이력")}
+              title={pick(locale, "Recent rollout history", "최근 배포 이력")}
               titleAs="h4"
               aside={<span className={docSiteBadgeClass}>{releaseRollouts.length}</span>}
             />
             {releaseRollouts.length === 0 ? (
               <div className={emptySurfaceClass}>
-                {pick(locale, "No rollout history is recorded yet.", "아직 기록된 rollout 이력이 없습니다.")}
+                {pick(locale, "No rollout history is recorded yet.", "아직 기록된 배포 이력이 없습니다.")}
               </div>
             ) : (
               <div className="grid gap-3">
@@ -284,12 +284,12 @@ export function FederationSection({
       <div className="grid gap-4 xl:grid-cols-2">
         <Card as="section" variant="nested" className="grid gap-4 p-5">
           <SectionHeader
-            title={pick(locale, "Release rollout monitor", "릴리스 rollout 모니터")}
+            title={pick(locale, "Release rollout monitor", "릴리스 배포 모니터")}
             titleAs="h4"
             description={pick(
               locale,
               "Watch the current release, active staged rollout, and node-level alignment against the expected version.",
-              "현재 릴리스, 활성 staged rollout, 기대 버전 대비 노드 정렬 상태를 함께 확인합니다."
+              "현재 릴리스, 활성 단계별 배포, 기대 버전 대비 노드 정렬 상태를 함께 확인합니다."
             )}
             aside={<span className={docSiteBadgeClass}>{readyModelVersions.length}</span>}
           />
@@ -342,6 +342,21 @@ export function FederationSection({
                           <MetricItem value={site.expected_version_name ?? notAvailableLabel} label={pick(locale, "Expected", "기대 버전")} />
                           <MetricItem value={formatDateTime(site.last_seen_at, notAvailableLabel)} label={pick(locale, "Last seen", "최근 신호")} />
                         </MetricGrid>
+                        <div className="text-xs leading-5 text-muted">
+                          {pick(locale, "Adoption", "배포 반영")}{" "}
+                          {site.adoption_ratio != null ? `${Math.round(site.adoption_ratio * 100)}%` : notAvailableLabel}
+                          {" · "}
+                          {pick(locale, "Validation", "검증")}{" "}
+                          {site.latest_validation?.AUROC != null
+                            ? `AUROC ${site.latest_validation.AUROC}`
+                            : notAvailableLabel}
+                          {site.validation_delta?.AUROC != null
+                            ? ` (${site.validation_delta.AUROC > 0 ? "+" : ""}${site.validation_delta.AUROC.toFixed(3)})`
+                            : ""}
+                          {site.latest_round?.outlier_detected
+                            ? ` · ${pick(locale, "Round alert", "round 경고")}`
+                            : ""}
+                        </div>
                       </Card>
                     ))}
                   </div>

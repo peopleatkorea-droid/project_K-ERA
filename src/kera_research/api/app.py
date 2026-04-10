@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import google.auth.transport.requests
 import jwt
@@ -125,6 +125,7 @@ from kera_research.api.site_jobs import (
     latest_federated_retrieval_sync_job as _latest_federated_retrieval_sync_job_impl,
     queue_site_embedding_backfill as _queue_site_embedding_backfill_impl,
     start_federated_retrieval_corpus_sync as _start_federated_retrieval_corpus_sync_impl,
+    start_site_validation as _start_site_validation_impl,
 )
 
 
@@ -230,6 +231,8 @@ _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
 _ADMIN_REGISTRY_ORCHESTRATOR = AdminRegistryOrchestrator(make_id=make_id, model_dir=MODEL_DIR)
 _SEMANTIC_PROMPT_SCORER: SemanticPromptScoringService | None = None
+_SITE_AUTOMATION_THREAD: threading.Thread | None = None
+_SITE_AUTOMATION_STOP = threading.Event()
 IMPORT_TEMPLATE_ROWS = [
     "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_status,culture_category,culture_species,"
     "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative",
@@ -730,6 +733,223 @@ def _resolve_execution_device(selection: str) -> str:
 def _preferred_embedding_execution_device() -> str:
     hardware = detect_hardware()
     return "cuda" if hardware.get("gpu_available") else "cpu"
+
+
+def _env_positive_int(name: str, default: int = 0) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip() or str(default))
+    except ValueError:
+        return default
+    return max(0, value)
+
+
+def _site_validation_interval_minutes() -> int:
+    return _env_positive_int("KERA_AUTO_SITE_VALIDATION_INTERVAL_MINUTES", 0)
+
+
+def _retrieval_sync_interval_minutes() -> int:
+    return _env_positive_int("KERA_AUTO_RETRIEVAL_SYNC_INTERVAL_MINUTES", 0)
+
+
+def _site_automation_poll_seconds() -> int:
+    return max(30, _env_positive_int("KERA_AUTO_SITE_AUTOMATION_POLL_SECONDS", 300))
+
+
+def _latest_completed_job_time(
+    site_store: SiteStore,
+    *,
+    job_type: str,
+    payload_filter: Callable[[dict[str, Any]], bool] | None = None,
+) -> datetime | None:
+    jobs = [
+        job
+        for job in site_store.list_jobs()
+        if str(job.get("job_type") or "").strip() == job_type
+        and str(job.get("status") or "").strip() == "completed"
+        and (payload_filter is None or payload_filter(dict(job.get("payload") or {})))
+    ]
+    if not jobs:
+        return None
+    jobs.sort(
+        key=lambda item: str(
+            item.get("finished_at")
+            or item.get("updated_at")
+            or item.get("heartbeat_at")
+            or item.get("started_at")
+            or item.get("created_at")
+            or ""
+        ),
+        reverse=True,
+    )
+    timestamp = str(
+        jobs[0].get("finished_at")
+        or jobs[0].get("updated_at")
+        or jobs[0].get("heartbeat_at")
+        or jobs[0].get("started_at")
+        or jobs[0].get("created_at")
+        or ""
+    ).strip()
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _latest_validation_time(cp: ControlPlaneStore, site_id: str) -> datetime | None:
+    runs = cp.list_validation_runs(site_id=site_id, limit=1)
+    if not runs:
+        return None
+    timestamp = str(runs[0].get("run_date") or runs[0].get("created_at") or "").strip()
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _queue_periodic_site_validation(cp: ControlPlaneStore, site_store: SiteStore) -> bool:
+    interval_minutes = _site_validation_interval_minutes()
+    if interval_minutes <= 0:
+        return False
+    active_job = next(
+        (
+            job
+            for job in site_store.list_jobs(status="queued")
+            if str(job.get("job_type") or "").strip() == "site_validation"
+        ),
+        None,
+    ) or next(
+        (
+            job
+            for job in site_store.list_jobs(status="running")
+            if str(job.get("job_type") or "").strip() == "site_validation"
+        ),
+        None,
+    )
+    if active_job is not None:
+        return False
+    latest_validation_at = _latest_validation_time(cp, site_store.site_id)
+    if latest_validation_at is not None and datetime.now(timezone.utc) - latest_validation_at < timedelta(minutes=interval_minutes):
+        return False
+    model_version = cp.current_global_model() or cp.local_current_model()
+    if model_version is None or not model_version.get("ready", True):
+        return False
+    execution_mode = str(os.getenv("KERA_AUTO_SITE_VALIDATION_EXECUTION_MODE", "cpu") or "cpu").strip().lower()
+    try:
+        execution_device = _resolve_execution_device(execution_mode)
+    except Exception:
+        execution_device = "cpu"
+    payload = SimpleNamespace(
+        execution_mode=execution_mode,
+        generate_gradcam=False,
+        generate_medsam=False,
+    )
+    _start_site_validation_impl(
+        site_store,
+        site_id=site_store.site_id,
+        project_id=_project_id_for_site(cp, site_store.site_id),
+        model_version=model_version,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=queue_name_for_job_type,
+    )
+    return True
+
+
+def _queue_periodic_retrieval_sync(cp: ControlPlaneStore, site_store: SiteStore) -> bool:
+    interval_minutes = _retrieval_sync_interval_minutes()
+    if interval_minutes <= 0 or not cp.remote_node_sync_enabled():
+        return False
+    retrieval_profile = str(os.getenv("KERA_AUTO_RETRIEVAL_SYNC_PROFILE", "dinov2_lesion_crop") or "dinov2_lesion_crop").strip() or "dinov2_lesion_crop"
+    active_job = _latest_federated_retrieval_sync_job_impl(site_store, retrieval_profile=retrieval_profile)
+    if active_job is not None and str(active_job.get("status") or "").strip() in {"queued", "running"}:
+        return False
+    latest_sync_at = _latest_completed_job_time(
+        site_store,
+        job_type="federated_retrieval_corpus_sync",
+        payload_filter=lambda payload: str(payload.get("retrieval_profile") or "").strip().lower() == retrieval_profile.lower(),
+    )
+    if latest_sync_at is not None and datetime.now(timezone.utc) - latest_sync_at < timedelta(minutes=interval_minutes):
+        return False
+    execution_mode = str(os.getenv("KERA_AUTO_RETRIEVAL_SYNC_EXECUTION_MODE", "cpu") or "cpu").strip().lower()
+    try:
+        execution_device = _resolve_execution_device(execution_mode)
+    except Exception:
+        execution_device = "cpu"
+    payload = SimpleNamespace(
+        execution_mode=execution_mode,
+        retrieval_profile=retrieval_profile,
+        force_refresh=False,
+    )
+    _start_federated_retrieval_corpus_sync_impl(
+        site_store,
+        site_id=site_store.site_id,
+        payload=payload,
+        execution_device=execution_device,
+        queue_name_for_job_type=queue_name_for_job_type,
+    )
+    return True
+
+
+def _site_automation_enabled() -> bool:
+    return _site_validation_interval_minutes() > 0 or _retrieval_sync_interval_minutes() > 0
+
+
+def _run_site_automation_once() -> None:
+    cp = get_control_plane()
+    for site in cp.list_sites():
+        site_id = str(site.get("site_id") or "").strip()
+        if not site_id:
+            continue
+        try:
+            site_store = SiteStore(site_id)
+        except Exception:
+            continue
+        try:
+            _queue_periodic_retrieval_sync(cp, site_store)
+        except Exception:
+            pass
+        try:
+            _queue_periodic_site_validation(cp, site_store)
+        except Exception:
+            pass
+
+
+def _start_site_automation_loop() -> None:
+    global _SITE_AUTOMATION_THREAD
+    if not _site_automation_enabled():
+        return
+    if _SITE_AUTOMATION_THREAD is not None and _SITE_AUTOMATION_THREAD.is_alive():
+        return
+    _SITE_AUTOMATION_STOP.clear()
+
+    def _loop() -> None:
+        poll_seconds = _site_automation_poll_seconds()
+        while not _SITE_AUTOMATION_STOP.wait(1):
+            try:
+                _run_site_automation_once()
+            except Exception:
+                pass
+            if _SITE_AUTOMATION_STOP.wait(poll_seconds):
+                break
+
+    _SITE_AUTOMATION_THREAD = threading.Thread(
+        target=_loop,
+        name="kera-site-automation",
+        daemon=True,
+    )
+    _SITE_AUTOMATION_THREAD.start()
+
+
+def _stop_site_automation_loop() -> None:
+    global _SITE_AUTOMATION_THREAD
+    _SITE_AUTOMATION_STOP.set()
+    if _SITE_AUTOMATION_THREAD is not None and _SITE_AUTOMATION_THREAD.is_alive():
+        _SITE_AUTOMATION_THREAD.join(timeout=2.0)
+    _SITE_AUTOMATION_THREAD = None
 
 def _require_validation_permission(user: dict[str, Any]) -> None:
     if user.get("role") in {"admin", "site_admin", "researcher"}:
@@ -1940,10 +2160,12 @@ def create_app() -> FastAPI:
             app_version=app.version,
             os_info=_remote_node_os_info(),
         )
+        _start_site_automation_loop()
 
     @app.on_event("shutdown")
     def _shutdown_remote_control_plane_sync() -> None:
         stop_control_plane_sync_loop(app)
+        _stop_site_automation_loop()
 
     return app
 

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -57,6 +56,239 @@ def latest_embedding_backfill_job(site_store: Any) -> dict[str, Any] | None:
     if not jobs:
         return None
     return next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+
+
+def _job_sort_key(job: dict[str, Any]) -> str:
+    return str(
+        job.get("finished_at")
+        or job.get("updated_at")
+        or job.get("heartbeat_at")
+        or job.get("started_at")
+        or job.get("created_at")
+        or ""
+    )
+
+
+def _latest_job(
+    site_store: Any,
+    *,
+    job_type: str,
+    statuses: set[str] | None = None,
+    payload_filter: Callable[[dict[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
+    jobs = [job for job in site_store.list_jobs() if str(job.get("job_type") or "").strip() == job_type]
+    if statuses is not None:
+        jobs = [job for job in jobs if str(job.get("status") or "").strip() in statuses]
+    if payload_filter is not None:
+        jobs = [job for job in jobs if payload_filter(dict(job.get("payload") or {}))]
+    if not jobs:
+        return None
+    jobs.sort(key=_job_sort_key, reverse=True)
+    return jobs[0]
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized != normalized:  # NaN
+        return None
+    return normalized
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_metric(value: Any) -> float | None:
+    normalized = _float_or_none(value)
+    if normalized is None:
+        return None
+    return round(normalized, 4)
+
+
+def _serialize_validation_summary(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(run, dict) or not run:
+        return None
+    return {
+        "validation_id": str(run.get("validation_id") or "").strip() or None,
+        "model_version_id": str(run.get("model_version_id") or "").strip() or None,
+        "model_version_name": str(run.get("model_version") or "").strip() or None,
+        "run_date": str(run.get("run_date") or "").strip() or None,
+        "n_cases": _int_or_none(run.get("n_cases")),
+        "n_images": _int_or_none(run.get("n_images")),
+        "accuracy": _round_metric(run.get("accuracy")),
+        "sensitivity": _round_metric(run.get("sensitivity")),
+        "specificity": _round_metric(run.get("specificity")),
+        "F1": _round_metric(run.get("F1")),
+        "AUROC": _round_metric(run.get("AUROC")),
+    }
+
+
+def _validation_delta(
+    latest_run: dict[str, Any] | None,
+    previous_run: dict[str, Any] | None,
+) -> dict[str, float] | None:
+    latest_summary = _serialize_validation_summary(latest_run)
+    previous_summary = _serialize_validation_summary(previous_run)
+    if not latest_summary or not previous_summary:
+        return None
+    delta: dict[str, float] = {}
+    for key in ("accuracy", "sensitivity", "specificity", "F1", "AUROC"):
+        latest_value = _float_or_none(latest_summary.get(key))
+        previous_value = _float_or_none(previous_summary.get(key))
+        if latest_value is None or previous_value is None:
+            continue
+        delta[key] = round(latest_value - previous_value, 4)
+    return delta or None
+
+
+def _latest_validation_runs_for_site(cp: Any, site_id: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    try:
+        runs = cp.list_validation_runs(site_id=site_id, limit=limit)
+    except Exception:
+        return []
+    return [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and (
+            int(run.get("n_cases", 0) or 0) > 1
+            or run.get("AUROC") is not None
+            or run.get("accuracy") is not None
+        )
+    ]
+
+
+def _latest_validation_for_model(cp: Any, site_id: str, *, model_version_id: str | None) -> dict[str, Any] | None:
+    normalized_model_version_id = str(model_version_id or "").strip()
+    if not normalized_model_version_id:
+        return None
+    for run in _latest_validation_runs_for_site(cp, site_id, limit=12):
+        if str(run.get("model_version_id") or "").strip() == normalized_model_version_id:
+            return run
+    return None
+
+
+def _extract_round_lineage(update: dict[str, Any]) -> dict[str, Any] | None:
+    round_scope = dict(((update.get("approval_report") or {}).get("round_scope") or {}))
+    eligible_snapshot = dict(update.get("eligible_snapshot") or round_scope.get("eligible_snapshot") or {})
+    lineage = {
+        "parent_model_version_id": str(
+            update.get("parent_model_version_id")
+            or update.get("base_model_version_id")
+            or round_scope.get("parent_model_version_id")
+            or ""
+        ).strip()
+        or None,
+        "policy_version": str(update.get("policy_version") or round_scope.get("policy_version") or "").strip() or None,
+        "training_input_policy": str(update.get("training_input_policy") or "").strip() or None,
+        "preprocess_signature": str(update.get("preprocess_signature") or "").strip() or None,
+        "eligible_snapshot": eligible_snapshot or None,
+    }
+    return lineage if any(value is not None for value in lineage.values()) else None
+
+
+def _extract_update_outlier_summary(update: dict[str, Any]) -> dict[str, Any]:
+    quality_summary = dict(update.get("quality_summary") or {})
+    validation_consistency = dict(quality_summary.get("validation_consistency") or {})
+    risk_flags = [
+        str(item).strip()
+        for item in (quality_summary.get("risk_flags") or [])
+        if str(item).strip()
+    ]
+    quality_score = _round_metric(quality_summary.get("quality_score"))
+    validation_score = _round_metric(validation_consistency.get("score"))
+    outlier_reasons = list(risk_flags)
+    if quality_score is not None and quality_score < 60:
+        outlier_reasons.append("quality_score_below_60")
+    if validation_score is not None and validation_score < 50:
+        outlier_reasons.append("validation_consistency_below_50")
+    return {
+        "quality_score": quality_score,
+        "validation_consistency_score": validation_score,
+        "validation_consistency_status": str(validation_consistency.get("status") or "").strip() or None,
+        "risk_flags": risk_flags,
+        "outlier_detected": bool(outlier_reasons),
+        "outlier_reasons": outlier_reasons,
+    }
+
+
+def _latest_federated_round_update(
+    cp: Any,
+    *,
+    site_id: str,
+    base_model_version_id: str | None,
+    round_type: str,
+) -> dict[str, Any] | None:
+    normalized_base_model_version_id = str(base_model_version_id or "").strip()
+    updates = [
+        update
+        for update in cp.list_model_updates(site_id=site_id)
+        if str(update.get("federated_round_type") or "").strip() == round_type
+        and (not normalized_base_model_version_id or str(update.get("base_model_version_id") or "").strip() == normalized_base_model_version_id)
+    ]
+    if not updates:
+        return None
+    updates.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    update = dict(updates[0])
+    return {
+        "update_id": str(update.get("update_id") or "").strip() or None,
+        "status": str(update.get("status") or "").strip() or None,
+        "created_at": str(update.get("created_at") or "").strip() or None,
+        "federated_round_type": str(update.get("federated_round_type") or "").strip() or None,
+        "n_cases": _int_or_none(update.get("n_cases")),
+        "n_images": _int_or_none(update.get("n_images")),
+        "aggregation_weight": _float_or_none(update.get("aggregation_weight")),
+        "aggregation_weight_unit": str(update.get("aggregation_weight_unit") or "").strip() or None,
+        "lineage": _extract_round_lineage(update),
+        **_extract_update_outlier_summary(update),
+    }
+
+
+def _summarize_retrieval_baseline_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(job, dict) or not job:
+        return None
+    response = dict(((job.get("result") or {}).get("response") or {}))
+    result_entries = list(response.get("results") or [])
+    result_payload = dict((result_entries[0].get("result") or {})) if result_entries else {}
+    metrics = dict(result_payload.get("test_metrics") or result_payload.get("val_metrics") or {})
+    return {
+        "job_id": str(job.get("job_id") or "").strip() or None,
+        "status": str(job.get("status") or "").strip() or None,
+        "finished_at": _job_sort_key(job) or None,
+        "crop_mode": str(result_payload.get("crop_mode") or (job.get("payload") or {}).get("crop_mode") or "").strip() or None,
+        "top_k": _int_or_none(result_payload.get("top_k") or (job.get("payload") or {}).get("top_k")),
+        "n_test_patients": _int_or_none(result_payload.get("n_test_patients")),
+        "accuracy": _round_metric(metrics.get("accuracy")),
+        "balanced_accuracy": _round_metric(metrics.get("balanced_accuracy")),
+        "AUROC": _round_metric(metrics.get("AUROC")),
+        "F1": _round_metric(metrics.get("F1")),
+    }
+
+
+def _summarize_retrieval_sync_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(job, dict) or not job:
+        return None
+    response = dict(((job.get("result") or {}).get("response") or {}))
+    remote_sync = dict(response.get("remote_sync") or {})
+    return {
+        "job_id": str(job.get("job_id") or "").strip() or None,
+        "status": str(job.get("status") or "").strip() or None,
+        "finished_at": _job_sort_key(job) or None,
+        "retrieval_profile": str(response.get("retrieval_profile") or (job.get("payload") or {}).get("retrieval_profile") or "").strip() or None,
+        "retrieval_signature": str(response.get("retrieval_signature") or "").strip() or None,
+        "prepared_entry_count": _int_or_none(response.get("prepared_entry_count")),
+        "eligible_case_count": _int_or_none(response.get("eligible_case_count")),
+        "failed_case_count": _int_or_none(response.get("failed_case_count")),
+        "inserted_count": _int_or_none(remote_sync.get("inserted_count")),
+        "updated_count": _int_or_none(remote_sync.get("updated_count")),
+        "deleted_count": _int_or_none(remote_sync.get("deleted_count")),
+    }
 
 
 def latest_federated_retrieval_sync_job(
@@ -175,6 +407,7 @@ def build_image_level_federated_round_status(
     site_store: Any,
     *,
     model_version: dict[str, Any],
+    cp: Any | None = None,
 ) -> dict[str, Any]:
     eligible_case_count = 0
     eligible_image_count = 0
@@ -211,6 +444,18 @@ def build_image_level_federated_round_status(
         site_store,
         model_version_id=str(model_version.get("version_id") or ""),
     )
+    recent_site_runs = _latest_validation_runs_for_site(cp, site_store.site_id, limit=8) if cp is not None else []
+    latest_site_validation = _serialize_validation_summary(recent_site_runs[0]) if len(recent_site_runs) > 0 else None
+    previous_site_validation = _serialize_validation_summary(recent_site_runs[1]) if len(recent_site_runs) > 1 else None
+    latest_base_validation = _serialize_validation_summary(
+        _latest_validation_for_model(cp, site_store.site_id, model_version_id=str(model_version.get("version_id") or ""))
+    ) if cp is not None else None
+    latest_round = _latest_federated_round_update(
+        cp,
+        site_id=site_store.site_id,
+        base_model_version_id=str(model_version.get("version_id") or ""),
+        round_type="image_level_site_round",
+    ) if cp is not None else None
     return {
         "site_id": site_store.site_id,
         "model_version": serialize_site_model_version(model_version),
@@ -223,6 +468,16 @@ def build_image_level_federated_round_status(
             "no_images": skipped_no_images,
         },
         "active_job": active_job,
+        "validation_context": {
+            "latest_site_validation": latest_site_validation,
+            "previous_site_validation": previous_site_validation,
+            "site_validation_delta": _validation_delta(
+                recent_site_runs[0] if len(recent_site_runs) > 0 else None,
+                recent_site_runs[1] if len(recent_site_runs) > 1 else None,
+            ),
+            "base_model_validation": latest_base_validation,
+        } if cp is not None else None,
+        "latest_round": latest_round,
     }
 
 
@@ -230,6 +485,7 @@ def build_visit_level_federated_round_status(
     site_store: Any,
     *,
     model_version: dict[str, Any],
+    cp: Any | None = None,
 ) -> dict[str, Any]:
     eligible_case_count = 0
     eligible_image_count = 0
@@ -266,6 +522,18 @@ def build_visit_level_federated_round_status(
         site_store,
         model_version_id=str(model_version.get("version_id") or ""),
     )
+    recent_site_runs = _latest_validation_runs_for_site(cp, site_store.site_id, limit=8) if cp is not None else []
+    latest_site_validation = _serialize_validation_summary(recent_site_runs[0]) if len(recent_site_runs) > 0 else None
+    previous_site_validation = _serialize_validation_summary(recent_site_runs[1]) if len(recent_site_runs) > 1 else None
+    latest_base_validation = _serialize_validation_summary(
+        _latest_validation_for_model(cp, site_store.site_id, model_version_id=str(model_version.get("version_id") or ""))
+    ) if cp is not None else None
+    latest_round = _latest_federated_round_update(
+        cp,
+        site_id=site_store.site_id,
+        base_model_version_id=str(model_version.get("version_id") or ""),
+        round_type="visit_level_site_round",
+    ) if cp is not None else None
     return {
         "site_id": site_store.site_id,
         "model_version": serialize_site_model_version(model_version),
@@ -278,6 +546,81 @@ def build_visit_level_federated_round_status(
             "no_images": skipped_no_images,
         },
         "active_job": active_job,
+        "validation_context": {
+            "latest_site_validation": latest_site_validation,
+            "previous_site_validation": previous_site_validation,
+            "site_validation_delta": _validation_delta(
+                recent_site_runs[0] if len(recent_site_runs) > 0 else None,
+                recent_site_runs[1] if len(recent_site_runs) > 1 else None,
+            ),
+            "base_model_validation": latest_base_validation,
+        } if cp is not None else None,
+        "latest_round": latest_round,
+    }
+
+
+def build_federated_retrieval_corpus_status(
+    cp: Any,
+    site_store: Any,
+    *,
+    retrieval_profile: str = "dinov2_lesion_crop",
+    workflow_factory: Callable[[Any], Any] | None = None,
+) -> dict[str, Any]:
+    workflow = workflow_factory(cp) if workflow_factory is not None else ResearchWorkflowService(cp)
+    signature_record = workflow.retrieval_signature(retrieval_profile)
+    active_job = latest_federated_retrieval_sync_job(site_store, retrieval_profile=retrieval_profile)
+    latest_sync_job = _latest_job(
+        site_store,
+        job_type="federated_retrieval_corpus_sync",
+        statuses={"completed", "failed", "cancelled"},
+        payload_filter=lambda payload: str(payload.get("retrieval_profile") or "").strip().lower() == retrieval_profile.strip().lower(),
+    )
+    latest_baseline_job = _latest_job(
+        site_store,
+        job_type="retrieval_baseline",
+        statuses={"completed", "failed", "cancelled"},
+        payload_filter=lambda payload: str(payload.get("crop_mode") or "automated").strip() in {"automated", "manual", "paired", "both"},
+    )
+
+    eligible_case_count = 0
+    skipped_not_positive = 0
+    skipped_not_included = 0
+    skipped_no_images = 0
+    for summary in site_store.list_case_summaries():
+        patient_id = str(summary.get("patient_id") or "").strip()
+        visit_date = str(summary.get("visit_date") or "").strip()
+        if not patient_id or not visit_date:
+            continue
+        try:
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        except ValueError:
+            continue
+        if not bool(policy_state.get("is_positive")):
+            skipped_not_positive += 1
+        elif not bool(policy_state.get("is_registry_included")):
+            skipped_not_included += 1
+        elif not bool(policy_state.get("has_images")):
+            skipped_no_images += 1
+        else:
+            eligible_case_count += 1
+
+    return {
+        "site_id": site_store.site_id,
+        "retrieval_profile": retrieval_profile,
+        "profile_id": signature_record.get("profile_id"),
+        "retrieval_signature": signature_record.get("retrieval_signature"),
+        "profile_metadata": dict(signature_record.get("profile_metadata") or {}),
+        "model_version": dict(signature_record.get("model_version") or {}),
+        "remote_node_sync_enabled": bool(cp.remote_node_sync_enabled()),
+        "eligible_case_count": eligible_case_count,
+        "skipped": {
+            "not_positive": skipped_not_positive,
+            "not_included": skipped_not_included,
+            "no_images": skipped_no_images,
+        },
+        "active_job": active_job,
+        "latest_sync": _summarize_retrieval_sync_job(latest_sync_job),
+        "latest_baseline": _summarize_retrieval_baseline_job(latest_baseline_job),
     }
 
 

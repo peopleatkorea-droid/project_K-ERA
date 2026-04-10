@@ -186,12 +186,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               KO / EN
             </button>
           </div>
-          <a
-            className="rounded-full px-2.5 py-1 text-[0.68rem] tracking-[0.08em] text-[#4d5874] transition hover:text-[#7b88a8]"
-            href="/admin-login"
-          >
-            관리자
-          </a>
+          {props.adminRecoveryLinkLabel.trim() ? (
+            <a
+              className="rounded-full px-2.5 py-1 text-[0.68rem] tracking-[0.08em] text-[#4d5874] transition hover:text-[#7b88a8]"
+              href="/admin-login"
+            >
+              {props.adminRecoveryLinkLabel}
+            </a>
+          ) : null}
         </div>
       </nav>
 

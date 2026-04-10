@@ -99,13 +99,13 @@ describe("DashboardSection", () => {
       />
     );
 
-    expect(screen.getByText("AI Clinic embedding status")).toBeInTheDocument();
+    expect(screen.getByText("Site AI readiness")).toBeInTheDocument();
     expect(screen.getByText("Action needed")).toBeInTheDocument();
     expect(screen.getByText("job-embed-1")).toBeInTheDocument();
     expect(screen.getByText("Embedding in progress")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
-    fireEvent.click(screen.getByRole("button", { name: "Backfill missing embeddings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh readiness" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare similar-case cache" }));
 
     expect(onRefreshEmbeddingStatus).toHaveBeenCalledTimes(1);
     expect(onEmbeddingBackfill).toHaveBeenCalledTimes(1);
@@ -139,6 +139,6 @@ describe("DashboardSection", () => {
     );
 
     expect(screen.getByText("Healthy")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Backfill missing embeddings" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Prepare similar-case cache" })).toBeDisabled();
   });
 });

@@ -198,16 +198,26 @@ function formatCount(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
 }
 
+function formatSignedDelta(value: number | null | undefined, emptyLabel: string): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return emptyLabel;
+  }
+  const normalized = value.toFixed(3);
+  return value > 0 ? `+${normalized}` : normalized;
+}
+
 function ReadinessCard({
   title,
   description,
   badge,
   metrics,
+  footnote,
 }: {
   title: string;
   description: string;
   badge: string;
   metrics: Array<{ label: string; value: string }>;
+  footnote?: ReactNode;
 }) {
   return (
     <Card as="article" variant="panel" className="grid gap-3 p-4">
@@ -226,6 +236,7 @@ function ReadinessCard({
           <MetricItem key={`${title}-${metric.label}`} value={metric.value} label={metric.label} />
         ))}
       </MetricGrid>
+      {footnote ? <div className="text-xs leading-5 text-muted">{footnote}</div> : null}
     </Card>
   );
 }
@@ -398,7 +409,7 @@ export function DashboardSection({
           </div>
           <Panel
             title={pick(locale, "Site AI readiness", "병원 AI 준비 상태")}
-            subtitle={pick(locale, "FL, retrieval, and embedding", "FL, retrieval, embedding")}
+            subtitle={pick(locale, "Round status, similar cases, and cache readiness", "라운드 상태, 유사 증례, 캐시 준비")}
             actions={
               <>
                 <Button
@@ -419,7 +430,7 @@ export function DashboardSection({
                 >
                   {embeddingBackfillBusy
                     ? pick(locale, "Queuing...", "대기열 등록 중...")
-                    : pick(locale, "Backfill embeddings", "임베딩 백필")}
+                    : pick(locale, "Prepare similar-case cache", "유사 증례 캐시 준비")}
                 </Button>
               </>
             }
@@ -438,6 +449,37 @@ export function DashboardSection({
                   { label: pick(locale, "eligible images", "적격 이미지"), value: formatCount(visitLevelFederatedStatus?.eligible_image_count) },
                   { label: pick(locale, "not included", "미포함"), value: formatCount(visitLevelFederatedStatus?.skipped.not_included) },
                 ]}
+                footnote={
+                  visitLevelFederatedStatus?.latest_round ? (
+                    <>
+                      {pick(locale, "Last round", "최근 round")}{" "}
+                      {formatDateTime(visitLevelFederatedStatus.latest_round.created_at)}
+                      {" · "}
+                      {pick(locale, "Quality", "품질")}{" "}
+                      {formatMetric(visitLevelFederatedStatus.latest_round.quality_score, notAvailableLabel)}
+                      {" · "}
+                      Δ AUROC{" "}
+                      {formatSignedDelta(
+                        visitLevelFederatedStatus.validation_context?.site_validation_delta?.AUROC,
+                        notAvailableLabel,
+                      )}
+                      {visitLevelFederatedStatus.latest_round.outlier_detected
+                        ? ` · ${pick(locale, "Review alert", "검토 경고")}`
+                        : ""}
+                    </>
+                  ) : visitLevelFederatedStatus?.validation_context?.latest_site_validation ? (
+                    <>
+                      {pick(locale, "Latest validation", "최근 검증")}{" "}
+                      {formatDateTime(visitLevelFederatedStatus.validation_context.latest_site_validation.run_date)}
+                      {" · "}
+                      AUROC{" "}
+                      {formatMetric(
+                        visitLevelFederatedStatus.validation_context.latest_site_validation.AUROC,
+                        notAvailableLabel,
+                      )}
+                    </>
+                  ) : null
+                }
               />
               <ReadinessCard
                 title={pick(locale, "Image-level FL", "Image-level FL")}
@@ -452,9 +494,40 @@ export function DashboardSection({
                   { label: pick(locale, "eligible images", "적격 이미지"), value: formatCount(imageLevelFederatedStatus?.eligible_image_count) },
                   { label: pick(locale, "not positive", "비양성"), value: formatCount(imageLevelFederatedStatus?.skipped.not_positive) },
                 ]}
+                footnote={
+                  imageLevelFederatedStatus?.latest_round ? (
+                    <>
+                      {pick(locale, "Last round", "최근 round")}{" "}
+                      {formatDateTime(imageLevelFederatedStatus.latest_round.created_at)}
+                      {" · "}
+                      {pick(locale, "Quality", "품질")}{" "}
+                      {formatMetric(imageLevelFederatedStatus.latest_round.quality_score, notAvailableLabel)}
+                      {" · "}
+                      Δ AUROC{" "}
+                      {formatSignedDelta(
+                        imageLevelFederatedStatus.validation_context?.site_validation_delta?.AUROC,
+                        notAvailableLabel,
+                      )}
+                      {imageLevelFederatedStatus.latest_round.outlier_detected
+                        ? ` · ${pick(locale, "Review alert", "검토 경고")}`
+                        : ""}
+                    </>
+                  ) : imageLevelFederatedStatus?.validation_context?.latest_site_validation ? (
+                    <>
+                      {pick(locale, "Latest validation", "최근 검증")}{" "}
+                      {formatDateTime(imageLevelFederatedStatus.validation_context.latest_site_validation.run_date)}
+                      {" · "}
+                      AUROC{" "}
+                      {formatMetric(
+                        imageLevelFederatedStatus.validation_context.latest_site_validation.AUROC,
+                        notAvailableLabel,
+                      )}
+                    </>
+                  ) : null
+                }
               />
               <ReadinessCard
-                title={pick(locale, "Retrieval corpus sync", "Retrieval corpus sync")}
+                title={pick(locale, "Similar-case sharing", "유사 증례 공유")}
                 description={federatedRetrievalStatus?.retrieval_profile ?? "dinov2_lesion_crop"}
                 badge={
                   federatedRetrievalStatus?.active_job
@@ -465,15 +538,38 @@ export function DashboardSection({
                   { label: pick(locale, "eligible cases", "적격 케이스"), value: formatCount(federatedRetrievalStatus?.eligible_case_count) },
                   { label: pick(locale, "not included", "미포함"), value: formatCount(federatedRetrievalStatus?.skipped.not_included) },
                   {
-                    label: pick(locale, "remote sync", "원격 sync"),
+                    label: pick(locale, "cross-site sharing", "기관 간 공유"),
                     value: federatedRetrievalStatus?.remote_node_sync_enabled
                       ? pick(locale, "Enabled", "활성")
                       : pick(locale, "Disabled", "비활성"),
                   },
                 ]}
+                footnote={
+                  federatedRetrievalStatus?.latest_sync || federatedRetrievalStatus?.latest_baseline ? (
+                    <>
+                      {federatedRetrievalStatus.latest_sync ? (
+                        <>
+                          {pick(locale, "Last share sync", "최근 공유 동기화")}{" "}
+                          {formatDateTime(federatedRetrievalStatus.latest_sync.finished_at)}
+                          {" · "}
+                          +{formatCount(federatedRetrievalStatus.latest_sync.inserted_count)}
+                          /~{formatCount(federatedRetrievalStatus.latest_sync.updated_count)}
+                          /-{formatCount(federatedRetrievalStatus.latest_sync.deleted_count)}
+                        </>
+                      ) : null}
+                      {federatedRetrievalStatus.latest_baseline ? (
+                        <>
+                          {federatedRetrievalStatus.latest_sync ? " · " : ""}
+                          {pick(locale, "Baseline AUROC", "Baseline AUROC")}{" "}
+                          {formatMetric(federatedRetrievalStatus.latest_baseline.AUROC, notAvailableLabel)}
+                        </>
+                      ) : null}
+                    </>
+                  ) : null
+                }
               />
               <ReadinessCard
-                title={pick(locale, "AI Clinic embeddings", "AI Clinic 임베딩")}
+                title={pick(locale, "AI Clinic cache", "AI Clinic 캐시")}
                 description={embeddingStatus?.model_version.version_name ?? currentModelVersionName ?? notAvailableLabel}
                 badge={
                   embeddingStatus?.active_job
@@ -562,7 +658,7 @@ export function DashboardSection({
             )}
           </Panel>
           <Panel
-            title={pick(locale, "Embedding cache detail", "임베딩 캐시 상세")}
+            title={pick(locale, "AI Clinic cache detail", "AI Clinic 캐시 상세")}
             subtitle={embeddingStatus?.model_version.version_name ?? currentModelVersionName ?? notAvailableLabel}
           >
             {embeddingStatus ? (
@@ -599,8 +695,8 @@ export function DashboardSection({
                   <p className="m-0">
                     {pick(
                       locale,
-                      "Missing counts are calculated against the current model version cache.",
-                      "누락 수치는 현재 모델 버전 캐시 기준으로 계산됩니다."
+                      "Missing counts are calculated against the current AI Clinic cache for the selected model version.",
+                      "누락 수치는 선택한 모델 버전의 현재 AI Clinic 캐시 기준으로 계산됩니다."
                     )}
                   </p>
                   <p className="m-0">
@@ -617,7 +713,7 @@ export function DashboardSection({
                     <div className="flex items-start justify-between gap-3 max-[720px]:flex-col">
                       <div className="grid gap-1">
                         <strong className="text-sm font-semibold text-ink">
-                          {pick(locale, "Latest embedding backfill job", "최근 임베딩 백필 작업")}
+                          {pick(locale, "Latest similar-case cache job", "최근 유사 증례 캐시 작업")}
                         </strong>
                         <span className="text-[0.82rem] text-muted">{embeddingStatus.active_job.job_id}</span>
                       </div>
@@ -640,8 +736,8 @@ export function DashboardSection({
                   <EmptyState>
                     {pick(
                       locale,
-                      "No embedding backfill job has been recorded for this hospital yet.",
-                      "이 병원에는 아직 임베딩 백필 작업 이력이 없습니다."
+                      "No similar-case cache preparation job has been recorded for this hospital yet.",
+                      "이 병원에는 아직 유사 증례 캐시 준비 작업 이력이 없습니다."
                     )}
                   </EmptyState>
                 )}

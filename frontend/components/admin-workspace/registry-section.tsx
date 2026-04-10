@@ -90,13 +90,13 @@ export function RegistrySection({
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
       <SectionHeader
-        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Registry", "레지스트리")}</div>}
+        eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Model review", "모델 검토")}</div>}
         title={pick(locale, "Model versions and update flow", "모델 버전과 업데이트 흐름")}
         titleAs="h3"
         description={pick(
           locale,
-          "Review stored model versions, inspect contributed updates, and decide whether each update should move into the global registry.",
-          "저장된 모델 버전을 검토하고 기여 업데이트를 확인한 뒤, 각 업데이트를 글로벌 레지스트리로 올릴지 결정합니다."
+          "Review stored model versions, inspect contributed updates, and decide whether each update should move into the global model line.",
+          "저장된 모델 버전을 검토하고 기여 업데이트를 확인한 뒤, 각 업데이트를 글로벌 모델 라인으로 올릴지 결정합니다."
         )}
         aside={<span className={docSiteBadgeClass}>{`${modelVersions.length} ${pick(locale, "model(s)", "모델")}`}</span>}
       />

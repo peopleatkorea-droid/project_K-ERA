@@ -57,6 +57,10 @@
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"
+      },
+      "wix": {
+        "bannerPath": "wix/banner-cpu-footprint.bmp",
+        "dialogImagePath": "wix/dialog-cpu-footprint.bmp"
       }
     },
     "icon": [

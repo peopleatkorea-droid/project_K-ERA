@@ -32,6 +32,7 @@ import AdminLoginPage from "../app/admin-login/page";
 describe("AdminLoginPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.NEXT_PUBLIC_KERA_UI_MODE;
     window.localStorage.clear();
     window.history.replaceState(null, "", "/admin-login");
     apiMocks.fetchSites.mockResolvedValue([
@@ -114,5 +115,14 @@ describe("AdminLoginPage", () => {
     await waitFor(() => {
       expect(routerReplace).toHaveBeenCalledWith("/");
     });
+  });
+
+  it("hides operator sign-in when the researcher UI mode is enabled", () => {
+    process.env.NEXT_PUBLIC_KERA_UI_MODE = "researcher";
+
+    render(<AdminLoginPage />);
+
+    expect(screen.getByText("Operator sign-in is hidden in this build")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Enter operator workspace" })).not.toBeInTheDocument();
   });
 });

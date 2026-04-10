@@ -7,6 +7,7 @@ import type { DesktopAppConfigState } from "../lib/desktop-app-config";
 import { fetchPublicSites } from "../lib/auth";
 import { openDesktopExternalUrl } from "../lib/desktop-app-config";
 import { pick, useI18n } from "../lib/i18n";
+import { isOperatorUiEnabled } from "../lib/ui-mode";
 import { LandingV4 } from "../components/public/landing-v4";
 
 type DesktopLandingScreenProps = {
@@ -25,6 +26,7 @@ function formatApproxGiB(bytes: number) {
 
 export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
   const { locale } = useI18n();
+  const operatorUiEnabled = isOperatorUiEnabled();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const [publicSites, setPublicSites] = useState<SiteRecord[]>([]);
   const diskNotice = props.config?.runtime_contract.disk_notice ?? null;
@@ -152,7 +154,7 @@ export function DesktopLandingScreen(props: DesktopLandingScreenProps) {
           "Password sign-in for admin and site admin",
           "admin 및 site admin 비밀번호 로그인",
         )}
-        adminRecoveryLinkLabel={pick(locale, "Operations", "운영")}
+        adminRecoveryLinkLabel={operatorUiEnabled ? pick(locale, "Operations", "운영") : ""}
         adminLaunchLinks={[]}
         publicSites={publicSites}
       />
