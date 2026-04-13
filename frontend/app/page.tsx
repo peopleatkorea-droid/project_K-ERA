@@ -283,7 +283,7 @@ export default function HomePage() {
       "Google is the default path for researchers. Admin and site admin accounts use password sign-in separately.",
       "연구자는 Google 로그인을 기본 경로로 사용하고, admin 및 site admin 계정은 비밀번호 로그인으로 별도 진입합니다."
     ),
-    googleLogin: pick(locale, "Institution Google login", "기관 Google 로그인"),
+    googleLogin: pick(locale, "Sign in with Google", "Google로 로그인"),
     googleDisabled: pick(
       locale,
       "Google login is disabled until `NEXT_PUBLIC_GOOGLE_CLIENT_ID` or `NEXT_PUBLIC_GOOGLE_DESKTOP_CLIENT_ID` is set.",
@@ -336,7 +336,7 @@ export default function HomePage() {
     highlightGoogleTitle: pick(locale, "Google Sign-In", "Google 로그인"),
     highlightGoogleBody: pick(
       locale,
-      "Researchers can onboard with a verified institution-linked Google account.",
+      "Researchers can onboard with an institution-linked Google account.",
       "?곌뎄?먮뒗 湲곌????곌껐??Google 怨꾩젙?쇰줈 ?⑤낫?⑺븷 ???덉뒿?덈떎."
     ),
     highlightApprovalTitle: pick(locale, "Approval Queue", "승인 대기"),
@@ -373,8 +373,8 @@ export default function HomePage() {
     landingSecondaryCta: pick(locale, "See how it flows", "?대뼸寃??댁뼱吏?붿? 蹂닿린"),
     landingCtaNote: pick(
       locale,
-      "Institution Google login remains the primary path. Admin and site admin accounts sign in separately with passwords.",
-      "기관 Google 로그인이 기본 경로이며, admin 및 site admin 계정은 비밀번호로 별도 로그인합니다."
+      "Google sign-in is the primary researcher path. Admin and site admin accounts sign in separately with passwords.",
+      "Google 로그인이 연구자 기본 경로이며, admin 및 site admin 계정은 비밀번호로 별도 로그인합니다."
     ),
     landingAuthEyebrow: pick(locale, "Research access", "?곌뎄 ?묎렐"),
     landingAuthTitle: pick(locale, "Move into the workspace with your institution account", "기관 계정으로 워크스페이스에 들어가기"),
@@ -522,7 +522,7 @@ export default function HomePage() {
       "?몃옒媛 ?앸궃 ?? 而ㅽ뵾 ???붿쓣 ?ㅺ퀬 AI?먭쾶 臾쇱뼱蹂댁꽭?? \"?덈뒗 ?대뼸寃??앷컖??\" K-ERA??洹?吏덈Ц?먯꽌 ?쒖옉?⑸땲??"
     ),
     finalCta: pick(locale, "Open Google sign-in", "Google 濡쒓렇???닿린"),
-    finalNote: pick(locale, "Research begins with one case.", "Research begins with one case."),
+    finalNote: pick(locale, "One careful case is where the network starts.", "한 케이스로 시작하고, 여러 병원이 검증합니다."),
     footerCopyright: pick(
       locale,
       "짤 2026 K-ERA Project 쨌 TinyStar Labs",
@@ -641,20 +641,20 @@ export default function HomePage() {
   ];
   const landingStats = [
     {
-      value: "77%",
-      label: pick(locale, "Pilot single-center 5-fold accuracy", "?⑥씪 湲곌? 珥덇린 紐⑤뜽 5-fold cross-validation accuracy"),
+      value: "101",
+      label: pick(locale, "Founding single-center patients", "단일기관 시작 코호트 환자 수"),
     },
     {
-      value: "85%+",
-      label: pick(locale, "Targeted accuracy at larger BK/FK scale", "BK 쨌 FK 媛?5,000??洹쒕え ?ъ꽦 ???덉긽 accuracy"),
+      value: "258",
+      label: pick(locale, "Culture-confirmed visits", "Culture-confirmed 방문 수"),
     },
     {
-      value: "3",
-      label: pick(locale, "White · Fluorescein · Slit modalities", "White · Fluorescein · Slit 이미지 지원"),
+      value: "658",
+      label: pick(locale, "White-light benchmark images", "White-light benchmark 이미지 수"),
     },
     {
-      value: "0",
-      label: pick(locale, "Known raw-data leaks outside participating hospitals", "?먮낯 ?곗씠???몃? ?좎텧"),
+      value: "0.677",
+      label: pick(locale, "Best visit-level AUROC", "Best visit-level AUROC"),
     },
   ];
   const landingFaqItems = [
