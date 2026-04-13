@@ -315,7 +315,6 @@ _DATA_PLANE_DB_INITIALIZED = False
 _CONTROL_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_SQLITE_SEARCH_READY = False
-CONTROL_PLANE_SCHEMA_REVISION = "2026-04-13"
 DATA_PLANE_SCHEMA_REVISION = "2026-04-13"
 CONTROL_PLANE_ALEMBIC_BASELINE_REVISION = "20260413_01"
 
@@ -711,6 +710,15 @@ def _upgrade_control_plane_schema_with_alembic() -> None:
     command.upgrade(build_control_plane_alembic_config(), "head")
 
 
+def current_control_plane_alembic_revision() -> str:
+    with CONTROL_PLANE_ENGINE.begin() as conn:
+        revision = conn.exec_driver_sql(
+            "SELECT version_num FROM alembic_version LIMIT 1"
+        ).scalar_one_or_none()
+    normalized_revision = str(revision or "").strip()
+    return normalized_revision or CONTROL_PLANE_ALEMBIC_BASELINE_REVISION
+
+
 def init_control_plane_db() -> None:
     global _CONTROL_PLANE_DB_INITIALIZED
     if _CONTROL_PLANE_DB_INITIALIZED:
@@ -741,7 +749,7 @@ def init_control_plane_db() -> None:
             CONTROL_PLANE_ENGINE,
             control_plane_schema_state,
             "control_plane",
-            CONTROL_PLANE_SCHEMA_REVISION,
+            current_control_plane_alembic_revision(),
         )
         _CONTROL_PLANE_DB_INITIALIZED = True
 

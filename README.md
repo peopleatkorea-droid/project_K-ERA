@@ -227,7 +227,7 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 - `npm run desktop:verify`는 이제 desktop bundle resource 확인뿐 아니라 `CSP 설정 여부`와 `desktop/web/python 버전 일치`까지 같이 검사합니다.
 - 로그인 rate limit은 control-plane DB 기반으로 기록되어 프로세스 재시작 뒤에도 동일한 제한 창(`5분 / 10회`)을 유지합니다. DB 경로가 일시적으로 실패하면 기존 in-memory fallback으로 내려갑니다.
 - control plane은 Alembic baseline을 도입했고, startup 시 현재 DB를 `head`로 맞춥니다. 현재 baseline revision은 `20260413_01`이며 이후 control-plane schema change는 Alembic revision으로 추가합니다.
-- data plane은 아직 기존 커스텀 migration 경로를 유지하고, `control_plane_schema_state`, `data_plane_schema_state` 테이블에는 현재 schema revision을 기록합니다.
+- `control_plane_schema_state`는 현재 Alembic revision을 기록하고, `data_plane_schema_state`는 기존 커스텀 data-plane schema revision을 기록합니다.
 - control plane migration 상태 확인/적용은 `uv run python -m kera_research.control_plane_alembic current`, `uv run python -m kera_research.control_plane_alembic upgrade head`로 실행할 수 있습니다.
 - split mode에서 비어 보이던 site/workspace 응답은 remote bootstrap + local cache 기준으로 계속 보이게 복구했습니다.
 - `.\scripts\run_control_plane_e2e_smoke.ps1`로 실제 런타임 흐름을 한 번에 검증할 수 있습니다.

@@ -1551,7 +1551,7 @@ class ApiHttpTests(unittest.TestCase):
 
         self.assertEqual(
             control_state["schema_revision"],
-            self.db_module.CONTROL_PLANE_SCHEMA_REVISION,
+            self.db_module.CONTROL_PLANE_ALEMBIC_BASELINE_REVISION,
         )
         self.assertTrue(str(control_state["recorded_at"]).strip())
         self.assertEqual(
