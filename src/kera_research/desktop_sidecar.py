@@ -33,6 +33,10 @@ from kera_research.api.case_model_versions import (
     serialize_case_artifact_availability,
     serialize_case_model_version,
 )
+from kera_research.api.routes.case_shared import (
+    resolve_case_postmortem_with_response_budget,
+    sync_case_artifact_cache_with_response_budget,
+)
 from kera_research.api.route_helpers import load_cross_validation_reports, site_level_validation_runs, validation_case_rows
 from kera_research.api.site_jobs import (
     build_federated_retrieval_corpus_status,
@@ -260,7 +264,7 @@ def _run_case_validation(params: dict[str, Any]) -> dict[str, Any]:
         generate_gradcam=bool(params.get("generate_gradcam", True)),
         generate_medsam=bool(params.get("generate_medsam", True)),
     )
-    _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
+    sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     case_prediction = case_predictions[0] if case_predictions else None
     post_mortem = None
     if case_prediction is not None and summary.get("validation_mode") != "inference_only":
@@ -278,48 +282,19 @@ def _run_case_validation(params: dict[str, Any]) -> dict[str, Any]:
             "prediction_probability": case_prediction.get("prediction_probability"),
             "is_correct": case_prediction.get("is_correct"),
         }
-        try:
-            post_mortem = workflow.run_case_postmortem(
-                site_store,
-                patient_id=patient_id,
-                visit_date=visit_date,
-                model_version=model_version,
-                execution_device=execution_device,
-                classification_context=classification_context,
-                case_prediction=case_prediction,
-                top_k=3,
-                retrieval_backend="hybrid",
-            )
-            if post_mortem is not None and case_reference_id:
-                case_prediction["post_mortem"] = post_mortem
-                cp.update_validation_case_prediction(
-                    str(summary.get("validation_id") or ""),
-                    case_reference_id=case_reference_id,
-                    updates={
-                        "post_mortem": post_mortem,
-                        "structured_analysis": post_mortem.get("structured_analysis"),
-                    },
-                )
-                site_store.record_case_validation_history(
-                    patient_id,
-                    visit_date,
-                    {
-                        "validation_id": summary.get("validation_id"),
-                        "run_date": summary.get("run_date"),
-                        "model_version": summary.get("model_version"),
-                        "model_version_id": summary.get("model_version_id"),
-                        "model_architecture": summary.get("model_architecture"),
-                        "run_scope": "case",
-                        "predicted_label": case_prediction.get("predicted_label"),
-                        "true_label": case_prediction.get("true_label"),
-                        "prediction_probability": case_prediction.get("prediction_probability"),
-                        "is_correct": case_prediction.get("is_correct"),
-                        "prediction_snapshot": case_prediction.get("prediction_snapshot"),
-                        "post_mortem": post_mortem,
-                    },
-                )
-        except Exception:
-            post_mortem = None
+        post_mortem = resolve_case_postmortem_with_response_budget(
+            workflow,
+            site_store,
+            cp,
+            patient_id=patient_id,
+            visit_date=visit_date,
+            model_version=model_version,
+            execution_device=execution_device,
+            summary=summary,
+            classification_context=classification_context,
+            case_prediction=case_prediction,
+            case_reference_id=case_reference_id,
+        )
     return {
         "summary": summary,
         "case_prediction": case_prediction,
@@ -372,7 +347,7 @@ def _run_case_validation_compare(params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             comparisons.append({"model_version": serialize_case_model_version(model_version), "error": str(exc)})
     if any(item.get("summary") for item in comparisons):
-        _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
+        sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     return {
         "patient_id": patient_id,
         "visit_date": visit_date,
@@ -402,7 +377,7 @@ def _run_case_ai_clinic(params: dict[str, Any]) -> dict[str, Any]:
         retrieval_backend=str(params.get("retrieval_backend") or "standard"),
         retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
-    _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
+    sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     return {
         **result,
         "analysis_stage": "expanded",
@@ -430,7 +405,7 @@ def _run_case_ai_clinic_similar_cases(params: dict[str, Any]) -> dict[str, Any]:
         retrieval_backend=str(params.get("retrieval_backend") or "standard"),
         retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
-    _sync_case_artifact_cache_best_effort(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
+    sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
     return {
         **result,
         "analysis_stage": "similar_cases",

@@ -525,8 +525,8 @@ export default function HomePage() {
     finalNote: pick(locale, "Research begins with one case.", "Research begins with one case."),
     footerCopyright: pick(
       locale,
-      "짤 2026 K-ERA Project 쨌 Jeju National University Hospital",
-      "짤 2026 K-ERA Project 쨌 Jeju National University Hospital"
+      "짤 2026 K-ERA Project 쨌 TinyStar Labs",
+      "짤 2026 K-ERA Project 쨌 TinyStar Labs"
     ),
     footerPrivacy: pick(locale, "Privacy Policy", "媛쒖씤?뺣낫泥섎━諛⑹묠"),
     footerTerms: pick(locale, "Terms", "?댁슜?쎄?"),

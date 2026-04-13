@@ -483,7 +483,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
         <div className="text-[1.05rem] font-semibold tracking-[0.04em] font-editorial">
           K<span className="text-[#1a5fa8]">-ERA</span>
         </div>
-        <div className="text-[0.71rem] text-[#7c8095]">© 2026 K-ERA Research Network · Jeju National University Hospital · Ophthalmology</div>
+        <div className="text-[0.71rem] text-[#7c8095]">© 2026 K-ERA Research Network · TinyStar Labs</div>
         <div className="flex gap-[18px]">
           <a className="text-[0.71rem] text-[#7c8095] transition hover:text-[#1a5fa8]" href="/privacy">
             Privacy

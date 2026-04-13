@@ -8,6 +8,13 @@ import {
   readPersistedDraftAssets,
   writePersistedDraftAssets,
 } from "../../lib/draft-persistence";
+import {
+  createDraftState,
+  draftStorageKey,
+  favoriteStorageKey,
+  hasDraftContent,
+  normalizeRecoveredDraft,
+} from "./case-workspace-draft-helpers";
 
 type DraftImage = {
   draft_id: string;
@@ -65,11 +72,6 @@ type Args = {
   recoveredDraftWithAssetsMessage: string;
   cultureSpecies: Record<string, string[]>;
   setToast: (toast: ToastState) => void;
-  createDraft: () => DraftState;
-  normalizeRecoveredDraft: (draft: DraftState) => DraftState;
-  hasDraftContent: (draft: DraftState) => boolean;
-  draftStorageKey: (userId: string, siteId: string) => string;
-  favoriteStorageKey: (userId: string, siteId: string) => string;
 };
 
 function serializeDraftBox(box: NormalizedBox | null | undefined): string {
@@ -114,11 +116,6 @@ export function useCaseWorkspaceDraftState({
   recoveredDraftWithAssetsMessage,
   cultureSpecies,
   setToast,
-  createDraft,
-  normalizeRecoveredDraft,
-  hasDraftContent,
-  draftStorageKey,
-  favoriteStorageKey,
 }: Args) {
   function defaultPendingOrganism(category = "bacterial"): OrganismRecord {
     const nextCategory = String(category || "bacterial");
@@ -142,7 +139,7 @@ export function useCaseWorkspaceDraftState({
       return {
         ...parsed,
         draft: normalizeRecoveredDraft({
-          ...createDraft(),
+          ...createDraftState(),
           ...parsed.draft,
         }),
       };
@@ -170,7 +167,7 @@ export function useCaseWorkspaceDraftState({
   const initialDraftSnapshotRef = useRef<PersistedDraft | null>(readStoredDraftSnapshot(selectedSiteId));
   const initialFavoriteCaseIdsRef = useRef<string[]>(readStoredFavoriteIds(selectedSiteId));
   const [draft, setDraft] = useState<DraftState>(
-    () => initialDraftSnapshotRef.current?.draft ?? createDraft(),
+    () => initialDraftSnapshotRef.current?.draft ?? createDraftState(),
   );
   const [pendingOrganism, setPendingOrganism] = useState<OrganismRecord>(() =>
     defaultPendingOrganism(initialDraftSnapshotRef.current?.draft.culture_category),
@@ -247,7 +244,7 @@ export function useCaseWorkspaceDraftState({
     async function loadPersistedDraftState() {
       if (!selectedSiteId) {
         resetPersistedAssetSnapshot();
-        setDraft(createDraft());
+        setDraft(createDraftState());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
         setDraftSavedAt(null);
@@ -286,7 +283,7 @@ export function useCaseWorkspaceDraftState({
         }
 
         rememberPersistedAssets(storageKey, [], {});
-        setDraft(createDraft());
+        setDraft(createDraftState());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
         setDraftSavedAt(null);
@@ -301,7 +298,7 @@ export function useCaseWorkspaceDraftState({
       try {
         const parsed = JSON.parse(rawDraft) as PersistedDraft;
         const recoveredDraft = normalizeRecoveredDraft({
-          ...createDraft(),
+          ...createDraftState(),
           ...parsed.draft,
         });
         setDraft(recoveredDraft);
@@ -333,7 +330,7 @@ export function useCaseWorkspaceDraftState({
         window.localStorage.removeItem(storageKey);
         void deletePersistedDraftAssets(storageKey);
         resetPersistedAssetSnapshot();
-        setDraft(createDraft());
+        setDraft(createDraftState());
         setPendingOrganism(defaultPendingOrganism());
         setShowAdditionalOrganismForm(false);
         setDraftSavedAt(null);

@@ -691,7 +691,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
         <div className="text-[0.95rem] text-[#2dd4c0] font-ko-serif">
           K<span className="text-[#3f4b6a]">-ERA</span>
         </div>
-        <div className="text-[0.73rem] text-[#3f4b6a]">© 2026 K-ERA Project · Jeju National University Hospital</div>
+        <div className="text-[0.73rem] text-[#3f4b6a]">© 2026 K-ERA Project · TinyStar Labs</div>
         <div className="flex gap-5">
           <a className="text-[0.73rem] text-[#3f4b6a] transition hover:text-[#2dd4c0]" href="/privacy">
             개인정보처리방침

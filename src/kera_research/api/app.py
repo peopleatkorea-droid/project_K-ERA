@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -1048,6 +1049,8 @@ def _get_model_version(cp: ControlPlaneStore, model_version_id: str | None) -> d
 
 import concurrent.futures
 
+LOGGER = logging.getLogger(__name__)
+
 _EMBEDDING_INDEX_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _PENDING_EMBEDDING_JOBS: dict[tuple[str, str, str], bool] = {}
 _PENDING_EMBEDDING_TRIGGERS: dict[tuple[str, str, str], str] = {}
@@ -1068,6 +1071,33 @@ def _parse_nonnegative_delay_seconds(env_name: str, default_seconds: float) -> f
         return max(0.0, float(raw_value))
     except ValueError:
         return float(default_seconds)
+
+
+def _submit_executor_job_after_delay(
+    executor: concurrent.futures.ThreadPoolExecutor,
+    fn: Callable[..., Any],
+    *args: Any,
+    delay_seconds: float = 0.0,
+) -> None:
+    normalized_delay = max(0.0, float(delay_seconds or 0.0))
+    if normalized_delay <= 0:
+        executor.submit(fn, *args)
+        return
+
+    def _submit() -> None:
+        try:
+            executor.submit(fn, *args)
+        except Exception as exc:
+            LOGGER.warning(
+                "Delayed executor submission failed for %s after %.3fs: %s",
+                getattr(fn, "__name__", repr(fn)),
+                normalized_delay,
+                exc,
+            )
+
+    timer = threading.Timer(normalized_delay, _submit)
+    timer.daemon = True
+    timer.start()
 
 
 def _case_embedding_refresh_delay_seconds(trigger: str, *, execution_device: str) -> float:
@@ -1192,23 +1222,178 @@ def _queue_case_embedding_refresh(
         ),
     )
 
-    def run_index_job_safe(
+    def schedule_embedding_refresh_run(
+        key: tuple[str, str, str],
+        job_trigger: str,
+        job_embedding_delay_seconds: float,
+        job_index_delay_seconds: float,
+    ) -> None:
+        _submit_executor_job_after_delay(
+            _EMBEDDING_INDEX_EXECUTOR,
+            run_embedding_job_safe,
+            key,
+            job_trigger,
+            job_embedding_delay_seconds,
+            job_index_delay_seconds,
+            delay_seconds=job_embedding_delay_seconds,
+        )
+
+    def finalize_embedding_job(
+        key: tuple[str, str, str],
+        job_trigger: str,
+    ) -> None:
+        with _EMBEDDING_JOB_LOCK:
+            is_dirty = _PENDING_EMBEDDING_JOBS.get(key, False)
+            latest_trigger = _PENDING_EMBEDDING_TRIGGERS.get(key, job_trigger)
+            if is_dirty:
+                _PENDING_EMBEDDING_JOBS[key] = False
+                latest_execution_device = _preferred_embedding_execution_device()
+                latest_embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
+                    latest_trigger,
+                    execution_device=latest_execution_device,
+                )
+                latest_index_delay_seconds = max(
+                    latest_embedding_delay_seconds,
+                    _case_vector_index_refresh_delay_seconds(
+                        latest_trigger,
+                        execution_device=latest_execution_device,
+                        embedding_delay_seconds=latest_embedding_delay_seconds,
+                    ),
+                )
+                schedule_embedding_refresh_run(
+                    key,
+                    latest_trigger,
+                    latest_embedding_delay_seconds,
+                    latest_index_delay_seconds,
+                )
+            else:
+                _PENDING_EMBEDDING_JOBS.pop(key, None)
+                _PENDING_EMBEDDING_TRIGGERS.pop(key, None)
+
+    def mark_embedding_job_superseded(
+        job_id: str,
+        embedding_response: dict[str, Any],
+    ) -> None:
+        site_store.update_job_status(
+            job_id,
+            "completed",
+            {
+                "progress": {
+                    "stage": "superseded",
+                    "message": "Skipped vector index rebuild because a newer case update is queued.",
+                    "percent": 100,
+                },
+                "response": {
+                    **embedding_response,
+                    "execution_device": execution_device,
+                    "vector_index": None,
+                    "vector_index_error": None,
+                },
+            },
+        )
+
+    def run_vector_index_stage(
+        key: tuple[str, str, str],
+        job_trigger: str,
+        job_id: str,
+        embedding_response: dict[str, Any],
+    ) -> None:
+        try:
+            with _EMBEDDING_JOB_LOCK:
+                if _PENDING_EMBEDDING_JOBS.get(key, False):
+                    mark_embedding_job_superseded(job_id, embedding_response)
+                    return
+
+            workflow = _get_workflow(cp)
+            site_store.update_job_status(
+                job_id,
+                "running",
+                {
+                    "progress": {
+                        "stage": "index",
+                        "message": "Rebuilding AI Clinic vector index.",
+                        "percent": 75,
+                    }
+                },
+            )
+
+            available_backends = list(embedding_response.get("available_backends") or [])
+            vector_index: dict[str, Any] | None = None
+            vector_index_error: str | None = None
+            try:
+                vector_index = {
+                    "classifier": workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="classifier",
+                    )
+                }
+                if "dinov2" in available_backends:
+                    vector_index["dinov2"] = workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="dinov2",
+                    )
+                if "biomedclip" in available_backends:
+                    vector_index["biomedclip"] = workflow.rebuild_case_vector_index(
+                        site_store,
+                        model_version=model_version,
+                        backend="biomedclip",
+                    )
+            except Exception as exc:
+                vector_index_error = str(exc)
+
+            site_store.update_job_status(
+                job_id,
+                "completed",
+                {
+                    "progress": {
+                        "stage": "completed",
+                        "message": "AI Clinic embedding refresh completed.",
+                        "percent": 100,
+                    },
+                    "response": {
+                        **embedding_response,
+                        "execution_device": execution_device,
+                        "vector_index": vector_index,
+                        "vector_index_error": vector_index_error,
+                    },
+                },
+            )
+        except Exception as exc:
+            site_store.update_job_status(
+                job_id,
+                "failed",
+                {
+                    "progress": {
+                        "stage": "failed",
+                        "message": "AI Clinic embedding refresh failed.",
+                        "percent": 100,
+                    },
+                    "error": str(exc),
+                },
+            )
+            try:
+                print(f"Embedding indexing failed for {key}: {exc}")
+            except Exception:
+                pass
+        finally:
+            finalize_embedding_job(key, job_trigger)
+
+    def run_embedding_job_safe(
         key: tuple[str, str, str],
         job_trigger: str,
         job_embedding_delay_seconds: float,
         job_index_delay_seconds: float,
     ) -> None:
         job: dict[str, Any] | None = None
+        handed_off_to_index_stage = False
         try:
-            job_started_at = time.monotonic()
-            if job_embedding_delay_seconds > 0:
-                # Keep case-save UX responsive by yielding the CPU-intensive refresh
-                # until after the save flow has completed and the next screen has rendered.
-                time.sleep(job_embedding_delay_seconds)
             with _EMBEDDING_JOB_LOCK:
                 if _PENDING_EMBEDDING_JOBS.get(key, False):
                     return
             workflow = _get_workflow(cp)
+            embedding_started_at = time.monotonic()
             # Create a localized job record in DB for visibility
             job = site_store.enqueue_job(
                 "ai_clinic_embedding_index",
@@ -1260,108 +1445,36 @@ def _queue_case_embedding_refresh(
 
             with _EMBEDDING_JOB_LOCK:
                 if _PENDING_EMBEDDING_JOBS.get(key, False):
-                    site_store.update_job_status(
-                        job["job_id"],
-                        "completed",
-                        {
-                            "progress": {
-                                "stage": "superseded",
-                                "message": "Skipped vector index rebuild because a newer case update is queued.",
-                                "percent": 100,
-                            },
-                            "response": {
-                                **embedding_response,
-                                "execution_device": execution_device,
-                                "vector_index": None,
-                                "vector_index_error": None,
-                            },
-                        },
-                    )
+                    mark_embedding_job_superseded(job["job_id"], embedding_response)
                     return
 
             remaining_index_delay_seconds = max(
                 0.0,
-                float(job_index_delay_seconds) - (time.monotonic() - job_started_at),
+                float(job_index_delay_seconds)
+                - float(job_embedding_delay_seconds)
+                - (time.monotonic() - embedding_started_at),
             )
             if remaining_index_delay_seconds > 0:
-                time.sleep(remaining_index_delay_seconds)
+                _submit_executor_job_after_delay(
+                    _EMBEDDING_INDEX_EXECUTOR,
+                    run_vector_index_stage,
+                    key,
+                    job_trigger,
+                    job["job_id"],
+                    embedding_response,
+                    delay_seconds=remaining_index_delay_seconds,
+                )
+                handed_off_to_index_stage = True
+                return
 
-            with _EMBEDDING_JOB_LOCK:
-                if _PENDING_EMBEDDING_JOBS.get(key, False):
-                    site_store.update_job_status(
-                        job["job_id"],
-                        "completed",
-                        {
-                            "progress": {
-                                "stage": "superseded",
-                                "message": "Skipped vector index rebuild because a newer case update is queued.",
-                                "percent": 100,
-                            },
-                            "response": {
-                                **embedding_response,
-                                "execution_device": execution_device,
-                                "vector_index": None,
-                                "vector_index_error": None,
-                            },
-                        },
-                    )
-                    return
-
-            site_store.update_job_status(
+            handed_off_to_index_stage = True
+            run_vector_index_stage(
+                key,
+                job_trigger,
                 job["job_id"],
-                "running",
-                {
-                    "progress": {
-                        "stage": "index",
-                        "message": "Rebuilding AI Clinic vector index.",
-                        "percent": 75,
-                    }
-                },
+                embedding_response,
             )
-
-            available_backends = list(embedding_response.get("available_backends") or [])
-            vector_index: dict[str, Any] | None = None
-            vector_index_error: str | None = None
-            try:
-                vector_index = {
-                    "classifier": workflow.rebuild_case_vector_index(
-                        site_store,
-                        model_version=model_version,
-                        backend="classifier",
-                    )
-                }
-                if "dinov2" in available_backends:
-                    vector_index["dinov2"] = workflow.rebuild_case_vector_index(
-                        site_store,
-                        model_version=model_version,
-                        backend="dinov2",
-                    )
-                if "biomedclip" in available_backends:
-                    vector_index["biomedclip"] = workflow.rebuild_case_vector_index(
-                        site_store,
-                        model_version=model_version,
-                        backend="biomedclip",
-                    )
-            except Exception as exc:
-                vector_index_error = str(exc)
-
-            site_store.update_job_status(
-                job["job_id"],
-                "completed",
-                {
-                    "progress": {
-                        "stage": "completed",
-                        "message": "AI Clinic embedding refresh completed.",
-                        "percent": 100,
-                    },
-                    "response": {
-                        **embedding_response,
-                        "execution_device": execution_device,
-                        "vector_index": vector_index,
-                        "vector_index_error": vector_index_error,
-                    },
-                },
-            )
+            return
 
         except Exception as exc:
             if job is not None:
@@ -1383,37 +1496,10 @@ def _queue_case_embedding_refresh(
             except Exception:
                 pass
         finally:
-            with _EMBEDDING_JOB_LOCK:
-                is_dirty = _PENDING_EMBEDDING_JOBS.get(key, False)
-                latest_trigger = _PENDING_EMBEDDING_TRIGGERS.get(key, job_trigger)
-                if is_dirty:
-                    _PENDING_EMBEDDING_JOBS[key] = False  # Reset dirty bit and re-queue
-                    latest_execution_device = _preferred_embedding_execution_device()
-                    latest_embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
-                        latest_trigger,
-                        execution_device=latest_execution_device,
-                    )
-                    latest_index_delay_seconds = max(
-                        latest_embedding_delay_seconds,
-                        _case_vector_index_refresh_delay_seconds(
-                            latest_trigger,
-                            execution_device=latest_execution_device,
-                            embedding_delay_seconds=latest_embedding_delay_seconds,
-                        ),
-                    )
-                    _EMBEDDING_INDEX_EXECUTOR.submit(
-                        run_index_job_safe,
-                        key,
-                        latest_trigger,
-                        latest_embedding_delay_seconds,
-                        latest_index_delay_seconds,
-                    )
-                else:
-                    _PENDING_EMBEDDING_JOBS.pop(key, None)
-                    _PENDING_EMBEDDING_TRIGGERS.pop(key, None)
+            if not handed_off_to_index_stage:
+                finalize_embedding_job(key, job_trigger)
 
-    _EMBEDDING_INDEX_EXECUTOR.submit(
-        run_index_job_safe,
+    schedule_embedding_refresh_run(
         job_key,
         trigger,
         embedding_delay_seconds,
@@ -1514,7 +1600,102 @@ def _queue_federated_retrieval_corpus_sync(
         _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[job_key] = False
 
     poll_seconds = _parse_nonnegative_delay_seconds("KERA_FEDERATED_RETRIEVAL_SYNC_POLL_SECONDS", 3.0)
+    poll_delay_seconds = max(0.1, float(poll_seconds or 0.0))
     max_wait_seconds = _parse_nonnegative_delay_seconds("KERA_FEDERATED_RETRIEVAL_SYNC_MAX_WAIT_SECONDS", 300.0)
+
+    def schedule_sync_run(
+        key: tuple[str, str],
+        profile: str,
+        job_trigger: str,
+        job_delay_seconds: float,
+    ) -> None:
+        _submit_executor_job_after_delay(
+            _FEDERATED_RETRIEVAL_SYNC_EXECUTOR,
+            run_sync_job_safe,
+            key,
+            profile,
+            job_trigger,
+            job_delay_seconds,
+            delay_seconds=job_delay_seconds,
+        )
+
+    def finalize_sync_job(
+        key: tuple[str, str],
+        profile: str,
+        job_trigger: str,
+    ) -> None:
+        with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
+            is_dirty = _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.get(key, False)
+            latest_trigger = _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.get(key, job_trigger)
+            if is_dirty:
+                _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[key] = False
+            else:
+                _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.pop(key, None)
+                _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.pop(key, None)
+
+        if not is_dirty:
+            return
+
+        latest_execution_device = _preferred_embedding_execution_device()
+        latest_delay_seconds = _federated_retrieval_sync_delay_seconds(
+            latest_trigger,
+            execution_device=latest_execution_device,
+        )
+        schedule_sync_run(
+            key,
+            profile,
+            latest_trigger,
+            latest_delay_seconds,
+        )
+
+    def schedule_sync_status_check(
+        key: tuple[str, str],
+        profile: str,
+        job_trigger: str,
+        job_id: str,
+        wait_started_at: float,
+    ) -> None:
+        _submit_executor_job_after_delay(
+            _FEDERATED_RETRIEVAL_SYNC_EXECUTOR,
+            recheck_sync_job_safe,
+            key,
+            profile,
+            job_trigger,
+            job_id,
+            wait_started_at,
+            delay_seconds=poll_delay_seconds,
+        )
+
+    def recheck_sync_job_safe(
+        key: tuple[str, str],
+        profile: str,
+        job_trigger: str,
+        job_id: str,
+        wait_started_at: float,
+    ) -> None:
+        monitoring_pending = False
+        try:
+            current_job = site_store.get_job(job_id) or {}
+            current_status = str(current_job.get("status") or "").strip().lower()
+            if current_status in {"queued", "running"}:
+                if max_wait_seconds <= 0 or (time.monotonic() - wait_started_at) < max_wait_seconds:
+                    schedule_sync_status_check(
+                        key,
+                        profile,
+                        job_trigger,
+                        job_id,
+                        wait_started_at,
+                    )
+                    monitoring_pending = True
+                    return
+        except Exception as exc:
+            try:
+                print(f"Federated retrieval auto-sync failed for {key}: {exc}")
+            except Exception:
+                pass
+        finally:
+            if not monitoring_pending:
+                finalize_sync_job(key, profile, job_trigger)
 
     def run_sync_job_safe(
         key: tuple[str, str],
@@ -1522,11 +1703,8 @@ def _queue_federated_retrieval_corpus_sync(
         job_trigger: str,
         job_delay_seconds: float,
     ) -> None:
+        monitoring_pending = False
         try:
-            if job_delay_seconds > 0:
-                # Keep case-save and image-save UX responsive by letting the write
-                # and navigation path settle before we enqueue site-level sync work.
-                time.sleep(job_delay_seconds)
             with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
                 if _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.get(key, False):
                     return
@@ -1548,44 +1726,31 @@ def _queue_federated_retrieval_corpus_sync(
                 job = dict(queued.get("job") or {})
 
             job_id = str((job or {}).get("job_id") or "").strip()
-            wait_started_at = time.monotonic()
-            while job_id:
+            if job_id:
                 current_job = site_store.get_job(job_id) or job
                 current_status = str(current_job.get("status") or "").strip().lower()
-                if current_status not in {"queued", "running"}:
-                    break
-                if max_wait_seconds > 0 and (time.monotonic() - wait_started_at) >= max_wait_seconds:
-                    break
-                time.sleep(poll_seconds)
+                if current_status in {"queued", "running"}:
+                    wait_started_at = time.monotonic()
+                    if max_wait_seconds <= 0 or (time.monotonic() - wait_started_at) < max_wait_seconds:
+                        schedule_sync_status_check(
+                            key,
+                            profile,
+                            job_trigger,
+                            job_id,
+                            wait_started_at,
+                        )
+                        monitoring_pending = True
+                        return
         except Exception as exc:
             try:
                 print(f"Federated retrieval auto-sync failed for {key}: {exc}")
             except Exception:
                 pass
         finally:
-            with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
-                is_dirty = _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.get(key, False)
-                latest_trigger = _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.get(key, job_trigger)
-                if is_dirty:
-                    _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[key] = False
-                    latest_execution_device = _preferred_embedding_execution_device()
-                    latest_delay_seconds = _federated_retrieval_sync_delay_seconds(
-                        latest_trigger,
-                        execution_device=latest_execution_device,
-                    )
-                    _FEDERATED_RETRIEVAL_SYNC_EXECUTOR.submit(
-                        run_sync_job_safe,
-                        key,
-                        profile,
-                        latest_trigger,
-                        latest_delay_seconds,
-                    )
-                else:
-                    _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.pop(key, None)
-                    _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.pop(key, None)
+            if not monitoring_pending:
+                finalize_sync_job(key, profile, job_trigger)
 
-    _FEDERATED_RETRIEVAL_SYNC_EXECUTOR.submit(
-        run_sync_job_safe,
+    schedule_sync_run(
         job_key,
         normalized_profile,
         trigger,
@@ -1655,8 +1820,6 @@ def _queue_ai_clinic_vector_index_rebuild(
     ) -> None:
         job: dict[str, Any] | None = None
         try:
-            if job_delay_seconds > 0:
-                time.sleep(job_delay_seconds)
             with _VECTOR_INDEX_REBUILD_JOB_LOCK:
                 if _PENDING_VECTOR_INDEX_REBUILD_JOBS.get(key, False):
                     return
@@ -1741,21 +1904,25 @@ def _queue_ai_clinic_vector_index_rebuild(
                         latest_trigger,
                         execution_device=latest_execution_device,
                     )
-                    _VECTOR_INDEX_REBUILD_EXECUTOR.submit(
+                    _submit_executor_job_after_delay(
+                        _VECTOR_INDEX_REBUILD_EXECUTOR,
                         run_rebuild_job_safe,
                         key,
                         latest_trigger,
                         latest_delay_seconds,
+                        delay_seconds=latest_delay_seconds,
                     )
                 else:
                     _PENDING_VECTOR_INDEX_REBUILD_JOBS.pop(key, None)
                     _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.pop(key, None)
 
-    _VECTOR_INDEX_REBUILD_EXECUTOR.submit(
+    _submit_executor_job_after_delay(
+        _VECTOR_INDEX_REBUILD_EXECUTOR,
         run_rebuild_job_safe,
         job_key,
         trigger,
         delay_seconds,
+        delay_seconds=delay_seconds,
     )
     return {
         "site_id": site_store.site_id,

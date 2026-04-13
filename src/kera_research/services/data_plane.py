@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from io import BytesIO
 import os
 import re
-import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -61,6 +60,20 @@ from kera_research.services.data_plane_case_history import (
     record_case_validation_history as _record_case_validation_history_impl,
     resolve_visit_reference as _resolve_visit_reference_impl,
 )
+from kera_research.services.data_plane_images import (
+    add_image as _add_image_impl,
+    backfill_image_derivatives as _backfill_image_derivatives_impl,
+    delete_images_for_visit as _delete_images_for_visit_impl,
+    get_image as _get_image_impl,
+    get_images as _get_images_impl,
+    list_images as _list_images_impl,
+    list_images_for_patient as _list_images_for_patient_impl,
+    list_images_for_visit as _list_images_for_visit_impl,
+    update_image_artifact_cache as _update_image_artifact_cache_impl,
+    update_image_quality_scores as _update_image_quality_scores_impl,
+    update_lesion_prompt_box as _update_lesion_prompt_box_impl,
+    update_representative_flags as _update_representative_flags_impl,
+)
 from kera_research.services.data_plane_jobs import (
     artifact_files as _artifact_files_impl,
     claim_next_job as _claim_next_job_impl,
@@ -78,6 +91,55 @@ from kera_research.services.data_plane_previews import (
     delete_image_preview_cache as _delete_image_preview_cache_impl,
     ensure_image_preview as _ensure_image_preview_impl,
     image_preview_cache_path as _image_preview_cache_path_impl,
+)
+from kera_research.services.data_plane_recovery import (
+    export_metadata_backup as _export_metadata_backup_impl,
+    find_matching_richer_metadata_snapshot as _find_matching_richer_metadata_snapshot_impl,
+    generate_manifest as _generate_manifest_impl,
+    load_manifest as _load_manifest_impl,
+    load_patient_metadata_snapshot_from_db as _load_patient_metadata_snapshot_from_db_impl,
+    local_metadata_backup_db_paths as _local_metadata_backup_db_paths_impl,
+    metadata_backup_path as _metadata_backup_path_impl,
+    normalize_snapshot_image_paths as _normalize_snapshot_image_paths_impl,
+    patient_id_from_recovery_image_path as _patient_id_from_recovery_image_path_impl,
+    patient_snapshot_is_richer_than_placeholder as _patient_snapshot_is_richer_than_placeholder_impl,
+    recover_metadata as _recover_metadata_impl,
+    recover_metadata_from_backup_payload as _recover_metadata_from_backup_payload_impl,
+    recover_metadata_from_manifest as _recover_metadata_from_manifest_impl,
+    resolve_recovery_image_path as _resolve_recovery_image_path_impl,
+    restore_placeholder_metadata_from_local_backups as _restore_placeholder_metadata_from_local_backups_impl,
+    restore_placeholder_metadata_from_snapshot as _restore_placeholder_metadata_from_snapshot_impl,
+    raw_inventory_stats as _raw_inventory_stats_impl,
+    standardize_visit_storage_layout as _standardize_visit_storage_layout_impl,
+    sync_raw_inventory_metadata as _sync_raw_inventory_metadata_impl,
+    sync_raw_inventory_metadata_if_due as _sync_raw_inventory_metadata_if_due_impl,
+)
+from kera_research.services.data_plane_summary import (
+    raw_inventory_index as _raw_inventory_index_impl,
+    site_summary_stats as _site_summary_stats_impl,
+)
+from kera_research.services.data_plane_patients import (
+    create_patient as _create_patient_impl,
+    create_visit as _create_visit_impl,
+    get_patient as _get_patient_impl,
+    get_visit as _get_visit_impl,
+    get_visit_by_id as _get_visit_by_id_impl,
+    get_visit_row as _get_visit_row_impl,
+    is_visit_fl_retained as _is_visit_fl_retained_impl,
+    list_patients as _list_patients_impl,
+    list_visible_workspace_patients as _list_visible_workspace_patients_impl,
+    list_retained_case_archive as _list_retained_case_archive_impl,
+    list_visits as _list_visits_impl,
+    list_visits_for_patient as _list_visits_for_patient_impl,
+    lookup_patient_id as _lookup_patient_id_impl,
+    mark_visit_fl_retained as _mark_visit_fl_retained_impl,
+    update_patient as _update_patient_impl,
+    update_visit as _update_visit_impl,
+)
+from kera_research.services.data_plane_patient_splits import (
+    clear_patient_split as _clear_patient_split_impl,
+    load_patient_split as _load_patient_split_impl,
+    save_patient_split as _save_patient_split_impl,
 )
 from kera_research.services.data_plane_queries import (
     list_case_summaries as _list_case_summaries_impl,
@@ -814,10 +876,7 @@ class SiteStore:
             _SITE_LEGACY_VISIT_LABEL_REPAIRED.add(self.site_id)
 
     def _get_visit_by_id(self, visit_id: str) -> dict[str, Any] | None:
-        query = select(db_visits).where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == visit_id))
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        return _hydrate_visit_culture_fields(dict(row)) if row else None
+        return _get_visit_by_id_impl(self, visit_id)
 
     def _resolve_visit_reference(self, patient_id: str, visit_date: str) -> tuple[str, str]:
         return _resolve_visit_reference_impl(self, patient_id, visit_date)
@@ -832,99 +891,22 @@ class SiteStore:
         return _record_case_contribution_history_impl(self, patient_id, visit_date, entry)
 
     def list_patients(self, created_by_user_id: str | None = None) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        query = select(db_patients).where(db_patients.c.site_id == self.site_id)
-        if created_by_user_id:
-            query = query.where(db_patients.c.created_by_user_id == created_by_user_id)
-        query = query.order_by(db_patients.c.created_at.desc())
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [
-            {
-                "patient_id": row["patient_id"],
-                "created_by_user_id": row.get("created_by_user_id"),
-                "sex": row["sex"],
-                "age": row["age"],
-                "chart_alias": row["chart_alias"],
-                "local_case_code": row["local_case_code"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
+        return _list_patients_impl(self, created_by_user_id=created_by_user_id)
+
+    def list_visible_workspace_patients(
+        self,
+        created_by_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return _list_visible_workspace_patients_impl(
+            self,
+            created_by_user_id=created_by_user_id,
+        )
 
     def get_patient(self, patient_id: str) -> dict[str, Any] | None:
-        self._sync_raw_inventory_metadata_if_due()
-        query = select(db_patients).where(
-            and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == patient_id)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        if row is None:
-            return None
-        return {
-            "patient_id": row["patient_id"],
-            "created_by_user_id": row.get("created_by_user_id"),
-            "sex": row["sex"],
-            "age": row["age"],
-            "chart_alias": row["chart_alias"],
-            "local_case_code": row["local_case_code"],
-            "created_at": row["created_at"],
-        }
+        return _get_patient_impl(self, patient_id)
 
     def lookup_patient_id(self, patient_id: str) -> dict[str, Any]:
-        self._sync_raw_inventory_metadata_if_due()
-        requested_patient_id = str(patient_id or "").strip()
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        if not normalized_patient_id:
-            raise ValueError("Patient id is required.")
-
-        patient_query = select(db_patients).where(
-            and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == normalized_patient_id)
-        )
-        visit_count_query = (
-            select(func.count())
-            .select_from(db_visits)
-            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
-        )
-        image_count_query = (
-            select(func.count())
-            .select_from(db_images)
-            .where(and_(db_images.c.site_id == self.site_id, db_images.c.patient_id == normalized_patient_id))
-        )
-        latest_visit_query = (
-            select(db_visits.c.visit_date)
-            .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
-            .order_by(desc(db_visits.c.visit_index), desc(db_visits.c.visit_date))
-            .limit(1)
-        )
-
-        with DATA_PLANE_ENGINE.begin() as conn:
-            patient_row = conn.execute(patient_query).mappings().first()
-            visit_count = conn.execute(visit_count_query).scalar() or 0
-            image_count = conn.execute(image_count_query).scalar() or 0
-            latest_visit_date = conn.execute(latest_visit_query).scalar()
-
-        patient_record = None
-        if patient_row is not None:
-            patient_record = {
-                "patient_id": patient_row["patient_id"],
-                "created_by_user_id": patient_row.get("created_by_user_id"),
-                "sex": patient_row["sex"],
-                "age": patient_row["age"],
-                "chart_alias": patient_row["chart_alias"],
-                "local_case_code": patient_row["local_case_code"],
-                "created_at": patient_row["created_at"],
-            }
-
-        return {
-            "requested_patient_id": requested_patient_id,
-            "normalized_patient_id": normalized_patient_id,
-            "exists": patient_record is not None,
-            "patient": patient_record,
-            "visit_count": int(visit_count or 0),
-            "image_count": int(image_count or 0),
-            "latest_visit_date": str(latest_visit_date or "") or None,
-        }
+        return _lookup_patient_id_impl(self, patient_id)
 
     def create_patient(
         self,
@@ -935,33 +917,15 @@ class SiteStore:
         local_case_code: str = "",
         created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        if self.get_patient(normalized_patient_id):
-            raise ValueError(f"Patient {normalized_patient_id} already exists.")
-        record = {
-            "site_id": self.site_id,
-            "patient_id": normalized_patient_id,
-            "created_by_user_id": created_by_user_id,
-            "sex": sex,
-            "age": int(age),
-            "chart_alias": chart_alias.strip(),
-            "local_case_code": local_case_code.strip(),
-            "created_at": utc_now(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(db_patients.insert().values(**record))
-        return {
-            key: record[key]
-            for key in [
-                "patient_id",
-                "created_by_user_id",
-                "sex",
-                "age",
-                "chart_alias",
-                "local_case_code",
-                "created_at",
-            ]
-        }
+        return _create_patient_impl(
+            self,
+            patient_id,
+            sex,
+            age,
+            chart_alias=chart_alias,
+            local_case_code=local_case_code,
+            created_by_user_id=created_by_user_id,
+        )
 
     def update_patient(
         self,
@@ -971,31 +935,14 @@ class SiteStore:
         chart_alias: str = "",
         local_case_code: str = "",
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        existing = self.get_patient(normalized_patient_id)
-        if existing is None:
-            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
-        values = {
-            "sex": sex,
-            "age": int(age),
-            "chart_alias": chart_alias.strip(),
-            "local_case_code": local_case_code.strip(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_patients)
-                .where(
-                    and_(
-                        db_patients.c.site_id == self.site_id,
-                        db_patients.c.patient_id == normalized_patient_id,
-                    )
-                )
-                .values(**values)
-            )
-        refreshed = self.get_patient(normalized_patient_id)
-        if refreshed is None:
-            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
-        return refreshed
+        return _update_patient_impl(
+            self,
+            patient_id,
+            sex,
+            age,
+            chart_alias=chart_alias,
+            local_case_code=local_case_code,
+        )
 
     def _get_visit_row(
         self,
@@ -1004,45 +951,15 @@ class SiteStore:
         *,
         include_soft_deleted: bool = False,
     ) -> dict[str, Any] | None:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        requested_visit_date = _coerce_optional_text(visit_date)
-        if not requested_visit_date:
-            return None
-        try:
-            normalized_visit_date = normalize_visit_label(requested_visit_date)
-            normalized_visit_index = visit_index_from_label(normalized_visit_date)
-        except ValueError:
-            normalized_visit_date = None
-            normalized_visit_index = None
-
-        predicates = [
-            db_visits.c.site_id == self.site_id,
-            db_visits.c.patient_id == normalized_patient_id,
-        ]
-        if not include_soft_deleted:
-            predicates.append(_visit_visible_clause(db_visits))
-        base_query = select(db_visits).where(and_(*predicates))
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(base_query.where(db_visits.c.visit_date == requested_visit_date)).mappings().first()
-            if row is not None:
-                return _hydrate_visit_culture_fields(dict(row))
-            if normalized_visit_date and normalized_visit_date != requested_visit_date:
-                row = conn.execute(base_query.where(db_visits.c.visit_date == normalized_visit_date)).mappings().first()
-                if row is not None:
-                    return _hydrate_visit_culture_fields(dict(row))
-            if normalized_visit_index is not None:
-                row = conn.execute(
-                    base_query.where(db_visits.c.visit_index == normalized_visit_index).order_by(
-                        case((db_visits.c.visit_date == normalized_visit_date, 0), else_=1),
-                        db_visits.c.created_at.desc(),
-                    )
-                ).mappings().first()
-                if row is not None:
-                    return _hydrate_visit_culture_fields(dict(row))
-        return None
+        return _get_visit_row_impl(
+            self,
+            patient_id,
+            visit_date,
+            include_soft_deleted=include_soft_deleted,
+        )
 
     def _is_visit_fl_retained(self, visit: dict[str, Any] | None) -> bool:
-        return bool(visit and visit.get("fl_retained"))
+        return _is_visit_fl_retained_impl(visit)
 
     def mark_visit_fl_retained(
         self,
@@ -1052,134 +969,22 @@ class SiteStore:
         scope: str,
         update_id: str | None = None,
     ) -> dict[str, Any]:
-        normalized_scope = str(scope or "").strip()
-        if not normalized_scope:
-            raise ValueError("Retention scope is required.")
-        existing = self._get_visit_row(patient_id, visit_date, include_soft_deleted=True)
-        if existing is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
-        scopes = [str(item or "").strip() for item in existing.get("fl_retention_scopes") or [] if str(item or "").strip()]
-        if normalized_scope not in scopes:
-            scopes.append(normalized_scope)
-        retained_at = _coerce_optional_text(existing.get("fl_retained_at")) or utc_now()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_visits)
-                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing["visit_id"]))
-                .values(
-                    fl_retained=True,
-                    fl_retained_at=retained_at,
-                    fl_retention_scopes=scopes,
-                    fl_retention_last_update_id=str(update_id or "").strip() or existing.get("fl_retention_last_update_id"),
-                )
-            )
-        refreshed = self._get_visit_row(
-            _coerce_optional_text(existing.get("patient_id")) or patient_id,
-            _coerce_optional_text(existing.get("visit_date")) or visit_date,
-            include_soft_deleted=True,
+        return _mark_visit_fl_retained_impl(
+            self,
+            patient_id,
+            visit_date,
+            scope=scope,
+            update_id=update_id,
         )
-        if refreshed is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
-        return refreshed
 
     def list_retained_case_archive(self) -> list[dict[str, Any]]:
-        image_counts = (
-            select(
-                db_images.c.visit_id.label("visit_id"),
-                func.count().label("total_image_count"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (db_images.c.soft_deleted_at.is_(None), 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("visible_image_count"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (db_images.c.soft_deleted_at.is_not(None), 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("soft_deleted_image_count"),
-            )
-            .where(db_images.c.site_id == self.site_id)
-            .group_by(db_images.c.visit_id)
-            .subquery()
-        )
-        query = (
-            select(
-                db_visits,
-                db_patients.c.chart_alias.label("chart_alias"),
-                db_patients.c.local_case_code.label("local_case_code"),
-                func.coalesce(image_counts.c.total_image_count, 0).label("total_image_count"),
-                func.coalesce(image_counts.c.visible_image_count, 0).label("visible_image_count"),
-                func.coalesce(image_counts.c.soft_deleted_image_count, 0).label("soft_deleted_image_count"),
-            )
-            .select_from(
-                db_visits.outerjoin(
-                    db_patients,
-                    and_(
-                        db_patients.c.site_id == db_visits.c.site_id,
-                        db_patients.c.patient_id == db_visits.c.patient_id,
-                    ),
-                ).outerjoin(
-                    image_counts,
-                    image_counts.c.visit_id == db_visits.c.visit_id,
-                )
-            )
-            .where(
-                and_(
-                    db_visits.c.site_id == self.site_id,
-                    db_visits.c.fl_retained.is_(True),
-                    or_(
-                        db_visits.c.soft_deleted_at.is_not(None),
-                        func.coalesce(image_counts.c.soft_deleted_image_count, 0) > 0,
-                    ),
-                )
-            )
-            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        archive_records: list[dict[str, Any]] = []
-        for row in rows:
-            record = _hydrate_visit_culture_fields(dict(row))
-            visit_soft_deleted_at = _coerce_optional_text(record.get("soft_deleted_at"))
-            soft_deleted_image_count = int(record.get("soft_deleted_image_count") or 0)
-            archive_records.append(
-                {
-                    **record,
-                    "chart_alias": _coerce_optional_text(record.get("chart_alias")),
-                    "local_case_code": _coerce_optional_text(record.get("local_case_code")),
-                    "total_image_count": int(record.get("total_image_count") or 0),
-                    "visible_image_count": int(record.get("visible_image_count") or 0),
-                    "soft_deleted_image_count": soft_deleted_image_count,
-                    "visit_soft_deleted_at": visit_soft_deleted_at,
-                    "visit_soft_delete_reason": _coerce_optional_text(record.get("soft_delete_reason")),
-                    "can_restore_visit": bool(visit_soft_deleted_at),
-                    "can_restore_images": not bool(visit_soft_deleted_at) and soft_deleted_image_count > 0,
-                }
-            )
-        return archive_records
+        return _list_retained_case_archive_impl(self)
 
     def list_visits(self) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        query = (
-            select(db_visits)
-            .where(and_(db_visits.c.site_id == self.site_id, _visit_visible_clause(db_visits)))
-            .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
+        return _list_visits_impl(self)
 
     def get_visit(self, patient_id: str, visit_date: str) -> dict[str, Any] | None:
-        self._sync_raw_inventory_metadata_if_due()
-        return self._get_visit_row(patient_id, visit_date, include_soft_deleted=False)
+        return _get_visit_impl(self, patient_id, visit_date)
 
     def create_visit(
         self,
@@ -1201,64 +1006,26 @@ class SiteStore:
         created_by_user_id: str | None = None,
         culture_status: str | None = None,
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        normalized_visit_date = normalize_visit_label(visit_date)
-        normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
-        if not self.get_patient(normalized_patient_id):
-            raise ValueError(f"Patient {normalized_patient_id} does not exist.")
-        if normalized_visit_date == "Initial":
-            visit_count_query = (
-                select(func.count())
-                .select_from(db_visits)
-                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == normalized_patient_id))
-            )
-            with DATA_PLANE_ENGINE.begin() as conn:
-                existing_visit_count = int(conn.execute(visit_count_query).scalar() or 0)
-            if existing_visit_count > 0:
-                raise ValueError("Existing patients can only receive follow-up visits. Use a FU #N label.")
-        if self.get_visit(normalized_patient_id, normalized_visit_date):
-            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} already exists.")
-        normalized_culture = _normalize_visit_culture_fields(
-            culture_status=culture_status,
-            culture_confirmed=culture_confirmed,
-            culture_category=culture_category,
-            culture_species=culture_species,
-            additional_organisms=additional_organisms,
+        return _create_visit_impl(
+            self,
+            patient_id,
+            visit_date,
+            actual_visit_date,
+            culture_confirmed,
+            culture_category,
+            culture_species,
+            additional_organisms,
+            contact_lens_use,
+            predisposing_factor,
+            other_history,
+            active_stage=active_stage,
+            visit_status=visit_status,
+            is_initial_visit=is_initial_visit,
+            smear_result=smear_result,
             polymicrobial=polymicrobial,
+            created_by_user_id=created_by_user_id,
+            culture_status=culture_status,
         )
-        normalized_status = (visit_status or "").strip().lower()
-        if normalized_status not in VISIT_STATUS_OPTIONS:
-            normalized_status = "active" if active_stage else "scar"
-        record = {
-            "visit_id": make_id("visit"),
-            "site_id": self.site_id,
-            "patient_id": normalized_patient_id,
-            "patient_reference_id": make_patient_reference_id(
-                self.site_id,
-                normalized_patient_id,
-                PATIENT_REFERENCE_SALT,
-            ),
-            "created_by_user_id": created_by_user_id,
-            "visit_date": normalized_visit_date,
-            "visit_index": visit_index_from_label(normalized_visit_date),
-            "actual_visit_date": normalized_actual_visit_date,
-            **normalized_culture,
-            "contact_lens_use": contact_lens_use,
-            "predisposing_factor": predisposing_factor,
-            "other_history": other_history,
-            "visit_status": normalized_status,
-            "active_stage": normalized_status == "active",
-            "is_initial_visit": bool(is_initial_visit),
-            "smear_result": smear_result.strip(),
-            "research_registry_status": "analysis_only",
-            "research_registry_updated_at": utc_now(),
-            "research_registry_updated_by": created_by_user_id,
-            "research_registry_source": "visit_create",
-            "created_at": utc_now(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(db_visits.insert().values(**record))
-        return record
 
     def update_visit(
         self,
@@ -1281,145 +1048,36 @@ class SiteStore:
         polymicrobial: bool = False,
         culture_status: str | None = None,
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        normalized_visit_date = normalize_visit_label(visit_date)
-        normalized_target_patient_id = normalize_patient_pseudonym(target_patient_id or patient_id)
-        normalized_target_visit_date = normalize_visit_label(target_visit_date or visit_date)
-        normalized_actual_visit_date = normalize_actual_visit_date(actual_visit_date)
-        existing = self.get_visit(normalized_patient_id, normalized_visit_date)
-        if existing is None:
-            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
-        if self.get_patient(normalized_target_patient_id) is None:
-            raise ValueError(f"Patient {normalized_target_patient_id} does not exist.")
-        existing_visit_id = _coerce_optional_text(existing.get("visit_id"))
-        existing_patient_id = _coerce_optional_text(existing.get("patient_id")) or normalized_patient_id
-        existing_visit_date = _coerce_optional_text(existing.get("visit_date")) or normalized_visit_date
-        target_changed = (
-            normalized_target_patient_id != existing_patient_id
-            or normalized_target_visit_date != existing_visit_date
-        )
-        if target_changed:
-            with DATA_PLANE_ENGINE.begin() as conn:
-                duplicate_visit = conn.execute(
-                    select(db_visits.c.visit_id).where(
-                        and_(
-                            db_visits.c.site_id == self.site_id,
-                            db_visits.c.patient_id == normalized_target_patient_id,
-                            db_visits.c.visit_date == normalized_target_visit_date,
-                            db_visits.c.visit_id != existing_visit_id,
-                        )
-                    )
-                ).scalar()
-            if duplicate_visit:
-                raise ValueError(
-                    f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} already exists."
-                )
-        normalized_culture = _normalize_visit_culture_fields(
-            culture_status=culture_status,
-            culture_confirmed=culture_confirmed,
-            culture_category=culture_category,
-            culture_species=culture_species,
-            additional_organisms=additional_organisms,
+        return _update_visit_impl(
+            self,
+            patient_id,
+            visit_date,
+            target_patient_id,
+            target_visit_date,
+            actual_visit_date,
+            culture_confirmed,
+            culture_category,
+            culture_species,
+            additional_organisms,
+            contact_lens_use,
+            predisposing_factor,
+            other_history,
+            active_stage=active_stage,
+            visit_status=visit_status,
+            is_initial_visit=is_initial_visit,
+            smear_result=smear_result,
             polymicrobial=polymicrobial,
+            culture_status=culture_status,
         )
-        normalized_status = (visit_status or "").strip().lower()
-        if normalized_status not in VISIT_STATUS_OPTIONS:
-            normalized_status = "active" if active_stage else "scar"
-        values = {
-            "patient_id": normalized_target_patient_id,
-            "patient_reference_id": make_patient_reference_id(
-                self.site_id,
-                normalized_target_patient_id,
-                PATIENT_REFERENCE_SALT,
-            ),
-            "actual_visit_date": normalized_actual_visit_date,
-            "visit_date": normalized_target_visit_date,
-            "visit_index": visit_index_from_label(normalized_target_visit_date),
-            **normalized_culture,
-            "contact_lens_use": contact_lens_use,
-            "predisposing_factor": predisposing_factor,
-            "other_history": other_history,
-            "visit_status": normalized_status,
-            "active_stage": normalized_status == "active",
-            "is_initial_visit": bool(is_initial_visit),
-            "smear_result": smear_result.strip(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_visits)
-                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing_visit_id))
-                .values(**values)
-            )
-            conn.execute(
-                update(db_images)
-                .where(and_(db_images.c.site_id == self.site_id, db_images.c.visit_id == existing_visit_id))
-                .values(
-                    patient_id=normalized_target_patient_id,
-                    visit_date=normalized_target_visit_date,
-                )
-            )
-        if target_changed:
-            source_history_path = self._case_history_path(existing_patient_id, existing_visit_date)
-            target_history_path = self._case_history_path(normalized_target_patient_id, normalized_target_visit_date)
-            if source_history_path.exists():
-                ensure_dir(target_history_path.parent)
-                if target_history_path.exists():
-                    target_history_path.unlink(missing_ok=True)
-                source_history_path.replace(target_history_path)
-            elif target_history_path.exists():
-                target_history_path.unlink(missing_ok=True)
-            if normalized_target_patient_id != existing_patient_id:
-                self._delete_patient_if_empty(existing_patient_id)
-        refreshed = self._get_visit_by_id(existing_visit_id)
-        if refreshed is None:
-            raise ValueError(
-                f"Visit {normalized_target_patient_id} / {normalized_target_visit_date} does not exist."
-            )
-        return refreshed
 
     def list_images(self) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        query = (
-            select(db_images)
-            .where(and_(db_images.c.site_id == self.site_id, _image_visible_clause(db_images)))
-            .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [self._resolve_image_record_path(dict(row)) for row in rows]
+        return _list_images_impl(self)
 
     def get_image(self, image_id: str) -> dict[str, Any] | None:
-        self._sync_raw_inventory_metadata_if_due()
-        query = select(db_images).where(
-            and_(
-                db_images.c.site_id == self.site_id,
-                db_images.c.image_id == image_id,
-                _image_visible_clause(db_images),
-            )
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).mappings().first()
-        return self._resolve_image_record_path(dict(row)) if row else None
+        return _get_image_impl(self, image_id)
 
     def get_images(self, image_ids: list[str]) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        requested_ids = [str(image_id or "").strip() for image_id in image_ids if str(image_id or "").strip()]
-        if not requested_ids:
-            return []
-        query = select(db_images).where(
-            and_(
-                db_images.c.site_id == self.site_id,
-                db_images.c.image_id.in_(requested_ids),
-                _image_visible_clause(db_images),
-            )
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        records_by_id = {
-            str(record.get("image_id") or ""): self._resolve_image_record_path(dict(record))
-            for record in rows
-        }
-        return [records_by_id[image_id] for image_id in requested_ids if image_id in records_by_id]
+        return _get_images_impl(self, image_ids)
 
     def add_image(
         self,
@@ -1431,87 +1089,19 @@ class SiteStore:
         content: bytes,
         created_by_user_id: str | None = None,
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        normalized_visit_date = normalize_visit_label(visit_date)
-        visit = self.get_visit(normalized_patient_id, normalized_visit_date)
-        if visit is None:
-            raise ValueError("Visit must exist before image upload.")
-        visit_dir = ensure_dir(self.raw_dir / normalized_patient_id / normalized_visit_date)
-        image_id = make_id("image")
-        sanitized_content, normalized_suffix = _sanitize_image_bytes(content, file_name)
-        destination = visit_dir / f"{image_id}{normalized_suffix}"
-        destination.write_bytes(sanitized_content)
-        image_record = {
-            "image_id": image_id,
-            "visit_id": visit["visit_id"],
-            "site_id": self.site_id,
-            "patient_id": normalized_patient_id,
-            "visit_date": normalized_visit_date,
-            "created_by_user_id": created_by_user_id,
-            "view": view,
-            "image_path": str(destination),
-            "is_representative": bool(is_representative),
-            "lesion_prompt_box": None,
-            "has_lesion_box": False,
-            "has_roi_crop": False,
-            "has_medsam_mask": False,
-            "has_lesion_crop": False,
-            "has_lesion_mask": False,
-            "quality_scores": None,
-            "artifact_status_updated_at": utc_now(),
-            "uploaded_at": utc_now(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(db_images.insert().values(**image_record))
-        return image_record
+        return _add_image_impl(
+            self,
+            patient_id,
+            visit_date,
+            view,
+            is_representative,
+            file_name,
+            content,
+            created_by_user_id=created_by_user_id,
+        )
 
     def delete_images_for_visit(self, patient_id: str, visit_date: str) -> int:
-        existing_visit = self.get_visit(patient_id, visit_date)
-        if existing_visit is None:
-            return 0
-        existing_images = self.list_images_for_visit(
-            _coerce_optional_text(existing_visit.get("patient_id")),
-            _coerce_optional_text(existing_visit.get("visit_date")),
-        )
-        if self._is_visit_fl_retained(existing_visit):
-            deleted_at = utc_now()
-            with DATA_PLANE_ENGINE.begin() as conn:
-                for image in existing_images:
-                    image_id = str(image.get("image_id") or "").strip()
-                    if image_id:
-                        self.delete_image_preview_cache(image_id)
-                conn.execute(
-                    update(db_images)
-                    .where(
-                        and_(
-                            db_images.c.site_id == self.site_id,
-                            db_images.c.visit_id == existing_visit["visit_id"],
-                            _image_visible_clause(db_images),
-                        )
-                    )
-                    .values(
-                        soft_deleted_at=deleted_at,
-                        soft_delete_reason="federated_retention_soft_delete",
-                    )
-                )
-            return len(existing_images)
-        for image in existing_images:
-            image_id = str(image.get("image_id") or "").strip()
-            if image_id:
-                self.delete_image_preview_cache(image_id)
-            image_path = Path(str(image.get("image_path") or ""))
-            if image_path.exists():
-                image_path.unlink(missing_ok=True)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                delete(db_images).where(
-                    and_(
-                        db_images.c.site_id == self.site_id,
-                        db_images.c.visit_id == existing_visit["visit_id"],
-                    )
-                )
-            )
-        return len(existing_images)
+        return _delete_images_for_visit_impl(self, patient_id, visit_date)
 
     def delete_visit(self, patient_id: str, visit_date: str) -> dict[str, Any]:
         existing_visit = self._get_visit_row(patient_id, visit_date, include_soft_deleted=False)
@@ -1680,34 +1270,10 @@ class SiteStore:
         return True
 
     def update_representative_flags(self, updates: dict[str, bool]) -> None:
-        with DATA_PLANE_ENGINE.begin() as conn:
-            for image_id, is_representative in updates.items():
-                conn.execute(
-                    update(db_images)
-                    .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-                    .values(is_representative=bool(is_representative))
-                )
+        _update_representative_flags_impl(self, updates)
 
     def update_lesion_prompt_box(self, image_id: str, lesion_prompt_box: dict[str, Any] | None) -> dict[str, Any]:
-        if self.get_image(image_id) is None:
-            raise ValueError("Image not found.")
-        has_lesion_box = isinstance(lesion_prompt_box, dict)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_images)
-                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-                .values(
-                    lesion_prompt_box=lesion_prompt_box,
-                    has_lesion_box=has_lesion_box,
-                    has_lesion_crop=False,
-                    has_lesion_mask=False,
-                    artifact_status_updated_at=utc_now(),
-                )
-            )
-        refreshed = self.get_image(image_id)
-        if refreshed is None:
-            raise ValueError("Image not found.")
-        return refreshed
+        return _update_lesion_prompt_box_impl(self, image_id, lesion_prompt_box)
 
     def update_image_artifact_cache(
         self,
@@ -1719,45 +1285,18 @@ class SiteStore:
         has_lesion_crop: bool | None = None,
         has_lesion_mask: bool | None = None,
     ) -> dict[str, Any]:
-        if self.get_image(image_id) is None:
-            raise ValueError("Image not found.")
-        values: dict[str, Any] = {
-            "artifact_status_updated_at": utc_now(),
-        }
-        if has_lesion_box is not None:
-            values["has_lesion_box"] = bool(has_lesion_box)
-        if has_roi_crop is not None:
-            values["has_roi_crop"] = bool(has_roi_crop)
-        if has_medsam_mask is not None:
-            values["has_medsam_mask"] = bool(has_medsam_mask)
-        if has_lesion_crop is not None:
-            values["has_lesion_crop"] = bool(has_lesion_crop)
-        if has_lesion_mask is not None:
-            values["has_lesion_mask"] = bool(has_lesion_mask)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_images)
-                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-                .values(**values)
-            )
-        refreshed = self.get_image(image_id)
-        if refreshed is None:
-            raise ValueError("Image not found.")
-        return refreshed
+        return _update_image_artifact_cache_impl(
+            self,
+            image_id,
+            has_lesion_box=has_lesion_box,
+            has_roi_crop=has_roi_crop,
+            has_medsam_mask=has_medsam_mask,
+            has_lesion_crop=has_lesion_crop,
+            has_lesion_mask=has_lesion_mask,
+        )
 
     def update_image_quality_scores(self, image_id: str, quality_scores: dict[str, Any] | None) -> dict[str, Any]:
-        if self.get_image(image_id) is None:
-            raise ValueError("Image not found.")
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_images)
-                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == image_id))
-                .values(quality_scores=quality_scores)
-            )
-        refreshed = self.get_image(image_id)
-        if refreshed is None:
-            raise ValueError("Image not found.")
-        return refreshed
+        return _update_image_quality_scores_impl(self, image_id, quality_scores)
 
     def backfill_image_derivatives(
         self,
@@ -1765,39 +1304,11 @@ class SiteStore:
         *,
         preview_sides: tuple[int, ...] = _PREWARMED_IMAGE_PREVIEW_SIDES,
     ) -> dict[str, int]:
-        if image_ids:
-            requested_ids = {str(image_id or "").strip() for image_id in image_ids if str(image_id or "").strip()}
-            images = [record for record in self.list_images() if str(record.get("image_id") or "") in requested_ids]
-        else:
-            images = self.list_images()
-
-        quality_updated = 0
-        previews_generated = 0
-        for image in images:
-            image_id = str(image.get("image_id") or "").strip()
-            image_path = str(image.get("image_path") or "").strip()
-            if not image_id or not image_path:
-                continue
-            if image.get("quality_scores") is None:
-                try:
-                    quality_scores = score_slit_lamp_image(image_path, view=str(image.get("view") or "white"))
-                except Exception:
-                    quality_scores = None
-                self.update_image_quality_scores(image_id, quality_scores)
-                quality_updated += 1
-            for max_side in preview_sides:
-                preview_path = self.image_preview_cache_path(image_id, max_side)
-                if preview_path.exists():
-                    continue
-                try:
-                    self.ensure_image_preview(image, max_side)
-                except Exception:
-                    continue
-                previews_generated += 1
-        return {
-            "quality_updated": quality_updated,
-            "previews_generated": previews_generated,
-        }
+        return _backfill_image_derivatives_impl(
+            self,
+            image_ids,
+            preview_sides=preview_sides,
+        )
 
     def dataset_records(self, *, positive_only: bool = True) -> list[dict[str, Any]]:
         patient_table = db_patients.alias("p")
@@ -1895,40 +1406,10 @@ class SiteStore:
         return records
 
     def list_visits_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
-        query = (
-            select(db_visits)
-            .where(
-                and_(
-                    db_visits.c.site_id == self.site_id,
-                    db_visits.c.patient_id == patient_id,
-                    _visit_visible_clause(db_visits),
-                )
-            )
-            .order_by(db_visits.c.visit_index, db_visits.c.visit_date)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [_hydrate_visit_culture_fields(dict(row)) for row in rows]
+        return _list_visits_for_patient_impl(self, patient_id)
 
     def list_images_for_visit(self, patient_id: str, visit_date: str) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        existing_visit = self.get_visit(patient_id, visit_date)
-        if existing_visit is None:
-            return []
-        query = (
-            select(db_images)
-            .where(
-                and_(
-                    db_images.c.site_id == self.site_id,
-                    db_images.c.visit_id == existing_visit["visit_id"],
-                    _image_visible_clause(db_images),
-                )
-            )
-            .order_by(db_images.c.uploaded_at)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [self._resolve_image_record_path(dict(row)) for row in rows]
+        return _list_images_for_visit_impl(self, patient_id, visit_date)
 
     def case_records_for_visit(
         self,
@@ -2012,55 +1493,13 @@ class SiteStore:
         }
 
     def list_images_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
-        self._sync_raw_inventory_metadata_if_due()
-        query = (
-            select(db_images)
-            .where(
-                and_(
-                    db_images.c.site_id == self.site_id,
-                    db_images.c.patient_id == patient_id,
-                    _image_visible_clause(db_images),
-                )
-            )
-            .order_by(db_images.c.uploaded_at)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-        return [self._resolve_image_record_path(dict(row)) for row in rows]
+        return _list_images_for_patient_impl(self, patient_id)
 
     def _raw_inventory_index(self) -> dict[str, Any]:
-        if not self.raw_dir.exists():
-            return {
-                "patient_ids": set(),
-                "visit_keys": set(),
-                "n_images": 0,
-            }
-
-        patient_ids: set[str] = set()
-        visit_keys: set[tuple[str, str]] = set()
-        image_count = 0
-        raw_root = self.raw_dir.resolve()
-
-        for image_path in raw_root.rglob("*"):
-            if not image_path.is_file() or image_path.suffix.lower() not in _RAW_INVENTORY_IMAGE_EXTENSIONS:
-                continue
-            try:
-                relative_parts = image_path.resolve().relative_to(raw_root).parts
-            except ValueError:
-                continue
-            if len(relative_parts) < 2:
-                continue
-            patient_id = str(relative_parts[0] or "").strip()
-            if not patient_id:
-                continue
-            patient_ids.add(patient_id)
-            if len(relative_parts) >= 3:
-                visit_label = str(relative_parts[1] or "").strip()
-                if visit_label:
-                    visit_keys.add((patient_id, visit_label))
-            image_count += 1
-
-        return {"patient_ids": patient_ids, "visit_keys": visit_keys, "n_images": int(image_count)}
+        return _raw_inventory_index_impl(
+            self,
+            raw_inventory_image_extensions=_RAW_INVENTORY_IMAGE_EXTENSIONS,
+        )
 
     def _storage_bundle_root(self) -> Path:
         site_parent = self.site_dir.parent.resolve()
@@ -2072,705 +1511,49 @@ class SiteStore:
         return _sqlite_path_from_url(DATA_PLANE_DATABASE_URL)
 
     def _local_metadata_backup_db_paths(self) -> list[Path]:
-        bundle_root = self._storage_bundle_root()
-        if not bundle_root.exists():
-            return []
-        current_db_path = self._current_data_plane_db_path()
-        candidates: list[Path] = []
-        for path in sorted(bundle_root.glob("kera*.db"), key=lambda item: item.stat().st_mtime, reverse=True):
-            resolved_path = path.resolve()
-            if current_db_path is not None and resolved_path == current_db_path:
-                continue
-            if not resolved_path.is_file():
-                continue
-            candidates.append(resolved_path)
-        return candidates
+        return _local_metadata_backup_db_paths_impl(self)
 
     def _load_patient_metadata_snapshot_from_db(
         self,
         db_path: Path,
         patient_id: str,
     ) -> dict[str, Any] | None:
-        if not db_path.exists():
-            return None
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            try:
-                patient_row = conn.execute(
-                    "select * from patients where site_id=? and patient_id=?",
-                    (self.site_id, patient_id),
-                ).fetchone()
-            except sqlite3.OperationalError:
-                return None
-            if patient_row is None:
-                return None
-            visit_rows = conn.execute(
-                "select * from visits where site_id=? and patient_id=? order by visit_index, visit_date, created_at",
-                (self.site_id, patient_id),
-            ).fetchall()
-            image_rows = conn.execute(
-                "select * from images where site_id=? and patient_id=? order by uploaded_at, image_path",
-                (self.site_id, patient_id),
-            ).fetchall()
-            if not visit_rows or not image_rows:
-                return None
-            return {
-                "patient": dict(patient_row),
-                "visits": [dict(row) for row in visit_rows],
-                "images": [dict(row) for row in image_rows],
-            }
-        finally:
-            conn.close()
+        return _load_patient_metadata_snapshot_from_db_impl(self, db_path, patient_id)
 
     def _patient_snapshot_is_richer_than_placeholder(self, snapshot: dict[str, Any] | None) -> bool:
-        if not snapshot:
-            return False
-        patient_row = snapshot.get("patient", {}) or {}
-        sex_value = str(patient_row.get("sex") or "").strip().lower()
-        age_value = _coerce_optional_int(patient_row.get("age"), 0)
-        if sex_value and sex_value != "unknown":
-            return True
-        if age_value > 0:
-            return True
-        for visit_row in snapshot.get("visits", []) or []:
-            if _derive_culture_status(
-                visit_row.get("culture_status"),
-                visit_row.get("culture_confirmed"),
-                visit_row.get("culture_category"),
-                visit_row.get("culture_species"),
-            ) == "positive":
-                return True
-            if str(visit_row.get("research_registry_source") or "").strip().lower() != _PLACEHOLDER_SYNC_SOURCE:
-                return True
-        return False
+        return _patient_snapshot_is_richer_than_placeholder_impl(self, snapshot)
 
     def _normalize_snapshot_image_paths(self, rows: list[dict[str, Any]]) -> set[str]:
-        normalized_paths: set[str] = set()
-        for row in rows:
-            resolved_path, _ = self._resolve_site_runtime_path(row.get("image_path"), require_exists=False)
-            normalized_paths.add(str(resolved_path.resolve()))
-        return normalized_paths
+        return _normalize_snapshot_image_paths_impl(self, rows)
 
     def _find_matching_richer_metadata_snapshot(
         self,
         patient_id: str,
         expected_image_paths: set[str],
     ) -> dict[str, Any] | None:
-        if not expected_image_paths:
-            return None
-        for db_path in self._local_metadata_backup_db_paths():
-            snapshot = self._load_patient_metadata_snapshot_from_db(db_path, patient_id)
-            if not self._patient_snapshot_is_richer_than_placeholder(snapshot):
-                continue
-            snapshot_image_paths = self._normalize_snapshot_image_paths(snapshot.get("images", []) or [])
-            if snapshot_image_paths != expected_image_paths:
-                continue
-            return snapshot
-        return None
+        return _find_matching_richer_metadata_snapshot_impl(self, patient_id, expected_image_paths)
 
     def _restore_placeholder_metadata_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, int]:
-        patient_row = snapshot.get("patient", {}) or {}
-        patient_id = _coerce_optional_text(patient_row.get("patient_id"))
-        if not patient_id:
-            return {"patients": 0, "visits": 0, "images": 0}
-
-        restored = {"patients": 0, "visits": 0, "images": 0}
-        with DATA_PLANE_ENGINE.begin() as conn:
-            patient_update = conn.execute(
-                update(db_patients)
-                .where(and_(db_patients.c.site_id == self.site_id, db_patients.c.patient_id == patient_id))
-                .values(
-                    sex=patient_row.get("sex"),
-                    age=patient_row.get("age"),
-                    chart_alias=patient_row.get("chart_alias"),
-                    local_case_code=patient_row.get("local_case_code"),
-                    created_at=patient_row.get("created_at"),
-                    created_by_user_id=patient_row.get("created_by_user_id"),
-                )
-            )
-            restored["patients"] += int(patient_update.rowcount or 0)
-
-            for visit_row in snapshot.get("visits", []) or []:
-                normalized_culture = _normalize_visit_culture_fields(
-                    culture_status=visit_row.get("culture_status"),
-                    culture_confirmed=visit_row.get("culture_confirmed"),
-                    culture_category=visit_row.get("culture_category"),
-                    culture_species=visit_row.get("culture_species"),
-                    additional_organisms=list(visit_row.get("additional_organisms") or []),
-                    polymicrobial=visit_row.get("polymicrobial"),
-                )
-                visit_update = conn.execute(
-                    update(db_visits)
-                    .where(
-                        and_(
-                            db_visits.c.site_id == self.site_id,
-                            db_visits.c.patient_id == patient_id,
-                            db_visits.c.visit_date == _coerce_optional_text(visit_row.get("visit_date")),
-                        )
-                    )
-                    .values(
-                        **normalized_culture,
-                        contact_lens_use=visit_row.get("contact_lens_use"),
-                        predisposing_factor=visit_row.get("predisposing_factor"),
-                        other_history=visit_row.get("other_history"),
-                        visit_status=visit_row.get("visit_status"),
-                        active_stage=visit_row.get("active_stage"),
-                        smear_result=visit_row.get("smear_result"),
-                        created_at=visit_row.get("created_at"),
-                        is_initial_visit=visit_row.get("is_initial_visit"),
-                        created_by_user_id=visit_row.get("created_by_user_id"),
-                        actual_visit_date=visit_row.get("actual_visit_date"),
-                        research_registry_status=visit_row.get("research_registry_status"),
-                        research_registry_updated_at=visit_row.get("research_registry_updated_at"),
-                        research_registry_updated_by=visit_row.get("research_registry_updated_by"),
-                        research_registry_source=visit_row.get("research_registry_source"),
-                        patient_reference_id=visit_row.get("patient_reference_id"),
-                        visit_index=visit_row.get("visit_index"),
-                    )
-                )
-                restored["visits"] += int(visit_update.rowcount or 0)
-
-            for image_row in snapshot.get("images", []) or []:
-                resolved_path, _ = self._resolve_site_runtime_path(image_row.get("image_path"), require_exists=False)
-                image_update = conn.execute(
-                    update(db_images)
-                    .where(
-                        and_(
-                            db_images.c.site_id == self.site_id,
-                            db_images.c.patient_id == patient_id,
-                            db_images.c.visit_date == _coerce_optional_text(image_row.get("visit_date")),
-                            db_images.c.image_path == str(resolved_path.resolve()),
-                        )
-                    )
-                    .values(
-                        view=image_row.get("view"),
-                        is_representative=image_row.get("is_representative"),
-                        uploaded_at=image_row.get("uploaded_at"),
-                        lesion_prompt_box=image_row.get("lesion_prompt_box"),
-                        created_by_user_id=image_row.get("created_by_user_id"),
-                        has_lesion_box=image_row.get("has_lesion_box"),
-                        has_roi_crop=image_row.get("has_roi_crop"),
-                        has_medsam_mask=image_row.get("has_medsam_mask"),
-                        has_lesion_crop=image_row.get("has_lesion_crop"),
-                        has_lesion_mask=image_row.get("has_lesion_mask"),
-                        artifact_status_updated_at=image_row.get("artifact_status_updated_at"),
-                        quality_scores=image_row.get("quality_scores"),
-                    )
-                )
-                restored["images"] += int(image_update.rowcount or 0)
-        return restored
+        return _restore_placeholder_metadata_from_snapshot_impl(self, snapshot)
 
     def _restore_placeholder_metadata_from_local_backups(self) -> dict[str, int]:
-        restored = {"patients": 0, "visits": 0, "images": 0}
-        candidate_query = (
-            select(db_patients.c.patient_id)
-            .join(
-                db_visits,
-                and_(
-                    db_patients.c.site_id == db_visits.c.site_id,
-                    db_patients.c.patient_id == db_visits.c.patient_id,
-                ),
-            )
-            .where(
-                and_(
-                    db_patients.c.site_id == self.site_id,
-                    db_patients.c.sex == "unknown",
-                    db_patients.c.age == 0,
-                    db_visits.c.culture_status != "positive",
-                    db_visits.c.research_registry_source == _PLACEHOLDER_SYNC_SOURCE,
-                )
-            )
-            .group_by(db_patients.c.patient_id)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            candidate_patient_ids = [
-                _coerce_optional_text(row[0])
-                for row in conn.execute(candidate_query).all()
-                if _coerce_optional_text(row[0])
-            ]
-        for patient_id in candidate_patient_ids:
-            with DATA_PLANE_ENGINE.begin() as conn:
-                visit_rows = conn.execute(
-                    select(
-                        db_visits.c.culture_status,
-                        db_visits.c.culture_confirmed,
-                        db_visits.c.research_registry_source,
-                    ).where(and_(db_visits.c.site_id == self.site_id, db_visits.c.patient_id == patient_id))
-                ).mappings().all()
-                image_rows = conn.execute(
-                    select(db_images.c.image_path).where(and_(db_images.c.site_id == self.site_id, db_images.c.patient_id == patient_id))
-                ).mappings().all()
-            if not visit_rows:
-                continue
-            if any(
-                _derive_culture_status(
-                    visit.get("culture_status"),
-                    visit.get("culture_confirmed"),
-                    None,
-                    None,
-                ) == "positive"
-                for visit in visit_rows
-            ):
-                continue
-            if any(
-                str(visit.get("research_registry_source") or "").strip().lower() != _PLACEHOLDER_SYNC_SOURCE
-                for visit in visit_rows
-            ):
-                continue
-            expected_image_paths = {
-                str(self._resolve_site_runtime_path(row.get("image_path"), require_exists=False)[0].resolve())
-                for row in image_rows
-            }
-            snapshot = self._find_matching_richer_metadata_snapshot(patient_id, expected_image_paths)
-            if snapshot is None:
-                continue
-            result = self._restore_placeholder_metadata_from_snapshot(snapshot)
-            restored["patients"] += result["patients"]
-            restored["visits"] += result["visits"]
-            restored["images"] += result["images"]
-        return restored
+        return _restore_placeholder_metadata_from_local_backups_impl(self)
 
     def sync_raw_inventory_metadata(self) -> dict[str, Any]:
-        self._repair_missing_image_paths_if_due(force=True)
-        restored_from_backup = self._restore_placeholder_metadata_from_local_backups()
-        if not self.raw_dir.exists():
-            return {
-                "site_id": self.site_id,
-                "scanned_patients": 0,
-                "scanned_visits": 0,
-                "scanned_images": 0,
-                "created_patients": 0,
-                "created_visits": 0,
-                "created_images": 0,
-                "skipped_existing_images": 0,
-                "skipped_invalid_patients": 0,
-                "skipped_invalid_visits": 0,
-                "restored_patients": restored_from_backup["patients"],
-                "restored_visits": restored_from_backup["visits"],
-                "restored_images": restored_from_backup["images"],
-            }
-
-        patient_records: list[dict[str, Any]] = []
-        visit_records: list[dict[str, Any]] = []
-        image_records: list[dict[str, Any]] = []
-        scanned_patients = 0
-        scanned_visits = 0
-        scanned_images = 0
-        skipped_existing_images = 0
-        skipped_invalid_patients = 0
-        skipped_invalid_visits = 0
-
-        with DATA_PLANE_ENGINE.begin() as conn:
-            existing_patient_ids = {
-                str(row[0] or "").strip()
-                for row in conn.execute(select(db_patients.c.patient_id).where(db_patients.c.site_id == self.site_id)).all()
-                if str(row[0] or "").strip()
-            }
-            existing_visits_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-            for row in conn.execute(
-                select(db_visits.c.visit_id, db_visits.c.patient_id, db_visits.c.visit_date).where(
-                    db_visits.c.site_id == self.site_id
-                )
-            ).mappings():
-                patient_id = str(row["patient_id"] or "").strip()
-                visit_date = str(row["visit_date"] or "").strip()
-                if not patient_id or not visit_date:
-                    continue
-                existing_visits_by_key[(patient_id, visit_date)] = {
-                    "visit_id": str(row["visit_id"] or "").strip(),
-                    "has_representative": False,
-                }
-
-            existing_image_paths: set[str] = set()
-            existing_image_keys: set[tuple[str, str, str]] = set()
-            representative_visit_ids: set[str] = set()
-            for row in conn.execute(
-                select(
-                    db_images.c.visit_id,
-                    db_images.c.patient_id,
-                    db_images.c.visit_date,
-                    db_images.c.image_path,
-                    db_images.c.is_representative,
-                ).where(db_images.c.site_id == self.site_id)
-            ).mappings():
-                patient_id = str(row["patient_id"] or "").strip()
-                visit_date = str(row["visit_date"] or "").strip()
-                resolved_path, _ = self._resolve_site_runtime_path(row["image_path"], require_exists=False)
-                resolved_path = resolved_path.resolve()
-                existing_image_paths.add(str(resolved_path))
-                existing_image_keys.add((patient_id, visit_date, resolved_path.name.lower()))
-                if bool(row.get("is_representative")):
-                    representative_visit_ids.add(str(row["visit_id"] or "").strip())
-            for visit_state in existing_visits_by_key.values():
-                visit_state["has_representative"] = str(visit_state.get("visit_id") or "").strip() in representative_visit_ids
-
-        scan_timestamp = utc_now()
-        for patient_dir in sorted((path for path in self.raw_dir.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
-            raw_patient_id = str(patient_dir.name or "").strip()
-            if not raw_patient_id:
-                continue
-            try:
-                normalized_patient_id = normalize_patient_pseudonym(raw_patient_id)
-            except ValueError:
-                skipped_invalid_patients += 1
-                continue
-            scanned_patients += 1
-            patient_visit_images: dict[str, list[Path]] = {}
-            for visit_dir in sorted((path for path in patient_dir.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
-                raw_visit_label = str(visit_dir.name or "").strip()
-                if not raw_visit_label:
-                    continue
-                try:
-                    normalized_visit_date = normalize_visit_label(raw_visit_label)
-                except ValueError:
-                    continue
-                visit_images = sorted(
-                    (
-                        image_path
-                        for image_path in visit_dir.rglob("*")
-                        if image_path.is_file() and image_path.suffix.lower() in _RAW_INVENTORY_IMAGE_EXTENSIONS
-                    ),
-                    key=lambda path: (str(path.parent).lower(), path.name.lower()),
-                )
-                if visit_images:
-                    patient_visit_images[normalized_visit_date] = visit_images
-
-            if normalized_patient_id not in existing_patient_ids:
-                expected_image_paths = {
-                    str(image_path.resolve())
-                    for visit_images in patient_visit_images.values()
-                    for image_path in visit_images
-                }
-                richer_snapshot = self._find_matching_richer_metadata_snapshot(
-                    normalized_patient_id,
-                    expected_image_paths,
-                )
-                if richer_snapshot is not None:
-                    patient_row = dict(richer_snapshot["patient"])
-                    patient_records.append(patient_row)
-                    existing_patient_ids.add(normalized_patient_id)
-                    for visit_row in richer_snapshot["visits"]:
-                        visit_records.append(dict(visit_row))
-                        visit_key = (
-                            _coerce_optional_text(visit_row.get("patient_id")),
-                            _coerce_optional_text(visit_row.get("visit_date")),
-                        )
-                        existing_visits_by_key[visit_key] = {
-                            "visit_id": _coerce_optional_text(visit_row.get("visit_id")),
-                            "has_representative": False,
-                        }
-                    for image_row in richer_snapshot["images"]:
-                        normalized_image_row = dict(image_row)
-                        resolved_image_path, _ = self._resolve_site_runtime_path(
-                            normalized_image_row.get("image_path"),
-                            require_exists=False,
-                        )
-                        normalized_image_row["image_path"] = str(resolved_image_path.resolve())
-                        image_records.append(normalized_image_row)
-                        existing_image_paths.add(normalized_image_row["image_path"])
-                        existing_image_keys.add(
-                            (
-                                _coerce_optional_text(normalized_image_row.get("patient_id")),
-                                _coerce_optional_text(normalized_image_row.get("visit_date")),
-                                Path(normalized_image_row["image_path"]).name.lower(),
-                            )
-                        )
-                        if bool(normalized_image_row.get("is_representative")):
-                            visit_id = _coerce_optional_text(normalized_image_row.get("visit_id"))
-                            if visit_id:
-                                representative_visit_ids.add(visit_id)
-                    for visit_state in existing_visits_by_key.values():
-                        visit_state["has_representative"] = (
-                            _coerce_optional_text(visit_state.get("visit_id")) in representative_visit_ids
-                        )
-                    continue
-
-                if not patient_visit_images:
-                    continue
-
-                patient_records.append(
-                    {
-                        "site_id": self.site_id,
-                        "patient_id": normalized_patient_id,
-                        "created_by_user_id": None,
-                        "sex": "unknown",
-                        "age": 0,
-                        "chart_alias": "",
-                        "local_case_code": "",
-                        "created_at": _filesystem_timestamp_to_utc(patient_dir.stat().st_mtime if patient_dir.exists() else None),
-                    }
-                )
-                existing_patient_ids.add(normalized_patient_id)
-
-            for visit_dir in sorted((path for path in patient_dir.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
-                raw_visit_label = str(visit_dir.name or "").strip()
-                if not raw_visit_label:
-                    continue
-                try:
-                    normalized_visit_date = normalize_visit_label(raw_visit_label)
-                except ValueError:
-                    skipped_invalid_visits += 1
-                    continue
-                visit_images = sorted(
-                    (
-                        image_path
-                        for image_path in visit_dir.rglob("*")
-                        if image_path.is_file() and image_path.suffix.lower() in _RAW_INVENTORY_IMAGE_EXTENSIONS
-                    ),
-                    key=lambda path: (str(path.parent).lower(), path.name.lower()),
-                )
-                if not visit_images:
-                    continue
-                scanned_visits += 1
-                visit_key = (normalized_patient_id, normalized_visit_date)
-                visit_state = existing_visits_by_key.get(visit_key)
-                if visit_state is None:
-                    visit_id = make_id("visit")
-                    visit_records.append(
-                        {
-                            "visit_id": visit_id,
-                            "site_id": self.site_id,
-                            "patient_id": normalized_patient_id,
-                            "patient_reference_id": make_patient_reference_id(
-                                self.site_id,
-                                normalized_patient_id,
-                                PATIENT_REFERENCE_SALT,
-                            ),
-                            "created_by_user_id": None,
-                            "visit_date": normalized_visit_date,
-                            "visit_index": visit_index_from_label(normalized_visit_date),
-                            "actual_visit_date": None,
-                            "culture_status": "unknown",
-                            "culture_confirmed": False,
-                            "culture_category": "",
-                            "culture_species": "",
-                            "contact_lens_use": "unknown",
-                            "predisposing_factor": [],
-                            "additional_organisms": [],
-                            "other_history": "",
-                            "visit_status": "active",
-                            "active_stage": True,
-                            "is_initial_visit": normalized_visit_date == "Initial",
-                            "smear_result": "",
-                            "polymicrobial": False,
-                            "research_registry_status": "analysis_only",
-                            "research_registry_updated_at": scan_timestamp,
-                            "research_registry_updated_by": None,
-                            "research_registry_source": "raw_inventory_sync",
-                            "created_at": _filesystem_timestamp_to_utc(visit_dir.stat().st_mtime if visit_dir.exists() else None),
-                        }
-                    )
-                    visit_state = {"visit_id": visit_id, "has_representative": False}
-                    existing_visits_by_key[visit_key] = visit_state
-
-                for image_path in visit_images:
-                    scanned_images += 1
-                    resolved_image_path = image_path.resolve()
-                    image_key = (normalized_patient_id, normalized_visit_date, resolved_image_path.name.lower())
-                    if str(resolved_image_path) in existing_image_paths or image_key in existing_image_keys:
-                        skipped_existing_images += 1
-                        continue
-                    inferred_view = _infer_raw_image_view(resolved_image_path)
-                    try:
-                        quality_scores = score_slit_lamp_image(str(resolved_image_path), view=inferred_view)
-                    except Exception:
-                        quality_scores = None
-                    uploaded_at = _filesystem_timestamp_to_utc(
-                        resolved_image_path.stat().st_mtime if resolved_image_path.exists() else None
-                    )
-                    is_representative = not bool(visit_state.get("has_representative"))
-                    image_records.append(
-                        {
-                            "image_id": make_id("image"),
-                            "visit_id": str(visit_state.get("visit_id") or "").strip(),
-                            "site_id": self.site_id,
-                            "patient_id": normalized_patient_id,
-                            "visit_date": normalized_visit_date,
-                            "created_by_user_id": None,
-                            "view": inferred_view,
-                            "image_path": str(resolved_image_path),
-                            "is_representative": is_representative,
-                            "lesion_prompt_box": None,
-                            "has_lesion_box": False,
-                            "has_roi_crop": False,
-                            "has_medsam_mask": False,
-                            "has_lesion_crop": False,
-                            "has_lesion_mask": False,
-                            "quality_scores": quality_scores,
-                            "artifact_status_updated_at": uploaded_at,
-                            "uploaded_at": uploaded_at,
-                        }
-                    )
-                    existing_image_paths.add(str(resolved_image_path))
-                    existing_image_keys.add(image_key)
-                    if is_representative:
-                        visit_state["has_representative"] = True
-
-        if patient_records or visit_records or image_records:
-            with DATA_PLANE_ENGINE.begin() as conn:
-                if patient_records:
-                    conn.execute(db_patients.insert().values(patient_records))
-                if visit_records:
-                    conn.execute(db_visits.insert().values(visit_records))
-                if image_records:
-                    conn.execute(db_images.insert().values(image_records))
-
-        return {
-            "site_id": self.site_id,
-            "scanned_patients": scanned_patients,
-            "scanned_visits": scanned_visits,
-            "scanned_images": scanned_images,
-            "created_patients": len(patient_records),
-            "created_visits": len(visit_records),
-            "created_images": len(image_records),
-            "skipped_existing_images": skipped_existing_images,
-            "skipped_invalid_patients": skipped_invalid_patients,
-            "skipped_invalid_visits": skipped_invalid_visits,
-            "restored_patients": restored_from_backup["patients"],
-            "restored_visits": restored_from_backup["visits"],
-            "restored_images": restored_from_backup["images"],
-        }
+        return _sync_raw_inventory_metadata_impl(self)
 
     def _sync_raw_inventory_metadata_if_due(self, *, force: bool = False) -> dict[str, Any]:
-        now = time.monotonic()
-        with _SITE_RAW_METADATA_SYNC_LOCK:
-            last_run = _SITE_RAW_METADATA_SYNC_LAST_RUN.get(self.site_id)
-            if not force and last_run is not None and (now - last_run) < _SITE_RAW_METADATA_SYNC_INTERVAL_SECONDS:
-                return {
-                    "site_id": self.site_id,
-                    "scanned_patients": 0,
-                    "scanned_visits": 0,
-                    "scanned_images": 0,
-                    "created_patients": 0,
-                    "created_visits": 0,
-                    "created_images": 0,
-                    "skipped_existing_images": 0,
-                    "skipped_invalid_patients": 0,
-                    "skipped_invalid_visits": 0,
-                    "restored_patients": 0,
-                    "restored_visits": 0,
-                    "restored_images": 0,
-                }
-            _SITE_RAW_METADATA_SYNC_LAST_RUN[self.site_id] = now
-        return self.sync_raw_inventory_metadata()
+        return _sync_raw_inventory_metadata_if_due_impl(self, force=force)
 
     def raw_inventory_stats(self) -> dict[str, int]:
-        inventory = self._raw_inventory_index()
-        return {
-            "n_patients": len(inventory["patient_ids"]),
-            "n_visits": len(inventory["visit_keys"]),
-            "n_images": int(inventory["n_images"]),
-        }
+        return _raw_inventory_stats_impl(self)
 
     def site_summary_stats(self) -> dict[str, int]:
-        self._repair_missing_image_paths_if_due(force=True)
-        self._sync_raw_inventory_metadata_if_due()
-        normalized_culture_category = func.lower(func.trim(func.coalesce(db_visits.c.culture_category, "")))
-        patient_count_query = (
-            select(func.count())
-            .select_from(db_patients)
-            .where(db_patients.c.site_id == self.site_id)
+        return _site_summary_stats_impl(
+            self,
+            placeholder_sync_source=_PLACEHOLDER_SYNC_SOURCE,
+            raw_inventory_image_extensions=_RAW_INVENTORY_IMAGE_EXTENSIONS,
         )
-        patient_ids_query = select(db_patients.c.patient_id).where(db_patients.c.site_id == self.site_id)
-        image_count_query = (
-            select(func.count())
-            .select_from(db_images)
-            .where(db_images.c.site_id == self.site_id)
-        )
-        visit_keys_query = select(db_visits.c.patient_id, db_visits.c.visit_date).where(db_visits.c.site_id == self.site_id)
-        visit_summary_query = (
-            select(
-                func.count(db_visits.c.visit_id).label("n_visits"),
-                func.sum(
-                    case(
-                        (
-                            or_(
-                                db_visits.c.visit_status == "active",
-                                and_(
-                                    db_visits.c.visit_status.is_(None),
-                                    db_visits.c.active_stage == True,
-                                ),
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("n_active_visits"),
-                func.sum(
-                    case(
-                        (db_visits.c.research_registry_status == "included", 1),
-                        else_=0,
-                    )
-                ).label("n_included_visits"),
-                func.sum(
-                    case(
-                        (db_visits.c.research_registry_status == "excluded", 1),
-                        else_=0,
-                    )
-                ).label("n_excluded_visits"),
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                normalized_culture_category == "fungal",
-                                or_(
-                                    db_visits.c.culture_status == "positive",
-                                    db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
-                                ),
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("n_fungal_visits"),
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                normalized_culture_category == "bacterial",
-                                or_(
-                                    db_visits.c.culture_status == "positive",
-                                    db_visits.c.research_registry_source != _PLACEHOLDER_SYNC_SOURCE,
-                                ),
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("n_bacterial_visits"),
-            )
-            .where(db_visits.c.site_id == self.site_id)
-        )
-
-        with DATA_PLANE_ENGINE.begin() as conn:
-            patient_count = conn.execute(patient_count_query).scalar() or 0
-            indexed_patient_ids = {
-                str(row[0] or "").strip()
-                for row in conn.execute(patient_ids_query).all()
-                if str(row[0] or "").strip()
-            }
-            image_count = conn.execute(image_count_query).scalar() or 0
-            indexed_visit_keys = {
-                (str(row[0] or "").strip(), str(row[1] or "").strip())
-                for row in conn.execute(visit_keys_query).all()
-                if str(row[0] or "").strip() and str(row[1] or "").strip()
-            }
-            visit_summary = conn.execute(visit_summary_query).mappings().first() or {}
-
-        raw_inventory = self._raw_inventory_index()
-        indexed_patient_ids.update(raw_inventory["patient_ids"])
-        indexed_visit_keys.update(raw_inventory["visit_keys"])
-        return {
-            "n_patients": len(indexed_patient_ids) or int(patient_count or 0),
-            "n_visits": len(indexed_visit_keys) or int(visit_summary.get("n_visits") or 0),
-            "n_images": max(int(image_count or 0), int(raw_inventory["n_images"] or 0)),
-            "n_active_visits": int(visit_summary.get("n_active_visits") or 0),
-            "n_included_visits": int(visit_summary.get("n_included_visits") or 0),
-            "n_excluded_visits": int(visit_summary.get("n_excluded_visits") or 0),
-            "n_fungal_visits": int(visit_summary.get("n_fungal_visits") or 0),
-            "n_bacterial_visits": int(visit_summary.get("n_bacterial_visits") or 0),
-        }
 
     def image_preview_cache_path(self, image_id: str, max_side: int) -> Path:
         return _image_preview_cache_path_impl(self, image_id, max_side)
@@ -2843,33 +1626,10 @@ class SiteStore:
         return refreshed
 
     def metadata_backup_path(self) -> Path:
-        return self.manifest_dir / "metadata_backup.json"
+        return _metadata_backup_path_impl(self)
 
     def export_metadata_backup(self, path: Path | None = None) -> Path:
-        backup_path = path or self.metadata_backup_path()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            patient_rows = conn.execute(
-                select(db_patients).where(db_patients.c.site_id == self.site_id).order_by(db_patients.c.patient_id)
-            ).mappings().all()
-            visit_rows = conn.execute(
-                select(db_visits)
-                .where(db_visits.c.site_id == self.site_id)
-                .order_by(db_visits.c.patient_id, db_visits.c.visit_index, db_visits.c.visit_date)
-            ).mappings().all()
-            image_rows = conn.execute(
-                select(db_images)
-                .where(db_images.c.site_id == self.site_id)
-                .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
-            ).mappings().all()
-        payload = {
-            "site_id": self.site_id,
-            "exported_at": utc_now(),
-            "patients": [dict(row) for row in patient_rows],
-            "visits": [dict(row) for row in visit_rows],
-            "images": [dict(row) for row in image_rows],
-        }
-        write_json(backup_path, payload)
-        return backup_path
+        return _export_metadata_backup_impl(self, path)
 
     def _clear_site_metadata_rows(self) -> None:
         with DATA_PLANE_ENGINE.begin() as conn:
@@ -2885,396 +1645,25 @@ class SiteStore:
         *,
         visit_date: str | None = None,
     ) -> Path:
-        raw_value = _coerce_optional_text(image_path)
-        candidates: list[Path] = []
-        normalized_patient_id = _coerce_optional_text(patient_id)
-        normalized_image_name = _coerce_optional_text(image_name)
-        normalized_visit_date: str | None = None
-        if visit_date:
-            try:
-                normalized_visit_date = normalize_visit_label(visit_date)
-            except ValueError:
-                normalized_visit_date = _coerce_optional_text(visit_date)
-        if normalized_patient_id and normalized_image_name and normalized_visit_date:
-            candidates.append(
-                self._canonical_image_storage_path(
-                    normalized_patient_id,
-                    normalized_visit_date,
-                    normalized_image_name,
-                )
-            )
-        if raw_value:
-            original = Path(raw_value).expanduser()
-            if original.is_absolute():
-                candidates.append(original)
-                parts = list(original.parts)
-                raw_index: int | None = None
-                for index in range(len(parts) - 1):
-                    if parts[index].lower() == "data" and parts[index + 1].lower() == "raw":
-                        raw_index = index
-                        break
-                if raw_index is not None:
-                    relative_parts = parts[raw_index + 2 :]
-                    if relative_parts:
-                        candidates.append((self.raw_dir / Path(*relative_parts)).resolve())
-            else:
-                candidates.append((self.site_dir / original).resolve())
-
-        patient_dir = self.raw_dir / patient_id
-        if image_name and patient_dir.exists():
-            matches = [path.resolve() for path in patient_dir.rglob(image_name) if path.is_file()]
-            if matches:
-                candidates.extend(matches)
-        if normalized_patient_id and normalized_visit_date:
-            visit_dir = self.raw_dir / normalized_patient_id / normalized_visit_date
-            if visit_dir.exists():
-                allowed_suffixes = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
-                visit_files = [
-                    path.resolve()
-                    for path in visit_dir.iterdir()
-                    if path.is_file() and path.suffix.lower() in allowed_suffixes
-                ]
-                if len(visit_files) == 1:
-                    candidates.append(visit_files[0])
-
-        seen: set[str] = set()
-        for candidate in candidates:
-            key = str(candidate)
-            if key in seen:
-                continue
-            seen.add(key)
-            if candidate.exists():
-                return candidate.resolve()
-        if candidates:
-            raise ValueError(f"Image file not found on disk: {candidates[0]}")
-        raise ValueError("Image file path is required for metadata recovery.")
+        return _resolve_recovery_image_path_impl(
+            self,
+            image_path,
+            patient_id,
+            image_name,
+            visit_date=visit_date,
+        )
 
     def standardize_visit_storage_layout(self, *, refresh_manifest: bool = True) -> dict[str, int]:
-        query = (
-            select(
-                db_images.c.image_id,
-                db_images.c.patient_id,
-                db_images.c.visit_date,
-                db_images.c.image_path,
-            )
-            .where(db_images.c.site_id == self.site_id)
-            .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-
-        moved_files = 0
-        updated_paths = 0
-        removed_dirs = 0
-        skipped_images = 0
-        conflict_paths = 0
-        patient_dirs: set[Path] = set()
-        for row in rows:
-            image_id = _coerce_optional_text(row.get("image_id"))
-            patient_id = _coerce_optional_text(row.get("patient_id"))
-            visit_date = _coerce_optional_text(row.get("visit_date"))
-            raw_path = _coerce_optional_text(row.get("image_path"))
-            image_name = Path(raw_path).name
-            if not image_id or not patient_id or not visit_date or not image_name:
-                skipped_images += 1
-                continue
-
-            patient_dir = (self.raw_dir / patient_id).resolve()
-            patient_dirs.add(patient_dir)
-            canonical_path = self._canonical_image_storage_path(patient_id, visit_date, image_name)
-            try:
-                resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
-            except ValueError:
-                skipped_images += 1
-                continue
-
-            runtime_path = canonical_path
-            if resolved_path != canonical_path:
-                ensure_dir(canonical_path.parent)
-                if canonical_path.exists():
-                    runtime_path = canonical_path
-                    conflict_paths += 1
-                else:
-                    resolved_path.replace(canonical_path)
-                    moved_files += 1
-                    removed_dirs += self._prune_empty_raw_dirs(resolved_path.parent, patient_dir=patient_dir)
-                    runtime_path = canonical_path
-            if str(raw_path) != str(runtime_path):
-                self._persist_image_record_path(image_id, runtime_path)
-                updated_paths += 1
-
-        manifest_rows = 0
-        if refresh_manifest:
-            manifest_rows = len(self.generate_manifest())
-
-        return {
-            "site_id": self.site_id,
-            "scanned_images": len(rows),
-            "moved_files": moved_files,
-            "updated_paths": updated_paths,
-            "removed_dirs": removed_dirs,
-            "conflict_paths": conflict_paths,
-            "skipped_images": skipped_images,
-            "manifest_rows": manifest_rows,
-        }
+        return _standardize_visit_storage_layout_impl(self, refresh_manifest=refresh_manifest)
 
     def _patient_id_from_recovery_image_path(self, image_path: Path) -> str | None:
-        try:
-            relative_path = image_path.resolve().relative_to(self.raw_dir.resolve())
-        except ValueError:
-            return None
-        if not relative_path.parts:
-            return None
-        return _coerce_optional_text(relative_path.parts[0]) or None
+        return _patient_id_from_recovery_image_path_impl(self, image_path)
 
     def _recover_metadata_from_backup_payload(self, payload: dict[str, Any], *, force_replace: bool) -> dict[str, Any]:
-        patients_payload = [dict(item) for item in payload.get("patients", []) if isinstance(item, dict)]
-        visits_payload = [dict(item) for item in payload.get("visits", []) if isinstance(item, dict)]
-        images_payload = [dict(item) for item in payload.get("images", []) if isinstance(item, dict)]
-        if not patients_payload and not visits_payload and not images_payload:
-            raise ValueError("Metadata backup is empty.")
-
-        if not force_replace and (self.list_patients() or self.list_visits() or self.list_images()):
-            raise ValueError("Site metadata already exists. Use force_replace to rebuild it.")
-
-        patient_id_overrides: dict[str, str] = {}
-        for row in images_payload:
-            raw_patient_id = _coerce_optional_text(row.get("patient_id"))
-            image_name = Path(_coerce_optional_text(row.get("image_path"))).name
-            if not raw_patient_id or not image_name:
-                continue
-            resolved_image_path = self._resolve_recovery_image_path(row.get("image_path"), raw_patient_id, image_name)
-            path_patient_id = self._patient_id_from_recovery_image_path(resolved_image_path)
-            if path_patient_id:
-                patient_id_overrides[raw_patient_id] = path_patient_id
-
-        patient_records: list[dict[str, Any]] = []
-        for row in patients_payload:
-            raw_patient_id = _coerce_optional_text(row.get("patient_id"))
-            patient_records.append(
-                {
-                    "site_id": self.site_id,
-                    "patient_id": normalize_patient_pseudonym(patient_id_overrides.get(raw_patient_id, raw_patient_id)),
-                    "created_by_user_id": _coerce_optional_text(row.get("created_by_user_id")) or None,
-                    "sex": _coerce_optional_text(row.get("sex"), "unknown") or "unknown",
-                    "age": _coerce_optional_int(row.get("age"), 0),
-                    "chart_alias": _coerce_optional_text(row.get("chart_alias")),
-                    "local_case_code": _coerce_optional_text(row.get("local_case_code")),
-                    "created_at": _coerce_optional_text(row.get("created_at"), utc_now()),
-                }
-            )
-
-        visit_records: list[dict[str, Any]] = []
-        visit_index_by_key: dict[tuple[str, str], str] = {}
-        for row in visits_payload:
-            raw_patient_id = _coerce_optional_text(row.get("patient_id"))
-            normalized_patient_id = normalize_patient_pseudonym(patient_id_overrides.get(raw_patient_id, raw_patient_id))
-            normalized_visit_date = normalize_visit_label(_coerce_optional_text(row.get("visit_date")))
-            visit_id = _coerce_optional_text(row.get("visit_id")) or make_id("visit")
-            normalized_culture = _normalize_visit_culture_fields(
-                culture_status=row.get("culture_status"),
-                culture_confirmed=row.get("culture_confirmed"),
-                culture_category=row.get("culture_category"),
-                culture_species=row.get("culture_species"),
-                additional_organisms=list(row.get("additional_organisms") or []),
-                polymicrobial=row.get("polymicrobial"),
-            )
-            visit_record = {
-                "visit_id": visit_id,
-                "site_id": self.site_id,
-                "patient_id": normalized_patient_id,
-                "patient_reference_id": _coerce_optional_text(row.get("patient_reference_id"))
-                or make_patient_reference_id(self.site_id, normalized_patient_id, PATIENT_REFERENCE_SALT),
-                "created_by_user_id": _coerce_optional_text(row.get("created_by_user_id")) or None,
-                "visit_date": normalized_visit_date,
-                "visit_index": int(row.get("visit_index") or visit_index_from_label(normalized_visit_date)),
-                "actual_visit_date": normalize_actual_visit_date(_coerce_optional_text(row.get("actual_visit_date")) or None),
-                **normalized_culture,
-                "contact_lens_use": _coerce_optional_text(row.get("contact_lens_use"), "unknown") or "unknown",
-                "predisposing_factor": list(row.get("predisposing_factor") or []),
-                "other_history": _coerce_optional_text(row.get("other_history")),
-                "visit_status": _coerce_optional_text(row.get("visit_status"), "active") or "active",
-                "active_stage": _coerce_optional_bool(row.get("active_stage"), True),
-                "is_initial_visit": _coerce_optional_bool(row.get("is_initial_visit"), normalized_visit_date == "Initial"),
-                "smear_result": _coerce_optional_text(row.get("smear_result"), "not done") or "not done",
-                "research_registry_status": _coerce_optional_text(row.get("research_registry_status"), "analysis_only") or "analysis_only",
-                "research_registry_updated_at": _coerce_optional_text(row.get("research_registry_updated_at"), utc_now()),
-                "research_registry_updated_by": _coerce_optional_text(row.get("research_registry_updated_by")) or None,
-                "research_registry_source": _coerce_optional_text(row.get("research_registry_source"), "metadata_backup_restore") or "metadata_backup_restore",
-                "created_at": _coerce_optional_text(row.get("created_at"), utc_now()),
-            }
-            visit_records.append(visit_record)
-            visit_index_by_key[(normalized_patient_id, normalized_visit_date)] = visit_id
-
-        image_records: list[dict[str, Any]] = []
-        for row in images_payload:
-            raw_patient_id = _coerce_optional_text(row.get("patient_id"))
-            normalized_visit_date = normalize_visit_label(_coerce_optional_text(row.get("visit_date")))
-            image_name = Path(_coerce_optional_text(row.get("image_path"))).name
-            resolved_image_path = self._resolve_recovery_image_path(
-                row.get("image_path"),
-                patient_id_overrides.get(raw_patient_id, raw_patient_id),
-                image_name,
-            )
-            path_patient_id = self._patient_id_from_recovery_image_path(resolved_image_path)
-            normalized_patient_id = normalize_patient_pseudonym(path_patient_id or patient_id_overrides.get(raw_patient_id, raw_patient_id))
-            image_records.append(
-                {
-                    "image_id": _coerce_optional_text(row.get("image_id")) or resolved_image_path.stem or make_id("image"),
-                    "visit_id": visit_index_by_key[(normalized_patient_id, normalized_visit_date)],
-                    "site_id": self.site_id,
-                    "patient_id": normalized_patient_id,
-                    "visit_date": normalized_visit_date,
-                    "created_by_user_id": _coerce_optional_text(row.get("created_by_user_id")) or None,
-                    "view": _coerce_optional_text(row.get("view"), "white") or "white",
-                    "image_path": str(resolved_image_path),
-                    "is_representative": _coerce_optional_bool(row.get("is_representative"), False),
-                    "lesion_prompt_box": _parse_manifest_box(row.get("lesion_prompt_box")) if not isinstance(row.get("lesion_prompt_box"), dict) else row.get("lesion_prompt_box"),
-                    "has_lesion_box": _coerce_optional_bool(row.get("has_lesion_box"), bool(_parse_manifest_box(row.get("lesion_prompt_box")))),
-                    "has_roi_crop": _coerce_optional_bool(row.get("has_roi_crop"), False),
-                    "has_medsam_mask": _coerce_optional_bool(row.get("has_medsam_mask"), False),
-                    "has_lesion_crop": _coerce_optional_bool(row.get("has_lesion_crop"), False),
-                    "has_lesion_mask": _coerce_optional_bool(row.get("has_lesion_mask"), False),
-                    "quality_scores": row.get("quality_scores") if isinstance(row.get("quality_scores"), dict) else None,
-                    "artifact_status_updated_at": _coerce_optional_text(row.get("artifact_status_updated_at"), utc_now()),
-                    "uploaded_at": _coerce_optional_text(row.get("uploaded_at"), utc_now()),
-                }
-            )
-
-        self._clear_site_metadata_rows()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            if patient_records:
-                conn.execute(db_patients.insert().values(patient_records))
-            if visit_records:
-                conn.execute(db_visits.insert().values(visit_records))
-            if image_records:
-                conn.execute(db_images.insert().values(image_records))
-        return {
-            "source": "backup",
-            "restored_patients": len(patient_records),
-            "restored_visits": len(visit_records),
-            "restored_images": len(image_records),
-        }
+        return _recover_metadata_from_backup_payload_impl(self, payload, force_replace=force_replace)
 
     def _recover_metadata_from_manifest(self, *, force_replace: bool) -> dict[str, Any]:
-        if not self.manifest_path.exists():
-            raise ValueError("Manifest file does not exist.")
-        manifest_df = pd.read_csv(self.manifest_path, dtype=str, keep_default_na=False)
-        if manifest_df.empty:
-            raise ValueError("Manifest file is empty.")
-
-        if not force_replace and (self.list_patients() or self.list_visits() or self.list_images()):
-            raise ValueError("Site metadata already exists. Use force_replace to rebuild it.")
-
-        timestamp = utc_now()
-        patient_records: dict[str, dict[str, Any]] = {}
-        visit_records: dict[tuple[str, str], dict[str, Any]] = {}
-        image_records: list[dict[str, Any]] = []
-
-        for row in manifest_df.to_dict(orient="records"):
-            raw_patient_id = _coerce_optional_text(row.get("patient_id"))
-            image_name = Path(_coerce_optional_text(row.get("image_path"))).name
-            resolved_image_path = self._resolve_recovery_image_path(row.get("image_path"), raw_patient_id, image_name)
-            path_patient_id = self._patient_id_from_recovery_image_path(resolved_image_path)
-            normalized_patient_id = normalize_patient_pseudonym(path_patient_id or raw_patient_id)
-            normalized_visit_date = normalize_visit_label(_coerce_optional_text(row.get("visit_date")))
-            patient_record = patient_records.get(normalized_patient_id)
-            if patient_record is None:
-                patient_record = {
-                    "site_id": self.site_id,
-                    "patient_id": normalized_patient_id,
-                    "created_by_user_id": None,
-                    "sex": _coerce_optional_text(row.get("sex"), "unknown") or "unknown",
-                    "age": _coerce_optional_int(row.get("age"), 0),
-                    "chart_alias": _coerce_optional_text(row.get("chart_alias")),
-                    "local_case_code": _coerce_optional_text(row.get("local_case_code")),
-                    "created_at": timestamp,
-                }
-                patient_records[normalized_patient_id] = patient_record
-            else:
-                if not patient_record["chart_alias"]:
-                    patient_record["chart_alias"] = _coerce_optional_text(row.get("chart_alias"))
-                if not patient_record["local_case_code"]:
-                    patient_record["local_case_code"] = _coerce_optional_text(row.get("local_case_code"))
-
-            visit_key = (normalized_patient_id, normalized_visit_date)
-            visit_record = visit_records.get(visit_key)
-            if visit_record is None:
-                normalized_status = _coerce_optional_text(row.get("visit_status"), "active").lower() or "active"
-                if normalized_status not in VISIT_STATUS_OPTIONS:
-                    normalized_status = "active"
-                normalized_culture = _normalize_visit_culture_fields(
-                    culture_status=row.get("culture_status"),
-                    culture_confirmed=row.get("culture_confirmed"),
-                    culture_category=row.get("culture_category"),
-                    culture_species=row.get("culture_species"),
-                    additional_organisms=[],
-                    polymicrobial=row.get("polymicrobial"),
-                )
-                visit_record = {
-                    "visit_id": make_id("visit"),
-                    "site_id": self.site_id,
-                    "patient_id": normalized_patient_id,
-                    "patient_reference_id": make_patient_reference_id(
-                        self.site_id,
-                        normalized_patient_id,
-                        PATIENT_REFERENCE_SALT,
-                    ),
-                    "created_by_user_id": None,
-                    "visit_date": normalized_visit_date,
-                    "visit_index": visit_index_from_label(normalized_visit_date),
-                    "actual_visit_date": None,
-                    **normalized_culture,
-                    "contact_lens_use": _coerce_optional_text(row.get("contact_lens_use"), "unknown") or "unknown",
-                    "predisposing_factor": _parse_manifest_pipe_list(row.get("predisposing_factor")),
-                    "other_history": _coerce_optional_text(row.get("other_history")),
-                    "visit_status": normalized_status,
-                    "active_stage": normalized_status == "active",
-                    "is_initial_visit": normalized_visit_date == "Initial",
-                    "smear_result": _coerce_optional_text(row.get("smear_result"), "not done") or "not done",
-                    "research_registry_status": "analysis_only",
-                    "research_registry_updated_at": timestamp,
-                    "research_registry_updated_by": None,
-                    "research_registry_source": "manifest_recovery",
-                    "created_at": timestamp,
-                }
-                visit_records[visit_key] = visit_record
-
-            lesion_prompt_box = _parse_manifest_box(row.get("lesion_prompt_box"))
-            image_records.append(
-                {
-                    "image_id": resolved_image_path.stem or make_id("image"),
-                    "visit_id": visit_record["visit_id"],
-                    "site_id": self.site_id,
-                    "patient_id": normalized_patient_id,
-                    "visit_date": normalized_visit_date,
-                    "created_by_user_id": None,
-                    "view": _coerce_optional_text(row.get("view"), "white") or "white",
-                    "image_path": str(resolved_image_path),
-                    "is_representative": _coerce_optional_bool(row.get("is_representative"), False),
-                    "lesion_prompt_box": lesion_prompt_box,
-                    "has_lesion_box": lesion_prompt_box is not None,
-                    "has_roi_crop": False,
-                    "has_medsam_mask": False,
-                    "has_lesion_crop": False,
-                    "has_lesion_mask": False,
-                    "quality_scores": None,
-                    "artifact_status_updated_at": timestamp,
-                    "uploaded_at": timestamp,
-                }
-            )
-
-        self._clear_site_metadata_rows()
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(db_patients.insert().values(list(patient_records.values())))
-            conn.execute(db_visits.insert().values(list(visit_records.values())))
-            conn.execute(db_images.insert().values(image_records))
-        return {
-            "source": "manifest",
-            "restored_patients": len(patient_records),
-            "restored_visits": len(visit_records),
-            "restored_images": len(image_records),
-        }
+        return _recover_metadata_from_manifest_impl(self, force_replace=force_replace)
 
     def recover_metadata(
         self,
@@ -3283,50 +1672,27 @@ class SiteStore:
         force_replace: bool = False,
         backup_path: str | None = None,
     ) -> dict[str, Any]:
-        backup_candidate = Path(backup_path).expanduser() if backup_path else self.metadata_backup_path()
-        if prefer_backup and backup_candidate.exists():
-            payload = read_json(backup_candidate, {})
-            result = self._recover_metadata_from_backup_payload(payload, force_replace=force_replace)
-        else:
-            result = self._recover_metadata_from_manifest(force_replace=force_replace)
-        self.generate_manifest()
-        self.export_metadata_backup()
-        return result
+        return _recover_metadata_impl(
+            self,
+            prefer_backup=prefer_backup,
+            force_replace=force_replace,
+            backup_path=backup_path,
+        )
 
     def generate_manifest(self, *, positive_only: bool = True) -> pd.DataFrame:
-        data_frame = pd.DataFrame(self.dataset_records(positive_only=positive_only), columns=MANIFEST_COLUMNS)
-        write_csv(self.manifest_path, data_frame)
-        return data_frame
+        return _generate_manifest_impl(self, positive_only=positive_only)
 
     def load_manifest(self) -> pd.DataFrame:
-        return self.generate_manifest()
+        return _load_manifest_impl(self)
 
     def load_patient_split(self) -> dict[str, Any]:
-        query = select(site_patient_splits.c.split_json).where(site_patient_splits.c.site_id == self.site_id)
-        with DATA_PLANE_ENGINE.begin() as conn:
-            row = conn.execute(query).first()
-        return dict(row[0]) if row and row[0] else {}
+        return _load_patient_split_impl(self)
 
     def save_patient_split(self, split_record: dict[str, Any]) -> dict[str, Any]:
-        record = {
-            "site_id": self.site_id,
-            "split_json": split_record,
-            "updated_at": utc_now(),
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            existing = conn.execute(select(site_patient_splits.c.site_id).where(site_patient_splits.c.site_id == self.site_id)).first()
-            if existing:
-                conn.execute(
-                    update(site_patient_splits)
-                    .where(site_patient_splits.c.site_id == self.site_id)
-                    .values(**record)
-                )
-            else:
-                conn.execute(site_patient_splits.insert().values(**record))
-        return split_record
+        return _save_patient_split_impl(self, split_record)
 
     def clear_patient_split(self) -> None:
-        self.save_patient_split({})
+        _clear_patient_split_impl(self)
 
     @staticmethod
     def _job_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:

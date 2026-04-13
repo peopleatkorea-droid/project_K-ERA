@@ -11,7 +11,11 @@ from kera_research.api.case_model_versions import (
     serialize_case_artifact_availability,
     serialize_case_model_version,
 )
-from kera_research.api.routes.case_shared import sync_case_artifact_cache_best_effort
+from kera_research.api.routes.case_shared import (
+    resolve_case_postmortem_with_response_budget,
+    sync_case_artifact_cache_best_effort,
+    sync_case_artifact_cache_with_response_budget,
+)
 from kera_research.services.pipeline_case_support import lesion_prompt_box_signature, load_stored_lesion_crop
 
 
@@ -95,7 +99,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Case validation is unavailable: {exc}",
             ) from exc
-        sync_case_artifact_cache_best_effort(
+        sync_case_artifact_cache_with_response_budget(
             workflow,
             site_store,
             patient_id=payload.patient_id,
@@ -119,48 +123,19 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 "prediction_probability": case_prediction.get("prediction_probability"),
                 "is_correct": case_prediction.get("is_correct"),
             }
-            try:
-                post_mortem = workflow.run_case_postmortem(
-                    site_store,
-                    patient_id=payload.patient_id,
-                    visit_date=payload.visit_date,
-                    model_version=model_version,
-                    execution_device=execution_device,
-                    classification_context=classification_context,
-                    case_prediction=case_prediction,
-                    top_k=3,
-                    retrieval_backend="hybrid",
-                )
-                if post_mortem is not None and case_reference_id:
-                    case_prediction["post_mortem"] = post_mortem
-                    cp.update_validation_case_prediction(
-                        str(summary.get("validation_id") or ""),
-                        case_reference_id=case_reference_id,
-                        updates={
-                            "post_mortem": post_mortem,
-                            "structured_analysis": post_mortem.get("structured_analysis"),
-                        },
-                    )
-                    site_store.record_case_validation_history(
-                        payload.patient_id,
-                        payload.visit_date,
-                        {
-                            "validation_id": summary.get("validation_id"),
-                            "run_date": summary.get("run_date"),
-                            "model_version": summary.get("model_version"),
-                            "model_version_id": summary.get("model_version_id"),
-                            "model_architecture": summary.get("model_architecture"),
-                            "run_scope": "case",
-                            "predicted_label": case_prediction.get("predicted_label"),
-                            "true_label": case_prediction.get("true_label"),
-                            "prediction_probability": case_prediction.get("prediction_probability"),
-                            "is_correct": case_prediction.get("is_correct"),
-                            "prediction_snapshot": case_prediction.get("prediction_snapshot"),
-                            "post_mortem": post_mortem,
-                        },
-                    )
-            except Exception:
-                post_mortem = None
+            post_mortem = resolve_case_postmortem_with_response_budget(
+                workflow,
+                site_store,
+                cp,
+                patient_id=payload.patient_id,
+                visit_date=payload.visit_date,
+                model_version=model_version,
+                execution_device=execution_device,
+                summary=summary,
+                classification_context=classification_context,
+                case_prediction=case_prediction,
+                case_reference_id=case_reference_id,
+            )
         return {
             "summary": summary,
             "case_prediction": case_prediction,
@@ -233,7 +208,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                     }
                 )
         if any(item.get("summary") for item in comparisons):
-            sync_case_artifact_cache_best_effort(
+            sync_case_artifact_cache_with_response_budget(
                 workflow,
                 site_store,
                 patient_id=payload.patient_id,
@@ -284,7 +259,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 retrieval_backend=payload.retrieval_backend,
                 retrieval_profile=payload.retrieval_profile,
             )
-            sync_case_artifact_cache_best_effort(
+            sync_case_artifact_cache_with_response_budget(
                 workflow,
                 site_store,
                 patient_id=payload.patient_id,
@@ -339,7 +314,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 retrieval_backend=payload.retrieval_backend,
                 retrieval_profile=payload.retrieval_profile,
             )
-            sync_case_artifact_cache_best_effort(
+            sync_case_artifact_cache_with_response_budget(
                 workflow,
                 site_store,
                 patient_id=payload.patient_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ ArtifactScope = Literal["patient", "visit", "image"]
 ArtifactStatusKey = Literal["missing_lesion_box", "missing_roi", "missing_lesion_crop", "medsam_backfill_ready"]
 
 MEDSAM_BACKFILL_JOB_TYPE = "medsam_artifact_backfill"
+LOGGER = logging.getLogger(__name__)
 
 
 def _case_key(record: dict[str, Any]) -> tuple[str, str]:
@@ -378,8 +380,14 @@ def queue_medsam_artifact_backfill(
                     lesion_completed += 1
                 refreshed_record = site_store.get_image(image_id) or record
                 sync_image_artifact_cache(workflow, site_store, refreshed_record)
-            except Exception:
+            except Exception as exc:
                 failed_images += 1
+                LOGGER.warning(
+                    "MedSAM artifact backfill failed for site=%s image_id=%s: %s",
+                    site_store.site_id,
+                    image_id,
+                    exc,
+                )
                 if image_id and len(failed_image_ids) < 25:
                     failed_image_ids.append(image_id)
             percent = 100 if total_images <= 0 else int((index / total_images) * 100)

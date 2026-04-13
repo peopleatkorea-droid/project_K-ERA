@@ -15,6 +15,14 @@ import {
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import type { LesionBoxMap, SavedImagePreview } from "./shared";
+import {
+  computeNextFollowUpNumber,
+  displayVisitReference,
+  FOLLOW_UP_VISIT_PATTERN,
+  normalizeAdditionalOrganisms,
+  normalizeCultureStatus,
+} from "./case-workspace-draft-helpers";
+import { normalizeBox } from "./case-workspace-core-helpers";
 
 type DraftImage = {
   draft_id: string;
@@ -63,28 +71,11 @@ type PendingOrganism = Pick<
 
 type LocalePick = (locale: Locale, en: string, ko: string) => string;
 
-const CULTURE_STATUS_OPTIONS = new Set([
-  "positive",
-  "negative",
-  "not_done",
-  "unknown",
-]);
-
-function normalizeCultureStatus(value: string | null | undefined): string {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return CULTURE_STATUS_OPTIONS.has(normalized) ? normalized : "unknown";
-}
-
 function normalizeDraftCultureFields(
   cultureStatus: string | null | undefined,
   cultureCategory: string | null | undefined,
   cultureSpecies: string | null | undefined,
   additionalOrganisms: OrganismRecord[] | undefined,
-  normalizeAdditionalOrganisms: (
-    primaryCategory: string,
-    primarySpecies: string,
-    organisms: OrganismRecord[] | undefined,
-  ) => OrganismRecord[],
 ): Pick<
   DraftState,
   "culture_status" | "culture_category" | "culture_species" | "additional_organisms"
@@ -138,7 +129,6 @@ type StartFollowUpDraftArgs = {
   selectedSiteId: string | null;
   token: string;
   locale: Locale;
-  followUpVisitPattern: RegExp;
   cultureSpecies: Record<string, string[]>;
   describeError: (error: unknown, fallback: string) => string;
   pick: LocalePick;
@@ -155,12 +145,6 @@ type StartFollowUpDraftArgs = {
   setDraft: Dispatch<SetStateAction<DraftState>>;
   setPendingOrganism: Dispatch<SetStateAction<PendingOrganism>>;
   setShowAdditionalOrganismForm: Dispatch<SetStateAction<boolean>>;
-  normalizeAdditionalOrganisms: (
-    primaryCategory: string,
-    primarySpecies: string,
-    organisms: OrganismRecord[] | undefined,
-  ) => OrganismRecord[];
-  computeNextFollowUpNumber: (visits: VisitRecord[]) => number;
   visitTimestamp: (visitRecord: VisitRecord) => number;
 };
 
@@ -169,7 +153,6 @@ type StartEditDraftArgs = {
   selectedSiteId: string | null;
   token: string;
   locale: Locale;
-  followUpVisitPattern: RegExp;
   cultureSpecies: Record<string, string[]>;
   describeError: (error: unknown, fallback: string) => string;
   pick: LocalePick;
@@ -188,22 +171,6 @@ type StartEditDraftArgs = {
   setPendingOrganism: Dispatch<SetStateAction<PendingOrganism>>;
   setShowAdditionalOrganismForm: Dispatch<SetStateAction<boolean>>;
   createDraftId: () => string;
-  normalizeBox: (box: {
-    x0: number;
-    y0: number;
-    x1: number;
-    y1: number;
-  }) => {
-    x0: number;
-    y0: number;
-    x1: number;
-    y1: number;
-  };
-  normalizeAdditionalOrganisms: (
-    primaryCategory: string,
-    primarySpecies: string,
-    organisms: OrganismRecord[] | undefined,
-  ) => OrganismRecord[];
 };
 
 type OpenImageTextSearchResultArgs = {
@@ -216,7 +183,6 @@ type OpenImageTextSearchResultArgs = {
   cases: CaseSummaryRecord[];
   pick: LocalePick;
   selectSiteForCaseMessage: string;
-  displayVisitReference: (locale: "en" | "ko", visitReference: string) => string;
   setToast: Dispatch<SetStateAction<ToastState>>;
   setCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   openSavedCase: (caseRecord: CaseSummaryRecord, nextView?: "cases" | "patients") => void;
@@ -270,7 +236,6 @@ export async function startFollowUpDraftFromSelectedCase({
   selectedSiteId,
   token,
   locale,
-  followUpVisitPattern,
   cultureSpecies,
   describeError,
   pick,
@@ -287,8 +252,6 @@ export async function startFollowUpDraftFromSelectedCase({
   setDraft,
   setPendingOrganism,
   setShowAdditionalOrganismForm,
-  normalizeAdditionalOrganisms,
-  computeNextFollowUpNumber,
   visitTimestamp,
 }: StartFollowUpDraftArgs) {
   if (!selectedCase) {
@@ -305,7 +268,7 @@ export async function startFollowUpDraftFromSelectedCase({
   setPanelOpen(true);
   setRailView("cases");
   const selectedFollowUpMatch = String(selectedCase.visit_date ?? "").match(
-    followUpVisitPattern,
+    FOLLOW_UP_VISIT_PATTERN,
   );
   const fallbackFollowUpNumber = String(
     (selectedFollowUpMatch ? Number(selectedFollowUpMatch[1]) || 0 : 0) + 1,
@@ -319,7 +282,6 @@ export async function startFollowUpDraftFromSelectedCase({
         selectedCase.culture_category || current.culture_category,
         selectedCase.culture_species || current.culture_species,
         selectedCase.additional_organisms,
-        normalizeAdditionalOrganisms,
       ),
       patient_id: selectedCase.patient_id,
       sex: selectedCase.sex || current.sex,
@@ -387,7 +349,6 @@ export async function startFollowUpDraftFromSelectedCase({
           selectedCase.culture_species ||
           current.culture_species,
         latestVisit.additional_organisms ?? selectedCase.additional_organisms,
-        normalizeAdditionalOrganisms,
       ),
       patient_id: selectedCase.patient_id,
       sex: selectedCase.sex || current.sex,
@@ -452,7 +413,6 @@ export async function startEditDraftFromSelectedCase({
   selectedSiteId,
   token,
   locale,
-  followUpVisitPattern,
   cultureSpecies,
   describeError,
   pick,
@@ -471,8 +431,6 @@ export async function startEditDraftFromSelectedCase({
   setPendingOrganism,
   setShowAdditionalOrganismForm,
   createDraftId,
-  normalizeBox,
-  normalizeAdditionalOrganisms,
 }: StartEditDraftArgs) {
   if (!selectedCase) {
     return;
@@ -561,7 +519,6 @@ export async function startEditDraftFromSelectedCase({
         caseToEdit.culture_species || current.culture_species,
         selectedVisit?.additional_organisms ??
           caseToEdit.additional_organisms,
-        normalizeAdditionalOrganisms,
       ),
       patient_id: caseToEdit.patient_id,
       sex: caseToEdit.sex || current.sex,
@@ -580,7 +537,7 @@ export async function startEditDraftFromSelectedCase({
       is_initial_visit: /^initial$/i.test(caseToEdit.visit_date),
       follow_up_number: (() => {
         const followUpMatch = String(caseToEdit.visit_date ?? "").match(
-          followUpVisitPattern,
+          FOLLOW_UP_VISIT_PATTERN,
         );
         return followUpMatch
           ? String(Number(followUpMatch[1]) || 1)
@@ -635,7 +592,6 @@ export async function handleOpenImageTextSearchResult({
   cases,
   pick,
   selectSiteForCaseMessage,
-  displayVisitReference,
   setToast,
   setCases,
   openSavedCase,

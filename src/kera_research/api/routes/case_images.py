@@ -1,4 +1,5 @@
 import mimetypes
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from kera_research.api.routes.case_shared import (
     sync_case_artifact_cache_best_effort,
     sync_image_artifact_cache_best_effort,
 )
+from kera_research.api.routes.workspace_visibility import workspace_visit_visible
 from kera_research.services.image_artifact_status import (
     artifact_status_labels,
     build_artifact_status_items,
@@ -36,6 +38,8 @@ from kera_research.services.image_artifact_status import (
     queue_medsam_artifact_backfill,
     sync_site_artifact_cache,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_case_images_router(support: Any) -> APIRouter:
@@ -61,22 +65,6 @@ def build_case_images_router(support: Any) -> APIRouter:
     max_image_bytes = support.max_image_bytes
     InvalidImageUploadError = support.InvalidImageUploadError
 
-    def _workspace_visit_culture_status(visit: dict[str, Any]) -> str:
-        normalized_status = str(visit.get("culture_status") or "").strip().lower()
-        if normalized_status:
-            return normalized_status
-        if (
-            bool(visit.get("culture_confirmed"))
-            or str(visit.get("culture_category") or "").strip()
-            or str(visit.get("culture_species") or "").strip()
-        ):
-            return "positive"
-        return "unknown"
-
-    def _workspace_visit_visible(visit: dict[str, Any]) -> bool:
-        source = str(visit.get("research_registry_source") or "").strip().lower()
-        return source != "raw_inventory_sync" or _workspace_visit_culture_status(visit) == "positive"
-
     def _visible_workspace_case_keys(site_store: Any, patient_id: str | None = None) -> set[tuple[str, str]]:
         visits = (
             site_store.list_visits_for_patient(patient_id)
@@ -86,7 +74,7 @@ def build_case_images_router(support: Any) -> APIRouter:
         return {
             (str(visit.get("patient_id") or "").strip(), str(visit.get("visit_date") or "").strip())
             for visit in visits
-            if _workspace_visit_visible(visit)
+            if workspace_visit_visible(visit)
         }
 
     def _filter_visible_workspace_images(
@@ -392,6 +380,7 @@ def build_case_images_router(support: Any) -> APIRouter:
             str(item.get("image_id") or "").strip(): item
             for item in site_store.get_images(requested_ids)
         }
+        queued_ids: list[str] = []
         ready_count = 0
         items: list[dict[str, Any]] = []
         for image_id in requested_ids:
@@ -411,45 +400,34 @@ def build_case_images_router(support: Any) -> APIRouter:
                 continue
 
             preview_path = site_store.image_preview_cache_path(image_id, normalized_max_side)
-            cache_status = "hit"
-            try:
-                if not preview_path.exists():
-                    site_store.ensure_image_preview(image, normalized_max_side)
-                    cache_status = "generated"
+            if preview_path.exists():
                 ready_count += 1
                 items.append(
                     {
                         "image_id": image_id,
                         "max_side": normalized_max_side,
                         "ready": True,
-                        "cache_status": cache_status,
+                        "cache_status": "hit",
                         "preview_url": preview_url,
                         "error": None,
                     }
                 )
-            except ValueError as exc:
-                detail = "Image file not found on disk." if str(exc) == "Image file not found on disk." else str(exc)
-                items.append(
-                    {
-                        "image_id": image_id,
-                        "max_side": normalized_max_side,
-                        "ready": False,
-                        "cache_status": "missing",
-                        "preview_url": preview_url,
-                        "error": detail,
-                    }
-                )
-            except OSError:
-                items.append(
-                    {
-                        "image_id": image_id,
-                        "max_side": normalized_max_side,
-                        "ready": False,
-                        "cache_status": "error",
-                        "preview_url": preview_url,
-                        "error": "Image preview could not be generated.",
-                    }
-                )
+                continue
+
+            queued_ids.append(image_id)
+            items.append(
+                {
+                    "image_id": image_id,
+                    "max_side": normalized_max_side,
+                    "ready": False,
+                    "cache_status": "queued",
+                    "preview_url": preview_url,
+                    "error": None,
+                }
+            )
+
+        if queued_ids:
+            schedule_image_derivative_backfill(site_store, queued_ids)
 
         return private_json_response(
             {
@@ -568,30 +546,20 @@ def build_case_images_router(support: Any) -> APIRouter:
                 media_type="image/jpeg",
                 filename=preview_path.name,
                 headers={"Cache-Control": "private, max-age=86400"},
-            )
+        )
         image = site_store.get_image(image_id)
         if image is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found.")
-        try:
-            preview_path = site_store.ensure_image_preview(image, normalized_max_side)
-        except ValueError as exc:
-            if str(exc) == "Image file not found on disk.":
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.") from exc
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Image preview could not be generated.",
-            ) from exc
-        except OSError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Image preview could not be generated.",
-            ) from exc
-
+        image_path = Path(str(image.get("image_path") or ""))
+        if not image_path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
+        schedule_image_derivative_backfill(site_store, [image_id])
+        media_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
         return FileResponse(
-            path=preview_path,
-            media_type="image/jpeg",
-            filename=preview_path.name,
-            headers={"Cache-Control": "private, max-age=86400"},
+            path=image_path,
+            media_type=media_type,
+            filename=image_path.name,
+            headers={"Cache-Control": "private, max-age=15"},
         )
 
     @router.post("/api/sites/{site_id}/images/{image_id}/lesion-live-preview")

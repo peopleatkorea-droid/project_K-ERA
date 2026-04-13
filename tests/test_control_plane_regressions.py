@@ -220,6 +220,31 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(collaborator_model["version_id"], "model_b")
         self.assertEqual(forwarded_model["version_id"], "model_b")
 
+    def test_site_store_patient_split_round_trip(self) -> None:
+        project = self.cp.create_project("Split Project", "test", "owner")
+        site_id = self._unique_site_id("SPLIT")
+        self.cp.create_site(
+            project["project_id"],
+            site_id,
+            "Split Site",
+            "Split Hospital",
+        )
+        site_store = self.app_module.SiteStore(site_id)
+
+        split_record = {
+            "split_id": "split_001",
+            "train_patient_ids": ["P-001", "P-002"],
+            "val_patient_ids": ["P-003"],
+            "test_patient_ids": ["P-004"],
+        }
+
+        self.assertEqual(site_store.load_patient_split(), {})
+        self.assertEqual(site_store.save_patient_split(split_record), split_record)
+        self.assertEqual(site_store.load_patient_split(), split_record)
+
+        site_store.clear_patient_split()
+        self.assertEqual(site_store.load_patient_split(), {})
+
     def test_workspace_collaborator_returns_updated_site_records(self) -> None:
         project = self.cp.create_project("Regression Project", "test", "owner")
         self.cp.create_site(project["project_id"], "REG_SITE", "Regression Site", "Regression Hospital")

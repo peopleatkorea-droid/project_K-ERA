@@ -22,6 +22,24 @@ import {
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import type { NormalizedBox, PatientListRow, SavedImagePreview } from "./shared";
+import {
+  buildOptimisticPatientRow,
+  buildOptimisticSavedCase,
+  pickRepresentativeSavedImage,
+} from "./case-workspace-save-flow-helpers";
+import {
+  hasUsableLesionPromptBox,
+  normalizeBox,
+  toNormalizedBox,
+  toSavedCaseImagePreview,
+} from "./case-workspace-core-helpers";
+import {
+  buildVisitReference,
+  computeNextFollowUpNumber,
+  displayVisitReference,
+  normalizeAdditionalOrganisms,
+  resolveDraftVisitReference,
+} from "./case-workspace-draft-helpers";
 
 type DraftImage = {
   draft_id: string;
@@ -130,25 +148,6 @@ type HandleSaveCaseArgs = {
   ) => void;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
-  buildVisitReference: (draft: DraftState) => string;
-  resolveDraftVisitReference: (
-    draft: DraftState,
-    patientLookup: PatientIdLookupResponse | null,
-  ) => string;
-  normalizeAdditionalOrganisms: (
-    primaryCategory: string,
-    primarySpecies: string,
-    organisms: OrganismRecord[] | undefined,
-  ) => OrganismRecord[];
-  normalizeBox: (box: NormalizedBox) => NormalizedBox;
-  hasUsableLesionPromptBox: (
-    box: NormalizedBox | null | undefined,
-  ) => boolean;
-  toSavedCaseImagePreview: (
-    siteId: string,
-    token: string,
-    image: any,
-  ) => SavedImagePreview;
   upsertCaseSummaryRecord: (
     caseRecords: CaseSummaryRecord[],
     nextCase: CaseSummaryRecord,
@@ -181,7 +180,6 @@ type HandleSaveCaseArgs = {
     patientId: string,
     fallbackCase?: CaseSummaryRecord | null,
   ) => CaseSummaryRecord[];
-  toNormalizedBox: (value: unknown) => NormalizedBox | null;
   applySavedLesionBoxesAndStartLivePreview: (
     entries: Array<{
       imageId: string;
@@ -189,8 +187,6 @@ type HandleSaveCaseArgs = {
       isRepresentative: boolean;
     }>,
   ) => Promise<void>;
-  displayVisitReference: (locale: "en" | "ko", visitReference: string) => string;
-  computeNextFollowUpNumber: (visits: VisitRecord[]) => number;
 };
 
 function yieldUploadLoopToBrowser(): Promise<void> {
@@ -274,21 +270,12 @@ export async function handleSaveCase({
   primeCaseImageCache,
   onSiteDataChanged,
   loadSiteActivity,
-  buildVisitReference,
-  resolveDraftVisitReference,
-  normalizeAdditionalOrganisms,
-  normalizeBox,
-  hasUsableLesionPromptBox,
-  toSavedCaseImagePreview,
   upsertCaseSummaryRecord,
   patientMatchesListSearch,
   organismSummaryLabel,
   upsertPatientListRow,
   buildKnownPatientTimeline,
-  toNormalizedBox,
   applySavedLesionBoxesAndStartLivePreview,
-  displayVisitReference,
-  computeNextFollowUpNumber,
 }: HandleSaveCaseArgs) {
   const draftNeedsPrimaryOrganism =
     String(draft.culture_status || "").trim().toLowerCase() === "positive";
@@ -371,10 +358,7 @@ export async function handleSaveCase({
         )),
       );
     }
-    const representativeImage =
-      uploadedImages.find((image) => image.is_representative) ??
-      uploadedImages[0] ??
-      null;
+    const representativeImage = pickRepresentativeSavedImage(uploadedImages);
     if (representativeImage && !canUseDesktopTransport()) {
       void setRepresentativeImageOnServer(selectedSiteId!, token, {
         patient_id: patientId,
@@ -396,66 +380,23 @@ export async function handleSaveCase({
       };
     });
   };
-  const buildOptimisticSavedCase = (
-    visitRecord: Partial<VisitRecord>,
-    visitReference: string,
-    uploadedImages: SavedImagePreview[],
-  ): CaseSummaryRecord => {
-    const representativeImage =
-      uploadedImages.find((image) => image.is_representative) ??
-      uploadedImages[0] ??
-      null;
-    const createdAt =
-      visitRecord.created_at ??
-      editingSourceCase?.created_at ??
-      new Date().toISOString();
-    return {
-      case_id: `${patientId}::${visitReference}`,
-      visit_id: String(visitRecord.visit_id ?? `${patientId}::${visitReference}`),
-      patient_id: patientId,
-      created_by_user_id:
-        visitRecord.created_by_user_id ??
-        editingSourceCase?.created_by_user_id ??
-        user.user_id,
-      visit_date: visitReference,
-      actual_visit_date: draft.actual_visit_date.trim() || null,
-      chart_alias: patientPayload.chart_alias,
-      local_case_code: patientPayload.local_case_code,
-      sex: draft.sex,
-      age: draft.age.trim().length > 0 ? Number(draft.age) : null,
-      culture_status: draft.culture_status,
-      culture_confirmed:
-        draftNeedsPrimaryOrganism &&
-        Boolean(draft.culture_category && draft.culture_species.trim()),
-      culture_category: draftNeedsPrimaryOrganism ? draft.culture_category : "",
-      culture_species: draftNeedsPrimaryOrganism ? draft.culture_species.trim() : "",
-      additional_organisms: draftNeedsPrimaryOrganism ? additionalOrganisms : [],
-      contact_lens_use: draft.contact_lens_use,
-      predisposing_factor: draft.predisposing_factor,
-      other_history: draft.other_history.trim(),
-      visit_status: draft.visit_status,
-      active_stage: draft.visit_status === "active",
-      is_initial_visit: /^initial$/i.test(visitReference),
-      smear_result: visitRecord.smear_result ?? "not done",
-      polymicrobial: draftNeedsPrimaryOrganism && additionalOrganisms.length > 0,
-      image_count: uploadedImages.length,
-      representative_image_id: representativeImage?.image_id ?? null,
-      representative_view: representativeImage?.view ?? null,
-      created_at: createdAt,
-      latest_image_uploaded_at:
-        uploadedImages[uploadedImages.length - 1]?.uploaded_at ?? createdAt,
-    };
-  };
   const finalizeSavedCase = (
     visitRecord: Partial<VisitRecord>,
     visitReference: string,
     uploadedImages: SavedImagePreview[] = [],
   ) => {
-    const optimisticCase = buildOptimisticSavedCase(
-      visitRecord,
+    const optimisticCase = buildOptimisticSavedCase({
+      patientId,
       visitReference,
+      draft,
+      patientPayload,
+      draftNeedsPrimaryOrganism,
+      additionalOrganisms,
       uploadedImages,
-    );
+      visitRecord,
+      editingSourceCase,
+      userId: user.user_id,
+    });
     const nextKnownCases = upsertCaseSummaryRecord(cases, optimisticCase, {
       replaceCase: editingSourceCase,
     });
@@ -475,45 +416,13 @@ export async function handleSaveCase({
     const currentPatientRow = patientListRows.find(
       (row) => row.patient_id === optimisticCase.patient_id,
     );
-    const optimisticThumbnail = (() => {
-      const representativeImage =
-        uploadedImages.find((image) => image.is_representative) ??
-        uploadedImages[0] ??
-        null;
-      if (!representativeImage) {
-        return null;
-      }
-      return {
-        case_id: optimisticCase.case_id,
-        image_id: representativeImage.image_id,
-        view: representativeImage.view,
-        preview_url: representativeImage.preview_url,
-        fallback_url: representativeImage.content_url ?? null,
-      };
-    })();
-    const optimisticPatientRow: PatientListRow = {
-      patient_id: optimisticCase.patient_id,
-      latest_case: optimisticCase,
-      case_count: Math.max(1, currentPatientCaseCount),
-      representative_thumbnail_count: Math.max(
-        optimisticThumbnail ? 1 : 0,
-        currentPatientRow?.representative_thumbnail_count ??
-          currentPatientRow?.representative_thumbnails.length ??
-          0,
-      ),
-      organism_summary: organismSummaryLabel(
-        optimisticCase.culture_category,
-        optimisticCase.culture_species,
-        optimisticCase.additional_organisms,
-        2,
-      ),
-      representative_thumbnails: [
-        ...(optimisticThumbnail ? [optimisticThumbnail] : []),
-        ...(currentPatientRow?.representative_thumbnails ?? []).filter(
-          (thumbnail) => thumbnail.case_id !== optimisticCase.case_id,
-        ),
-      ].slice(0, 3),
-    };
+    const optimisticPatientRow = buildOptimisticPatientRow({
+      optimisticCase,
+      uploadedImages,
+      currentPatientRow,
+      currentPatientCaseCount,
+      organismSummaryLabel,
+    });
 
     if (shouldIncludeOptimisticCase) {
       startTransition(() => {

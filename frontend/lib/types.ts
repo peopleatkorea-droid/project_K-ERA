@@ -254,7 +254,7 @@ export type ImagePreviewBatchItemRecord = {
   image_id: string;
   max_side: number;
   ready: boolean;
-  cache_status: "hit" | "generated" | "missing" | "error";
+  cache_status: "hit" | "generated" | "queued" | "missing" | "error";
   preview_url: string;
   error?: string | null;
 };

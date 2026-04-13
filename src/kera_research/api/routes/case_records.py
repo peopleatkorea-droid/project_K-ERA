@@ -10,6 +10,7 @@ from kera_research.api.routes.case_shared import (
     private_json_response,
     schedule_image_derivative_backfill,
 )
+from kera_research.api.routes.workspace_visibility import filter_visible_workspace_visits
 
 
 def build_case_records_router(support: Any) -> APIRouter:
@@ -38,43 +39,8 @@ def build_case_records_router(support: Any) -> APIRouter:
     PatientUpdateRequest = support.PatientUpdateRequest
     VisitCreateRequest = support.VisitCreateRequest
 
-    def _workspace_visit_culture_status(visit: dict[str, Any]) -> str:
-        normalized_status = str(visit.get("culture_status") or "").strip().lower()
-        if normalized_status:
-            return normalized_status
-        if (
-            bool(visit.get("culture_confirmed"))
-            or str(visit.get("culture_category") or "").strip()
-            or str(visit.get("culture_species") or "").strip()
-        ):
-            return "positive"
-        return "unknown"
-
-    def _workspace_visit_visible(visit: dict[str, Any]) -> bool:
-        source = str(visit.get("research_registry_source") or "").strip().lower()
-        return source != "raw_inventory_sync" or _workspace_visit_culture_status(visit) == "positive"
-
     def _visible_workspace_visits(visits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [visit for visit in visits if _workspace_visit_visible(visit)]
-
-    def _visible_workspace_patients(site_store: Any, patients: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        all_visits = site_store.list_visits()
-        visible_patient_ids = {
-            str(visit.get("patient_id") or "").strip()
-            for visit in _visible_workspace_visits(all_visits)
-            if str(visit.get("patient_id") or "").strip()
-        }
-        patient_ids_with_any_visit = {
-            str(visit.get("patient_id") or "").strip()
-            for visit in all_visits
-            if str(visit.get("patient_id") or "").strip()
-        }
-        return [
-            patient
-            for patient in patients
-            if str(patient.get("patient_id") or "").strip() in visible_patient_ids
-            or str(patient.get("patient_id") or "").strip() not in patient_ids_with_any_visit
-        ]
+        return filter_visible_workspace_visits(visits)
 
     def _visible_workspace_lookup(site_store: Any, patient_id: str) -> dict[str, Any]:
         lookup = site_store.lookup_patient_id(patient_id)
@@ -139,9 +105,8 @@ def build_case_records_router(support: Any) -> APIRouter:
     ) -> list[dict[str, Any]]:
         site_store = require_site_access(cp, user, site_id)
         created_by_user_id = user["user_id"] if mine else None
-        return _visible_workspace_patients(
-            site_store,
-            site_store.list_patients(created_by_user_id=created_by_user_id),
+        return site_store.list_visible_workspace_patients(
+            created_by_user_id=created_by_user_id,
         )
 
     @router.get("/api/sites/{site_id}/patients/lookup")

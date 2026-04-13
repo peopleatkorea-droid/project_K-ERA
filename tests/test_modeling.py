@@ -15,7 +15,13 @@ from PIL import Image
 
 from kera_research.cli import build_parser
 from kera_research.domain import LABEL_TO_INDEX
-from kera_research.services.modeling import ModelManager, torch
+from kera_research.services.modeling import (
+    ModelManager,
+    VisitBagDataset,
+    collate_visit_bags,
+    preprocess_image,
+    torch,
+)
 
 
 @unittest.skipIf(torch is None, "PyTorch is required for modeling tests.")
@@ -184,6 +190,200 @@ class ModelManagerTests(unittest.TestCase):
         self.assertEqual(manager.normalize_case_aggregation("attention_mil", "convnext_tiny"), "mean")
         self.assertEqual(manager.normalize_case_aggregation("quality_weighted_mean", "convnext_tiny"), "quality_weighted_mean")
 
+    def test_select_decision_threshold_prefers_balanced_candidate(self):
+        manager = ModelManager()
+        result = manager.select_decision_threshold(
+            true_labels=[0, 0, 1, 1],
+            positive_probabilities=[0.1, 0.4, 0.6, 0.9],
+        )
+        self.assertIn("decision_threshold", result)
+        self.assertEqual(result["selection_metric"], "balanced_accuracy")
+        self.assertGreaterEqual(float(result["decision_threshold"]), 0.4)
+        self.assertLessEqual(float(result["decision_threshold"]), 0.6)
+        self.assertIn("selection_metrics", result)
+
+    def test_normalize_training_pretraining_source_maps_alias_and_defaults(self):
+        manager = ModelManager()
+        self.assertEqual(manager.normalize_training_pretraining_source(None, use_pretrained=True), "imagenet")
+        self.assertEqual(manager.normalize_training_pretraining_source(None, use_pretrained=False), "scratch")
+        self.assertEqual(manager.normalize_training_pretraining_source("pretrained"), "imagenet")
+        with self.assertRaisesRegex(ValueError, "Unsupported pretraining source"):
+            manager.normalize_training_pretraining_source("unknown-source")
+
+    def test_resolve_preprocess_metadata_supports_legacy_signature(self):
+        manager = ModelManager()
+        resolved = manager.resolve_preprocess_metadata(
+            checkpoint_metadata={
+                "preprocess_signature": manager.legacy_preprocess_signature(),
+            }
+        )
+
+        self.assertEqual(
+            resolved,
+            manager.legacy_preprocess_metadata(),
+        )
+
+    def test_validate_model_artifact_rejects_preprocess_signature_mismatch(self):
+        manager = ModelManager()
+        checkpoint = {
+            "architecture": "convnext_tiny",
+            "artifact_metadata": manager.build_artifact_metadata(
+                architecture="convnext_tiny",
+                num_classes=2,
+                preprocess_metadata=manager.legacy_preprocess_metadata(),
+            ),
+        }
+
+        with self.assertRaisesRegex(ValueError, "Checkpoint preprocess signature mismatch"):
+            manager.validate_model_artifact(
+                {
+                    "architecture": "convnext_tiny",
+                    "num_classes": 2,
+                    "preprocess_signature": manager.preprocess_signature(),
+                },
+                checkpoint,
+            )
+
+    def test_build_model_for_training_uses_imagenet_builder_when_supported(self):
+        manager = ModelManager()
+        sentinel_model = object()
+        with (
+            patch.object(manager, "build_model_pretrained", return_value=sentinel_model) as build_pretrained,
+            patch.object(manager, "build_model") as build_model,
+        ):
+            model, resolved_source, ssl_metadata = manager.build_model_for_training(
+                "convnext_tiny",
+                pretraining_source="imagenet",
+                num_classes=3,
+            )
+
+        self.assertIs(model, sentinel_model)
+        self.assertEqual(resolved_source, "imagenet")
+        self.assertIsNone(ssl_metadata)
+        build_pretrained.assert_called_once_with("convnext_tiny", num_classes=3)
+        build_model.assert_not_called()
+
+    def test_build_cross_validation_splits_assign_each_patient_once_to_test_fold(self):
+        manager = ModelManager()
+        patient_ids = [f"P-00{index}" for index in range(1, 7)]
+        patient_labels = {
+            patient_id: ("bacterial" if index % 2 else "fungal")
+            for index, patient_id in enumerate(patient_ids, start=1)
+        }
+
+        folds = manager._build_cross_validation_splits(
+            patient_ids=patient_ids,
+            patient_labels=patient_labels,
+            num_folds=3,
+            val_split=0.25,
+            seed=7,
+        )
+
+        self.assertEqual(len(folds), 3)
+        all_test_ids = [patient_id for fold in folds for patient_id in fold["test_patient_ids"]]
+        self.assertCountEqual(all_test_ids, patient_ids)
+        for fold in folds:
+            self.assertTrue(set(fold["train_patient_ids"]).isdisjoint(fold["test_patient_ids"]))
+            self.assertTrue(set(fold["val_patient_ids"]).isdisjoint(fold["test_patient_ids"]))
+            self.assertGreaterEqual(len(fold["train_patient_ids"]), 1)
+            self.assertGreaterEqual(len(fold["val_patient_ids"]), 1)
+
+    def test_cross_validate_aggregates_fold_metrics_from_initial_train_results(self):
+        manager = ModelManager()
+        records = [
+            {
+                "patient_id": f"P-00{index}",
+                "culture_category": "bacterial" if index % 2 else "fungal",
+            }
+            for index in range(1, 7)
+        ]
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            output_root = Path(tempdir)
+
+            def fake_initial_train(**kwargs):
+                fold = kwargs["saved_split"]
+                fold_index = int(fold["fold_index"])
+                metric_base = 0.60 + (0.05 * fold_index)
+                model_path = output_root / f"fold-{fold_index}.pth"
+                model_path.write_text("stub", encoding="utf-8")
+                return {
+                    "output_model_path": str(model_path),
+                    "n_train_patients": len(fold["train_patient_ids"]),
+                    "n_val_patients": len(fold["val_patient_ids"]),
+                    "n_test_patients": len(fold["test_patient_ids"]),
+                    "n_train": 10 + fold_index,
+                    "n_val": 4,
+                    "n_test": 3,
+                    "best_val_acc": round(metric_base, 4),
+                    "val_metrics": {
+                        "AUROC": round(metric_base + 0.1, 4),
+                        "accuracy": round(metric_base, 4),
+                    },
+                    "test_metrics": {
+                        "AUROC": round(metric_base + 0.05, 4),
+                        "accuracy": round(metric_base, 4),
+                        "sensitivity": round(metric_base - 0.02, 4),
+                        "specificity": round(metric_base + 0.02, 4),
+                        "F1": round(metric_base - 0.01, 4),
+                        "balanced_accuracy": round(metric_base + 0.01, 4),
+                        "brier_score": round(0.2 + (0.01 * fold_index), 4),
+                        "ece": round(0.05 + (0.01 * fold_index), 4),
+                    },
+                    "patient_split": fold,
+                }
+
+            with patch.object(manager, "initial_train", side_effect=fake_initial_train) as initial_train:
+                result = manager.cross_validate(
+                    records=records,
+                    architecture="convnext_tiny",
+                    output_dir=output_root,
+                    device="cpu",
+                    num_folds=3,
+                    epochs=2,
+                    pretraining_source="pretrained",
+                )
+
+        self.assertEqual(initial_train.call_count, 3)
+        self.assertEqual(result["pretraining_source"], "imagenet")
+        self.assertTrue(result["use_pretrained"])
+        self.assertEqual(len(result["fold_results"]), 3)
+        self.assertAlmostEqual(float(result["aggregate_metrics"]["accuracy"]["mean"]), 0.7, places=4)
+        self.assertAlmostEqual(float(result["aggregate_metrics"]["accuracy"]["std"]), 0.0408, places=4)
+        self.assertEqual(result["total_patients"], 6)
+        self.assertEqual(result["total_records"], 6)
+
+    def test_visit_prediction_rows_aggregate_paths_and_views(self):
+        manager = ModelManager()
+        rows = manager._visit_prediction_rows_from_records(
+            [
+                [
+                    {
+                        "patient_id": "P-001",
+                        "visit_date": "Initial",
+                        "culture_category": "bacterial",
+                        "source_image_path": "raw/a.jpg",
+                        "image_path": "roi/a_crop.png",
+                        "view": "white",
+                    },
+                    {
+                        "patient_id": "P-001",
+                        "visit_date": "Initial",
+                        "culture_category": "bacterial",
+                        "source_image_path": "raw/b.jpg",
+                        "image_path": "roi/b_crop.png",
+                        "view": "slit",
+                    },
+                ]
+            ]
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sample_kind"], "visit")
+        self.assertEqual(rows[0]["sample_key"], "visit::P-001::Initial")
+        self.assertEqual(rows[0]["source_image_paths"], ["raw/a.jpg", "raw/b.jpg"])
+        self.assertEqual(rows[0]["prepared_image_paths"], ["roi/a_crop.png", "roi/b_crop.png"])
+        self.assertEqual(rows[0]["views"], ["white", "slit"])
+
     def test_baseline_model_settings_cover_new_dual_input_and_mil_defaults(self):
         manager = ModelManager()
 
@@ -228,6 +428,128 @@ class ModelManagerTests(unittest.TestCase):
         manager = ModelManager()
         self.assertTrue(manager.is_dual_input_architecture("dual_input_concat"))
         self.assertTrue(manager.supports_gradcam("dual_input_concat"))
+
+    def test_preprocess_image_applies_imagenet_normalization_metadata(self):
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            image_path = Path(tempdir) / "white.png"
+            Image.new("RGB", (16, 16), (255, 255, 255)).save(image_path)
+
+            _, legacy_tensor = preprocess_image(
+                image_path,
+                preprocess_metadata=manager.legacy_preprocess_metadata(),
+            )
+            _, normalized_tensor = preprocess_image(
+                image_path,
+                preprocess_metadata=manager.preprocess_metadata(),
+            )
+
+        self.assertAlmostEqual(float(legacy_tensor.max().item()), 1.0, places=4)
+        self.assertGreater(float(normalized_tensor[0, 0, 0, 0].item()), 2.0)
+
+    def test_visit_bag_dataset_and_collate_keep_patient_visit_groups(self):
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            records = []
+            for patient_id, visit_date, image_count, color in (
+                ("P-001", "Initial", 2, (255, 0, 0)),
+                ("P-002", "FU #1", 1, (0, 255, 0)),
+            ):
+                for image_index in range(image_count):
+                    image_path = temp_path / f"{patient_id}_{visit_date}_{image_index}.png"
+                    Image.new("RGB", (24, 24), color).save(image_path)
+                    records.append(
+                        {
+                            "patient_id": patient_id,
+                            "visit_date": visit_date,
+                            "culture_category": "bacterial" if patient_id == "P-001" else "fungal",
+                            "image_path": str(image_path),
+                            "source_image_path": str(image_path),
+                            "view": "white",
+                        }
+                    )
+
+            dataset = VisitBagDataset(
+                records,
+                augment=False,
+                preprocess_metadata=manager.legacy_preprocess_metadata(),
+            )
+            self.assertEqual(len(dataset), 2)
+
+            first_item = dataset[0]
+            second_item = dataset[1]
+            batch_images, batch_mask, labels = collate_visit_bags([first_item, second_item])
+
+        self.assertEqual(batch_images.shape[0], 2)
+        self.assertEqual(batch_images.shape[1], 2)
+        self.assertTrue(bool(batch_mask[0, 0]))
+        self.assertTrue(bool(batch_mask[0, 1]))
+        self.assertTrue(bool(batch_mask[1, 0]))
+        self.assertFalse(bool(batch_mask[1, 1]))
+        self.assertEqual(labels.shape[0], 2)
+        self.assertEqual(first_item["patient_id"], "P-001")
+        self.assertEqual(first_item["visit_date"], "Initial")
+
+    def test_weight_delta_round_trip_reconstructs_tuned_checkpoint(self):
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            base_model = manager.build_model("cnn")
+            base_state = {
+                key: value.detach().clone()
+                for key, value in base_model.state_dict().items()
+            }
+            tuned_state = {
+                key: value.detach().clone() + 0.25
+                for key, value in base_state.items()
+            }
+            preprocess_metadata = manager.preprocess_metadata()
+            base_path = temp_path / "base_model.pt"
+            tuned_path = temp_path / "tuned_model.pt"
+            delta_path = temp_path / "weight_delta.pt"
+            reconstructed_path = temp_path / "reconstructed_model.pt"
+            torch.save(
+                {
+                    "architecture": "cnn",
+                    "state_dict": base_state,
+                    "artifact_metadata": manager.build_artifact_metadata(
+                        architecture="cnn",
+                        preprocess_metadata=preprocess_metadata,
+                    ),
+                },
+                base_path,
+            )
+            torch.save(
+                {
+                    "architecture": "cnn",
+                    "state_dict": tuned_state,
+                    "artifact_metadata": manager.build_artifact_metadata(
+                        architecture="cnn",
+                        preprocess_metadata=preprocess_metadata,
+                    ),
+                },
+                tuned_path,
+            )
+
+            saved_delta_path = manager.save_weight_delta(
+                base_model_path=base_path,
+                tuned_model_path=tuned_path,
+                output_delta_path=delta_path,
+            )
+            rebuilt_model_path = manager.aggregate_weight_deltas(
+                [saved_delta_path],
+                reconstructed_path,
+                base_model_path=base_path,
+            )
+
+            delta_checkpoint = torch.load(saved_delta_path, map_location="cpu", weights_only=True)
+            rebuilt_checkpoint = torch.load(rebuilt_model_path, map_location="cpu", weights_only=True)
+
+        self.assertEqual(delta_checkpoint["artifact_metadata"]["artifact_type"], "weight_delta")
+        self.assertEqual(rebuilt_checkpoint["artifact_metadata"]["artifact_type"], "model")
+        for key, value in tuned_state.items():
+            self.assertTrue(torch.allclose(value, rebuilt_checkpoint["state_dict"][key]))
 
 
 if __name__ == "__main__":
