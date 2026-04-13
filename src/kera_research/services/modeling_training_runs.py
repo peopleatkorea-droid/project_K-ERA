@@ -28,6 +28,7 @@ from kera_research.services.modeling_data import (
     collate_visit_bags,
     collate_visit_paired_bags,
 )
+from kera_research.services.modeling_evaluation import split_ids_with_fallback
 
 try:
     import torch
@@ -96,7 +97,7 @@ def build_cross_validation_splits(
             raise ValueError("Cross-validation fold construction failed. Not enough patients in a fold.")
         val_count = max(1, int(round(len(train_val_ids) * val_split)))
         val_count = min(val_count, len(train_val_ids) - 1)
-        train_ids, val_ids = manager._split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + fold_index)
+        train_ids, val_ids = split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + fold_index)
         folds.append(
             {
                 "split_id": make_id("cvsplit"),

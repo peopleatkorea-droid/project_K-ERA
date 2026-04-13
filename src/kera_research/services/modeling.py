@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 from kera_research.domain import (
     DENSENET_VARIANTS,
@@ -71,6 +70,7 @@ from kera_research.services.modeling_evaluation import (
     paired_forward_from_batch as _paired_forward_from_batch_impl,
     predicted_labels_from_threshold as _predicted_labels_from_threshold_impl,
     select_decision_threshold as _select_decision_threshold_impl,
+    split_ids_with_fallback as _split_ids_with_fallback_impl,
     visit_prediction_rows_from_records as _visit_prediction_rows_from_records_impl,
 )
 from kera_research.services.modeling_runtime import (
@@ -1634,23 +1634,7 @@ class ModelManager:
         test_size: int,
         seed: int,
     ) -> tuple[list[str], list[str]]:
-        if test_size <= 0 or test_size >= len(patient_ids):
-            raise ValueError("test_size must leave at least one patient on each side of the split.")
-        labels = [patient_labels[patient_id] for patient_id in patient_ids]
-        stratify_labels = labels if len(set(labels)) > 1 else None
-        try:
-            left_ids, right_ids = train_test_split(
-                patient_ids,
-                test_size=test_size,
-                random_state=seed,
-                stratify=stratify_labels,
-            )
-        except ValueError:
-            shuffled = patient_ids[:]
-            random.Random(seed).shuffle(shuffled)
-            right_ids = shuffled[:test_size]
-            left_ids = shuffled[test_size:]
-        return list(left_ids), list(right_ids)
+        return _split_ids_with_fallback_impl(patient_ids, patient_labels, test_size, seed)
 
     def normalize_case_aggregation(self, value: str | None, architecture: str | None = None) -> str:
         return _normalize_case_aggregation_impl(

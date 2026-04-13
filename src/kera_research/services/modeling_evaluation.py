@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score, roc_curve
+from sklearn.model_selection import train_test_split
 
 from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, is_attention_mil_architecture, make_id, utc_now
 
@@ -37,6 +38,31 @@ def normalize_case_aggregation(
     if normalized not in case_aggregations or normalized == "attention_mil":
         return default_case_aggregation
     return normalized
+
+
+def split_ids_with_fallback(
+    patient_ids: list[str],
+    patient_labels: dict[str, str],
+    test_size: int,
+    seed: int,
+) -> tuple[list[str], list[str]]:
+    if test_size <= 0 or test_size >= len(patient_ids):
+        raise ValueError("test_size must leave at least one patient on each side of the split.")
+    labels = [patient_labels[patient_id] for patient_id in patient_ids]
+    stratify_labels = labels if len(set(labels)) > 1 else None
+    try:
+        left_ids, right_ids = train_test_split(
+            patient_ids,
+            test_size=test_size,
+            random_state=seed,
+            stratify=stratify_labels,
+        )
+    except ValueError:
+        shuffled = patient_ids[:]
+        random.Random(seed).shuffle(shuffled)
+        right_ids = shuffled[:test_size]
+        left_ids = shuffled[test_size:]
+    return list(left_ids), list(right_ids)
 
 
 def bag_inputs_to_device(
@@ -146,11 +172,11 @@ def build_patient_split(
 
     test_count = max(1, int(round(len(unique_patient_ids) * test_split)))
     test_count = min(test_count, len(unique_patient_ids) - 2)
-    train_val_ids, test_ids = manager._split_ids_with_fallback(unique_patient_ids, patient_labels, test_count, seed)
+    train_val_ids, test_ids = split_ids_with_fallback(unique_patient_ids, patient_labels, test_count, seed)
 
     val_count = max(1, int(round(len(unique_patient_ids) * val_split)))
     val_count = min(val_count, len(train_val_ids) - 1)
-    train_ids, val_ids = manager._split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + 1)
+    train_ids, val_ids = split_ids_with_fallback(train_val_ids, patient_labels, val_count, seed + 1)
 
     return {
         "split_id": make_id("split"),

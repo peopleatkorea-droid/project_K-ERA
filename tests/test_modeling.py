@@ -202,6 +202,29 @@ class ModelManagerTests(unittest.TestCase):
         self.assertLessEqual(float(result["decision_threshold"]), 0.6)
         self.assertIn("selection_metrics", result)
 
+    def test_split_ids_with_fallback_partitions_patients_when_stratified_split_fails(self):
+        manager = ModelManager()
+        patient_ids = ["P-001", "P-002", "P-003", "P-004"]
+        patient_labels = {
+            "P-001": "bacterial",
+            "P-002": "fungal",
+            "P-003": "bacterial",
+            "P-004": "bacterial",
+        }
+
+        with patch("kera_research.services.modeling_evaluation.train_test_split", side_effect=ValueError("boom")):
+            left_ids, right_ids = manager._split_ids_with_fallback(
+                patient_ids,
+                patient_labels,
+                test_size=1,
+                seed=7,
+            )
+
+        self.assertEqual(len(left_ids), 3)
+        self.assertEqual(len(right_ids), 1)
+        self.assertEqual(sorted(left_ids + right_ids), sorted(patient_ids))
+        self.assertFalse(set(left_ids) & set(right_ids))
+
     def test_normalize_training_pretraining_source_maps_alias_and_defaults(self):
         manager = ModelManager()
         self.assertEqual(manager.normalize_training_pretraining_source(None, use_pretrained=True), "imagenet")
