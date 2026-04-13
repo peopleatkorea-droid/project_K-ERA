@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -315,6 +317,7 @@ _DATA_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_SQLITE_SEARCH_READY = False
 CONTROL_PLANE_SCHEMA_REVISION = "2026-04-13"
 DATA_PLANE_SCHEMA_REVISION = "2026-04-13"
+CONTROL_PLANE_ALEMBIC_BASELINE_REVISION = "20260413_01"
 
 users = Table(
     "users",
@@ -693,6 +696,21 @@ def _record_schema_state(engine: Engine, table: Table, schema_name: str, schema_
         )
 
 
+def build_control_plane_alembic_config() -> Config:
+    script_location = Path(__file__).resolve().parent / "alembic"
+    config = Config()
+    config.set_main_option("script_location", str(script_location))
+    config.set_main_option("sqlalchemy.url", CONTROL_PLANE_DATABASE_URL)
+    config.set_main_option("version_table", "alembic_version")
+    config.attributes["configure_logger"] = False
+    config.attributes["control_plane_metadata"] = CONTROL_PLANE_METADATA
+    return config
+
+
+def _upgrade_control_plane_schema_with_alembic() -> None:
+    command.upgrade(build_control_plane_alembic_config(), "head")
+
+
 def init_control_plane_db() -> None:
     global _CONTROL_PLANE_DB_INITIALIZED
     if _CONTROL_PLANE_DB_INITIALIZED:
@@ -718,6 +736,7 @@ def init_control_plane_db() -> None:
             )
             CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
             _migrate_control_plane_schema()
+        _upgrade_control_plane_schema_with_alembic()
         _record_schema_state(
             CONTROL_PLANE_ENGINE,
             control_plane_schema_state,

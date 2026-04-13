@@ -1560,6 +1560,15 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertTrue(str(data_state["recorded_at"]).strip())
 
+    def test_control_plane_db_is_stamped_to_alembic_baseline_http(self):
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            revision = conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+
+        self.assertEqual(
+            revision,
+            self.db_module.CONTROL_PLANE_ALEMBIC_BASELINE_REVISION,
+        )
+
     def test_local_login_is_restricted_to_admin_and_site_admin_http(self):
         local_headers = {"x-kera-control-plane-owner": "local"}
         researcher_response = self.client.post(

@@ -13,7 +13,9 @@
 
 - `auth.py`의 로그인 rate limit을 control-plane DB 기반으로 바꿔 프로세스 재시작 뒤에도 제한 창이 유지되도록 수정했습니다.
 - DB 경로가 일시적으로 실패하는 경우에는 기존 in-memory limiter로 안전하게 fallback 하도록 유지했습니다.
-- Alembic 기반 migration framework는 아직 도입하지 않았지만, control/data plane DB 초기화 시 커스텀 migration 뒤 현재 schema revision을 `control_plane_schema_state`, `data_plane_schema_state`에 기록하도록 보강했습니다.
+- control plane에는 Alembic baseline revision(`20260413_01`)을 도입했고, startup 시 기존 `create_all + custom migration` 뒤 `upgrade head`를 적용하도록 연결했습니다.
+- 앞으로 control-plane schema change는 `src/kera_research/alembic/versions/` 아래 Alembic revision으로 추가할 수 있고, `uv run python -m kera_research.control_plane_alembic ...` 경로로 관리할 수 있습니다.
+- data plane은 아직 기존 커스텀 migration 경로를 유지하고, control/data plane DB 초기화 시 현재 schema revision을 `control_plane_schema_state`, `data_plane_schema_state`에 기록하도록 보강했습니다.
 - 관련 회귀 테스트를 추가해 `restart 이후 rate limit 지속`, `schema state row 기록`, `preview cold miss는 원본 즉시 응답 + backfill queue` 동작을 계속 검증하도록 했습니다.
 
 ## 2026-04-07 ~ 2026-04-09

@@ -25,6 +25,7 @@ dependencies = [
     "open_clip_torch>=2.30.0",
     "faiss-cpu>=1.10.0",
     "umap-learn>=0.5.11",
+    "alembic>=1.18.4",
 ]
 
 [project.optional-dependencies]
