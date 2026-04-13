@@ -218,6 +218,15 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
   - `model update metadata upload`
   - `validation summary upload`
   - `LLM relay`
+
+### 7. 2026-04-13 운영 가드 업데이트
+
+- Tauri desktop runtime의 CSP를 더 이상 `null`로 두지 않고 명시적으로 설정했습니다.
+- `frontend/src-tauri/tauri.conf.json`, `frontend/src-tauri/Cargo.toml`, `frontend/package.json`, `pyproject.toml`의 버전은 현재 `1.0.0`으로 맞춰져 있습니다.
+- `frontend/scripts/sync-desktop-version.mjs`를 추가해 `npm run tauri:dev*`, `npm run tauri:build` 실행 전 버전 드리프트를 자동으로 정리하도록 했습니다.
+- `npm run desktop:verify`는 이제 desktop bundle resource 확인뿐 아니라 `CSP 설정 여부`와 `desktop/web/python 버전 일치`까지 같이 검사합니다.
+- 로그인 rate limit은 control-plane DB 기반으로 기록되어 프로세스 재시작 뒤에도 동일한 제한 창(`5분 / 10회`)을 유지합니다. DB 경로가 일시적으로 실패하면 기존 in-memory fallback으로 내려갑니다.
+- DB는 Alembic을 아직 쓰지 않지만, control/data plane 초기화 시 커스텀 migration을 수행하고 현재 schema revision을 `control_plane_schema_state`, `data_plane_schema_state` 테이블에 기록합니다.
 - split mode에서 비어 보이던 site/workspace 응답은 remote bootstrap + local cache 기준으로 계속 보이게 복구했습니다.
 - `.\scripts\run_control_plane_e2e_smoke.ps1`로 실제 런타임 흐름을 한 번에 검증할 수 있습니다.
 
