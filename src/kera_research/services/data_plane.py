@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from datetime import datetime, timezone
 from io import BytesIO
 import os
@@ -42,7 +41,6 @@ from kera_research.db import (
     visits as db_visits,
 )
 from kera_research.domain import (
-    LABEL_TO_INDEX,
     MANIFEST_COLUMNS,
     VISIT_STATUS_OPTIONS,
     make_id,
@@ -86,6 +84,21 @@ from kera_research.services.data_plane_jobs import (
     request_job_cancel as _request_job_cancel_impl,
     requeue_stale_jobs as _requeue_stale_jobs_impl,
     update_job_status as _update_job_status_impl,
+)
+from kera_research.services.data_plane_normalizers import (
+    _coerce_optional_bool as _coerce_optional_bool_impl,
+    _coerce_optional_int as _coerce_optional_int_impl,
+    _coerce_optional_text as _coerce_optional_text_impl,
+    _derive_culture_status as _derive_culture_status_impl,
+    _hydrate_visit_culture_fields as _hydrate_visit_culture_fields_impl,
+    _list_organisms as _list_organisms_impl,
+    _normalize_additional_organisms as _normalize_additional_organisms_impl,
+    _normalize_culture_status as _normalize_culture_status_impl,
+    _normalize_organism_entry as _normalize_organism_entry_impl,
+    _normalize_visit_culture_fields as _normalize_visit_culture_fields_impl,
+    _organism_summary_label as _organism_summary_label_impl,
+    _parse_manifest_box as _parse_manifest_box_impl,
+    _parse_manifest_pipe_list as _parse_manifest_pipe_list_impl,
 )
 from kera_research.services.data_plane_previews import (
     delete_image_preview_cache as _delete_image_preview_cache_impl,
@@ -252,16 +265,7 @@ def _control_plane_root_override(site_id: str) -> Path | None:
 
 
 def _normalize_organism_entry(entry: dict[str, Any] | None) -> dict[str, str] | None:
-    if not isinstance(entry, dict):
-        return None
-    category = str(entry.get("culture_category", "")).strip().lower()
-    species = str(entry.get("culture_species", "")).strip()
-    if not category or not species:
-        return None
-    return {
-        "culture_category": category,
-        "culture_species": species,
-    }
+    return _normalize_organism_entry_impl(entry)
 
 
 def _normalize_additional_organisms(
@@ -269,26 +273,19 @@ def _normalize_additional_organisms(
     primary_species: str,
     additional_organisms: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]]:
-    primary_key = f"{primary_category.strip().lower()}::{primary_species.strip().lower()}"
-    normalized: list[dict[str, str]] = []
-    seen = {primary_key}
-    for raw_entry in additional_organisms or []:
-        entry = _normalize_organism_entry(raw_entry)
-        if entry is None:
-            continue
-        entry_key = f"{entry['culture_category']}::{entry['culture_species'].lower()}"
-        if entry_key in seen:
-            continue
-        seen.add(entry_key)
-        normalized.append(entry)
-    return normalized
+    return _normalize_additional_organisms_impl(
+        primary_category,
+        primary_species,
+        additional_organisms,
+    )
 
 
 def _normalize_culture_status(value: Any, default: str = "unknown") -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in _CULTURE_STATUS_OPTIONS:
-        return normalized
-    return default
+    return _normalize_culture_status_impl(
+        value,
+        _CULTURE_STATUS_OPTIONS,
+        default=default,
+    )
 
 
 def _derive_culture_status(
@@ -297,14 +294,13 @@ def _derive_culture_status(
     culture_category: Any,
     culture_species: Any,
 ) -> str:
-    normalized_status = _normalize_culture_status(culture_status, default="")
-    if normalized_status:
-        return normalized_status
-    if _coerce_optional_bool(culture_confirmed, False):
-        return "positive"
-    if str(culture_category or "").strip() or str(culture_species or "").strip():
-        return "positive"
-    return "unknown"
+    return _derive_culture_status_impl(
+        culture_status,
+        culture_confirmed,
+        culture_category,
+        culture_species,
+        _CULTURE_STATUS_OPTIONS,
+    )
 
 
 def _normalize_visit_culture_fields(
@@ -316,57 +312,19 @@ def _normalize_visit_culture_fields(
     additional_organisms: list[dict[str, Any]] | None,
     polymicrobial: Any,
 ) -> dict[str, Any]:
-    normalized_status = _derive_culture_status(
-        culture_status,
-        culture_confirmed,
-        culture_category,
-        culture_species,
+    return _normalize_visit_culture_fields_impl(
+        culture_status=culture_status,
+        culture_confirmed=culture_confirmed,
+        culture_category=culture_category,
+        culture_species=culture_species,
+        additional_organisms=additional_organisms,
+        polymicrobial=polymicrobial,
+        culture_status_options=_CULTURE_STATUS_OPTIONS,
     )
-    if normalized_status == "positive":
-        normalized_category = str(culture_category or "").strip().lower()
-        normalized_species = str(culture_species or "").strip()
-        if LABEL_TO_INDEX.get(normalized_category, -1) == -1:
-            raise ValueError("Positive culture cases require a bacterial or fungal category.")
-        if not normalized_species:
-            raise ValueError("Positive culture cases require a primary organism.")
-        normalized_additional_organisms = _normalize_additional_organisms(
-            normalized_category,
-            normalized_species,
-            additional_organisms,
-        )
-        normalized_polymicrobial = bool(polymicrobial or normalized_additional_organisms)
-    else:
-        normalized_category = ""
-        normalized_species = ""
-        normalized_additional_organisms = []
-        normalized_polymicrobial = False
-    return {
-        "culture_status": normalized_status,
-        "culture_confirmed": normalized_status == "positive",
-        "culture_category": normalized_category,
-        "culture_species": normalized_species,
-        "additional_organisms": normalized_additional_organisms,
-        "polymicrobial": normalized_polymicrobial,
-    }
 
 
 def _hydrate_visit_culture_fields(record: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(record)
-    culture_fields = _normalize_visit_culture_fields(
-        culture_status=normalized.get("culture_status"),
-        culture_confirmed=normalized.get("culture_confirmed"),
-        culture_category=normalized.get("culture_category"),
-        culture_species=normalized.get("culture_species"),
-        additional_organisms=list(normalized.get("additional_organisms") or []),
-        polymicrobial=normalized.get("polymicrobial"),
-    )
-    normalized.update(culture_fields)
-    scopes = normalized.get("fl_retention_scopes")
-    if not isinstance(scopes, list):
-        scopes = []
-    normalized["fl_retention_scopes"] = [str(item or "").strip() for item in scopes if str(item or "").strip()]
-    normalized["fl_retained"] = bool(normalized.get("fl_retained"))
-    return normalized
+    return _hydrate_visit_culture_fields_impl(record, _CULTURE_STATUS_OPTIONS)
 
 
 def _visit_visible_clause(visit_table: Any) -> Any:
@@ -382,21 +340,7 @@ def _list_organisms(
     culture_species: str,
     additional_organisms: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]]:
-    primary_species = str(culture_species or "").strip()
-    normalized_additional = _normalize_additional_organisms(
-        culture_category,
-        culture_species,
-        additional_organisms,
-    )
-    if not primary_species:
-        return normalized_additional
-    return [
-        {
-            "culture_category": str(culture_category or "").strip().lower(),
-            "culture_species": primary_species,
-        },
-        *normalized_additional,
-    ]
+    return _list_organisms_impl(culture_category, culture_species, additional_organisms)
 
 
 def _organism_summary_label(
@@ -406,80 +350,32 @@ def _organism_summary_label(
     *,
     max_visible_species: int = 2,
 ) -> str:
-    organisms = _list_organisms(culture_category, culture_species, additional_organisms)
-    if not organisms:
-        return ""
-    visible_count = max(1, int(max_visible_species or 1))
-    if len(organisms) <= visible_count:
-        return " / ".join(item["culture_species"] for item in organisms)
-    visible = " / ".join(item["culture_species"] for item in organisms[:visible_count])
-    return f"{visible} + {len(organisms) - visible_count}"
+    return _organism_summary_label_impl(
+        culture_category,
+        culture_species,
+        additional_organisms,
+        max_visible_species=max_visible_species,
+    )
 
 
 def _coerce_optional_text(value: Any, default: str = "") -> str:
-    if value is None:
-        return default
-    if isinstance(value, float) and pd.isna(value):
-        return default
-    return str(value).strip()
+    return _coerce_optional_text_impl(value, default)
 
 
 def _coerce_optional_int(value: Any, default: int = 0) -> int:
-    if value is None:
-        return default
-    if isinstance(value, float) and pd.isna(value):
-        return default
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default
+    return _coerce_optional_int_impl(value, default)
 
 
 def _coerce_optional_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float) and pd.isna(value):
-        return default
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "y"}:
-        return True
-    if normalized in {"0", "false", "no", "n"}:
-        return False
-    return default
+    return _coerce_optional_bool_impl(value, default)
 
 
 def _parse_manifest_pipe_list(value: Any) -> list[str]:
-    raw = _coerce_optional_text(value)
-    return [item.strip() for item in raw.split("|") if item.strip()]
+    return _parse_manifest_pipe_list_impl(value)
 
 
 def _parse_manifest_box(value: Any) -> dict[str, float] | None:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    if isinstance(value, dict):
-        candidate = value
-    else:
-        raw = str(value).strip()
-        if not raw:
-            return None
-        try:
-            candidate = ast.literal_eval(raw)
-        except (SyntaxError, ValueError):
-            return None
-    if not isinstance(candidate, dict):
-        return None
-    normalized: dict[str, float] = {}
-    for key in ("x0", "y0", "x1", "y1"):
-        raw_value = candidate.get(key)
-        if raw_value is None:
-            continue
-        try:
-            normalized[key] = float(raw_value)
-        except (TypeError, ValueError):
-            continue
-    return normalized or None
+    return _parse_manifest_box_impl(value)
 
 
 def _case_summary_sort_key(summary: dict[str, Any]) -> tuple[str, str, str, str]:
