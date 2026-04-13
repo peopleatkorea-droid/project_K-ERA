@@ -1,6 +1,6 @@
 [project]
 name = "kera-research"
-version = "0.1.0"
+version = "1.0.0"
 description = "K-ERA research workflow platform"
 requires-python = ">=3.11"
 dependencies = [

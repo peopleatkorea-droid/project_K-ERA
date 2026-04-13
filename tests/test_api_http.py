@@ -1534,6 +1534,32 @@ class ApiHttpTests(unittest.TestCase):
             SiteStore.heartbeat_job("missing-job", "test-worker")
             self.assertTrue(mocked_init.called)
 
+    def test_schema_state_rows_are_recorded_for_control_and_data_plane_http(self):
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            control_state = conn.execute(
+                self.db_module.control_plane_schema_state.select().where(
+                    self.db_module.control_plane_schema_state.c.schema_name == "control_plane"
+                )
+            ).mappings().one()
+
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            data_state = conn.execute(
+                self.db_module.data_plane_schema_state.select().where(
+                    self.db_module.data_plane_schema_state.c.schema_name == "data_plane"
+                )
+            ).mappings().one()
+
+        self.assertEqual(
+            control_state["schema_revision"],
+            self.db_module.CONTROL_PLANE_SCHEMA_REVISION,
+        )
+        self.assertTrue(str(control_state["recorded_at"]).strip())
+        self.assertEqual(
+            data_state["schema_revision"],
+            self.db_module.DATA_PLANE_SCHEMA_REVISION,
+        )
+        self.assertTrue(str(data_state["recorded_at"]).strip())
+
     def test_local_login_is_restricted_to_admin_and_site_admin_http(self):
         local_headers = {"x-kera-control-plane-owner": "local"}
         researcher_response = self.client.post(
@@ -1560,6 +1586,37 @@ class ApiHttpTests(unittest.TestCase):
             self.assertIn("disabled", response.text)
         finally:
             os.environ.pop("KERA_LOCAL_LOGIN_ENABLED", None)
+
+    def test_login_rate_limit_persists_across_app_reload_http(self):
+        for _ in range(10):
+            response = self.client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            self.assertEqual(response.status_code, 401, response.text)
+
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+        reloaded_app = reload_app_module(
+            Path(self.tempdir.name) / "test.db",
+            control_plane_artifact_dir=self.control_plane_artifact_dir,
+        )
+        self.app_module = reloaded_app
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+        from fastapi.testclient import TestClient
+
+        self.client = TestClient(self.app_module.create_app())
+
+        throttled = self.client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+
+        self.assertEqual(throttled.status_code, 429, throttled.text)
+        self.assertEqual(throttled.headers.get("Retry-After"), "300")
+        self.assertIn("Too many login attempts", throttled.text)
 
     def test_non_admin_null_site_ids_do_not_expand_access_http(self):
         legacy_user = self.cp.upsert_user(
@@ -1891,6 +1948,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            fake_schedule = Mock()
             with patch.dict(
                 os.environ,
                 {
@@ -1909,15 +1967,20 @@ class ApiHttpTests(unittest.TestCase):
                                     return_value={"job_id": "job-retained-restore", "status": "running"},
                                 ) as queue_mock:
                                     with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                                        restore_response = self.client.post(
-                                            f"/api/admin/sites/{self.site_id}/retained-cases/restore",
-                                            headers={"Authorization": f"Bearer {admin_token}"},
-                                            json={
-                                                "patient_id": "HTTP-001",
-                                                "visit_date": "Initial",
-                                                "mode": "visit",
-                                            },
-                                        )
+                                        with patch.object(
+                                            self.app_module,
+                                            "_submit_executor_job_after_delay",
+                                            fake_schedule,
+                                        ):
+                                            restore_response = self.client.post(
+                                                f"/api/admin/sites/{self.site_id}/retained-cases/restore",
+                                                headers={"Authorization": f"Bearer {admin_token}"},
+                                                json={
+                                                    "patient_id": "HTTP-001",
+                                                    "visit_date": "Initial",
+                                                    "mode": "visit",
+                                                },
+                                            )
 
             self.assertEqual(restore_response.status_code, 200, restore_response.text)
             restore_payload = restore_response.json()
@@ -1926,7 +1989,8 @@ class ApiHttpTests(unittest.TestCase):
             self.assertEqual(int(restore_payload["restored_images"] or 0), 1)
             self.assertEqual(queue_mock.call_count, 1)
             self.assertEqual(queue_mock.call_args.kwargs["trigger"], "retained_case_restore")
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            self.assertEqual(fake_schedule.call_count, 1)
+            self.assertIs(fake_schedule.call_args.args[0], fake_executor)
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
@@ -2217,6 +2281,9 @@ class ApiHttpTests(unittest.TestCase):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
         preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=256"
+        image_record = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image_record)
+        self.site_store.ensure_image_preview(image_record, 256)
 
         response = self.client.get(
             preview_url,
@@ -2241,6 +2308,9 @@ class ApiHttpTests(unittest.TestCase):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
         preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=256"
+        image_record = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image_record)
+        self.site_store.ensure_image_preview(image_record, 256)
 
         initial_response = self.client.get(
             preview_url,
@@ -2266,6 +2336,9 @@ class ApiHttpTests(unittest.TestCase):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
         preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
+        image_record = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image_record)
+        self.site_store.ensure_image_preview(image_record, 384)
 
         initial_response = self.client.get(
             preview_url,
@@ -2287,6 +2360,9 @@ class ApiHttpTests(unittest.TestCase):
         image_id = self._seed_case(token, patient_id="HTTP-001", visit_date="Initial")
         preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
         preview_path = self.site_store.image_preview_cache_path(image_id, 384)
+        image_record = self.site_store.get_image(image_id)
+        self.assertIsNotNone(image_record)
+        self.site_store.ensure_image_preview(image_record, 384)
 
         preview_response = self.client.get(
             preview_url,
@@ -2308,28 +2384,67 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(missing_response.status_code, 404, missing_response.text)
 
+    def test_image_preview_endpoint_serves_source_while_preview_backfill_queues_http(self):
+        admin_token = self._login("admin", "admin123")
+        image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
+        preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
+        preview_path = self.site_store.image_preview_cache_path(image_id, 384)
+        preview_path.unlink(missing_ok=True)
+
+        with patch("kera_research.api.routes.case_images.schedule_image_derivative_backfill") as backfill_mock:
+            with patch.object(
+                self.app_module.SiteStore,
+                "ensure_image_preview",
+                side_effect=AssertionError("preview endpoint should not generate previews inline on cache miss"),
+            ):
+                response = self.client.get(
+                    preview_url,
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertFalse(preview_path.exists())
+        backfill_mock.assert_called_once()
+        scheduled_store, scheduled_ids = backfill_mock.call_args.args
+        self.assertEqual(str(scheduled_store.site_id), self.site_id)
+        self.assertEqual(scheduled_ids, [image_id])
+
     def test_image_preview_batch_endpoint_prewarms_and_reports_preview_status_http(self):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
         preview_path = self.site_store.image_preview_cache_path(image_id, 256)
         preview_path.unlink(missing_ok=True)
 
-        response = self.client.post(
-            f"/api/sites/{self.site_id}/images/previews",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"image_ids": [image_id, "missing-image"], "max_side": 256},
-        )
+        with patch("kera_research.api.routes.case_images.schedule_image_derivative_backfill") as backfill_mock:
+            with patch.object(
+                self.app_module.SiteStore,
+                "ensure_image_preview",
+                side_effect=AssertionError("preview batch should not generate previews inline"),
+            ):
+                response = self.client.post(
+                    f"/api/sites/{self.site_id}/images/previews",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={"image_ids": [image_id, "missing-image"], "max_side": 256},
+                )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["max_side"], 256)
         self.assertEqual(payload["requested_count"], 2)
-        self.assertEqual(payload["ready_count"], 1)
 
         items_by_id = {item["image_id"]: item for item in payload["items"]}
-        self.assertTrue(items_by_id[image_id]["ready"])
-        self.assertIn(items_by_id[image_id]["cache_status"], {"generated", "hit"})
+        if items_by_id[image_id]["ready"]:
+            self.assertEqual(payload["ready_count"], 1)
+            self.assertEqual(items_by_id[image_id]["cache_status"], "hit")
+            backfill_mock.assert_not_called()
+        else:
+            self.assertEqual(payload["ready_count"], 0)
+            self.assertEqual(items_by_id[image_id]["cache_status"], "queued")
+            backfill_mock.assert_called_once()
+            scheduled_store, scheduled_ids = backfill_mock.call_args.args
+            self.assertEqual(str(scheduled_store.site_id), self.site_id)
+            self.assertEqual(scheduled_ids, [image_id])
         self.assertTrue(items_by_id[image_id]["preview_url"].endswith(f"/images/{image_id}/preview?max_side=256"))
-        self.assertTrue(preview_path.exists())
 
         self.assertFalse(items_by_id["missing-image"]["ready"])
         self.assertEqual(items_by_id["missing-image"]["cache_status"], "missing")
@@ -2682,6 +2797,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            fake_schedule = Mock()
             with patch.dict(
                 os.environ,
                 {
@@ -2692,23 +2808,166 @@ class ApiHttpTests(unittest.TestCase):
             ):
                 with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
                     with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        result = self.app_module._queue_federated_retrieval_corpus_sync(
-                            self.cp,
-                            self.site_store,
-                            trigger="image_upload",
-                        )
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                            result = self.app_module._queue_federated_retrieval_corpus_sync(
+                                self.cp,
+                                self.site_store,
+                                trigger="image_upload",
+                            )
 
             self.assertTrue(result["queued"])
-            self.assertEqual(fake_executor.submit.call_count, 1)
-            submitted_fn, submitted_key, submitted_profile, submitted_trigger, submitted_delay = fake_executor.submit.call_args[0]
+            self.assertEqual(fake_schedule.call_count, 1)
+            submitted_executor = fake_schedule.call_args.args[0]
+            submitted_fn = fake_schedule.call_args.args[1]
+            submitted_key = fake_schedule.call_args.args[2]
+            submitted_profile = fake_schedule.call_args.args[3]
+            submitted_trigger = fake_schedule.call_args.args[4]
+            submitted_delay = fake_schedule.call_args.args[5]
+            self.assertIs(submitted_executor, fake_executor)
             self.assertTrue(callable(submitted_fn))
             self.assertEqual(submitted_key, job_key)
             self.assertEqual(submitted_profile, "dinov2_lesion_crop")
             self.assertEqual(submitted_trigger, "image_upload")
             self.assertEqual(submitted_delay, 11.0)
+            self.assertEqual(fake_schedule.call_args.kwargs["delay_seconds"], 11.0)
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
+    def test_federated_retrieval_auto_sync_rechecks_running_job_without_sleep_http(self):
+        job_key = (self.site_id, "dinov2_lesion_crop")
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+        self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            scheduled_calls: list[tuple[Any, Any, tuple[Any, ...], float]] = []
+
+            def capture_schedule(executor, fn, *args, delay_seconds):
+                scheduled_calls.append((executor, fn, args, float(delay_seconds)))
+
+            running_job = {"job_id": "retrieval-job-1", "status": "running"}
+            completed_job = {"job_id": "retrieval-job-1", "status": "completed"}
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_FEDERATED_RETRIEVAL_SYNC_DEFAULT_DELAY_SECONDS": "7",
+                    "KERA_FEDERATED_RETRIEVAL_SYNC_POLL_SECONDS": "2",
+                    "KERA_FEDERATED_RETRIEVAL_SYNC_MAX_WAIT_SECONDS": "30",
+                    "KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
+                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", side_effect=capture_schedule):
+                            with patch.object(
+                                self.app_module,
+                                "_latest_federated_retrieval_sync_job_impl",
+                                return_value=dict(running_job),
+                            ):
+                                with patch.object(
+                                    self.app_module,
+                                    "_start_federated_retrieval_corpus_sync_impl",
+                                ) as start_sync:
+                                    with patch.object(
+                                        self.site_store,
+                                        "get_job",
+                                        side_effect=[dict(running_job), dict(completed_job)],
+                                    ) as get_job:
+                                        result = self.app_module._queue_federated_retrieval_corpus_sync(
+                                            self.cp,
+                                            self.site_store,
+                                            trigger="save_case",
+                                        )
+                                        self.assertTrue(result["queued"])
+                                        self.assertEqual(len(scheduled_calls), 1)
+                                        self.assertEqual(scheduled_calls[0][3], 7.0)
+
+                                        initial_fn = scheduled_calls[0][1]
+                                        initial_args = scheduled_calls[0][2]
+                                        with patch.object(
+                                            self.app_module.time,
+                                            "sleep",
+                                            side_effect=AssertionError("sleep should not be called"),
+                                        ):
+                                            initial_fn(*initial_args)
+                                            self.assertEqual(len(scheduled_calls), 2)
+                                            self.assertEqual(scheduled_calls[1][3], 2.0)
+
+                                            poll_fn = scheduled_calls[1][1]
+                                            poll_args = scheduled_calls[1][2]
+                                            poll_fn(*poll_args)
+
+                                        start_sync.assert_not_called()
+                                        self.assertEqual(get_job.call_count, 2)
+
+            self.assertNotIn(job_key, self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS)
+            self.assertNotIn(job_key, self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS)
+        finally:
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
+            self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
+
+    def test_ai_clinic_vector_index_rebuild_uses_delayed_submission_http(self):
+        job_key = (self.site_id, "model-1")
+        self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
+        self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
+        try:
+            fake_executor = Mock()
+            fake_schedule = Mock()
+            with patch.dict(
+                os.environ,
+                {
+                    "KERA_CASE_VECTOR_INDEX_DEFAULT_DELAY_SECONDS": "7",
+                    "KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0",
+                },
+                clear=False,
+            ):
+                with patch.object(
+                    self.app_module,
+                    "control_plane_split_enabled",
+                    return_value=False,
+                ):
+                    with patch.object(
+                        self.cp,
+                        "current_global_model",
+                        return_value={"version_id": "model-1", "ready": True},
+                    ):
+                        with patch.object(
+                            self.app_module,
+                            "_VECTOR_INDEX_REBUILD_EXECUTOR",
+                            fake_executor,
+                        ):
+                            with patch.object(
+                                self.app_module,
+                                "_submit_executor_job_after_delay",
+                                fake_schedule,
+                            ):
+                                result = self.app_module._queue_ai_clinic_vector_index_rebuild(
+                                    self.cp,
+                                    self.site_store,
+                                    trigger="image_upload",
+                                )
+
+            self.assertTrue(result["queued"])
+            self.assertEqual(result["model_version_id"], "model-1")
+            fake_schedule.assert_called_once()
+            submitted_executor = fake_schedule.call_args.args[0]
+            submitted_fn = fake_schedule.call_args.args[1]
+            submitted_key = fake_schedule.call_args.args[2]
+            submitted_trigger = fake_schedule.call_args.args[3]
+            submitted_delay = fake_schedule.call_args.args[4]
+            self.assertIs(submitted_executor, fake_executor)
+            self.assertTrue(callable(submitted_fn))
+            self.assertEqual(submitted_key, job_key)
+            self.assertEqual(submitted_trigger, "image_upload")
+            self.assertEqual(submitted_delay, 7.0)
+            self.assertEqual(
+                fake_schedule.call_args.kwargs["delay_seconds"],
+                7.0,
+            )
+        finally:
+            self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
+            self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
 
     def test_desktop_internal_federated_retrieval_queue_route_http(self):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
@@ -2969,6 +3228,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            fake_schedule = Mock()
             with patch.dict(
                 os.environ,
                 {
@@ -2980,21 +3240,29 @@ class ApiHttpTests(unittest.TestCase):
                 with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
                     with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
                         with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
-                            self.app_module._queue_case_embedding_refresh(
-                                self.cp,
-                                self.site_store,
-                                patient_id="HTTP-001",
-                                visit_date="Initial",
-                                trigger="image_upload",
-                            )
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                                self.app_module._queue_case_embedding_refresh(
+                                    self.cp,
+                                    self.site_store,
+                                    patient_id="HTTP-001",
+                                    visit_date="Initial",
+                                    trigger="image_upload",
+                                )
 
-            self.assertEqual(fake_executor.submit.call_count, 1)
-            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
+            self.assertEqual(fake_schedule.call_count, 1)
+            submitted_executor = fake_schedule.call_args.args[0]
+            submitted_fn = fake_schedule.call_args.args[1]
+            submitted_key = fake_schedule.call_args.args[2]
+            submitted_trigger = fake_schedule.call_args.args[3]
+            submitted_embedding_delay = fake_schedule.call_args.args[4]
+            submitted_index_delay = fake_schedule.call_args.args[5]
+            self.assertIs(submitted_executor, fake_executor)
             self.assertTrue(callable(submitted_fn))
             self.assertEqual(submitted_key, job_key)
             self.assertEqual(submitted_trigger, "image_upload")
             self.assertEqual(submitted_embedding_delay, 7.0)
             self.assertEqual(submitted_index_delay, 7.0)
+            self.assertEqual(fake_schedule.call_args.kwargs["delay_seconds"], 7.0)
         finally:
             self.app_module._PENDING_EMBEDDING_JOBS.clear()
             self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
@@ -3034,6 +3302,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            fake_schedule = Mock()
             with patch.dict(
                 os.environ,
                 {
@@ -3046,21 +3315,29 @@ class ApiHttpTests(unittest.TestCase):
                 with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
                     with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
                         with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
-                            self.app_module._queue_case_embedding_refresh(
-                                self.cp,
-                                self.site_store,
-                                patient_id="HTTP-001",
-                                visit_date="Initial",
-                                trigger="representative_change",
-                            )
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                                self.app_module._queue_case_embedding_refresh(
+                                    self.cp,
+                                    self.site_store,
+                                    patient_id="HTTP-001",
+                                    visit_date="Initial",
+                                    trigger="representative_change",
+                                )
 
-            self.assertEqual(fake_executor.submit.call_count, 1)
-            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
+            self.assertEqual(fake_schedule.call_count, 1)
+            submitted_executor = fake_schedule.call_args.args[0]
+            submitted_fn = fake_schedule.call_args.args[1]
+            submitted_key = fake_schedule.call_args.args[2]
+            submitted_trigger = fake_schedule.call_args.args[3]
+            submitted_embedding_delay = fake_schedule.call_args.args[4]
+            submitted_index_delay = fake_schedule.call_args.args[5]
+            self.assertIs(submitted_executor, fake_executor)
             self.assertTrue(callable(submitted_fn))
             self.assertEqual(submitted_key, job_key)
             self.assertEqual(submitted_trigger, "representative_change")
             self.assertEqual(submitted_embedding_delay, 20.0)
             self.assertEqual(submitted_index_delay, 60.0)
+            self.assertEqual(fake_schedule.call_args.kwargs["delay_seconds"], 20.0)
         finally:
             self.app_module._PENDING_EMBEDDING_JOBS.clear()
             self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
@@ -3071,6 +3348,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            outer_schedule = Mock()
             fake_workflow = Mock()
             fake_workflow.index_case_embedding.return_value = {
                 "case_id": "HTTP-001::Initial",
@@ -3102,19 +3380,34 @@ class ApiHttpTests(unittest.TestCase):
                 with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
                     with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
                         with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
-                            self.app_module._queue_case_embedding_refresh(
-                                self.cp,
-                                self.site_store,
-                                patient_id="HTTP-001",
-                                visit_date="Initial",
-                                trigger="representative_change",
-                            )
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", outer_schedule):
+                                self.app_module._queue_case_embedding_refresh(
+                                    self.cp,
+                                    self.site_store,
+                                    patient_id="HTTP-001",
+                                    visit_date="Initial",
+                                    trigger="representative_change",
+                                )
 
-            submitted_fn, submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay = fake_executor.submit.call_args[0]
+            submitted_fn = outer_schedule.call_args.args[1]
+            submitted_key = outer_schedule.call_args.args[2]
+            submitted_trigger = outer_schedule.call_args.args[3]
+            submitted_embedding_delay = outer_schedule.call_args.args[4]
+            submitted_index_delay = outer_schedule.call_args.args[5]
             with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
-                with patch.object(self.app_module.time, "sleep") as sleep_mock:
-                    with patch.object(self.app_module.time, "monotonic", return_value=0.0):
+                with patch.object(self.app_module.time, "monotonic", return_value=0.0):
+                    with patch.object(self.app_module, "_submit_executor_job_after_delay") as inner_schedule:
                         submitted_fn(submitted_key, submitted_trigger, submitted_embedding_delay, submitted_index_delay)
+
+            inner_schedule.assert_called_once()
+            stage_fn = inner_schedule.call_args.args[1]
+            stage_key = inner_schedule.call_args.args[2]
+            stage_trigger = inner_schedule.call_args.args[3]
+            stage_job_id = inner_schedule.call_args.args[4]
+            stage_embedding_response = inner_schedule.call_args.args[5]
+            self.assertEqual(inner_schedule.call_args.kwargs["delay_seconds"], 3.0)
+            with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+                stage_fn(stage_key, stage_trigger, stage_job_id, stage_embedding_response)
 
             fake_workflow.index_case_embedding.assert_called_once()
             self.assertFalse(fake_workflow.index_case_embedding.call_args.kwargs["update_index"])
@@ -3122,8 +3415,6 @@ class ApiHttpTests(unittest.TestCase):
                 [call.kwargs["backend"] for call in fake_workflow.rebuild_case_vector_index.call_args_list],
                 ["classifier", "dinov2"],
             )
-            self.assertEqual(sleep_mock.call_args_list[0].args[0], 2.0)
-            self.assertEqual(sleep_mock.call_args_list[1].args[0], 5.0)
             jobs = [
                 job for job in self.site_store.list_jobs() if job.get("job_type") == "ai_clinic_embedding_index"
             ]
@@ -3788,7 +4079,14 @@ class ApiHttpTests(unittest.TestCase):
             )
         self.assertEqual(validation_response.status_code, 200, validation_response.text)
 
-        image = self.site_store.get_image(image_id)
+        image = None
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            image = self.site_store.get_image(image_id)
+            if image is not None and image["has_roi_crop"] and image["has_medsam_mask"] and image["artifact_status_updated_at"] is not None:
+                break
+            time.sleep(0.05)
+
         self.assertIsNotNone(image)
         self.assertFalse(image["has_lesion_box"])
         self.assertTrue(image["has_roi_crop"])
@@ -3796,6 +4094,45 @@ class ApiHttpTests(unittest.TestCase):
         self.assertFalse(image["has_lesion_crop"])
         self.assertFalse(image["has_lesion_mask"])
         self.assertIsNotNone(image["artifact_status_updated_at"])
+
+    def test_case_validation_degrades_slow_postmortem_to_background_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-SLOW-POSTMORTEM-001"
+        self._seed_case(token, patient_id=patient_id)
+
+        class SlowPostmortemFakeWorkflow(FakeWorkflow):
+            def run_case_postmortem(self, *args, **kwargs):
+                time.sleep(0.8)
+                return super().run_case_postmortem(*args, **kwargs)
+
+        fake_workflow = SlowPostmortemFakeWorkflow(self.app_module, self.cp)
+        with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+            validation_response = self.client.post(
+                f"/api/sites/{self.site_id}/cases/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"patient_id": patient_id, "visit_date": "Initial", "execution_mode": "cpu"},
+            )
+        self.assertEqual(validation_response.status_code, 200, validation_response.text)
+
+        payload = validation_response.json()
+        self.assertIsNone(payload["post_mortem"])
+        validation_id = payload["summary"]["validation_id"]
+
+        persisted_post_mortem = None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            predictions = self.cp.load_case_predictions(validation_id)
+            persisted_post_mortem = predictions[0].get("post_mortem") if predictions else None
+            if persisted_post_mortem is not None:
+                break
+            time.sleep(0.05)
+
+        self.assertIsNotNone(persisted_post_mortem)
+        self.assertEqual(persisted_post_mortem["outcome"], "correct")
+
+        history = self.site_store.load_case_history(patient_id, "Initial")
+        self.assertTrue(history["validations"])
+        self.assertEqual(history["validations"][0]["post_mortem"]["outcome"], "correct")
 
     def test_patient_reference_trajectory_http(self):
         token = self._token_for_username("http_researcher")
@@ -6759,17 +7096,20 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
             fake_executor = Mock()
+            fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
                 with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
                     with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        response = self.client.post(
-                            f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
-                            headers={"Authorization": f"Bearer {site_admin_token}"},
-                        )
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                            response = self.client.post(
+                                f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+                                headers={"Authorization": f"Bearer {site_admin_token}"},
+                            )
 
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            self.assertEqual(fake_schedule.call_count, 1)
+            self.assertIs(fake_schedule.call_args.args[0], fake_executor)
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
@@ -6914,6 +7254,37 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(patients_response.status_code, 200, patients_response.text)
         self.assertIn(
             "HTTP-EMPTY-001",
+            [item["patient_id"] for item in patients_response.json()],
+        )
+
+    def test_patient_list_route_avoids_loading_all_visits_for_visibility_http(self):
+        token = self._token_for_username("http_researcher")
+        create_response = self.client.post(
+            f"/api/sites/{self.site_id}/patients",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "patient_id": "HTTP-EMPTY-FAST-001",
+                "sex": "female",
+                "age": 47,
+                "chart_alias": "",
+                "local_case_code": "",
+            },
+        )
+        self.assertEqual(create_response.status_code, 200, create_response.text)
+
+        with patch.object(
+            self.app_module.SiteStore,
+            "list_visits",
+            side_effect=AssertionError("patients route should use workspace patient query"),
+        ):
+            patients_response = self.client.get(
+                f"/api/sites/{self.site_id}/patients",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self.assertEqual(patients_response.status_code, 200, patients_response.text)
+        self.assertIn(
+            "HTTP-EMPTY-FAST-001",
             [item["patient_id"] for item in patients_response.json()],
         )
 

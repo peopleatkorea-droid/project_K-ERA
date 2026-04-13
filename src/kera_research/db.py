@@ -313,6 +313,8 @@ _DATA_PLANE_DB_INITIALIZED = False
 _CONTROL_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_SQLITE_SEARCH_READY = False
+CONTROL_PLANE_SCHEMA_REVISION = "2026-04-13"
+DATA_PLANE_SCHEMA_REVISION = "2026-04-13"
 
 users = Table(
     "users",
@@ -413,6 +415,23 @@ access_requests = Table(
     Column("reviewer_notes", Text, nullable=False, default=""),
     Column("created_at", String(64), nullable=False),
     Column("reviewed_at", String(64), nullable=True),
+)
+
+auth_rate_limits = Table(
+    "auth_rate_limits",
+    CONTROL_PLANE_METADATA,
+    Column("attempt_id", Integer, primary_key=True, autoincrement=True),
+    Column("scope", String(64), nullable=False),
+    Column("client_key", String(255), nullable=False),
+    Column("attempted_at_epoch", Float, nullable=False),
+)
+
+control_plane_schema_state = Table(
+    "control_plane_schema_state",
+    CONTROL_PLANE_METADATA,
+    Column("schema_name", String(64), primary_key=True),
+    Column("schema_revision", String(64), nullable=False),
+    Column("recorded_at", String(64), nullable=False),
 )
 
 validation_runs = Table(
@@ -636,6 +655,43 @@ site_jobs = Table(
     Column("updated_at", String(64), nullable=True),
 )
 
+data_plane_schema_state = Table(
+    "data_plane_schema_state",
+    DATA_PLANE_METADATA,
+    Column("schema_name", String(64), primary_key=True),
+    Column("schema_revision", String(64), nullable=False),
+    Column("recorded_at", String(64), nullable=False),
+)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_schema_state(engine: Engine, table: Table, schema_name: str, schema_revision: str) -> None:
+    recorded_at = _utc_now_iso()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(table.c.schema_name).where(table.c.schema_name == schema_name)
+        ).scalar_one_or_none()
+        if existing is None:
+            conn.execute(
+                table.insert().values(
+                    schema_name=schema_name,
+                    schema_revision=schema_revision,
+                    recorded_at=recorded_at,
+                )
+            )
+            return
+        conn.execute(
+            update(table)
+            .where(table.c.schema_name == schema_name)
+            .values(
+                schema_revision=schema_revision,
+                recorded_at=recorded_at,
+            )
+        )
+
 
 def init_control_plane_db() -> None:
     global _CONTROL_PLANE_DB_INITIALIZED
@@ -662,6 +718,12 @@ def init_control_plane_db() -> None:
             )
             CONTROL_PLANE_METADATA.create_all(CONTROL_PLANE_ENGINE)
             _migrate_control_plane_schema()
+        _record_schema_state(
+            CONTROL_PLANE_ENGINE,
+            control_plane_schema_state,
+            "control_plane",
+            CONTROL_PLANE_SCHEMA_REVISION,
+        )
         _CONTROL_PLANE_DB_INITIALIZED = True
 
 
@@ -674,6 +736,12 @@ def init_data_plane_db() -> None:
             return
         DATA_PLANE_METADATA.create_all(DATA_PLANE_ENGINE)
         _migrate_data_plane_schema()
+        _record_schema_state(
+            DATA_PLANE_ENGINE,
+            data_plane_schema_state,
+            "data_plane",
+            DATA_PLANE_SCHEMA_REVISION,
+        )
         _DATA_PLANE_DB_INITIALIZED = True
 
 
@@ -989,6 +1057,14 @@ def _migrate_control_plane_schema() -> None:
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_validation_cases_validation_case "
                     "ON validation_cases (validation_id, case_reference_id)"
+                )
+            )
+
+        if "auth_rate_limits" in table_names:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_auth_rate_limits_scope_client_time "
+                    "ON auth_rate_limits (scope, client_key, attempted_at_epoch)"
                 )
             )
 

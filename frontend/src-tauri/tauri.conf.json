@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' asset: data: blob: http://asset.localhost https://asset.localhost; img-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:* http://asset.localhost https://asset.localhost https:; media-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:* http://asset.localhost https://asset.localhost https:; font-src 'self' asset: data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://accounts.google.com; connect-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:* http://asset.localhost https://asset.localhost https: ws: wss:; frame-src 'self' https://accounts.google.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self' https://accounts.google.com",
       "assetProtocol": {
         "enable": true,
         "scope": [

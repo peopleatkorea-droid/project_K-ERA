@@ -6,6 +6,9 @@ import process from "node:process";
 const repoRoot = process.cwd();
 const tauriRoot = path.join(repoRoot, "src-tauri");
 const tauriConfigPath = path.join(tauriRoot, "tauri.conf.json");
+const cargoTomlPath = path.join(tauriRoot, "Cargo.toml");
+const packageJsonPath = path.join(repoRoot, "package.json");
+const pyprojectTomlPath = path.resolve(repoRoot, "..", "pyproject.toml");
 
 const checks = [];
 
@@ -50,10 +53,42 @@ async function verifyTauriResources() {
   }
 }
 
+function extractTomlVersion(raw, label) {
+  const match = raw.match(/^\s*version\s*=\s*"([^"]+)"/m);
+  if (!match) {
+    throw new Error(`Unable to find version in ${label}.`);
+  }
+  return match[1].trim();
+}
+
+async function verifyDesktopSecurityAndVersions() {
+  const tauriConfig = JSON.parse(await fsp.readFile(tauriConfigPath, "utf8"));
+  const packageJson = JSON.parse(await fsp.readFile(packageJsonPath, "utf8"));
+  const cargoToml = await fsp.readFile(cargoTomlPath, "utf8");
+  const pyprojectToml = await fsp.readFile(pyprojectTomlPath, "utf8");
+
+  const tauriVersion = String(tauriConfig.version ?? "").trim();
+  const tauriCsp = tauriConfig.app?.security?.csp;
+  const cargoVersion = extractTomlVersion(cargoToml, "Cargo.toml");
+  const packageVersion = String(packageJson.version ?? "").trim();
+  const pyprojectVersion = extractTomlVersion(pyprojectToml, "pyproject.toml");
+
+  record(Boolean(tauriCsp), "desktop CSP is configured", tauriConfigPath);
+  record(
+    tauriVersion.length > 0 &&
+      tauriVersion === cargoVersion &&
+      tauriVersion === packageVersion &&
+      tauriVersion === pyprojectVersion,
+    "desktop/web/python versions stay aligned",
+    `tauri=${tauriVersion || "<missing>"}, cargo=${cargoVersion}, package=${packageVersion}, pyproject=${pyprojectVersion}`,
+  );
+}
+
 async function main() {
   verifyExists("tauri.conf.json", tauriConfigPath);
   await verifyDesktopBundle();
   await verifyTauriResources();
+  await verifyDesktopSecurityAndVersions();
 
   const failed = checks.filter((entry) => !entry.ok);
   for (const entry of checks) {
