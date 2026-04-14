@@ -35,7 +35,7 @@ export function SectionHeader({
           </p>
         ) : null}
       </div>
-      {aside ? <div className="min-w-0 max-w-full max-[900px]:w-full">{aside}</div> : null}
+      {aside ? <div className="max-w-full shrink-0 self-start max-[900px]:w-full">{aside}</div> : null}
     </div>
   );
 }
