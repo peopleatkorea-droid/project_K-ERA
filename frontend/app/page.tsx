@@ -1403,7 +1403,13 @@ export default function HomePage() {
               title={pick(locale, "Verifying the workspace connection", "워크스페이스 연결을 확인하는 중입니다")}
               description={copy.workspaceServicesChecking}
               aside={
-                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={handleWorkspaceLogout}
+                >
                   {copy.logOut}
                 </Button>
               }
@@ -1434,7 +1440,13 @@ export default function HomePage() {
               title={copy.workspaceServicesUnavailableTitle}
               description={copy.workspaceServicesUnavailableBody}
               aside={
-                <Button type="button" variant="ghost" size="sm" onClick={handleWorkspaceLogout}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  onClick={handleWorkspaceLogout}
+                >
                   {copy.logOut}
                 </Button>
               }
