@@ -13,8 +13,12 @@ if str(SRC_DIR) not in sys.path:
 
 from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
+    assert_federated_privacy_runtime_ready,
+    build_federated_dp_accounting_entry,
     federated_delta_privacy_controls,
+    federated_privacy_runtime_report,
     summarize_federated_data_distribution,
+    summarize_federated_dp_accounting,
     verify_federated_update_signature,
 )
 
@@ -93,6 +97,96 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         self.assertEqual(summary["label_histogram"]["bacterial"], 2)
         self.assertEqual(summary["culture_category_histogram"]["fungal"], 1)
         self.assertEqual(summary["top_species"][0]["label"], "Pseudomonas aeruginosa")
+
+    def test_privacy_runtime_report_requires_acknowledgement_in_production_like_runtime(self):
+        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+            report = federated_privacy_runtime_report()
+        self.assertFalse(report["formal_dp_accounting"])
+        self.assertTrue(report["production_like_runtime"])
+        self.assertTrue(report["warning_required"])
+
+    def test_privacy_runtime_report_honors_acknowledgement_override(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+            },
+            clear=False,
+        ):
+            report = federated_privacy_runtime_report()
+            assert_federated_privacy_runtime_ready(operation="Image-level federated learning")
+        self.assertTrue(report["non_dp_acknowledged"])
+        self.assertFalse(report["warning_required"])
+
+    def test_dp_accounting_entry_is_reported_when_clip_and_noise_are_configured(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            entry = build_federated_dp_accounting_entry(
+                controls,
+                local_steps=3,
+                participant_count=12,
+                patient_count=7,
+            )
+            report = federated_privacy_runtime_report()
+        self.assertTrue(entry["formal_dp_accounting"])
+        self.assertEqual(entry["accountant"], "gaussian_basic_composition")
+        self.assertGreater(float(entry["epsilon"] or 0.0), 0.0)
+        self.assertEqual(entry["local_steps"], 3)
+        self.assertEqual(entry["participant_count"], 12)
+        self.assertEqual(entry["patient_count"], 7)
+        self.assertTrue(report["formal_dp_accounting"])
+        self.assertEqual(report["dp_accountant_delta"], 1e-5)
+
+    def test_dp_accounting_summary_accumulates_per_site(self):
+        summary = summarize_federated_dp_accounting(
+            [
+                {
+                    "site_id": "SITE-A",
+                    "dp_accounting": {
+                        "formal_dp_accounting": True,
+                        "epsilon": 0.4,
+                        "delta": 1e-5,
+                    },
+                },
+                {
+                    "site_id": "SITE-A",
+                    "dp_accounting": {
+                        "formal_dp_accounting": True,
+                        "epsilon": 0.6,
+                        "delta": 2e-5,
+                    },
+                },
+                {
+                    "site_id": "SITE-B",
+                    "dp_accounting": {
+                        "formal_dp_accounting": True,
+                        "epsilon": 0.3,
+                        "delta": 1e-6,
+                    },
+                },
+            ]
+        )
+        self.assertTrue(summary["formal_dp_accounting"])
+        self.assertEqual(summary["accounted_updates"], 3)
+        self.assertAlmostEqual(float(summary["epsilon"] or 0.0), 1.3)
+        self.assertAlmostEqual(float(summary["delta"] or 0.0), 3.1e-5)
+        self.assertEqual(len(summary["sites"]), 2)
+        self.assertEqual(summary["sites"][0]["site_id"], "SITE-A")
+        self.assertAlmostEqual(float(summary["sites"][0]["epsilon"] or 0.0), 1.0)
+
+    def test_privacy_runtime_report_rejects_when_formal_dp_is_required(self):
+        with patch.dict(os.environ, {"KERA_REQUIRE_FORMAL_DP_ACCOUNTING": "true"}, clear=False):
+            with self.assertRaises(ValueError):
+                assert_federated_privacy_runtime_ready(operation="Federated aggregation")
 
 
 if __name__ == "__main__":

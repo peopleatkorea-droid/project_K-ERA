@@ -35,6 +35,7 @@ def reload_app_module(
     control_plane_artifact_dir: Path | None = None,
     model_distribution_mode: str | None = None,
     control_plane_api_base_url: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ):
     for env_name in (
         "KERA_DATABASE_URL",
@@ -86,6 +87,14 @@ def reload_app_module(
         "KERA_FEDERATED_DELTA_CLIP_NORM",
         "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER",
         "KERA_FEDERATED_DELTA_QUANTIZATION_BITS",
+        "KERA_REQUIRE_FORMAL_DP_ACCOUNTING",
+        "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING",
+        "KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK",
+        "KERA_ENVIRONMENT",
+        "KERA_ENV",
+        "ENVIRONMENT",
+        "APP_ENV",
+        "NODE_ENV",
     ):
         os.environ.pop(env_name, None)
 
@@ -117,6 +126,8 @@ def reload_app_module(
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
     os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
     os.environ["KERA_RESEARCHER_PASSWORD"] = "research123"
+    for env_name, value in (extra_env or {}).items():
+        os.environ[str(env_name)] = str(value)
     for module_name in list(sys.modules):
         if module_name.startswith("kera_research"):
             del sys.modules[module_name]
@@ -1699,8 +1710,10 @@ class ApiHttpTests(unittest.TestCase):
             clear=False,
         ):
             reloaded_app = reload_app_module(
-                Path(self.tempdir.name) / "dev_login_disabled_prod.db",
+                control_plane_db_path=Path(self.tempdir.name) / "dev_login_disabled_prod_control.db",
+                data_plane_db_path=Path(self.tempdir.name) / "dev_login_disabled_prod_data.db",
                 control_plane_artifact_dir=self.control_plane_artifact_dir,
+                extra_env={"KERA_ENVIRONMENT": "production"},
             )
             self.app_module = reloaded_app
             self.db_module = sys.modules["kera_research.db"]
@@ -5646,6 +5659,85 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(start_response.status_code, 409, start_response.text)
         self.assertIn("requires at least one positive, active, included case", start_response.json()["detail"])
 
+    def test_image_level_federated_round_requires_non_dp_acknowledgement_in_production_like_runtime_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-PROD-ACK-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-PROD-ACK-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_prod_ack.pth"
+        convnext_path.write_bytes(b"convnext-prod-ack")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_prod_ack",
+                "version_name": "global-convnext-tiny-full-http-prod-ack",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-14T01:00:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/image-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"model_version_id": convnext_model["version_id"], "execution_mode": "cpu"},
+            )
+
+        self.assertEqual(start_response.status_code, 409, start_response.text)
+        self.assertIn("KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING", start_response.json()["detail"])
+
+    def test_image_level_federated_round_allows_non_dp_acknowledgement_override_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-PROD-ACK-ALLOW-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-PROD-ACK-ALLOW-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_prod_ack_allow.pth"
+        convnext_path.write_bytes(b"convnext-prod-ack-allow")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_prod_ack_allow",
+                "version_name": "global-convnext-tiny-full-http-prod-ack-allow",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-14T01:05:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+            },
+            clear=False,
+        ):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/image-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"model_version_id": convnext_model["version_id"], "execution_mode": "cpu"},
+            )
+
+        self.assertEqual(start_response.status_code, 200, start_response.text)
+        self.assertEqual(start_response.json()["model_version"]["version_id"], convnext_model["version_id"])
+
     def test_visit_level_federated_round_job_http(self):
         admin_token = self._login("admin", "admin123")
         self._seed_case(admin_token, patient_id="HTTP-VISIT-FL-001", visit_date="Initial")
@@ -6195,6 +6287,152 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(aggregation_response.status_code, 400, aggregation_response.text)
         self.assertIn("Only one approved update per site can be aggregated at a time.", aggregation_response.text)
+
+    def test_aggregation_requires_non_dp_acknowledgement_in_production_like_runtime_http(self):
+        admin_token = self._login("admin", "admin123")
+        base_model = self.cp.current_global_model()
+        for index in range(2):
+            delta_path = self.site_store.update_dir / f"prod_ack_delta_{index}.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": self.site_id if index == 0 else "SITE-B",
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": 1,
+                    "created_at": f"2026-04-14T01:1{index}:00+00:00",
+                    "status": "approved",
+                }
+            )
+
+        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+            aggregation_response = self.client.post(
+                "/api/admin/aggregations/run",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={},
+            )
+
+        self.assertEqual(aggregation_response.status_code, 409, aggregation_response.text)
+        self.assertIn("KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING", aggregation_response.json()["detail"])
+
+    def test_aggregation_job_endpoints_persist_status_and_dp_accounting_http(self):
+        from kera_research.services.federated_update_security import apply_federated_update_signature
+
+        admin_token = self._login("admin", "admin123")
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        real_aggregate = fake_workflow.model_manager.aggregate_weight_deltas
+
+        def slow_aggregate(*args, **kwargs):
+            time.sleep(0.35)
+            return real_aggregate(*args, **kwargs)
+
+        fake_workflow.model_manager.aggregate_weight_deltas = slow_aggregate
+        base_model_path = Path(self.tempdir.name) / "dp_agg_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_dp_http_agg",
+                "version_name": "global-convnext-tiny-dp-http-agg",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-14T03:10:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "fed-signing-secret",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+            },
+            clear=False,
+        ):
+            for site_id, epsilon in (("SITE-A", 0.4), ("SITE-B", 0.7)):
+                delta_path = self.site_store.update_dir / f"{site_id}_dp_agg_delta.pt"
+                delta_path.parent.mkdir(parents=True, exist_ok=True)
+                delta_path.write_bytes(f"delta-{site_id}".encode("utf-8"))
+                update_id = self.app_module.make_id("update")
+                artifact_metadata = self.cp.store_model_update_artifact(
+                    delta_path,
+                    update_id=update_id,
+                    artifact_kind="delta",
+                )
+                update = apply_federated_update_signature(
+                    {
+                        "update_id": update_id,
+                        "site_id": site_id,
+                        "base_model_version_id": base_model["version_id"],
+                        "architecture": base_model["architecture"],
+                        "upload_type": "weight delta",
+                        "execution_device": "cpu",
+                        "artifact_path": str(delta_path),
+                        **artifact_metadata,
+                        "n_cases": 2,
+                        "aggregation_weight": 2,
+                        "aggregation_weight_unit": "cases",
+                        "federated_round_type": "visit_level_site_round",
+                        "dp_accounting": {
+                            "formal_dp_accounting": True,
+                            "epsilon": epsilon,
+                            "delta": 1e-5,
+                        },
+                        "created_at": "2026-04-14T03:11:00+00:00",
+                        "status": "approved",
+                    }
+                )
+                self.cp.register_model_update(update)
+
+            with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+                aggregation_response = self.client.post(
+                    "/api/admin/aggregations/run",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={},
+                )
+
+        self.assertEqual(aggregation_response.status_code, 200, aggregation_response.text)
+        payload = aggregation_response.json()
+        self.assertEqual(payload["status"], "running")
+        job_id = payload["job_id"]
+
+        jobs_response = self.client.get(
+            "/api/admin/aggregations/jobs",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(jobs_response.status_code, 200, jobs_response.text)
+        listed_job = next(item for item in jobs_response.json() if item["job_id"] == job_id)
+        self.assertEqual(listed_job["status"], "running")
+
+        job_detail_payload = None
+        for _ in range(20):
+            job_detail_response = self.client.get(
+                f"/api/admin/aggregations/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(job_detail_response.status_code, 200, job_detail_response.text)
+            job_detail_payload = job_detail_response.json()
+            if job_detail_payload["status"] == "done":
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(job_detail_payload)
+        self.assertEqual(job_detail_payload["status"], "done")
+        dp_accounting = job_detail_payload["result"]["aggregation"]["dp_accounting"]
+        self.assertTrue(dp_accounting["formal_dp_accounting"])
+        self.assertEqual(dp_accounting["accounted_updates"], 2)
+        self.assertAlmostEqual(float(dp_accounting["epsilon"] or 0.0), 1.1)
+        self.assertEqual(len(dp_accounting["sites"]), 2)
 
     def test_register_model_update_rejects_tampered_federated_signature_http(self):
         from kera_research.services.federated_update_security import apply_federated_update_signature

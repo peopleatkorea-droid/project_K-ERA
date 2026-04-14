@@ -30,6 +30,10 @@ from kera_research.api.site_jobs import (
 )
 from kera_research.services.ssl_pretraining import SUPPORTED_SSL_ARCHITECTURES
 from kera_research.services.data_plane import SiteStore
+from kera_research.services.federated_update_security import (
+    FederatedPrivacyRuntimePolicyError,
+    assert_federated_privacy_runtime_ready,
+)
 
 
 def build_site_training_router(support: Any) -> APIRouter:
@@ -217,6 +221,10 @@ def build_site_training_router(support: Any) -> APIRouter:
                     f"images={int(skipped.get('no_images') or 0)}."
                 ),
             )
+        try:
+            assert_federated_privacy_runtime_ready(operation="Image-level federated learning")
+        except FederatedPrivacyRuntimePolicyError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return start_image_level_federated_round(
             site_store,
             site_id=site_id,
@@ -304,6 +312,10 @@ def build_site_training_router(support: Any) -> APIRouter:
                     f"images={int(skipped.get('no_images') or 0)}."
                 ),
             )
+        try:
+            assert_federated_privacy_runtime_ready(operation="Visit-level federated learning")
+        except FederatedPrivacyRuntimePolicyError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return start_visit_level_federated_round(
             site_store,
             site_id=site_id,

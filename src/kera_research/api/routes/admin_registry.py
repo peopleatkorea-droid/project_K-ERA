@@ -5,6 +5,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import FileResponse, Response
 
 from kera_research.api.control_plane_proxy import call_remote_control_plane_method, remote_control_plane_is_primary
+from kera_research.services.federated_update_security import (
+    FederatedPrivacyRuntimePolicyError,
+    assert_federated_privacy_runtime_ready,
+)
 
 
 def build_admin_registry_router(support: Any) -> APIRouter:
@@ -399,6 +403,10 @@ def build_admin_registry_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
+        try:
+            assert_federated_privacy_runtime_ready(operation="Federated aggregation")
+        except FederatedPrivacyRuntimePolicyError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return registry_orchestrator.run_federated_aggregation(
             cp,
             get_workflow=get_workflow,
@@ -409,16 +417,18 @@ def build_admin_registry_router(support: Any) -> APIRouter:
     @router.get("/api/admin/aggregations/jobs")
     def list_aggregation_jobs(
         user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
     ) -> list[dict[str, Any]]:
         require_platform_admin(user)
-        return registry_orchestrator.list_aggregation_jobs()
+        return registry_orchestrator.list_aggregation_jobs(cp=cp)
 
     @router.get("/api/admin/aggregations/jobs/{job_id}")
     def get_aggregation_job(
         job_id: str,
         user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
         require_platform_admin(user)
-        return registry_orchestrator.get_aggregation_job(job_id)
+        return registry_orchestrator.get_aggregation_job(job_id, cp=cp)
 
     return router

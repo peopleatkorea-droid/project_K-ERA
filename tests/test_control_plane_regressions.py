@@ -33,6 +33,7 @@ def reload_app_module(
     data_plane_database_url: str | None = None,
     storage_dir: Path | None = None,
     storage_state_value: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> object:
     for env_name in (
         "KERA_DATABASE_URL",
@@ -55,6 +56,12 @@ def reload_app_module(
         "KERA_MODEL_DISTRIBUTION_MODE",
         "KERA_SITE_STORAGE_SOURCE",
         "KERA_SKIP_LOCAL_ENV_FILE",
+        "KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK",
+        "KERA_ENVIRONMENT",
+        "KERA_ENV",
+        "ENVIRONMENT",
+        "APP_ENV",
+        "NODE_ENV",
     ):
         os.environ.pop(env_name, None)
 
@@ -91,6 +98,8 @@ def reload_app_module(
     os.environ["KERA_MODEL_DISTRIBUTION_MODE"] = model_distribution_mode
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
+    for env_name, value in (extra_env or {}).items():
+        os.environ[str(env_name)] = str(value)
 
     for module_name in list(sys.modules):
         if module_name.startswith("kera_research"):
@@ -249,6 +258,36 @@ class ControlPlaneRegressionTests(unittest.TestCase):
 
         site_store.clear_patient_split()
         self.assertEqual(site_store.load_patient_split(), {})
+
+    def test_control_plane_admin_job_round_trip(self) -> None:
+        created = self.cp.create_admin_job(
+            job_type="federated_aggregation",
+            payload={"aggregation_strategy": "fedavg", "aggregated_site_ids": ["SITE-A", "SITE-B"]},
+            status="running",
+        )
+        self.assertEqual(created["job_type"], "federated_aggregation")
+        self.assertEqual(created["status"], "running")
+        self.assertEqual(created["payload"]["aggregation_strategy"], "fedavg")
+        self.assertIsNotNone(created["started_at"])
+
+        updated = self.cp.update_admin_job(
+            created["job_id"],
+            status="done",
+            result={"aggregation_id": "agg_001"},
+        )
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["result"]["aggregation_id"], "agg_001")
+        self.assertIsNotNone(updated["finished_at"])
+
+        fetched = self.cp.get_admin_job(created["job_id"])
+        self.assertIsNotNone(fetched)
+        assert fetched is not None
+        self.assertEqual(fetched["job_id"], created["job_id"])
+        self.assertEqual(fetched["status"], "done")
+
+        listed = self.cp.list_admin_jobs(job_type="federated_aggregation")
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["job_id"], created["job_id"])
 
     def test_workspace_collaborator_returns_updated_site_records(self) -> None:
         project = self.cp.create_project("Regression Project", "test", "owner")
@@ -462,6 +501,36 @@ class ControlPlaneRegressionTests(unittest.TestCase):
             any("Legacy KERA_DATABASE_URL/DATABASE_URL" in str(item.message) for item in caught),
             [str(item.message) for item in caught],
         )
+
+    def test_production_like_runtime_rejects_legacy_single_db_fallback_without_override(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            reload_app_module(
+                Path(self.tempdir.name) / "legacy_single_db_prod.db",
+                control_plane_artifact_dir=Path(self.tempdir.name) / "legacy_single_db_prod_artifacts",
+                extra_env={"KERA_ENVIRONMENT": "production"},
+            )
+
+        self.assertIn("refuses legacy single-database fallback", str(ctx.exception))
+
+    def test_production_like_runtime_allows_legacy_single_db_fallback_with_explicit_override(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        self.app_module = reload_app_module(
+            Path(self.tempdir.name) / "legacy_single_db_prod_allowed.db",
+            control_plane_artifact_dir=Path(self.tempdir.name) / "legacy_single_db_prod_allowed_artifacts",
+            extra_env={
+                "KERA_ENVIRONMENT": "production",
+                "KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK": "true",
+            },
+        )
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+
+        self.assertTrue(bool(self.db_module.DATABASE_TOPOLOGY["legacy_single_db_fallback_active"]))
 
     def test_remote_cache_mode_rebuilds_malformed_local_cache_in_place(self) -> None:
         self.db_module.CONTROL_PLANE_ENGINE.dispose()

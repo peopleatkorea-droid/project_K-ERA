@@ -249,7 +249,11 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
   - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned delta는 등록/집계 전에 거절됩니다.
   - aggregation 전략은 `KERA_FEDERATED_AGGREGATION_STRATEGY=fedavg|coordinate_median|trimmed_mean`으로 고를 수 있고, `trimmed_mean`은 `KERA_FEDERATED_AGGREGATION_TRIM_RATIO`를 사용합니다.
   - 선택형 client-side delta hardening으로 `KERA_FEDERATED_DELTA_CLIP_NORM`, `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER`, `KERA_FEDERATED_DELTA_QUANTIZATION_BITS=8|16`을 지원합니다.
+  - clip + noise + `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`가 같이 설정되면 site update metadata에는 basic composition 기반 DP accounting entry가 붙고, aggregation payload에는 site별/전체 누적 summary가 기록됩니다.
+  - formal DP accountant는 아직 없으므로, production/staging 같은 runtime에서 FL round/aggregation을 돌리려면 `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING=true`를 명시적으로 넣어야 합니다.
+  - `KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true`를 설정하면 formal DP accountant가 구현되기 전까지 FL round/aggregation은 시작되지 않습니다.
   - 이 보강은 trusted consortium 환경을 목표로 한 1차 가드입니다. secure aggregation이나 formal DP accountant를 대체하지는 않습니다.
+  - admin-side aggregation job 상태는 control plane DB에 영속 저장되며, `GET /api/admin/aggregations/jobs`, `GET /api/admin/aggregations/jobs/{job_id}`로 poll할 수 있습니다.
 - baseline 컨테이너 자산도 추가했습니다.
   - `Dockerfile.api`: FastAPI / worker 공용 이미지
   - `frontend/Dockerfile.web`: Next.js production 이미지
@@ -304,6 +308,13 @@ KERA_SENTRY_PROFILES_SAMPLE_RATE=0.0
 - MSI는 여전히 관리자 권한 전제를 두는 경로라, 병원 PC 일반 사용자 배포 기준 기본 경로로는 권장하지 않습니다.
 - `desktop:smoke-installed:cpu`는 비관리자 세션이면 자동으로 NSIS current-user installer를 우선 사용합니다.
 - `desktop:smoke-installed:cpu:nsis`, `desktop:verify-package:nsis`, `tauri:build:nsis`는 권장 배포 경로만 따로 확인할 때 사용합니다.
+- 런타임 안정성 보강으로 web home page는 이제 `CaseWorkspace`와 `AdminWorkspace`를 각각 별도 React error boundary로 감싸서, 하위 렌더링 예외가 나더라도 전체 세션이 하얗게 죽지 않고 `retry / reload / logout` 복구 경로를 제공합니다.
+- 공급망 점검은 `.\scripts\run_dependency_audits.ps1 -TorchProfile cpu`로 한 번에 돌릴 수 있습니다.
+  - Python: repo-root `.venv`가 있으면 그 환경을 `uvx pip-audit`로 직접 감사하고, 없으면 `uv export` requirements fallback을 사용합니다.
+  - frontend: `npm audit --omit=dev --audit-level=high`
+  - 결과물은 `artifacts/dependency-audit/` 아래에 남습니다.
+  - 2026-04-14 현재 기준으로 `frontend` production dependency audit는 `0 vulnerabilities` 상태입니다.
+- GitHub Actions에는 별도 `dependency-audits` workflow를 추가해 주간/수동 점검 보고서를 업로드하도록 했습니다.
 
 공용 FastAPI 서버 1대를 두고 다른 PC에서 같은 관리자/프로젝트/site를 보려면, 클라이언트 PC에서는 로컬 API를 띄우지 말고 아래처럼 frontend만 공용 API에 연결하세요.
 
@@ -459,6 +470,9 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 | `KERA_FEDERATED_DELTA_CLIP_NORM` | site-side delta L2 clipping 임계값 |
 | `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER` | clipping 후 추가할 Gaussian noise 배수. formal DP accountant는 아직 없음 |
 | `KERA_FEDERATED_DELTA_QUANTIZATION_BITS` | 전송/저장 delta 양자화 비트 수 (`8` 또는 `16`) |
+| `KERA_REQUIRE_FORMAL_DP_ACCOUNTING` | `true`면 formal DP accountant가 없는 빌드에서 FL round/aggregation을 시작하지 않음 |
+| `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING` | production/staging runtime에서 formal DP accountant 없이 FL을 돌릴 때 필요한 명시적 운영 승인 |
+| `KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK` | production/staging runtime에서 legacy `KERA_DATABASE_URL` / `DATABASE_URL` fallback을 계속 쓸 때 필요한 명시적 승인 |
 | `KERA_ONEDRIVE_TENANT_ID` | OneDrive/SharePoint Graph app의 tenant ID |
 | `KERA_ONEDRIVE_CLIENT_ID` | OneDrive/SharePoint Graph app의 client ID |
 | `KERA_ONEDRIVE_CLIENT_SECRET` | OneDrive/SharePoint Graph app의 client secret |
@@ -480,7 +494,8 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 - `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 실행 스크립트가 서버/프론트엔드에서 서로 보완되도록 처리합니다.
 - 불특정 사용자 배포에서는 `KERA_LOCAL_API_JWT_PRIVATE_KEY_B64`를 중앙 control plane 서버에만 두고, `KERA_LOCAL_API_JWT_PUBLIC_KEY_B64`만 desktop/local node에 배포하세요.
 - 중앙 owner(Next.js control plane)는 `KERA_CONTROL_PLANE_DATABASE_URL`을 사용합니다. 병원 local node는 `KERA_CONTROL_PLANE_API_BASE_URL`과 `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL`을 사용하고, `KERA_DATA_PLANE_DATABASE_URL`은 병원 로컬 DB를 가리켜야 합니다.
-- `KERA_DATABASE_URL` / `DATABASE_URL`는 legacy 호환용입니다. split env를 함께 쓰는 경우에는 실제로 다른 DB를 가리킬 때만 경고가 발생하며, 운영 설정에서는 가능하면 비워 두는 편이 안전합니다.
+- `KERA_DATABASE_URL` / `DATABASE_URL`는 legacy 호환용입니다. split env를 함께 쓰는 경우에는 실제로 다른 DB를 가리킬 때만 경고가 발생합니다.
+- production/staging처럼 보이는 runtime에서는 legacy single-DB fallback이 기본적으로 차단됩니다. 정말 필요한 경우에만 `KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK=true`로 명시적으로 승인하세요.
 - remote control plane cache SQLite가 손상된 경우 local node는 startup 시 cache 파일을 같은 경로에서 quarantine 후 재생성합니다. 별도 `.recovered.db`로 우회하지 않습니다.
 - 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\KERA_DATA\kera.db`입니다.
 - 집/병원 등 여러 관리자 PC에서 같은 validation metadata와 model registry artifact를 보려면 `KERA_CONTROL_PLANE_DIR`과 `KERA_MODEL_DIR`을 모든 관리자 PC에서 동일한 공유 경로로 맞추는 것을 권장합니다.

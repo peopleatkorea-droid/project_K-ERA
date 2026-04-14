@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-import threading
 from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
 from kera_research.services.federated_update_security import (
+    summarize_federated_dp_accounting,
     federated_aggregation_strategy,
     federated_aggregation_trim_ratio,
     require_signed_federated_updates,
@@ -21,9 +21,6 @@ class AdminRegistryOrchestrator:
     def __init__(self, *, make_id: Callable[[str], str], model_dir: Path) -> None:
         self.make_id = make_id
         self.model_dir = Path(model_dir)
-        self._jobs: dict[str, dict[str, Any]] = {}
-        self._jobs_lock = threading.Lock()
-        self._running = threading.Event()
 
     def publish_model_version(
         self,
@@ -251,7 +248,8 @@ class AdminRegistryOrchestrator:
         selected_update_ids: list[str],
         new_version_name: str | None,
     ) -> dict[str, Any]:
-        if self._running.is_set():
+        active_jobs = cp.list_admin_jobs(job_type="federated_aggregation", status="running")
+        if active_jobs:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Another aggregation job is already running. Poll /api/admin/aggregations/jobs to check status.",
@@ -349,26 +347,29 @@ class AdminRegistryOrchestrator:
         resolved_version_name = (new_version_name or "").strip() or f"global-{architecture}-{version_suffix}-{self.make_id('v')[:6]}"
         output_path = self.model_dir / f"global_{architecture}_{self.make_id('agg')}.pth"
         update_ids = [item["update_id"] for item in approved_updates]
+        dp_accounting_summary = summarize_federated_dp_accounting(approved_updates)
         try:
             for update_record in approved_updates:
                 verify_federated_update_signature(update_record)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-        job_id = self.make_id("job")
-        job_record: dict[str, Any] = {
-            "job_id": job_id,
-            "status": "running",
-            "result": None,
-            "error": None,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None,
-        }
-        with self._jobs_lock:
-            self._jobs[job_id] = job_record
+        job_record = cp.create_admin_job(
+            job_type="federated_aggregation",
+            payload={
+                "aggregation_strategy": aggregation_strategy,
+                "aggregation_trim_ratio": aggregation_trim_ratio if aggregation_strategy == "trimmed_mean" else None,
+                "weighting_mode": weighting_mode,
+                "aggregated_update_ids": list(update_ids),
+                "aggregated_site_ids": sorted(site_weights),
+                "base_model_version_id": base_model_version_id,
+                "architecture": str(architecture or base_model.get("architecture") or "unknown"),
+            },
+            status="running",
+        )
+        job_id = str(job_record.get("job_id") or "").strip()
 
         def run() -> None:
-            self._running.set()
             try:
                 workflow.model_manager.aggregate_weight_deltas(
                     delta_paths,
@@ -398,6 +399,7 @@ class AdminRegistryOrchestrator:
                         "signed_updates_required": require_signed_federated_updates(),
                         "aggregated_update_ids": list(update_ids),
                         "aggregated_site_ids": sorted(site_weights),
+                        "dp_accounting": dp_accounting_summary,
                     },
                 )
                 cp.update_model_update_statuses(update_ids, "aggregated")
@@ -405,35 +407,25 @@ class AdminRegistryOrchestrator:
                     (item for item in cp.list_model_versions() if item.get("aggregation_id") == aggregation["aggregation_id"]),
                     cp.current_global_model(),
                 )
-                with self._jobs_lock:
-                    self._jobs[job_id].update(
-                        {
-                            "status": "done",
-                            "result": {
-                                "aggregation": aggregation,
-                                "model_version": model_version,
-                                "aggregated_update_ids": update_ids,
-                            },
-                            "finished_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
+                cp.update_admin_job(
+                    job_id,
+                    status="done",
+                    result={
+                        "aggregation": aggregation,
+                        "model_version": model_version,
+                        "aggregated_update_ids": update_ids,
+                    },
+                )
             except Exception as exc:
-                with self._jobs_lock:
-                    self._jobs[job_id].update(
-                        {
-                            "status": "failed",
-                            "error": str(exc),
-                            "finished_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-            finally:
-                self._running.clear()
+                cp.update_admin_job(job_id, status="failed", error=str(exc))
+
+        import threading
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         thread.join(timeout=0.25)
 
-        job_snapshot = self.get_aggregation_job(job_id)
+        job_snapshot = self.get_aggregation_job(job_id, cp=cp)
         if job_snapshot.get("status") == "done" and isinstance(job_snapshot.get("result"), dict):
             return job_snapshot["result"]
         if job_snapshot.get("status") == "failed":
@@ -444,13 +436,15 @@ class AdminRegistryOrchestrator:
 
         return {"job_id": job_id, "status": "running"}
 
-    def list_aggregation_jobs(self) -> list[dict[str, Any]]:
-        with self._jobs_lock:
-            return [dict(job) for job in self._jobs.values()]
+    def list_aggregation_jobs(self, cp: Any | None = None) -> list[dict[str, Any]]:
+        if cp is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Control plane instance is required.")
+        return cp.list_admin_jobs(job_type="federated_aggregation")
 
-    def get_aggregation_job(self, job_id: str) -> dict[str, Any]:
-        with self._jobs_lock:
-            job = self._jobs.get(job_id)
+    def get_aggregation_job(self, job_id: str, cp: Any | None = None) -> dict[str, Any]:
+        if cp is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Control plane instance is required.")
+        job = cp.get_admin_job(job_id)
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Aggregation job not found.")
         return dict(job)

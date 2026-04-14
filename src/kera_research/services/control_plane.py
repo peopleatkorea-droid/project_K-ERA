@@ -1022,6 +1022,43 @@ class ControlPlaneStore:
     def list_aggregations(self) -> list[dict[str, Any]]:
         return self.models.list_aggregations()
 
+    def create_admin_job(
+        self,
+        *,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        status: str = "running",
+    ) -> dict[str, Any]:
+        return self.registry.create_admin_job(job_type=job_type, payload=payload, status=status)
+
+    def update_admin_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        payload: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        return self.registry.update_admin_job(
+            job_id,
+            status=status,
+            payload=payload,
+            result=result,
+            error=error,
+        )
+
+    def list_admin_jobs(
+        self,
+        *,
+        job_type: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.registry.list_admin_jobs(job_type=job_type, status=status)
+
+    def get_admin_job(self, job_id: str) -> dict[str, Any] | None:
+        return self.registry.get_admin_job(job_id)
+
     def register_aggregation(
         self,
         base_model_version_id: str,

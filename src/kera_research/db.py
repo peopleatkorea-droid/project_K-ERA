@@ -36,6 +36,25 @@ from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 from kera_research.config import PATIENT_REFERENCE_SALT, STORAGE_DIR
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_PRODUCTION_LIKE_ENVIRONMENTS = {"prod", "production", "stage", "staging"}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = str(os.getenv(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in _TRUE_VALUES
+
+
+def _runtime_environment_is_production_like() -> bool:
+    for env_name in ("KERA_ENVIRONMENT", "KERA_ENV", "ENVIRONMENT", "APP_ENV", "NODE_ENV"):
+        value = str(os.getenv(env_name) or "").strip().lower()
+        if value in _PRODUCTION_LIKE_ENVIRONMENTS:
+            return True
+    return False
+
+
 def _configure_sqlite_wal(dbapi_conn: object, _connection_record: object) -> None:
     """Enable WAL journal mode for SQLite to allow concurrent reads during writes."""
     cursor = dbapi_conn.cursor()  # type: ignore[attr-defined]
@@ -182,6 +201,27 @@ def _resolve_data_plane_database_url() -> str:
     )
 
 
+def _legacy_single_db_fallback_active(
+    *,
+    control_plane_url: str,
+    split_env_names: tuple[str, ...],
+) -> bool:
+    legacy_url = str(os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL") or "").strip()
+    if not legacy_url:
+        return False
+    if split_env_names:
+        return False
+    if _control_plane_remote_api_enabled():
+        return False
+    explicit_control_plane_url = (
+        str(os.getenv("KERA_CONTROL_PLANE_DATABASE_URL") or "").strip()
+        or str(os.getenv("KERA_AUTH_DATABASE_URL") or "").strip()
+    )
+    if explicit_control_plane_url:
+        return False
+    return str(control_plane_url or "").strip() == legacy_url
+
+
 def _connect_args_for(database_url: str) -> dict[str, object]:
     return {"check_same_thread": False} if database_url.startswith("sqlite") else {}
 
@@ -270,6 +310,10 @@ def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> d
     configured_env_names = _configured_database_env_names()
     legacy_values = _configured_database_env_values(configured_env_names["legacy"])
     control_plane_remote_api_enabled = _control_plane_remote_api_enabled()
+    legacy_single_db_fallback_active = _legacy_single_db_fallback_active(
+        control_plane_url=control_plane_url,
+        split_env_names=configured_env_names["split"],
+    )
     return {
         "control_plane_split_enabled": control_plane_url != data_plane_url,
         "control_plane_connection_mode": "remote_api_cache" if control_plane_remote_api_enabled else "direct_db",
@@ -279,6 +323,7 @@ def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> d
         "legacy_database_env_present": bool(legacy_values),
         "legacy_database_env_names": configured_env_names["legacy"],
         "legacy_database_env_values": legacy_values,
+        "legacy_single_db_fallback_active": legacy_single_db_fallback_active,
         "split_database_env_names": configured_env_names["split"],
         "legacy_database_env_conflicts": _legacy_database_env_conflicts(
             control_plane_url=control_plane_url,
@@ -290,6 +335,16 @@ def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> d
 
 
 def _validate_database_configuration(topology: dict[str, object]) -> None:
+    if (
+        topology.get("legacy_single_db_fallback_active")
+        and _runtime_environment_is_production_like()
+        and not _env_flag("KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK", default=False)
+    ):
+        raise RuntimeError(
+            "Production-like runtime refuses legacy single-database fallback via KERA_DATABASE_URL/DATABASE_URL. "
+            "Configure KERA_CONTROL_PLANE_DATABASE_URL and KERA_DATA_PLANE_DATABASE_URL explicitly, "
+            "or set KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK=true only if you intentionally accept that legacy topology."
+        )
     if topology["control_plane_connection_mode"] == "remote_api_cache":
         if topology["control_plane_backend"] != "sqlite":
             raise RuntimeError(
@@ -564,6 +619,21 @@ aggregations = Table(
     Column("total_cases", Integer, nullable=True),
     Column("created_at", String(64), nullable=True, index=True),
     Column("payload_json", JSON, nullable=False),
+)
+
+admin_jobs = Table(
+    "admin_jobs",
+    CONTROL_PLANE_METADATA,
+    Column("job_id", String(64), primary_key=True),
+    Column("job_type", String(64), nullable=False, index=True),
+    Column("status", String(64), nullable=False, index=True),
+    Column("payload_json", JSON, nullable=False),
+    Column("result_json", JSON, nullable=True),
+    Column("error_text", Text, nullable=True),
+    Column("created_at", String(64), nullable=False, index=True),
+    Column("updated_at", String(64), nullable=True),
+    Column("started_at", String(64), nullable=True),
+    Column("finished_at", String(64), nullable=True),
 )
 
 app_settings = Table(

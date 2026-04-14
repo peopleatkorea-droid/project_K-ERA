@@ -104,6 +104,7 @@ from kera_research.services.data_plane import (
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
+from kera_research.services.federated_update_security import federated_privacy_runtime_report
 from kera_research.services.observability import (
     ApiRequestMetrics,
     configure_sentry_observability,
@@ -2436,6 +2437,7 @@ def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
         "data_plane": _database_engine_probe(DATA_PLANE_ENGINE, label="data_plane"),
     }
     error_aggregation = current_error_aggregation_status()
+    federated_learning = federated_privacy_runtime_report()
 
     required_checks = {
         "storage.storage_dir": runtime_checks["storage"]["storage_dir"],
@@ -2445,6 +2447,10 @@ def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
         "database_connections.control_plane": database_connections["control_plane"],
         "database_connections.data_plane": database_connections["data_plane"],
     }
+    if bool(federated_learning.get("require_formal_dp_accounting")) and not bool(
+        federated_learning.get("formal_dp_accounting")
+    ):
+        required_checks["federated_learning"] = {"ready": False}
     control_plane_cache_check = runtime_checks["control_plane_cache_database"]
     if bool(control_plane_cache_check.get("required")):
         required_checks["control_plane_cache_database"] = control_plane_cache_check
@@ -2453,6 +2459,7 @@ def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
         "disk": runtime_checks["disk"],
         "control_plane": runtime_checks["control_plane"],
         "background_jobs": {"ready": not background_jobs["hung_queues"]},
+        "federated_learning": {"ready": not bool(federated_learning.get("warning_required"))},
     }
     if bool(error_aggregation.get("configured")):
         optional_checks["error_aggregation"] = {"ready": bool(error_aggregation.get("enabled"))}
@@ -2484,6 +2491,7 @@ def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
         "observability": {
             "error_aggregation": error_aggregation,
         },
+        "federated_learning": federated_learning,
         "background_jobs": background_jobs,
         "request_metrics": request_metrics,
         "failing_required_checks": failing_required_checks,

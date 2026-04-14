@@ -7,7 +7,7 @@ from typing import Any, Callable
 from sqlalchemy import select, update
 
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
-from kera_research.db import CONTROL_PLANE_ENGINE, aggregations, contributions, model_updates, model_versions
+from kera_research.db import CONTROL_PLANE_ENGINE, admin_jobs, aggregations, contributions, model_updates, model_versions
 from kera_research.domain import make_id, utc_now
 from kera_research.services.federated_update_security import verify_federated_update_signature
 
@@ -36,6 +36,21 @@ class ControlPlaneRegistryOps:
         if str(metadata.get("model_path") or "").strip():
             return "local"
         return "unknown"
+
+    def _admin_job_row_to_dict(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(row.get("payload_json") or {})
+        return {
+            "job_id": row["job_id"],
+            "job_type": row["job_type"],
+            "status": row["status"],
+            "payload": payload,
+            "result": row.get("result_json"),
+            "error": row.get("error_text"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+        }
 
     def _normalize_model_metadata(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
         merged = dict(model_metadata)
@@ -459,6 +474,97 @@ class ControlPlaneRegistryOps:
             self.payload_record(row, "payload_json", ["aggregation_id", "architecture", "created_at", "total_cases"])
             for row in rows
         ]
+
+    def create_admin_job(
+        self,
+        *,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        status: str = "running",
+    ) -> dict[str, Any]:
+        record = {
+            "job_id": make_id("job"),
+            "job_type": str(job_type or "").strip(),
+            "status": str(status or "running").strip() or "running",
+            "payload_json": dict(payload or {}),
+            "result_json": None,
+            "error_text": None,
+            "created_at": utc_now(),
+            "updated_at": None,
+            "started_at": utc_now() if str(status or "").strip().lower() == "running" else None,
+            "finished_at": None,
+        }
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(admin_jobs.insert().values(**record))
+        return self._admin_job_row_to_dict(record)
+
+    def update_admin_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        payload: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_job_id = str(job_id or "").strip()
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            existing = conn.execute(
+                select(admin_jobs).where(admin_jobs.c.job_id == normalized_job_id)
+            ).mappings().first()
+            if existing is None:
+                raise ValueError(f"Unknown admin job: {normalized_job_id}")
+            now = utc_now()
+            next_status = str(status or existing.get("status") or "").strip() or str(existing.get("status") or "running")
+            values: dict[str, Any] = {
+                "status": next_status,
+                "payload_json": dict(payload) if payload is not None else existing.get("payload_json"),
+                "result_json": result if result is not None else existing.get("result_json"),
+                "error_text": error if error is not None else existing.get("error_text"),
+                "updated_at": now,
+            }
+            if next_status == "running" and not existing.get("started_at"):
+                values["started_at"] = now
+            if next_status in {"done", "failed", "cancelled"}:
+                values["finished_at"] = now
+            conn.execute(
+                update(admin_jobs).where(admin_jobs.c.job_id == normalized_job_id).values(**values)
+            )
+            row = conn.execute(
+                select(admin_jobs).where(admin_jobs.c.job_id == normalized_job_id)
+            ).mappings().first()
+        if row is None:
+            raise ValueError(f"Unknown admin job: {normalized_job_id}")
+        return self._admin_job_row_to_dict(row)
+
+    def list_admin_jobs(
+        self,
+        *,
+        job_type: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = select(admin_jobs).order_by(admin_jobs.c.created_at.desc())
+        normalized_job_type = str(job_type or "").strip()
+        normalized_status = str(status or "").strip()
+        if normalized_job_type:
+            query = query.where(admin_jobs.c.job_type == normalized_job_type)
+        if normalized_status:
+            query = query.where(admin_jobs.c.status == normalized_status)
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(query).mappings().all()
+        return [self._admin_job_row_to_dict(row) for row in rows]
+
+    def get_admin_job(self, job_id: str) -> dict[str, Any] | None:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            return None
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            row = conn.execute(
+                select(admin_jobs).where(admin_jobs.c.job_id == normalized_job_id)
+            ).mappings().first()
+        if row is None:
+            return None
+        return self._admin_job_row_to_dict(row)
 
     def register_aggregation(
         self,

@@ -10,6 +10,7 @@ from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_no
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
+    build_federated_dp_accounting_entry,
     federated_delta_privacy_controls,
     summarize_federated_data_distribution,
 )
@@ -876,6 +877,12 @@ class ResearchTrainingWorkflow:
             "approval_report": approval_report,
             "quality_summary": quality_summary,
             "privacy_controls": privacy_controls,
+            "dp_accounting": build_federated_dp_accounting_entry(
+                privacy_controls,
+                local_steps=max(1, int(epochs)),
+                participant_count=eligible_image_count,
+                patient_count=eligible_case_count,
+            ),
             "data_distribution": summarize_federated_data_distribution(records),
             "status": "pending_review",
         }
@@ -1170,6 +1177,12 @@ class ResearchTrainingWorkflow:
             "approval_report": approval_report,
             "quality_summary": quality_summary,
             "privacy_controls": privacy_controls,
+            "dp_accounting": build_federated_dp_accounting_entry(
+                privacy_controls,
+                local_steps=max(1, int(epochs)),
+                participant_count=eligible_image_count,
+                patient_count=eligible_case_count,
+            ),
             "data_distribution": summarize_federated_data_distribution(records),
             "status": "pending_review",
         }

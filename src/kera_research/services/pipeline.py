@@ -26,6 +26,7 @@ from kera_research.services.pipeline_federated_retrieval_workflow import Researc
 from kera_research.services.pipeline_postmortem_workflow import ResearchPostmortemWorkflow
 from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
+    build_federated_dp_accounting_entry,
     federated_delta_privacy_controls,
     summarize_federated_data_distribution,
 )
@@ -2010,6 +2011,20 @@ class ResearchWorkflowService:
             "training_input_policy": training_input_policy,
             "training_summary": result,
             "privacy_controls": privacy_controls if upload_type == "weight delta" else {},
+            "dp_accounting": build_federated_dp_accounting_entry(
+                privacy_controls,
+                local_steps=int(epochs),
+                participant_count=len(records),
+                patient_count=len(
+                    {
+                        str(item.get("patient_id") or "").strip()
+                        for item in records
+                        if str(item.get("patient_id") or "").strip()
+                    }
+                ),
+            )
+            if upload_type == "weight delta"
+            else {},
             "data_distribution": summarize_federated_data_distribution(records) if upload_type == "weight delta" else {},
         }
         if upload_type == "weight delta":

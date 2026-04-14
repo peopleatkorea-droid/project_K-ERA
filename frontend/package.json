@@ -33,6 +33,7 @@
     "desktop:package:cpu": "node ./scripts/run-desktop-profile-command.mjs package cpu",
     "desktop:package:gpu": "node ./scripts/run-desktop-profile-command.mjs package gpu",
     "build": "node ./scripts/run-next-command.mjs build",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "rebuild": "npm run clean && next build",
     "start": "node ./scripts/run-next-command.mjs start",
     "tauri:dev": "npm run desktop:sync-version && node ./scripts/run-tauri-dev.mjs",
@@ -53,7 +54,7 @@
     "@tauri-apps/plugin-updater": "^2.10.0",
     "google-auth-library": "^10.1.0",
     "jose": "^6.1.0",
-    "next": "^15.2.0",
+    "next": "^15.5.15",
     "postgres": "^3.4.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

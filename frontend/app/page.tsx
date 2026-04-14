@@ -19,6 +19,7 @@ const LandingV4 = dynamic(() =>
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Field } from "../components/ui/field";
+import { RuntimeErrorBoundary } from "../components/ui/runtime-error-boundary";
 import { SectionHeader } from "../components/ui/section-header";
 import {
   GOOGLE_CLIENT_ID,
@@ -963,6 +964,34 @@ export default function HomePage() {
     setOperationsSection("management");
   }
 
+  const caseWorkspaceCrashCopy = {
+    eyebrow: pick(locale, "Case Workspace Recovery", "케이스 워크스페이스 복구"),
+    title: pick(locale, "The case workspace hit an unexpected error.", "케이스 워크스페이스에서 예기치 않은 오류가 발생했습니다."),
+    description: pick(
+      locale,
+      "Retry this workspace view, reload the page, or sign out and reopen the session.",
+      "이 화면을 다시 시도하거나 페이지를 새로고침하거나, 로그아웃 후 다시 열 수 있습니다."
+    ),
+    retryLabel: pick(locale, "Retry workspace", "워크스페이스 다시 시도"),
+    reloadLabel: pick(locale, "Reload page", "페이지 새로고침"),
+    exitLabel: copy.logOut,
+    devDetailsLabel: pick(locale, "Developer details", "개발자 상세 정보"),
+  };
+
+  const adminWorkspaceCrashCopy = {
+    eyebrow: pick(locale, "Operations Recovery", "운영 워크스페이스 복구"),
+    title: pick(locale, "The operations workspace hit an unexpected error.", "운영 워크스페이스에서 예기치 않은 오류가 발생했습니다."),
+    description: pick(
+      locale,
+      "Retry this operations view, reload the page, or sign out and reopen the session.",
+      "이 운영 화면을 다시 시도하거나 페이지를 새로고침하거나, 로그아웃 후 다시 열 수 있습니다."
+    ),
+    retryLabel: pick(locale, "Retry operations", "운영 화면 다시 시도"),
+    reloadLabel: pick(locale, "Reload page", "페이지 새로고침"),
+    exitLabel: copy.logOut,
+    devDetailsLabel: pick(locale, "Developer details", "개발자 상세 정보"),
+  };
+
   const landingHospitalChips = [
     ...publicSites.slice(0, 5).map((site) => ({ label: getSiteDisplayName(site), active: true })),
     ...Array.from({ length: Math.max(0, 5 - publicSites.slice(0, 5).length) }, () => ({
@@ -1304,52 +1333,66 @@ export default function HomePage() {
   }
   if (workspaceMode === "canvas" || !canOpenOperations) {
     return (
-      <CaseWorkspace
-        token={effectiveToken}
-        user={user}
-        sites={sites}
-        selectedSiteId={selectedSiteId}
-        summary={summary}
-        canOpenOperations={canOpenOperations}
-        onSelectSite={setSelectedSiteId}
-        onExportManifest={handleManifestDownload}
-        onLogout={handleWorkspaceLogout}
-        onOpenHospitalAccessRequest={() => setAccessRequestMode(true)}
-        onOpenOperations={(section) => {
-          setOperationsSection(section ?? "management");
-          setWorkspaceMode("operations");
-        }}
-        onSiteDataChanged={async (siteId) => {
-          await refreshSiteData(siteId, effectiveToken);
-        }}
-        theme={resolvedTheme}
-        onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-      />
+      <RuntimeErrorBoundary
+        copy={caseWorkspaceCrashCopy}
+        scope="case-workspace"
+        resetKey={`${workspaceMode}:${selectedSiteId}:${resolvedTheme}:${user.user_id}`}
+        onExit={handleWorkspaceLogout}
+      >
+        <CaseWorkspace
+          token={effectiveToken}
+          user={user}
+          sites={sites}
+          selectedSiteId={selectedSiteId}
+          summary={summary}
+          canOpenOperations={canOpenOperations}
+          onSelectSite={setSelectedSiteId}
+          onExportManifest={handleManifestDownload}
+          onLogout={handleWorkspaceLogout}
+          onOpenHospitalAccessRequest={() => setAccessRequestMode(true)}
+          onOpenOperations={(section) => {
+            setOperationsSection(section ?? "management");
+            setWorkspaceMode("operations");
+          }}
+          onSiteDataChanged={async (siteId) => {
+            await refreshSiteData(siteId, effectiveToken);
+          }}
+          theme={resolvedTheme}
+          onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+        />
+      </RuntimeErrorBoundary>
     );
   }
 
   if (workspaceMode === "operations" && canOpenOperations) {
     return (
-      <AdminWorkspace
-        token={effectiveToken}
-        user={user}
-        sites={sites}
-        sitesBusy={bootstrapBusy && sites.length === 0}
-        selectedSiteId={selectedSiteId}
-        summary={summary}
-        initialSection={operationsSection}
-        onSelectSite={setSelectedSiteId}
-        onOpenCanvas={() => setWorkspaceMode("canvas")}
-        onLogout={handleWorkspaceLogout}
-        onRefreshSites={async () => {
-          await refreshApprovedSites(effectiveToken);
-        }}
-        onSiteDataChanged={async (siteId) => {
-          await refreshSiteData(siteId, effectiveToken);
-        }}
-        theme={resolvedTheme}
-        onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-      />
+      <RuntimeErrorBoundary
+        copy={adminWorkspaceCrashCopy}
+        scope="admin-workspace"
+        resetKey={`${workspaceMode}:${selectedSiteId}:${operationsSection}:${resolvedTheme}:${user.user_id}`}
+        onExit={handleWorkspaceLogout}
+      >
+        <AdminWorkspace
+          token={effectiveToken}
+          user={user}
+          sites={sites}
+          sitesBusy={bootstrapBusy && sites.length === 0}
+          selectedSiteId={selectedSiteId}
+          summary={summary}
+          initialSection={operationsSection}
+          onSelectSite={setSelectedSiteId}
+          onOpenCanvas={() => setWorkspaceMode("canvas")}
+          onLogout={handleWorkspaceLogout}
+          onRefreshSites={async () => {
+            await refreshApprovedSites(effectiveToken);
+          }}
+          onSiteDataChanged={async (siteId) => {
+            await refreshSiteData(siteId, effectiveToken);
+          }}
+          theme={resolvedTheme}
+          onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+        />
+      </RuntimeErrorBoundary>
     );
   }
 

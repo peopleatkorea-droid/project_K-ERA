@@ -10,10 +10,20 @@
 - 이미지 업로드는 기존 PIL 재인코딩/픽셀 제한에 더해 magic-byte sniffing과 basename 정규화를 추가했습니다.
 - 관련 회귀 테스트를 추가해 Argon2 마이그레이션, trusted proxy rate limit, explicit CORS allowlist, invalid image upload 검증을 고정했습니다.
 
+### 프론트 런타임 안정성 / 공급망 점검 보강
+
+- home page에서 `CaseWorkspace`와 `AdminWorkspace`를 각각 별도 React error boundary로 감싸, 하위 렌더링 예외가 나더라도 전체 세션이 빈 화면으로 죽지 않고 `retry / reload / logout` 복구 경로를 제공하도록 했습니다.
+- `frontend/components/ui/runtime-error-boundary.tsx`와 전용 테스트를 추가했습니다.
+- `frontend`의 `next`를 `15.5.15`로 올려, production `npm audit --omit=dev --audit-level=high` 기준 고위험 advisory를 제거했습니다.
+- `frontend/package.json`에 `npm audit --omit=dev --audit-level=high` 기반 `audit:prod` 스크립트를 추가했습니다.
+- 루트 `scripts/run_dependency_audits.ps1`를 추가해 `uv export + uvx pip-audit`와 `frontend npm audit`를 한 번에 실행하고 `artifacts/dependency-audit/`에 보고서를 남기도록 했습니다.
+- GitHub Actions에 `dependency-audits` workflow를 추가해 주간/수동 점검 보고서를 업로드하도록 했습니다.
+
 ### DB runtime / split-env 가드 정리
 
 - split control/data plane 구성이 켜진 상태에서 `KERA_DATABASE_URL` / `DATABASE_URL`가 같이 설정돼 있어도, 실제 resolved control/data plane URL과 같은 값을 가리키면 더 이상 경고하지 않도록 정리했습니다.
 - legacy DB env가 split URL과 실제로 충돌할 때만 경고를 띄우도록 바꿔, 운영 로그와 테스트 출력의 노이즈를 줄였습니다.
+- production/staging처럼 보이는 runtime에서는 legacy `KERA_DATABASE_URL` / `DATABASE_URL` fallback을 기본적으로 거절하고, 정말 필요한 경우에만 `KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK=true`로 명시적으로 승인하도록 바꿨습니다.
 - remote control plane cache SQLite가 손상된 경우에는 import 시 `.recovered.db`로 우회하지 않고, startup/init 시 같은 경로에서 quarantine 후 재생성하도록 복구 경계를 단순화했습니다.
 - Windows에서 손상 cache quarantine 중 파일 핸들 경합이 날 수 있는 경로에는 짧은 retry를 넣어 local cache 재빌드가 더 안정적으로 완료되게 했습니다.
 
@@ -23,6 +33,10 @@
 - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned 또는 tampered delta update를 거절하도록 했습니다.
 - aggregation 전략을 `fedavg`, `coordinate_median`, `trimmed_mean` 중에서 고를 수 있게 했고, aggregation payload에 실제 전략/trim ratio/weighting mode를 기록합니다.
 - site-side delta hardening으로 L2 clipping, Gaussian noise, 8/16-bit symmetric quantization을 추가했습니다. formal DP accountant나 secure aggregation은 아직 포함하지 않습니다.
+- `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`가 함께 설정되면 site update metadata에 basic composition 기반 DP accounting entry를 붙이고, aggregation payload에는 site별/전체 누적 summary를 기록합니다.
+- production/staging runtime에서는 formal DP accountant 부재를 명시적으로 승인하지 않으면 image-level / visit-level FL round와 aggregation을 시작하지 않도록 가드를 추가했습니다.
+- `KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true`를 설정하면 formal DP accountant가 구현되기 전까지 FL round/aggregation이 `503`으로 차단됩니다.
+- admin aggregation job 상태를 control plane DB에 영속 저장하도록 바꿨고, aggregation job list/detail API가 프로세스 재시작 뒤에도 상태를 계속 보여주도록 정리했습니다.
 - federated update security/unit test, modeling delta quantization/robust aggregation test, API aggregation/signature 회귀 테스트를 추가했습니다.
 
 ### Windows 설치형 배포 경로 정리
