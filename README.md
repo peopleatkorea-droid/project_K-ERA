@@ -8,68 +8,152 @@
 
 ---
 
-## 아키텍처
+## 이 프로젝트를 어떻게 쓰나
 
-### 웹 앱 (Next.js + FastAPI)
+K-ERA는 현재 아래 두 화면을 함께 쓰는 구조입니다.
 
-```
-[Browser]
-   |
-   v
-[Next.js Web UI]  http://localhost:3000
-   |
-   v
-[FastAPI API]     http://localhost:8000
-   |
-   +-- Control Plane DB  (사용자, 프로젝트, 모델 레지스트리, 집계 이력)
-   +-- Data Plane DB     (환자, 방문, 이미지 메타데이터)
-   +-- <저장 루트>/sites/<SITE_ID>/data/raw/         원본 이미지
-   +-- <저장 루트>/sites/<SITE_ID>/artifacts/        ROI crop, mask, Grad-CAM, embedding
-   +-- <저장 루트>/sites/<SITE_ID>/validation/       검증 결과 및 리포트
-   +-- <저장 루트>/sites/<SITE_ID>/model_updates/    기여 delta
-   +-- <저장 루트>/models/                           글로벌 모델 파일
-```
+1. **웹 포털 (`k-era.org`)**
+   - Google 로그인
+   - 기관 접근 요청 / 승인
+   - 운영자 승인 처리
+   - 데스크톱 설치본 다운로드
+2. **Windows 데스크톱 앱**
+   - 환자 이미지 업로드
+   - 저장된 환자 목록 보기
+   - 케이스 작성 / 검토 / 분석
+   - 병원 PC 안에서 실제 연구 작업 수행
 
-### 데스크탑 앱 (Tauri)
+즉, **웹은 계정과 접근 관리 중심**, **실제 환자 케이스 작업은 데스크톱 앱 중심**으로 이해하면 됩니다.
 
-```
-[Tauri 데스크탑 앱]
-   |
-   +-- [Desktop Shell UI]  (React, desktop-shell/)
-   |      |
-   |      v
-   +-- [내장 FastAPI 서버]  (Python 런타임 자동 시작)
-          |
-          +-- Data Plane DB     (로컬 SQLite)
-          +-- <저장 루트>/sites/<SITE_ID>/...
-          |
-          +-- [Remote Control Plane]  (선택, 연합학습 / 모델 동기화용)
-```
+### 어떤 사람이 무엇을 보면 되나
 
-데스크탑 앱은 Tauri 셸이 Python 런타임과 FastAPI 서버를 내장해 병원 PC 단독으로 동작합니다. 웹 앱과 동일한 FastAPI 백엔드를 사용하며, Remote Control Plane 연동 시 연합학습과 모델 배포가 가능합니다.
-
-기본 저장 루트: `앱 폴더의 상위 디렉토리\KERA_DATA\`
-
-> **CPU 데스크톱 용량 안내:** 현재 CPU 배포본은 설치 후 첫 실행까지 합쳐 대략 `2.3 GB`의 디스크 공간이 필요합니다.
-> 설치 직후 앱 자체가 약 `1.0 GB`를 차지하고, 첫 실행 때 `%LOCALAPPDATA%\KERA\runtime` 아래로 Python 런타임이 약 `1.3 GB` 추가로 풀립니다.
-
-메타데이터는 SQLite(기본) 또는 PostgreSQL에 저장되고, 원본 이미지와 파생 artifact는 파일 시스템에 저장됩니다.
+- **의료진 / 연구자**: 아래 `의료진 / 연구자용 빠른 시작`
+- **운영자 / 관리자**: 아래 `운영자용 배포 절차`
+- **개발자 / 기술 담당자**: 아래 `개발자 / 운영 담당자용 실행 방법`
 
 ---
 
-## 현재 AI / 연합학습 구성
+## 의료진 / 연구자용 빠른 시작
+
+### 처음 사용하는 사용자
+
+1. `k-era.org`에 접속합니다.
+2. Google 계정으로 로그인합니다.
+3. 소속 병원을 검색하고 접근 요청을 제출합니다.
+4. 승인되면 바로 다음 단계로 넘어갑니다.
+5. 웹 화면에 데스크톱 설치 버튼이 보이면 앱을 설치합니다.
+6. 이후 실제 환자 케이스 작업은 데스크톱 앱에서 진행합니다.
+
+### 웹에서 할 수 있는 일
+
+- 내 계정 승인 상태 확인
+- 병원 접근 요청 제출
+- 운영자 화면 접근
+- 데스크톱 설치본 다운로드
+
+### 데스크톱 앱에서 할 수 있는 일
+
+- 저장된 환자 목록 보기
+- 방문별 이미지 확인
+- 새 케이스 저장
+- AI 분석 / 검토 / 기여
+- 연구용 로컬 학습과 연합학습 참여
+
+### 꼭 알아둘 점
+
+- `k-era.org`는 **환자 케이스를 직접 여는 메인 작업 화면이 아닙니다.**
+- 환자 케이스 작업은 **데스크톱 앱**에서 진행하는 것이 현재 기본 운영 방식입니다.
+- 웹 포털에서 보이는 설치 버튼은 승인된 사용자가 데스크톱 앱으로 넘어가도록 돕는 용도입니다.
+
+---
+
+## 운영자용 배포 절차
+
+### 현재 권장 설치본
+
+- **Windows CPU 설치본**
+- 형식: **NSIS current-user installer**
+- 일반 사용자 권한으로 설치 가능
+
+### 설치본 용량
+
+- 현재 CPU 설치본 파일 크기: 약 `940 MB`
+- 설치 후 첫 실행까지 포함한 디스크 사용량: 대략 `2.3 GB`
+
+### 현재 배포 방식
+
+- 승인된 사용자가 `k-era.org`에 로그인
+- 병원을 선택
+- 웹 포털에서 데스크톱 설치 버튼 클릭
+- 외부 저장소(현재는 OneDrive)에 올린 설치 파일로 이동
+
+### 새 버전 배포 순서
+
+1. 새 Windows CPU 설치본을 빌드합니다.
+2. OneDrive 같은 외부 저장소에 업로드합니다.
+3. `k-era.org`의 운영자 화면에서 `데스크톱 설치본 관리`로 들어갑니다.
+4. 아래 항목을 등록하고 활성화합니다.
+   - 버전
+   - 설치 파일 URL
+   - SHA256
+   - 파일 크기
+   - 메모
+
+즉, **버전이 바뀔 때마다 Vercel 환경변수를 다시 수정할 필요는 없습니다.**
+
+### 현재 OneDrive 방식의 한계
+
+- 링크를 아는 사람은 접근할 수 있습니다.
+- 따라서 현재 웹 포털은 “설치 링크를 보여주고 기록을 남기는 문” 역할입니다.
+- 더 강한 다운로드 통제가 필요해지면 `R2/S3/Azure Blob + signed URL` 구조로 옮기는 것이 좋습니다.
+
+---
+
+## 제품 구성 요약
+
+### 웹 포털
+
+- 계정 로그인
+- 기관 승인
+- 운영자 기능
+- 설치본 배포
+
+### 데스크톱 앱
+
+- 환자별 저장 기록 관리
+- 이미지 업로드 및 검토
+- 케이스 작성
+- AI 분석
+- 연구 기여
+
+### 중앙 서버가 하는 일
+
+- 사용자 / 권한 / 병원 접근 관리
+- 모델 버전 관리
+- 연합학습 집계 기록 관리
+- 데스크톱 설치본 배포 정보 관리
+
+### 병원 PC가 하는 일
+
+- 환자 메타데이터 저장
+- 방문 정보 저장
+- 원본 이미지와 파생 이미지 저장
+- 실제 케이스 작업 실행
+
+---
+
+## 연구 기능 요약
+
+### 기본 분석 구성
 
 - **주 분석 모델**: `EfficientNetV2-S MIL (full)`
-  - visit-level bag inference / validation / visit-level federated round의 기본 모델입니다.
-- **보조 image-level 모델**: `ConvNeXt-Tiny (full)`
-  - image-level support와 image-level federated round의 기본 모델입니다.
-- **similar case retrieval**: `DINOv2 lesion-crop retrieval`
-  - AI Clinic similar case 검색용 retrieval profile이며, analysis model과 분리되어 동작합니다.
+- **보조 이미지 모델**: `ConvNeXt-Tiny (full)`
+- **유사 증례 검색**: `DINOv2 lesion-crop retrieval`
 
-### 학습 / 기여 정책
+### 현재 연구 정책
 
 - 모든 사용자는 케이스를 저장하고 분석할 수 있습니다.
-- `culture_status`는 `positive / negative / not_done / unknown`을 사용합니다.
+- 배양 상태는 `positive / negative / not_done / unknown`을 사용합니다.
 - 연합학습 기여와 연구 registry 포함은 아래 조건을 모두 만족할 때만 허용합니다.
   - `positive`
   - `active`
@@ -77,71 +161,47 @@
   - `research registry consent`
   - `registry included`
 
-### 다기관 similar case 확장
+### 현재 한계
 
-- DINO retrieval은 현재 **full federated learning**이 아니라 **federated retrieval corpus expansion** 방식으로 운영합니다.
-- 각 병원은 같은 retrieval profile / preprocessing / normalization 기준으로 positive case embedding을 생성합니다.
-- 중앙 control plane에는 embedding과 최소 메타데이터, 선택적으로 thumbnail만 업로드합니다.
-- AI Clinic은 로컬 케이스를 query로 사용하되, cross-site positive corpus에서 top-k similar case를 검색할 수 있습니다.
+- formal DP accountant는 아직 없습니다.
+- secure aggregation도 아직 없습니다.
+- production/staging 같은 운영 환경에서는 signed federated update가 강제되지 않으면 FL round와 aggregation이 차단됩니다.
 
-### 연합학습 round 구조
-
-- **Image-level FL**: `ConvNeXt-Tiny (full)`
-  - `site-round background job -> pending_review model update -> FedAvg`
-  - 집계 가중치는 `n_images`
-- **Visit-level FL**: `EfficientNetV2-S MIL (full)`
-  - `site-round background job -> pending_review model update -> FedAvg`
-  - 집계 가중치는 `n_cases`
-- 집계 시에는 `same architecture + same base model + same federated_round_type`만 함께 aggregate됩니다.
-
-### 운영 / 복구 문서
-
-- 연합학습 운영 및 rollback / 재집계 / 재학습 절차 초안: [docs/fl_operation_sop_ko.md](docs/fl_operation_sop_ko.md)
-- 현재 한계:
-  - formal DP accountant는 아직 구현되지 않았습니다.
-  - secure aggregation도 아직 구현되지 않았습니다.
-  - production/staging runtime에서는 signed federated update 강제가 풀려 있으면 FL round/aggregation이 차단됩니다.
+운영 절차 초안은 [docs/fl_operation_sop_ko.md](docs/fl_operation_sop_ko.md)를 참고하세요.
 
 ---
 
-## 요구사항
+## 개발자 / 운영 담당자용 실행 방법
+
+아래는 개발/운영 담당자를 위한 실행 경로입니다. 의료진 사용 안내가 아니라 **기술 담당자용**입니다.
+
+### 요구사항
 
 - Windows PowerShell
 - Python 3.11
-- uv
+- `uv`
 - Node.js / npm
 
----
-
-## 빠른 실행
-
-### 1. 의존성 설치
+### 1. 개발 환경 준비
 
 ```powershell
 .\scripts\setup_local_node.ps1
 ```
 
-이 스크립트는 repo-root `.venv`를 `uv`로 생성/재사용하고, `uv.lock` 기준으로 CPU/GPU 프로필을 sync한 뒤 기본 health check(bcrypt, faiss 포함)를 수행합니다.
+이 스크립트는 repo-root `.venv`를 `uv` 기준으로 맞추고, CPU/GPU 프로필과 기본 런타임 검사를 함께 수행합니다.
 
-수동으로 맞추려면 아래 기준을 사용합니다.
+수동으로 맞추려면:
 
 ```powershell
 uv venv .venv --python 3.11
 uv sync --frozen --extra cpu --extra dev
 ```
 
-옵션:
+### 2. 환경변수 준비
 
-```powershell
-.\scripts\setup_local_node.ps1 -TorchProfile cpu
-.\scripts\setup_local_node.ps1 -TorchProfile gpu
-```
+루트에 `.env.local` 파일을 만들고 `.env.example`을 참고합니다.
 
-### 2. 환경변수 설정
-
-루트에 `.env.local` 파일을 생성합니다. `.env.example`을 참고하세요.
-
-local-first control plane까지 같이 쓰는 현재 기준 최소 예시는 아래와 같습니다.
+최소 예시:
 
 ```dotenv
 NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL=http://127.0.0.1:8000
@@ -150,130 +210,59 @@ KERA_CONTROL_PLANE_DEV_AUTH=false
 KERA_SITE_STORAGE_SOURCE=local
 ```
 
-`KERA_CONTROL_PLANE_NODE_ID`, `KERA_CONTROL_PLANE_NODE_TOKEN`은 최초 등록 후 로컬에 자동 저장되므로 보통 직접 넣지 않습니다.
-
-### 3. 앱 실행
+### 3. 로컬 실행
 
 ```powershell
 .\scripts\run_local_node.ps1
 ```
 
-FastAPI 서버와 Next.js 개발 서버를 함께 실행하고, 사용 가능한 포트를 자동으로 찾아 브라우저를 엽니다.
-이 상태에서 병원 로컬 앱은 기본 화면(`/`)으로, local-first 중앙 control plane은 `/control-plane`으로 접속할 수 있습니다.
+이 스크립트는 FastAPI와 Next 개발 서버를 함께 띄웁니다.
 
-개별 실행도 가능합니다.
+- 기본 화면(`/`)은 웹 포털/메인 화면입니다.
+- 운영/승인 화면은 `/control-plane` 경로에서 확인할 수 있습니다.
+
+개별 실행:
 
 ```powershell
 .\scripts\run_api_server.ps1
 .\scripts\run_web_frontend.ps1
 ```
 
-### 4. local-first control plane 등록 흐름
+### 4. Windows 설치본 빌드
 
-오늘 기준으로 병원 PC 최초 등록은 아래 순서가 기본입니다.
-
-1. `.env.local`에 중앙 DB와 control-plane 관련 값을 넣습니다.
-2. `.\scripts\run_local_node.ps1` 또는 `.\scripts\run_api_server.ps1`, `.\scripts\run_web_frontend.ps1`로 앱을 띄웁니다.
-3. `http://127.0.0.1:3000/control-plane`에서 로그인합니다.
-4. control plane에서 node를 등록합니다.
-5. 로컬 FastAPI가 `node_id` / `node_token`을 자동 저장합니다.
-
-Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 `.env.local`에 `KERA_CONTROL_PLANE_NODE_ID`, `KERA_CONTROL_PLANE_NODE_TOKEN`을 직접 넣지 않아도 됩니다.
-
-수동 등록이 필요하면 아래 스크립트를 사용할 수 있습니다.
+권장 경로:
 
 ```powershell
-.\scripts\register_local_node.ps1 `
-  -ApiBaseUrl http://127.0.0.1:8000 `
-  -ControlPlaneBaseUrl http://127.0.0.1:3000/control-plane/api `
-  -ControlPlaneUserToken <control-plane-access-token> `
-  -SiteId my-site `
-  -DisplayName "My Site" `
-  -HospitalName "My Hospital" `
-  -Overwrite
+cd .\frontend
+npm run desktop:package:cpu:nsis
 ```
 
-### 5. 런타임 E2E smoke test
+검증:
 
-중앙 control plane과 로컬 node를 함께 띄워 실제 흐름을 검증하려면:
+```powershell
+cd .\frontend
+npm run desktop:verify-package:nsis
+npm run desktop:smoke-installed:cpu:nsis
+```
+
+MSI는 별도 관리자 검증 경로로만 유지합니다.
+
+### 5. 데스크톱 앱 개발 실행
+
+```powershell
+cd .\frontend
+npm run tauri:dev
+```
+
+### 6. 런타임 검증
 
 ```powershell
 .\scripts\run_control_plane_e2e_smoke.ps1
 ```
 
-이 스크립트는 다음을 자동으로 확인합니다.
+이 스크립트는 로그인, 등록, bootstrap, release 조회, 업로드 흐름까지 한 번에 확인합니다.
 
-- control plane dev login
-- current model publish
-- node register
-- node bootstrap
-- current release 조회
-- model update metadata 업로드
-- validation summary 업로드
-
-### 6. 2026-03-18 업데이트
-
-- 중앙 control plane을 Next.js 안에서 local-first 구조로 운영할 수 있게 정리했습니다.
-- 병원 PC 최초 등록 시 `node_id` / `node_token`을 Windows DPAPI로 자동 저장합니다.
-- 병원 PC 핵심 경로는 remote control plane 우선으로 동작합니다.
-  - `bootstrap`
-  - `heartbeat`
-  - `current release`
-  - `model update metadata upload`
-  - `validation summary upload`
-  - `LLM relay`
-
-### 7. 2026-04-13 ~ 2026-04-14 운영 / 배포 업데이트
-
-- Tauri desktop runtime의 CSP를 더 이상 `null`로 두지 않고 명시적으로 설정했습니다.
-- 현재 Tauri CSP는 Google OAuth 흐름 때문에 `script-src 'unsafe-inline'`, `style-src 'unsafe-inline'`을 포함합니다. 빈 CSP를 두는 것보다는 안전하지만, 최종 hardening 상태로 보지는 않고 추후 inline 의존 제거가 필요합니다.
-- `frontend/src-tauri/tauri.conf.json`, `frontend/src-tauri/Cargo.toml`, `frontend/package.json`, `pyproject.toml`의 버전은 현재 `1.0.0`으로 맞춰져 있습니다.
-- FastAPI 런타임도 같은 버전(`1.0.0`)을 health / readiness / liveness 응답에 보고합니다.
-- `frontend/scripts/sync-desktop-version.mjs`를 추가해 `npm run tauri:dev*`, `npm run tauri:build` 실행 전 버전 드리프트를 자동으로 정리하도록 했습니다.
-- `npm run desktop:verify`는 이제 desktop bundle resource 확인뿐 아니라 `CSP 설정 여부`와 `desktop/web/python 버전 일치`까지 같이 검사합니다.
-- 로그인 rate limit은 control-plane DB 기반으로 기록되어 프로세스 재시작 뒤에도 동일한 제한 창(`5분 / 10회`)을 유지합니다. DB 경로가 일시적으로 실패하면 기존 in-memory fallback으로 내려갑니다.
-- control plane과 data plane 모두 Alembic baseline을 도입했고, startup 시 현재 DB를 `head`로 맞춥니다.
-  - control plane baseline revision: `20260413_01`
-  - data plane baseline revision: `20260413_02`
-- data plane은 기존 `create_all + custom migration` 경로를 먼저 유지한 뒤 Alembic `head`를 적용합니다. 즉 기존 로컬 SQLite 보정 로직은 그대로 두면서, 이후 schema change는 Alembic revision으로 누적할 수 있습니다.
-- `control_plane_schema_state`, `data_plane_schema_state`는 이제 각각 현재 Alembic revision을 기록합니다.
-- migration 상태 확인/적용은 아래처럼 실행할 수 있습니다.
-  - control plane: `uv run python -m kera_research.control_plane_alembic current`
-  - control plane: `uv run python -m kera_research.control_plane_alembic upgrade head`
-  - data plane: `uv run python -m kera_research.data_plane_alembic current`
-  - data plane: `uv run python -m kera_research.data_plane_alembic upgrade head`
-- API에는 운영용 probe와 기본 metrics endpoint가 추가되었습니다.
-  - `GET /api/live`: 프로세스 liveness와 버전, uptime 확인
-  - `GET /api/ready`: storage / DB / model artifact / background queue 상태를 반영한 readiness 확인
-  - `GET /api/health`: readiness payload + 상세 runtime check / request metrics
-  - `GET /api/metrics`: Prometheus text exposition 형식의 in-memory request metrics
-- 모든 API 응답에는 `X-Request-ID`가 포함되고, 서버는 route template 기준의 structured request log와 request duration metrics를 남깁니다.
-- 선택형 Sentry error aggregation / performance trace hook도 추가했습니다. `KERA_SENTRY_DSN`이 없으면 비활성 상태를 유지하고, DSN이 있으면 FastAPI exception/error event와 traces를 수집할 수 있습니다.
-- 연합학습 보강도 추가했습니다.
-  - `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 있으면 각 site의 weight delta update에 HMAC 서명이 붙고, 중앙 registry는 서명을 검증합니다.
-  - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned delta는 등록/집계 전에 거절됩니다.
-  - production/staging 같은 runtime에서는 `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`와 `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 같이 설정되지 않으면 FL round/aggregation이 차단됩니다.
-  - aggregation 전략은 `KERA_FEDERATED_AGGREGATION_STRATEGY=fedavg|coordinate_median|trimmed_mean`으로 고를 수 있고, `trimmed_mean`은 `KERA_FEDERATED_AGGREGATION_TRIM_RATIO`를 사용합니다.
-  - 선택형 client-side delta hardening으로 `KERA_FEDERATED_DELTA_CLIP_NORM`, `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER`, `KERA_FEDERATED_DELTA_QUANTIZATION_BITS=8|16`을 지원합니다.
-  - clip + noise + `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`가 같이 설정되면 site update metadata에는 basic composition 기반 DP accounting entry가 붙고, aggregation payload에는 site별/전체 누적 summary가 기록됩니다.
-  - formal DP accountant는 아직 없으므로, production/staging 같은 runtime에서 FL round/aggregation을 돌리려면 `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING=true`를 명시적으로 넣어야 합니다.
-  - `KERA_REQUIRE_SECURE_AGGREGATION=true`를 설정하면 secure aggregation이 구현되기 전까지 FL round/aggregation은 시작되지 않습니다.
-  - `KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true`를 설정하면 formal DP accountant가 구현되기 전까지 FL round/aggregation은 시작되지 않습니다.
-  - 이 보강은 trusted consortium 환경을 목표로 한 1차 가드입니다. secure aggregation이나 formal DP accountant를 대체하지는 않습니다.
-  - admin-side aggregation job 상태는 control plane DB에 영속 저장되며, `GET /api/admin/aggregations/jobs`, `GET /api/admin/aggregations/jobs/{job_id}`로 poll할 수 있습니다.
-- baseline 컨테이너 자산도 추가했습니다.
-  - `Dockerfile.api`: FastAPI / worker 공용 이미지
-  - `frontend/Dockerfile.web`: Next.js production 이미지
-  - `docker-compose.yml`: `api + worker + web` 3개 서비스를 한 번에 띄우는 baseline stack
-- compose 기본값은 SQLite volume을 사용하지만, `KERA_CONTROL_PLANE_DATABASE_URL`, `KERA_DATA_PLANE_DATABASE_URL` 환경변수를 주면 외부 PostgreSQL / 별도 DB로도 바꿀 수 있습니다.
-- compose stack은 이제 `api / worker / web` healthcheck와 `service_healthy` 의존관계를 포함합니다.
-- split mode에서 비어 보이던 site/workspace 응답은 remote bootstrap + local cache 기준으로 계속 보이게 복구했습니다.
-- `.\scripts\run_control_plane_e2e_smoke.ps1`로 실제 런타임 흐름을 한 번에 검증할 수 있습니다.
-- 2026-04-14 기준으로 Windows 첫 배포 경로는 `CPU + NSIS current-user installer`를 권장합니다. 이 경로는 현재 로컬 smoke에서 `package -> install -> first launch`까지 통과한 상태입니다.
-
-### 7-1. 컨테이너 baseline 실행
-
-웹/SaaS 형태의 baseline 런타임을 로컬에서 띄우려면:
+### 7. 컨테이너 실행
 
 ```powershell
 docker compose up --build
@@ -284,191 +273,20 @@ docker compose up --build
 - web: `http://localhost:3000`
 - api: `http://localhost:8000`
 
-기본 compose는 named volume에 SQLite control/data plane을 저장합니다. 외부 DB를 쓰려면 `.env` 또는 셸 환경변수로 아래 값을 덮어씁니다.
+### 8. 보안 / 운영 상태 요약
 
-```dotenv
-KERA_CONTROL_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_control_plane
-KERA_DATA_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_data_plane
-```
+- 로그인 rate limit은 control-plane DB 기반으로 유지됩니다.
+- control plane과 data plane 모두 Alembic baseline을 갖고 있습니다.
+- API에는 `live`, `ready`, `health`, `metrics` endpoint가 있습니다.
+- 선택형 Sentry hook이 있습니다.
+- signed federated update가 production/staging runtime에서 강제됩니다.
+- formal DP accountant와 secure aggregation은 아직 없습니다.
 
-선택형 Sentry observability를 켜려면 아래 값을 추가합니다.
+### 9. 참고: 현재 배포 자동화
 
-```dotenv
-KERA_SENTRY_DSN=https://<public>@<org>.ingest.sentry.io/<project>
-KERA_SENTRY_ENVIRONMENT=production
-KERA_SENTRY_TRACES_SAMPLE_RATE=0.1
-KERA_SENTRY_PROFILES_SAMPLE_RATE=0.0
-```
-
-### 7-2. Windows 설치형 배포 권장 경로
-
-현재 Windows 설치형 배포는 `CPU + NSIS current-user installer`를 기본 경로로 권장합니다.
-
-- 권장 package build: `cd frontend && npm run desktop:package:cpu:nsis`
-- 권장 설치 smoke: `cd frontend && npm run desktop:smoke-installed:cpu`
-- 산출물 확인: `cd frontend && npm run desktop:verify-package:nsis`
-- MSI 관리자 검증이 필요하면 `cd frontend && npm run desktop:package:cpu:msi`, `powershell -ExecutionPolicy Bypass -File ./scripts/run-desktop-installer-smoke.ps1 -Profile cpu -InstallerType msi -LaunchSeconds 15`처럼 별도 경로로 확인합니다.
-
-참고:
-
-- NSIS installer는 `currentUser` 모드로 동작해서 관리자 권한 없이 설치할 수 있습니다.
-- MSI는 여전히 관리자 권한 전제를 두는 경로라, 병원 PC 일반 사용자 배포 기준 기본 경로로는 권장하지 않습니다.
-- `desktop:smoke-installed:cpu`는 비관리자 세션이면 자동으로 NSIS current-user installer를 우선 사용합니다.
-- `desktop:smoke-installed:cpu:nsis`, `desktop:verify-package:nsis`, `tauri:build:nsis`는 권장 배포 경로만 따로 확인할 때 사용합니다.
-- 런타임 안정성 보강으로 web home page는 이제 `CaseWorkspace`와 `AdminWorkspace`를 각각 별도 React error boundary로 감싸서, 하위 렌더링 예외가 나더라도 전체 세션이 하얗게 죽지 않고 `retry / reload / logout` 복구 경로를 제공합니다.
-- 공급망 점검은 `.\scripts\run_dependency_audits.ps1 -TorchProfile cpu`로 한 번에 돌릴 수 있습니다.
-  - Python: repo-root `.venv`가 있으면 그 환경을 `uvx pip-audit`로 직접 감사하고, 없으면 `uv export` requirements fallback을 사용합니다.
-  - frontend: `npm audit --omit=dev --audit-level=high`
-  - 결과물은 `artifacts/dependency-audit/` 아래에 남습니다.
-  - 2026-04-14 현재 기준으로 `frontend` production dependency audit는 `0 vulnerabilities` 상태입니다.
-- GitHub Actions에는 별도 `dependency-audits` workflow를 추가해 주간/수동 점검 보고서를 업로드하도록 했습니다.
-
-### 7-3. `k-era.org` 로그인 후 데스크톱 설치본 다운로드
-
-web 배포가 control plane 전용일 때는, 승인된 사용자가 로그인한 뒤 병원을 선택하고 Windows CPU 설치본을 받을 수 있습니다.
-
-- 현재 구현은 `main-app bridge`가 control-plane DB에서 활성 desktop release metadata를 읽고, 다운로드 클릭 로그를 남긴 뒤 외부 링크로 보냅니다.
-- 새 버전이 나올 때마다 Vercel 환경변수를 다시 수정할 필요는 없습니다. platform admin이 web admin workspace의 `데스크톱 설치본 관리` 패널에서 release를 등록/활성화하면 됩니다.
-- 첫 배포는 OneDrive 같은 외부 저장소를 써도 되지만, 현재 방식은 `링크를 아는 사람 누구나` 접근 가능한 공유 링크라면 진짜 접근 통제는 아닙니다. `k-era.org`는 링크 노출과 다운로드 로그를 관리하는 문 역할만 합니다.
-- 배포 환경의 `KERA_DESKTOP_CPU_RELEASE_*` 값은 이제 필수가 아니라 `초기 시드(seed)`용입니다. control-plane DB에 release가 아직 하나도 없을 때만 한 번 가져와서 등록합니다.
-- 이후에는 admin workspace에서 DB 기준으로 관리하는 것이 기본입니다.
-
-권장 운영 순서:
-
-1. OneDrive 같은 외부 저장소에 새 CPU 설치본을 업로드합니다.
-2. platform admin으로 `k-era.org`에 로그인합니다.
-3. admin workspace의 `데스크톱 설치본 관리` 패널에서 버전 / URL / SHA256 / 크기를 저장합니다.
-4. 저장 시 해당 release를 active로 전환하면, 승인된 사용자의 다운로드 카드가 새 버전을 가리킵니다.
-
-선택적으로 첫 release를 자동으로 심고 싶다면 아래 env를 넣을 수 있습니다.
-
-```dotenv
-KERA_DESKTOP_CPU_RELEASE_VERSION=1.0.0
-KERA_DESKTOP_CPU_RELEASE_LABEL=K-ERA Desktop (CPU)
-KERA_DESKTOP_CPU_RELEASE_DOWNLOAD_URL=https://...
-KERA_DESKTOP_CPU_RELEASE_FOLDER_URL=https://...
-KERA_DESKTOP_CPU_RELEASE_SHA256=AB4D68AD96CF9ACF4C7FC1283E3E516A6E1952EA71019343A53FB64BACA8A004
-KERA_DESKTOP_CPU_RELEASE_SIZE_BYTES=985666481
-KERA_DESKTOP_CPU_RELEASE_NOTES=Windows CPU installer hosted on OneDrive
-```
-
-- 현재 CPU 설치본 기준 정보:
-  - version: `1.0.0`
-  - size: `985,666,481 bytes` (`약 940 MB`)
-  - SHA256: `AB4D68AD96CF9ACF4C7FC1283E3E516A6E1952EA71019343A53FB64BACA8A004`
-- 더 강한 배포 통제가 필요해지면 OneDrive 공개 링크 대신 `R2/S3/Azure Blob + signed URL`로 옮기는 것을 권장합니다.
-
-공용 FastAPI 서버 1대를 두고 다른 PC에서 같은 관리자/프로젝트/site를 보려면, 클라이언트 PC에서는 로컬 API를 띄우지 말고 아래처럼 frontend만 공용 API에 연결하세요.
-
-```powershell
-.\scripts\run_local_node.ps1 -SharedApiBaseUrl http://YOUR-SHARED-API:8000
-```
-
-또는 `.env.local`에 `KERA_INTERNAL_API_BASE_URL`을 넣어도 동일하게 동작합니다.
-
-새 PC에서 관리자/프로젝트/site만 같은 중앙 DB를 보게 하려면 `.env.local`을 직접 편집하지 않고 아래 한 줄로 생성할 수 있습니다.
-
-```powershell
-.\scripts\configure_shared_control_plane_client.ps1 -ControlPlaneDatabaseUrl "postgresql://.../kera_control_plane?sslmode=require&channel_binding=require"
-```
-
-### 7. Tauri 데스크탑 앱 실행 (개발)
-
-Tauri 데스크탑 앱을 개발 모드로 실행하려면:
-
-```powershell
-cd .\frontend
-node .\scripts\run-tauri-dev.mjs
-```
-
-이 스크립트는 Python sidecar 서버와 Tauri 앱을 함께 시작합니다. 실행 전 `setup_local_node.ps1`로 의존성이 설치되어 있어야 합니다.
-
-#### 데스크탑 패키지 빌드 (CPU/GPU 선택)
-
-```powershell
-# CPU 전용 패키지 빌드
-cd .\frontend
-node .\scripts\run-desktop-profile-command.mjs package cpu
-
-# GPU(CUDA) 패키지 빌드
-node .\scripts\run-desktop-profile-command.mjs package gpu
-```
-
-데스크탑 배포판(`.exe` 인스톨러)은 GitHub Actions `desktop-release` 워크플로(`v*` 태그 푸시 시 자동 실행)로 생성할 수 있습니다.
-
-#### 데스크탑 앱 인증 흐름
-
-데스크탑 앱은 웹 앱과 별개의 인증 경로를 사용합니다.
-
-- **Google 로그인**: Tauri 셸 내 브라우저 창에서 OAuth 인증 후 토큰을 로컬 세션에 저장
-- **로컬 로그인**: Remote Control Plane 없이 dev 모드에서 직접 로그인
-- 세션은 `DESKTOP_TOKEN_KEY`로 로컬 스토리지에 캐시되며, 앱 재시작 시 자동 복원
-
-### 8. 2026-03-19 업데이트
-
-- initial training 기준 supervised backbone이 8종으로 확장되었습니다.
-  - `DenseNet121`
-  - `ConvNeXt-Tiny`
-  - `ViT`
-  - `Swin`
-  - `EfficientNetV2-S`
-  - `DINOv2`
-  - `DINOv2 Attention MIL`
-  - `Dual-input Concat Fusion`
-- `dual_input_concat`은 `paired` crop mode에서 `cornea crop + lesion crop` feature를 concat한 single classifier baseline입니다.
-- benchmark는 비교 일관성을 위해 기존 7개 single-input backbone만 순차 학습합니다. `dual_input_concat`은 단일 학습/교차검증용 baseline입니다.
-- visit 단위 분석을 위해 `mean`, `logit_mean`, `quality_weighted_mean`, `attention_mil` 집계를 지원합니다.
-- `dinov2_mil`은 visit 안의 여러 이미지를 attention으로 통합해 visit-level 예측을 수행하고, 대표 이미지는 highest-attention 컷으로 자동 선택합니다.
-- case validation 뒤에는 prediction snapshot, structured analysis, root-cause/action tag, LLM/local fallback summary를 포함한 post-mortem이 함께 생성됩니다.
-- 7종 benchmark 진행 카드에는 전체 퍼센트, 현재 architecture, 순서, 남은 모델 수와 함께 ETA가 표시됩니다.
-- 단일 initial training과 benchmark는 작업 중단이 가능하고, benchmark는 완료되지 않은 architecture만 다시 시작할 수 있습니다.
-
-### 9. 2026-03-22 ~ 2026-03-24 업데이트
-
-- Tauri 데스크탑 앱이 100개 이상의 Rust 모듈로 분리되어 대규모 리팩토링이 완료되었습니다 (v0.6 → v0.69).
-- 데스크탑 전용 Google OAuth 인증 흐름(`auth/desktop/start` → `exchange`)과 세션 캐시가 추가되었습니다.
-- Python 백엔드 라우터가 역할별로 분리되었습니다.
-  - `admin.py` → `admin_access`, `admin_management`, `admin_registry`, `admin_shared`
-  - `cases.py` → `case_analysis`, `case_images`, `case_records`, `case_shared`
-  - `sites.py` → `site_training`, `site_imports`, `site_overview`, `site_shared`
-- Federation Salt 시스템이 추가되어 다기관 환경에서 케이스/환자/별칭 참조값을 독립적으로 솔팅합니다.
-- 데스크탑 패키지 빌드에서 CPU / GPU 두 가지 배포판을 지원합니다.
-- GitHub Actions `desktop-release` 워크플로(`v*` 태그 기반)와 `desktop-verify` 워크플로(PR 검증)가 추가되었습니다.
-- SQLite N+1 쿼리 수정, CTE 최적화, 인덱스 추가 등 성능 개선이 적용되었습니다.
-
-### 10. 2026-04-07 ~ 2026-04-09 업데이트
-
-- CPU 배포본 안정화 작업을 진행했습니다.
-  - `Next production build`
-  - `desktop:smoke-installed:cpu`
-  - 주요 Python 회귀
-  - packaged backend self-check
-- 케이스 정책을 `culture_confirmed bool` 중심에서 `culture_status` 중심으로 정리했습니다.
-  - `positive / negative / not_done / unknown`
-  - 모든 사용자는 저장/분석 가능
-  - `positive`일 때만 category/species가 학습/기여에 사용
-- validation을 `labeled validation`과 `inference-only`로 분리했습니다.
-  - inference-only는 `true_label / is_correct` 없이 pattern support 성격으로 반환합니다.
-- AI Clinic retrieval을 analysis model과 분리된 `retrieval_profile` 구조로 고정했습니다.
-- 운영 기본 AI 구성을 아래처럼 정리했습니다.
-  - 주 분석: `EfficientNetV2-S MIL (full)`
-  - 보조 image-level: `ConvNeXt-Tiny (full)`
-  - similar case retrieval: `DINOv2 lesion-crop`
-- 다기관 similar case 공유를 위해 `federated retrieval corpus expansion`을 추가했습니다.
-  - 각 병원 positive / included case embedding을 중앙 retrieval corpus로 sync
-  - AI Clinic이 cross-site similar case를 검색 가능
-  - retrieval signature 검증으로 동일 profile만 같은 corpus에 포함
-- image-level federated learning을 `ConvNeXt-Tiny (full)` 기준으로 추가했습니다.
-  - site-round background job
-  - pending review update
-  - FedAvg aggregation
-- visit-level federated learning을 `EfficientNetV2-S MIL (full)` 기준으로 추가했습니다.
-  - true MIL bag fine-tune 경로
-  - site-round background job
-  - pending review update
-  - FedAvg aggregation
-- 연합학습 / retrieval / embedding status 응답의 `active_job` semantics를 정리했습니다.
-  - 완료된 job은 더 이상 `active_job`으로 보이지 않습니다.
+- GitHub Actions에는 `desktop-verify`, `desktop-release`, `dependency-audits` workflow가 있습니다.
+- 현재 실사용 설치본 배포는 **GitHub Release 자동 배포가 아니라**, 웹 포털의 `데스크톱 설치본 관리`를 통한 DB 기반 활성화가 기준입니다.
+- GitHub Actions의 desktop release workflow는 계속 유지되지만, 현재 운영 흐름의 중심은 아닙니다.
 
 ---
 

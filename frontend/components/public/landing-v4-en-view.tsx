@@ -54,23 +54,23 @@ const enApproach = [
 const enWorkflow = [
   {
     step: "Step 01",
-    title: "Register and obtain approval",
-    body: "Sign in with Google, enter case details in the browser, and work inside the same clinical-style workflow. Federated contribution requires institutional approval.",
+    title: "Sign in and request approval",
+    body: "Sign in with Google on this website to request institutional approval. The web portal handles account management and hospital access only — not case authoring.",
   },
   {
     step: "Step 02",
-    title: "Upload slit-lamp images",
-    body: "The platform can store white light, fluorescein, and slit views from a visit. The current published benchmark is white-light only.",
+    title: "Install the desktop app and upload images",
+    body: "After approval, install the K-ERA desktop app on a hospital PC. Upload white-light, fluorescein, and slit images from a visit. The current published benchmark is white-light only.",
   },
   {
     step: "Step 03",
     title: "Prepare lesion ROI",
-    body: "Draw a loose lesion box and K-ERA prepares ROI previews and lesion crops for review. The current paper's lesion-centered comparison was evaluated with manual prompts.",
+    body: "In the desktop app, draw a loose lesion box and K-ERA prepares ROI previews and lesion crops for review. The current paper's lesion-centered comparison was evaluated with manual prompts.",
   },
   {
     step: "Step 04",
     title: "Review and contribute",
-    body: "Approved sites can run local image-level or visit-level rounds. Review bundles are checked centrally before aggregation.",
+    body: "From the desktop app, approved sites run local training rounds. Weight updates are reviewed centrally before aggregation — raw images stay on the hospital PC.",
   },
 ];
 
@@ -385,6 +385,10 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 <br />
                 <br />
                 <span className="text-[#1a5fa8]">FedAvg aggregation</span> → redistributed to approved nodes
+              </div>
+              <div className="mt-4 rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-5 py-4">
+                <div className="mb-1 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095]">K-ERA Desktop App</div>
+                <p className="text-[0.82rem] leading-[1.65] text-[#393c4a]">Local training runs on the K-ERA desktop app, installed on a hospital PC. Case authoring and image upload also happen in the app — not in the browser. A download link is provided after institutional approval.</p>
               </div>
             </div>
 

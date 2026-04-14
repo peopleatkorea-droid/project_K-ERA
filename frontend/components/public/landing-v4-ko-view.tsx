@@ -70,9 +70,9 @@ const koFeaturePreviewOptions = [
 ];
 
 const koFedPoints = [
-  "중앙에 올라가는 것: weight delta, 비식별 메타데이터, 검토용 저해상도 thumbnail",
-  "병원 밖으로 나가지 않는 것: 원본 이미지, 환자 ID, full-size crop, 상세 임상 기록",
-  "현재 운영 방식: image-level FL, visit-level FL, retrieval 확장을 서로 다른 레일로 분리합니다",
+  "중앙에 올라가는 것: AI 학습 결과 요약, 비식별 메타데이터, 검토용 저해상도 썸네일",
+  "병원 밖으로 나가지 않는 것: 원본 이미지, 환자 정보, 상세 임상 기록",
+  "데스크톱 앱에서 실행: 케이스 작성·이미지 업로드·AI 학습이 모두 병원 PC에서 이루어집니다",
 ];
 
 const koStats = [
@@ -89,7 +89,7 @@ const koFaqs = [
   },
   {
     q: "코딩을 전혀 몰라도 쓸 수 있나요?",
-    a: "가능합니다. Python 설치도, CSV 작성도 필요 없습니다. Google 로그인으로 시작할 수 있지만, 연구 기여와 기관 워크스페이스 사용은 승인 절차를 거쳐야 합니다.",
+    a: "가능합니다. Python 설치도, CSV 작성도 필요 없습니다. Google 로그인으로 기관 승인을 신청하고, 승인 후에는 K-ERA 데스크톱 앱을 설치해 케이스 작성과 이미지 업로드를 진행합니다.",
   },
   {
     q: "환자 데이터가 외부로 유출되지 않나요?",
@@ -105,7 +105,7 @@ const koFaqs = [
   },
   {
     q: "병원 IT 인프라가 복잡해야 하나요?",
-    a: "아닙니다. 내부 노드는 병원 내부 PC 한 대로 시작할 수 있게 설계돼 있습니다. 설치 스크립트와 웹 UI를 제공하고, site round 이후에는 중앙 review와 집계 절차가 이어집니다.",
+    a: "아닙니다. K-ERA 데스크톱 앱 한 대로 시작할 수 있게 설계돼 있습니다. 기관 승인 후 다운로드 링크가 제공되고, AI 학습 이후에는 중앙 검토와 집계 절차가 이어집니다.",
   },
 ];
 
@@ -457,7 +457,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                   <div key={name} className="rounded-[8px] border border-[rgba(45,212,192,0.13)] bg-white/[0.025] px-1.5 py-3 text-center text-[0.7rem] leading-[1.4] text-[#7b88a8]">
                     {name}
                     <br />
-                    내부 노드
+                    K-ERA 앱
                   </div>
                 ))}
               </div>
@@ -492,6 +492,15 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                     </div>
                   );
                 })}
+              </div>
+              <div className="mt-6 rounded-[12px] border border-[rgba(45,212,192,0.18)] bg-[rgba(45,212,192,0.05)] px-6 py-5">
+                <div className="mb-1.5 text-[0.63rem] uppercase tracking-[0.14em] text-[#2dd4c0]">K-ERA 데스크톱 앱</div>
+                <p className="mb-2 text-[0.86rem] leading-[1.7] text-[#e4e8f5]">
+                  케이스 작성, 이미지 업로드, AI 학습은 모두 병원 PC에 설치된 K-ERA 앱에서 진행합니다. 웹은 로그인과 기관 승인 신청에만 사용됩니다.
+                </p>
+                <p className="text-[0.78rem] text-[#7b88a8]">
+                  기관 승인 완료 후 다운로드 링크가 제공됩니다.
+                </p>
               </div>
             </div>
           </div>
@@ -597,7 +606,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             >
               {props.authBusy ? props.connectingLabel : "기관 참여 신청하기 →"}
             </LandingGoogleCta>
-            <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">Google 로그인으로 시작 · 연구 기여는 기관 승인 후 진행</p>
+            <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">① Google 로그인 → 기관 승인 신청 → ② 승인 후 데스크톱 앱 설치 → 케이스 작성</p>
           </div>
         </div>
       </section>
