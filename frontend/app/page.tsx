@@ -275,42 +275,42 @@ export default function HomePage() {
     requestSubmissionFailed: pick(locale, "Request submission failed.", "?붿껌 ?쒖텧???ㅽ뙣?덉뒿?덈떎."),
     workspaceServicesChecking: pick(
       locale,
-      "Checking whether this web deployment can open the patient workspace.",
-      "이 웹 배포본에서 환자 워크스페이스를 열 수 있는지 확인하는 중입니다."
+      "Checking whether patient cases can be opened on this website.",
+      "이 웹사이트에서 환자 케이스를 바로 열 수 있는지 확인하는 중입니다."
     ),
     workspaceServicesUnavailableTitle: pick(
       locale,
-      "Patient workspace is unavailable on this web deployment",
-      "이 웹 배포본에서는 환자 워크스페이스를 열 수 없습니다"
+      "Open patient cases in the desktop app",
+      "환자 케이스는 데스크톱 앱에서 열어 주세요"
     ),
     workspaceServicesUnavailableBody: pick(
       locale,
-      "Google sign-in succeeded, but this site is only connected to the central control plane. Patient uploads, image review, and case authoring require a reachable data-plane backend or the desktop app.",
-      "Google 로그인은 성공했지만, 현재 이 사이트는 중앙 control plane에만 연결되어 있습니다. 환자 업로드, 이미지 검토, 케이스 작성은 연결 가능한 data-plane backend 또는 데스크톱 앱이 필요합니다."
+      "You have signed in successfully. This website is currently used for account approval and hospital access only. To upload patient images, review images, or write a case, please use the K-ERA desktop app.",
+      "로그인은 정상적으로 완료되었습니다. 현재 이 웹사이트는 계정 승인과 병원 접근 관리용으로만 사용됩니다. 환자 이미지 업로드, 이미지 검토, 케이스 작성은 K-ERA 데스크톱 앱에서 진행해 주세요."
     ),
     workspaceServicesUnavailableHint: pick(
       locale,
-      "If this deployment should host the full workspace, connect `/api/*` to a reachable backend before exposing the patient UI.",
-      "이 배포본에서 전체 워크스페이스를 제공해야 한다면, 환자 UI를 열기 전에 `/api/*`가 실제 backend에 연결되어 있어야 합니다."
+      "If you only need to continue your work now, download the desktop app below and sign in there with the same account.",
+      "지금 바로 작업을 이어가려면 아래의 데스크톱 앱을 내려받아 같은 계정으로 로그인해 주세요."
     ),
-    desktopDownloadTitle: pick(locale, "Download the desktop app", "데스크톱 앱 다운로드"),
+    desktopDownloadTitle: pick(locale, "Download K-ERA Desktop", "K-ERA 데스크톱 다운로드"),
     desktopDownloadBody: pick(
       locale,
-      "Use the Windows CPU installer when this web deployment is connected to the control plane only.",
-      "이 웹 배포본이 control plane에만 연결되어 있을 때는 Windows CPU 설치본을 사용하세요.",
+      "Install the Windows desktop app first, then continue your patient-case work there.",
+      "먼저 Windows 데스크톱 앱을 설치한 뒤, 환자 케이스 작업은 그곳에서 이어가세요.",
     ),
     desktopDownloadBusy: pick(locale, "Loading desktop release...", "데스크톱 설치본 정보를 불러오는 중입니다."),
     desktopDownloadButton: pick(locale, "Download CPU installer", "CPU 설치본 다운로드"),
     desktopDownloadPreparing: pick(locale, "Preparing download...", "다운로드 링크를 준비하는 중입니다."),
     desktopDownloadUnavailable: pick(
       locale,
-      "No desktop installer is published for this environment yet.",
-      "이 환경에는 아직 게시된 데스크톱 설치본이 없습니다.",
+      "A desktop installer has not been posted yet. Please contact the administrator.",
+      "아직 게시된 데스크톱 설치본이 없습니다. 관리자에게 문의해 주세요.",
     ),
     desktopDownloadExternalHint: pick(
       locale,
-      "The installer opens from an external OneDrive link. Keep the shared URL private.",
-      "설치본은 외부 OneDrive 링크로 열립니다. 공유 URL은 외부로 퍼지지 않게 관리하세요.",
+      "The installer opens from OneDrive in a new window.",
+      "설치 파일은 새 창에서 OneDrive로 열립니다.",
     ),
     desktopSelectedHospital: pick(locale, "Hospital for this download", "이 다운로드에 기록할 병원"),
     desktopVersionLabel: pick(locale, "Version", "버전"),
@@ -1397,7 +1397,7 @@ export default function HomePage() {
             <SectionHeader
               eyebrow={
                 <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
-                  {pick(locale, "Workspace Services", "워크스페이스 서비스")}
+                  {pick(locale, "Connection Check", "연결 상태 확인")}
                 </span>
               }
               title={pick(locale, "Verifying the workspace connection", "워크스페이스 연결을 확인하는 중입니다")}
@@ -1434,7 +1434,7 @@ export default function HomePage() {
             <SectionHeader
               eyebrow={
                 <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface-muted/80 px-3 text-[0.76rem] font-semibold uppercase tracking-[0.14em] text-muted">
-                  {pick(locale, "Control Plane Only", "Control Plane 전용")}
+                  {pick(locale, "Web Portal Only", "웹 포털 전용")}
                 </span>
               }
               title={copy.workspaceServicesUnavailableTitle}
