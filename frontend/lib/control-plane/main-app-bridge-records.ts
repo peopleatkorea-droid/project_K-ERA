@@ -865,3 +865,35 @@ export async function latestAccessRequestForCanonicalUser(
   const lookups = await preloadAccessRequestLookups(rows);
   return serializeAccessRequestRecordWithLookups(rows[0], lookups);
 }
+
+export async function latestApprovedAccessRequestForCanonicalUser(
+  canonicalUserId: string,
+): Promise<AccessRequestRecord | null> {
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      request_id,
+      user_id,
+      email,
+      requested_site_id,
+      requested_site_label,
+      requested_site_source,
+      requested_role,
+      message,
+      status,
+      reviewed_by,
+      reviewer_notes,
+      created_at,
+      reviewed_at
+    from access_requests
+    where user_id = ${canonicalUserId}
+      and status = ${"approved"}
+    order by coalesce(reviewed_at, created_at) desc, created_at desc
+    limit 1
+  `;
+  if (!rows[0]) {
+    return null;
+  }
+  const lookups = await preloadAccessRequestLookups(rows);
+  return serializeAccessRequestRecordWithLookups(rows[0], lookups);
+}

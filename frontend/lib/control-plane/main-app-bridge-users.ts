@@ -10,8 +10,11 @@ import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
   latestAccessRequestForCanonicalUser,
+  latestApprovedAccessRequestForCanonicalUser,
   preloadAccessRequestLookups,
   serializeAccessRequestRecordWithLookups,
+  siteRowById,
+  siteRowBySourceInstitutionId,
   upsertAccessRequestRecord,
   upsertSiteRecord,
 } from "./main-app-bridge-records";
@@ -552,9 +555,7 @@ export async function serializeManagedUserRecord(
       ? lookups.latestRequestsByUserId.get(canonicalUserId) ?? null
       : await latestAccessRequestForCanonicalUser(canonicalUserId);
   const fallbackRole = (trimText(rowValue<string>(row, "role")) || "viewer") as AuthUser["role"];
-  const approvedSiteIds =
-    canonicalUser?.memberships.filter((membership) => membership.status === "approved").map((membership) => membership.site_id) ??
-    normalizeStringArray(rowValue<unknown>(row, "site_ids"));
+  const approvedSiteIds = await deriveApprovedSiteIdsForCanonicalUser(canonicalUserId, canonicalUser, row);
   const localUserId = trimText(rowValue<string | null>(row, "legacy_local_user_id")) || canonicalUserId;
   return {
     user_id: localUserId,
@@ -567,7 +568,7 @@ export async function serializeManagedUserRecord(
     public_alias: trimText(rowValue<string | null>(row, "public_alias")) || null,
     role: deriveLegacyRoleFromCanonical(canonicalUser, fallbackRole),
     site_ids: approvedSiteIds,
-    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
+    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest, approvedSiteIds),
     latest_access_request: latestRequest,
     registry_consents: normalizeRegistryConsents(rowValue<unknown>(row, "registry_consents")),
   };
@@ -621,17 +622,79 @@ function deriveLegacyRoleFromCanonical(
 function deriveApprovalStatusFromCanonical(
   user: Awaited<ReturnType<typeof getControlPlaneUser>>,
   latestRequest: AccessRequestRecord | null,
+  approvedSiteIds: string[] = [],
 ): AuthState {
   if (user?.global_role === "admin") {
     return "approved";
   }
-  if (user?.memberships.some((membership) => membership.status === "approved")) {
+  if (approvedSiteIds.length > 0 || user?.memberships.some((membership) => membership.status === "approved")) {
     return "approved";
   }
   if (latestRequest?.status) {
     return latestRequest.status;
   }
   return "application_required";
+}
+
+async function resolveApprovedSiteId(candidate: string): Promise<string | null> {
+  const normalizedCandidate = normalizeSiteIdPreservingCase(candidate);
+  if (!normalizedCandidate) {
+    return null;
+  }
+  const directSite = await siteRowById(normalizedCandidate);
+  if (directSite) {
+    return normalizeSiteIdPreservingCase(rowValue<string>(directSite, "site_id"));
+  }
+  const mappedSite = await siteRowBySourceInstitutionId(normalizedCandidate);
+  if (mappedSite) {
+    return normalizeSiteIdPreservingCase(rowValue<string>(mappedSite, "site_id"));
+  }
+  return null;
+}
+
+async function deriveApprovedSiteIdsForCanonicalUser(
+  canonicalUserId: string,
+  user: Awaited<ReturnType<typeof getControlPlaneUser>>,
+  canonicalRow: Row | null,
+  fallbackSiteIds: string[] = [],
+): Promise<string[]> {
+  const membershipSiteIds = Array.from(
+    new Set(
+      (user?.memberships ?? [])
+        .filter((membership) => membership.status === "approved")
+        .map((membership) => normalizeSiteIdPreservingCase(membership.site_id))
+        .filter(Boolean),
+    ),
+  );
+  if (membershipSiteIds.length > 0) {
+    return membershipSiteIds;
+  }
+
+  const legacySiteIds = [
+    ...normalizeStringArray(canonicalRow ? rowValue<unknown>(canonicalRow, "site_ids") : []),
+    ...normalizeStringArray(fallbackSiteIds),
+  ];
+  const resolvedLegacySiteIds = Array.from(
+    new Set(
+      (
+        await Promise.all(
+          legacySiteIds.map(async (siteId) => (await resolveApprovedSiteId(siteId)) || normalizeSiteIdPreservingCase(siteId)),
+        )
+      ).filter(Boolean),
+    ),
+  );
+  if (resolvedLegacySiteIds.length > 0) {
+    return resolvedLegacySiteIds;
+  }
+
+  const latestApprovedRequest = await latestApprovedAccessRequestForCanonicalUser(canonicalUserId);
+  if (!latestApprovedRequest) {
+    return [];
+  }
+  const resolvedFromRequest =
+    (await resolveApprovedSiteId(trimText(latestApprovedRequest.resolved_site_id || ""))) ||
+    (await resolveApprovedSiteId(trimText(latestApprovedRequest.requested_site_id)));
+  return resolvedFromRequest ? [resolvedFromRequest] : [];
 }
 
 export async function buildLegacyAuthUser(
@@ -642,7 +705,7 @@ export async function buildLegacyAuthUser(
   const canonicalRow = await canonicalUserRowById(canonicalUserId);
   const latestRequest = await latestAccessRequestForCanonicalUser(canonicalUserId);
   const approvedSiteIds = canonicalUser
-    ? canonicalUser.memberships.filter((membership) => membership.status === "approved").map((membership) => membership.site_id)
+    ? await deriveApprovedSiteIdsForCanonicalUser(canonicalUserId, canonicalUser, canonicalRow, normalizeStringArray(localUser.site_ids))
     : normalizeStringArray(localUser.site_ids);
   const nextUser: AuthUser = {
     user_id: localUser.user_id,
@@ -651,7 +714,7 @@ export async function buildLegacyAuthUser(
     public_alias: trimText(localUser.public_alias) || null,
     role: deriveLegacyRoleFromCanonical(canonicalUser, localUser.role),
     site_ids: approvedSiteIds,
-    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
+    approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest, approvedSiteIds),
     latest_access_request: latestRequest,
     registry_consents: normalizeRegistryConsents(
       canonicalRow ? rowValue<unknown>(canonicalRow, "registry_consents") : localUser.registry_consents,
@@ -692,13 +755,17 @@ async function loadMainAuthState(
   if (!canonicalUser || !resolvedCanonicalRow) {
     throw new Error("Authentication required.");
   }
+  const approvedSiteIds = await deriveApprovedSiteIdsForCanonicalUser(
+    canonicalUserId,
+    canonicalUser,
+    resolvedCanonicalRow,
+    normalizeStringArray(fallback?.site_ids),
+  );
   const hasApprovedMembership =
     canonicalUser.global_role === "admin" ||
+    approvedSiteIds.length > 0 ||
     canonicalUser.memberships.some((membership) => membership.status === "approved");
   const latestRequest = hasApprovedMembership ? null : await latestAccessRequestForCanonicalUser(canonicalUserId);
-  const approvedSiteIds = canonicalUser.memberships
-    .filter((membership) => membership.status === "approved")
-    .map((membership) => membership.site_id);
 
   return {
     canonicalUser,
@@ -719,7 +786,7 @@ async function loadMainAuthState(
         ((trimText(fallback?.role) || trimText(rowValue<string>(resolvedCanonicalRow, "role")) || "viewer") as AuthUser["role"]),
       ),
       site_ids: approvedSiteIds,
-      approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest),
+      approval_status: deriveApprovalStatusFromCanonical(canonicalUser, latestRequest, approvedSiteIds),
       latest_access_request: latestRequest,
       registry_consents: normalizeRegistryConsents(rowValue<unknown>(resolvedCanonicalRow, "registry_consents")),
     },
