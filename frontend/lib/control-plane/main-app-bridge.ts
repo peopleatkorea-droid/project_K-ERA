@@ -7,6 +7,8 @@ import type {
   MainBootstrapResponse,
   AuthResponse,
   AuthUser,
+  DesktopReleaseDownloadResponse,
+  DesktopReleaseRecord,
   ResearchRegistrySettingsResponse,
   SiteRecord,
 } from "../types";
@@ -52,8 +54,11 @@ export {
   searchPublicInstitutions,
 } from "./main-app-bridge-public";
 import {
+  appendDesktopDownloadEvent,
+  desktopReleaseRowById,
   institutionRowById,
   latestAccessRequestForCanonicalUser,
+  listActiveDesktopReleases,
   listAccessRequestsForCanonicalUser,
   serializeSiteRecord,
   siteRowById,
@@ -77,7 +82,7 @@ import {
   rowValue,
   trimText,
 } from "./main-app-bridge-shared";
-import { ensureControlPlaneIdentity } from "./store";
+import { appendAuditEvent, ensureControlPlaneIdentity } from "./store";
 
 const AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request.";
 const BOOTSTRAP_TIMING_LOGS_ENABLED = trimText(process.env.KERA_BOOTSTRAP_TIMING_LOGS) === "1";
@@ -197,6 +202,106 @@ export async function fetchSitesForMainUser(request: NextRequest): Promise<SiteR
 export async function fetchMainUserAuth(request: NextRequest): Promise<AuthResponse> {
   const { user } = await requireMainAppBridgeUser(request);
   return buildLocalAuthResponse(user);
+}
+
+function assertDesktopDownloadPermission(user: AuthUser): void {
+  if (user.approval_status !== "approved" && user.role !== "admin" && user.role !== "site_admin") {
+    throw new Error("Approved hospital access is required.");
+  }
+}
+
+function assertDesktopDownloadSiteAccess(user: AuthUser, siteId: string | null): string | null {
+  const normalizedSiteId = trimText(siteId);
+  if (!normalizedSiteId) {
+    if (user.role === "admin") {
+      return null;
+    }
+    throw new Error("Choose a hospital before downloading the desktop app.");
+  }
+  if (user.role === "admin") {
+    return normalizedSiteId;
+  }
+  const allowedSiteIds = normalizeStringArray(user.site_ids);
+  if (!allowedSiteIds.includes(normalizedSiteId)) {
+    throw new Error("You can only download installers for approved hospitals.");
+  }
+  return normalizedSiteId;
+}
+
+export async function fetchMainDesktopReleases(request: NextRequest): Promise<DesktopReleaseRecord[]> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertDesktopDownloadPermission(user);
+  return listActiveDesktopReleases();
+}
+
+export async function claimMainDesktopReleaseDownload(
+  request: NextRequest,
+  releaseId: string,
+  payload?: { site_id?: string | null },
+): Promise<DesktopReleaseDownloadResponse> {
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  assertDesktopDownloadPermission(user);
+  const resolvedSiteId = assertDesktopDownloadSiteAccess(user, payload?.site_id ?? null);
+  const releaseRow = await desktopReleaseRowById(releaseId);
+  if (!releaseRow || !Boolean(rowValue<boolean>(releaseRow, "active"))) {
+    throw new Error("The requested desktop installer is unavailable.");
+  }
+  const release = {
+    release_id: trimText(rowValue<string>(releaseRow, "release_id")),
+    channel: trimText(rowValue<string>(releaseRow, "channel")),
+    label: trimText(rowValue<string>(releaseRow, "label")),
+    version: trimText(rowValue<string>(releaseRow, "version")),
+    platform: trimText(rowValue<string>(releaseRow, "platform")) || "windows",
+    installer_type: trimText(rowValue<string>(releaseRow, "installer_type")) || "nsis",
+    download_url: trimText(rowValue<string>(releaseRow, "download_url")),
+    folder_url: trimText(rowValue<string | null>(releaseRow, "folder_url")) || null,
+    sha256: trimText(rowValue<string | null>(releaseRow, "sha256")) || null,
+    size_bytes:
+      typeof rowValue<number | null>(releaseRow, "size_bytes") === "number"
+        ? rowValue<number | null>(releaseRow, "size_bytes")
+        : Number.isFinite(Number(rowValue<string | null>(releaseRow, "size_bytes")))
+          ? Number(rowValue<string | null>(releaseRow, "size_bytes"))
+          : null,
+    notes: trimText(rowValue<string | null>(releaseRow, "notes")) || null,
+    active: true,
+    metadata_json:
+      rowValue<Record<string, unknown> | null>(releaseRow, "metadata_json") &&
+      typeof rowValue<Record<string, unknown> | null>(releaseRow, "metadata_json") === "object"
+        ? (rowValue<Record<string, unknown>>(releaseRow, "metadata_json") ?? {})
+        : {},
+    created_at: new Date(rowValue<string | Date>(releaseRow, "created_at")).toISOString(),
+    updated_at: new Date(rowValue<string | Date>(releaseRow, "updated_at")).toISOString(),
+  } satisfies DesktopReleaseRecord;
+  const eventId = await appendDesktopDownloadEvent({
+    releaseId: release.release_id,
+    userId: canonicalUserId,
+    username: user.username,
+    userRole: user.role,
+    siteId: resolvedSiteId,
+    metadata: {
+      approval_status: user.approval_status,
+      folder_url: release.folder_url,
+    },
+  });
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "desktop_release.download_claimed",
+    targetType: "desktop_release",
+    targetId: release.release_id,
+    payload: {
+      channel: release.channel,
+      version: release.version,
+      site_id: resolvedSiteId,
+      event_id: eventId,
+    },
+  });
+  return {
+    event_id: eventId,
+    release,
+    redirect_url: release.download_url,
+    site_id: resolvedSiteId,
+  };
 }
 
 export async function fetchMainBootstrap(request: NextRequest): Promise<MainBootstrapResponse> {

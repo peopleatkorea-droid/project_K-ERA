@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   createPatient: vi.fn(),
+  claimDesktopReleaseDownload: vi.fn(),
   downloadManifest: vi.fn(),
+  fetchDesktopReleases: vi.fn(),
   fetchAccessRequests: vi.fn(),
   fetchMainBootstrap: vi.fn(),
   fetchMe: vi.fn(),
@@ -111,7 +113,9 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     createPatient: apiMocks.createPatient,
+    claimDesktopReleaseDownload: apiMocks.claimDesktopReleaseDownload,
     downloadManifest: apiMocks.downloadManifest,
+    fetchDesktopReleases: apiMocks.fetchDesktopReleases,
     fetchAccessRequests: apiMocks.fetchAccessRequests,
     fetchMainBootstrap: apiMocks.fetchMainBootstrap,
     fetchMe: apiMocks.fetchMe,
@@ -261,6 +265,29 @@ describe("HomePage history guard", () => {
     apiMocks.fetchPatients.mockResolvedValue([]);
     apiMocks.fetchPublicSites.mockResolvedValue([]);
     apiMocks.fetchMyAccessRequests.mockResolvedValue([]);
+    apiMocks.fetchDesktopReleases.mockResolvedValue([]);
+    apiMocks.claimDesktopReleaseDownload.mockResolvedValue({
+      event_id: "download_1",
+      redirect_url: "https://example.com/download.exe",
+      site_id: "SITE_A",
+      release: {
+        release_id: "desktop_cpu_nsis_1_0_0",
+        channel: "desktop_cpu_nsis",
+        label: "K-ERA Desktop (CPU)",
+        version: "1.0.0",
+        platform: "windows",
+        installer_type: "nsis",
+        download_url: "https://example.com/download.exe",
+        folder_url: "https://example.com/folder",
+        sha256: "ABC",
+        size_bytes: 100,
+        notes: "CPU installer",
+        active: true,
+        metadata_json: {},
+        created_at: "2026-04-14T00:00:00.000Z",
+        updated_at: "2026-04-14T00:00:00.000Z",
+      },
+    });
     apiMocks.fetchAccessRequests.mockResolvedValue([]);
     apiMocks.searchPublicInstitutions.mockResolvedValue([]);
     webDataPlaneMocks.probeWebDataPlaneAvailability.mockResolvedValue(true);
@@ -719,6 +746,47 @@ describe("HomePage history guard", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/^Workspace$/)).not.toBeInTheDocument();
     expect(apiMocks.fetchSiteSummary).not.toHaveBeenCalled();
+  });
+
+  it("shows the desktop installer card on the control-plane-only guard and opens the claimed release link", async () => {
+    webDataPlaneMocks.probeWebDataPlaneAvailability.mockResolvedValue(false);
+    apiMocks.fetchDesktopReleases.mockResolvedValue([
+      {
+        release_id: "desktop_cpu_nsis_1_0_0",
+        channel: "desktop_cpu_nsis",
+        label: "K-ERA Desktop (CPU)",
+        version: "1.0.0",
+        platform: "windows",
+        installer_type: "nsis",
+        download_url: "https://example.com/download.exe",
+        folder_url: "https://example.com/folder",
+        sha256: "ABC",
+        size_bytes: 985666481,
+        notes: "CPU installer",
+        active: true,
+        metadata_json: {},
+        created_at: "2026-04-14T00:00:00.000Z",
+        updated_at: "2026-04-14T00:00:00.000Z",
+      },
+    ]);
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<HomePage />);
+
+    expect(await screen.findByText((content) => content.includes("Download the desktop app"))).toBeInTheDocument();
+    expect(screen.getByText("1.0.0")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download CPU installer" }));
+
+    await waitFor(() => {
+      expect(apiMocks.claimDesktopReleaseDownload).toHaveBeenCalledWith(
+        undefined,
+        "desktop_cpu_nsis_1_0_0",
+        { site_id: "SITE_A" },
+      );
+    });
+    expect(openSpy).toHaveBeenCalledWith("https://example.com/download.exe", "_blank", "noopener,noreferrer");
+    openSpy.mockRestore();
   });
 
   it("shows admin operations before the site list bootstrap finishes", async () => {

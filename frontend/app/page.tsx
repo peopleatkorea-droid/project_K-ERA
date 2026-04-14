@@ -38,8 +38,11 @@ import { getRequestedSiteLabel, getSiteDisplayName } from "../lib/site-labels";
 import { useTheme } from "../lib/theme";
 import { isOperatorUiEnabled } from "../lib/ui-mode";
 import {
+  claimDesktopReleaseDownload,
   createPatient,
   downloadManifest,
+  fetchDesktopReleases,
+  type DesktopReleaseRecord,
   type PublicInstitutionRecord,
   type SiteSummary,
   type AccessRequestRecord,
@@ -213,6 +216,23 @@ function statusCopy(locale: "en" | "ko", status: AuthState): string {
   return pick(locale, "Approved", "승인됨");
 }
 
+function formatBinarySize(locale: "en" | "ko", sizeBytes: number | null | undefined): string {
+  if (!Number.isFinite(sizeBytes) || !sizeBytes || sizeBytes <= 0) {
+    return pick(locale, "Size unavailable", "파일 크기 정보 없음");
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = sizeBytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = new Intl.NumberFormat(locale === "ko" ? "ko-KR" : "en-US", {
+    maximumFractionDigits: value >= 100 ? 0 : value >= 10 ? 1 : 2,
+  }).format(value);
+  return `${formatted} ${units[unitIndex]}`;
+}
+
 export default function HomePage() {
   const { locale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
@@ -233,6 +253,10 @@ export default function HomePage() {
   const [institutionQuery, setInstitutionQuery] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("canvas");
   const [operationsSection, setOperationsSection] = useState<OperationsSection>("management");
+  const [desktopReleases, setDesktopReleases] = useState<DesktopReleaseRecord[]>([]);
+  const [desktopReleaseBusy, setDesktopReleaseBusy] = useState(false);
+  const [desktopReleaseError, setDesktopReleaseError] = useState<string | null>(null);
+  const [desktopDownloadBusy, setDesktopDownloadBusy] = useState(false);
   const deferredInstitutionQuery = useDeferredValue(institutionQuery);
 
   useEffect(() => {
@@ -269,6 +293,30 @@ export default function HomePage() {
       "If this deployment should host the full workspace, connect `/api/*` to a reachable backend before exposing the patient UI.",
       "이 배포본에서 전체 워크스페이스를 제공해야 한다면, 환자 UI를 열기 전에 `/api/*`가 실제 backend에 연결되어 있어야 합니다."
     ),
+    desktopDownloadTitle: pick(locale, "Download the desktop app", "데스크톱 앱 다운로드"),
+    desktopDownloadBody: pick(
+      locale,
+      "Use the Windows CPU installer when this web deployment is connected to the control plane only.",
+      "이 웹 배포본이 control plane에만 연결되어 있을 때는 Windows CPU 설치본을 사용하세요.",
+    ),
+    desktopDownloadBusy: pick(locale, "Loading desktop release...", "데스크톱 설치본 정보를 불러오는 중입니다."),
+    desktopDownloadButton: pick(locale, "Download CPU installer", "CPU 설치본 다운로드"),
+    desktopDownloadPreparing: pick(locale, "Preparing download...", "다운로드 링크를 준비하는 중입니다."),
+    desktopDownloadUnavailable: pick(
+      locale,
+      "No desktop installer is published for this environment yet.",
+      "이 환경에는 아직 게시된 데스크톱 설치본이 없습니다.",
+    ),
+    desktopDownloadExternalHint: pick(
+      locale,
+      "The installer opens from an external OneDrive link. Keep the shared URL private.",
+      "설치본은 외부 OneDrive 링크로 열립니다. 공유 URL은 외부로 퍼지지 않게 관리하세요.",
+    ),
+    desktopSelectedHospital: pick(locale, "Hospital for this download", "이 다운로드에 기록할 병원"),
+    desktopVersionLabel: pick(locale, "Version", "버전"),
+    desktopSizeLabel: pick(locale, "Size", "크기"),
+    desktopShaLabel: pick(locale, "SHA256", "SHA256"),
+    desktopFolderLink: pick(locale, "Open release folder", "배포 폴더 열기"),
     connecting: pick(locale, "Connecting...", "?곌껐 以?.."),
     submitting: pick(locale, "Submitting...", "?쒖텧 以?.."),
     heroEyebrow: pick(locale, "Clinical Research Workspace", "?꾩긽 ?곌뎄 ?뚰겕?ㅽ럹?댁뒪"),
@@ -841,6 +889,74 @@ export default function HomePage() {
           : "이 계정에는 병원 1곳만 연결할 수 있습니다. 승인되면 워크스페이스가 새로 배정된 병원으로 전환됩니다.",
       )
     : copy.approvedBody;
+  const primaryDesktopRelease = desktopReleases[0] ?? null;
+  const selectedDownloadSite =
+    (selectedSiteId ? sites.find((site) => site.site_id === selectedSiteId) : null) ?? sites[0] ?? null;
+  const selectedDownloadSiteLabel = selectedDownloadSite ? getSiteDisplayName(selectedDownloadSite) : null;
+
+  useEffect(() => {
+    if (
+      desktopWorkspaceRuntime ||
+      workspaceDataPlaneState !== "unavailable" ||
+      !user ||
+      (!approved && user.role !== "admin" && user.role !== "site_admin")
+    ) {
+      setDesktopReleases([]);
+      setDesktopReleaseBusy(false);
+      setDesktopReleaseError(null);
+      return;
+    }
+    let cancelled = false;
+    setDesktopReleaseBusy(true);
+    setDesktopReleaseError(null);
+    void fetchDesktopReleases(token ?? undefined)
+      .then((releases) => {
+        if (cancelled) {
+          return;
+        }
+        setDesktopReleases(releases);
+      })
+      .catch((nextError) => {
+        if (cancelled) {
+          return;
+        }
+        setDesktopReleases([]);
+        setDesktopReleaseError(describeError(nextError, copy.failedConnect));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDesktopReleaseBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [approved, copy.failedConnect, describeError, desktopWorkspaceRuntime, token, user, workspaceDataPlaneState]);
+
+  const handleDesktopInstallerDownload = useCallback(async () => {
+    if (!primaryDesktopRelease) {
+      return;
+    }
+    setDesktopDownloadBusy(true);
+    setDesktopReleaseError(null);
+    try {
+      const claimed = await claimDesktopReleaseDownload(token ?? undefined, primaryDesktopRelease.release_id, {
+        site_id: selectedSiteId ?? selectedDownloadSite?.site_id ?? null,
+      });
+      window.open(claimed.redirect_url, "_blank", "noopener,noreferrer");
+    } catch (nextError) {
+      setDesktopReleaseError(describeError(nextError, copy.failedConnect));
+    } finally {
+      setDesktopDownloadBusy(false);
+    }
+  }, [
+    copy.failedConnect,
+    describeError,
+    primaryDesktopRelease,
+    selectedDownloadSite?.site_id,
+    selectedSiteId,
+    token,
+  ]);
 
   useEffect(() => {
     function syncGoogleButtonWidth() {
@@ -1326,6 +1442,103 @@ export default function HomePage() {
             <div className="rounded-[20px] border border-border bg-surface-muted/60 px-4 py-5 text-sm leading-6 text-muted">
               {copy.workspaceServicesUnavailableHint}
             </div>
+            <Card as="section" variant="surface" className="grid gap-4 rounded-[22px] border border-border/80 bg-surface-muted/70 p-5">
+              <SectionHeader
+                title={copy.desktopDownloadTitle}
+                description={copy.desktopDownloadBody}
+              />
+              {sites.length > 1 ? (
+                <Field
+                  htmlFor="desktop_download_site_id"
+                  label={copy.desktopSelectedHospital}
+                  hint={pick(
+                    locale,
+                    "The selected hospital is written into the download log before the OneDrive redirect opens.",
+                    "선택한 병원은 OneDrive 다운로드로 이동하기 전에 다운로드 로그에 함께 기록됩니다.",
+                  )}
+                >
+                  <select
+                    id="desktop_download_site_id"
+                    value={selectedSiteId ?? ""}
+                    onChange={(event) => setSelectedSiteId(event.target.value || null)}
+                  >
+                    {sites.map((site) => (
+                      <option key={site.site_id} value={site.site_id}>
+                        {getSiteDisplayName(site)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : selectedDownloadSiteLabel ? (
+                <div className="rounded-[18px] border border-border/70 bg-surface px-4 py-3 text-sm text-ink">
+                  <div className="text-[0.74rem] uppercase tracking-[0.14em] text-muted">
+                    {copy.desktopSelectedHospital}
+                  </div>
+                  <div className="mt-1 font-medium">{selectedDownloadSiteLabel}</div>
+                </div>
+              ) : null}
+              {desktopReleaseBusy ? (
+                <div className="rounded-[18px] border border-dashed border-border px-4 py-4 text-sm text-muted">
+                  {copy.desktopDownloadBusy}
+                </div>
+              ) : primaryDesktopRelease ? (
+                <div className="grid gap-3 rounded-[18px] border border-border/70 bg-surface px-4 py-4 text-sm text-ink">
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <div className="text-[0.74rem] uppercase tracking-[0.14em] text-muted">{copy.desktopVersionLabel}</div>
+                      <div className="mt-1 font-medium">{primaryDesktopRelease.version}</div>
+                    </div>
+                    <div>
+                      <div className="text-[0.74rem] uppercase tracking-[0.14em] text-muted">{copy.desktopSizeLabel}</div>
+                      <div className="mt-1 font-medium">
+                        {formatBinarySize(locale, primaryDesktopRelease.size_bytes)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[0.74rem] uppercase tracking-[0.14em] text-muted">{copy.desktopShaLabel}</div>
+                      <div className="mt-1 break-all font-mono text-[0.72rem]">
+                        {primaryDesktopRelease.sha256 || pick(locale, "Unavailable", "없음")}
+                      </div>
+                    </div>
+                  </div>
+                  {primaryDesktopRelease.notes ? (
+                    <div className="rounded-[14px] bg-surface-muted/70 px-3 py-2 text-sm text-muted">
+                      {primaryDesktopRelease.notes}
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        void handleDesktopInstallerDownload();
+                      }}
+                      disabled={desktopDownloadBusy || (!selectedSiteId && sites.length > 0 && user?.role !== "admin")}
+                    >
+                      {desktopDownloadBusy ? copy.desktopDownloadPreparing : copy.desktopDownloadButton}
+                    </Button>
+                    {primaryDesktopRelease.folder_url ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() => window.open(primaryDesktopRelease.folder_url ?? "", "_blank", "noopener,noreferrer")}
+                      >
+                        {copy.desktopFolderLink}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div className="text-[0.76rem] leading-6 text-muted">{copy.desktopDownloadExternalHint}</div>
+                </div>
+              ) : (
+                <div className="rounded-[18px] border border-dashed border-border px-4 py-4 text-sm text-muted">
+                  {copy.desktopDownloadUnavailable}
+                </div>
+              )}
+              {desktopReleaseError ? (
+                <div className="rounded-[18px] border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
+                  {desktopReleaseError}
+                </div>
+              ) : null}
+            </Card>
           </Card>
         </section>
       </main>

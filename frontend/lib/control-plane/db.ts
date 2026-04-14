@@ -7,7 +7,7 @@ export type ControlPlaneSql = postgres.Sql<Record<string, unknown>>;
 let cachedSql: ControlPlaneSql | null = null;
 let schemaPromise: Promise<void> | null = null;
 const CONTROL_PLANE_SCHEMA_NAME = "control_plane";
-const CONTROL_PLANE_SCHEMA_VERSION = 2;
+const CONTROL_PLANE_SCHEMA_VERSION = 3;
 const SYSTEM_PROJECT_OWNER_ID = "system";
 const DEFAULT_PROJECT_ID = "project_default";
 const DEFAULT_PROJECT_NAME = "K-ERA Default Project";
@@ -726,6 +726,43 @@ export async function ensureControlPlaneSchema(): Promise<void> {
       )
     `;
     await createIndex(sql, "audit_events", "created_at", "(created_at desc)");
+
+    await sql`
+      create table if not exists desktop_releases (
+        release_id text primary key,
+        channel text not null,
+        label text not null,
+        version text not null,
+        platform text not null default 'windows',
+        installer_type text not null default 'nsis',
+        download_url text not null,
+        folder_url text,
+        sha256 text not null default '',
+        size_bytes bigint,
+        notes text,
+        active boolean not null default true,
+        metadata_json jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `;
+    await createUniqueIndex(sql, "desktop_releases", "channel_version", "(channel, version)");
+    await createIndex(sql, "desktop_releases", "active_updated", "(active, updated_at desc)");
+
+    await sql`
+      create table if not exists desktop_download_events (
+        event_id text primary key,
+        release_id text not null references desktop_releases (release_id) on delete cascade,
+        user_id text references users (user_id) on delete set null,
+        username text not null default '',
+        user_role text not null default '',
+        site_id text references sites (site_id) on delete set null,
+        metadata_json jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null default now()
+      )
+    `;
+    await createIndex(sql, "desktop_download_events", "release_created", "(release_id, created_at desc)");
+    await createIndex(sql, "desktop_download_events", "user_created", "(user_id, created_at desc)");
     await writeControlPlaneSchemaVersion(sql);
   })().catch((error) => {
     schemaPromise = null;

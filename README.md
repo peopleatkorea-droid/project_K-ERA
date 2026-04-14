@@ -316,6 +316,30 @@ KERA_SENTRY_PROFILES_SAMPLE_RATE=0.0
   - 2026-04-14 현재 기준으로 `frontend` production dependency audit는 `0 vulnerabilities` 상태입니다.
 - GitHub Actions에는 별도 `dependency-audits` workflow를 추가해 주간/수동 점검 보고서를 업로드하도록 했습니다.
 
+### 7-3. `k-era.org` 로그인 후 데스크톱 설치본 다운로드
+
+web 배포가 control plane 전용일 때는, 승인된 사용자가 로그인한 뒤 병원을 선택하고 Windows CPU 설치본을 받을 수 있습니다.
+
+- 현재 구현은 `main-app bridge`가 control-plane DB에서 활성 desktop release metadata를 읽고, 다운로드 클릭 로그를 남긴 뒤 외부 링크로 보냅니다.
+- 첫 배포는 OneDrive 같은 외부 저장소를 써도 되지만, 현재 방식은 `링크를 아는 사람 누구나` 접근 가능한 공유 링크라면 진짜 접근 통제는 아닙니다. `k-era.org`는 링크 노출과 다운로드 로그를 관리하는 문 역할만 합니다.
+- 버튼을 노출하려면 배포 환경에 아래 값이 필요합니다.
+
+```dotenv
+KERA_DESKTOP_CPU_RELEASE_VERSION=1.0.0
+KERA_DESKTOP_CPU_RELEASE_LABEL=K-ERA Desktop (CPU)
+KERA_DESKTOP_CPU_RELEASE_DOWNLOAD_URL=https://...
+KERA_DESKTOP_CPU_RELEASE_FOLDER_URL=https://...
+KERA_DESKTOP_CPU_RELEASE_SHA256=AB4D68AD96CF9ACF4C7FC1283E3E516A6E1952EA71019343A53FB64BACA8A004
+KERA_DESKTOP_CPU_RELEASE_SIZE_BYTES=985666481
+KERA_DESKTOP_CPU_RELEASE_NOTES=Windows CPU installer hosted on OneDrive
+```
+
+- 현재 CPU 설치본 기준 정보:
+  - version: `1.0.0`
+  - size: `985,666,481 bytes` (`약 940 MB`)
+  - SHA256: `AB4D68AD96CF9ACF4C7FC1283E3E516A6E1952EA71019343A53FB64BACA8A004`
+- 더 강한 배포 통제가 필요해지면 OneDrive 공개 링크 대신 `R2/S3/Azure Blob + signed URL`로 옮기는 것을 권장합니다.
+
 공용 FastAPI 서버 1대를 두고 다른 PC에서 같은 관리자/프로젝트/site를 보려면, 클라이언트 PC에서는 로컬 API를 띄우지 말고 아래처럼 frontend만 공용 API에 연결하세요.
 
 ```powershell

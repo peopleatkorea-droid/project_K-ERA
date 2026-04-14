@@ -112,3 +112,59 @@ export function controlPlaneHiraApiTimeoutMs(): number {
   const seconds = Number(process.env.KERA_HIRA_API_TIMEOUT_SECONDS?.trim() || "30");
   return Math.max(5_000, Math.floor(seconds * 1000));
 }
+
+function trimOptionalText(value: string | undefined): string {
+  return value?.trim() || "";
+}
+
+function parseIntegerEnv(value: string | undefined): number | null {
+  const normalized = Number.parseInt(trimOptionalText(value), 10);
+  return Number.isFinite(normalized) && normalized >= 0 ? normalized : null;
+}
+
+function slugifyReleaseSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+export type ConfiguredDesktopRelease = {
+  releaseId: string;
+  channel: "desktop_cpu_nsis";
+  label: string;
+  version: string;
+  platform: "windows";
+  installerType: "nsis";
+  downloadUrl: string;
+  folderUrl: string | null;
+  sha256: string;
+  sizeBytes: number | null;
+  notes: string | null;
+};
+
+export function configuredDesktopCpuRelease(): ConfiguredDesktopRelease | null {
+  const downloadUrl = trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_DOWNLOAD_URL);
+  if (!downloadUrl) {
+    return null;
+  }
+  const version = trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_VERSION) || "1.0.0";
+  const releaseId =
+    trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_ID) ||
+    `desktop_cpu_nsis_${slugifyReleaseSegment(version) || "current"}`;
+  const label = trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_LABEL) || "K-ERA Desktop (CPU)";
+  return {
+    releaseId,
+    channel: "desktop_cpu_nsis",
+    label,
+    version,
+    platform: "windows",
+    installerType: "nsis",
+    downloadUrl,
+    folderUrl: trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_FOLDER_URL) || null,
+    sha256: trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_SHA256).toUpperCase(),
+    sizeBytes: parseIntegerEnv(process.env.KERA_DESKTOP_CPU_RELEASE_SIZE_BYTES),
+    notes: trimOptionalText(process.env.KERA_DESKTOP_CPU_RELEASE_NOTES) || null,
+  };
+}

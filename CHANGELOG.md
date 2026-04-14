@@ -2,6 +2,14 @@
 
 ## 2026-04-14
 
+### Web installer delivery for control-plane-only deployments
+
+- 승인된 사용자가 `k-era.org` 같은 web control-plane 배포에 로그인한 뒤, 선택한 병원 기준으로 Windows CPU 설치본을 받을 수 있는 desktop release 경로를 추가했습니다.
+- Next main-app bridge에 `desktop_releases`, `desktop_download_events` 테이블과 release metadata / download claim API를 추가했습니다.
+- 현재 배포 방식은 env 기반 release metadata를 control-plane DB로 sync한 뒤, 다운로드 클릭 시 로그를 남기고 외부 installer URL로 redirect 하는 구조입니다.
+- home page의 `control-plane-only` guard 화면에는 최소 다운로드 카드가 추가되어, web data plane이 없는 환경에서도 바로 데스크톱 설치본으로 넘어갈 수 있습니다.
+- `.env.example`과 README에 `KERA_DESKTOP_CPU_RELEASE_*` 설정과 현재 CPU 설치본 메타데이터를 반영했습니다.
+
 ### 인증 / API 보안 하드닝
 
 - control-plane 비밀번호 저장 기본값을 Argon2로 전환했고, legacy bcrypt/PBKDF2 row는 로그인 성공 시 Argon2로 자동 재해시되도록 했습니다.

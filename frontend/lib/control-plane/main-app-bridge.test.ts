@@ -9,9 +9,13 @@ const latestAccessRequestForCanonicalUser = vi.hoisted(() => vi.fn());
 const siteRowById = vi.hoisted(() => vi.fn());
 const siteRowBySourceInstitutionId = vi.hoisted(() => vi.fn());
 const upsertAccessRequestRecord = vi.hoisted(() => vi.fn());
+const listActiveDesktopReleases = vi.hoisted(() => vi.fn());
+const desktopReleaseRowById = vi.hoisted(() => vi.fn());
+const appendDesktopDownloadEvent = vi.hoisted(() => vi.fn());
 const buildLegacyAuthUser = vi.hoisted(() => vi.fn());
 const buildMainAuthResponse = vi.hoisted(() => vi.fn());
 const legacyEmailForLocalUser = vi.hoisted(() => vi.fn());
+const appendAuditEvent = vi.hoisted(() => vi.fn());
 
 vi.mock("server-only", () => ({}));
 
@@ -70,6 +74,7 @@ vi.mock("./main-app-bridge-records", () => ({
   institutionRowById,
   latestAccessRequestForCanonicalUser,
   listAccessRequestsForCanonicalUser,
+  listActiveDesktopReleases,
   serializeSiteRecord: (row: Record<string, unknown>) => {
     const siteId = typeof row.site_id === "string" ? row.site_id : "";
     const sourceInstitutionName =
@@ -93,6 +98,8 @@ vi.mock("./main-app-bridge-records", () => ({
       ...(sourceInstitutionName ? { source_institution_name: sourceInstitutionName } : {}),
     };
   },
+  appendDesktopDownloadEvent,
+  desktopReleaseRowById,
   siteRowById,
   siteRowBySourceInstitutionId,
   upsertAccessRequestRecord,
@@ -119,10 +126,17 @@ vi.mock("./main-app-bridge-shared", () => ({
 }));
 
 vi.mock("./store", () => ({
+  appendAuditEvent,
   ensureControlPlaneIdentity: vi.fn(),
 }));
 
-import { fetchMainBootstrap, fetchSitesForMainUser, submitMainAccessRequest } from "./main-app-bridge";
+import {
+  claimMainDesktopReleaseDownload,
+  fetchMainBootstrap,
+  fetchMainDesktopReleases,
+  fetchSitesForMainUser,
+  submitMainAccessRequest,
+} from "./main-app-bridge";
 
 describe("fetchSitesForMainUser", () => {
   beforeEach(() => {
@@ -396,6 +410,121 @@ describe("fetchSitesForMainUser", () => {
       user: pendingUser,
       sites: [],
       my_access_requests: requests,
+    });
+  });
+
+  it("lists active desktop releases for approved users", async () => {
+    const approvedUser = {
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    };
+    const releases = [
+      {
+        release_id: "desktop_cpu_nsis_1_0_0",
+        channel: "desktop_cpu_nsis",
+        label: "K-ERA Desktop (CPU)",
+        version: "1.0.0",
+        platform: "windows",
+        installer_type: "nsis",
+        download_url: "https://example.com/download.exe",
+        folder_url: "https://example.com/folder",
+        sha256: "ABC",
+        size_bytes: 100,
+        notes: "CPU installer",
+        active: true,
+        created_at: "2026-04-14T00:00:00.000Z",
+        updated_at: "2026-04-14T00:00:00.000Z",
+        metadata_json: {},
+      },
+    ];
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_researcher",
+      user: approvedUser,
+    });
+    listActiveDesktopReleases.mockResolvedValue(releases);
+
+    await expect(fetchMainDesktopReleases({} as never)).resolves.toEqual(releases);
+    expect(listActiveDesktopReleases).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs desktop download claims with the selected site", async () => {
+    const approvedUser = {
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+    };
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_researcher",
+      user: approvedUser,
+    });
+    desktopReleaseRowById.mockResolvedValue({
+      release_id: "desktop_cpu_nsis_1_0_0",
+      channel: "desktop_cpu_nsis",
+      label: "K-ERA Desktop (CPU)",
+      version: "1.0.0",
+      platform: "windows",
+      installer_type: "nsis",
+      download_url: "https://example.com/download.exe",
+      folder_url: "https://example.com/folder",
+      sha256: "ABC",
+      size_bytes: 100,
+      notes: "CPU installer",
+      active: true,
+      metadata_json: {},
+      created_at: "2026-04-14T00:00:00.000Z",
+      updated_at: "2026-04-14T00:00:00.000Z",
+    });
+    appendDesktopDownloadEvent.mockResolvedValue("download_1");
+
+    const result = await claimMainDesktopReleaseDownload(
+      {} as never,
+      "desktop_cpu_nsis_1_0_0",
+      { site_id: "SITE_A" },
+    );
+
+    expect(appendDesktopDownloadEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        releaseId: "desktop_cpu_nsis_1_0_0",
+        userId: "user_researcher",
+        username: "researcher",
+        userRole: "researcher",
+        siteId: "SITE_A",
+      }),
+    );
+    expect(appendAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "desktop_release.download_claimed",
+        targetId: "desktop_cpu_nsis_1_0_0",
+      }),
+    );
+    expect(result).toEqual({
+      event_id: "download_1",
+      redirect_url: "https://example.com/download.exe",
+      site_id: "SITE_A",
+      release: {
+        release_id: "desktop_cpu_nsis_1_0_0",
+        channel: "desktop_cpu_nsis",
+        label: "K-ERA Desktop (CPU)",
+        version: "1.0.0",
+        platform: "windows",
+        installer_type: "nsis",
+        download_url: "https://example.com/download.exe",
+        folder_url: "https://example.com/folder",
+        sha256: "ABC",
+        size_bytes: 100,
+        notes: "CPU installer",
+        active: true,
+        metadata_json: {},
+        created_at: "2026-04-14T00:00:00.000Z",
+        updated_at: "2026-04-14T00:00:00.000Z",
+      },
     });
   });
 

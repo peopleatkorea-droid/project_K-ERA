@@ -5,6 +5,8 @@ import type {
   AccessRequestRecord,
   AuthResponse,
   AuthState,
+  DesktopReleaseDownloadResponse,
+  DesktopReleaseRecord,
   MainBootstrapResponse,
   AuthUser,
   PublicInstitutionRecord,
@@ -107,6 +109,30 @@ export async function fetchPublicStatistics() {
 
 export async function fetchMyAccessRequests(token?: string) {
   return requestMainControlPlane<AccessRequestRecord[]>("/auth/access-requests", {}, token);
+}
+
+export async function fetchDesktopReleases(token?: string) {
+  const response = await requestMainControlPlane<{ releases: DesktopReleaseRecord[] }>(
+    "/auth/desktop-releases",
+    {},
+    token,
+  );
+  return response.releases;
+}
+
+export async function claimDesktopReleaseDownload(
+  token: string | null | undefined,
+  releaseId: string,
+  payload?: { site_id?: string | null },
+) {
+  return requestMainControlPlane<DesktopReleaseDownloadResponse>(
+    `/auth/desktop-releases/${encodeURIComponent(releaseId)}/download`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    },
+    token ?? undefined,
+  );
 }
 
 export async function submitAccessRequest(

@@ -2019,6 +2019,31 @@ export type MainBootstrapResponse = AuthResponse & {
   my_access_requests: AccessRequestRecord[];
 };
 
+export type DesktopReleaseRecord = {
+  release_id: string;
+  channel: string;
+  label: string;
+  version: string;
+  platform: string;
+  installer_type: string;
+  download_url: string;
+  folder_url?: string | null;
+  sha256?: string | null;
+  size_bytes?: number | null;
+  notes?: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  metadata_json?: Record<string, unknown>;
+};
+
+export type DesktopReleaseDownloadResponse = {
+  event_id: string;
+  release: DesktopReleaseRecord;
+  redirect_url: string;
+  site_id?: string | null;
+};
+
 export type PublicStatistics = {
   site_count: number;
   total_cases: number;

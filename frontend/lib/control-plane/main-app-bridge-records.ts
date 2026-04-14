@@ -4,6 +4,7 @@ import type { Row } from "postgres";
 
 import type {
   AccessRequestRecord,
+  DesktopReleaseRecord,
   AuthState,
   ManagedSiteRecord,
   ProjectRecord,
@@ -12,6 +13,7 @@ import type {
 } from "../types";
 import { getSiteAlias, getSiteOfficialName } from "../site-labels";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
+import { configuredDesktopCpuRelease, type ConfiguredDesktopRelease } from "./config";
 import { controlPlaneSql } from "./db";
 import {
   DEFAULT_PROJECT_ID,
@@ -29,6 +31,203 @@ type AccessRequestResolutionLookups = {
   mappedSitesBySourceInstitutionId: Map<string, Row>;
   institutionsById: Map<string, Row>;
 };
+
+function serializeDesktopReleaseRecord(row: Row): DesktopReleaseRecord {
+  return {
+    release_id: trimText(rowValue<string>(row, "release_id")),
+    channel: trimText(rowValue<string>(row, "channel")),
+    label: trimText(rowValue<string>(row, "label")),
+    version: trimText(rowValue<string>(row, "version")),
+    platform: trimText(rowValue<string>(row, "platform")) || "windows",
+    installer_type: trimText(rowValue<string>(row, "installer_type")) || "nsis",
+    download_url: trimText(rowValue<string>(row, "download_url")),
+    folder_url: trimText(rowValue<string | null>(row, "folder_url")) || null,
+    sha256: trimText(rowValue<string | null>(row, "sha256")) || null,
+    size_bytes:
+      typeof rowValue<number | null>(row, "size_bytes") === "number"
+        ? rowValue<number | null>(row, "size_bytes")
+        : Number.isFinite(Number(rowValue<string | null>(row, "size_bytes")))
+          ? Number(rowValue<string | null>(row, "size_bytes"))
+          : null,
+    notes: trimText(rowValue<string | null>(row, "notes")) || null,
+    active: Boolean(rowValue<boolean>(row, "active")),
+    metadata_json:
+      rowValue<Record<string, unknown> | null>(row, "metadata_json") &&
+      typeof rowValue<Record<string, unknown> | null>(row, "metadata_json") === "object"
+        ? (rowValue<Record<string, unknown>>(row, "metadata_json") ?? {})
+        : {},
+    created_at: new Date(rowValue<string | Date>(row, "created_at")).toISOString(),
+    updated_at: new Date(rowValue<string | Date>(row, "updated_at")).toISOString(),
+  };
+}
+
+function configuredDesktopReleases(): ConfiguredDesktopRelease[] {
+  const cpuRelease = configuredDesktopCpuRelease();
+  return cpuRelease ? [cpuRelease] : [];
+}
+
+export async function upsertDesktopReleaseRecord(record: ConfiguredDesktopRelease): Promise<void> {
+  const sql = await controlPlaneSql();
+  await sql`
+    insert into desktop_releases (
+      release_id,
+      channel,
+      label,
+      version,
+      platform,
+      installer_type,
+      download_url,
+      folder_url,
+      sha256,
+      size_bytes,
+      notes,
+      active,
+      metadata_json,
+      created_at,
+      updated_at
+    ) values (
+      ${trimText(record.releaseId)},
+      ${trimText(record.channel)},
+      ${trimText(record.label)},
+      ${trimText(record.version)},
+      ${trimText(record.platform)},
+      ${trimText(record.installerType)},
+      ${trimText(record.downloadUrl)},
+      ${trimText(record.folderUrl) || null},
+      ${trimText(record.sha256)},
+      ${record.sizeBytes ?? null},
+      ${trimText(record.notes) || null},
+      ${true},
+      ${JSON.stringify({
+        source: "env",
+      })}::jsonb,
+      now(),
+      now()
+    )
+    on conflict (release_id) do update set
+      channel = excluded.channel,
+      label = excluded.label,
+      version = excluded.version,
+      platform = excluded.platform,
+      installer_type = excluded.installer_type,
+      download_url = excluded.download_url,
+      folder_url = excluded.folder_url,
+      sha256 = excluded.sha256,
+      size_bytes = excluded.size_bytes,
+      notes = excluded.notes,
+      active = excluded.active,
+      metadata_json = excluded.metadata_json,
+      updated_at = now()
+  `;
+}
+
+export async function syncConfiguredDesktopReleases(): Promise<void> {
+  const configured = configuredDesktopReleases();
+  if (configured.length === 0) {
+    return;
+  }
+  for (const release of configured) {
+    await upsertDesktopReleaseRecord(release);
+  }
+  const sql = await controlPlaneSql();
+  const configuredIds = configured.map((release) => release.releaseId);
+  const configuredChannels = Array.from(new Set(configured.map((release) => release.channel)));
+  await sql`
+    update desktop_releases
+    set
+      active = case when release_id = any(${configuredIds}) then true else false end,
+      updated_at = now()
+    where channel = any(${configuredChannels})
+  `;
+}
+
+export async function listActiveDesktopReleases(): Promise<DesktopReleaseRecord[]> {
+  await syncConfiguredDesktopReleases();
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      release_id,
+      channel,
+      label,
+      version,
+      platform,
+      installer_type,
+      download_url,
+      folder_url,
+      sha256,
+      size_bytes,
+      notes,
+      active,
+      metadata_json,
+      created_at,
+      updated_at
+    from desktop_releases
+    where active = true
+    order by updated_at desc, created_at desc
+  `;
+  return rows.map((row) => serializeDesktopReleaseRecord(row));
+}
+
+export async function desktopReleaseRowById(releaseId: string): Promise<Row | null> {
+  await syncConfiguredDesktopReleases();
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      release_id,
+      channel,
+      label,
+      version,
+      platform,
+      installer_type,
+      download_url,
+      folder_url,
+      sha256,
+      size_bytes,
+      notes,
+      active,
+      metadata_json,
+      created_at,
+      updated_at
+    from desktop_releases
+    where release_id = ${trimText(releaseId)}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function appendDesktopDownloadEvent(input: {
+  releaseId: string;
+  userId?: string | null;
+  username?: string | null;
+  userRole?: string | null;
+  siteId?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<string> {
+  const eventId = makeControlPlaneId("download");
+  const sql = await controlPlaneSql();
+  await sql`
+    insert into desktop_download_events (
+      event_id,
+      release_id,
+      user_id,
+      username,
+      user_role,
+      site_id,
+      metadata_json,
+      created_at
+    ) values (
+      ${eventId},
+      ${trimText(input.releaseId)},
+      ${trimText(input.userId) || null},
+      ${trimText(input.username)},
+      ${trimText(input.userRole)},
+      ${trimText(input.siteId) || null},
+      ${JSON.stringify(input.metadata ?? {})}::jsonb,
+      now()
+    )
+  `;
+  return eventId;
+}
 
 export async function ensureDefaultProject(): Promise<void> {
   const sql = await controlPlaneSql();
