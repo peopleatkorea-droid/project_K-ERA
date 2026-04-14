@@ -6,7 +6,7 @@ import { Card } from "../ui/card";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass } from "../ui/workspace-patterns";
 
-type CaseWorkspaceResearchRegistryModalProps = {
+export type CaseWorkspaceResearchRegistryModalProps = {
   locale: Locale;
   busy: boolean;
   explanationConfirmed: boolean;

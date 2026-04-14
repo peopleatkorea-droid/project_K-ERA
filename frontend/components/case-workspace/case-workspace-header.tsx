@@ -4,6 +4,7 @@ import { type RefObject } from "react";
 
 import { LocaleToggle, pick, type Locale } from "../../lib/i18n";
 import { type DesktopControlPlaneProbe } from "../../lib/desktop-control-plane-status";
+import type { CaseWorkspaceToastLogEntry } from "./case-workspace-definitions";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { DesktopControlPlaneStatusBadge } from "../ui/desktop-control-plane-status-badge";
@@ -20,14 +21,7 @@ import {
   workspaceUserBadgeClass,
 } from "../ui/workspace-patterns";
 
-type AlertEntry = {
-  id: string;
-  tone: "success" | "error";
-  message: string;
-  created_at: string;
-};
-
-type CaseWorkspaceHeaderProps = {
+export type CaseWorkspaceHeaderProps = {
   locale: Locale;
   localeTag: string;
   title: string;
@@ -39,7 +33,7 @@ type CaseWorkspaceHeaderProps = {
   userRoleLabel: string | null;
   alertsPanelRef: RefObject<HTMLDivElement | null>;
   alertsPanelOpen: boolean;
-  alerts: AlertEntry[];
+  alerts: CaseWorkspaceToastLogEntry[];
   recentAlertsLabel: string;
   recentAlertsCopy: string;
   alertsKeptLabel: string;

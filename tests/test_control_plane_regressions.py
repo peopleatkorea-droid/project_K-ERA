@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from pathlib import Path
 from PIL import Image
 from sqlalchemy import select, update
@@ -58,6 +59,10 @@ def reload_app_module(
         os.environ.pop(env_name, None)
 
     os.environ["KERA_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    if data_plane_database_url is None and (
+        control_plane_api_base_url is not None or next_public_control_plane_api_base_url is not None
+    ):
+        data_plane_database_url = f"sqlite:///{db_path.as_posix()}"
     if data_plane_database_url is not None:
         os.environ["KERA_DATA_PLANE_DATABASE_URL"] = data_plane_database_url
     os.environ["KERA_CONTROL_PLANE_ARTIFACT_DIR"] = str(control_plane_artifact_dir)
@@ -410,6 +415,85 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(config_module.CONTROL_PLANE_API_BASE_URL, "https://control-plane.example.test")
         self.assertEqual(self.db_module.DATABASE_TOPOLOGY["control_plane_connection_mode"], "remote_api_cache")
         self.assertTrue(self.cp.remote_control_plane_enabled())
+
+    def test_remote_cache_mode_does_not_warn_when_legacy_database_url_matches_data_plane(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        db_path = Path(self.tempdir.name) / "remote_data_plane_same.db"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.app_module = reload_app_module(
+                db_path,
+                control_plane_artifact_dir=Path(self.tempdir.name) / "remote_control_artifacts_same",
+                control_plane_api_base_url="https://control-plane.example.test",
+                local_control_plane_db_path=Path(self.tempdir.name) / "remote_control_plane_same.db",
+                data_plane_database_url=f"sqlite:///{db_path.as_posix()}",
+                storage_dir=Path(self.tempdir.name) / "remote_storage_same",
+            )
+
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+        self.assertFalse(
+            any("Legacy KERA_DATABASE_URL/DATABASE_URL" in str(item.message) for item in caught),
+            [str(item.message) for item in caught],
+        )
+
+    def test_remote_cache_mode_warns_when_legacy_database_url_conflicts_with_split_urls(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        legacy_db_path = Path(self.tempdir.name) / "legacy_data_plane.db"
+        explicit_data_plane_db_path = Path(self.tempdir.name) / "explicit_data_plane.db"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.app_module = reload_app_module(
+                legacy_db_path,
+                control_plane_artifact_dir=Path(self.tempdir.name) / "remote_control_artifacts_conflict",
+                control_plane_api_base_url="https://control-plane.example.test",
+                local_control_plane_db_path=Path(self.tempdir.name) / "remote_control_plane_conflict.db",
+                data_plane_database_url=f"sqlite:///{explicit_data_plane_db_path.as_posix()}",
+                storage_dir=Path(self.tempdir.name) / "remote_storage_conflict",
+            )
+
+        self.db_module = sys.modules["kera_research.db"]
+        self.cp = self.app_module.ControlPlaneStore()
+        self.assertTrue(
+            any("Legacy KERA_DATABASE_URL/DATABASE_URL" in str(item.message) for item in caught),
+            [str(item.message) for item in caught],
+        )
+
+    def test_remote_cache_mode_rebuilds_malformed_local_cache_in_place(self) -> None:
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        data_plane_db_path = Path(self.tempdir.name) / "remote_data_plane_rebuild.db"
+        local_cache_path = Path(self.tempdir.name) / "remote_control_plane_rebuild.db"
+        local_cache_path.write_text("not a sqlite database", encoding="utf-8")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.app_module = reload_app_module(
+                data_plane_db_path,
+                control_plane_artifact_dir=Path(self.tempdir.name) / "remote_control_artifacts_rebuild",
+                control_plane_api_base_url="https://control-plane.example.test",
+                local_control_plane_db_path=local_cache_path,
+                data_plane_database_url=f"sqlite:///{data_plane_db_path.as_posix()}",
+                storage_dir=Path(self.tempdir.name) / "remote_storage_rebuild",
+            )
+            self.db_module = sys.modules["kera_research.db"]
+            self.db_module.init_control_plane_db()
+
+        self.cp = self.app_module.ControlPlaneStore()
+        self.assertTrue(local_cache_path.exists())
+        self.assertFalse(
+            any("Using a fresh recovery cache" in str(item.message) for item in caught),
+            [str(item.message) for item in caught],
+        )
+        self.assertTrue(
+            any("Rebuilt the malformed local control-plane cache database." in str(item.message) for item in caught),
+            [str(item.message) for item in caught],
+        )
 
     def test_site_store_keeps_local_storage_override_even_when_remote_control_plane_is_present(self) -> None:
         self._reload_remote_control_plane_app()

@@ -1,26 +1,31 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import os
 import threading
 import time
+import json
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
+from urllib.parse import urlparse
+from uuid import uuid4
 
 import google.auth.transport.requests
 import jwt
 import re
 from sqlalchemy import select, update as sa_update
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from google.oauth2 import id_token as google_id_token
 
+from kera_research import __version__ as KERA_VERSION
 from kera_research.config import (
     CASE_REFERENCE_SALT_FINGERPRINT,
     CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS,
@@ -28,10 +33,14 @@ from kera_research.config import (
     MODEL_DIR,
     SITE_ROOT_DIR,
 )
-from kera_research.db import CONTROL_PLANE_ENGINE, DATABASE_TOPOLOGY, institution_directory, sites as control_plane_sites
+from kera_research.db import CONTROL_PLANE_ENGINE, DATA_PLANE_ENGINE, DATABASE_TOPOLOGY, institution_directory, sites as control_plane_sites
 from kera_research.domain import TRAINING_ARCHITECTURES, make_id
 from kera_research.api.control_plane_sync import start_control_plane_sync_loop, stop_control_plane_sync_loop
-from kera_research.api.desktop_support import desktop_self_check as _desktop_self_check, remote_node_os_info as _remote_node_os_info
+from kera_research.api.desktop_support import (
+    desktop_runtime_checks as _desktop_runtime_checks,
+    desktop_self_check as _desktop_self_check,
+    remote_node_os_info as _remote_node_os_info,
+)
 from kera_research.api.models import (
     AccessRequestCreateRequest,
     AccessRequestReviewRequest,
@@ -77,20 +86,15 @@ from kera_research.api.models import (
 from kera_research.services.admin_registry_orchestrator import AdminRegistryOrchestrator
 from kera_research.services.hardware import detect_hardware, resolve_execution_mode
 from kera_research.services.job_runner import queue_name_for_job_type
-from kera_research.services.local_api_secret import load_or_create_local_api_secret
-from kera_research.services.local_api_jwt import (
-    load_control_plane_jwt_audience,
-    load_control_plane_jwt_issuer,
-    load_control_plane_jwt_public_key,
-)
-from kera_research.services.node_credentials import (
-    clear_node_credentials,
-    load_node_credentials,
-    node_credentials_status,
-    save_node_credentials,
-)
 from kera_research.services.quality import score_slit_lamp_image
-from kera_research.services.control_plane import GOOGLE_AUTH_SENTINEL, ControlPlaneStore, _hash_password, _is_bcrypt_hash
+from kera_research.services.secrets_manager import DEFAULT_SECRETS_MANAGER
+from kera_research.services.control_plane import (
+    GOOGLE_AUTH_SENTINEL,
+    ControlPlaneStore,
+    _hash_password,
+    _is_argon2_hash,
+    _is_bcrypt_hash,
+)
 from kera_research.services.data_plane import (
     InvalidImageUploadError,
     SiteStore,
@@ -100,6 +104,11 @@ from kera_research.services.data_plane import (
 from kera_research.services.pipeline import ResearchWorkflowService
 from kera_research.services.remote_control_plane import RemoteControlPlaneClient
 from kera_research.services.semantic_prompts import SemanticPromptScoringService
+from kera_research.services.observability import (
+    ApiRequestMetrics,
+    configure_sentry_observability,
+    current_error_aggregation_status,
+)
 from kera_research.api.route_helpers import (
     attach_image_quality_scores as _attach_image_quality_scores,
     bool_from_value as _bool_from_value,
@@ -116,6 +125,7 @@ from kera_research.api.route_helpers import (
 )
 from kera_research.api.route_support import build_route_supports
 from kera_research.api.routes.admin import build_admin_router
+from kera_research.api.auth_rate_limit import AuthRateLimitMiddleware
 from kera_research.api.routes.auth import build_auth_router
 from kera_research.api.routes.cases import build_cases_router
 from kera_research.api.routes.desktop import build_desktop_router
@@ -218,15 +228,15 @@ def _backfill_institution_names(ykiho_codes: list[str]) -> None:
                 _INSTITUTION_BACKFILL_IN_PROGRESS.discard(ykiho)
 
 def _load_or_create_api_secret() -> str:
-    return load_or_create_local_api_secret()
+    return DEFAULT_SECRETS_MANAGER.load_or_create_local_api_secret()
 
 API_SECRET = _load_or_create_api_secret()
 API_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = 2
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
-CONTROL_PLANE_JWT_PUBLIC_KEY = load_control_plane_jwt_public_key()
-CONTROL_PLANE_JWT_ISSUER = load_control_plane_jwt_issuer()
-CONTROL_PLANE_JWT_AUDIENCE = load_control_plane_jwt_audience()
+CONTROL_PLANE_JWT_PUBLIC_KEY = DEFAULT_SECRETS_MANAGER.load_control_plane_jwt_public_key()
+CONTROL_PLANE_JWT_ISSUER = DEFAULT_SECRETS_MANAGER.load_control_plane_jwt_issuer()
+CONTROL_PLANE_JWT_AUDIENCE = DEFAULT_SECRETS_MANAGER.load_control_plane_jwt_audience()
 
 _LESION_PREVIEW_JOBS: dict[str, dict[str, Any]] = {}
 _LESION_PREVIEW_JOBS_LOCK = threading.Lock()
@@ -271,9 +281,56 @@ def _local_login_enabled() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+_LOCAL_DEV_AUTH_ALLOWED_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver", "testclient"}
+_PRODUCTION_LIKE_ENVIRONMENTS = {"prod", "production", "stage", "staging"}
+
+
+def _normalize_dev_auth_host(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return ""
+    try:
+        parsed = urlparse(normalized if "://" in normalized else f"http://{normalized}")
+    except ValueError:
+        return ""
+    host = str(parsed.hostname or "").strip().lower()
+    return host
+
+
+def _runtime_environment_is_production_like() -> bool:
+    for env_name in ("KERA_ENVIRONMENT", "KERA_ENV", "ENVIRONMENT", "APP_ENV", "NODE_ENV"):
+        value = str(os.getenv(env_name) or "").strip().lower()
+        if value in _PRODUCTION_LIKE_ENVIRONMENTS:
+            return True
+    return False
+
+
+def _control_plane_base_url_is_loopback_or_empty() -> bool:
+    for env_name in ("KERA_CONTROL_PLANE_API_BASE_URL", "NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL"):
+        raw = str(os.getenv(env_name) or "").strip()
+        if not raw:
+            continue
+        if _normalize_dev_auth_host(raw) not in _LOCAL_DEV_AUTH_ALLOWED_HOSTS:
+            return False
+    return True
+
+
 def _local_control_plane_dev_auth_enabled() -> bool:
     value = os.getenv("KERA_CONTROL_PLANE_DEV_AUTH", "false").strip().lower()
-    return value in {"1", "true", "yes", "on"}
+    requested = value in {"1", "true", "yes", "on"}
+    if not requested:
+        return False
+    if _runtime_environment_is_production_like():
+        logging.getLogger(__name__).error(
+            "Ignoring KERA_CONTROL_PLANE_DEV_AUTH because runtime environment looks production-like."
+        )
+        return False
+    if not _control_plane_base_url_is_loopback_or_empty():
+        logging.getLogger(__name__).error(
+            "Ignoring KERA_CONTROL_PLANE_DEV_AUTH because control-plane base URL is not localhost/loopback."
+        )
+        return False
+    return True
 
 
 def _create_access_token(user: dict[str, Any]) -> str:
@@ -471,13 +528,13 @@ def get_control_plane() -> ControlPlaneStore:
 
 def get_current_user(
     authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None, alias="token"),
+    kera_web_token: str | None = Cookie(default=None, alias="kera_web_token"),
 ) -> dict[str, Any]:
     raw_token: str | None = None
     if authorization and authorization.lower().startswith("bearer "):
         raw_token = authorization.split(" ", 1)[1].strip()
-    elif token:
-        raw_token = token.strip()
+    elif kera_web_token:
+        raw_token = kera_web_token.strip()
     if not raw_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
     token_payload = _decode_access_token(raw_token)
@@ -1050,19 +1107,163 @@ def _get_model_version(cp: ControlPlaneStore, model_version_id: str | None) -> d
 import concurrent.futures
 
 LOGGER = logging.getLogger(__name__)
+_REQUEST_METRICS = ApiRequestMetrics()
 
 _EMBEDDING_INDEX_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _PENDING_EMBEDDING_JOBS: dict[tuple[str, str, str], bool] = {}
 _PENDING_EMBEDDING_TRIGGERS: dict[tuple[str, str, str], str] = {}
+_PENDING_EMBEDDING_UPDATED_AT: dict[tuple[str, str, str], float] = {}
 _EMBEDDING_JOB_LOCK = threading.Lock()
 _FEDERATED_RETRIEVAL_SYNC_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS: dict[tuple[str, str], bool] = {}
 _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS: dict[tuple[str, str], str] = {}
+_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT: dict[tuple[str, str], float] = {}
 _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK = threading.Lock()
 _VECTOR_INDEX_REBUILD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 _PENDING_VECTOR_INDEX_REBUILD_JOBS: dict[tuple[str, str], bool] = {}
 _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS: dict[tuple[str, str], str] = {}
+_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT: dict[tuple[str, str], float] = {}
 _VECTOR_INDEX_REBUILD_JOB_LOCK = threading.Lock()
+
+
+def _mark_pending_job_activity(
+    activity_map: dict[Any, float],
+    key: Any,
+) -> None:
+    activity_map[key] = time.monotonic()
+
+
+def _clear_pending_job_activity(
+    activity_map: dict[Any, float],
+    key: Any,
+) -> None:
+    activity_map.pop(key, None)
+
+
+def _log_background_failure(
+    *,
+    event: str,
+    job_key: Any,
+    exc: Exception,
+) -> None:
+    LOGGER.warning(
+        json.dumps(
+            {
+                "event": event,
+                "job_key": list(job_key) if isinstance(job_key, tuple) else str(job_key),
+                "error_type": exc.__class__.__name__,
+                "error": str(exc),
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+    )
+
+
+def _background_queue_probe(
+    *,
+    queue_name: str,
+    pending_jobs: dict[Any, bool],
+    pending_triggers: dict[Any, str],
+    pending_updated_at: dict[Any, float],
+    hung_after_seconds: float,
+) -> dict[str, Any]:
+    now = time.monotonic()
+    queued_items = len(pending_jobs)
+    dirty_items = sum(1 for item in pending_jobs.values() if bool(item))
+    pending_ages = [
+        max(0.0, now - float(pending_updated_at.get(key) or now))
+        for key in pending_jobs
+    ]
+    oldest_age_seconds = max(pending_ages, default=0.0)
+    trigger_examples = sorted({str(value or "").strip() for value in pending_triggers.values() if str(value or "").strip()})
+    hung = queued_items > 0 and oldest_age_seconds >= max(0.0, float(hung_after_seconds or 0.0))
+    return {
+        "queue_name": queue_name,
+        "queued_items": queued_items,
+        "dirty_items": dirty_items,
+        "oldest_age_seconds": round(oldest_age_seconds, 3),
+        "hung_threshold_seconds": float(hung_after_seconds),
+        "hung": hung,
+        "status": "degraded" if hung else "ok",
+        "triggers": trigger_examples[:5],
+    }
+
+
+def _background_queue_report() -> dict[str, Any]:
+    embedding_hung_after_seconds = _parse_nonnegative_delay_seconds(
+        "KERA_HEALTH_EMBEDDING_QUEUE_HUNG_SECONDS",
+        1800.0,
+    )
+    retrieval_hung_after_seconds = _parse_nonnegative_delay_seconds(
+        "KERA_HEALTH_RETRIEVAL_SYNC_HUNG_SECONDS",
+        1800.0,
+    )
+    vector_hung_after_seconds = _parse_nonnegative_delay_seconds(
+        "KERA_HEALTH_VECTOR_INDEX_HUNG_SECONDS",
+        1200.0,
+    )
+    with _EMBEDDING_JOB_LOCK:
+        embedding_queue = _background_queue_probe(
+            queue_name="case_embedding_refresh",
+            pending_jobs=dict(_PENDING_EMBEDDING_JOBS),
+            pending_triggers=dict(_PENDING_EMBEDDING_TRIGGERS),
+            pending_updated_at=dict(_PENDING_EMBEDDING_UPDATED_AT),
+            hung_after_seconds=embedding_hung_after_seconds,
+        )
+    with _FEDERATED_RETRIEVAL_SYNC_JOB_LOCK:
+        retrieval_queue = _background_queue_probe(
+            queue_name="federated_retrieval_corpus_sync",
+            pending_jobs=dict(_PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS),
+            pending_triggers=dict(_PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS),
+            pending_updated_at=dict(_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT),
+            hung_after_seconds=retrieval_hung_after_seconds,
+        )
+    with _VECTOR_INDEX_REBUILD_JOB_LOCK:
+        vector_queue = _background_queue_probe(
+            queue_name="ai_clinic_vector_index_rebuild",
+            pending_jobs=dict(_PENDING_VECTOR_INDEX_REBUILD_JOBS),
+            pending_triggers=dict(_PENDING_VECTOR_INDEX_REBUILD_TRIGGERS),
+            pending_updated_at=dict(_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT),
+            hung_after_seconds=vector_hung_after_seconds,
+        )
+
+    queues = {
+        "case_embedding_refresh": embedding_queue,
+        "federated_retrieval_corpus_sync": retrieval_queue,
+        "ai_clinic_vector_index_rebuild": vector_queue,
+    }
+    hung_queues = [name for name, queue in queues.items() if bool(queue.get("hung"))]
+    return {
+        "status": "degraded" if hung_queues else "ok",
+        "hung_queues": hung_queues,
+        "queues": queues,
+    }
+
+
+def _database_engine_probe(
+    engine: Any,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    backend = ""
+    try:
+        backend = str(getattr(getattr(engine, "url", None), "drivername", "") or "").strip()
+    except Exception:
+        backend = ""
+    result = {
+        "label": label,
+        "backend": backend,
+        "ready": False,
+        "detail": "",
+    }
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SELECT 1")
+        result["ready"] = True
+    except Exception as exc:
+        result["detail"] = str(exc)
+    return result
 
 
 def _parse_nonnegative_delay_seconds(env_name: str, default_seconds: float) -> float:
@@ -1205,8 +1406,10 @@ def _queue_case_embedding_refresh(
         _PENDING_EMBEDDING_TRIGGERS[job_key] = trigger
         if job_key in _PENDING_EMBEDDING_JOBS:
             _PENDING_EMBEDDING_JOBS[job_key] = True  # Mark as dirty
+            _mark_pending_job_activity(_PENDING_EMBEDDING_UPDATED_AT, job_key)
             return
         _PENDING_EMBEDDING_JOBS[job_key] = False
+        _mark_pending_job_activity(_PENDING_EMBEDDING_UPDATED_AT, job_key)
 
     execution_device = _preferred_embedding_execution_device()
     embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
@@ -1247,6 +1450,7 @@ def _queue_case_embedding_refresh(
             latest_trigger = _PENDING_EMBEDDING_TRIGGERS.get(key, job_trigger)
             if is_dirty:
                 _PENDING_EMBEDDING_JOBS[key] = False
+                _mark_pending_job_activity(_PENDING_EMBEDDING_UPDATED_AT, key)
                 latest_execution_device = _preferred_embedding_execution_device()
                 latest_embedding_delay_seconds = _case_embedding_refresh_delay_seconds(
                     latest_trigger,
@@ -1269,6 +1473,7 @@ def _queue_case_embedding_refresh(
             else:
                 _PENDING_EMBEDDING_JOBS.pop(key, None)
                 _PENDING_EMBEDDING_TRIGGERS.pop(key, None)
+                _clear_pending_job_activity(_PENDING_EMBEDDING_UPDATED_AT, key)
 
     def mark_embedding_job_superseded(
         job_id: str,
@@ -1373,10 +1578,11 @@ def _queue_case_embedding_refresh(
                     "error": str(exc),
                 },
             )
-            try:
-                print(f"Embedding indexing failed for {key}: {exc}")
-            except Exception:
-                pass
+            _log_background_failure(
+                event="case_embedding_refresh_index_stage_failed",
+                job_key=key,
+                exc=exc,
+            )
         finally:
             finalize_embedding_job(key, job_trigger)
 
@@ -1490,11 +1696,11 @@ def _queue_case_embedding_refresh(
                         "error": str(exc),
                     },
                 )
-            # We don't want to crash the worker thread
-            try:
-                print(f"Embedding indexing failed for {key}: {exc}")
-            except Exception:
-                pass
+            _log_background_failure(
+                event="case_embedding_refresh_failed",
+                job_key=key,
+                exc=exc,
+            )
         finally:
             if not handed_off_to_index_stage:
                 finalize_embedding_job(key, job_trigger)
@@ -1562,6 +1768,13 @@ def _queue_federated_retrieval_corpus_sync(
     trigger: str,
     retrieval_profile: str = "dinov2_lesion_crop",
 ) -> dict[str, Any]:
+    if control_plane_split_enabled():
+        return {
+            "site_id": site_store.site_id,
+            "retrieval_profile": retrieval_profile,
+            "queued": False,
+            "reason": "control_plane_split_enabled",
+        }
     disable_refresh = os.getenv("KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC", "").strip().lower()
     if disable_refresh in {"1", "true", "yes", "on"}:
         return {
@@ -1589,6 +1802,7 @@ def _queue_federated_retrieval_corpus_sync(
         _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS[job_key] = trigger
         if job_key in _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS:
             _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[job_key] = True
+            _mark_pending_job_activity(_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT, job_key)
             return {
                 "site_id": site_store.site_id,
                 "retrieval_profile": normalized_profile,
@@ -1598,6 +1812,7 @@ def _queue_federated_retrieval_corpus_sync(
                 "delay_seconds": float(delay_seconds),
             }
         _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[job_key] = False
+        _mark_pending_job_activity(_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT, job_key)
 
     poll_seconds = _parse_nonnegative_delay_seconds("KERA_FEDERATED_RETRIEVAL_SYNC_POLL_SECONDS", 3.0)
     poll_delay_seconds = max(0.1, float(poll_seconds or 0.0))
@@ -1629,9 +1844,11 @@ def _queue_federated_retrieval_corpus_sync(
             latest_trigger = _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.get(key, job_trigger)
             if is_dirty:
                 _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS[key] = False
+                _mark_pending_job_activity(_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT, key)
             else:
                 _PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.pop(key, None)
                 _PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.pop(key, None)
+                _clear_pending_job_activity(_PENDING_FEDERATED_RETRIEVAL_SYNC_UPDATED_AT, key)
 
         if not is_dirty:
             return
@@ -1689,10 +1906,11 @@ def _queue_federated_retrieval_corpus_sync(
                     monitoring_pending = True
                     return
         except Exception as exc:
-            try:
-                print(f"Federated retrieval auto-sync failed for {key}: {exc}")
-            except Exception:
-                pass
+            _log_background_failure(
+                event="federated_retrieval_sync_recheck_failed",
+                job_key=key,
+                exc=exc,
+            )
         finally:
             if not monitoring_pending:
                 finalize_sync_job(key, profile, job_trigger)
@@ -1742,10 +1960,11 @@ def _queue_federated_retrieval_corpus_sync(
                         monitoring_pending = True
                         return
         except Exception as exc:
-            try:
-                print(f"Federated retrieval auto-sync failed for {key}: {exc}")
-            except Exception:
-                pass
+            _log_background_failure(
+                event="federated_retrieval_sync_failed",
+                job_key=key,
+                exc=exc,
+            )
         finally:
             if not monitoring_pending:
                 finalize_sync_job(key, profile, job_trigger)
@@ -1798,6 +2017,7 @@ def _queue_ai_clinic_vector_index_rebuild(
         _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS[job_key] = trigger
         if job_key in _PENDING_VECTOR_INDEX_REBUILD_JOBS:
             _PENDING_VECTOR_INDEX_REBUILD_JOBS[job_key] = True
+            _mark_pending_job_activity(_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT, job_key)
             return {
                 "site_id": site_store.site_id,
                 "model_version_id": model_version_id,
@@ -1806,6 +2026,7 @@ def _queue_ai_clinic_vector_index_rebuild(
                 "trigger": trigger,
             }
         _PENDING_VECTOR_INDEX_REBUILD_JOBS[job_key] = False
+        _mark_pending_job_activity(_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT, job_key)
 
     execution_device = _preferred_embedding_execution_device()
     delay_seconds = _ai_clinic_vector_index_rebuild_delay_seconds(
@@ -1889,16 +2110,18 @@ def _queue_ai_clinic_vector_index_rebuild(
                         "error": str(exc),
                     },
                 )
-            try:
-                print(f"AI Clinic vector index rebuild failed for {key}: {exc}")
-            except Exception:
-                pass
+            _log_background_failure(
+                event="ai_clinic_vector_index_rebuild_failed",
+                job_key=key,
+                exc=exc,
+            )
         finally:
             with _VECTOR_INDEX_REBUILD_JOB_LOCK:
                 is_dirty = _PENDING_VECTOR_INDEX_REBUILD_JOBS.get(key, False)
                 latest_trigger = _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.get(key, job_trigger)
                 if is_dirty:
                     _PENDING_VECTOR_INDEX_REBUILD_JOBS[key] = False
+                    _mark_pending_job_activity(_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT, key)
                     latest_execution_device = _preferred_embedding_execution_device()
                     latest_delay_seconds = _ai_clinic_vector_index_rebuild_delay_seconds(
                         latest_trigger,
@@ -1915,6 +2138,7 @@ def _queue_ai_clinic_vector_index_rebuild(
                 else:
                     _PENDING_VECTOR_INDEX_REBUILD_JOBS.pop(key, None)
                     _PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.pop(key, None)
+                    _clear_pending_job_activity(_PENDING_VECTOR_INDEX_REBUILD_UPDATED_AT, key)
 
     _submit_executor_job_after_delay(
         _VECTOR_INDEX_REBUILD_EXECUTOR,
@@ -2148,6 +2372,207 @@ def _normalize_default_storage_root(value: str) -> Path:
         raise ValueError("Site storage directory must be a directory.")
     return site_root.resolve()
 _VALID_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9\-\.]+(?::\d+)?$")
+_DEFAULT_ALLOWED_CORS_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+)
+
+
+def _normalize_allowed_origin(origin: str) -> str | None:
+    normalized = str(origin or "").strip()
+    if not normalized:
+        return None
+    if not _VALID_ORIGIN_RE.match(normalized):
+        LOGGER.warning("Ignoring invalid CORS origin configuration: %s", normalized)
+        return None
+    return normalized
+
+
+def _build_allowed_cors_origins() -> list[str]:
+    configured: list[str] = list(_DEFAULT_ALLOWED_CORS_ORIGINS)
+    extra_frontend_origin = str(os.getenv("KERA_FRONTEND_ORIGIN") or "").strip()
+    configured_csv = str(os.getenv("KERA_CORS_ALLOWED_ORIGINS") or "").strip()
+    extra_candidates = [
+        extra_frontend_origin,
+        *(entry.strip() for entry in configured_csv.split(",") if entry.strip()),
+    ]
+    seen: set[str] = set()
+    allowed: list[str] = []
+    for candidate in [*configured, *extra_candidates]:
+        normalized = _normalize_allowed_origin(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        allowed.append(normalized)
+    return allowed
+
+
+def _request_route_label(request: StarletteRequest) -> str:
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    normalized = str(route_path or "").strip()
+    return normalized or "<unmatched>"
+
+
+def _build_liveness_report() -> dict[str, Any]:
+    request_metrics = _REQUEST_METRICS.snapshot(top_n=3)
+    return {
+        "status": "alive",
+        "service": "kera-api",
+        "version": KERA_VERSION,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "uptime_seconds": request_metrics["uptime_seconds"],
+    }
+
+
+def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
+    runtime_checks = _desktop_runtime_checks(cp, force_refresh_control_plane=False)
+    background_jobs = _background_queue_report()
+    request_metrics = _REQUEST_METRICS.snapshot(top_n=5)
+    database_connections = {
+        "control_plane": _database_engine_probe(CONTROL_PLANE_ENGINE, label="control_plane"),
+        "data_plane": _database_engine_probe(DATA_PLANE_ENGINE, label="data_plane"),
+    }
+    error_aggregation = current_error_aggregation_status()
+
+    required_checks = {
+        "storage.storage_dir": runtime_checks["storage"]["storage_dir"],
+        "storage.runtime_dir": runtime_checks["storage"]["runtime_dir"],
+        "data_plane_database": runtime_checks["data_plane_database"],
+        "model_artifacts": runtime_checks["model_artifacts"],
+        "database_connections.control_plane": database_connections["control_plane"],
+        "database_connections.data_plane": database_connections["data_plane"],
+    }
+    control_plane_cache_check = runtime_checks["control_plane_cache_database"]
+    if bool(control_plane_cache_check.get("required")):
+        required_checks["control_plane_cache_database"] = control_plane_cache_check
+
+    optional_checks = {
+        "disk": runtime_checks["disk"],
+        "control_plane": runtime_checks["control_plane"],
+        "background_jobs": {"ready": not background_jobs["hung_queues"]},
+    }
+    if bool(error_aggregation.get("configured")):
+        optional_checks["error_aggregation"] = {"ready": bool(error_aggregation.get("enabled"))}
+
+    failing_required_checks = [
+        name for name, check in required_checks.items() if not bool(check.get("ready"))
+    ]
+    degraded_checks = [
+        name for name, check in optional_checks.items() if not bool(check.get("ready"))
+    ]
+    ready = not failing_required_checks
+    if failing_required_checks:
+        status_value = "error"
+    elif degraded_checks:
+        status_value = "degraded"
+    else:
+        status_value = "ok"
+
+    return {
+        "status": status_value,
+        "ready": ready,
+        "service": "kera-api",
+        "version": KERA_VERSION,
+        "checked_at": runtime_checks["checked_at"],
+        "google_auth_configured": bool(_google_client_ids()),
+        "database_topology": DATABASE_TOPOLOGY,
+        "checks": runtime_checks,
+        "database_connections": database_connections,
+        "observability": {
+            "error_aggregation": error_aggregation,
+        },
+        "background_jobs": background_jobs,
+        "request_metrics": request_metrics,
+        "failing_required_checks": failing_required_checks,
+        "degraded_checks": degraded_checks,
+    }
+
+
+def _build_readiness_report(cp: ControlPlaneStore) -> dict[str, Any]:
+    payload = _build_runtime_health_report(cp)
+    if payload["ready"] and str(payload.get("status") or "").strip().lower() == "degraded":
+        payload["status"] = "ready_with_warnings"
+    return payload
+
+
+def _render_metrics() -> str:
+    base_metrics = _REQUEST_METRICS.render_prometheus().rstrip("\n")
+    background_jobs = _background_queue_report()
+    lines = [base_metrics]
+    lines.extend(
+        [
+            "# HELP kera_api_info Build information for the current API runtime.",
+            "# TYPE kera_api_info gauge",
+            f'kera_api_info{{service="kera-api",version="{KERA_VERSION}"}} 1',
+            "# HELP kera_api_background_queue_items Number of items currently pending in each in-memory background queue.",
+            "# TYPE kera_api_background_queue_items gauge",
+            "# HELP kera_api_background_queue_oldest_age_seconds Age of the oldest pending item in each in-memory background queue.",
+            "# TYPE kera_api_background_queue_oldest_age_seconds gauge",
+            "# HELP kera_api_background_queue_hung Whether the queue currently exceeds its hung threshold (1=yes, 0=no).",
+            "# TYPE kera_api_background_queue_hung gauge",
+        ]
+    )
+    for queue_name, payload in sorted((background_jobs.get("queues") or {}).items()):
+        safe_name = str(queue_name or "").replace("\\", "\\\\").replace("\"", "\\\"")
+        lines.append(
+            f'kera_api_background_queue_items{{queue="{safe_name}"}} {int(payload.get("queued_items") or 0)}'
+        )
+        lines.append(
+            f'kera_api_background_queue_oldest_age_seconds{{queue="{safe_name}"}} {float(payload.get("oldest_age_seconds") or 0.0):.6f}'
+        )
+        lines.append(
+            f'kera_api_background_queue_hung{{queue="{safe_name}"}} {1 if payload.get("hung") else 0}'
+        )
+    return "\n".join(lines) + "\n"
+
+
+class _RequestObservabilityMiddleware(BaseHTTPMiddleware):
+    """Attach request IDs, emit structured request logs, and collect in-memory metrics."""
+
+    async def dispatch(self, request: StarletteRequest, call_next: Any) -> StarletteResponse:
+        request_id = str(request.headers.get("X-Request-ID") or "").strip() or uuid4().hex
+        request.state.request_id = request_id
+        _REQUEST_METRICS.begin_request()
+        started_at = time.perf_counter()
+        response: StarletteResponse | None = None
+        status_code = 500
+        error_type: str | None = None
+        try:
+            response = await call_next(request)
+            status_code = int(response.status_code)
+            return response
+        except Exception as exc:
+            error_type = exc.__class__.__name__
+            raise
+        finally:
+            duration_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+            route_label = _request_route_label(request)
+            _REQUEST_METRICS.finish_request(
+                method=request.method,
+                route=route_label,
+                status_code=status_code,
+                duration_ms=duration_ms,
+            )
+            if response is not None:
+                response.headers.setdefault("X-Request-ID", request_id)
+            log_payload = {
+                "event": "http_request",
+                "request_id": request_id,
+                "method": request.method,
+                "route": route_label,
+                "status_code": status_code,
+                "duration_ms": round(duration_ms, 3),
+                "client_ip": getattr(request.client, "host", None),
+            }
+            if error_type is not None:
+                log_payload["error_type"] = error_type
+            LOGGER.log(
+                logging.ERROR if status_code >= 500 else logging.INFO,
+                json.dumps(log_payload, sort_keys=True, ensure_ascii=True),
+            )
 
 
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -2163,31 +2588,39 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="K-ERA Research API", version="0.2.0")
+    @asynccontextmanager
+    async def _app_lifespan(app: FastAPI):
+        cp = get_control_plane()
+        start_control_plane_sync_loop(
+            app,
+            cp,
+            heartbeat_interval_seconds=float(CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS),
+            bootstrap_refresh_seconds=float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS),
+            app_version=app.version,
+            os_info=_remote_node_os_info(),
+        )
+        _start_site_automation_loop()
+        try:
+            yield
+        finally:
+            stop_control_plane_sync_loop(app)
+            _stop_site_automation_loop()
 
-    allowed_origins = [
-        origin
-        for port in range(3000, 3020)
-        for origin in (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
-    ]
-    extra_origin = os.getenv("KERA_FRONTEND_ORIGIN", "").strip()
-    if extra_origin:
-        if _VALID_ORIGIN_RE.match(extra_origin):
-            allowed_origins.append(extra_origin)
-        else:
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "KERA_FRONTEND_ORIGIN '%s' is not a valid URL, ignoring.", extra_origin
-            )
+    app = FastAPI(title="K-ERA Research API", version=KERA_VERSION, lifespan=_app_lifespan)
+    configure_sentry_observability(release=KERA_VERSION, logger=LOGGER)
+    allowed_origins = _build_allowed_cors_origins()
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
+    app.add_middleware(AuthRateLimitMiddleware)
     app.add_middleware(_SecurityHeadersMiddleware)
+    app.add_middleware(_RequestObservabilityMiddleware)
 
     route_supports = build_route_supports(
         get_control_plane=get_control_plane,
@@ -2195,10 +2628,11 @@ def create_app() -> FastAPI:
         get_approved_user=get_approved_user,
         google_client_ids=_google_client_ids,
         desktop_self_check=_desktop_self_check,
-        load_node_credentials=load_node_credentials,
-        node_credentials_status=node_credentials_status,
-        save_node_credentials=save_node_credentials,
-        clear_node_credentials=clear_node_credentials,
+        build_health_report=_build_runtime_health_report,
+        build_readiness_report=_build_readiness_report,
+        build_liveness_report=_build_liveness_report,
+        render_metrics=_render_metrics,
+        secrets_manager=DEFAULT_SECRETS_MANAGER,
         database_topology=DATABASE_TOPOLOGY,
         remote_node_os_info=_remote_node_os_info,
         local_control_plane_dev_auth_enabled=_local_control_plane_dev_auth_enabled,
@@ -2315,24 +2749,6 @@ def create_app() -> FastAPI:
     app.include_router(build_admin_router(route_supports.admin))
     app.include_router(build_sites_router(route_supports.sites))
     app.include_router(build_cases_router(route_supports.cases))
-
-    @app.on_event("startup")
-    def _startup_remote_control_plane_sync() -> None:
-        cp = get_control_plane()
-        start_control_plane_sync_loop(
-            app,
-            cp,
-            heartbeat_interval_seconds=float(CONTROL_PLANE_HEARTBEAT_INTERVAL_SECONDS),
-            bootstrap_refresh_seconds=float(CONTROL_PLANE_BOOTSTRAP_REFRESH_SECONDS),
-            app_version=app.version,
-            os_info=_remote_node_os_info(),
-        )
-        _start_site_automation_loop()
-
-    @app.on_event("shutdown")
-    def _shutdown_remote_control_plane_sync() -> None:
-        stop_control_plane_sync_loop(app)
-        _stop_site_automation_loop()
 
     return app
 

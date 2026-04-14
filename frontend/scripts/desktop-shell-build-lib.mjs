@@ -55,7 +55,7 @@ function buildClientEnv() {
     NEXT_PUBLIC_KERA_DESKTOP_STRICT_MODE:
       process.env.NEXT_PUBLIC_KERA_DESKTOP_STRICT_MODE || process.env.KERA_DESKTOP_STRICT_MODE || "0",
     NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL:
-      process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL || "https://kera-bay.vercel.app/control-plane/api",
+      process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL || "https://k-era.org/control-plane/api",
   };
   return {
     "process.env": JSON.stringify(entries),

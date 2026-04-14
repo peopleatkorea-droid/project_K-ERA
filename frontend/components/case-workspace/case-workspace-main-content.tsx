@@ -15,6 +15,7 @@ import {
 } from "./saved-case-overview";
 import { Button } from "../ui/button";
 import { SectionHeader } from "../ui/section-header";
+import { CaseWorkspaceReviewPanel } from "./case-workspace-review-panel";
 import {
   docSectionHeadClass,
   docSectionLabelClass,
@@ -23,7 +24,7 @@ import {
   workspacePanelClass,
 } from "../ui/workspace-patterns";
 
-type CaseWorkspacePatientListViewProps = {
+export type CaseWorkspacePatientListViewProps = {
   boardProps: ComponentProps<typeof PatientListBoard>;
   backlogProps: ComponentProps<typeof MedsamArtifactBacklogPanel>;
 };
@@ -46,7 +47,7 @@ export function CaseWorkspacePatientListView({
   );
 }
 
-type CaseWorkspaceSavedCaseViewProps = {
+export type CaseWorkspaceSavedCaseViewProps = {
   overviewProps: ComponentProps<typeof SavedCaseOverview>;
   imageBoardProps: ComponentProps<typeof SavedCaseImageBoard>;
   analysisSectionContent?: ReactNode;
@@ -124,7 +125,7 @@ export function CaseWorkspaceSiteAccessPrompt({
   );
 }
 
-type CaseWorkspaceDraftViewProps = {
+export type CaseWorkspaceDraftViewProps = {
   canvasProps: Omit<
     ComponentProps<typeof CaseWorkspaceAuthoringCanvas>,
     "patientVisitForm" | "imageManagerPanel"
@@ -148,5 +149,66 @@ export function CaseWorkspaceDraftView({
         ) : null
       }
     />
+  );
+}
+
+type CaseWorkspaceMainLayoutProps = {
+  railView: "cases" | "patients";
+  mainLayoutClass: string;
+  patientListViewProps: CaseWorkspacePatientListViewProps;
+  savedCaseViewProps: CaseWorkspaceSavedCaseViewProps | null;
+  analysisSectionContent?: ReactNode;
+  selectedSiteId: string | null;
+  locale: Locale;
+  draftViewProps: CaseWorkspaceDraftViewProps;
+  showSecondaryPanel: boolean;
+  reviewPanelProps: ComponentProps<typeof CaseWorkspaceReviewPanel>;
+  onOpenHospitalAccessRequest?: () => void;
+};
+
+export function CaseWorkspaceMainLayout({
+  railView,
+  mainLayoutClass,
+  patientListViewProps,
+  savedCaseViewProps,
+  analysisSectionContent,
+  selectedSiteId,
+  locale,
+  draftViewProps,
+  showSecondaryPanel,
+  reviewPanelProps,
+  onOpenHospitalAccessRequest,
+}: CaseWorkspaceMainLayoutProps) {
+  return (
+    <div className={mainLayoutClass}>
+      {railView === "patients" ? (
+        <CaseWorkspacePatientListView
+          boardProps={patientListViewProps.boardProps}
+          backlogProps={patientListViewProps.backlogProps}
+        />
+      ) : savedCaseViewProps ? (
+        <CaseWorkspaceSavedCaseView
+          overviewProps={savedCaseViewProps.overviewProps}
+          imageBoardProps={savedCaseViewProps.imageBoardProps}
+          analysisSectionContent={analysisSectionContent}
+          sidebarProps={savedCaseViewProps.sidebarProps}
+        />
+      ) : !selectedSiteId ? (
+        <CaseWorkspaceSiteAccessPrompt
+          locale={locale}
+          onOpenHospitalAccessRequest={onOpenHospitalAccessRequest}
+        />
+      ) : (
+        <CaseWorkspaceDraftView
+          canvasProps={draftViewProps.canvasProps}
+          patientVisitFormProps={draftViewProps.patientVisitFormProps}
+          imageManagerPanelProps={draftViewProps.imageManagerPanelProps}
+        />
+      )}
+
+      {showSecondaryPanel ? (
+        <CaseWorkspaceReviewPanel {...reviewPanelProps} />
+      ) : null}
+    </div>
   );
 }

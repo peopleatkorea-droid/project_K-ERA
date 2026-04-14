@@ -69,16 +69,16 @@ type FetchPatientListPageOptions = {
   signal?: AbortSignal;
 };
 
-export async function fetchSiteSummary(siteId: string, token: string) {
+export async function fetchSiteSummary(siteId: string, token?: string) {
   if (canUseDesktopLocalApiTransport()) {
-    return requestDesktopLocalApiJson<SiteSummary>(`/api/sites/${siteId}/summary`, token);
+    return requestDesktopLocalApiJson<SiteSummary>(`/api/sites/${siteId}/summary`, token ?? "");
   }
   return request<SiteSummary>(`/api/sites/${siteId}/summary`, {}, token);
 }
 
-export async function fetchSiteSummaryCounts(siteId: string, token: string) {
+export async function fetchSiteSummaryCounts(siteId: string, token?: string) {
   if (canUseDesktopLocalApiTransport()) {
-    return requestDesktopLocalApiJson<SiteSummaryCounts>(`/api/sites/${siteId}/summary/counts`, token);
+    return requestDesktopLocalApiJson<SiteSummaryCounts>(`/api/sites/${siteId}/summary/counts`, token ?? "");
   }
   return request<SiteSummaryCounts>(`/api/sites/${siteId}/summary/counts`, {}, token);
 }

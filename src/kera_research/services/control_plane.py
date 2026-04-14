@@ -37,6 +37,7 @@ from kera_research.domain import (
 )
 from kera_research.passwords import (
     hash_password,
+    is_argon2_hash,
     is_bcrypt_hash,
     is_pbkdf2_sha256_hash,
     verify_pbkdf2_sha256_hash,
@@ -299,6 +300,10 @@ def _is_bcrypt_hash(value: str) -> bool:
     return is_bcrypt_hash(value)
 
 
+def _is_argon2_hash(value: str) -> bool:
+    return is_argon2_hash(value)
+
+
 def _is_pbkdf2_sha256_hash(value: str) -> bool:
     return is_pbkdf2_sha256_hash(value)
 
@@ -312,6 +317,7 @@ def _normalize_password_storage(value: str) -> str:
     if (
         not normalized
         or normalized == GOOGLE_AUTH_SENTINEL
+        or _is_argon2_hash(normalized)
         or _is_bcrypt_hash(normalized)
         or _is_pbkdf2_sha256_hash(normalized)
     ):
@@ -1027,6 +1033,7 @@ class ControlPlaneStore:
         decision_threshold: float | None = None,
         threshold_selection_metric: str | None = None,
         threshold_selection_metrics: dict[str, Any] | None = None,
+        aggregation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.models.register_aggregation(
             base_model_version_id,
@@ -1038,6 +1045,7 @@ class ControlPlaneStore:
             decision_threshold=decision_threshold,
             threshold_selection_metric=threshold_selection_metric,
             threshold_selection_metrics=threshold_selection_metrics,
+            aggregation_metadata=aggregation_metadata,
         )
 
     def get_public_statistics(self) -> dict[str, Any]:

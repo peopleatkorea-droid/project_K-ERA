@@ -5,12 +5,15 @@ import hashlib
 import hmac
 import os
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 import bcrypt
 
 PASSWORD_SCHEME = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = max(210000, int(os.getenv("KERA_PASSWORD_PBKDF2_ITERATIONS", "").strip() or "210000"))
 PASSWORD_KEY_LENGTH = 32
 _BCRYPT_MAX_PASSWORD_BYTES = 72
+_ARGON2_HASHER = PasswordHasher()
 
 
 def _pbkdf2_digest(password: str, salt: str, iterations: int) -> bytes:
@@ -25,12 +28,11 @@ def hash_password(password: str) -> str:
     normalized = str(password or "")
     if not normalized:
         raise ValueError("Password is required.")
-    encoded = normalized.encode("utf-8")
-    if len(encoded) <= _BCRYPT_MAX_PASSWORD_BYTES:
-        return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode("utf-8")
-    salt = _pbkdf2_salt()
-    digest = _pbkdf2_digest(normalized, salt, PASSWORD_ITERATIONS)
-    return f"{PASSWORD_SCHEME}${PASSWORD_ITERATIONS}${salt}${base64.b64encode(digest).decode('ascii')}"
+    return _ARGON2_HASHER.hash(normalized)
+
+
+def is_argon2_hash(value: str) -> bool:
+    return str(value or "").startswith(("$argon2id$", "$argon2i$", "$argon2d$"))
 
 
 def is_bcrypt_hash(value: str) -> bool:
@@ -46,6 +48,20 @@ def verify_bcrypt_password(password: str, encoded: str) -> bool:
         return bcrypt.checkpw(password.encode("utf-8"), encoded.encode("utf-8"))
     except ValueError:
         return False
+
+
+def verify_argon2_password(password: str, encoded: str) -> bool:
+    try:
+        return bool(_ARGON2_HASHER.verify(encoded, password))
+    except (InvalidHashError, VerificationError, VerifyMismatchError):
+        return False
+
+
+def argon2_hash_needs_rehash(encoded: str) -> bool:
+    try:
+        return bool(_ARGON2_HASHER.check_needs_rehash(encoded))
+    except (InvalidHashError, VerificationError, VerifyMismatchError):
+        return True
 
 
 def verify_pbkdf2_sha256_hash(password: str, encoded: str) -> bool:

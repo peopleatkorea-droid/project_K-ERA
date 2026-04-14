@@ -1,0 +1,118 @@
+services:
+  api:
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command:
+      - uv
+      - run
+      - uvicorn
+      - kera_research.api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "2"
+    environment:
+      KERA_SKIP_LOCAL_ENV_FILE: "1"
+      KERA_STORAGE_DIR: /var/lib/kera/storage
+      KERA_MODEL_DIR: /var/lib/kera/models
+      KERA_CONTROL_PLANE_ARTIFACT_DIR: /var/lib/kera/control-plane-artifacts
+      KERA_CONTROL_PLANE_DATABASE_URL: ${KERA_CONTROL_PLANE_DATABASE_URL:-sqlite:////var/lib/kera/control-plane/kera_control_plane.db}
+      KERA_DATA_PLANE_DATABASE_URL: ${KERA_DATA_PLANE_DATABASE_URL:-sqlite:////var/lib/kera/data-plane/kera_data_plane.db}
+    ports:
+      - "8000:8000"
+    volumes:
+      - kera-storage:/var/lib/kera/storage
+      - kera-models:/var/lib/kera/models
+      - kera-control-plane:/var/lib/kera/control-plane
+      - kera-data-plane:/var/lib/kera/data-plane
+      - kera-control-plane-artifacts:/var/lib/kera/control-plane-artifacts
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=3).getcode() == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command:
+      - uv
+      - run
+      - python
+      - -m
+      - kera_research.worker
+    environment:
+      KERA_SKIP_LOCAL_ENV_FILE: "1"
+      KERA_STORAGE_DIR: /var/lib/kera/storage
+      KERA_MODEL_DIR: /var/lib/kera/models
+      KERA_CONTROL_PLANE_ARTIFACT_DIR: /var/lib/kera/control-plane-artifacts
+      KERA_CONTROL_PLANE_DATABASE_URL: ${KERA_CONTROL_PLANE_DATABASE_URL:-sqlite:////var/lib/kera/control-plane/kera_control_plane.db}
+      KERA_DATA_PLANE_DATABASE_URL: ${KERA_DATA_PLANE_DATABASE_URL:-sqlite:////var/lib/kera/data-plane/kera_data_plane.db}
+    volumes:
+      - kera-storage:/var/lib/kera/storage
+      - kera-models:/var/lib/kera/models
+      - kera-control-plane:/var/lib/kera/control-plane
+      - kera-data-plane:/var/lib/kera/data-plane
+      - kera-control-plane-artifacts:/var/lib/kera/control-plane-artifacts
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,sys; data=pathlib.Path('/proc/1/cmdline').read_text(encoding='utf-8', errors='ignore'); sys.exit(0 if 'kera_research.worker' in data else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    init: true
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.web
+      args:
+        KERA_INTERNAL_API_BASE_URL: http://api:8000
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    environment:
+      KERA_INTERNAL_API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NODE_ENV: production
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then((response)=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  kera-storage:
+  kera-models:
+  kera-control-plane:
+  kera-data-plane:
+  kera-control-plane-artifacts:

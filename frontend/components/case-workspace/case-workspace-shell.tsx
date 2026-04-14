@@ -2,16 +2,12 @@
 
 import { type ReactNode } from "react";
 
+import type { CaseWorkspaceToastState } from "./case-workspace-definitions";
 import { workspaceNoiseClass, workspaceShellClass, workspaceToastClass } from "../ui/workspace-patterns";
-
-type ToastState = {
-  tone: "success" | "error";
-  message: string;
-} | null;
 
 type CaseWorkspaceShellProps = {
   theme: "dark" | "light";
-  toast: ToastState;
+  toast: CaseWorkspaceToastState;
   savedLabel: string;
   actionNeededLabel: string;
   children: ReactNode;

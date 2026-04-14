@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { mainAppAuthCookieName, mainAppAuthCookieOptions } from "./main-app-auth-cookie";
 import { controlPlaneSandboxEnabled } from "./config";
 import { createSessionToken, readSessionUserId, sessionCookieOptions } from "./session";
 import { authenticateNode, getControlPlaneUser } from "./store";
@@ -7,6 +8,23 @@ import type { ControlPlaneNode, ControlPlaneUser } from "./types";
 
 export function jsonError(message: string, status = 400) {
   return NextResponse.json({ detail: message }, { status });
+}
+
+export function clearMainAppAuthCookie<T extends NextResponse>(response: T): T {
+  response.cookies.set(mainAppAuthCookieName, "", {
+    ...mainAppAuthCookieOptions(),
+    maxAge: 0,
+  });
+  return response;
+}
+
+export function authJsonResponse(payload: Record<string, unknown>, status = 200) {
+  const response = NextResponse.json(payload, { status });
+  const token = typeof payload.access_token === "string" ? payload.access_token.trim() : "";
+  if (token) {
+    response.cookies.set(mainAppAuthCookieName, token, mainAppAuthCookieOptions());
+  }
+  return response;
 }
 
 function assertControlPlaneSandboxEnabled(): void {

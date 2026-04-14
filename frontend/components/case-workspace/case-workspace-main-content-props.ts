@@ -4,6 +4,8 @@ import type { ComponentProps } from "react";
 
 import { CaseWorkspaceAuthoringCanvas } from "./case-workspace-authoring-canvas";
 import { ImageManagerPanel } from "./image-manager-panel";
+import { MedsamArtifactBacklogPanel } from "./medsam-artifact-backlog-panel";
+import { PatientListBoard } from "./patient-list-board";
 import { PatientVisitForm } from "./patient-visit-form";
 import { SavedCaseImageBoard } from "./saved-case-image-board";
 import { SavedCaseOverview, SavedCaseSidebar } from "./saved-case-overview";
@@ -18,10 +20,201 @@ type SavedCaseImageBoardProps = ComponentProps<typeof SavedCaseImageBoard>;
 type SavedCaseSidebarProps = ComponentProps<typeof SavedCaseSidebar>;
 type PatientVisitFormProps = ComponentProps<typeof PatientVisitForm>;
 type ImageManagerPanelProps = ComponentProps<typeof ImageManagerPanel>;
+type PatientListBoardProps = ComponentProps<typeof PatientListBoard>;
+type MedsamArtifactBacklogPanelProps = ComponentProps<
+  typeof MedsamArtifactBacklogPanel
+>;
 type AuthoringCanvasProps = Omit<
   ComponentProps<typeof CaseWorkspaceAuthoringCanvas>,
   "patientVisitForm" | "imageManagerPanel"
 >;
+
+export function buildPatientListViewProps(args: {
+  locale: PatientListBoardProps["locale"];
+  localeTag: PatientListBoardProps["localeTag"];
+  commonNotAvailable: PatientListBoardProps["commonNotAvailable"];
+  selectedSiteId: string | null;
+  token: PatientListBoardProps["token"];
+  selectedSiteLabel: PatientListBoardProps["selectedSiteLabel"];
+  selectedPatientId: PatientListBoardProps["selectedPatientId"];
+  patientListRows: PatientListBoardProps["patientListRows"];
+  patientListTotalCount: PatientListBoardProps["patientListTotalCount"];
+  patientListPage: PatientListBoardProps["patientListPage"];
+  patientListTotalPages: PatientListBoardProps["patientListTotalPages"];
+  patientListThumbsByPatient: PatientListBoardProps["patientListThumbsByPatient"];
+  caseSearch: PatientListBoardProps["caseSearch"];
+  showOnlyMine: PatientListBoardProps["showOnlyMine"];
+  casesLoading: PatientListBoardProps["casesLoading"];
+  copyPatients: PatientListBoardProps["copyPatients"];
+  copyAllRecords: PatientListBoardProps["copyAllRecords"];
+  copyMyPatientsOnly: PatientListBoardProps["copyMyPatientsOnly"];
+  copyLoadingSavedCases: PatientListBoardProps["copyLoadingSavedCases"];
+  pick: PatientListBoardProps["pick"];
+  translateOption: PatientListBoardProps["translateOption"];
+  displayVisitReference: PatientListBoardProps["displayVisitReference"];
+  formatDateTime: PatientListBoardProps["formatDateTime"];
+  onSearchChange: PatientListBoardProps["onSearchChange"];
+  onShowOnlyMineChange: PatientListBoardProps["onShowOnlyMineChange"];
+  onPageChange: PatientListBoardProps["onPageChange"];
+  onOpenSavedCase: PatientListBoardProps["onOpenSavedCase"];
+  onOpenImageTextSearchResult: PatientListBoardProps["onOpenImageTextSearchResult"];
+  prefetchDesktopVisitImages?: (
+    siteId: string,
+    patientId: string,
+    visitDate: string,
+  ) => void;
+  medsamArtifactActiveStatus: PatientListBoardProps["medsamArtifactActiveStatus"];
+  medsamArtifactScope: PatientListBoardProps["medsamArtifactScope"];
+  medsamArtifactItems: PatientListBoardProps["medsamArtifactItems"];
+  medsamArtifactItemsBusy: PatientListBoardProps["medsamArtifactItemsBusy"];
+  medsamArtifactPage: PatientListBoardProps["medsamArtifactPage"];
+  medsamArtifactTotalCount: PatientListBoardProps["medsamArtifactTotalCount"];
+  medsamArtifactTotalPages: PatientListBoardProps["medsamArtifactTotalPages"];
+  medsamArtifactPanelEnabled: MedsamArtifactBacklogPanelProps["medsamArtifactPanelEnabled"];
+  medsamArtifactStatus: MedsamArtifactBacklogPanelProps["medsamArtifactStatus"];
+  medsamArtifactStatusBusy: MedsamArtifactBacklogPanelProps["medsamArtifactStatusBusy"];
+  medsamArtifactBackfillBusy: MedsamArtifactBacklogPanelProps["medsamArtifactBackfillBusy"];
+  canBackfillMedsamArtifacts: MedsamArtifactBacklogPanelProps["canBackfillMedsamArtifacts"];
+  onEnableMedsamArtifactPanel: () => void | Promise<void>;
+  onDisableMedsamArtifactPanel: MedsamArtifactBacklogPanelProps["onDisableMedsamArtifactPanel"];
+  onRefreshMedsamArtifactStatus: (force?: boolean) => void | Promise<void>;
+  onOpenMedsamArtifactBacklog: MedsamArtifactBacklogPanelProps["onOpenMedsamArtifactBacklog"];
+  onCloseMedsamArtifactBacklog: MedsamArtifactBacklogPanelProps["onCloseMedsamArtifactBacklog"];
+  onMedsamArtifactScopeChange: PatientListBoardProps["onMedsamArtifactScopeChange"];
+  onMedsamArtifactPageChange: PatientListBoardProps["onMedsamArtifactPageChange"];
+  onBackfillMedsamArtifacts: () => void | Promise<void>;
+}) {
+  const {
+    locale,
+    localeTag,
+    commonNotAvailable,
+    selectedSiteId,
+    token,
+    selectedSiteLabel,
+    selectedPatientId,
+    patientListRows,
+    patientListTotalCount,
+    patientListPage,
+    patientListTotalPages,
+    patientListThumbsByPatient,
+    caseSearch,
+    showOnlyMine,
+    casesLoading,
+    copyPatients,
+    copyAllRecords,
+    copyMyPatientsOnly,
+    copyLoadingSavedCases,
+    pick,
+    translateOption,
+    displayVisitReference,
+    formatDateTime,
+    onSearchChange,
+    onShowOnlyMineChange,
+    onPageChange,
+    onOpenSavedCase,
+    onOpenImageTextSearchResult,
+    prefetchDesktopVisitImages,
+    medsamArtifactActiveStatus,
+    medsamArtifactScope,
+    medsamArtifactItems,
+    medsamArtifactItemsBusy,
+    medsamArtifactPage,
+    medsamArtifactTotalCount,
+    medsamArtifactTotalPages,
+    medsamArtifactPanelEnabled,
+    medsamArtifactStatus,
+    medsamArtifactStatusBusy,
+    medsamArtifactBackfillBusy,
+    canBackfillMedsamArtifacts,
+    onEnableMedsamArtifactPanel,
+    onDisableMedsamArtifactPanel,
+    onRefreshMedsamArtifactStatus,
+    onOpenMedsamArtifactBacklog,
+    onCloseMedsamArtifactBacklog,
+    onMedsamArtifactScopeChange,
+    onMedsamArtifactPageChange,
+    onBackfillMedsamArtifacts,
+  } = args;
+
+  const boardProps: PatientListBoardProps = {
+    locale,
+    localeTag,
+    commonNotAvailable,
+    siteId: selectedSiteId,
+    token,
+    selectedSiteLabel,
+    selectedPatientId,
+    patientListRows,
+    patientListTotalCount,
+    patientListPage,
+    patientListTotalPages,
+    patientListThumbsByPatient,
+    caseSearch,
+    showOnlyMine,
+    casesLoading,
+    copyPatients,
+    copyAllRecords,
+    copyMyPatientsOnly,
+    copyLoadingSavedCases,
+    pick,
+    translateOption,
+    displayVisitReference,
+    formatDateTime,
+    onSearchChange,
+    onShowOnlyMineChange,
+    onPageChange,
+    onOpenSavedCase,
+    onOpenImageTextSearchResult,
+    onPrefetchCase: (caseRecord) => {
+      if (!selectedSiteId || !prefetchDesktopVisitImages) {
+        return;
+      }
+      prefetchDesktopVisitImages(
+        selectedSiteId,
+        caseRecord.patient_id,
+        caseRecord.visit_date,
+      );
+    },
+    medsamArtifactActiveStatus,
+    medsamArtifactScope,
+    medsamArtifactItems,
+    medsamArtifactItemsBusy,
+    medsamArtifactPage,
+    medsamArtifactTotalCount,
+    medsamArtifactTotalPages,
+    onCloseMedsamArtifactBacklog,
+    onMedsamArtifactScopeChange,
+    onMedsamArtifactPageChange,
+  };
+
+  const backlogProps: MedsamArtifactBacklogPanelProps = {
+    locale,
+    pick,
+    medsamArtifactPanelEnabled,
+    medsamArtifactStatus,
+    medsamArtifactStatusBusy,
+    medsamArtifactBackfillBusy,
+    medsamArtifactActiveStatus,
+    canBackfillMedsamArtifacts,
+    onEnableMedsamArtifactPanel: () => {
+      void onEnableMedsamArtifactPanel();
+    },
+    onDisableMedsamArtifactPanel,
+    onRefreshMedsamArtifactStatus: () => {
+      void onRefreshMedsamArtifactStatus(true);
+    },
+    onOpenMedsamArtifactBacklog,
+    onCloseMedsamArtifactBacklog,
+    onBackfillMedsamArtifacts: () => {
+      void onBackfillMedsamArtifacts();
+    },
+  };
+
+  return {
+    boardProps,
+    backlogProps,
+  };
+}
 
 export function buildSavedCaseViewProps(args: {
   locale: SavedCaseOverviewProps["locale"];

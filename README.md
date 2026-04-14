@@ -142,7 +142,7 @@ local-first control plane까지 같이 쓰는 현재 기준 최소 예시는 아
 ```dotenv
 NEXT_PUBLIC_LOCAL_NODE_API_BASE_URL=http://127.0.0.1:8000
 KERA_CONTROL_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_control_plane?sslmode=require
-KERA_CONTROL_PLANE_DEV_AUTH=true
+KERA_CONTROL_PLANE_DEV_AUTH=false
 KERA_SITE_STORAGE_SOURCE=local
 ```
 
@@ -219,18 +219,91 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
   - `validation summary upload`
   - `LLM relay`
 
-### 7. 2026-04-13 운영 가드 업데이트
+### 7. 2026-04-13 ~ 2026-04-14 운영 / 배포 업데이트
 
 - Tauri desktop runtime의 CSP를 더 이상 `null`로 두지 않고 명시적으로 설정했습니다.
 - `frontend/src-tauri/tauri.conf.json`, `frontend/src-tauri/Cargo.toml`, `frontend/package.json`, `pyproject.toml`의 버전은 현재 `1.0.0`으로 맞춰져 있습니다.
+- FastAPI 런타임도 같은 버전(`1.0.0`)을 health / readiness / liveness 응답에 보고합니다.
 - `frontend/scripts/sync-desktop-version.mjs`를 추가해 `npm run tauri:dev*`, `npm run tauri:build` 실행 전 버전 드리프트를 자동으로 정리하도록 했습니다.
 - `npm run desktop:verify`는 이제 desktop bundle resource 확인뿐 아니라 `CSP 설정 여부`와 `desktop/web/python 버전 일치`까지 같이 검사합니다.
 - 로그인 rate limit은 control-plane DB 기반으로 기록되어 프로세스 재시작 뒤에도 동일한 제한 창(`5분 / 10회`)을 유지합니다. DB 경로가 일시적으로 실패하면 기존 in-memory fallback으로 내려갑니다.
-- control plane은 Alembic baseline을 도입했고, startup 시 현재 DB를 `head`로 맞춥니다. 현재 baseline revision은 `20260413_01`이며 이후 control-plane schema change는 Alembic revision으로 추가합니다.
-- `control_plane_schema_state`는 현재 Alembic revision을 기록하고, `data_plane_schema_state`는 기존 커스텀 data-plane schema revision을 기록합니다.
-- control plane migration 상태 확인/적용은 `uv run python -m kera_research.control_plane_alembic current`, `uv run python -m kera_research.control_plane_alembic upgrade head`로 실행할 수 있습니다.
+- control plane과 data plane 모두 Alembic baseline을 도입했고, startup 시 현재 DB를 `head`로 맞춥니다.
+  - control plane baseline revision: `20260413_01`
+  - data plane baseline revision: `20260413_02`
+- data plane은 기존 `create_all + custom migration` 경로를 먼저 유지한 뒤 Alembic `head`를 적용합니다. 즉 기존 로컬 SQLite 보정 로직은 그대로 두면서, 이후 schema change는 Alembic revision으로 누적할 수 있습니다.
+- `control_plane_schema_state`, `data_plane_schema_state`는 이제 각각 현재 Alembic revision을 기록합니다.
+- migration 상태 확인/적용은 아래처럼 실행할 수 있습니다.
+  - control plane: `uv run python -m kera_research.control_plane_alembic current`
+  - control plane: `uv run python -m kera_research.control_plane_alembic upgrade head`
+  - data plane: `uv run python -m kera_research.data_plane_alembic current`
+  - data plane: `uv run python -m kera_research.data_plane_alembic upgrade head`
+- API에는 운영용 probe와 기본 metrics endpoint가 추가되었습니다.
+  - `GET /api/live`: 프로세스 liveness와 버전, uptime 확인
+  - `GET /api/ready`: storage / DB / model artifact / background queue 상태를 반영한 readiness 확인
+  - `GET /api/health`: readiness payload + 상세 runtime check / request metrics
+  - `GET /api/metrics`: Prometheus text exposition 형식의 in-memory request metrics
+- 모든 API 응답에는 `X-Request-ID`가 포함되고, 서버는 route template 기준의 structured request log와 request duration metrics를 남깁니다.
+- 선택형 Sentry error aggregation / performance trace hook도 추가했습니다. `KERA_SENTRY_DSN`이 없으면 비활성 상태를 유지하고, DSN이 있으면 FastAPI exception/error event와 traces를 수집할 수 있습니다.
+- 연합학습 보강도 추가했습니다.
+  - `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 있으면 각 site의 weight delta update에 HMAC 서명이 붙고, 중앙 registry는 서명을 검증합니다.
+  - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned delta는 등록/집계 전에 거절됩니다.
+  - aggregation 전략은 `KERA_FEDERATED_AGGREGATION_STRATEGY=fedavg|coordinate_median|trimmed_mean`으로 고를 수 있고, `trimmed_mean`은 `KERA_FEDERATED_AGGREGATION_TRIM_RATIO`를 사용합니다.
+  - 선택형 client-side delta hardening으로 `KERA_FEDERATED_DELTA_CLIP_NORM`, `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER`, `KERA_FEDERATED_DELTA_QUANTIZATION_BITS=8|16`을 지원합니다.
+  - 이 보강은 trusted consortium 환경을 목표로 한 1차 가드입니다. secure aggregation이나 formal DP accountant를 대체하지는 않습니다.
+- baseline 컨테이너 자산도 추가했습니다.
+  - `Dockerfile.api`: FastAPI / worker 공용 이미지
+  - `frontend/Dockerfile.web`: Next.js production 이미지
+  - `docker-compose.yml`: `api + worker + web` 3개 서비스를 한 번에 띄우는 baseline stack
+- compose 기본값은 SQLite volume을 사용하지만, `KERA_CONTROL_PLANE_DATABASE_URL`, `KERA_DATA_PLANE_DATABASE_URL` 환경변수를 주면 외부 PostgreSQL / 별도 DB로도 바꿀 수 있습니다.
+- compose stack은 이제 `api / worker / web` healthcheck와 `service_healthy` 의존관계를 포함합니다.
 - split mode에서 비어 보이던 site/workspace 응답은 remote bootstrap + local cache 기준으로 계속 보이게 복구했습니다.
 - `.\scripts\run_control_plane_e2e_smoke.ps1`로 실제 런타임 흐름을 한 번에 검증할 수 있습니다.
+- 2026-04-14 기준으로 Windows 첫 배포 경로는 `CPU + NSIS current-user installer`를 권장합니다. 이 경로는 현재 로컬 smoke에서 `package -> install -> first launch`까지 통과한 상태입니다.
+
+### 7-1. 컨테이너 baseline 실행
+
+웹/SaaS 형태의 baseline 런타임을 로컬에서 띄우려면:
+
+```powershell
+docker compose up --build
+```
+
+기본 포트:
+
+- web: `http://localhost:3000`
+- api: `http://localhost:8000`
+
+기본 compose는 named volume에 SQLite control/data plane을 저장합니다. 외부 DB를 쓰려면 `.env` 또는 셸 환경변수로 아래 값을 덮어씁니다.
+
+```dotenv
+KERA_CONTROL_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_control_plane
+KERA_DATA_PLANE_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/kera_data_plane
+```
+
+선택형 Sentry observability를 켜려면 아래 값을 추가합니다.
+
+```dotenv
+KERA_SENTRY_DSN=https://<public>@<org>.ingest.sentry.io/<project>
+KERA_SENTRY_ENVIRONMENT=production
+KERA_SENTRY_TRACES_SAMPLE_RATE=0.1
+KERA_SENTRY_PROFILES_SAMPLE_RATE=0.0
+```
+
+### 7-2. Windows 설치형 배포 권장 경로
+
+현재 Windows 설치형 배포는 `CPU + NSIS current-user installer`를 기본 경로로 권장합니다.
+
+- 권장 package build: `cd frontend && npm run desktop:package:cpu:nsis`
+- 권장 설치 smoke: `cd frontend && npm run desktop:smoke-installed:cpu`
+- 산출물 확인: `cd frontend && npm run desktop:verify-package:nsis`
+- MSI 관리자 검증이 필요하면 `cd frontend && npm run desktop:package:cpu:msi`, `powershell -ExecutionPolicy Bypass -File ./scripts/run-desktop-installer-smoke.ps1 -Profile cpu -InstallerType msi -LaunchSeconds 15`처럼 별도 경로로 확인합니다.
+
+참고:
+
+- NSIS installer는 `currentUser` 모드로 동작해서 관리자 권한 없이 설치할 수 있습니다.
+- MSI는 여전히 관리자 권한 전제를 두는 경로라, 병원 PC 일반 사용자 배포 기준 기본 경로로는 권장하지 않습니다.
+- `desktop:smoke-installed:cpu`는 비관리자 세션이면 자동으로 NSIS current-user installer를 우선 사용합니다.
+- `desktop:smoke-installed:cpu:nsis`, `desktop:verify-package:nsis`, `tauri:build:nsis`는 권장 배포 경로만 따로 확인할 때 사용합니다.
 
 공용 FastAPI 서버 1대를 두고 다른 PC에서 같은 관리자/프로젝트/site를 보려면, 클라이언트 PC에서는 로컬 API를 띄우지 말고 아래처럼 frontend만 공용 API에 연결하세요.
 
@@ -364,7 +437,7 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 | `KERA_CONTROL_PLANE_API_BASE_URL` | 병원 local node가 중앙 control-plane HTTP API에 붙을 때 사용하는 base URL |
 | `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL` | 병원 local node가 중앙 metadata projection/cache를 저장하는 로컬 SQLite DB |
 | `KERA_CONTROL_PLANE_SESSION_SECRET` | control plane 세션/JWT 서명용 비밀값 |
-| `KERA_CONTROL_PLANE_DEV_AUTH` | 로컬 개발용 dev login 허용 여부 (`true` 권장, 운영에서는 비활성화) |
+| `KERA_CONTROL_PLANE_DEV_AUTH` | 로컬 개발용 dev login 허용 여부 (기본 `false`, 개발 중에만 임시 `true`) |
 | `KERA_CONTROL_PLANE_DIR` | 중앙 control plane 파일 루트 (`validation_cases`, `validation_reports`, `experiments`, `artifacts`) |
 | `KERA_CONTROL_PLANE_ARTIFACT_DIR` | 중앙 delta 및 control plane 파일 아티팩트 저장 경로 |
 | `KERA_DATA_PLANE_DATABASE_URL` | 병원 로컬 data plane DB (환자, 방문, 이미지) |
@@ -378,12 +451,20 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 | `KERA_CONTROL_PLANE_NODE_ID` | 병원 PC에 발급된 node id. 보통 최초 등록 후 로컬 자격증명 저장소에서 자동 로드 |
 | `KERA_CONTROL_PLANE_NODE_TOKEN` | 병원 PC에 발급된 node token. 보통 최초 등록 후 로컬 자격증명 저장소에서 자동 로드 |
 | `KERA_SITE_STORAGE_SOURCE` | site 저장소 해석 기준. remote control plane 개발 중에는 `local` 권장 |
+| `KERA_FEDERATED_UPDATE_SIGNING_SECRET` | weight delta update 서명용 HMAC 비밀값. multi-site 운영 시 설정 권장 |
+| `KERA_FEDERATED_UPDATE_SIGNING_KEY_ID` | 서명 키 회전 시 추적용 key id |
+| `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES` | `true`면 unsigned federated delta 등록/집계를 거절 |
+| `KERA_FEDERATED_AGGREGATION_STRATEGY` | `fedavg`, `coordinate_median`, `trimmed_mean` 중 선택 |
+| `KERA_FEDERATED_AGGREGATION_TRIM_RATIO` | `trimmed_mean`에서 양 끝을 자를 비율 (기본 `0.2`) |
+| `KERA_FEDERATED_DELTA_CLIP_NORM` | site-side delta L2 clipping 임계값 |
+| `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER` | clipping 후 추가할 Gaussian noise 배수. formal DP accountant는 아직 없음 |
+| `KERA_FEDERATED_DELTA_QUANTIZATION_BITS` | 전송/저장 delta 양자화 비트 수 (`8` 또는 `16`) |
 | `KERA_ONEDRIVE_TENANT_ID` | OneDrive/SharePoint Graph app의 tenant ID |
 | `KERA_ONEDRIVE_CLIENT_ID` | OneDrive/SharePoint Graph app의 client ID |
 | `KERA_ONEDRIVE_CLIENT_SECRET` | OneDrive/SharePoint Graph app의 client secret |
 | `KERA_ONEDRIVE_DRIVE_ID` | 업로드 대상 document library 또는 drive ID |
 | `KERA_ONEDRIVE_ROOT_PATH` | drive 내부에서 K-ERA 모델/델타를 올릴 루트 폴더 경로 |
-| `KERA_DATABASE_URL` / `DATABASE_URL` | 단일 DB 방식 사용 시 (control/data plane 미분리) |
+| `KERA_DATABASE_URL` / `DATABASE_URL` | legacy 단일 DB 호환용. split control/data plane env를 쓰는 운영에서는 비워 두는 것을 권장 |
 | `KERA_CASE_REFERENCE_SALT` | case_reference_id 해시 salt (다기관 환경에서 모든 노드가 동일 값 사용 권장) |
 | `MEDSAM_SCRIPT` | MedSAM 실행 스크립트 경로 |
 | `MEDSAM_CHECKPOINT` | MedSAM 체크포인트 경로 |
@@ -399,6 +480,8 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 - `KERA_GOOGLE_CLIENT_ID`와 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`는 실행 스크립트가 서버/프론트엔드에서 서로 보완되도록 처리합니다.
 - 불특정 사용자 배포에서는 `KERA_LOCAL_API_JWT_PRIVATE_KEY_B64`를 중앙 control plane 서버에만 두고, `KERA_LOCAL_API_JWT_PUBLIC_KEY_B64`만 desktop/local node에 배포하세요.
 - 중앙 owner(Next.js control plane)는 `KERA_CONTROL_PLANE_DATABASE_URL`을 사용합니다. 병원 local node는 `KERA_CONTROL_PLANE_API_BASE_URL`과 `KERA_LOCAL_CONTROL_PLANE_DATABASE_URL`을 사용하고, `KERA_DATA_PLANE_DATABASE_URL`은 병원 로컬 DB를 가리켜야 합니다.
+- `KERA_DATABASE_URL` / `DATABASE_URL`는 legacy 호환용입니다. split env를 함께 쓰는 경우에는 실제로 다른 DB를 가리킬 때만 경고가 발생하며, 운영 설정에서는 가능하면 비워 두는 편이 안전합니다.
+- remote control plane cache SQLite가 손상된 경우 local node는 startup 시 cache 파일을 같은 경로에서 quarantine 후 재생성합니다. 별도 `.recovered.db`로 우회하지 않습니다.
 - 아무 DB도 지정하지 않으면 기본값은 `앱 폴더의 상위 디렉토리\KERA_DATA\kera.db`입니다.
 - 집/병원 등 여러 관리자 PC에서 같은 validation metadata와 model registry artifact를 보려면 `KERA_CONTROL_PLANE_DIR`과 `KERA_MODEL_DIR`을 모든 관리자 PC에서 동일한 공유 경로로 맞추는 것을 권장합니다.
 - OneDrive/SharePoint 자동 발행을 쓰려면 `KERA_MODEL_DISTRIBUTION_MODE=download_url`과 `KERA_ONEDRIVE_*`를 함께 설정하세요. 그러면 관리자 Registry의 `자동 발행` 버튼으로 모델/델타를 바로 업로드하고 링크를 등록할 수 있습니다.
@@ -422,12 +505,14 @@ Single-DB에서 split control/data plane으로 전환할 때는 [docs/control_pl
 **웹 앱:**
 - Google Sign-In (기본 연구자 로그인 경로, `/`)
 - 로컬 username/password 로그인 (관리자 복구용, `/admin-login`)
+- 새/마이그레이션 비밀번호는 Argon2로 저장하고, 기존 bcrypt/PBKDF2 row는 성공적인 로그인 시 Argon2로 무중단 재해시합니다.
 - JWT 기반 세션, 2시간 만료
 - 기관(site) 및 역할(role) 접근 요청 제출 및 승인/반려
 
 **데스크탑 앱:**
 - Google OAuth 토큰 교환 (`/auth/desktop/start` → `/auth/desktop/exchange`)
-- 개발 모드 로컬 로그인 (`KERA_CONTROL_PLANE_DEV_AUTH=true` 환경에서만)
+- 개발 모드 로컬 로그인 (`KERA_CONTROL_PLANE_DEV_AUTH=true` 이고 localhost/loopback 요청에서만)
+  - 추가 가드: runtime environment가 `production/staging`으로 보이거나 control-plane base URL이 localhost가 아니면 dev-login route는 아예 등록되지 않습니다.
 - 세션은 로컬에 캐시되어 앱 재시작 시 자동 복원
 
 지원 역할: `admin`, `site_admin`, `researcher`, `viewer`
@@ -777,6 +862,8 @@ uv run python -m unittest tests.test_modeling
 - MedSAM은 로컬 스크립트와 체크포인트가 준비된 경우에만 사용하며, 그렇지 않으면 fallback ROI 경로를 사용합니다.
 - 프론트엔드 실행 스크립트는 개발 서버(`next dev`) 기준입니다.
 - 프론트엔드는 기본적으로 동일 origin의 `/api/...`로 요청하고, Next 개발 서버가 내부적으로 `http://127.0.0.1:8000` API로 프록시합니다. 다른 주소를 써야 하면 `KERA_INTERNAL_API_BASE_URL` 또는 `NEXT_PUBLIC_API_BASE_URL`을 설정합니다.
+- CORS 기본 허용 origin은 `localhost/127.0.0.1`의 `3000`, `3001`만 포함합니다. 추가 웹 origin이 필요하면 `KERA_CORS_ALLOWED_ORIGINS=https://example.org,https://admin.example.org`처럼 명시적으로 설정합니다.
+- 역방향 프록시 뒤에서 로그인 rate limit을 정확히 적용하려면 `KERA_TRUST_PROXY_HEADERS=true`와 `KERA_TRUSTED_PROXY_IPS`를 함께 설정해야 합니다. 신뢰한 프록시가 아닐 때는 `X-Forwarded-For`/`X-Real-IP`를 무시합니다.
 - 배포용 인증, 비밀 관리, 감사 로깅, 장애 복구는 연구용 로컬 노드 수준으로만 구성되어 있습니다.
 
 ### 프론트엔드 빌드/캐시 트러블슈팅

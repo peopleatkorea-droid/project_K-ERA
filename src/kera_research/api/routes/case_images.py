@@ -30,6 +30,7 @@ from kera_research.api.routes.case_shared import (
     sync_image_artifact_cache_best_effort,
 )
 from kera_research.api.routes.workspace_visibility import workspace_visit_visible
+from kera_research.services.data_plane_helpers import FileUploadValidator
 from kera_research.services.image_artifact_status import (
     artifact_status_labels,
     build_artifact_status_items,
@@ -64,6 +65,7 @@ def build_case_images_router(support: Any) -> APIRouter:
     lesion_preview_jobs_lock = support.lesion_preview_jobs_lock
     max_image_bytes = support.max_image_bytes
     InvalidImageUploadError = support.InvalidImageUploadError
+    upload_validator = FileUploadValidator(max_image_bytes=max_image_bytes)
 
     def _visible_workspace_case_keys(site_store: Any, patient_id: str | None = None) -> set[tuple[str, str]]:
         visits = (
@@ -233,12 +235,10 @@ def build_case_images_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         # Reject oversized requests before reading the body into memory.
         content_length_header = request.headers.get("content-length")
-        if content_length_header is not None:
-            try:
-                if int(content_length_header) > max_image_bytes:
-                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 20 MB limit.")
-            except ValueError:
-                pass
+        try:
+            upload_validator.validate_content_length(content_length_header)
+        except InvalidImageUploadError as exc:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
         normalized_view = view.strip().lower()
         if normalized_view not in _VALID_IMAGE_VIEWS:
             raise HTTPException(
@@ -247,16 +247,18 @@ def build_case_images_router(support: Any) -> APIRouter:
             )
         site_store = require_site_access(cp, user, site_id)
         content = await file.read()
-        if len(content) > max_image_bytes:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds 20 MB limit.")
         try:
+            validated_upload = upload_validator.validate_image_upload(
+                content=content,
+                file_name=file.filename,
+            )
             saved_image = site_store.add_image(
                 patient_id=patient_id,
                 visit_date=visit_date,
                 view=normalized_view,
                 is_representative=is_representative,
-                file_name=file.filename or "upload.bin",
-                content=content,
+                file_name=validated_upload.normalized_upload_name,
+                content=validated_upload.sanitized_content,
                 created_by_user_id=user["user_id"],
             )
             schedule_image_derivative_backfill(
@@ -278,7 +280,12 @@ def build_case_images_router(support: Any) -> APIRouter:
             )
             return saved_image
         except InvalidImageUploadError as exc:
-            raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+            status_code = (
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+                if "20 MB limit" in str(exc)
+                else status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+            )
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -825,11 +832,8 @@ def build_case_images_router(support: Any) -> APIRouter:
                 top_k=max(1, min(int(body.top_k or 10), 50)),
                 persistence_dir=persistence_dir,
             )
-            token = (authorization or "").replace("Bearer ", "").strip()
             for item in result["results"]:
                 preview_url = f"/api/sites/{site_id}/images/{item['image_id']}/preview"
-                if token:
-                    preview_url += f"?token={token}"
                 item["preview_url"] = preview_url
                 item.pop("image_path", None)
             return {"query": query, **result}

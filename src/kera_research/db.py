@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 import warnings
+import gc
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
@@ -92,17 +94,6 @@ def _sqlite_file_is_malformed(path: Path) -> bool:
         return False
 
 
-def _recovered_control_plane_cache_path(database_path: Path) -> Path:
-    suffix = database_path.suffix
-    stem = database_path.stem
-    candidate = database_path.with_name(f"{stem}.recovered{suffix}")
-    recovery_index = 2
-    while _sqlite_file_is_malformed(candidate):
-        candidate = database_path.with_name(f"{stem}.recovered{recovery_index}{suffix}")
-        recovery_index += 1
-    return candidate
-
-
 def _is_malformed_sqlite_error(error: BaseException) -> bool:
     message = str(error or "").strip().lower()
     return "database disk image is malformed" in message or "file is not a database" in message
@@ -133,9 +124,26 @@ def _quarantine_local_control_plane_cache() -> list[Path]:
         if not candidate.exists():
             continue
         target = Path(f"{candidate}.{quarantine_suffix}")
-        candidate.replace(target)
+        _replace_path_with_retry(candidate, target)
         moved_paths.append(target)
     return moved_paths
+
+
+def _replace_path_with_retry(source: Path, target: Path, *, attempts: int = 3) -> None:
+    last_error: PermissionError | None = None
+    for attempt in range(attempts):
+        try:
+            source.replace(target)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            CONTROL_PLANE_ENGINE.dispose()
+            gc.collect()
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def _control_plane_remote_api_enabled() -> bool:
@@ -152,30 +160,9 @@ def _resolve_control_plane_database_url() -> str:
         or ""
     ).strip()
     if local_cache_url:
-        local_cache_path = _sqlite_database_path(local_cache_url)
-        if local_cache_path is not None and _sqlite_file_is_malformed(local_cache_path):
-            recovered_path = _recovered_control_plane_cache_path(local_cache_path)
-            warnings.warn(
-                "The local control-plane cache database is malformed. "
-                f"Using a fresh recovery cache at {recovered_path.name}.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return _sqlite_url_for_path(recovered_path)
         return local_cache_url
     if _control_plane_remote_api_enabled():
-        default_cache_url = _default_local_control_plane_cache_url()
-        default_cache_path = _sqlite_database_path(default_cache_url)
-        if default_cache_path is not None and _sqlite_file_is_malformed(default_cache_path):
-            recovered_path = _recovered_control_plane_cache_path(default_cache_path)
-            warnings.warn(
-                "The default local control-plane cache database is malformed. "
-                f"Using a fresh recovery cache at {recovered_path.name}.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return _sqlite_url_for_path(recovered_path)
-        return default_cache_url
+        return _default_local_control_plane_cache_url()
     legacy_url = os.getenv("KERA_DATABASE_URL") or os.getenv("DATABASE_URL")
     return (
         os.getenv("KERA_CONTROL_PLANE_DATABASE_URL")
@@ -250,8 +237,38 @@ def _configured_database_env_names() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _configured_database_env_values(env_names: tuple[str, ...]) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for env_name in env_names:
+        value = str(os.getenv(env_name) or "").strip()
+        if not value or value in seen:
+            continue
+        values.append(value)
+        seen.add(value)
+    return tuple(values)
+
+
+def _legacy_database_env_conflicts(
+    *,
+    control_plane_url: str,
+    data_plane_url: str,
+    legacy_values: tuple[str, ...],
+    split_env_names: tuple[str, ...],
+) -> bool:
+    if not legacy_values or not split_env_names:
+        return False
+    effective_urls = {
+        str(control_plane_url or "").strip(),
+        str(data_plane_url or "").strip(),
+    }
+    effective_urls.discard("")
+    return any(value not in effective_urls for value in legacy_values)
+
+
 def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> dict[str, object]:
     configured_env_names = _configured_database_env_names()
+    legacy_values = _configured_database_env_values(configured_env_names["legacy"])
     control_plane_remote_api_enabled = _control_plane_remote_api_enabled()
     return {
         "control_plane_split_enabled": control_plane_url != data_plane_url,
@@ -259,9 +276,16 @@ def _database_topology_summary(control_plane_url: str, data_plane_url: str) -> d
         "control_plane_backend": database_backend_label(control_plane_url),
         "data_plane_backend": database_backend_label(data_plane_url),
         "data_plane_local_sqlite": database_backend_label(data_plane_url) == "sqlite",
-        "legacy_database_env_present": bool(configured_env_names["legacy"]),
+        "legacy_database_env_present": bool(legacy_values),
         "legacy_database_env_names": configured_env_names["legacy"],
+        "legacy_database_env_values": legacy_values,
         "split_database_env_names": configured_env_names["split"],
+        "legacy_database_env_conflicts": _legacy_database_env_conflicts(
+            control_plane_url=control_plane_url,
+            data_plane_url=data_plane_url,
+            legacy_values=legacy_values,
+            split_env_names=configured_env_names["split"],
+        ),
     }
 
 
@@ -277,9 +301,10 @@ def _validate_database_configuration(topology: dict[str, object]) -> None:
                 "KERA_CONTROL_PLANE_API_BASE_URL local-node mode requires KERA_DATA_PLANE_DATABASE_URL "
                 "to point to a local SQLite data plane."
             )
-    if topology["legacy_database_env_present"] and topology["split_database_env_names"]:
+    if topology.get("legacy_database_env_conflicts"):
         warnings.warn(
-            "Legacy KERA_DATABASE_URL/DATABASE_URL is set alongside split control/data plane database settings. "
+            "Legacy KERA_DATABASE_URL/DATABASE_URL is set alongside split control/data plane database settings "
+            "and points to a different database than the resolved control/data plane URLs. "
             "The split variables take precedence, but the legacy env can still mask deployment mistakes.",
             RuntimeWarning,
             stacklevel=2,
@@ -317,6 +342,7 @@ _DATA_PLANE_DB_INIT_LOCK = threading.Lock()
 _DATA_PLANE_SQLITE_SEARCH_READY = False
 DATA_PLANE_SCHEMA_REVISION = "2026-04-13"
 CONTROL_PLANE_ALEMBIC_BASELINE_REVISION = "20260413_01"
+DATA_PLANE_ALEMBIC_BASELINE_REVISION = "20260413_02"
 
 users = Table(
     "users",
@@ -706,8 +732,23 @@ def build_control_plane_alembic_config() -> Config:
     return config
 
 
+def build_data_plane_alembic_config() -> Config:
+    script_location = Path(__file__).resolve().parent / "alembic_data_plane"
+    config = Config()
+    config.set_main_option("script_location", str(script_location))
+    config.set_main_option("sqlalchemy.url", DATA_PLANE_DATABASE_URL)
+    config.set_main_option("version_table", "data_plane_alembic_version")
+    config.attributes["configure_logger"] = False
+    config.attributes["data_plane_metadata"] = DATA_PLANE_METADATA
+    return config
+
+
 def _upgrade_control_plane_schema_with_alembic() -> None:
     command.upgrade(build_control_plane_alembic_config(), "head")
+
+
+def _upgrade_data_plane_schema_with_alembic() -> None:
+    command.upgrade(build_data_plane_alembic_config(), "head")
 
 
 def current_control_plane_alembic_revision() -> str:
@@ -717,6 +758,15 @@ def current_control_plane_alembic_revision() -> str:
         ).scalar_one_or_none()
     normalized_revision = str(revision or "").strip()
     return normalized_revision or CONTROL_PLANE_ALEMBIC_BASELINE_REVISION
+
+
+def current_data_plane_alembic_revision() -> str:
+    with DATA_PLANE_ENGINE.begin() as conn:
+        revision = conn.exec_driver_sql(
+            "SELECT version_num FROM data_plane_alembic_version LIMIT 1"
+        ).scalar_one_or_none()
+    normalized_revision = str(revision or "").strip()
+    return normalized_revision or DATA_PLANE_ALEMBIC_BASELINE_REVISION
 
 
 def init_control_plane_db() -> None:
@@ -763,11 +813,12 @@ def init_data_plane_db() -> None:
             return
         DATA_PLANE_METADATA.create_all(DATA_PLANE_ENGINE)
         _migrate_data_plane_schema()
+        _upgrade_data_plane_schema_with_alembic()
         _record_schema_state(
             DATA_PLANE_ENGINE,
             data_plane_schema_state,
             "data_plane",
-            DATA_PLANE_SCHEMA_REVISION,
+            current_data_plane_alembic_revision(),
         )
         _DATA_PLANE_DB_INITIALIZED = True
 

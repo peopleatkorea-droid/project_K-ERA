@@ -7,6 +7,12 @@ from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
+from kera_research.services.federated_update_security import (
+    federated_aggregation_strategy,
+    federated_aggregation_trim_ratio,
+    require_signed_federated_updates,
+    verify_federated_update_signature,
+)
 from kera_research.services.model_artifacts import ModelArtifactStore
 from kera_research.services.onedrive_publisher import OneDrivePublisher
 
@@ -336,9 +342,18 @@ class AdminRegistryOrchestrator:
             site_weights[site_key] = site_weights.get(site_key, 0) + aggregation_weight
             delta_weights.append(aggregation_weight)
 
-        resolved_version_name = (new_version_name or "").strip() or f"global-{architecture}-fedavg-{self.make_id('v')[:6]}"
+        aggregation_strategy = federated_aggregation_strategy()
+        aggregation_trim_ratio = federated_aggregation_trim_ratio()
+        version_suffix = aggregation_strategy.replace("_", "-")
+        weighting_mode = "sample_weighted" if aggregation_strategy == "fedavg" else "per_site_uniform"
+        resolved_version_name = (new_version_name or "").strip() or f"global-{architecture}-{version_suffix}-{self.make_id('v')[:6]}"
         output_path = self.model_dir / f"global_{architecture}_{self.make_id('agg')}.pth"
         update_ids = [item["update_id"] for item in approved_updates]
+        try:
+            for update_record in approved_updates:
+                verify_federated_update_signature(update_record)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
         job_id = self.make_id("job")
         job_record: dict[str, Any] = {
@@ -360,6 +375,8 @@ class AdminRegistryOrchestrator:
                     output_path,
                     weights=delta_weights,
                     base_model_path=workflow.model_manager.resolve_model_path(base_model, allow_download=True),
+                    strategy=aggregation_strategy,
+                    trim_ratio=aggregation_trim_ratio,
                 )
                 aggregation = cp.register_aggregation(
                     base_model_version_id=base_model["version_id"],
@@ -373,6 +390,14 @@ class AdminRegistryOrchestrator:
                     threshold_selection_metrics={
                         "source_model_version_id": base_model.get("version_id"),
                         "source_decision_threshold": base_model.get("decision_threshold"),
+                    },
+                    aggregation_metadata={
+                        "aggregation_strategy": aggregation_strategy,
+                        "aggregation_trim_ratio": aggregation_trim_ratio if aggregation_strategy == "trimmed_mean" else None,
+                        "weighting_mode": weighting_mode,
+                        "signed_updates_required": require_signed_federated_updates(),
+                        "aggregated_update_ids": list(update_ids),
+                        "aggregated_site_ids": sorted(site_weights),
                     },
                 )
                 cp.update_model_update_statuses(update_ids, "aggregated")

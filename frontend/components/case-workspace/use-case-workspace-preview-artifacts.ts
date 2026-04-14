@@ -24,15 +24,14 @@ import {
   applyLesionPreviewFlags,
   applyRoiPreviewFlags,
   buildLesionPreviewCards,
-  buildPreviewByImageId,
   buildRoiPreviewCards,
-  collectResolvedPreviewUrls,
   mergeResolvedPreviewUrls,
-  resolvePreviewArtifactEntries,
   revokeObjectUrls,
-  selectUnresolvedLesionCropImages,
-  selectUnresolvedRoiCropImages,
 } from "./case-workspace-preview-artifact-helpers";
+import {
+  resolveSavedImageLesionCropArtifacts,
+  resolveSavedImageRoiCropArtifacts,
+} from "./case-workspace-preview-artifact-runtime";
 
 type ToastState = {
   tone: "success" | "error";
@@ -171,57 +170,32 @@ export function useCaseWorkspacePreviewArtifacts({
       return;
     }
 
-    const unresolvedImages = selectUnresolvedRoiCropImages(
-      selectedCaseImages,
-      savedImageRoiCropUrls,
-    );
-    if (unresolvedImages.length === 0) {
-      return;
-    }
-
     let cancelled = false;
     setSavedImageRoiCropBusy(true);
 
     void (async () => {
       try {
-        const previews = await fetchCaseRoiPreview(
-          selectedSiteId,
-          selectedCase.patient_id,
-          selectedCase.visit_date,
-          token,
-        );
+        const { previewByImageId, entries, urls } =
+          await resolveSavedImageRoiCropArtifacts({
+            siteId: selectedSiteId,
+            patientId: selectedCase.patient_id,
+            visitDate: selectedCase.visit_date,
+            token,
+            images: selectedCaseImages,
+            currentUrls: savedImageRoiCropUrls,
+          });
         if (cancelled) {
+          revokeObjectUrls(urls);
           return;
         }
-
-        const previewByImageId = buildPreviewByImageId(previews);
+        if (entries.length === 0) {
+          return;
+        }
 
         setSelectedCaseImages((current) =>
           applyRoiPreviewFlags(current, previewByImageId),
         );
-
-        const entries = await resolvePreviewArtifactEntries({
-          images: unresolvedImages,
-          canResolve: (image) =>
-            Boolean(previewByImageId.get(image.image_id)?.has_roi_crop),
-          fetchUrl: (image) =>
-            fetchCaseRoiPreviewArtifactUrl(
-              selectedSiteId,
-              selectedCase.patient_id,
-              selectedCase.visit_date,
-              image.image_id,
-              "roi_crop",
-              token,
-            ),
-        });
-
-        if (cancelled) {
-          revokeObjectUrls(collectResolvedPreviewUrls(entries));
-          return;
-        }
-
-        const nextUrls = collectResolvedPreviewUrls(entries);
-        savedImageRoiCropUrlsRef.current.push(...nextUrls);
+        savedImageRoiCropUrlsRef.current.push(...urls);
         setSavedImageRoiCropUrls((current) =>
           mergeResolvedPreviewUrls(current, entries),
         );
@@ -272,71 +246,35 @@ export function useCaseWorkspacePreviewArtifacts({
     ) {
       return;
     }
-
-    const unresolvedImages = selectUnresolvedLesionCropImages(
-      selectedCaseImages,
-      liveLesionPreviews,
-      savedImageLesionCropUrls,
-    );
-    if (unresolvedImages.length === 0) {
-      return;
-    }
-
-    const hasAnyStoredLesionBox = selectedCaseImages.some(
-      (image) =>
-        typeof image.lesion_prompt_box === "object" &&
-        image.lesion_prompt_box !== null,
-    );
     let cancelled = false;
     setSavedImageLesionCropBusy(true);
 
     void (async () => {
       try {
-        let previewByImageId = new Map<
-          string,
-          Awaited<ReturnType<typeof fetchCaseLesionPreview>>[number]
-        >();
-        if (hasAnyStoredLesionBox) {
-          const previews = await fetchCaseLesionPreview(
-            selectedSiteId,
-            selectedCase.patient_id,
-            selectedCase.visit_date,
+        const { previewByImageId, entries, urls } =
+          await resolveSavedImageLesionCropArtifacts({
+            siteId: selectedSiteId,
+            patientId: selectedCase.patient_id,
+            visitDate: selectedCase.visit_date,
             token,
-          );
-          if (cancelled) {
-            return;
-          }
-
-          previewByImageId = buildPreviewByImageId(previews);
-
+            images: selectedCaseImages,
+            liveLesionPreviews,
+            currentUrls: savedImageLesionCropUrls,
+          });
+        if (cancelled) {
+          revokeObjectUrls(urls);
+          return;
+        }
+        if (previewByImageId.size > 0) {
           setSelectedCaseImages((current) =>
             applyLesionPreviewFlags(current, previewByImageId),
           );
         }
-
-        const entries = await resolvePreviewArtifactEntries({
-          images: unresolvedImages,
-          canResolve: (image) =>
-            previewByImageId.get(image.image_id)?.has_lesion_crop ??
-            Boolean(image.has_lesion_crop),
-          fetchUrl: (image) =>
-            fetchCaseLesionPreviewArtifactUrl(
-              selectedSiteId,
-              selectedCase.patient_id,
-              selectedCase.visit_date,
-              image.image_id,
-              "lesion_crop",
-              token,
-            ),
-        });
-
-        if (cancelled) {
-          revokeObjectUrls(collectResolvedPreviewUrls(entries));
+        if (entries.length === 0) {
           return;
         }
 
-        const nextUrls = collectResolvedPreviewUrls(entries);
-        savedImageLesionCropUrlsRef.current.push(...nextUrls);
+        savedImageLesionCropUrlsRef.current.push(...urls);
         setSavedImageLesionCropUrls((current) =>
           mergeResolvedPreviewUrls(current, entries),
         );

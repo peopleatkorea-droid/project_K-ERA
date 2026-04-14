@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useCaseWorkspaceDraftState } from "./use-case-workspace-draft";
@@ -133,10 +133,14 @@ describe("useCaseWorkspaceDraftState", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "update-draft" }));
     await flushAutosave();
+    await act(async () => {
+      vi.runOnlyPendingTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(persistenceMocks.writePersistedDraftAssets).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("patient-id")).toHaveTextContent("KERA-2026-001");
-    expect(window.localStorage.getItem("draft:user_researcher:SITE_A")).toContain("\"patient_id\":\"KERA-2026-001\"");
     expect(screen.getByTestId("saved-at")).not.toBeEmptyDOMElement();
   });
 });

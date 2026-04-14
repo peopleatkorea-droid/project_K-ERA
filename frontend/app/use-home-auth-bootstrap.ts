@@ -27,10 +27,12 @@ import {
 import {
   CLIENT_BOOTSTRAP_TIMING_LOGS,
   GOOGLE_CLIENT_ID,
+  cacheMainAuthHint,
+  clearMainAuthHint,
   isAuthBootstrapError,
-  isTokenExpired,
   optimisticSitesForUser,
   parseOperationsLaunchFromSearch,
+  readOptimisticUserFromAuthHint,
   readOptimisticUserFromToken,
   sitesNeedLabelHydration,
   TOKEN_KEY,
@@ -85,6 +87,7 @@ export function useHomeAuthBootstrap({
   const [error, setError] = useState<string | null>(null);
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget | null>(null);
   const [workspaceDataPlaneState, setWorkspaceDataPlaneState] = useState<WorkspaceDataPlaneState>("idle");
+  const [sessionBootstrapAttempted, setSessionBootstrapAttempted] = useState(false);
 
   const approved = user?.approval_status === "approved";
   const {
@@ -131,27 +134,83 @@ export function useHomeAuthBootstrap({
   }
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(TOKEN_KEY);
-    if (stored) {
-      if (isTokenExpired(stored)) {
-        window.localStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(TOKEN_KEY);
+    const optimisticUser = readOptimisticUserFromAuthHint();
+    if (optimisticUser) {
+      setUser(optimisticUser);
+      setBootstrapBusy(true);
+      if (optimisticUser.approval_status === "approved") {
+        const optimisticSites = optimisticSitesForUser(optimisticUser);
+        setMyRequests([]);
+        applyApprovedWorkspaceState(optimisticUser, { sites: optimisticSites });
       } else {
-        setBootstrapBusy(true);
-        setToken(stored);
-        const optimisticUser = readOptimisticUserFromToken(stored);
-        if (optimisticUser?.approval_status === "approved") {
-          const optimisticSites = optimisticSitesForUser(optimisticUser);
-          setUser(optimisticUser);
-          setMyRequests([]);
-          applyApprovedWorkspaceState(optimisticUser, { sites: optimisticSites });
-        }
+        clearApprovedWorkspaceState();
+        setMyRequests(optimisticUser.latest_access_request ? [optimisticUser.latest_access_request] : []);
       }
     }
     setLaunchTarget(parseOperationsLaunchFromSearch());
-  }, [applyApprovedWorkspaceState]);
+  }, [applyApprovedWorkspaceState, clearApprovedWorkspaceState]);
 
   useEffect(() => {
     if (!token || !user) {
+      return;
+    }
+    cacheMainAuthHint(user, token);
+  }, [token, user]);
+
+  useEffect(() => {
+    if (token || sessionBootstrapAttempted) {
+      return;
+    }
+    let cancelled = false;
+    setSessionBootstrapAttempted(true);
+    setBootstrapBusy(true);
+    setError(null);
+    void fetchMainBootstrap()
+      .then((bootstrapResult) => {
+        if (cancelled) {
+          return;
+        }
+        setToken(bootstrapResult.access_token);
+        setUser(bootstrapResult.user);
+        cacheMainAuthHint(bootstrapResult.user, bootstrapResult.access_token);
+        if (bootstrapResult.user.approval_status === "approved") {
+          setMyRequests([]);
+          applyApprovedWorkspaceState(bootstrapResult.user, { sites: bootstrapResult.sites });
+        } else {
+          clearApprovedWorkspaceState();
+          setMyRequests(bootstrapResult.my_access_requests);
+        }
+      })
+      .catch((nextError) => {
+        if (cancelled) {
+          return;
+        }
+        clearApprovedWorkspaceState();
+        clearMainAuthHint();
+        if (!(nextError instanceof Error && isAuthBootstrapError(nextError.message))) {
+          setError(describeError(nextError, copy.failedConnect));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBootstrapBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyApprovedWorkspaceState,
+    clearApprovedWorkspaceState,
+    copy.failedConnect,
+    describeError,
+    sessionBootstrapAttempted,
+    token,
+  ]);
+
+  useEffect(() => {
+    if (!user) {
       return;
     }
     void fetchPublicSites()
@@ -165,10 +224,10 @@ export function useHomeAuthBootstrap({
       .catch((nextError) => {
         setError(describeError(nextError, copy.unableLoadInstitutions));
       });
-  }, [approved, applyApprovedWorkspaceState, copy.unableLoadInstitutions, describeError, setRequestForm, token, user]);
+  }, [approved, applyApprovedWorkspaceState, copy.unableLoadInstitutions, describeError, setRequestForm, user]);
 
   useEffect(() => {
-    if (!token || !user) {
+    if (!user) {
       setPublicInstitutions([]);
       setInstitutionSearchBusy(false);
       return;
@@ -200,7 +259,7 @@ export function useHomeAuthBootstrap({
     return () => {
       cancelled = true;
     };
-  }, [approved, copy.unableLoadInstitutions, deferredInstitutionQuery, describeError, token, user]);
+  }, [approved, copy.unableLoadInstitutions, deferredInstitutionQuery, describeError, user]);
 
   useEffect(() => {
     if (!token) {
@@ -221,6 +280,7 @@ export function useHomeAuthBootstrap({
       try {
         const bootstrapResult = await fetchMainBootstrap(currentToken);
         setUser(bootstrapResult.user);
+        cacheMainAuthHint(bootstrapResult.user, bootstrapResult.access_token);
         if (bootstrapResult.user.approval_status === "approved") {
           setMyRequests([]);
           applyApprovedWorkspaceState(bootstrapResult.user, { sites: bootstrapResult.sites });
@@ -242,6 +302,7 @@ export function useHomeAuthBootstrap({
         setToken(null);
         setUser(null);
         clearApprovedWorkspaceState();
+        clearMainAuthHint();
         if (!(nextError instanceof Error && isAuthBootstrapError(nextError.message))) {
           setError(describeError(nextError, copy.failedConnect));
         }
@@ -264,7 +325,7 @@ export function useHomeAuthBootstrap({
   }, [applyApprovedWorkspaceState, clearApprovedWorkspaceState, copy.failedConnect, describeError, token]);
 
   useEffect(() => {
-    if (!token || !user || !approved) {
+    if (!user || !approved) {
       setWorkspaceDataPlaneState("idle");
       return;
     }
@@ -345,9 +406,10 @@ export function useHomeAuthBootstrap({
         setError(null);
         try {
           const auth = await googleLogin(response.credential);
-          window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+          setSessionBootstrapAttempted(true);
           setToken(auth.access_token);
           setUser(auth.user);
+          cacheMainAuthHint(auth.user, auth.access_token);
           if (auth.user.approval_status === "approved") {
             setMyRequests([]);
             applyApprovedWorkspaceState(auth.user);
@@ -372,34 +434,35 @@ export function useHomeAuthBootstrap({
 
   async function handleRequestAccess(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token) {
+    if (!user) {
       return;
     }
     setRequestBusy(true);
     setError(null);
     try {
       const response = await submitAccessRequest(token, requestForm);
-      const refreshedToken = window.localStorage.getItem(TOKEN_KEY) || token;
-      if (refreshedToken !== token) {
+      const refreshedToken = response.access_token || token || null;
+      if (refreshedToken && refreshedToken !== token) {
         setToken(refreshedToken);
       }
       setUser(response.user);
+      cacheMainAuthHint(response.user, refreshedToken);
       if (response.user.approval_status === "approved" && response.request.status === "approved") {
         const preferredSiteId = response.request.resolved_site_id || response.request.requested_site_id;
         setMyRequests([]);
         applyApprovedWorkspaceState(response.user, { preferredSiteId });
-        const nextRequests = await fetchMyAccessRequests(refreshedToken);
+        const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
         setMyRequests(nextRequests);
-        const nextSites = await refreshApprovedSites(refreshedToken, { preferredSiteId });
+        const nextSites = await refreshApprovedSites(refreshedToken ?? undefined, { preferredSiteId });
         applyApprovedWorkspaceState(response.user, { preferredSiteId, sites: nextSites });
       } else if (response.user.approval_status === "approved") {
-        const nextRequests = await fetchMyAccessRequests(refreshedToken);
+        const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
         setMyRequests(nextRequests);
-        const nextSites = await refreshApprovedSites(refreshedToken);
+        const nextSites = await refreshApprovedSites(refreshedToken ?? undefined);
         applyApprovedWorkspaceState(response.user, { sites: nextSites });
       } else {
         clearApprovedWorkspaceState();
-        const nextRequests = await fetchMyAccessRequests(refreshedToken);
+        const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
         setMyRequests(nextRequests);
       }
     } catch (nextError) {
@@ -411,9 +474,15 @@ export function useHomeAuthBootstrap({
 
   function handleLogout() {
     window.localStorage.removeItem(TOKEN_KEY);
+    void fetch("/control-plane/api/main/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    }).catch(() => undefined);
+    setSessionBootstrapAttempted(true);
     setToken(null);
     setUser(null);
     clearApprovedWorkspaceState();
+    clearMainAuthHint();
     setMyRequests([]);
     setPublicInstitutions([]);
     setError(null);
@@ -429,9 +498,10 @@ export function useHomeAuthBootstrap({
         startLogin: ({ redirect_uri }) => startDesktopGoogleLogin(redirect_uri),
       })
         .then((auth) => {
-          window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+          setSessionBootstrapAttempted(true);
           setToken(auth.access_token);
           setUser(auth.user);
+          cacheMainAuthHint(auth.user, auth.access_token);
           if (auth.user.approval_status === "approved") {
             setMyRequests([]);
             applyApprovedWorkspaceState(auth.user);

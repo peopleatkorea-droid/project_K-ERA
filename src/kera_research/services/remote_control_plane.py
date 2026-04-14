@@ -12,7 +12,7 @@ from kera_research.config import (
     CONTROL_PLANE_NODE_ID,
     CONTROL_PLANE_NODE_TOKEN,
 )
-from kera_research.services.node_credentials import load_node_credentials
+from kera_research.services.secrets_manager import DEFAULT_SECRETS_MANAGER
 
 REMOTE_CONTROL_PLANE_HTTP_POOL_SIZE = 8
 
@@ -40,7 +40,7 @@ class RemoteControlPlaneClient:
         self.base_url = self._configured_base_url
         self.node_id = self._configured_node_id
         self.node_token = self._configured_node_token
-        stored = load_node_credentials()
+        stored = DEFAULT_SECRETS_MANAGER.load_node_credentials()
         if stored is None:
             return None
         if not self.base_url:

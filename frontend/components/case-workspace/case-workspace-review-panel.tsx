@@ -20,7 +20,7 @@ import {
   workspacePanelClass,
 } from "../ui/workspace-patterns";
 
-type CaseWorkspaceReviewPanelProps = {
+export type CaseWorkspaceReviewPanelProps = {
   locale: Locale;
   selectedCasePanelContent?: ReactNode;
   isAuthoringCanvas: boolean;

@@ -69,11 +69,17 @@ async function verifyDesktopSecurityAndVersions() {
 
   const tauriVersion = String(tauriConfig.version ?? "").trim();
   const tauriCsp = tauriConfig.app?.security?.csp;
+  const nsisInstallMode = String(tauriConfig.bundle?.windows?.nsis?.installMode ?? "").trim();
   const cargoVersion = extractTomlVersion(cargoToml, "Cargo.toml");
   const packageVersion = String(packageJson.version ?? "").trim();
   const pyprojectVersion = extractTomlVersion(pyprojectToml, "pyproject.toml");
 
   record(Boolean(tauriCsp), "desktop CSP is configured", tauriConfigPath);
+  record(
+    nsisInstallMode === "currentUser",
+    "desktop NSIS installer stays current-user by default",
+    nsisInstallMode || "<missing>",
+  );
   record(
     tauriVersion.length > 0 &&
       tauriVersion === cargoVersion &&

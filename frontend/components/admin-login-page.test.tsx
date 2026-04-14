@@ -73,7 +73,7 @@ describe("AdminLoginPage", () => {
     await waitFor(() => {
       expect(routerReplace).toHaveBeenCalledWith("/");
     });
-    expect(window.localStorage.getItem("kera_web_token")).toBe("admin-token");
+    expect(window.localStorage.getItem("kera_web_token")).toBeNull();
     expect(window.localStorage.getItem("kera_cached_site_records_v1")).toContain("제주대학교병원");
   });
 

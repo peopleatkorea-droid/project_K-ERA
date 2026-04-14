@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildDraftViewProps,
+  buildPatientListViewProps,
   buildSavedCaseViewProps,
 } from "./case-workspace-main-content-props";
 
@@ -250,5 +251,123 @@ describe("case-workspace main content props", () => {
     expect(completedProps.imageManagerPanelProps).not.toBeNull();
     completedProps.imageManagerPanelProps?.onSaveCase();
     expect(saveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds patient-list props with guarded prefetch and async backlog wrappers", async () => {
+    const prefetchDesktopVisitImages = vi.fn();
+    const enableBacklog = vi.fn(async () => undefined);
+    const refreshBacklog = vi.fn(async () => undefined);
+    const backfillArtifacts = vi.fn(async () => undefined);
+
+    const props = buildPatientListViewProps({
+      locale: "en",
+      localeTag: "en-US",
+      commonNotAvailable: "N/A",
+      selectedSiteId: null,
+      token: "token",
+      selectedSiteLabel: "Site A",
+      selectedPatientId: "P-001",
+      patientListRows: [],
+      patientListTotalCount: 0,
+      patientListPage: 1,
+      patientListTotalPages: 1,
+      patientListThumbsByPatient: {},
+      caseSearch: "",
+      showOnlyMine: false,
+      casesLoading: false,
+      copyPatients: "Patients",
+      copyAllRecords: "All",
+      copyMyPatientsOnly: "Mine",
+      copyLoadingSavedCases: "Loading",
+      pick: (_locale, en) => en,
+      translateOption: (_locale, _group, value) => value,
+      displayVisitReference: (_locale, visitReference) => visitReference,
+      formatDateTime: (value) => value ?? "N/A",
+      onSearchChange: vi.fn(),
+      onShowOnlyMineChange: vi.fn(),
+      onPageChange: vi.fn(),
+      onOpenSavedCase: vi.fn(),
+      onOpenImageTextSearchResult: vi.fn(),
+      prefetchDesktopVisitImages,
+      medsamArtifactActiveStatus: null,
+      medsamArtifactScope: "patient",
+      medsamArtifactItems: [],
+      medsamArtifactItemsBusy: false,
+      medsamArtifactPage: 1,
+      medsamArtifactTotalCount: 0,
+      medsamArtifactTotalPages: 1,
+      medsamArtifactPanelEnabled: true,
+      medsamArtifactStatus: null,
+      medsamArtifactStatusBusy: false,
+      medsamArtifactBackfillBusy: false,
+      canBackfillMedsamArtifacts: true,
+      onEnableMedsamArtifactPanel: enableBacklog,
+      onDisableMedsamArtifactPanel: vi.fn(),
+      onRefreshMedsamArtifactStatus: refreshBacklog,
+      onOpenMedsamArtifactBacklog: vi.fn(),
+      onCloseMedsamArtifactBacklog: vi.fn(),
+      onMedsamArtifactScopeChange: vi.fn(),
+      onMedsamArtifactPageChange: vi.fn(),
+      onBackfillMedsamArtifacts: backfillArtifacts,
+    });
+
+    props.boardProps.onPrefetchCase?.({
+      case_id: "case_1",
+      visit_id: "visit_1",
+      patient_id: "P-001",
+      visit_date: "Initial",
+    } as any);
+    expect(prefetchDesktopVisitImages).not.toHaveBeenCalled();
+
+    await props.backlogProps.onEnableMedsamArtifactPanel();
+    await props.backlogProps.onRefreshMedsamArtifactStatus();
+    await props.backlogProps.onBackfillMedsamArtifacts();
+    expect(enableBacklog).toHaveBeenCalledTimes(1);
+    expect(refreshBacklog).toHaveBeenCalledWith(true);
+    expect(backfillArtifacts).toHaveBeenCalledTimes(1);
+
+    const hydratedProps = buildPatientListViewProps({
+      ...props.boardProps,
+      selectedSiteId: "site-1",
+      onOpenImageTextSearchResult: vi.fn(),
+      patientListRows: [],
+      patientListTotalCount: 0,
+      patientListPage: 1,
+      patientListTotalPages: 1,
+      patientListThumbsByPatient: {},
+      caseSearch: "",
+      showOnlyMine: false,
+      casesLoading: false,
+      copyPatients: "Patients",
+      copyAllRecords: "All",
+      copyMyPatientsOnly: "Mine",
+      copyLoadingSavedCases: "Loading",
+      prefetchDesktopVisitImages,
+      medsamArtifactPanelEnabled: true,
+      medsamArtifactStatus: null,
+      medsamArtifactStatusBusy: false,
+      medsamArtifactBackfillBusy: false,
+      canBackfillMedsamArtifacts: true,
+      onEnableMedsamArtifactPanel: enableBacklog,
+      onDisableMedsamArtifactPanel: vi.fn(),
+      onRefreshMedsamArtifactStatus: refreshBacklog,
+      onOpenMedsamArtifactBacklog: vi.fn(),
+      onCloseMedsamArtifactBacklog: vi.fn(),
+      onMedsamArtifactScopeChange: vi.fn(),
+      onMedsamArtifactPageChange: vi.fn(),
+      onBackfillMedsamArtifacts: backfillArtifacts,
+    });
+
+    hydratedProps.boardProps.onPrefetchCase?.({
+      case_id: "case_2",
+      visit_id: "visit_2",
+      patient_id: "P-002",
+      visit_date: "FU #1",
+    } as any);
+    expect(prefetchDesktopVisitImages).toHaveBeenCalledWith(
+      "site-1",
+      "P-002",
+      "FU #1",
+    );
   });
 });

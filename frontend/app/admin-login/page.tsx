@@ -11,7 +11,7 @@ import { SectionHeader } from "../../components/ui/section-header";
 import { devLogin, fetchSites, login } from "../../lib/api";
 import { LocaleToggle, pick, translateApiError, useI18n } from "../../lib/i18n";
 import { isOperatorUiEnabled } from "../../lib/ui-mode";
-import { cacheSiteRecords } from "../home-page-auth-shared";
+import { cacheSiteRecords, clearMainAuthHint } from "../home-page-auth-shared";
 
 const TOKEN_KEY = "kera_web_token";
 const DEFAULT_POST_LOGIN_PATH = "/";
@@ -121,13 +121,14 @@ export default function AdminLoginPage() {
   }
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(TOKEN_KEY);
-    if (stored) {
-      const destination = getSafePostLoginPath();
-      void warmApprovedSiteCache(stored).finally(() => {
+    const destination = getSafePostLoginPath();
+    window.localStorage.removeItem(TOKEN_KEY);
+    clearMainAuthHint();
+    void warmApprovedSiteCache("")
+      .then(() => {
         router.replace(destination);
-      });
-    }
+      })
+      .catch(() => undefined);
   }, [router]);
 
   async function handleLocalLogin(event: FormEvent<HTMLFormElement>) {
@@ -137,7 +138,8 @@ export default function AdminLoginPage() {
     const destination = getSafePostLoginPath();
     try {
       const auth = await login(loginForm.username, loginForm.password);
-      window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+      window.localStorage.removeItem(TOKEN_KEY);
+      clearMainAuthHint();
       await warmApprovedSiteCache(auth.access_token);
       router.replace(destination);
     } catch (nextError) {
@@ -153,7 +155,8 @@ export default function AdminLoginPage() {
     const destination = getSafePostLoginPath();
     try {
       const auth = await devLogin();
-      window.localStorage.setItem(TOKEN_KEY, auth.access_token);
+      window.localStorage.removeItem(TOKEN_KEY);
+      clearMainAuthHint();
       await warmApprovedSiteCache(auth.access_token);
       router.replace(destination);
     } catch (nextError) {

@@ -5,7 +5,7 @@ import { hasDesktopRuntime, invokeDesktop, listenDesktopEvent } from "./desktop-
 const GOOGLE_OAUTH_REDIRECT_EVENT = "kera://oauth-redirect";
 const GOOGLE_OAUTH_TIMEOUT_MS = 120_000;
 const DESKTOP_GOOGLE_LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"];
-const DEFAULT_DESKTOP_GOOGLE_WEB_LOGIN_ROOT = "https://kera-bay.vercel.app";
+const DEFAULT_DESKTOP_GOOGLE_WEB_LOGIN_ROOT = "https://k-era.org";
 
 type GoogleOAuthServerResponse = {
   port: number;

@@ -57,7 +57,7 @@ export async function fetchMe(token: string) {
   return auth.user;
 }
 
-export async function fetchMainBootstrap(token: string) {
+export async function fetchMainBootstrap(token?: string) {
   const bootstrap = await requestMainControlPlane<MainBootstrapResponse>("/bootstrap", {}, token);
   persistMainAppToken(bootstrap.access_token);
   return {
@@ -66,7 +66,7 @@ export async function fetchMainBootstrap(token: string) {
   };
 }
 
-export async function fetchSites(token: string) {
+export async function fetchSites(token?: string) {
   return filterVisibleSites(await requestMainControlPlane<SiteRecord[]>("/sites", {}, token));
 }
 
@@ -105,12 +105,12 @@ export async function fetchPublicStatistics() {
   return requestMainControlPlane<PublicStatistics>("/public/statistics");
 }
 
-export async function fetchMyAccessRequests(token: string) {
+export async function fetchMyAccessRequests(token?: string) {
   return requestMainControlPlane<AccessRequestRecord[]>("/auth/access-requests", {}, token);
 }
 
 export async function submitAccessRequest(
-  token: string,
+  token: string | null | undefined,
   payload: {
     requested_site_id: string;
     requested_site_label?: string;
@@ -126,7 +126,7 @@ export async function submitAccessRequest(
       method: "POST",
       body: JSON.stringify(payload),
     },
-    token,
+    token ?? undefined,
   );
   persistMainAppToken(response.access_token);
   return response;

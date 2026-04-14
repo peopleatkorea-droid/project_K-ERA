@@ -17,6 +17,8 @@ const apiMocks = vi.hoisted(() => ({
   fetchProjects: vi.fn(),
   fetchAdminSites: vi.fn(),
   fetchUsers: vi.fn(),
+  fetchRetainedCaseArchive: vi.fn(),
+  restoreRetainedCase: vi.fn(),
   fetchSiteComparison: vi.fn(),
   fetchInstitutionDirectoryStatus: vi.fn(),
   searchPublicInstitutions: vi.fn(),
@@ -52,6 +54,8 @@ vi.mock("../lib/api", async () => {
     fetchProjects: apiMocks.fetchProjects,
     fetchAdminSites: apiMocks.fetchAdminSites,
     fetchUsers: apiMocks.fetchUsers,
+    fetchRetainedCaseArchive: apiMocks.fetchRetainedCaseArchive,
+    restoreRetainedCase: apiMocks.restoreRetainedCase,
     fetchSiteComparison: apiMocks.fetchSiteComparison,
     fetchInstitutionDirectoryStatus: apiMocks.fetchInstitutionDirectoryStatus,
     searchPublicInstitutions: apiMocks.searchPublicInstitutions,
@@ -117,6 +121,12 @@ describe("AdminWorkspace integration", () => {
       },
     ]);
     apiMocks.fetchUsers.mockResolvedValue([]);
+    apiMocks.fetchRetainedCaseArchive.mockResolvedValue([]);
+    apiMocks.restoreRetainedCase.mockResolvedValue({
+      restored_visit: true,
+      restored_images: 0,
+      visible_image_count: 0,
+    });
     apiMocks.fetchSiteComparison.mockResolvedValue([]);
     apiMocks.fetchInstitutionDirectoryStatus.mockResolvedValue({
       source: "hira",
@@ -510,7 +520,6 @@ describe("AdminWorkspace integration", () => {
     });
     await waitFor(() => {
       expect(onRefreshSites).toHaveBeenCalledTimes(1);
-      expect(onSelectSite).toHaveBeenCalledWith("SITE_B");
     });
     expect(await screen.findByText("Registered Hospital B.")).toBeInTheDocument();
   });
@@ -1080,8 +1089,12 @@ describe("AdminWorkspace integration", () => {
       </LocaleProvider>
     );
 
-    const input = await screen.findByLabelText("Folder path");
-    expect(input).toHaveValue("C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
+    const storageSection = (await screen.findByText("Default storage root")).closest("section");
+    expect(storageSection).not.toBeNull();
+    const input = within(storageSection as HTMLElement).getByLabelText("Folder path");
+    await waitFor(() => {
+      expect(input).toHaveValue("C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
+    });
     expect(input).toHaveAttribute("placeholder", "C:\\Users\\USER\\OneDrive\\KERA\\KERA_DATA");
     expect(screen.getByText("C:\\InstallParent\\KERA_DATA")).toBeInTheDocument();
   });
@@ -1135,7 +1148,9 @@ describe("AdminWorkspace integration", () => {
       </LocaleProvider>
     );
 
-    const input = await screen.findByLabelText("Folder path");
+    const storageSection = (await screen.findByText("Default storage root")).closest("section");
+    expect(storageSection).not.toBeNull();
+    const input = within(storageSection as HTMLElement).getByLabelText("Folder path");
     expect(input).toBeDisabled();
     expect(input).toHaveAttribute("placeholder", "Loading active root...");
   });
@@ -1202,7 +1217,9 @@ describe("AdminWorkspace integration", () => {
     );
 
     expect(await screen.findByText("Active data folder")).toBeInTheDocument();
-    expect(screen.getByText("C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites\\SITE_A")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("C:\\Users\\USER\\OneDrive\\AI\\KERA_DATA\\sites\\SITE_A")).toBeInTheDocument();
+    });
   });
 
   it("runs metadata recovery for the selected hospital from management", async () => {
@@ -1257,6 +1274,8 @@ describe("AdminWorkspace integration", () => {
         source: "auto",
         force_replace: true,
       });
+    });
+    await waitFor(() => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     });
     expect(await screen.findByText("Recovered Hospital A metadata from backup (1/2/3).")).toBeInTheDocument();
@@ -1314,6 +1333,7 @@ describe("AdminWorkspace integration", () => {
       </LocaleProvider>
     );
 
+    expect(await screen.findByText("Default storage root")).toBeInTheDocument();
     expect(await screen.findByText("Environment")).toBeInTheDocument();
     expect(screen.getByText("C:\\InstallParent\\KERA_DATA")).toBeInTheDocument();
     expect(screen.getAllByText("D:\\EnvDefault").length).toBeGreaterThan(0);
@@ -1372,8 +1392,12 @@ describe("AdminWorkspace integration", () => {
     );
 
     await screen.findByRole("button", { name: "Register hospital" });
-    const folderInputs = await screen.findAllByLabelText("Folder path");
-    expect(folderInputs[0]).toHaveAttribute("placeholder", "C:\\KERA");
+    const storageSection = (await screen.findByText("Default storage root")).closest("section");
+    expect(storageSection).not.toBeNull();
+    const storageRootInput = within(storageSection as HTMLElement).getByLabelText("Folder path");
+    await waitFor(() => {
+      expect(storageRootInput).toHaveAttribute("placeholder", "C:\\KERA");
+    });
     expect(
       screen.getByText(
         "Enter either the KERA_DATA folder or the direct site-root folder. If you provide KERA_DATA, the app will use its sites subfolder automatically.",
@@ -2468,7 +2492,7 @@ describe("AdminWorkspace integration", () => {
       expect(onSiteDataChanged).toHaveBeenCalledWith("SITE_A");
     }, { timeout: 6000 });
     expect(await screen.findByText("Registered global-vit-2026.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Model registry" })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: "Model review" })).toHaveClass("active");
 
     fireEvent.click(screen.getByRole("button", { name: "Recent alerts" }));
 

@@ -1,6 +1,6 @@
 "use client";
 
-import type { LiveLesionPreviewMap, LesionPreviewCard, RoiPreviewCard, SavedImagePreview } from "./shared";
+import type { LiveLesionPreviewMap, SavedImagePreview } from "./shared";
 
 type PreviewWithImageId = {
   image_id?: string | null;
@@ -19,6 +19,18 @@ type LesionPreviewFlags = {
 };
 
 export type ResolvedPreviewEntry = readonly [string, string | null];
+
+type RoiPreviewCardBase = {
+  source_preview_url: string | null;
+  roi_crop_url: string | null;
+  medsam_mask_url: string | null;
+};
+
+type LesionPreviewCardBase = {
+  source_preview_url: string | null;
+  lesion_crop_url: string | null;
+  lesion_mask_url: string | null;
+};
 
 export function revokeObjectUrls(urls: string[]) {
   for (const url of urls) {
@@ -140,12 +152,12 @@ export async function buildRoiPreviewCards<TItem extends {
   fetchSourcePreviewUrl: (imageId: string) => Promise<string | null>;
   fetchRoiCropUrl: (imageId: string) => Promise<string | null>;
   fetchMedsamMaskUrl: (imageId: string) => Promise<string | null>;
-}): Promise<{ cards: RoiPreviewCard[]; urls: string[] }> {
+}): Promise<{ cards: Array<TItem & RoiPreviewCardBase>; urls: string[] }> {
   const urls: string[] = [];
   const cards = await Promise.all(
     args.items.map(async (item) => {
-      const nextCard: RoiPreviewCard = {
-        ...(item as RoiPreviewCard),
+      const nextCard: TItem & RoiPreviewCardBase = {
+        ...item,
         source_preview_url: null,
         roi_crop_url: null,
         medsam_mask_url: null,
@@ -199,12 +211,12 @@ export async function buildLesionPreviewCards<TItem extends {
   fetchSourcePreviewUrl: (imageId: string) => Promise<string | null>;
   fetchLesionCropUrl: (imageId: string) => Promise<string | null>;
   fetchLesionMaskUrl: (imageId: string) => Promise<string | null>;
-}): Promise<{ cards: LesionPreviewCard[]; urls: string[] }> {
+}): Promise<{ cards: Array<TItem & LesionPreviewCardBase>; urls: string[] }> {
   const urls: string[] = [];
   const cards = await Promise.all(
     args.items.map(async (item) => {
-      const nextCard: LesionPreviewCard = {
-        ...(item as LesionPreviewCard),
+      const nextCard: TItem & LesionPreviewCardBase = {
+        ...item,
         source_preview_url: null,
         lesion_crop_url: null,
         lesion_mask_url: null,

@@ -34,6 +34,7 @@ def reload_app_module(
     data_plane_db_path: Path | None = None,
     control_plane_artifact_dir: Path | None = None,
     model_distribution_mode: str | None = None,
+    control_plane_api_base_url: str | None = None,
 ):
     for env_name in (
         "KERA_DATABASE_URL",
@@ -66,6 +67,25 @@ def reload_app_module(
         "KERA_ONEDRIVE_SHARE_TYPE",
         "KERA_SITE_STORAGE_SOURCE",
         "KERA_SKIP_LOCAL_ENV_FILE",
+        "KERA_SENTRY_DSN",
+        "SENTRY_DSN",
+        "KERA_SENTRY_ENVIRONMENT",
+        "SENTRY_ENVIRONMENT",
+        "KERA_SENTRY_TRACES_SAMPLE_RATE",
+        "KERA_SENTRY_PROFILES_SAMPLE_RATE",
+        "KERA_SENTRY_SEND_DEFAULT_PII",
+        "KERA_TRUST_PROXY_HEADERS",
+        "KERA_TRUSTED_PROXY_IPS",
+        "KERA_TRUSTED_PROXY_CIDRS",
+        "KERA_CORS_ALLOWED_ORIGINS",
+        "KERA_FEDERATED_UPDATE_SIGNING_SECRET",
+        "KERA_FEDERATED_UPDATE_SIGNING_KEY_ID",
+        "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES",
+        "KERA_FEDERATED_AGGREGATION_STRATEGY",
+        "KERA_FEDERATED_AGGREGATION_TRIM_RATIO",
+        "KERA_FEDERATED_DELTA_CLIP_NORM",
+        "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER",
+        "KERA_FEDERATED_DELTA_QUANTIZATION_BITS",
     ):
         os.environ.pop(env_name, None)
 
@@ -91,6 +111,8 @@ def reload_app_module(
     os.environ["KERA_SKIP_LOCAL_ENV_FILE"] = "1"
     if model_distribution_mode is not None:
         os.environ["KERA_MODEL_DISTRIBUTION_MODE"] = model_distribution_mode
+    if control_plane_api_base_url is not None:
+        os.environ["KERA_CONTROL_PLANE_API_BASE_URL"] = control_plane_api_base_url
     os.environ["KERA_ADMIN_USERNAME"] = "admin"
     os.environ["KERA_ADMIN_PASSWORD"] = "admin123"
     os.environ["KERA_RESEARCHER_USERNAME"] = "researcher"
@@ -107,13 +129,23 @@ class FakeModelManager:
     def __init__(self) -> None:
         self.aggregate_calls: list[dict[str, object]] = []
 
-    def aggregate_weight_deltas(self, delta_paths, output_path, weights=None, base_model_path=None):
+    def aggregate_weight_deltas(
+        self,
+        delta_paths,
+        output_path,
+        weights=None,
+        base_model_path=None,
+        strategy=None,
+        trim_ratio=None,
+    ):
         self.aggregate_calls.append(
             {
                 "delta_paths": list(delta_paths),
                 "output_path": str(output_path),
                 "weights": list(weights) if weights is not None else None,
                 "base_model_path": base_model_path,
+                "strategy": strategy,
+                "trim_ratio": trim_ratio,
             }
         )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1386,12 +1418,13 @@ class ApiHttpTests(unittest.TestCase):
         return self.app_module._create_access_token(user)
 
     def test_auth_me_accepts_remote_control_plane_token_when_local_verification_fails(self):
+        wrong_remote_secret = "wrong-shared-secret-with-32-bytes-minimum!!"
         remote_token = jwt.encode(
             {
                 "sub": "remote_control_plane_user",
                 "username": "remote.user@example.com",
             },
-            "wrong-shared-secret",
+            wrong_remote_secret,
             algorithm="HS256",
         )
         remote_client = Mock()
@@ -1423,12 +1456,13 @@ class ApiHttpTests(unittest.TestCase):
         remote_client.main_auth_me.assert_called_once_with(user_bearer_token=remote_token)
 
     def test_auth_login_proxies_to_remote_control_plane_when_remote_is_primary(self):
+        wrong_remote_secret = "wrong-shared-secret-with-32-bytes-minimum!!"
         remote_token = jwt.encode(
             {
                 "sub": "remote_admin_user",
                 "username": "admin",
             },
-            "wrong-shared-secret",
+            wrong_remote_secret,
             algorithm="HS256",
         )
         remote_client = Mock()
@@ -1556,7 +1590,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(str(control_state["recorded_at"]).strip())
         self.assertEqual(
             data_state["schema_revision"],
-            self.db_module.DATA_PLANE_SCHEMA_REVISION,
+            self.db_module.DATA_PLANE_ALEMBIC_BASELINE_REVISION,
         )
         self.assertTrue(str(data_state["recorded_at"]).strip())
 
@@ -1567,6 +1601,17 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(
             revision,
             self.db_module.CONTROL_PLANE_ALEMBIC_BASELINE_REVISION,
+        )
+
+    def test_data_plane_db_is_stamped_to_alembic_baseline_http(self):
+        with self.db_module.DATA_PLANE_ENGINE.begin() as conn:
+            revision = conn.exec_driver_sql(
+                "SELECT version_num FROM data_plane_alembic_version"
+            ).scalar_one()
+
+        self.assertEqual(
+            revision,
+            self.db_module.DATA_PLANE_ALEMBIC_BASELINE_REVISION,
         )
 
     def test_local_login_is_restricted_to_admin_and_site_admin_http(self):
@@ -1595,6 +1640,104 @@ class ApiHttpTests(unittest.TestCase):
             self.assertIn("disabled", response.text)
         finally:
             os.environ.pop("KERA_LOCAL_LOGIN_ENABLED", None)
+
+    def test_dev_login_is_restricted_to_loopback_even_when_enabled_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with patch.dict(os.environ, {"KERA_CONTROL_PLANE_DEV_AUTH": "true"}, clear=False):
+            reloaded_app = reload_app_module(
+                Path(self.tempdir.name) / "dev_login_remote.db",
+                control_plane_artifact_dir=self.control_plane_artifact_dir,
+            )
+            self.app_module = reloaded_app
+            self.db_module = sys.modules["kera_research.db"]
+            self.cp = self.app_module.ControlPlaneStore()
+            from fastapi.testclient import TestClient
+
+            self.client = TestClient(self.app_module.create_app(), base_url="https://k-era.org")
+            response = self.client.post("/api/auth/dev-login")
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("localhost", response.text)
+
+    def test_dev_login_allows_loopback_when_enabled_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with patch.dict(os.environ, {"KERA_CONTROL_PLANE_DEV_AUTH": "true"}, clear=False):
+            reloaded_app = reload_app_module(
+                Path(self.tempdir.name) / "dev_login_loopback.db",
+                control_plane_artifact_dir=self.control_plane_artifact_dir,
+            )
+            self.app_module = reloaded_app
+            self.db_module = sys.modules["kera_research.db"]
+            self.cp = self.app_module.ControlPlaneStore()
+            from fastapi.testclient import TestClient
+
+            self.client = TestClient(self.app_module.create_app(), base_url="http://127.0.0.1:8000")
+            response = self.client.post("/api/auth/dev-login")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["user"]["role"], "admin")
+        self.assertTrue(str(payload["access_token"]).strip())
+
+    def test_dev_login_route_is_not_registered_for_production_like_runtime_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_CONTROL_PLANE_DEV_AUTH": "true",
+                "KERA_ENVIRONMENT": "production",
+            },
+            clear=False,
+        ):
+            reloaded_app = reload_app_module(
+                Path(self.tempdir.name) / "dev_login_disabled_prod.db",
+                control_plane_artifact_dir=self.control_plane_artifact_dir,
+            )
+            self.app_module = reloaded_app
+            self.db_module = sys.modules["kera_research.db"]
+            self.cp = self.app_module.ControlPlaneStore()
+            from fastapi.testclient import TestClient
+
+            self.client = TestClient(self.app_module.create_app(), base_url="http://127.0.0.1:8000")
+            response = self.client.post("/api/auth/dev-login")
+
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_dev_login_route_is_not_registered_when_control_plane_base_url_is_remote_http(self):
+        self.client.close()
+        self.db_module.CONTROL_PLANE_ENGINE.dispose()
+        self.db_module.DATA_PLANE_ENGINE.dispose()
+
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_CONTROL_PLANE_DEV_AUTH": "true",
+            },
+            clear=False,
+        ):
+            reloaded_app = reload_app_module(
+                Path(self.tempdir.name) / "dev_login_disabled_remote_base.db",
+                control_plane_artifact_dir=self.control_plane_artifact_dir,
+                control_plane_api_base_url="https://k-era.org/control-plane/api",
+            )
+            self.app_module = reloaded_app
+            self.db_module = sys.modules["kera_research.db"]
+            self.cp = self.app_module.ControlPlaneStore()
+            from fastapi.testclient import TestClient
+
+            self.client = TestClient(self.app_module.create_app(), base_url="http://127.0.0.1:8000")
+            response = self.client.post("/api/auth/dev-login")
+
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_login_rate_limit_persists_across_app_reload_http(self):
         for _ in range(10):
@@ -1627,6 +1770,102 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(throttled.headers.get("Retry-After"), "300")
         self.assertIn("Too many login attempts", throttled.text)
 
+    def test_login_rate_limit_ignores_forwarded_headers_from_untrusted_client_http(self):
+        with patch.dict(os.environ, {"KERA_TRUST_PROXY_HEADERS": "true"}, clear=False):
+            for attempt in range(10):
+                response = self.client.post(
+                    "/api/auth/login",
+                    headers={"X-Forwarded-For": f"203.0.113.{attempt + 10}"},
+                    json={"username": "admin", "password": "wrong-password"},
+                )
+                self.assertEqual(response.status_code, 401, response.text)
+
+            throttled = self.client.post(
+                "/api/auth/login",
+                headers={"X-Forwarded-For": "198.51.100.24"},
+                json={"username": "admin", "password": "wrong-password"},
+            )
+
+        self.assertEqual(throttled.status_code, 429, throttled.text)
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(self.db_module.auth_rate_limits.select()).mappings().all()
+        self.assertTrue(all(str(row["client_key"]) == "testclient" for row in rows))
+
+    def test_login_rate_limit_uses_forwarded_ip_from_trusted_proxy_http(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_TRUST_PROXY_HEADERS": "true",
+                "KERA_TRUSTED_PROXY_IPS": "testclient",
+            },
+            clear=False,
+        ):
+            response = self.client.post(
+                "/api/auth/login",
+                headers={"X-Forwarded-For": "203.0.113.55"},
+                json={"username": "admin", "password": "wrong-password"},
+            )
+
+        self.assertEqual(response.status_code, 401, response.text)
+        with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(self.db_module.auth_rate_limits.select()).mappings().all()
+        self.assertEqual([str(row["client_key"]) for row in rows], ["203.0.113.55"])
+
+    def test_default_cors_allows_known_local_web_origin_http(self):
+        response = self.client.options(
+            "/api/auth/login",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:3000")
+
+    def test_default_cors_rejects_unknown_localhost_port_http(self):
+        response = self.client.options(
+            "/api/auth/login",
+            headers={
+                "Origin": "http://localhost:3015",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertNotEqual(response.headers.get("access-control-allow-origin"), "http://localhost:3015")
+
+    def test_cors_allows_explicitly_configured_extra_origins_http(self):
+        from fastapi.testclient import TestClient
+
+        with patch.dict(
+            os.environ,
+            {"KERA_CORS_ALLOWED_ORIGINS": "https://k-era.org, https://downloads.k-era.org"},
+            clear=False,
+        ):
+            client = TestClient(self.app_module.create_app())
+            try:
+                response = client.options(
+                    "/api/auth/login",
+                    headers={
+                        "Origin": "https://downloads.k-era.org",
+                        "Access-Control-Request-Method": "POST",
+                    },
+                )
+            finally:
+                client.close()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "https://downloads.k-era.org")
+
+    def test_query_string_token_is_not_accepted_for_authenticated_routes_http(self):
+        token = self._token_for_username("admin")
+
+        response = self.client.get(f"/api/auth/me?token={token}")
+
+        self.assertEqual(response.status_code, 401, response.text)
+        self.assertIn("Missing bearer token", response.text)
+
     def test_non_admin_null_site_ids_do_not_expand_access_http(self):
         legacy_user = self.cp.upsert_user(
             {
@@ -1654,7 +1893,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(repaired_store.accessible_sites_for_user(repaired_user), [])
         self.assertFalse(repaired_store.user_can_access_site(repaired_user, self.site_id))
 
-    def test_plaintext_password_rows_are_migrated_to_bcrypt_http(self):
+    def test_plaintext_password_rows_are_migrated_to_argon2_http(self):
         legacy_admin_id = self.app_module.make_id("user")
         with self.db_module.CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(
@@ -1672,10 +1911,10 @@ class ApiHttpTests(unittest.TestCase):
         migrated_store = self.app_module.ControlPlaneStore()
         raw_user = migrated_store._load_user_by_username("legacy_plain_admin")
         self.assertIsNotNone(raw_user)
-        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
+        self.assertTrue(self.app_module._is_argon2_hash(str(raw_user["password"])))
         self.assertIsNotNone(migrated_store.authenticate("legacy_plain_admin", "plain-admin-pass"))
 
-    def test_legacy_pbkdf2_password_rows_migrate_to_bcrypt_after_login_http(self):
+    def test_legacy_pbkdf2_password_rows_migrate_to_argon2_after_login_http(self):
         salt = "legacy-salt"
         iterations = 210000
         digest = hashlib.pbkdf2_hmac("sha256", b"legacy-admin-pass", salt.encode("utf-8"), iterations)
@@ -1702,9 +1941,9 @@ class ApiHttpTests(unittest.TestCase):
 
         raw_after_login = migrated_store._load_user_by_username("legacy_pbkdf2_admin")
         self.assertIsNotNone(raw_after_login)
-        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_after_login["password"])))
+        self.assertTrue(self.app_module._is_argon2_hash(str(raw_after_login["password"])))
 
-    def test_legacy_pbkdf2_long_password_rows_stay_authenticable_http(self):
+    def test_legacy_pbkdf2_long_password_rows_migrate_to_argon2_after_login_http(self):
         long_password = "kera-long-password-" * 6
         salt = "legacy-long-salt"
         iterations = 210000
@@ -1728,7 +1967,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNotNone(migrated_store.authenticate("legacy_long_pbkdf2_admin", long_password))
         raw_after_login = migrated_store._load_user_by_username("legacy_long_pbkdf2_admin")
         self.assertIsNotNone(raw_after_login)
-        self.assertTrue(str(raw_after_login["password"]).startswith("pbkdf2_sha256$"))
+        self.assertTrue(self.app_module._is_argon2_hash(str(raw_after_login["password"])))
 
     def test_upsert_user_hashes_plaintext_password_http(self):
         created = self.cp.upsert_user(
@@ -1743,7 +1982,7 @@ class ApiHttpTests(unittest.TestCase):
         )
         raw_user = self.cp._load_user_by_id(created["user_id"])
         self.assertIsNotNone(raw_user)
-        self.assertTrue(self.app_module._is_bcrypt_hash(str(raw_user["password"])))
+        self.assertTrue(self.app_module._is_argon2_hash(str(raw_user["password"])))
         self.assertIsNotNone(self.cp.authenticate("hashed_on_upsert_admin", "admin-pass-123"))
 
     def test_stringified_empty_site_ids_are_normalized_http(self):
@@ -2304,7 +2543,7 @@ class ApiHttpTests(unittest.TestCase):
         preview_path = self.site_store.image_preview_cache_path(image_id, 256)
         self.assertTrue(preview_path.exists())
 
-        with patch("kera_research.services.data_plane.Image.open", side_effect=AssertionError("preview should be served from cache")):
+        with patch("kera_research.services.data_plane_previews.Image.open", side_effect=AssertionError("preview should be served from cache")):
             cached_response = self.client.get(
                 preview_url,
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -2610,11 +2849,18 @@ class ApiHttpTests(unittest.TestCase):
         ]
         self.assertEqual(len(embedding_jobs), 1)
         self.assertEqual(embedding_jobs[0]["status"], "running")
-        for _ in range(30):
-            job = self.site_store.get_job(first_payload["job"]["job_id"])
-            if job is not None and job.get("status") == "completed":
+        completed_job = None
+        for _ in range(80):
+            completed_job = self.site_store.get_job(first_payload["job"]["job_id"])
+            if completed_job is not None and completed_job.get("status") == "completed":
                 break
             time.sleep(0.1)
+        self.assertIsNotNone(completed_job)
+        self.assertEqual(completed_job.get("status"), "completed")
+        for _ in range(20):
+            if not dict(self.app_module._PENDING_EMBEDDING_JOBS):
+                break
+            time.sleep(0.05)
 
     def test_federated_retrieval_sync_route_http(self):
         admin_token = self._login("admin", "admin123")
@@ -2815,14 +3061,15 @@ class ApiHttpTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
-                            result = self.app_module._queue_federated_retrieval_corpus_sync(
-                                self.cp,
-                                self.site_store,
-                                trigger="image_upload",
-                            )
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                                result = self.app_module._queue_federated_retrieval_corpus_sync(
+                                    self.cp,
+                                    self.site_store,
+                                    trigger="image_upload",
+                                )
 
             self.assertTrue(result["queued"])
             self.assertEqual(fake_schedule.call_count, 1)
@@ -2866,49 +3113,50 @@ class ApiHttpTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        with patch.object(self.app_module, "_submit_executor_job_after_delay", side_effect=capture_schedule):
-                            with patch.object(
-                                self.app_module,
-                                "_latest_federated_retrieval_sync_job_impl",
-                                return_value=dict(running_job),
-                            ):
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(self.cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", side_effect=capture_schedule):
                                 with patch.object(
                                     self.app_module,
-                                    "_start_federated_retrieval_corpus_sync_impl",
-                                ) as start_sync:
+                                    "_latest_federated_retrieval_sync_job_impl",
+                                    return_value=dict(running_job),
+                                ):
                                     with patch.object(
-                                        self.site_store,
-                                        "get_job",
-                                        side_effect=[dict(running_job), dict(completed_job)],
-                                    ) as get_job:
-                                        result = self.app_module._queue_federated_retrieval_corpus_sync(
-                                            self.cp,
-                                            self.site_store,
-                                            trigger="save_case",
-                                        )
-                                        self.assertTrue(result["queued"])
-                                        self.assertEqual(len(scheduled_calls), 1)
-                                        self.assertEqual(scheduled_calls[0][3], 7.0)
-
-                                        initial_fn = scheduled_calls[0][1]
-                                        initial_args = scheduled_calls[0][2]
+                                        self.app_module,
+                                        "_start_federated_retrieval_corpus_sync_impl",
+                                    ) as start_sync:
                                         with patch.object(
-                                            self.app_module.time,
-                                            "sleep",
-                                            side_effect=AssertionError("sleep should not be called"),
-                                        ):
-                                            initial_fn(*initial_args)
-                                            self.assertEqual(len(scheduled_calls), 2)
-                                            self.assertEqual(scheduled_calls[1][3], 2.0)
+                                            self.site_store,
+                                            "get_job",
+                                            side_effect=[dict(running_job), dict(completed_job)],
+                                        ) as get_job:
+                                            result = self.app_module._queue_federated_retrieval_corpus_sync(
+                                                self.cp,
+                                                self.site_store,
+                                                trigger="save_case",
+                                            )
+                                            self.assertTrue(result["queued"])
+                                            self.assertEqual(len(scheduled_calls), 1)
+                                            self.assertEqual(scheduled_calls[0][3], 7.0)
 
-                                            poll_fn = scheduled_calls[1][1]
-                                            poll_args = scheduled_calls[1][2]
-                                            poll_fn(*poll_args)
+                                            initial_fn = scheduled_calls[0][1]
+                                            initial_args = scheduled_calls[0][2]
+                                            with patch.object(
+                                                self.app_module.time,
+                                                "sleep",
+                                                side_effect=AssertionError("sleep should not be called"),
+                                            ):
+                                                initial_fn(*initial_args)
+                                                self.assertEqual(len(scheduled_calls), 2)
+                                                self.assertEqual(scheduled_calls[1][3], 2.0)
 
-                                        start_sync.assert_not_called()
-                                        self.assertEqual(get_job.call_count, 2)
+                                                poll_fn = scheduled_calls[1][1]
+                                                poll_args = scheduled_calls[1][2]
+                                                poll_fn(*poll_args)
+
+                                            start_sync.assert_not_called()
+                                            self.assertEqual(get_job.call_count, 2)
 
             self.assertNotIn(job_key, self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS)
             self.assertNotIn(job_key, self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS)
@@ -2982,7 +3230,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
-            fake_executor = Mock()
+            fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(
                 os.environ,
@@ -2992,19 +3240,22 @@ class ApiHttpTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        response = self.client.post(
-                            f"/api/desktop/internal/sites/{self.site_id}/ai-clinic/retrieval-corpus/queue?trigger=visit_update",
-                            headers={"x-kera-control-plane-owner": "desktop-owner-test"},
-                            json={"retrieval_profile": "dinov2_lesion_crop"},
-                        )
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                            response = self.client.post(
+                                f"/api/desktop/internal/sites/{self.site_id}/ai-clinic/retrieval-corpus/queue?trigger=visit_update",
+                                headers={"x-kera-control-plane-owner": "desktop-owner-test"},
+                                json={"retrieval_profile": "dinov2_lesion_crop"},
+                            )
 
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()
             self.assertTrue(payload["queued"])
             self.assertEqual(payload["retrieval_profile"], "dinov2_lesion_crop")
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            fake_schedule.assert_called_once()
+            self.assertIs(fake_schedule.call_args.args[0], self.app_module._FEDERATED_RETRIEVAL_SYNC_EXECUTOR)
+            self.assertEqual(fake_schedule.call_args.kwargs["delay_seconds"], payload["delay_seconds"])
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
@@ -3013,7 +3264,7 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_EMBEDDING_JOBS.clear()
         self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
         try:
-            fake_executor = Mock()
+            fake_schedule = Mock()
             with patch.dict(
                 os.environ,
                 {
@@ -3024,7 +3275,7 @@ class ApiHttpTests(unittest.TestCase):
             ):
                 with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
                     with patch.object(self.cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
-                        with patch.object(self.app_module, "_EMBEDDING_INDEX_EXECUTOR", fake_executor):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
                             response = self.client.post(
                                 f"/api/desktop/internal/sites/{self.site_id}/cases/HTTP-001/visits/Initial/ai-clinic/embeddings/queue?trigger=image_upload",
                                 headers={"x-kera-control-plane-owner": "desktop-owner-test"},
@@ -3035,7 +3286,9 @@ class ApiHttpTests(unittest.TestCase):
             self.assertTrue(payload["queued"])
             self.assertEqual(payload["patient_id"], "HTTP-001")
             self.assertEqual(payload["visit_date"], "Initial")
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            fake_schedule.assert_called_once()
+            self.assertIs(fake_schedule.call_args.args[0], self.app_module._EMBEDDING_INDEX_EXECUTOR)
+            self.assertGreater(float(fake_schedule.call_args.kwargs["delay_seconds"]), 0.0)
         finally:
             self.app_module._PENDING_EMBEDDING_JOBS.clear()
             self.app_module._PENDING_EMBEDDING_TRIGGERS.clear()
@@ -3047,19 +3300,21 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
         self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
         try:
-            fake_executor = Mock()
+            fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(os.environ, {"KERA_DISABLE_CASE_EMBEDDING_REFRESH": "0"}, clear=False):
                 with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
                     with patch.object(lazy_cp, "current_global_model", return_value={"version_id": "model-1", "ready": True}):
-                        with patch.object(self.app_module, "_VECTOR_INDEX_REBUILD_EXECUTOR", fake_executor):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
                             response = self.client.delete(
                                 f"/api/sites/{self.site_id}/images?patient_id=HTTP-VECTOR-001&visit_date=Initial",
                                 headers={"Authorization": f"Bearer {token}"},
                             )
 
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            fake_schedule.assert_called_once()
+            self.assertIs(fake_schedule.call_args.args[0], self.app_module._VECTOR_INDEX_REBUILD_EXECUTOR)
+            self.assertGreater(float(fake_schedule.call_args.kwargs["delay_seconds"]), 0.0)
         finally:
             self.app_module._PENDING_VECTOR_INDEX_REBUILD_JOBS.clear()
             self.app_module._PENDING_VECTOR_INDEX_REBUILD_TRIGGERS.clear()
@@ -3199,34 +3454,37 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
-            fake_executor = Mock()
+            fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
-                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        response = self.client.post(
-                            f"/api/sites/{self.site_id}/visits",
-                            headers={"Authorization": f"Bearer {token}"},
-                            json={
-                                "patient_id": "HTTP-AUTO-SYNC-001",
-                                "visit_date": "Initial",
-                                "culture_status": "unknown",
-                                "culture_confirmed": False,
-                                "culture_category": "",
-                                "culture_species": "",
-                                "additional_organisms": [],
-                                "contact_lens_use": "none",
-                                "predisposing_factor": [],
-                                "other_history": "",
-                                "visit_status": "active",
-                                "is_initial_visit": True,
-                                "smear_result": "not done",
-                                "polymicrobial": False,
-                            },
-                        )
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                            response = self.client.post(
+                                f"/api/sites/{self.site_id}/visits",
+                                headers={"Authorization": f"Bearer {token}"},
+                                json={
+                                    "patient_id": "HTTP-AUTO-SYNC-001",
+                                    "visit_date": "Initial",
+                                    "culture_status": "unknown",
+                                    "culture_confirmed": False,
+                                    "culture_category": "",
+                                    "culture_species": "",
+                                    "additional_organisms": [],
+                                    "contact_lens_use": "none",
+                                    "predisposing_factor": [],
+                                    "other_history": "",
+                                    "visit_status": "active",
+                                    "is_initial_visit": True,
+                                    "smear_result": "not done",
+                                    "polymicrobial": False,
+                                },
+                            )
 
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            fake_schedule.assert_called_once()
+            self.assertIs(fake_schedule.call_args.args[0], self.app_module._FEDERATED_RETRIEVAL_SYNC_EXECUTOR)
+            self.assertGreater(float(fake_schedule.call_args.kwargs["delay_seconds"]), 0.0)
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
@@ -5938,6 +6196,129 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(aggregation_response.status_code, 400, aggregation_response.text)
         self.assertIn("Only one approved update per site can be aggregated at a time.", aggregation_response.text)
 
+    def test_register_model_update_rejects_tampered_federated_signature_http(self):
+        from kera_research.services.federated_update_security import apply_federated_update_signature
+
+        delta_path = self.site_store.update_dir / "signed_delta_tamper.pt"
+        delta_path.parent.mkdir(parents=True, exist_ok=True)
+        delta_path.write_bytes(b"signed-delta")
+        update_id = self.app_module.make_id("update")
+        artifact_metadata = self.cp.store_model_update_artifact(
+            delta_path,
+            update_id=update_id,
+            artifact_kind="delta",
+        )
+        update_record = {
+            "update_id": update_id,
+            "site_id": self.site_id,
+            "base_model_version_id": self.cp.current_global_model()["version_id"],
+            "architecture": "densenet121",
+            "upload_type": "weight delta",
+            "execution_device": "cpu",
+            "artifact_path": str(delta_path),
+            **artifact_metadata,
+            "n_cases": 2,
+            "aggregation_weight": 2,
+            "aggregation_weight_unit": "cases",
+            "created_at": "2026-04-14T00:00:00+00:00",
+            "status": "pending_review",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "fed-signing-secret",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+            },
+            clear=False,
+        ):
+            signed = apply_federated_update_signature(update_record)
+            accepted = self.cp.register_model_update(dict(signed))
+            self.assertTrue(str(accepted.get("federated_update_signature") or "").strip())
+
+            tampered = dict(signed)
+            tampered["aggregation_weight"] = 99
+            with self.assertRaises(ValueError):
+                self.cp.register_model_update(tampered)
+
+    def test_aggregation_uses_configured_robust_strategy_http(self):
+        from kera_research.services.federated_update_security import apply_federated_update_signature
+
+        admin_token = self._login("admin", "admin123")
+        fake_workflow = FakeWorkflow(self.app_module, self.cp)
+        base_model_path = Path(self.tempdir.name) / "robust_agg_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_robust_http_agg",
+                "version_name": "global-convnext-tiny-robust-http-agg",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-14T00:10:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "fed-signing-secret",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_AGGREGATION_STRATEGY": "coordinate_median",
+                "KERA_FEDERATED_AGGREGATION_TRIM_RATIO": "0.3",
+            },
+            clear=False,
+        ):
+            for site_id, aggregation_weight in (("SITE-A", 5), ("SITE-B", 7)):
+                delta_path = self.site_store.update_dir / f"{site_id}_robust_delta.pt"
+                delta_path.parent.mkdir(parents=True, exist_ok=True)
+                delta_path.write_bytes(f"delta-{site_id}".encode("utf-8"))
+                update_id = self.app_module.make_id("update")
+                artifact_metadata = self.cp.store_model_update_artifact(
+                    delta_path,
+                    update_id=update_id,
+                    artifact_kind="delta",
+                )
+                update = apply_federated_update_signature(
+                    {
+                        "update_id": update_id,
+                        "site_id": site_id,
+                        "base_model_version_id": base_model["version_id"],
+                        "architecture": base_model["architecture"],
+                        "upload_type": "weight delta",
+                        "execution_device": "cpu",
+                        "artifact_path": str(delta_path),
+                        **artifact_metadata,
+                        "n_cases": aggregation_weight,
+                        "aggregation_weight": aggregation_weight,
+                        "aggregation_weight_unit": "images",
+                        "federated_round_type": "image_level_site_round",
+                        "created_at": "2026-04-14T00:11:00+00:00",
+                        "status": "approved",
+                    }
+                )
+                self.cp.register_model_update(update)
+
+            with patch.object(self.app_module, "_get_workflow", return_value=fake_workflow):
+                aggregation_response = self.client.post(
+                    "/api/admin/aggregations/run",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    json={},
+                )
+
+        self.assertEqual(aggregation_response.status_code, 200, aggregation_response.text)
+        self.assertTrue(fake_workflow.model_manager.aggregate_calls)
+        self.assertEqual(fake_workflow.model_manager.aggregate_calls[-1]["strategy"], "coordinate_median")
+        payload = aggregation_response.json()["aggregation"]
+        self.assertEqual(payload["aggregation_strategy"], "coordinate_median")
+        self.assertEqual(payload["weighting_mode"], "per_site_uniform")
+
     def test_model_version_delete_soft_delete_rules_http(self):
         admin_token = self._login("admin", "admin123")
         archived_candidate = self.cp.ensure_model_version(
@@ -6749,6 +7130,50 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(imported_case["culture_category"], "")
         self.assertEqual(imported_case["culture_species"], "")
 
+    def test_bulk_import_skips_invalid_image_bundle_entries_http(self):
+        admin_token = self._token_for_username("admin")
+
+        projects_response = self.client.get("/api/admin/projects", headers={"Authorization": f"Bearer {admin_token}"})
+        self.assertEqual(projects_response.status_code, 200, projects_response.text)
+        project_id = projects_response.json()[0]["project_id"]
+
+        create_site_response = self.client.post(
+            "/api/admin/sites",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "project_id": project_id,
+                "hospital_name": "Import Invalid Image Hospital",
+                "source_institution_id": "OPS_HTTP_INVALID_IMAGE",
+            },
+        )
+        self.assertEqual(create_site_response.status_code, 200, create_site_response.text)
+        site_id = create_site_response.json()["site_id"]
+
+        csv_content = (
+            "patient_id,chart_alias,local_case_code,sex,age,visit_date,actual_visit_date,culture_status,culture_category,culture_species,"
+            "contact_lens_use,predisposing_factor,visit_status,active_stage,smear_result,polymicrobial,other_history,image_filename,view,is_representative\n"
+            "OPS-I-001,OPS-I-001,CASE-I-001,female,51,Initial,2026-03-11,unknown,,,none,trauma,active,TRUE,unknown,FALSE,,ops_invalid_white.jpg,white,TRUE\n"
+        ).encode("utf-8")
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("ops_invalid_white.jpg", b"not-an-image")
+
+        import_response = self.client.post(
+            f"/api/sites/{site_id}/import/bulk",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            files=[
+                ("csv_file", ("ops_import_invalid.csv", csv_content, "text/csv")),
+                ("files", ("ops_invalid_images.zip", archive_buffer.getvalue(), "application/zip")),
+            ],
+        )
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+        payload = import_response.json()
+        self.assertEqual(payload["created_patients"], 0)
+        self.assertEqual(payload["created_visits"], 0)
+        self.assertEqual(payload["imported_images"], 0)
+        self.assertEqual(payload["skipped_images"], 1)
+        self.assertTrue(any("Invalid image file" in message for message in payload["errors"]))
+
     def test_platform_admin_can_update_site_source_institution_mapping_http(self):
         admin_token = self._token_for_username("admin")
 
@@ -7046,19 +7471,22 @@ class ApiHttpTests(unittest.TestCase):
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
         self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
         try:
-            fake_executor = Mock()
+            fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
-                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        response = self.client.post(
-                            f"/api/admin/sites/{self.site_id}/metadata/recover",
-                            headers={"Authorization": f"Bearer {site_admin_token}"},
-                            json={"source": "auto", "force_replace": True},
-                        )
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                            response = self.client.post(
+                                f"/api/admin/sites/{self.site_id}/metadata/recover",
+                                headers={"Authorization": f"Bearer {site_admin_token}"},
+                                json={"source": "auto", "force_replace": True},
+                            )
 
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(fake_executor.submit.call_count, 1)
+            fake_schedule.assert_called_once()
+            self.assertIs(fake_schedule.call_args.args[0], self.app_module._FEDERATED_RETRIEVAL_SYNC_EXECUTOR)
+            self.assertGreater(float(fake_schedule.call_args.kwargs["delay_seconds"]), 0.0)
         finally:
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_JOBS.clear()
             self.app_module._PENDING_FEDERATED_RETRIEVAL_SYNC_TRIGGERS.clear()
@@ -7108,13 +7536,14 @@ class ApiHttpTests(unittest.TestCase):
             fake_schedule = Mock()
             lazy_cp = self.app_module.get_control_plane()
             with patch.dict(os.environ, {"KERA_DISABLE_FEDERATED_RETRIEVAL_AUTO_SYNC": "0"}, clear=False):
-                with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
-                    with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
-                        with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
-                            response = self.client.post(
-                                f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
-                                headers={"Authorization": f"Bearer {site_admin_token}"},
-                            )
+                with patch.object(self.app_module, "control_plane_split_enabled", return_value=False):
+                    with patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True):
+                        with patch.object(self.app_module, "_FEDERATED_RETRIEVAL_SYNC_EXECUTOR", fake_executor):
+                            with patch.object(self.app_module, "_submit_executor_job_after_delay", fake_schedule):
+                                response = self.client.post(
+                                    f"/api/admin/sites/{self.site_id}/metadata/sync-raw",
+                                    headers={"Authorization": f"Bearer {site_admin_token}"},
+                                )
 
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(fake_schedule.call_count, 1)
@@ -7296,6 +7725,128 @@ class ApiHttpTests(unittest.TestCase):
             "HTTP-EMPTY-FAST-001",
             [item["patient_id"] for item in patients_response.json()],
         )
+
+    def test_runtime_health_and_metrics_endpoints_http(self):
+        live_response = self.client.get("/api/live", headers={"X-Request-ID": "health-live-req"})
+        self.assertEqual(live_response.status_code, 200, live_response.text)
+        self.assertEqual(live_response.headers.get("X-Request-ID"), "health-live-req")
+        live_payload = live_response.json()
+        self.assertEqual(live_payload["status"], "alive")
+        self.assertEqual(live_payload["service"], "kera-api")
+        self.assertEqual(live_payload["version"], "1.0.0")
+
+        health_response = self.client.get("/api/health")
+        self.assertEqual(health_response.status_code, 200, health_response.text)
+        self.assertTrue(str(health_response.headers.get("X-Request-ID") or "").strip())
+        health_payload = health_response.json()
+        self.assertTrue(health_payload["ready"])
+        self.assertIn(health_payload["status"], {"ok", "ready_with_warnings"})
+        self.assertIn("checks", health_payload)
+        self.assertTrue(health_payload["checks"]["storage"]["storage_dir"]["ready"])
+        self.assertTrue(health_payload["checks"]["data_plane_database"]["ready"])
+        self.assertTrue(health_payload["database_connections"]["control_plane"]["ready"])
+        self.assertTrue(health_payload["database_connections"]["data_plane"]["ready"])
+        self.assertIn("background_jobs", health_payload)
+        self.assertIn("request_metrics", health_payload)
+
+        metrics_response = self.client.get("/api/metrics")
+        self.assertEqual(metrics_response.status_code, 200, metrics_response.text)
+        self.assertTrue(metrics_response.headers["content-type"].startswith("text/plain"))
+        metrics_text = metrics_response.text
+        self.assertIn("kera_api_requests_total", metrics_text)
+        self.assertIn("kera_api_background_queue_items", metrics_text)
+        self.assertIn('route="/api/live"', metrics_text)
+        self.assertIn('route="/api/health"', metrics_text)
+
+    def test_readiness_endpoint_returns_503_when_required_probe_fails_http(self):
+        failed_checks = {
+            "checked_at": "2026-04-13T00:00:00+00:00",
+            "storage": {
+                "storage_dir": {"path": self.tempdir.name, "exists": True, "ready": True, "writable": True, "detail": ""},
+                "runtime_dir": {"path": self.tempdir.name, "exists": True, "ready": True, "writable": True, "detail": ""},
+            },
+            "disk": {
+                "path": self.tempdir.name,
+                "total_bytes": 100,
+                "used_bytes": 10,
+                "free_bytes": 90,
+                "minimum_free_bytes": 0,
+                "ready": True,
+                "detail": "",
+            },
+            "data_plane_database": {
+                "path": str(Path(self.tempdir.name) / "kera.db"),
+                "exists": False,
+                "required": True,
+                "ready": False,
+                "detail": "simulated failure",
+            },
+            "control_plane_cache_database": {
+                "path": str(Path(self.tempdir.name) / "control_plane_cache.db"),
+                "exists": True,
+                "required": False,
+                "ready": True,
+                "detail": "",
+            },
+            "control_plane": {
+                "configured": False,
+                "node_sync_enabled": False,
+                "base_url": "",
+                "node_id": "",
+                "bootstrap": None,
+                "ready": True,
+                "detail": "",
+            },
+            "model_artifacts": {
+                "model_dir": "",
+                "model_dir_exists": True,
+                "active_manifest_path": "",
+                "active_manifest_exists": True,
+                "active_manifest": {},
+                "active_model_path": "",
+                "active_model_exists": True,
+                "current_release": {"version_id": "model-1", "ready": True},
+                "resolved_model_path": "",
+                "ready": True,
+                "downloadable": False,
+                "detail": "",
+            },
+        }
+        with patch.object(self.app_module, "_desktop_runtime_checks", return_value=failed_checks):
+            readiness_response = self.client.get("/api/ready")
+
+        self.assertEqual(readiness_response.status_code, 503, readiness_response.text)
+        payload = readiness_response.json()
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("data_plane_database", payload["failing_required_checks"])
+
+    def test_sentry_observability_initializes_when_dsn_is_configured_http(self):
+        from fastapi.testclient import TestClient
+
+        os.environ["KERA_SENTRY_DSN"] = "https://public@example.ingest.sentry.io/123"
+        os.environ["KERA_SENTRY_ENVIRONMENT"] = "test-suite"
+        os.environ["KERA_SENTRY_TRACES_SAMPLE_RATE"] = "0.25"
+        try:
+            with patch("sentry_sdk.init") as sentry_init:
+                client = TestClient(self.app_module.create_app())
+                try:
+                    response = client.get("/api/health")
+                finally:
+                    client.close()
+        finally:
+            os.environ.pop("KERA_SENTRY_DSN", None)
+            os.environ.pop("KERA_SENTRY_ENVIRONMENT", None)
+            os.environ.pop("KERA_SENTRY_TRACES_SAMPLE_RATE", None)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        sentry_init.assert_called_once()
+        payload = response.json()
+        sentry_status = payload["observability"]["error_aggregation"]
+        self.assertTrue(sentry_status["configured"])
+        self.assertTrue(sentry_status["enabled"])
+        self.assertEqual(sentry_status["provider"], "sentry")
+        self.assertEqual(sentry_status["environment"], "test-suite")
 
 
 if __name__ == "__main__":

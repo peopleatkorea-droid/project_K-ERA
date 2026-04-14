@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pandas as pd
 
@@ -27,6 +29,38 @@ def local_metadata_backup_db_paths(store: Any) -> list[Path]:
             continue
         candidates.append(resolved_path)
     return candidates
+
+
+def storage_bundle_root(store: Any) -> Path:
+    site_parent = store.site_dir.parent.resolve()
+    if site_parent.name.strip().lower() == "sites":
+        return site_parent.parent.resolve()
+    return site_parent
+
+
+def _sqlite_database_path(database_url: str) -> Path | None:
+    normalized = str(database_url or "").strip()
+    if not normalized.startswith("sqlite:///"):
+        return None
+    raw_path = unquote(normalized[len("sqlite:///") :]).strip()
+    if not raw_path or raw_path == ":memory:":
+        return None
+    if os.name == "nt" and raw_path.startswith("/") and len(raw_path) >= 3 and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    return Path(raw_path)
+
+
+def current_data_plane_db_path(store: Any) -> Path | None:
+    dp = _deps()
+    return _sqlite_database_path(dp.DATA_PLANE_DATABASE_URL)
+
+
+def clear_site_metadata_rows(store: Any) -> None:
+    dp = _deps()
+    with dp.DATA_PLANE_ENGINE.begin() as conn:
+        conn.execute(dp.delete(dp.db_images).where(dp.db_images.c.site_id == store.site_id))
+        conn.execute(dp.delete(dp.db_visits).where(dp.db_visits.c.site_id == store.site_id))
+        conn.execute(dp.delete(dp.db_patients).where(dp.db_patients.c.site_id == store.site_id))
 
 
 def load_patient_metadata_snapshot_from_db(

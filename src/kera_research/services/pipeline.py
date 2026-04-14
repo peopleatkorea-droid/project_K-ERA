@@ -24,6 +24,11 @@ from kera_research.services.pipeline_domains import (
 from kera_research.services.pipeline_embedding_workflow import ResearchEmbeddingWorkflow
 from kera_research.services.pipeline_federated_retrieval_workflow import ResearchFederatedRetrievalWorkflow
 from kera_research.services.pipeline_postmortem_workflow import ResearchPostmortemWorkflow
+from kera_research.services.federated_update_security import (
+    apply_federated_update_signature,
+    federated_delta_privacy_controls,
+    summarize_federated_data_distribution,
+)
 from kera_research.services.preferred_operating_models import preferred_operating_model_versions
 from kera_research.services.pipeline_review_support import ResearchReviewSupport
 from kera_research.services.prediction_postmortem_analyzer import PredictionPostmortemAnalyzer
@@ -1955,12 +1960,16 @@ class ResearchWorkflowService:
 
         upload_path = Path(result["output_model_path"])
         base_model_path = self.model_manager.resolve_model_path(model_version, allow_download=True)
+        privacy_controls = federated_delta_privacy_controls()
         if upload_type == "weight delta":
             upload_path = site_store.update_dir / f"{make_id('delta')}.pt"
             self.model_manager.save_weight_delta(
                 base_model_path,
                 result["output_model_path"],
                 upload_path,
+                clip_l2_norm=privacy_controls.get("delta_clip_l2_norm"),
+                noise_multiplier=privacy_controls.get("delta_noise_multiplier"),
+                quantization_bits=privacy_controls.get("delta_quantization_bits"),
             )
         elif upload_type == "aggregated update":
             upload_path = site_store.update_dir / f"{make_id('agg')}.pt"
@@ -1968,6 +1977,9 @@ class ResearchWorkflowService:
                 base_model_path,
                 result["output_model_path"],
                 upload_path,
+                clip_l2_norm=privacy_controls.get("delta_clip_l2_norm"),
+                noise_multiplier=privacy_controls.get("delta_noise_multiplier"),
+                quantization_bits=privacy_controls.get("delta_quantization_bits"),
             )
 
         update_id = make_id("update")
@@ -1997,7 +2009,11 @@ class ResearchWorkflowService:
             "crop_mode": crop_mode,
             "training_input_policy": training_input_policy,
             "training_summary": result,
+            "privacy_controls": privacy_controls if upload_type == "weight delta" else {},
+            "data_distribution": summarize_federated_data_distribution(records) if upload_type == "weight delta" else {},
         }
+        if upload_type == "weight delta":
+            update_metadata = apply_federated_update_signature(update_metadata)
         self.control_plane.register_model_update(update_metadata)
         update_metadata["experiment"] = self._register_experiment(
             site_store,

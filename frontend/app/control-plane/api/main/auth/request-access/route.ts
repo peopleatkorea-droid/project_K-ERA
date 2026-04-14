@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { submitMainAccessRequest } from "../../../../../../lib/control-plane/main-app-bridge";
-import { jsonError } from "../../../../../../lib/control-plane/http";
+import { authJsonResponse, jsonError } from "../../../../../../lib/control-plane/http";
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
       requested_role?: string;
       message?: string;
     };
-    return Response.json(await submitMainAccessRequest(request, body));
+    return authJsonResponse(await submitMainAccessRequest(request, body));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to submit the access request.";
     return jsonError(message, 400);

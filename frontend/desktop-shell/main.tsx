@@ -137,8 +137,8 @@ function DesktopShellApp() {
     settingsTitle: pick(locale, "Desktop settings", "데스크톱 설정"),
     settingsDescription: pick(
       locale,
-      "Most users only need the local storage folder. The shared server address and secret keys stay on kera-bay.vercel.app.",
-      "대부분의 사용자는 로컬 저장소 폴더만 보면 됩니다. 공용 서버 주소와 비밀 키는 kera-bay.vercel.app에서 관리합니다.",
+      "Most users only need the local storage folder. The shared server address and secret keys stay on k-era.org.",
+      "대부분의 사용자는 로컬 저장소 폴더만 보면 됩니다. 공용 서버 주소와 비밀 키는 k-era.org에서 관리합니다.",
     ),
     storageTitle: pick(locale, "Storage", "저장소"),
     storageDescription: pick(

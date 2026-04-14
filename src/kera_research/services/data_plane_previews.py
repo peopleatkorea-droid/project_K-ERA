@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 def _deps():
@@ -44,21 +48,19 @@ def ensure_image_preview(store: Any, image: dict[str, Any], max_side: int) -> Pa
     if not image_path.exists():
         raise ValueError("Image file not found on disk.")
 
-    temp_path = preview_path.with_suffix(
-        f".{dp.os.getpid()}.{dp.threading.get_ident()}.tmp"
-    )
-    resampling = getattr(dp.Image, "Resampling", dp.Image)
+    temp_path = preview_path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+    resampling = getattr(Image, "Resampling", Image)
 
     try:
-        with dp.Image.open(image_path) as handle:
-            normalized = dp.ImageOps.exif_transpose(handle)
+        with Image.open(image_path) as handle:
+            normalized = ImageOps.exif_transpose(handle)
             preview = normalized.copy()
             preview.thumbnail((normalized_max_side, normalized_max_side), resampling.LANCZOS)
             if preview.mode not in {"RGB", "L"}:
                 preview = preview.convert("RGB")
             preview.save(temp_path, format="JPEG", quality=82, optimize=True)
         temp_path.replace(preview_path)
-    except (OSError, dp.UnidentifiedImageError, ValueError):
+    except (OSError, UnidentifiedImageError, ValueError):
         temp_path.unlink(missing_ok=True)
         raise
 

@@ -1,97 +1,24 @@
 import logging
-import threading
-import time
-from collections import defaultdict
 from typing import Any
 
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import delete, func, select
+from kera_research.api.auth_rate_limit import (
+    ensure_auth_rate_limit,
+    request_client_ip,
+    request_uses_loopback_host,
+)
 from kera_research.api.control_plane_proxy import (
     call_remote_control_plane_method,
     call_remote_public_control_plane_method,
     prefer_local_control_plane,
     remote_control_plane_is_primary,
 )
-from kera_research.db import CONTROL_PLANE_ENGINE, auth_rate_limits, init_control_plane_db
 
 AUTO_APPROVAL_REVIEWER_ID = "system_auto_approve"
 AUTO_APPROVAL_REVIEWER_NOTE = "Automatically approved researcher access request."
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Persistent login rate limiter for admin/dev-login endpoints.
-# Primary path is control-plane DB backed so restart does not clear the window.
-# Falls back to in-memory only if the DB path is temporarily unavailable.
-# ---------------------------------------------------------------------------
-_login_rate: dict[str, list[float]] = defaultdict(list)
-_login_rate_lock = threading.Lock()
-_MAX_LOGIN_ATTEMPTS = 10
-_LOGIN_WINDOW_SECONDS = 300.0  # 5 minutes
-_LOGIN_RATE_LIMIT_SCOPE = "auth_login"
-
-def _check_login_rate_limit_in_memory(ip: str) -> None:
-    now = time.monotonic()
-    with _login_rate_lock:
-        window = _login_rate[ip]
-        _login_rate[ip] = [t for t in window if now - t < _LOGIN_WINDOW_SECONDS]
-        if len(_login_rate[ip]) >= _MAX_LOGIN_ATTEMPTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many login attempts. Please try again later.",
-                headers={"Retry-After": str(int(_LOGIN_WINDOW_SECONDS))},
-            )
-        _login_rate[ip].append(now)
-
-
-def _check_login_rate_limit(ip: str) -> None:
-    normalized_ip = str(ip or "").strip() or "unknown"
-    now = time.time()
-    cutoff = now - _LOGIN_WINDOW_SECONDS
-
-    try:
-        init_control_plane_db()
-        with CONTROL_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                delete(auth_rate_limits).where(
-                    auth_rate_limits.c.scope == _LOGIN_RATE_LIMIT_SCOPE,
-                    auth_rate_limits.c.attempted_at_epoch < cutoff,
-                )
-            )
-            current_count = int(
-                conn.execute(
-                    select(func.count())
-                    .select_from(auth_rate_limits)
-                    .where(
-                        auth_rate_limits.c.scope == _LOGIN_RATE_LIMIT_SCOPE,
-                        auth_rate_limits.c.client_key == normalized_ip,
-                        auth_rate_limits.c.attempted_at_epoch >= cutoff,
-                    )
-                ).scalar_one()
-            )
-            if current_count >= _MAX_LOGIN_ATTEMPTS:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Too many login attempts. Please try again later.",
-                    headers={"Retry-After": str(int(_LOGIN_WINDOW_SECONDS))},
-                )
-            conn.execute(
-                auth_rate_limits.insert().values(
-                    scope=_LOGIN_RATE_LIMIT_SCOPE,
-                    client_key=normalized_ip,
-                    attempted_at_epoch=now,
-                )
-            )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning(
-            "Persistent login rate limiter failed for ip=%s; falling back to in-memory limiter: %s",
-            normalized_ip,
-            exc,
-        )
-        _check_login_rate_limit_in_memory(normalized_ip)
 
 
 def build_auth_router(support: Any) -> APIRouter:
@@ -232,7 +159,7 @@ def build_auth_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
     ) -> dict[str, Any]:
-        _check_login_rate_limit(request.client.host if request.client else "unknown")
+        ensure_auth_rate_limit(request)
         if not local_login_enabled():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -268,12 +195,22 @@ def build_auth_router(support: Any) -> APIRouter:
 
         @router.post("/api/auth/dev-login")
         def dev_login(request: Request, cp=Depends(get_control_plane)) -> dict[str, Any]:
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = request_client_ip(request)
+            if not request_uses_loopback_host(request):
+                logger.error(
+                    "Blocked dev login from non-loopback host=%s client_ip=%s.",
+                    request.url.hostname,
+                    client_ip,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Dev login is restricted to localhost development sessions.",
+                )
             logger.warning(
                 "Dev login endpoint accessed from %s.",
                 client_ip,
             )
-            _check_login_rate_limit(client_ip)
+            ensure_auth_rate_limit(request)
             user = cp.get_user_by_username("admin")
             if user is None:
                 user = cp.upsert_user(

@@ -59,7 +59,7 @@ class _FakeWorkflow:
 class JobRunnerBenchmarkTests(unittest.TestCase):
     def test_benchmark_uses_dual_input_paired_crop_without_breaking_single_input_models(self) -> None:
         workflow = _FakeWorkflow()
-        worker = SiteJobWorker(control_plane=None, workflow_factory=lambda cp: workflow)
+        worker = SiteJobWorker(control_plane=object(), workflow_factory=lambda cp: workflow)
         site_store = _FakeSiteStore()
         job = {
             "job_id": "job_benchmark",

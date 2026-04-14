@@ -3,6 +3,7 @@ import { normalizeEffectiveApprovalStatus } from "../lib/auth-access-state";
 import { isPlaceholderSiteLabel } from "../lib/site-labels";
 
 export const TOKEN_KEY = "kera_web_token";
+export const AUTH_HINT_KEY = "kera_web_auth_hint_v1";
 const SITE_RECORD_CACHE_KEY = "kera_cached_site_records_v1";
 export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 export const CLIENT_BOOTSTRAP_TIMING_LOGS = process.env.NEXT_PUBLIC_KERA_BOOTSTRAP_TIMING_LOGS === "1";
@@ -29,6 +30,11 @@ type MainAppTokenPayload = {
   approval_status?: unknown;
   registry_consents?: unknown;
   exp?: unknown;
+};
+
+type MainAppAuthHint = {
+  user: AuthUser;
+  expires_at_epoch: number | null;
 };
 
 export function parseOperationsLaunchFromSearch(): LaunchTarget | null {
@@ -104,6 +110,71 @@ export function readOptimisticUserFromToken(token: string): AuthUser | null {
     latest_access_request: null,
     registry_consents: registryConsents,
   };
+}
+
+export function readOptimisticUserFromAuthHint(): AuthUser | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const rawValue = window.localStorage.getItem(AUTH_HINT_KEY);
+    if (!rawValue) {
+      return null;
+    }
+    const parsed = JSON.parse(rawValue) as Partial<MainAppAuthHint> | null;
+    const expiresAtEpoch =
+      typeof parsed?.expires_at_epoch === "number" && Number.isFinite(parsed.expires_at_epoch)
+        ? parsed.expires_at_epoch
+        : null;
+    if (expiresAtEpoch !== null && expiresAtEpoch <= Math.floor(Date.now() / 1000)) {
+      window.localStorage.removeItem(AUTH_HINT_KEY);
+      return null;
+    }
+    const candidate = parsed?.user;
+    if (!candidate || typeof candidate !== "object") {
+      return null;
+    }
+    const user = candidate as AuthUser;
+    if (!user.user_id || !user.username || !user.role || !user.approval_status) {
+      return null;
+    }
+    return user;
+  } catch {
+    return null;
+  }
+}
+
+export function clearMainAuthHint() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(AUTH_HINT_KEY);
+}
+
+export function cacheMainAuthHint(user: AuthUser | null | undefined, token?: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!user) {
+    clearMainAuthHint();
+    return;
+  }
+  const expires_at_epoch = token ? readJwtExpiration(token) : null;
+  const payload: MainAppAuthHint = {
+    user: {
+      user_id: user.user_id,
+      username: user.username,
+      full_name: user.full_name,
+      public_alias: user.public_alias ?? null,
+      role: user.role,
+      site_ids: Array.isArray(user.site_ids) ? [...user.site_ids] : [],
+      approval_status: user.approval_status,
+      latest_access_request: user.latest_access_request ?? null,
+      registry_consents: user.registry_consents ?? {},
+    },
+    expires_at_epoch,
+  };
+  window.localStorage.setItem(AUTH_HINT_KEY, JSON.stringify(payload));
 }
 
 function readCachedSiteRecordMap(): Map<string, SiteRecord> {

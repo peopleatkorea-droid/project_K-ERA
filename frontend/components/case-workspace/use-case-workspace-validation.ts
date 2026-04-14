@@ -13,25 +13,13 @@ import {
   type CaseValidationResponse,
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
+import type {
+  CaseWorkspaceExecutionMode,
+  CaseWorkspaceToastState,
+  CaseWorkspaceValidationArtifactKind,
+  CaseWorkspaceValidationArtifactPreviews,
+} from "./case-workspace-definitions";
 import type { LocalePick } from "./shared";
-
-type ToastState = {
-  tone: "success" | "error";
-  message: string;
-} | null;
-
-type ValidationArtifactKind =
-  | "gradcam"
-  | "gradcam_cornea"
-  | "gradcam_lesion"
-  | "roi_crop"
-  | "medsam_mask"
-  | "lesion_crop"
-  | "lesion_mask";
-
-type ValidationArtifactPreviews = Partial<
-  Record<ValidationArtifactKind, string | null>
->;
 
 type ModelCompareItem = CaseValidationCompareResponse["comparisons"][number];
 type SuccessfulModelCompareItem = ModelCompareItem & {
@@ -55,9 +43,9 @@ type Args = {
   copy: ValidationCopy;
   executionModeFromDevice: (
     device: string | undefined,
-  ) => "auto" | "cpu" | "gpu";
+  ) => CaseWorkspaceExecutionMode;
   describeError: (error: unknown, fallback: string) => string;
-  setToast: Dispatch<SetStateAction<ToastState>>;
+  setToast: Dispatch<SetStateAction<CaseWorkspaceToastState>>;
   setPanelOpen: Dispatch<SetStateAction<boolean>>;
   setContributionResult: Dispatch<
     SetStateAction<CaseContributionResponse | null>
@@ -112,7 +100,7 @@ export function useCaseWorkspaceValidation({
   const [modelCompareResult, setModelCompareResult] =
     useState<CaseValidationCompareResponse | null>(null);
   const [validationArtifacts, setValidationArtifacts] =
-    useState<ValidationArtifactPreviews>({});
+    useState<CaseWorkspaceValidationArtifactPreviews>({});
 
   const validationArtifactUrlsRef = useRef<string[]>([]);
 
@@ -148,12 +136,12 @@ export function useCaseWorkspaceValidation({
     result: CaseValidationResponse,
     patientId: string,
     visitDate: string,
-  ): Promise<ValidationArtifactPreviews> {
-    const nextArtifacts: ValidationArtifactPreviews = {};
+  ): Promise<CaseWorkspaceValidationArtifactPreviews> {
+    const nextArtifacts: CaseWorkspaceValidationArtifactPreviews = {};
     const hasBranchAwareGradcam =
       result.artifact_availability.gradcam_cornea ||
       result.artifact_availability.gradcam_lesion;
-    const artifactKinds: ValidationArtifactKind[] = [
+    const artifactKinds: CaseWorkspaceValidationArtifactKind[] = [
       "roi_crop",
       ...(hasBranchAwareGradcam ? [] : ["gradcam" as const]),
       "gradcam_cornea",

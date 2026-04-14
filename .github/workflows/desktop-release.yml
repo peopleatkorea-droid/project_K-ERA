@@ -8,7 +8,7 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
     permissions:
       contents: write
 
@@ -45,12 +45,25 @@ jobs:
         shell: pwsh
         run: .\scripts\setup_local_node.ps1 -PythonExe python -TorchProfile cpu
 
+      - name: Verify web production build
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL: https://k-era.org/control-plane/api
+        run: npm run build
+
+      - name: Run frontend integration tests
+        working-directory: frontend
+        run: npm exec vitest run
+
+      - name: Run backend test suite
+        run: uv run pytest tests -q
+
       - name: Build packaged desktop installer
         working-directory: frontend
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL: https://kera-bay.vercel.app/control-plane/api
+          NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL: https://k-era.org/control-plane/api
         run: npm run tauri:build
 
       - name: Verify packaged desktop installer

@@ -1,5 +1,5 @@
 const DEFAULT_DESKTOP_CONTROL_PLANE_API_BASE_URL: &str =
-    "https://kera-bay.vercel.app/control-plane/api";
+    "https://k-era.org/control-plane/api";
 
 fn compile_time_env_value(key: &str) -> Option<String> {
     let value = match key {

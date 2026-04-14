@@ -794,6 +794,9 @@ export default function HomePage() {
   const canOpenOperations = Boolean(operatorUiEnabled && approved && user && ["admin", "site_admin"].includes(user.role));
   const desktopWorkspaceRuntime = canUseDesktopTransport();
   const errorMessage = siteError ?? error;
+  const hasAuthenticatedSession = Boolean(token || user);
+  const effectiveToken = token ?? "";
+  const optimisticApprovedBootstrap = Boolean(!token && user && approved && bootstrapBusy);
   const filteredExistingSites = publicSites.filter((site) =>
     matchesInstitutionSearch(institutionQuery, site.site_id, site.display_name, site.hospital_name),
   );
@@ -803,8 +806,8 @@ export default function HomePage() {
     selectedExistingSite && !filteredExistingSites.some((site) => site.site_id === selectedExistingSite.site_id)
       ? [selectedExistingSite, ...filteredExistingSites]
       : filteredExistingSites;
-  const approvedButUnassigned = Boolean(token && user && approved && sites.length === 0);
-  const showAccessRequestScreen = Boolean(token && user && (!approved || accessRequestMode || approvedButUnassigned));
+  const approvedButUnassigned = Boolean(hasAuthenticatedSession && user && approved && sites.length === 0);
+  const showAccessRequestScreen = Boolean(hasAuthenticatedSession && user && (!approved || accessRequestMode || approvedButUnassigned));
   const accessRequestEyebrow = approved
     ? pick(locale, approvedButUnassigned ? "Hospital setup" : "Hospital change", approvedButUnassigned ? "병원 연결" : "병원 변경")
     : copy.approvalRequired;
@@ -872,14 +875,14 @@ export default function HomePage() {
   }, [workspaceMode]);
 
   useEffect(() => {
-    if (token && user && approved) {
+    if (hasAuthenticatedSession && user && approved) {
       return;
     }
     workspaceHistoryReadyRef.current = false;
-  }, [approved, token, user]);
+  }, [approved, hasAuthenticatedSession, user]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !token || !user || !approved) {
+    if (typeof window === "undefined" || !hasAuthenticatedSession || !user || !approved) {
       return;
     }
 
@@ -900,10 +903,10 @@ export default function HomePage() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [approved, token, user]);
+  }, [approved, hasAuthenticatedSession, user]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !token || !user || !approved) {
+    if (typeof window === "undefined" || !hasAuthenticatedSession || !user || !approved) {
       return;
     }
 
@@ -938,13 +941,13 @@ export default function HomePage() {
     if (browserEntry?.kind === "guard" && !isSameHomeHistoryEntry(browserEntry, guardEntry)) {
       writeHomeHistoryEntry(guardEntry, "replace");
     }
-  }, [approved, token, user, workspaceMode]);
+  }, [approved, hasAuthenticatedSession, user, workspaceMode]);
 
   async function handleManifestDownload() {
-    if (!token || !selectedSiteId) {
+    if (!hasAuthenticatedSession || !selectedSiteId) {
       return;
     }
-    const blob = await downloadManifest(selectedSiteId, token);
+    const blob = await downloadManifest(selectedSiteId, effectiveToken);
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -968,7 +971,7 @@ export default function HomePage() {
     })),
   ];
 
-  if (token && (!user || (!approved && bootstrapBusy && (workspaceMode !== "operations" || !canOpenOperations)))) {
+  if (hasAuthenticatedSession && !user) {
     return (
       <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto flex w-full max-w-6xl justify-end">
@@ -1005,7 +1008,7 @@ export default function HomePage() {
     );
   }
 
-  if (!token || !user) {
+  if (!hasAuthenticatedSession || !user) {
     return (
       <LandingV4
         locale={locale}
@@ -1234,7 +1237,11 @@ export default function HomePage() {
     );
   }
 
-  if (!desktopWorkspaceRuntime && (workspaceDataPlaneState === "idle" || workspaceDataPlaneState === "checking")) {
+  if (
+    !desktopWorkspaceRuntime &&
+    !optimisticApprovedBootstrap &&
+    (workspaceDataPlaneState === "idle" || workspaceDataPlaneState === "checking")
+  ) {
     return (
       <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(48,88,255,0.14),transparent_34%),linear-gradient(180deg,var(--surface-muted),var(--surface))] px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto flex w-full max-w-6xl justify-end">
@@ -1298,7 +1305,7 @@ export default function HomePage() {
   if (workspaceMode === "canvas" || !canOpenOperations) {
     return (
       <CaseWorkspace
-        token={token}
+        token={effectiveToken}
         user={user}
         sites={sites}
         selectedSiteId={selectedSiteId}
@@ -1313,7 +1320,7 @@ export default function HomePage() {
           setWorkspaceMode("operations");
         }}
         onSiteDataChanged={async (siteId) => {
-          await refreshSiteData(siteId, token);
+          await refreshSiteData(siteId, effectiveToken);
         }}
         theme={resolvedTheme}
         onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
@@ -1324,7 +1331,7 @@ export default function HomePage() {
   if (workspaceMode === "operations" && canOpenOperations) {
     return (
       <AdminWorkspace
-        token={token}
+        token={effectiveToken}
         user={user}
         sites={sites}
         sitesBusy={bootstrapBusy && sites.length === 0}
@@ -1335,10 +1342,10 @@ export default function HomePage() {
         onOpenCanvas={() => setWorkspaceMode("canvas")}
         onLogout={handleWorkspaceLogout}
         onRefreshSites={async () => {
-          await refreshApprovedSites(token);
+          await refreshApprovedSites(effectiveToken);
         }}
         onSiteDataChanged={async (siteId) => {
-          await refreshSiteData(siteId, token);
+          await refreshSiteData(siteId, effectiveToken);
         }}
         theme={resolvedTheme}
         onToggleTheme={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}

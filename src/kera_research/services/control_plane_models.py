@@ -123,6 +123,7 @@ class ControlPlaneModelFacade:
         decision_threshold: float | None = None,
         threshold_selection_metric: str | None = None,
         threshold_selection_metrics: dict[str, Any] | None = None,
+        aggregation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.store.registry.register_aggregation(
             base_model_version_id,
@@ -134,6 +135,7 @@ class ControlPlaneModelFacade:
             decision_threshold=decision_threshold,
             threshold_selection_metric=threshold_selection_metric,
             threshold_selection_metrics=threshold_selection_metrics,
+            aggregation_metadata=aggregation_metadata,
         )
 
     def publish_model_update_artifact(

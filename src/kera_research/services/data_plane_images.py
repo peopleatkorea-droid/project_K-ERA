@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from kera_research.services.data_plane_helpers import FileUploadValidator
+
 
 def _deps():
     from kera_research.services import data_plane as dp
@@ -71,6 +73,7 @@ def add_image(
     created_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     dp = _deps()
+    upload_validator = FileUploadValidator()
     normalized_patient_id = dp.normalize_patient_pseudonym(patient_id)
     normalized_visit_date = dp.normalize_visit_label(visit_date)
     visit = store.get_visit(normalized_patient_id, normalized_visit_date)
@@ -78,9 +81,10 @@ def add_image(
         raise ValueError("Visit must exist before image upload.")
     visit_dir = dp.ensure_dir(store.raw_dir / normalized_patient_id / normalized_visit_date)
     image_id = dp.make_id("image")
-    sanitized_content, normalized_suffix = dp._sanitize_image_bytes(content, file_name)
+    validated_upload = upload_validator.validate_image_upload(content=content, file_name=file_name)
+    normalized_suffix = validated_upload.normalized_suffix
     destination = visit_dir / f"{image_id}{normalized_suffix}"
-    destination.write_bytes(sanitized_content)
+    destination.write_bytes(validated_upload.sanitized_content)
     image_record = {
         "image_id": image_id,
         "visit_id": visit["visit_id"],

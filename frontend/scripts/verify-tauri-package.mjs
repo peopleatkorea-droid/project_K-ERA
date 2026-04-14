@@ -4,6 +4,19 @@ import process from "node:process";
 
 const frontendRoot = process.cwd();
 const bundleRoot = path.join(frontendRoot, "src-tauri", "target", "release", "bundle");
+const args = process.argv.slice(2);
+
+function parseBundleType() {
+  const typeFlagIndex = args.findIndex((arg) => arg === "--type");
+  if (typeFlagIndex >= 0) {
+    const next = String(args[typeFlagIndex + 1] ?? "").trim().toLowerCase();
+    if (["any", "nsis", "msi"].includes(next)) {
+      return next;
+    }
+    throw new Error(`Unsupported bundle type '${next || "<missing>"}'. Expected one of: any, nsis, msi.`);
+  }
+  return "any";
+}
 
 async function existingFiles(dirPath, extensions) {
   try {
@@ -18,12 +31,22 @@ async function existingFiles(dirPath, extensions) {
 }
 
 async function main() {
+  const bundleType = parseBundleType();
   const nsisFiles = await existingFiles(path.join(bundleRoot, "nsis"), [".exe"]);
   const msiFiles = await existingFiles(path.join(bundleRoot, "msi"), [".msi"]);
 
-  const packageFiles = [...nsisFiles, ...msiFiles];
+  const packageFiles =
+    bundleType === "nsis"
+      ? nsisFiles
+      : bundleType === "msi"
+        ? msiFiles
+        : [...nsisFiles, ...msiFiles];
   if (packageFiles.length === 0) {
-    console.error("No packaged installer artifacts were found under src-tauri/target/release/bundle.");
+    console.error(
+      bundleType === "any"
+        ? "No packaged installer artifacts were found under src-tauri/target/release/bundle."
+        : `No packaged ${bundleType.toUpperCase()} installer artifacts were found under src-tauri/target/release/bundle.`,
+    );
     process.exit(1);
   }
 
@@ -32,7 +55,9 @@ async function main() {
     console.log(`OK   packaged artifact: ${filePath} (${stat.size} bytes)`);
   }
 
-  console.log(`packaged installer verification passed (${packageFiles.length} artifact${packageFiles.length === 1 ? "" : "s"})`);
+  console.log(
+    `packaged ${bundleType === "any" ? "installer" : bundleType.toUpperCase()} verification passed (${packageFiles.length} artifact${packageFiles.length === 1 ? "" : "s"})`,
+  );
 }
 
 await main();

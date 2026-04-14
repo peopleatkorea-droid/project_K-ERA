@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { loginMainWithLocalCredentials } from "../../../../../../lib/control-plane/main-app-bridge";
-import { jsonError } from "../../../../../../lib/control-plane/http";
+import { authJsonResponse, jsonError } from "../../../../../../lib/control-plane/http";
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
       username?: string;
       password?: string;
     };
-    return Response.json(await loginMainWithLocalCredentials(request, body));
+    return authJsonResponse(await loginMainWithLocalCredentials(request, body));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to sign in.";
     return jsonError(message, 400);

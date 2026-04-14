@@ -23,11 +23,18 @@ export function mainControlPlanePath(path: string): string {
 }
 
 export function persistMainAppToken(token: string | null | undefined) {
-  const nextToken = String(token ?? "").trim();
-  if (!nextToken || typeof window === "undefined") {
+  if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(MAIN_APP_TOKEN_KEY, nextToken);
+  const nextToken = String(token ?? "").trim();
+  if (!nextToken) {
+    window.localStorage.removeItem(MAIN_APP_TOKEN_KEY);
+    return;
+  }
+  // Main web auth now relies on the httpOnly same-origin cookie issued by
+  // the control-plane routes. Keep legacy storage clear instead of persisting
+  // raw bearer tokens into localStorage.
+  window.localStorage.removeItem(MAIN_APP_TOKEN_KEY);
 }
 
 export async function requestMainControlPlane<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {

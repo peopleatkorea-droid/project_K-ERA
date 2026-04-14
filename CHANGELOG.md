@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-04-14
+
+### 인증 / API 보안 하드닝
+
+- control-plane 비밀번호 저장 기본값을 Argon2로 전환했고, legacy bcrypt/PBKDF2 row는 로그인 성공 시 Argon2로 자동 재해시되도록 했습니다.
+- 로그인 rate limit은 이제 `KERA_TRUST_PROXY_HEADERS=true` 이고 요청이 명시적으로 신뢰한 프록시(`KERA_TRUSTED_PROXY_IPS`)를 통해 들어온 경우에만 `X-Forwarded-For` / `X-Real-IP`를 사용합니다.
+- API CORS 기본 허용 origin을 `localhost/127.0.0.1`의 `3000`, `3001`로 축소했고, 추가 origin은 `KERA_CORS_ALLOWED_ORIGINS`로만 열도록 정리했습니다.
+- 이미지 업로드는 기존 PIL 재인코딩/픽셀 제한에 더해 magic-byte sniffing과 basename 정규화를 추가했습니다.
+- 관련 회귀 테스트를 추가해 Argon2 마이그레이션, trusted proxy rate limit, explicit CORS allowlist, invalid image upload 검증을 고정했습니다.
+
+### DB runtime / split-env 가드 정리
+
+- split control/data plane 구성이 켜진 상태에서 `KERA_DATABASE_URL` / `DATABASE_URL`가 같이 설정돼 있어도, 실제 resolved control/data plane URL과 같은 값을 가리키면 더 이상 경고하지 않도록 정리했습니다.
+- legacy DB env가 split URL과 실제로 충돌할 때만 경고를 띄우도록 바꿔, 운영 로그와 테스트 출력의 노이즈를 줄였습니다.
+- remote control plane cache SQLite가 손상된 경우에는 import 시 `.recovered.db`로 우회하지 않고, startup/init 시 같은 경로에서 quarantine 후 재생성하도록 복구 경계를 단순화했습니다.
+- Windows에서 손상 cache quarantine 중 파일 핸들 경합이 날 수 있는 경로에는 짧은 retry를 넣어 local cache 재빌드가 더 안정적으로 완료되게 했습니다.
+
+### Federated learning hardening
+
+- weight delta update에 선택형 HMAC 서명을 추가했습니다. `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 설정되면 site가 delta metadata에 서명하고, control plane registry는 제출과 집계 전에 서명을 검증합니다.
+- `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned 또는 tampered delta update를 거절하도록 했습니다.
+- aggregation 전략을 `fedavg`, `coordinate_median`, `trimmed_mean` 중에서 고를 수 있게 했고, aggregation payload에 실제 전략/trim ratio/weighting mode를 기록합니다.
+- site-side delta hardening으로 L2 clipping, Gaussian noise, 8/16-bit symmetric quantization을 추가했습니다. formal DP accountant나 secure aggregation은 아직 포함하지 않습니다.
+- federated update security/unit test, modeling delta quantization/robust aggregation test, API aggregation/signature 회귀 테스트를 추가했습니다.
+
+### Windows 설치형 배포 경로 정리
+
+- CPU 설치형 기본 배포 경로를 `NSIS current-user installer`로 정리했습니다.
+- `frontend/src-tauri/tauri.conf.json`에서 NSIS `installMode`를 `currentUser`로 고정해, 일반 사용자 세션에서도 설치가 가능하도록 맞췄습니다.
+- `frontend/src-tauri/installer-hooks.nsh`의 preinstall 안내는 silent install일 때 자동으로 건너뛰도록 정리해, installer smoke가 대화상자에서 멈추지 않게 했습니다.
+- `frontend/scripts/run-desktop-installer-smoke.ps1`는 비관리자 세션에서 NSIS를 자동 우선 선택하고, installer별 timeout/log 기록과 MSI/NSIS 단독 진단 모드를 지원하도록 확장했습니다.
+- `frontend/scripts/verify-tauri-package.mjs`는 `--type nsis|msi` 필터를 지원하도록 확장했습니다.
+- `frontend/package.json`에 `desktop:package:cpu:nsis`, `desktop:package:cpu:msi`, `desktop:verify-package:nsis`, `desktop:verify-package:msi`, `desktop:smoke-installed:cpu:nsis`, `tauri:build:nsis`, `tauri:build:msi` 스크립트를 추가했습니다.
+- 현재 로컬 검증 기준으로 `desktop:package:cpu:nsis -> desktop:smoke-installed:cpu` 경로는 통과했고, MSI는 관리자 권한 전제의 별도 검증 경로로 남겨 두었습니다.
+
 ## 2026-04-13
 
 ### Desktop runtime / release guard 보강
@@ -13,10 +48,36 @@
 
 - `auth.py`의 로그인 rate limit을 control-plane DB 기반으로 바꿔 프로세스 재시작 뒤에도 제한 창이 유지되도록 수정했습니다.
 - DB 경로가 일시적으로 실패하는 경우에는 기존 in-memory limiter로 안전하게 fallback 하도록 유지했습니다.
-- control plane에는 Alembic baseline revision(`20260413_01`)을 도입했고, startup 시 기존 `create_all + custom migration` 뒤 `upgrade head`를 적용하도록 연결했습니다.
-- 앞으로 control-plane schema change는 `src/kera_research/alembic/versions/` 아래 Alembic revision으로 추가할 수 있고, `uv run python -m kera_research.control_plane_alembic ...` 경로로 관리할 수 있습니다.
-- control plane schema state는 현재 Alembic revision을 기록하고, data plane은 아직 기존 커스텀 migration 경로를 유지하면서 `data_plane_schema_state`에 현재 schema revision을 기록합니다.
+- control plane에는 Alembic baseline revision(`20260413_01`)을, data plane에는 Alembic baseline revision(`20260413_02`)을 도입했습니다.
+- startup 시 control plane은 기존 `create_all + custom migration` 뒤 `upgrade head`를 적용하고, data plane도 기존 `create_all + custom migration` 뒤 `upgrade head`를 적용하도록 연결했습니다.
+- 앞으로 schema change는 `src/kera_research/alembic/versions/`와 `src/kera_research/alembic_data_plane/versions/` 아래 Alembic revision으로 추가할 수 있고, `uv run python -m kera_research.control_plane_alembic ...`, `uv run python -m kera_research.data_plane_alembic ...` 경로로 관리할 수 있습니다.
+- control plane schema state와 data plane schema state는 이제 각각 현재 Alembic revision을 기록합니다.
 - 관련 회귀 테스트를 추가해 `restart 이후 rate limit 지속`, `schema state row 기록`, `preview cold miss는 원본 즉시 응답 + backfill queue` 동작을 계속 검증하도록 했습니다.
+
+### API observability / health probe 보강
+
+- FastAPI 런타임 버전을 `1.0.0`으로 정렬하고, `/api/live`, `/api/ready`, `/api/health`가 동일한 버전을 보고하도록 맞췄습니다.
+- request-id middleware를 추가해 모든 API 응답에 `X-Request-ID`를 포함하고, route template 기준의 structured request log를 남기도록 했습니다.
+- in-memory request metrics recorder와 `GET /api/metrics` Prometheus text endpoint를 추가했습니다.
+- `/api/health`와 `/api/ready`는 이제 storage, SQLite readiness, model artifact readiness, disk usage, background queue hung 여부를 함께 반환합니다.
+- `/api/health`에는 control/data plane DB `SELECT 1` probe도 포함해, 프로세스 생존과 실제 DB readiness를 분리해서 보게 했습니다.
+- background queue failure는 더 이상 `print`로 삼키지 않고 structured warning log로 남기도록 정리했습니다.
+- `KERA_SENTRY_DSN` 기반의 선택형 Sentry integration을 추가해, 운영 환경에서는 error aggregation과 trace sampling을 바로 붙일 수 있게 했습니다.
+- remote control plane은 미설정 상태와 실제 bootstrap 실패를 구분해, optional dependency 문제를 `degraded`로 분리하도록 health semantics를 정리했습니다.
+
+### 웹/SaaS baseline 컨테이너 자산 추가
+
+- `Dockerfile.api`, `frontend/Dockerfile.web`, `docker-compose.yml`를 추가했습니다.
+- baseline stack은 `api + worker + web` 3개 서비스로 구성되고, 기본값은 volume-backed SQLite를 사용합니다.
+- 환경변수 override로 외부 PostgreSQL control/data plane에 연결할 수 있게 구성했습니다.
+- compose stack에는 `api / worker / web` healthcheck와 `service_healthy` 의존관계를 추가했습니다.
+
+### Windows 설치형 배포 가드 보강
+
+- NSIS installer를 `currentUser` 모드로 고정해, 일반 사용자 세션에서도 CPU 설치형 배포를 기본 경로로 사용할 수 있게 했습니다.
+- NSIS preinstall 안내 `MessageBox`는 silent install일 때 자동으로 건너뛰도록 바꿔, installer smoke가 대화상자에서 멈추지 않게 했습니다.
+- `run-desktop-installer-smoke.ps1`는 installer별 timeout/log 기록, MSI/NSIS 단독 진단, 비관리자 세션의 NSIS 우선 선택을 지원합니다.
+- `desktop:package:cpu:nsis`, `desktop:verify-package:nsis`, `desktop:smoke-installed:cpu:nsis`, `tauri:build:nsis` 스크립트를 추가해 권장 배포 경로를 명시했습니다.
 
 ## 2026-04-07 ~ 2026-04-09
 

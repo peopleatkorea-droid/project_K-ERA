@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi.responses import PlainTextResponse
 
 from kera_research.api.models import (
     FederatedRetrievalSyncRequest,
@@ -23,10 +24,11 @@ def build_desktop_router(support: Any) -> APIRouter:
     get_control_plane = support.get_control_plane
     google_client_ids = support.google_client_ids
     desktop_self_check = support.desktop_self_check
-    load_node_credentials = support.load_node_credentials
-    node_credentials_status = support.node_credentials_status
-    save_node_credentials = support.save_node_credentials
-    clear_node_credentials = support.clear_node_credentials
+    build_health_report = support.build_health_report
+    build_readiness_report = support.build_readiness_report
+    build_liveness_report = support.build_liveness_report
+    render_metrics = support.render_metrics
+    secrets_manager = support.secrets_manager
     database_topology = support.database_topology
     remote_node_os_info = support.remote_node_os_info
     local_control_plane_dev_auth_enabled = support.local_control_plane_dev_auth_enabled
@@ -48,12 +50,26 @@ def build_desktop_router(support: Any) -> APIRouter:
             )
 
     @router.get("/api/health")
-    def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "service": "kera-api",
-            "google_auth_configured": bool(google_client_ids()),
-        }
+    def health(response: Response, cp=Depends(get_control_plane)) -> dict[str, Any]:
+        payload = build_health_report(cp)
+        if str(payload.get("status") or "").strip().lower() == "error":
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return payload
+
+    @router.get("/api/live")
+    def live() -> dict[str, Any]:
+        return build_liveness_report()
+
+    @router.get("/api/ready")
+    def ready(response: Response, cp=Depends(get_control_plane)) -> dict[str, Any]:
+        payload = build_readiness_report(cp)
+        if not bool(payload.get("ready")):
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return payload
+
+    @router.get("/api/metrics", response_class=PlainTextResponse)
+    def metrics() -> PlainTextResponse:
+        return PlainTextResponse(render_metrics(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @router.get("/api/desktop/self-check")
     def get_desktop_self_check(cp=Depends(get_control_plane)) -> dict[str, Any]:
@@ -143,7 +159,7 @@ def build_desktop_router(support: Any) -> APIRouter:
         cp.reload_remote_control_plane_credentials()
         bootstrap = cp.remote_bootstrap_state(force_refresh=bool(refresh))
         current_release = cp.current_global_model()
-        credential_status = node_credentials_status()
+        credential_status = secrets_manager.node_credentials_status()
         return {
             "control_plane": {
                 "configured": cp.remote_control_plane_enabled(),
@@ -152,7 +168,7 @@ def build_desktop_router(support: Any) -> APIRouter:
                 "node_id": cp.remote_control_plane.node_id,
             },
             "credentials": credential_status,
-            "stored_credentials_present": load_node_credentials() is not None,
+            "stored_credentials_present": secrets_manager.load_node_credentials() is not None,
             "database_topology": database_topology,
             "bootstrap": bootstrap,
             "current_release": current_release,
@@ -163,13 +179,13 @@ def build_desktop_router(support: Any) -> APIRouter:
         payload: LocalControlPlaneNodeCredentialsRequest,
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
-        existing = load_node_credentials()
+        existing = secrets_manager.load_node_credentials()
         if existing is not None and not payload.overwrite:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Node credentials are already configured. Pass overwrite=true to replace them.",
             )
-        save_node_credentials(
+        secrets_manager.save_node_credentials(
             control_plane_base_url=payload.control_plane_base_url,
             node_id=payload.node_id,
             node_token=payload.node_token,
@@ -189,17 +205,17 @@ def build_desktop_router(support: Any) -> APIRouter:
             )
         return {
             "saved": True,
-            "credentials": node_credentials_status(),
+            "credentials": secrets_manager.node_credentials_status(),
             "bootstrap": bootstrap,
         }
 
     @router.delete("/api/control-plane/node/credentials")
     def clear_local_control_plane_node_credentials(cp=Depends(get_control_plane)) -> dict[str, Any]:
-        clear_node_credentials()
+        secrets_manager.clear_node_credentials()
         cp.clear_remote_control_plane_state()
         return {
             "cleared": True,
-            "credentials": node_credentials_status(),
+            "credentials": secrets_manager.node_credentials_status(),
         }
 
     @router.post("/api/control-plane/node/register")
@@ -207,7 +223,7 @@ def build_desktop_router(support: Any) -> APIRouter:
         payload: LocalControlPlaneNodeRegisterRequest,
         cp=Depends(get_control_plane),
     ) -> dict[str, Any]:
-        existing = load_node_credentials()
+        existing = secrets_manager.load_node_credentials()
         if existing is not None and not payload.overwrite:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -255,7 +271,7 @@ def build_desktop_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Control plane node registration did not return node credentials.",
             )
-        save_node_credentials(
+        secrets_manager.save_node_credentials(
             control_plane_base_url=client.base_url,
             node_id=node_id,
             node_token=node_token,
@@ -285,7 +301,7 @@ def build_desktop_router(support: Any) -> APIRouter:
             "node_id": node_id,
             "node_token": node_token,
             "bootstrap": bootstrap,
-            "credentials": node_credentials_status(),
+            "credentials": secrets_manager.node_credentials_status(),
         }
 
     @router.post("/api/dev/control-plane/smoke")

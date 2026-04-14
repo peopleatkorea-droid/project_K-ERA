@@ -1,35 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from io import BytesIO
-import os
-import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, case, column, delete, desc, func, literal_column, or_, select, table, update
 
 from kera_research.config import (
-    BASE_DIR,
     PATIENT_REFERENCE_SALT,
-    STORAGE_DIR,
-    SITE_ROOT_DIR,
     ensure_base_directories,
     remap_bundle_paths_in_value,
-    remap_bundle_absolute_path,
-    resolve_portable_path,
 )
 from kera_research.db import (
-    CONTROL_PLANE_DATABASE_URL,
-    CONTROL_PLANE_ENGINE,
     DATA_PLANE_DATABASE_URL,
     DATA_PLANE_ENGINE,
-    DATABASE_TOPOLOGY,
-    app_settings,
     data_plane_sqlite_search_ready,
     images as db_images,
     init_control_plane_db,
@@ -37,7 +23,6 @@ from kera_research.db import (
     patients as db_patients,
     site_jobs,
     site_patient_splits,
-    sites as control_sites,
     visits as db_visits,
 )
 from kera_research.domain import (
@@ -57,6 +42,15 @@ from kera_research.services.data_plane_case_history import (
     record_case_contribution_history as _record_case_contribution_history_impl,
     record_case_validation_history as _record_case_validation_history_impl,
     resolve_visit_reference as _resolve_visit_reference_impl,
+)
+from kera_research.services.data_plane_helpers import (
+    InvalidImageUploadError,
+    case_summary_search_haystack as _case_summary_search_haystack,
+    case_summary_sort_key as _case_summary_sort_key,
+    filesystem_timestamp_to_utc as _filesystem_timestamp_to_utc,
+    infer_raw_image_view as _infer_raw_image_view,
+    sanitize_image_bytes as _sanitize_image_bytes,
+    sqlite_patient_case_match_query as _sqlite_patient_case_match_query,
 )
 from kera_research.services.data_plane_images import (
     add_image as _add_image_impl,
@@ -106,6 +100,8 @@ from kera_research.services.data_plane_previews import (
     image_preview_cache_path as _image_preview_cache_path_impl,
 )
 from kera_research.services.data_plane_recovery import (
+    clear_site_metadata_rows as _clear_site_metadata_rows_impl,
+    current_data_plane_db_path as _current_data_plane_db_path_impl,
     export_metadata_backup as _export_metadata_backup_impl,
     find_matching_richer_metadata_snapshot as _find_matching_richer_metadata_snapshot_impl,
     generate_manifest as _generate_manifest_impl,
@@ -123,13 +119,25 @@ from kera_research.services.data_plane_recovery import (
     restore_placeholder_metadata_from_local_backups as _restore_placeholder_metadata_from_local_backups_impl,
     restore_placeholder_metadata_from_snapshot as _restore_placeholder_metadata_from_snapshot_impl,
     raw_inventory_stats as _raw_inventory_stats_impl,
+    storage_bundle_root as _storage_bundle_root_impl,
     standardize_visit_storage_layout as _standardize_visit_storage_layout_impl,
     sync_raw_inventory_metadata as _sync_raw_inventory_metadata_impl,
     sync_raw_inventory_metadata_if_due as _sync_raw_inventory_metadata_if_due_impl,
 )
+from kera_research.services.data_plane_research_registry import (
+    case_research_policy_state as _case_research_policy_state_impl,
+    update_visit_registry_status as _update_visit_registry_status_impl,
+)
 from kera_research.services.data_plane_summary import (
     raw_inventory_index as _raw_inventory_index_impl,
     site_summary_stats as _site_summary_stats_impl,
+)
+from kera_research.services.data_plane_storage_roots import (
+    control_plane_split_enabled,
+    invalidate_site_storage_root_cache,
+    resolve_site_storage_root as _resolve_site_storage_root,
+    safe_path_component as _safe_path_component,
+    site_storage_uses_control_plane as _site_storage_uses_control_plane,
 )
 from kera_research.services.data_plane_patients import (
     create_patient as _create_patient_impl,
@@ -149,6 +157,10 @@ from kera_research.services.data_plane_patients import (
     update_patient as _update_patient_impl,
     update_visit as _update_visit_impl,
 )
+from kera_research.services.data_plane_path_integrity import (
+    SiteStorePathIntegrityMixin,
+    _SITE_LEGACY_VISIT_LABEL_REPAIRED,
+)
 from kera_research.services.data_plane_patient_splits import (
     clear_patient_split as _clear_patient_split_impl,
     load_patient_split as _load_patient_split_impl,
@@ -161,107 +173,13 @@ from kera_research.services.data_plane_queries import (
 from kera_research.services.quality import score_slit_lamp_image
 from kera_research.storage import ensure_dir, read_json, write_csv, write_json
 
-_ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF", "BMP", "WEBP"}
 _RAW_INVENTORY_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-_MAX_IMAGE_PIXELS = 40_000_000
 _PREWARMED_IMAGE_PREVIEW_SIDES = (256, 640)
-_SITE_STORAGE_ROOT_CACHE: dict[str, Path] = {}
-_SITE_STORAGE_ROOT_CACHE_LOCK = threading.Lock()
-_SITE_LEGACY_VISIT_LABEL_REPAIRED: set[str] = set()
-_SITE_LEGACY_VISIT_LABEL_REPAIRED_LOCK = threading.Lock()
-_SITE_MISSING_IMAGE_PATH_REPAIR_LAST_RUN: dict[str, float] = {}
-_SITE_MISSING_IMAGE_PATH_REPAIR_LOCK = threading.Lock()
-_SITE_MISSING_IMAGE_PATH_REPAIR_INTERVAL_SECONDS = 15.0
 _SITE_RAW_METADATA_SYNC_LAST_RUN: dict[str, float] = {}
 _SITE_RAW_METADATA_SYNC_LOCK = threading.Lock()
 _SITE_RAW_METADATA_SYNC_INTERVAL_SECONDS = 15.0
-_INSTANCE_STORAGE_ROOT_SETTING_KEY = "instance_storage_root"
 _PLACEHOLDER_SYNC_SOURCE = "raw_inventory_sync"
 _CULTURE_STATUS_OPTIONS = {"positive", "negative", "not_done", "unknown"}
-
-
-class InvalidImageUploadError(ValueError):
-    pass
-
-
-def control_plane_split_enabled() -> bool:
-    return CONTROL_PLANE_DATABASE_URL != DATA_PLANE_DATABASE_URL
-
-
-def _site_storage_lookup_mode() -> str:
-    mode = os.getenv("KERA_SITE_STORAGE_SOURCE", "").strip().lower()
-    if mode == "control_plane":
-        return "control_plane"
-    if mode == "local":
-        return "local"
-    return "auto"
-
-
-def _site_storage_uses_control_plane() -> bool:
-    lookup_mode = _site_storage_lookup_mode()
-    if lookup_mode == "local":
-        return False
-    if lookup_mode == "control_plane":
-        return True
-    if not bool(DATABASE_TOPOLOGY.get("control_plane_split_enabled")):
-        return True
-    if str(DATABASE_TOPOLOGY.get("control_plane_connection_mode") or "").strip().lower() == "remote_api_cache":
-        return True
-    return (
-        not tuple(DATABASE_TOPOLOGY.get("split_database_env_names") or ())
-    )
-
-
-def invalidate_site_storage_root_cache(site_id: str | None = None) -> None:
-    normalized_site_id = str(site_id or "").strip()
-    with _SITE_STORAGE_ROOT_CACHE_LOCK:
-        if normalized_site_id:
-            _SITE_STORAGE_ROOT_CACHE.pop(normalized_site_id, None)
-            return
-        _SITE_STORAGE_ROOT_CACHE.clear()
-
-
-def _resolve_storage_path(value: str | Path) -> Path:
-    candidate = Path(value).expanduser()
-    if not candidate.is_absolute():
-        candidate = (BASE_DIR / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
-    return candidate
-
-
-def _normalize_instance_storage_root(candidate: Path) -> Path:
-    looks_like_storage_bundle = candidate.name.strip().lower() == "kera_data" or any(
-        (candidate / child_name).exists() for child_name in ("sites", "control_plane", "models")
-    )
-    if looks_like_storage_bundle and candidate.name.strip().lower() != "sites":
-        return (candidate / "sites").resolve()
-    return candidate.resolve()
-
-
-def _control_plane_root_override(site_id: str) -> Path | None:
-    with CONTROL_PLANE_ENGINE.begin() as conn:
-        site_row = conn.execute(
-            select(control_sites.c.local_storage_root).where(control_sites.c.site_id == site_id)
-        ).first()
-        if site_row and str(site_row[0] or "").strip():
-            configured_root = _resolve_storage_path(str(site_row[0] or "").strip())
-            remapped_root, remapped = resolve_portable_path(configured_root, require_exists=False)
-            if remapped:
-                return remapped_root
-            return configured_root
-        setting_row = conn.execute(
-            select(app_settings.c.setting_value).where(app_settings.c.setting_key == _INSTANCE_STORAGE_ROOT_SETTING_KEY)
-        ).first()
-    configured_instance_root = str(setting_row[0] or "").strip() if setting_row else ""
-    if not configured_instance_root:
-        return None
-    configured_site_root = _normalize_instance_storage_root(_resolve_storage_path(configured_instance_root)) / site_id
-    if os.getenv("KERA_STORAGE_DIR", "").strip() and STORAGE_DIR.name.strip().lower() == "kera_data" and not configured_site_root.exists():
-        remapped_root = remap_bundle_absolute_path(configured_site_root)
-        if remapped_root is not None and remapped_root.exists():
-            return remapped_root.resolve()
-    return configured_site_root
 
 
 def _normalize_organism_entry(entry: dict[str, Any] | None) -> dict[str, str] | None:
@@ -378,142 +296,7 @@ def _parse_manifest_box(value: Any) -> dict[str, float] | None:
     return _parse_manifest_box_impl(value)
 
 
-def _case_summary_sort_key(summary: dict[str, Any]) -> tuple[str, str, str, str]:
-    return (
-        str(summary.get("latest_image_uploaded_at") or ""),
-        str(summary.get("created_at") or ""),
-        str(summary.get("visit_date") or ""),
-        str(summary.get("patient_id") or ""),
-    )
-
-
-def _case_summary_search_haystack(summary: dict[str, Any]) -> str:
-    additional_organisms = summary.get("additional_organisms", []) or []
-    return " ".join(
-        [
-            str(summary.get("patient_id") or ""),
-            str(summary.get("local_case_code") or ""),
-            str(summary.get("chart_alias") or ""),
-            str(summary.get("culture_category") or ""),
-            str(summary.get("culture_species") or ""),
-            *(str(item.get("culture_species") or "") for item in additional_organisms if isinstance(item, dict)),
-            str(summary.get("visit_date") or ""),
-            str(summary.get("actual_visit_date") or ""),
-        ]
-    ).strip().lower()
-
-
-def _sqlite_search_tokens(value: str) -> list[str]:
-    tokens: list[str] = []
-    current: list[str] = []
-    for char in str(value or ""):
-        if char.isalnum():
-            current.append(char.casefold())
-            continue
-        if current:
-            tokens.append("".join(current))
-            current = []
-    if current:
-        tokens.append("".join(current))
-    return tokens
-
-
-def _sqlite_patient_case_match_query(value: str | None) -> str | None:
-    tokens = _sqlite_search_tokens(str(value or ""))
-    if not tokens:
-        return None
-    return " ".join(f"{token}*" for token in tokens)
-
-
-def _sanitize_image_bytes(content: bytes, file_name: str) -> tuple[bytes, str]:
-    try:
-        with Image.open(BytesIO(content)) as image:
-            format_name = str(image.format or "").upper()
-            if format_name not in _ALLOWED_IMAGE_FORMATS:
-                raise InvalidImageUploadError("Unsupported image format.")
-            if getattr(image, "n_frames", 1) != 1:
-                raise InvalidImageUploadError("Animated or multi-frame images are not supported.")
-            image.load()
-            width, height = image.size
-            if width <= 0 or height <= 0:
-                raise InvalidImageUploadError("Image dimensions are invalid.")
-            if width * height > _MAX_IMAGE_PIXELS:
-                raise InvalidImageUploadError("Image is too large.")
-            normalized = ImageOps.exif_transpose(image)
-            output = BytesIO()
-            if format_name == "PNG" or "A" in normalized.getbands():
-                if normalized.mode not in {"RGB", "RGBA", "L"}:
-                    normalized = normalized.convert("RGBA" if "A" in normalized.getbands() else "RGB")
-                normalized.save(output, format="PNG")
-                return output.getvalue(), ".png"
-
-            if normalized.mode not in {"RGB", "L"}:
-                normalized = normalized.convert("RGB")
-            normalized.save(output, format="JPEG", quality=95, optimize=True)
-            return output.getvalue(), ".jpg"
-    except InvalidImageUploadError:
-        raise
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise InvalidImageUploadError("Invalid image file.") from exc
-
-
-def _resolve_site_storage_root(site_id: str) -> Path:
-    with _SITE_STORAGE_ROOT_CACHE_LOCK:
-        cached = _SITE_STORAGE_ROOT_CACHE.get(site_id)
-        if cached is not None:
-            return cached
-
-    resolved_root = (SITE_ROOT_DIR / site_id).resolve()
-    if _site_storage_uses_control_plane():
-        init_control_plane_db()
-        try:
-            configured_root = _control_plane_root_override(site_id)
-        except Exception:
-            configured_root = None
-        if configured_root is not None:
-            resolved_root = configured_root.resolve()
-
-    with _SITE_STORAGE_ROOT_CACHE_LOCK:
-        _SITE_STORAGE_ROOT_CACHE[site_id] = resolved_root
-    return resolved_root
-
-
-def _safe_path_component(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
-    return normalized or "unknown"
-
-
-def _filesystem_timestamp_to_utc(value: float | None) -> str:
-    if value is None:
-        return utc_now()
-    try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).replace(microsecond=0).isoformat()
-    except (OSError, OverflowError, TypeError, ValueError):
-        return utc_now()
-
-
-def _infer_raw_image_view(image_path: Path) -> str:
-    normalized_name = image_path.stem.strip().lower()
-    if any(token in normalized_name for token in ("fluorescein", "fluoro", "fluo", "stain", "seidel")):
-        return "fluorescein"
-    if any(token in normalized_name for token in ("slit", "beam")):
-        return "slit"
-    return "white"
-
-
-def _sqlite_path_from_url(database_url: str | None) -> Path | None:
-    raw = str(database_url or "").strip()
-    if not raw.startswith("sqlite:///"):
-        return None
-    candidate = raw[len("sqlite:///") :]
-    if re.match(r"^/[A-Za-z]:/", candidate):
-        candidate = candidate[1:]
-    if not candidate:
-        return None
-    return Path(candidate).expanduser().resolve()
-
-
-class SiteStore:
+class SiteStore(SiteStorePathIntegrityMixin):
     def __init__(self, site_id: str) -> None:
         ensure_base_directories()
         init_data_plane_db()
@@ -538,238 +321,8 @@ class SiteStore:
         self._seed_defaults()
         self._repair_legacy_visit_labels_once()
 
-    def _seed_defaults(self) -> None:
-        for path in (
-            self.raw_dir,
-            self.manifest_dir,
-            self.gradcam_dir,
-            self.medsam_mask_dir,
-            self.roi_crop_dir,
-            self.lesion_mask_dir,
-            self.lesion_crop_dir,
-            self.embedding_dir,
-            self.image_preview_dir,
-            self.validation_dir,
-            self.update_dir,
-            self.case_history_dir,
-        ):
-            ensure_dir(path)
-
-    def _resolve_site_runtime_path(self, value: Any, *, require_exists: bool = False) -> tuple[Path, bool]:
-        resolved, remapped = resolve_portable_path(
-            _coerce_optional_text(value),
-            base_dir=self.site_dir,
-            require_exists=require_exists,
-        )
-        return resolved, remapped
-
-    def _persist_image_record_path(self, image_id: str, image_path: Path) -> None:
-        normalized_image_id = _coerce_optional_text(image_id)
-        if not normalized_image_id:
-            return
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_images)
-                .where(and_(db_images.c.site_id == self.site_id, db_images.c.image_id == normalized_image_id))
-                .values(image_path=str(image_path))
-            )
-
-    def _canonical_image_storage_path(self, patient_id: str, visit_date: str, image_name: str) -> Path:
-        return (self.raw_dir / patient_id / visit_date / image_name).resolve()
-
-    def _prune_empty_raw_dirs(self, start_dir: Path, *, patient_dir: Path) -> int:
-        removed_count = 0
-        current = start_dir.resolve()
-        stop_dir = patient_dir.resolve()
-        while current != stop_dir and current.exists() and current.is_dir():
-            try:
-                next(current.iterdir())
-                break
-            except StopIteration:
-                try:
-                    current.rmdir()
-                except OSError:
-                    break
-                removed_count += 1
-                current = current.parent
-        return removed_count
-
-    def _resolve_image_record_path(self, record: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
-        raw_path = _coerce_optional_text(record.get("image_path"))
-        if not raw_path:
-            return record
-        image_id = _coerce_optional_text(record.get("image_id"))
-        patient_id = _coerce_optional_text(record.get("patient_id"))
-        visit_date = _coerce_optional_text(record.get("visit_date"))
-        image_name = Path(raw_path).name
-        should_persist = False
-        try:
-            resolved_path, remapped = self._resolve_site_runtime_path(raw_path, require_exists=True)
-            if not resolved_path.exists():
-                raise ValueError("Image file not found on disk.")
-            should_persist = remapped and Path(raw_path).is_absolute()
-        except Exception:
-            try:
-                resolved_path = self._resolve_recovery_image_path(raw_path, patient_id, image_name, visit_date=visit_date)
-                should_persist = str(resolved_path) != raw_path
-            except Exception:
-                return record
-        record["image_path"] = str(resolved_path)
-        if persist and should_persist:
-            self._persist_image_record_path(image_id, resolved_path)
-        return record
-
-    def repair_missing_image_paths(self) -> dict[str, int]:
-        query = (
-            select(
-                db_images.c.image_id,
-                db_images.c.patient_id,
-                db_images.c.visit_date,
-                db_images.c.image_path,
-            )
-            .where(db_images.c.site_id == self.site_id)
-            .order_by(db_images.c.patient_id, db_images.c.visit_date, db_images.c.uploaded_at)
-        )
-        with DATA_PLANE_ENGINE.begin() as conn:
-            rows = conn.execute(query).mappings().all()
-
-        missing_before = 0
-        repaired_paths = 0
-        unresolved_paths = 0
-        remapped_paths = 0
-
-        for row in rows:
-            image_id = _coerce_optional_text(row.get("image_id"))
-            patient_id = _coerce_optional_text(row.get("patient_id"))
-            visit_date = _coerce_optional_text(row.get("visit_date"))
-            raw_path = _coerce_optional_text(row.get("image_path"))
-            image_name = Path(raw_path).name
-            if not image_id or not raw_path or not image_name:
-                unresolved_paths += 1
-                continue
-
-            try:
-                resolved_path, remapped = self._resolve_site_runtime_path(raw_path, require_exists=True)
-                if resolved_path.exists():
-                    if remapped and Path(raw_path).is_absolute() and str(resolved_path) != raw_path:
-                        self._persist_image_record_path(image_id, resolved_path)
-                        repaired_paths += 1
-                        remapped_paths += 1
-                    continue
-            except Exception:
-                pass
-
-            missing_before += 1
-            try:
-                resolved_path = self._resolve_recovery_image_path(
-                    raw_path,
-                    patient_id,
-                    image_name,
-                    visit_date=visit_date,
-                )
-            except ValueError:
-                unresolved_paths += 1
-                continue
-
-            if str(resolved_path) != raw_path:
-                self._persist_image_record_path(image_id, resolved_path)
-                repaired_paths += 1
-
-        return {
-            "site_id": self.site_id,
-            "scanned_images": len(rows),
-            "missing_before": missing_before,
-            "repaired_paths": repaired_paths,
-            "remapped_paths": remapped_paths,
-            "unresolved_paths": unresolved_paths,
-        }
-
-    def _repair_missing_image_paths_if_due(self, *, force: bool = False) -> dict[str, int]:
-        with _SITE_MISSING_IMAGE_PATH_REPAIR_LOCK:
-            now = time.monotonic()
-            last_run = _SITE_MISSING_IMAGE_PATH_REPAIR_LAST_RUN.get(self.site_id, 0.0)
-            if not force and (now - last_run) < _SITE_MISSING_IMAGE_PATH_REPAIR_INTERVAL_SECONDS:
-                return {
-                    "site_id": self.site_id,
-                    "scanned_images": 0,
-                    "missing_before": 0,
-                    "repaired_paths": 0,
-                    "remapped_paths": 0,
-                    "unresolved_paths": 0,
-                }
-            result = self.repair_missing_image_paths()
-            _SITE_MISSING_IMAGE_PATH_REPAIR_LAST_RUN[self.site_id] = time.monotonic()
-            return result
-
     def _case_history_path(self, patient_id: str, visit_date: str) -> Path:
         return _case_history_path_impl(self, patient_id, visit_date)
-
-    def _repair_legacy_visit_labels_once(self) -> None:
-        with _SITE_LEGACY_VISIT_LABEL_REPAIRED_LOCK:
-            if self.site_id in _SITE_LEGACY_VISIT_LABEL_REPAIRED:
-                return
-
-            history_moves: list[tuple[Path, Path]] = []
-            with DATA_PLANE_ENGINE.begin() as conn:
-                visit_rows = conn.execute(
-                    select(
-                        db_visits.c.visit_id,
-                        db_visits.c.patient_id,
-                        db_visits.c.visit_date,
-                    ).where(db_visits.c.site_id == self.site_id)
-                ).mappings().all()
-                for row in visit_rows:
-                    visit_id = _coerce_optional_text(row.get("visit_id"))
-                    patient_id = _coerce_optional_text(row.get("patient_id"))
-                    raw_visit_date = _coerce_optional_text(row.get("visit_date"))
-                    if not visit_id or not patient_id or not raw_visit_date:
-                        continue
-                    try:
-                        normalized_visit_date = normalize_visit_label(raw_visit_date)
-                    except ValueError:
-                        continue
-                    if normalized_visit_date == raw_visit_date:
-                        continue
-                    collision_visit_id = conn.execute(
-                        select(db_visits.c.visit_id).where(
-                            and_(
-                                db_visits.c.site_id == self.site_id,
-                                db_visits.c.patient_id == patient_id,
-                                db_visits.c.visit_date == normalized_visit_date,
-                                db_visits.c.visit_id != visit_id,
-                            )
-                        )
-                    ).scalar()
-                    if collision_visit_id:
-                        continue
-                    conn.execute(
-                        update(db_visits)
-                        .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == visit_id))
-                        .values(
-                            visit_date=normalized_visit_date,
-                            visit_index=visit_index_from_label(normalized_visit_date),
-                            is_initial_visit=normalized_visit_date == "Initial",
-                        )
-                    )
-                    conn.execute(
-                        update(db_images)
-                        .where(and_(db_images.c.site_id == self.site_id, db_images.c.visit_id == visit_id))
-                        .values(visit_date=normalized_visit_date)
-                    )
-                    source_history_path = self._case_history_path(patient_id, raw_visit_date)
-                    target_history_path = self._case_history_path(patient_id, normalized_visit_date)
-                    if source_history_path != target_history_path and source_history_path.exists():
-                        history_moves.append((source_history_path, target_history_path))
-
-            for source_history_path, target_history_path in history_moves:
-                if not source_history_path.exists():
-                    continue
-                ensure_dir(target_history_path.parent)
-                if target_history_path.exists():
-                    continue
-                source_history_path.replace(target_history_path)
-
-            _SITE_LEGACY_VISIT_LABEL_REPAIRED.add(self.site_id)
 
     def _get_visit_by_id(self, visit_id: str) -> dict[str, Any] | None:
         return _get_visit_by_id_impl(self, visit_id)
@@ -1357,36 +910,7 @@ class SiteStore:
         return records
 
     def case_research_policy_state(self, patient_id: str, visit_date: str) -> dict[str, Any]:
-        visit = self.get_visit(patient_id, visit_date)
-        if visit is None:
-            raise ValueError(f"Visit {patient_id} / {visit_date} does not exist.")
-        case_summary = next(
-            (
-                item
-                for item in self.list_case_summaries(patient_id=str(visit.get("patient_id") or patient_id))
-                if str(item.get("patient_id") or "") == str(visit.get("patient_id") or patient_id)
-                and str(item.get("visit_date") or "") == str(visit.get("visit_date") or visit_date)
-            ),
-            None,
-        )
-        image_count = int(case_summary.get("image_count") or 0) if case_summary else len(self.list_images_for_visit(patient_id, visit_date))
-        culture_status = _normalize_culture_status(visit.get("culture_status"), default="unknown")
-        visit_status = str(visit.get("visit_status") or "").strip().lower() or ("active" if visit.get("active_stage") else "scar")
-        research_registry_status = str(visit.get("research_registry_status") or "analysis_only").strip().lower() or "analysis_only"
-        return {
-            "patient_id": str(visit.get("patient_id") or patient_id),
-            "visit_date": str(visit.get("visit_date") or visit_date),
-            "visit": visit,
-            "case_summary": case_summary,
-            "culture_status": culture_status,
-            "is_positive": culture_status == "positive",
-            "visit_status": visit_status,
-            "is_active": visit_status == "active",
-            "image_count": image_count,
-            "has_images": image_count > 0,
-            "research_registry_status": research_registry_status,
-            "is_registry_included": research_registry_status == "included",
-        }
+        return _case_research_policy_state_impl(self, patient_id, visit_date)
 
     def list_images_for_patient(self, patient_id: str) -> list[dict[str, Any]]:
         return _list_images_for_patient_impl(self, patient_id)
@@ -1398,13 +922,10 @@ class SiteStore:
         )
 
     def _storage_bundle_root(self) -> Path:
-        site_parent = self.site_dir.parent.resolve()
-        if site_parent.name.strip().lower() == "sites":
-            return site_parent.parent.resolve()
-        return site_parent
+        return _storage_bundle_root_impl(self)
 
     def _current_data_plane_db_path(self) -> Path | None:
-        return _sqlite_path_from_url(DATA_PLANE_DATABASE_URL)
+        return _current_data_plane_db_path_impl(self)
 
     def _local_metadata_backup_db_paths(self) -> list[Path]:
         return _local_metadata_backup_db_paths_impl(self)
@@ -1496,30 +1017,14 @@ class SiteStore:
         updated_by_user_id: str | None,
         source: str,
     ) -> dict[str, Any]:
-        normalized_patient_id = normalize_patient_pseudonym(patient_id)
-        normalized_visit_date = normalize_visit_label(visit_date)
-        existing = self.get_visit(normalized_patient_id, normalized_visit_date)
-        if existing is None:
-            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
-        normalized_status = str(status_value or "").strip().lower()
-        if normalized_status not in {"analysis_only", "candidate", "included", "excluded"}:
-            raise ValueError("Invalid registry status.")
-        values = {
-            "research_registry_status": normalized_status,
-            "research_registry_updated_at": utc_now(),
-            "research_registry_updated_by": updated_by_user_id,
-            "research_registry_source": str(source or "").strip() or None,
-        }
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(
-                update(db_visits)
-                .where(and_(db_visits.c.site_id == self.site_id, db_visits.c.visit_id == existing["visit_id"]))
-                .values(**values)
-            )
-        refreshed = self._get_visit_by_id(_coerce_optional_text(existing.get("visit_id")))
-        if refreshed is None:
-            raise ValueError(f"Visit {normalized_patient_id} / {normalized_visit_date} does not exist.")
-        return refreshed
+        return _update_visit_registry_status_impl(
+            self,
+            patient_id,
+            visit_date,
+            status_value=status_value,
+            updated_by_user_id=updated_by_user_id,
+            source=source,
+        )
 
     def metadata_backup_path(self) -> Path:
         return _metadata_backup_path_impl(self)
@@ -1528,10 +1033,7 @@ class SiteStore:
         return _export_metadata_backup_impl(self, path)
 
     def _clear_site_metadata_rows(self) -> None:
-        with DATA_PLANE_ENGINE.begin() as conn:
-            conn.execute(delete(db_images).where(db_images.c.site_id == self.site_id))
-            conn.execute(delete(db_visits).where(db_visits.c.site_id == self.site_id))
-            conn.execute(delete(db_patients).where(db_patients.c.site_id == self.site_id))
+        _clear_site_metadata_rows_impl(self)
 
     def _resolve_recovery_image_path(
         self,

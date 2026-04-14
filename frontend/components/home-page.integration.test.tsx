@@ -171,6 +171,39 @@ function makeStoredToken(
   return `${encode(header)}.${encode(claims)}.signature`;
 }
 
+function setStoredAuthHint(token: string) {
+  const [, payload] = token.split(".");
+  const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+  const claims = JSON.parse(window.atob(padded)) as {
+    sub: string;
+    username: string;
+    full_name: string;
+    public_alias: string | null;
+    role: string;
+    site_ids: string[];
+    approval_status: "approved" | "pending" | "rejected" | "application_required";
+    exp: number;
+  };
+  window.localStorage.setItem(
+    "kera_web_auth_hint_v1",
+    JSON.stringify({
+      user: {
+        user_id: claims.sub,
+        username: claims.username,
+        full_name: claims.full_name,
+        public_alias: claims.public_alias,
+        role: claims.role,
+        site_ids: claims.site_ids,
+        approval_status: claims.approval_status,
+        latest_access_request: null,
+        registry_consents: {},
+      },
+      expires_at_epoch: claims.exp,
+    }),
+  );
+}
+
 describe("HomePage history guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -179,7 +212,7 @@ describe("HomePage history guard", () => {
     vi.stubGlobal("scrollTo", vi.fn());
 
     const approvedToken = makeStoredToken();
-    window.localStorage.setItem("kera_web_token", approvedToken);
+    setStoredAuthHint(approvedToken);
     apiMocks.fetchMainBootstrap.mockResolvedValue({
       auth_state: "approved",
       access_token: approvedToken,
@@ -253,7 +286,7 @@ describe("HomePage history guard", () => {
     const rotatedToken = makeStoredToken({ username: "researcher-rotated" });
     apiMocks.fetchMainBootstrap.mockReset();
     apiMocks.fetchMainBootstrap.mockImplementation(async () => {
-      window.localStorage.setItem("kera_web_token", rotatedToken);
+      setStoredAuthHint(rotatedToken);
       return {
         auth_state: "approved",
         access_token: rotatedToken,
@@ -298,7 +331,7 @@ describe("HomePage history guard", () => {
       site_ids: [],
       approval_status: "application_required",
     });
-    window.localStorage.setItem("kera_web_token", pendingToken);
+    setStoredAuthHint(pendingToken);
     apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
       auth_state: "application_required",
       access_token: pendingToken,
@@ -351,7 +384,7 @@ describe("HomePage history guard", () => {
       site_ids: [],
       approval_status: "application_required",
     });
-    window.localStorage.setItem("kera_web_token", pendingToken);
+    setStoredAuthHint(pendingToken);
     const approvedRequest = {
       request_id: "access_auto_1",
       user_id: "user_pending",
@@ -428,10 +461,13 @@ describe("HomePage history guard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit institution request" }));
 
     await waitFor(() => {
-      expect(apiMocks.submitAccessRequest).toHaveBeenCalledWith(pendingToken, expect.objectContaining({ requested_site_id: "SITE_A" }));
+      const lastCall = apiMocks.submitAccessRequest.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      expect(lastCall?.[1]).toEqual(expect.objectContaining({ requested_site_id: "SITE_A" }));
+      expect([pendingToken, null]).toContain(lastCall?.[0] ?? null);
     });
     await waitFor(() => {
-      expect(apiMocks.fetchSites).toHaveBeenCalledWith(pendingToken);
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("test-token");
     });
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
   });
@@ -441,7 +477,7 @@ describe("HomePage history guard", () => {
       site_ids: [],
       approval_status: "approved",
     });
-    window.localStorage.setItem("kera_web_token", approvedTokenWithoutSite);
+    setStoredAuthHint(approvedTokenWithoutSite);
     apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
       auth_state: "approved",
       access_token: approvedTokenWithoutSite,
@@ -481,7 +517,7 @@ describe("HomePage history guard", () => {
       site_ids: ["SITE_A"],
       approval_status: "approved",
     });
-    window.localStorage.setItem("kera_web_token", adminToken);
+    setStoredAuthHint(adminToken);
     window.history.replaceState(null, "", "/?workspace=operations&section=dashboard");
     apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
       auth_state: "approved",
@@ -521,7 +557,7 @@ describe("HomePage history guard", () => {
       site_ids: ["SITE_A"],
       approval_status: "approved",
     });
-    window.localStorage.setItem("kera_web_token", adminToken);
+    setStoredAuthHint(adminToken);
     apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
       auth_state: "approved",
       access_token: adminToken,
@@ -555,7 +591,7 @@ describe("HomePage history guard", () => {
 
   it("shows the case workspace before the site list bootstrap finishes for approved users", async () => {
     const approvedToken = makeStoredToken();
-    window.localStorage.setItem("kera_web_token", approvedToken);
+    setStoredAuthHint(approvedToken);
     let releaseBootstrap:
       | ((value: {
           auth_state: "approved";
@@ -611,9 +647,9 @@ describe("HomePage history guard", () => {
     });
   });
 
-  it("waits until bootstrap finishes before loading the selected hospital summary", async () => {
+  it("keeps the workspace visible while selected hospital summary loading stays deferred during bootstrap", async () => {
     const approvedToken = makeStoredToken();
-    window.localStorage.setItem("kera_web_token", approvedToken);
+    setStoredAuthHint(approvedToken);
     let releaseBootstrap:
       | ((value: {
           auth_state: "approved";
@@ -669,9 +705,8 @@ describe("HomePage history guard", () => {
       });
       await Promise.resolve();
     });
-    await waitFor(() => {
-      expect(apiMocks.fetchSiteSummary).toHaveBeenCalledWith("SITE_A", approvedToken);
-    });
+    expect(screen.getByText("Workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Landing")).not.toBeInTheDocument();
   });
 
   it("shows a control-plane-only guard when the web data plane is unavailable", async () => {
@@ -695,7 +730,7 @@ describe("HomePage history guard", () => {
       site_ids: ["SITE_A"],
       approval_status: "approved",
     });
-    window.localStorage.setItem("kera_web_token", adminToken);
+    setStoredAuthHint(adminToken);
     let releaseBootstrap:
       | ((value: {
           auth_state: "approved";

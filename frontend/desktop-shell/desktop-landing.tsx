@@ -18,7 +18,7 @@ type DesktopLandingScreenProps = {
   onAdminLaunch: () => void;
 };
 
-const PUBLIC_SITE_ROOT = "https://kera-bay.vercel.app";
+const PUBLIC_SITE_ROOT = "https://k-era.org";
 
 function formatApproxGiB(bytes: number) {
   return `${(bytes / 1_073_741_824).toFixed(1)} GB`;

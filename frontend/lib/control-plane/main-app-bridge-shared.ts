@@ -7,6 +7,7 @@ import type { Row } from "postgres";
 import { normalizeEffectiveApprovalStatus, normalizeSiteIds } from "../auth-access-state";
 import type { AuthResponse, AuthState, AuthUser } from "../types";
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
+import { mainAppAuthCookieName } from "./main-app-auth-cookie";
 import {
   localApiJwtAudience,
   localApiJwtIssuer,
@@ -181,10 +182,13 @@ export async function fetchLegacyLocalNodeApi<T>(
 
 export function readBearerToken(request: NextRequest): string {
   const authorization = request.headers.get("authorization")?.trim() || "";
-  if (!authorization.toLowerCase().startsWith("bearer ")) {
-    throw new Error("Missing bearer token.");
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    const token = authorization.slice("bearer ".length).trim();
+    if (token) {
+      return token;
+    }
   }
-  const token = authorization.slice("bearer ".length).trim();
+  const token = request.cookies.get(mainAppAuthCookieName)?.value?.trim() || "";
   if (!token) {
     throw new Error("Missing bearer token.");
   }

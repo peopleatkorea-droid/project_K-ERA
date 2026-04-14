@@ -346,7 +346,7 @@ export function PatientListBoard({
               return previewUrl ? (
                 <img
                   key={`board-${thumbnail.case_id}`}
-                  src={previewUrl ? `${previewUrl}${previewUrl.includes("?") ? "&" : "?"}token=${token}` : undefined}
+                  src={previewUrl || undefined}
                   alt={`${row.patient_id}-${thumbnail.case_id}`}
                   className={patientListThumbClass}
                   loading={prioritizeThumbnails ? "eager" : "lazy"}
@@ -500,7 +500,7 @@ export function PatientListBoard({
                   <div className="flex items-start gap-3">
                     {result.preview_url ? (
                       <img
-                        src={`${result.preview_url}${result.preview_url?.includes("?") ? "&" : "?"}token=${token}`}
+                        src={result.preview_url}
                         alt={result.image_id}
                         className="h-16 w-16 shrink-0 rounded-[12px] border border-border/70 object-cover"
                         loading="lazy"

@@ -574,6 +574,124 @@ class ModelManagerTests(unittest.TestCase):
         for key, value in tuned_state.items():
             self.assertTrue(torch.allclose(value, rebuilt_checkpoint["state_dict"][key]))
 
+    def test_weight_delta_quantization_round_trip_reconstructs_with_tolerance(self):
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            base_model = manager.build_model("cnn")
+            base_state = {
+                key: value.detach().clone()
+                for key, value in base_model.state_dict().items()
+            }
+            tuned_state = {
+                key: value.detach().clone() + 0.125
+                for key, value in base_state.items()
+            }
+            preprocess_metadata = manager.preprocess_metadata()
+            base_path = temp_path / "base_model.pt"
+            tuned_path = temp_path / "tuned_model.pt"
+            delta_path = temp_path / "weight_delta_quantized.pt"
+            reconstructed_path = temp_path / "reconstructed_quantized_model.pt"
+            torch.save(
+                {
+                    "architecture": "cnn",
+                    "state_dict": base_state,
+                    "artifact_metadata": manager.build_artifact_metadata(
+                        architecture="cnn",
+                        preprocess_metadata=preprocess_metadata,
+                    ),
+                },
+                base_path,
+            )
+            torch.save(
+                {
+                    "architecture": "cnn",
+                    "state_dict": tuned_state,
+                    "artifact_metadata": manager.build_artifact_metadata(
+                        architecture="cnn",
+                        preprocess_metadata=preprocess_metadata,
+                    ),
+                },
+                tuned_path,
+            )
+
+            saved_delta_path = manager.save_weight_delta(
+                base_model_path=base_path,
+                tuned_model_path=tuned_path,
+                output_delta_path=delta_path,
+                quantization_bits=8,
+            )
+            rebuilt_model_path = manager.aggregate_weight_deltas(
+                [saved_delta_path],
+                reconstructed_path,
+                base_model_path=base_path,
+            )
+
+            delta_checkpoint = torch.load(saved_delta_path, map_location="cpu", weights_only=True)
+            rebuilt_checkpoint = torch.load(rebuilt_model_path, map_location="cpu", weights_only=True)
+
+        self.assertEqual(delta_checkpoint["delta_encoding"], "symmetric_linear")
+        self.assertEqual(delta_checkpoint["delta_quantization_bits"], 8)
+        for key, value in tuned_state.items():
+            self.assertTrue(torch.allclose(value, rebuilt_checkpoint["state_dict"][key], atol=5e-3))
+
+    def test_coordinate_median_aggregation_rejects_single_site_outlier(self):
+        manager = ModelManager()
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            base_model = manager.build_model("cnn")
+            base_state = {
+                key: value.detach().clone()
+                for key, value in base_model.state_dict().items()
+            }
+            preprocess_metadata = manager.preprocess_metadata()
+            base_path = temp_path / "base_model.pt"
+            aggregated_path = temp_path / "coordinate_median_model.pt"
+            torch.save(
+                {
+                    "architecture": "cnn",
+                    "state_dict": base_state,
+                    "artifact_metadata": manager.build_artifact_metadata(
+                        architecture="cnn",
+                        preprocess_metadata=preprocess_metadata,
+                    ),
+                },
+                base_path,
+            )
+
+            def write_delta(path: Path, delta_value: float) -> str:
+                delta_state = {
+                    key: torch.full_like(value, float(delta_value))
+                    for key, value in base_state.items()
+                }
+                torch.save(
+                    {
+                        "architecture": "cnn",
+                        "state_dict": delta_state,
+                        "artifact_metadata": manager.build_artifact_metadata(
+                            architecture="cnn",
+                            artifact_type="weight_delta",
+                            preprocess_metadata=preprocess_metadata,
+                        ),
+                    },
+                    path,
+                )
+                return str(path)
+
+            honest_a = write_delta(temp_path / "honest_a.pt", 0.10)
+            honest_b = write_delta(temp_path / "honest_b.pt", 0.12)
+            malicious = write_delta(temp_path / "malicious.pt", 50.0)
+            rebuilt_model_path = manager.aggregate_weight_deltas(
+                [honest_a, honest_b, malicious],
+                aggregated_path,
+                base_model_path=base_path,
+                strategy="coordinate_median",
+            )
+            rebuilt_checkpoint = torch.load(rebuilt_model_path, map_location="cpu", weights_only=True)
+
+        for key, value in rebuilt_checkpoint["state_dict"].items():
+            self.assertTrue(torch.allclose(value, base_state[key] + 0.12, atol=1e-5))
+
 
 if __name__ == "__main__":
     unittest.main()

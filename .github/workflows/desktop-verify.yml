@@ -6,6 +6,8 @@ on:
     paths:
       - "frontend/**"
       - "scripts/setup_local_node.ps1"
+      - "pyproject.toml"
+      - "uv.lock"
       - "requirements*.txt"
       - ".github/workflows/desktop-verify.yml"
   push:
@@ -15,11 +17,50 @@ on:
     paths:
       - "frontend/**"
       - "scripts/setup_local_node.ps1"
+      - "pyproject.toml"
+      - "uv.lock"
       - "requirements*.txt"
       - ".github/workflows/desktop-verify.yml"
 
 jobs:
+  quality-gates:
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "frontend/package-lock.json"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Prepare local Python environment
+        shell: pwsh
+        run: .\scripts\setup_local_node.ps1 -PythonExe python -TorchProfile cpu
+
+      - name: Verify web production build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run frontend integration tests
+        working-directory: frontend
+        run: npm exec vitest run
+
+      - name: Run backend test suite
+        run: uv run pytest tests -q
+
   windows-desktop-smoke:
+    needs: quality-gates
     runs-on: windows-latest
     timeout-minutes: 120
 

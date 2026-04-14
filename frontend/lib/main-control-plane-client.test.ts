@@ -21,12 +21,12 @@ describe("mainControlPlanePath", () => {
   });
 
   it("uses the configured absolute control-plane base in desktop builds", async () => {
-    process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL = "https://kera-bay.vercel.app/control-plane/api";
+    process.env.NEXT_PUBLIC_KERA_CONTROL_PLANE_API_BASE_URL = "https://k-era.org/control-plane/api";
 
     const { mainControlPlanePath } = await import("./main-control-plane-client");
 
     expect(mainControlPlanePath("/admin/overview")).toBe(
-      "https://kera-bay.vercel.app/control-plane/api/main/admin/overview",
+      "https://k-era.org/control-plane/api/main/admin/overview",
     );
   });
 

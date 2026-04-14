@@ -312,8 +312,16 @@ export function useAdminWorkspaceManagementController({
     setInstitutionSyncBusy(true);
     try {
       const result = await syncInstitutionDirectory(token, { page_size: 100 });
-      await refreshWorkspace();
-      await onRefreshSites();
+      try {
+        await refreshWorkspace();
+      } catch {
+        // Keep the sync result visible even if one of the follow-up refreshes fails.
+      }
+      try {
+        await onRefreshSites();
+      } catch {
+        // The directory sync already succeeded; follow-up site refresh is best effort.
+      }
       setToast({
         tone: "success",
         message: copy.institutionSyncSucceeded(result.institutions_synced, result.pages_synced),
@@ -372,8 +380,16 @@ export function useAdminWorkspaceManagementController({
         research_registry_enabled: siteForm.research_registry_enabled,
       });
       handleResetSiteForm(effectiveProjectId);
-      await onRefreshSites();
-      await refreshWorkspace();
+      try {
+        await onRefreshSites();
+      } catch {
+        // The hospital registration already succeeded; site list refresh is best effort.
+      }
+      try {
+        await refreshWorkspace();
+      } catch {
+        // Keep the successful registration visible even if the bootstrap refresh fails.
+      }
       onSelectSite(createdSite.site_id);
       setToast({ tone: "success", message: copy.siteRegistered(getSiteDisplayName(createdSite, createdSite.site_id)) });
     } catch (nextError) {
@@ -397,8 +413,16 @@ export function useAdminWorkspaceManagementController({
         research_registry_enabled: siteForm.research_registry_enabled,
       });
       handleResetSiteForm(updatedSite.project_id);
-      await onRefreshSites();
-      await refreshWorkspace();
+      try {
+        await onRefreshSites();
+      } catch {
+        // The hospital update already succeeded; site list refresh is best effort.
+      }
+      try {
+        await refreshWorkspace();
+      } catch {
+        // Keep the successful update visible even if the bootstrap refresh fails.
+      }
       onSelectSite(updatedSite.site_id);
       setToast({ tone: "success", message: copy.siteUpdated(getSiteDisplayName(updatedSite, updatedSite.site_id)) });
     } catch (nextError) {
@@ -482,7 +506,11 @@ export function useAdminWorkspaceManagementController({
         source: "auto",
         force_replace: true,
       });
-      await refreshWorkspace(true);
+      try {
+        await refreshWorkspace(true);
+      } catch {
+        // Recovery already succeeded; the follow-up refresh should not hide that result.
+      }
       setSection("dashboard");
       setToast({
         tone: "success",

@@ -80,7 +80,7 @@ function FieldGrid({ items }: { items: FieldItem[] }) {
   );
 }
 
-function resolvePreviewImageSrc(previewUrl: string | null | undefined, token: string) {
+function resolvePreviewImageSrc(previewUrl: string | null | undefined, _token: string) {
   const normalized = String(previewUrl || "").trim();
   if (!normalized) {
     return undefined;
@@ -88,7 +88,7 @@ function resolvePreviewImageSrc(previewUrl: string | null | undefined, token: st
   if (normalized.startsWith("data:")) {
     return normalized;
   }
-  return `${normalized}${normalized.includes("?") ? "&" : "?"}token=${token}`;
+  return normalized;
 }
 
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {

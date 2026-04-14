@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Any
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
 from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
 from kera_research.services.data_plane import SiteStore
+from kera_research.services.federated_update_security import (
+    apply_federated_update_signature,
+    federated_delta_privacy_controls,
+    summarize_federated_data_distribution,
+)
 from kera_research.storage import write_json
 
 if TYPE_CHECKING:
@@ -371,10 +376,14 @@ class ResearchContributionWorkflow:
 
         delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
         base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
+        privacy_controls = federated_delta_privacy_controls()
         service.model_manager.save_weight_delta(
             base_model_path,
             result["output_model_path"],
             delta_path,
+            clip_l2_norm=privacy_controls.get("delta_clip_l2_norm"),
+            noise_multiplier=privacy_controls.get("delta_noise_multiplier"),
+            quantization_bits=privacy_controls.get("delta_quantization_bits"),
         )
 
         update_id = make_id("update")
@@ -423,8 +432,11 @@ class ResearchContributionWorkflow:
             "training_summary": result,
             "approval_report": approval_report,
             "quality_summary": quality_summary,
+            "privacy_controls": privacy_controls,
+            "data_distribution": summarize_federated_data_distribution(records),
             "status": "pending_review",
         }
+        update_metadata = apply_federated_update_signature(update_metadata)
         update_metadata = service.control_plane.register_model_update(update_metadata)
         update_metadata["experiment"] = service._register_experiment(
             site_store,
@@ -758,10 +770,14 @@ class ResearchTrainingWorkflow:
         )
         delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
         base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
+        privacy_controls = federated_delta_privacy_controls()
         service.model_manager.save_weight_delta(
             base_model_path,
             result["output_model_path"],
             delta_path,
+            clip_l2_norm=privacy_controls.get("delta_clip_l2_norm"),
+            noise_multiplier=privacy_controls.get("delta_noise_multiplier"),
+            quantization_bits=privacy_controls.get("delta_quantization_bits"),
         )
 
         update_id = make_id("update")
@@ -859,8 +875,11 @@ class ResearchTrainingWorkflow:
             },
             "approval_report": approval_report,
             "quality_summary": quality_summary,
+            "privacy_controls": privacy_controls,
+            "data_distribution": summarize_federated_data_distribution(records),
             "status": "pending_review",
         }
+        update_metadata = apply_federated_update_signature(update_metadata)
         update_metadata = service.control_plane.register_model_update(update_metadata)
         retained_cases: set[tuple[str, str]] = {
             (
@@ -1045,10 +1064,14 @@ class ResearchTrainingWorkflow:
         )
         delta_path = site_store.update_dir / f"{make_id('delta')}.pth"
         base_model_path = service.model_manager.resolve_model_path(model_version, allow_download=True)
+        privacy_controls = federated_delta_privacy_controls()
         service.model_manager.save_weight_delta(
             base_model_path,
             result["output_model_path"],
             delta_path,
+            clip_l2_norm=privacy_controls.get("delta_clip_l2_norm"),
+            noise_multiplier=privacy_controls.get("delta_noise_multiplier"),
+            quantization_bits=privacy_controls.get("delta_quantization_bits"),
         )
 
         update_id = make_id("update")
@@ -1146,8 +1169,11 @@ class ResearchTrainingWorkflow:
             },
             "approval_report": approval_report,
             "quality_summary": quality_summary,
+            "privacy_controls": privacy_controls,
+            "data_distribution": summarize_federated_data_distribution(records),
             "status": "pending_review",
         }
+        update_metadata = apply_federated_update_signature(update_metadata)
         update_metadata = service.control_plane.register_model_update(update_metadata)
         retained_cases: set[tuple[str, str]] = {
             (

@@ -1,12 +1,10 @@
-import io
-import zipfile
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import Response
 
+from kera_research.api.site_import_validation import SiteImportValidator
 from kera_research.api.routes.site_shared import assert_site_access_only
 from kera_research.domain import normalize_actual_visit_date, normalize_patient_pseudonym, normalize_visit_label
 
@@ -24,6 +22,7 @@ def build_site_imports_router(support: Any) -> APIRouter:
     bool_from_value = support.bool_from_value
     coerce_text = support.coerce_text
     import_template_rows = support.import_template_rows
+    import_validator = SiteImportValidator()
 
     @router.get("/api/sites/{site_id}/import/template.csv")
     def download_import_template(
@@ -50,60 +49,11 @@ def build_site_imports_router(support: Any) -> APIRouter:
     ) -> dict[str, Any]:
         require_admin_workspace_permission(user)
         site_store = require_site_access(cp, user, site_id)
-
-        csv_name = (csv_file.filename or "").lower()
-        if not csv_name.endswith(".csv"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bulk import requires a CSV metadata file.")
-
-        csv_bytes = await csv_file.read()
-        try:
-            import_df = pd.read_csv(io.BytesIO(csv_bytes))
-        except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unable to parse CSV: {exc}") from exc
-
-        required_columns = [
-            "patient_id",
-            "sex",
-            "age",
-            "visit_date",
-            "image_filename",
-            "view",
-        ]
-        missing_columns = [column for column in required_columns if column not in import_df.columns]
-        if missing_columns:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Missing columns: {', '.join(missing_columns)}",
-            )
-
-        image_bytes: dict[str, bytes] = {}
-        image_sources: dict[str, str] = {}
-        for upload in files:
-            upload_name = Path(upload.filename or "").name
-            if not upload_name:
-                continue
-            content = await upload.read()
-            if upload_name.lower().endswith(".zip"):
-                try:
-                    with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                        for member in archive.namelist():
-                            if member.endswith("/"):
-                                continue
-                            image_name = Path(member).name
-                            if not image_name or image_name.startswith(".") or ".." in member:
-                                continue
-                            image_bytes[image_name] = archive.read(member)
-                            image_sources[image_name] = upload_name
-                except zipfile.BadZipFile as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Invalid ZIP archive: {upload_name}",
-                    ) from exc
-            else:
-                image_bytes[upload_name] = content
-                image_sources[upload_name] = upload_name
-
-        import_df = import_df.where(pd.notnull(import_df), None)
+        parsed_bundle = await import_validator.parse_bundle(csv_file=csv_file, files=files)
+        import_df = parsed_bundle.dataframe
+        image_bytes = parsed_bundle.image_bytes
+        image_sources = parsed_bundle.image_sources
+        bundle_errors = parsed_bundle.bundle_errors
         patient_cache = {item["patient_id"] for item in site_store.list_patients()}
         visit_cache = {(item["patient_id"], item["visit_date"]) for item in site_store.list_visits()}
         existing_images = site_store.list_images()
@@ -224,7 +174,7 @@ def build_site_imports_router(support: Any) -> APIRouter:
             "created_visits": created_visits,
             "imported_images": imported_images,
             "skipped_images": skipped_images,
-            "errors": errors[:100],
+            "errors": [*bundle_errors[:25], *errors[:100]][:100],
             "file_sources": image_sources,
         }
 

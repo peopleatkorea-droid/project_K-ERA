@@ -88,15 +88,15 @@ export function useApprovedWorkspaceState({
     [],
   );
 
-  const refreshSiteData = useCallback(async (siteId: string, currentToken: string) => {
+  const refreshSiteData = useCallback(async (siteId: string, currentToken?: string | null) => {
     try {
-      const nextCounts = await fetchSiteSummaryCounts(siteId, currentToken);
+      const nextCounts = await fetchSiteSummaryCounts(siteId, currentToken ?? undefined);
       siteSummaryCountsLoadedSiteIdRef.current = String(nextCounts.site_id ?? siteId);
       setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
     } catch {
       // Keep the refresh path resilient when the quick endpoint is unavailable.
     }
-    const nextSummary = await fetchSiteSummary(siteId, currentToken);
+    const nextSummary = await fetchSiteSummary(siteId, currentToken ?? undefined);
     siteSummaryCountsLoadedSiteIdRef.current = String(nextSummary.site_id ?? siteId);
     siteSummaryLoadedSiteIdRef.current = String(nextSummary.site_id ?? siteId);
     setSummary(nextSummary);
@@ -105,8 +105,8 @@ export function useApprovedWorkspaceState({
   }, []);
 
   const refreshApprovedSites = useCallback(
-    async (currentToken: string, options?: { preferredSiteId?: string | null }) => {
-      const nextSites = mergeSitesWithCachedMetadata(await fetchSites(currentToken));
+    async (currentToken?: string | null, options?: { preferredSiteId?: string | null }) => {
+      const nextSites = mergeSitesWithCachedMetadata(await fetchSites(currentToken ?? undefined));
       cacheSiteRecords(nextSites);
       setSites(nextSites);
       setSelectedSiteId((current) => resolveSelectedSiteId(nextSites, current, options?.preferredSiteId));
@@ -136,7 +136,6 @@ export function useApprovedWorkspaceState({
     if (
       canUseDesktopLocalApiTransport() ||
       !workspaceDataPlaneReady ||
-      !token ||
       !selectedSiteId ||
       !approved ||
       bootstrapBusy ||
@@ -146,7 +145,7 @@ export function useApprovedWorkspaceState({
       return;
     }
 
-    const currentToken = token;
+    const currentToken = token ?? undefined;
     const currentSiteId = selectedSiteId;
     const suppressSiteError = bootstrapBusy;
     let cancelled = false;

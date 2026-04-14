@@ -40,7 +40,7 @@ function createConfig(overrides?: Partial<DesktopAppConfigState>): DesktopAppCon
     },
     values: {
       storage_dir: "C:\\Users\\USER\\AppData\\Local\\KERA\\KERA_DATA",
-      control_plane_api_base_url: "https://kera-bay.vercel.app/control-plane/api",
+      control_plane_api_base_url: "https://k-era.org/control-plane/api",
       control_plane_node_id: "node-1",
       control_plane_node_token: "secret",
       control_plane_site_id: "site-1",
@@ -119,7 +119,7 @@ describe("runDesktopSelfCheck", () => {
       control_plane: {
         configured: true,
         node_sync_enabled: true,
-        base_url: "https://kera-bay.vercel.app/control-plane/api",
+        base_url: "https://k-era.org/control-plane/api",
         node_id: "node-1",
         bootstrap: { ok: true },
         ready: true,
@@ -181,7 +181,7 @@ describe("runDesktopSelfCheck", () => {
       control_plane: {
         configured: true,
         node_sync_enabled: true,
-        base_url: "https://kera-bay.vercel.app/control-plane/api",
+        base_url: "https://k-era.org/control-plane/api",
         node_id: "node-1",
         bootstrap: null,
         ready: false,
@@ -244,7 +244,7 @@ describe("runDesktopSelfCheck", () => {
       control_plane: {
         configured: true,
         node_sync_enabled: false,
-        base_url: "https://kera-bay.vercel.app/control-plane/api",
+        base_url: "https://k-era.org/control-plane/api",
         node_id: "",
         bootstrap: null,
         ready: false,

@@ -22,6 +22,11 @@ import {
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import type { NormalizedBox, PatientListRow, SavedImagePreview } from "./shared";
+import type {
+  CaseWorkspaceCompletionState,
+  CaseWorkspaceDraftState,
+  CaseWorkspaceToastState,
+} from "./case-workspace-definitions";
 import {
   buildOptimisticPatientRow,
   buildOptimisticSavedCase,
@@ -47,45 +52,6 @@ type DraftImage = {
   preview_url: string;
   view: string;
   is_representative: boolean;
-};
-
-type DraftState = {
-  patient_id: string;
-  chart_alias: string;
-  local_case_code: string;
-  sex: string;
-  age: string;
-  actual_visit_date: string;
-  follow_up_number: string;
-  culture_status: string;
-  culture_category: string;
-  culture_species: string;
-  additional_organisms: OrganismRecord[];
-  contact_lens_use: string;
-  visit_status: string;
-  is_initial_visit: boolean;
-  predisposing_factor: string[];
-  other_history: string;
-  intake_completed: boolean;
-};
-
-type ToastState = {
-  tone: "success" | "error";
-  message: string;
-} | null;
-
-type CompletionState = {
-  kind: "saved" | "contributed";
-  patient_id: string;
-  visit_date: string;
-  timestamp: string;
-  stats?: {
-    user_contributions: number;
-    total_contributions: number;
-    user_contribution_pct: number;
-  };
-  update_id?: string;
-  update_count?: number;
 };
 
 type EditingCaseContext = {
@@ -116,7 +82,7 @@ type HandleSaveCaseArgs = {
   user: AuthUser;
   showOnlyMine: boolean;
   patientIdLookup: PatientIdLookupResponse | null;
-  draft: DraftState;
+  draft: CaseWorkspaceDraftState;
   draftImages: DraftImage[];
   draftLesionPromptBoxes: Record<string, NormalizedBox | null>;
   editingCaseContext: EditingCaseContext;
@@ -129,7 +95,7 @@ type HandleSaveCaseArgs = {
   copy: CopyShape;
   describeError: (error: unknown, fallback: string) => string;
   isAlreadyExistsError: (error: unknown) => boolean;
-  setToast: Dispatch<SetStateAction<ToastState>>;
+  setToast: Dispatch<SetStateAction<CaseWorkspaceToastState>>;
   setSaveBusy: Dispatch<SetStateAction<boolean>>;
   setCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   setPatientListRows: Dispatch<SetStateAction<PatientListRow[]>>;
@@ -139,7 +105,9 @@ type HandleSaveCaseArgs = {
   setSelectedCase: Dispatch<SetStateAction<CaseSummaryRecord | null>>;
   setSelectedPatientCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   setPanelOpen: Dispatch<SetStateAction<boolean>>;
-  setCompletionState: Dispatch<SetStateAction<CompletionState | null>>;
+  setCompletionState: Dispatch<
+    SetStateAction<CaseWorkspaceCompletionState | null>
+  >;
   clearDraftStorage: (siteId?: string | null) => void;
   resetDraft: () => void;
   primeCaseImageCache: (

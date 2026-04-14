@@ -13,25 +13,11 @@ import {
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
 import { waitForSiteJobSettlement } from "../../lib/site-job-runtime";
-
-type ToastState = {
-  tone: "success" | "error";
-  message: string;
-} | null;
-
-type CompletionState = {
-  kind: "saved" | "contributed";
-  patient_id: string;
-  visit_date: string;
-  timestamp: string;
-  stats?: {
-    user_contributions: number;
-    total_contributions: number;
-    user_contribution_pct: number;
-  };
-  update_id?: string;
-  update_count?: number;
-};
+import type {
+  CaseWorkspaceCompletionState,
+  CaseWorkspaceExecutionMode,
+  CaseWorkspaceToastState,
+} from "./case-workspace-definitions";
 
 type Args = {
   locale: Locale;
@@ -44,13 +30,15 @@ type Args = {
   validationResult: CaseValidationResponse | null;
   executionModeFromDevice: (
     device: string | undefined,
-  ) => "auto" | "cpu" | "gpu";
+  ) => CaseWorkspaceExecutionMode;
   pick: (locale: Locale, en: string, ko: string) => string;
   describeError: (error: unknown, fallback: string) => string;
-  setToast: Dispatch<SetStateAction<ToastState>>;
+  setToast: Dispatch<SetStateAction<CaseWorkspaceToastState>>;
   setPanelOpen: Dispatch<SetStateAction<boolean>>;
   setSiteValidationBusy: Dispatch<SetStateAction<boolean>>;
-  setCompletionState: Dispatch<SetStateAction<CompletionState | null>>;
+  setCompletionState: Dispatch<
+    SetStateAction<CaseWorkspaceCompletionState | null>
+  >;
   setContributionResult: Dispatch<
     SetStateAction<CaseContributionResponse | null>
   >;

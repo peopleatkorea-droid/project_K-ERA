@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
 from kera_research.db import CONTROL_PLANE_ENGINE, aggregations, contributions, model_updates, model_versions
 from kera_research.domain import make_id, utc_now
+from kera_research.services.federated_update_security import verify_federated_update_signature
 
 _MODEL_VERSION_LOCK = threading.Lock()
 
@@ -226,6 +227,7 @@ class ControlPlaneRegistryOps:
                 )
             except FileNotFoundError:
                 pass
+        verify_federated_update_signature(record)
         record.pop("artifact_path", None)
         record.pop("central_artifact_path", None)
         with CONTROL_PLANE_ENGINE.begin() as conn:
@@ -469,6 +471,7 @@ class ControlPlaneRegistryOps:
         decision_threshold: float | None = None,
         threshold_selection_metric: str | None = None,
         threshold_selection_metrics: dict[str, Any] | None = None,
+        aggregation_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         agg_id = make_id("agg")
         record = {
@@ -480,6 +483,8 @@ class ControlPlaneRegistryOps:
             "total_cases": sum(site_weights.values()),
             "created_at": utc_now(),
         }
+        if aggregation_metadata:
+            record.update({key: value for key, value in aggregation_metadata.items() if value is not None})
         with CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 aggregations.insert().values(

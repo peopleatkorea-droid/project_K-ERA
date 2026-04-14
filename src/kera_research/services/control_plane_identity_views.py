@@ -10,8 +10,11 @@ from kera_research.config import PUBLIC_ALIAS_SALT
 from kera_research.db import CONTROL_PLANE_ENGINE, access_requests, users
 from kera_research.domain import make_id, utc_now
 from kera_research.passwords import (
+    argon2_hash_needs_rehash,
+    is_argon2_hash,
     is_bcrypt_hash,
     is_pbkdf2_sha256_hash,
+    verify_argon2_password,
     verify_bcrypt_password,
     verify_pbkdf2_sha256_hash,
 )
@@ -131,9 +134,30 @@ class ControlPlaneIdentityFacade:
         stored = user_record.get("password", "")
         if stored == self.google_auth_sentinel:
             return None
+        if is_argon2_hash(stored):
+            if not verify_argon2_password(password, stored):
+                return None
+            if argon2_hash_needs_rehash(stored):
+                migrated_password = self.normalize_password_storage(password)
+                with CONTROL_PLANE_ENGINE.begin() as conn:
+                    conn.execute(
+                        update(users)
+                        .where(users.c.user_id == user_record["user_id"])
+                        .values(password=migrated_password)
+                    )
+                user_record["password"] = migrated_password
+            return self.serialize_user(user_record)
         if is_bcrypt_hash(stored):
             if not verify_bcrypt_password(password, stored):
                 return None
+            migrated_password = self.normalize_password_storage(password)
+            with CONTROL_PLANE_ENGINE.begin() as conn:
+                conn.execute(
+                    update(users)
+                    .where(users.c.user_id == user_record["user_id"])
+                    .values(password=migrated_password)
+                )
+            user_record["password"] = migrated_password
             return self.serialize_user(user_record)
         if is_pbkdf2_sha256_hash(stored):
             if not verify_pbkdf2_sha256_hash(password, stored):

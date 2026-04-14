@@ -9,10 +9,11 @@ class DesktopRouteSupport:
     get_control_plane: Any
     google_client_ids: Any
     desktop_self_check: Any
-    load_node_credentials: Any
-    node_credentials_status: Any
-    save_node_credentials: Any
-    clear_node_credentials: Any
+    build_health_report: Any
+    build_readiness_report: Any
+    build_liveness_report: Any
+    render_metrics: Any
+    secrets_manager: Any
     database_topology: Any
     remote_node_os_info: Any
     local_control_plane_dev_auth_enabled: Any
@@ -181,10 +182,11 @@ def build_route_supports(**deps: Any) -> RouteSupports:
             get_control_plane=deps["get_control_plane"],
             google_client_ids=deps["google_client_ids"],
             desktop_self_check=deps["desktop_self_check"],
-            load_node_credentials=deps["load_node_credentials"],
-            node_credentials_status=deps["node_credentials_status"],
-            save_node_credentials=deps["save_node_credentials"],
-            clear_node_credentials=deps["clear_node_credentials"],
+            build_health_report=deps["build_health_report"],
+            build_readiness_report=deps["build_readiness_report"],
+            build_liveness_report=deps["build_liveness_report"],
+            render_metrics=deps["render_metrics"],
+            secrets_manager=deps["secrets_manager"],
             database_topology=deps["database_topology"],
             remote_node_os_info=deps["remote_node_os_info"],
             local_control_plane_dev_auth_enabled=deps["local_control_plane_dev_auth_enabled"],
