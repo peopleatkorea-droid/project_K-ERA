@@ -89,7 +89,7 @@ const koFaqs = [
   },
   {
     q: "코딩을 전혀 몰라도 쓸 수 있나요?",
-    a: "가능합니다. Python 설치도, CSV 작성도 필요 없습니다. Google 로그인으로 기관 승인을 신청하고, 승인 후에는 K-ERA 데스크톱 앱을 설치해 케이스 작성과 이미지 업로드를 진행합니다.",
+    a: "가능합니다. Python 설치도, CSV 작성도 필요 없습니다. 먼저 웹 포털에서 Google 로그인으로 기관 승인을 신청하고, 승인되면 K-ERA 데스크톱 앱을 설치해 환자 이미지 업로드와 케이스 작성을 진행하면 됩니다.",
   },
   {
     q: "환자 데이터가 외부로 유출되지 않나요?",
@@ -105,7 +105,7 @@ const koFaqs = [
   },
   {
     q: "병원 IT 인프라가 복잡해야 하나요?",
-    a: "아닙니다. K-ERA 데스크톱 앱 한 대로 시작할 수 있게 설계돼 있습니다. 기관 승인 후 다운로드 링크가 제공되고, AI 학습 이후에는 중앙 검토와 집계 절차가 이어집니다.",
+    a: "아닙니다. 웹 포털은 로그인, 기관 승인, 설치 파일 안내에 사용하고, 실제 환자 케이스 작업은 병원 PC의 K-ERA 데스크톱 앱 한 대로 시작할 수 있게 설계돼 있습니다. 승인 후 다운로드 링크가 제공되고, 그다음부터는 앱에서 케이스 작성과 AI 학습을 이어가면 됩니다.",
   },
 ];
 
@@ -227,7 +227,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             >
               파이썬도, 엑셀 manifest도, 수동 annotation도 필요 없습니다.
               <br />
-              오늘 찍은 사진을 올리면, K-ERA가 함께 고민합니다.
+              K-ERA 앱에 오늘 찍은 사진을 올리면, 함께 판단을 돕습니다.
             </p>
 
             <div
@@ -241,7 +241,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
                 slotClassName="rounded-[8px]"
               >
-                {props.authBusy ? props.connectingLabel : "연구 참여하기"}
+                {props.authBusy ? props.connectingLabel : "Google 로그인으로 승인 신청"}
               </LandingGoogleCta>
               <a className="inline-block rounded-[8px] border border-[rgba(45,212,192,0.13)] px-7 py-3 text-[0.88rem] tracking-[0.04em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0]" href="#features">
                 어떻게 작동하나요 →
@@ -378,7 +378,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <span className="text-[#2dd4c0]">"임상 워크플로"</span>로
               </h2>
               <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-                K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI를 학습·검증·공유할 수 있도록 설계된 연구 플랫폼입니다. Google 로그인과 웹 브라우저만으로 케이스 등록, 이미지 검토, 연구 준비를 이어갈 수 있습니다.
+                K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI 연구를 이어갈 수 있도록 설계된 연구 플랫폼입니다. Google 로그인으로 기관 승인을 신청하고, 승인되면 K-ERA 앱에서 케이스 등록과 이미지 검토를 이어갈 수 있습니다.
               </p>
               <p className="text-[0.93rem] leading-[1.9] text-[#7b88a8]">
                 현재 공개 근거는 제주 단일기관 white-light benchmark입니다. 그 위에서 참여 병원이 늘어날수록 더 넓은 external validation이 가능해지고, 문헌 전반에서 기대되는 것처럼 CNN 계열이 더 큰 데이터에서 좋아지는지 직접 검증할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
@@ -398,7 +398,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 반나절 쓰셨다면
               </h2>
-              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나로 ROI 초안을 만들고, 케이스 정리와 review 흐름은 K-ERA가 이어받습니다.</p>
+              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나로 ROI 초안을 만들고, 정리와 review 흐름은 K-ERA가 이어받습니다.</p>
             </div>
             <div
               className="landing-reveal justify-self-center w-full max-w-[460px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[320px]"
@@ -604,7 +604,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
               slotClassName="rounded-[8px]"
             >
-              {props.authBusy ? props.connectingLabel : "기관 참여 신청하기 →"}
+              {props.authBusy ? props.connectingLabel : "Google 로그인으로 기관 승인 신청하기 →"}
             </LandingGoogleCta>
             <p className="mt-3.5 text-[0.76rem] text-[#3f4b6a]">① Google 로그인 → 기관 승인 신청 → ② 승인 후 데스크톱 앱 설치 → 케이스 작성</p>
           </div>
@@ -663,7 +663,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               pulseClassName="ring-4 ring-[rgba(45,212,192,0.22)]"
               slotClassName="rounded-[8px]"
             >
-              {props.authBusy ? props.connectingLabel : "Google 로그인하여 연구 참여하기"}
+              {props.authBusy ? props.connectingLabel : "Google 로그인으로 승인 신청하기"}
             </LandingGoogleCta>
             <p className="mt-4 text-[0.75rem] text-[#3f4b6a]">한 케이스로 시작하고, 여러 병원이 검증합니다.</p>
           </div>
