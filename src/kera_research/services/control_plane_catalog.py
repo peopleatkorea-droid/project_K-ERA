@@ -7,7 +7,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 
 from kera_research.db import CONTROL_PLANE_ENGINE, institution_directory, organism_catalog, organism_requests
 from kera_research.domain import make_id, order_culture_species, utc_now
-from kera_research.services.institution_directory import HiraInstitutionDirectoryClient
+from kera_research.services.institution_directory import HiraApiError, HiraInstitutionDirectoryClient
 
 
 class ControlPlaneCatalogFacade:
@@ -109,7 +109,15 @@ class ControlPlaneCatalogFacade:
         query = query.limit(bounded_limit)
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
-        return [dict(row) for row in rows]
+        serialized_rows = [dict(row) for row in rows]
+        if serialized_rows or not normalized_search or not self.hira_api_key.strip():
+            return serialized_rows
+        return self._search_hira_live(
+            search=search,
+            sido_code=normalized_sido or None,
+            sggu_code=normalized_sggu or None,
+            limit=bounded_limit,
+        )
 
     def get_institution(self, institution_id: str) -> dict[str, Any] | None:
         normalized_institution_id = institution_id.strip()
@@ -204,6 +212,37 @@ class ControlPlaneCatalogFacade:
             json.dumps(result, ensure_ascii=False),
         )
         return result
+
+    def _search_hira_live(
+        self,
+        *,
+        search: str,
+        sido_code: str | None,
+        sggu_code: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        normalized_search = str(search or "").strip()
+        if not normalized_search:
+            return []
+        try:
+            client = HiraInstitutionDirectoryClient(self.hira_api_key)
+            page = client.search_ophthalmology_institutions(normalized_search, num_rows=limit)
+        except HiraApiError:
+            return []
+
+        filtered_items: list[dict[str, Any]] = []
+        normalized_sido = str(sido_code or "").strip()
+        normalized_sggu = str(sggu_code or "").strip()
+        for item in page.items:
+            if normalized_sido and str(item.get("sido_code") or "").strip() != normalized_sido:
+                continue
+            if normalized_sggu and str(item.get("sggu_code") or "").strip() != normalized_sggu:
+                continue
+            filtered_items.append(item)
+
+        if filtered_items:
+            self.upsert_institutions(filtered_items)
+        return filtered_items
 
     def list_organisms(self, category: str | None = None) -> list[str] | dict[str, list[str]]:
         query = select(organism_catalog).order_by(organism_catalog.c.culture_category, organism_catalog.c.species_name)

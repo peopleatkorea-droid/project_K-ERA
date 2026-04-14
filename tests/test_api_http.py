@@ -6976,6 +6976,52 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(request_payload["requested_role"], "researcher")
         self.assertEqual(request_payload["requested_site_source"], "institution_directory")
 
+    def test_public_institution_search_falls_back_to_live_hira_when_directory_is_empty_http(self):
+        from kera_research.services.institution_directory import HiraInstitutionPage
+
+        self.assertEqual(self.cp.institution_directory_sync_status()["institutions_synced"], 0)
+
+        with patch(
+            "kera_research.services.control_plane_catalog.HiraInstitutionDirectoryClient.search_ophthalmology_institutions",
+            return_value=HiraInstitutionPage(
+                page_no=1,
+                num_rows=8,
+                total_count=1,
+                items=[
+                    {
+                        "institution_id": "39100103",
+                        "source": "hira",
+                        "name": "제주대학교병원",
+                        "institution_type_code": "11",
+                        "institution_type_name": "종합병원",
+                        "address": "제주특별자치도 제주시 아란13길 15",
+                        "phone": "064-717-1114",
+                        "homepage": "https://www.jejunuh.co.kr/",
+                        "sido_code": "390000",
+                        "sggu_code": "390200",
+                        "emdong_name": "아라일동",
+                        "postal_code": "63241",
+                        "x_pos": "126.5452109",
+                        "y_pos": "33.4671105",
+                        "ophthalmology_available": True,
+                        "open_status": "active",
+                        "synced_at": "2026-04-14T00:00:00Z",
+                    }
+                ],
+            ),
+        ) as search_mock:
+            response = self.client.get("/api/public/institutions/search?q=제주대&limit=8")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["institution_id"], "39100103")
+        self.assertEqual(payload[0]["name"], "제주대학교병원")
+        search_mock.assert_called_once()
+        cached = self.cp.get_institution("39100103")
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["name"], "제주대학교병원")
+
     def test_public_institution_search_matches_korean_and_english_region_aliases_http(self):
         self.cp.upsert_institutions(
             [

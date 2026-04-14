@@ -92,6 +92,43 @@ class InstitutionDirectoryClientTests(unittest.TestCase):
 
         self.assertIn("401 Unauthorized", str(raised.exception))
 
+    def test_search_by_name_uses_hira_name_parameter(self) -> None:
+        payload = {
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "NORMAL SERVICE"},
+                "body": {
+                    "totalCount": 1,
+                    "items": {
+                        "item": {
+                            "ykiho": "39100103",
+                            "yadmNm": "제주대학교병원",
+                            "clCd": "11",
+                            "clCdNm": "종합병원",
+                            "addr": "제주특별자치도 제주시",
+                            "sidoCd": "390000",
+                            "sgguCd": "390200",
+                        }
+                    },
+                },
+            }
+        }
+        session = FakeSession(
+            FakeResponse(
+                headers={"content-type": "application/json"},
+                text="{}",
+                json_payload=payload,
+            )
+        )
+        client = HiraInstitutionDirectoryClient("test-key", session=session)
+
+        page = client.search_ophthalmology_institutions("제주대", num_rows=8)
+
+        self.assertEqual(page.total_count, 1)
+        self.assertEqual(len(page.items), 1)
+        self.assertEqual(page.items[0]["name"], "제주대학교병원")
+        self.assertEqual(session.calls[0]["params"]["yadmNm"], "제주대")
+        self.assertEqual(session.calls[0]["params"]["dgsbjtCd"], "12")
+
 
 if __name__ == "__main__":
     unittest.main()

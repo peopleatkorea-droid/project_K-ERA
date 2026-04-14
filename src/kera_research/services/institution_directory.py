@@ -162,6 +162,50 @@ class HiraInstitutionDirectoryClient:
             return self._parse_xml_page(text, page_no=page_no, num_rows=num_rows)
         raise HiraApiError("Unexpected HIRA response format.")
 
+    def search_ophthalmology_institutions(
+        self,
+        query: str,
+        *,
+        page_no: int = 1,
+        num_rows: int = 20,
+    ) -> HiraInstitutionPage:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return HiraInstitutionPage(page_no=page_no, num_rows=num_rows, total_count=0, items=[])
+        if not self.service_key:
+            raise HiraApiError("KERA_HIRA_API_KEY is not configured.")
+
+        response = self.session.get(
+            self.base_url,
+            params={
+                "serviceKey": self.service_key,
+                "pageNo": str(page_no),
+                "numOfRows": str(num_rows),
+                "dgsbjtCd": HIRA_OPHTHALMOLOGY_SPECIALTY_CODE,
+                "yadmNm": normalized_query,
+                "_type": "json",
+            },
+            timeout=self.timeout_seconds,
+        )
+
+        if response.status_code == 401:
+            raise HiraApiError(
+                "HIRA API returned 401 Unauthorized. In data.go.kr this usually means the Open API "
+                "application has not been approved yet, approval has not propagated, or the key is not "
+                "active for this service."
+            )
+        if response.status_code >= 400:
+            snippet = response.text.strip().replace("\n", " ")[:240]
+            raise HiraApiError(f"HIRA API request failed with HTTP {response.status_code}: {snippet}")
+
+        text = response.text.lstrip()
+        if "json" in (response.headers.get("content-type") or "").lower() or text.startswith("{"):
+            payload = response.json()
+            return self._parse_json_page(payload, page_no=page_no, num_rows=num_rows)
+        if text.startswith("<"):
+            return self._parse_xml_page(text, page_no=page_no, num_rows=num_rows)
+        raise HiraApiError("Unexpected HIRA response format.")
+
     def iter_ophthalmology_records(
         self,
         *,
