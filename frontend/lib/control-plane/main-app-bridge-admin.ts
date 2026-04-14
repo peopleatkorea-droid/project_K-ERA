@@ -9,6 +9,7 @@ import type {
   AdminWorkspaceBootstrapResponse,
   AggregationRecord,
   AuthUser,
+  DesktopReleaseRecord,
   InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
   ManagedUserRecord,
@@ -23,9 +24,11 @@ import {
 import { makeControlPlaneId, normalizeEmail } from "./crypto";
 import { controlPlaneSql } from "./db";
 import {
+  activateDesktopReleaseRecord,
   ensureDefaultProject,
   hydrateSiteLabelsForInstitutionIds,
   institutionRowById,
+  listDesktopReleases,
   preloadAccessRequestLookups,
   serializeAccessRequestRecordWithLookups,
   serializeAccessRequestRecord,
@@ -33,6 +36,7 @@ import {
   serializeProjectRecord,
   siteRowById,
   siteRowBySourceInstitutionId,
+  upsertDesktopReleaseRecord,
   upsertAccessRequestRecord,
   upsertInstitutionRecord,
   upsertSiteRecord,
@@ -615,6 +619,68 @@ export async function listMainAdminAccessRequests(
 export async function fetchMainAdminOverview(request: NextRequest): Promise<AdminOverviewResponse> {
   const { user } = await requireMainAppBridgeUser(request);
   return fetchMainAdminOverviewForUser(user);
+}
+
+export async function listMainDesktopReleases(request: NextRequest): Promise<DesktopReleaseRecord[]> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+  return listDesktopReleases();
+}
+
+export async function upsertMainDesktopRelease(
+  request: NextRequest,
+  payload: {
+    release_id?: string;
+    channel?: string;
+    label?: string;
+    version?: string;
+    platform?: string;
+    installer_type?: string;
+    download_url?: string;
+    folder_url?: string | null;
+    sha256?: string | null;
+    size_bytes?: number | null;
+    notes?: string | null;
+    active?: boolean;
+  },
+): Promise<DesktopReleaseRecord> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+
+  const channel = trimText(payload.channel) || "desktop_cpu_nsis";
+  const version = trimText(payload.version);
+  const downloadUrl = trimText(payload.download_url);
+  if (!version) {
+    throw new Error("Desktop release version is required.");
+  }
+  if (!downloadUrl) {
+    throw new Error("Desktop release download URL is required.");
+  }
+
+  return upsertDesktopReleaseRecord({
+    releaseId: trimText(payload.release_id) || undefined,
+    channel,
+    label: trimText(payload.label) || "K-ERA Desktop (CPU)",
+    version,
+    platform: trimText(payload.platform) || "windows",
+    installerType: trimText(payload.installer_type) || "nsis",
+    downloadUrl,
+    folderUrl: trimText(payload.folder_url) || null,
+    sha256: trimText(payload.sha256) || null,
+    sizeBytes: typeof payload.size_bytes === "number" && Number.isFinite(payload.size_bytes) ? payload.size_bytes : null,
+    notes: trimText(payload.notes) || null,
+    active: payload.active !== false,
+    metadataJson: {
+      source: "admin",
+      managed_by: "admin_ui",
+    },
+  });
+}
+
+export async function activateMainDesktopRelease(request: NextRequest, releaseId: string): Promise<DesktopReleaseRecord> {
+  const { user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+  return activateDesktopReleaseRecord(releaseId);
 }
 
 async function fetchMainAdminOverviewForUser(user: AuthUser): Promise<AdminOverviewResponse> {

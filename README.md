@@ -97,6 +97,10 @@
 ### 운영 / 복구 문서
 
 - 연합학습 운영 및 rollback / 재집계 / 재학습 절차 초안: [docs/fl_operation_sop_ko.md](docs/fl_operation_sop_ko.md)
+- 현재 한계:
+  - formal DP accountant는 아직 구현되지 않았습니다.
+  - secure aggregation도 아직 구현되지 않았습니다.
+  - production/staging runtime에서는 signed federated update 강제가 풀려 있으면 FL round/aggregation이 차단됩니다.
 
 ---
 
@@ -222,6 +226,7 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 ### 7. 2026-04-13 ~ 2026-04-14 운영 / 배포 업데이트
 
 - Tauri desktop runtime의 CSP를 더 이상 `null`로 두지 않고 명시적으로 설정했습니다.
+- 현재 Tauri CSP는 Google OAuth 흐름 때문에 `script-src 'unsafe-inline'`, `style-src 'unsafe-inline'`을 포함합니다. 빈 CSP를 두는 것보다는 안전하지만, 최종 hardening 상태로 보지는 않고 추후 inline 의존 제거가 필요합니다.
 - `frontend/src-tauri/tauri.conf.json`, `frontend/src-tauri/Cargo.toml`, `frontend/package.json`, `pyproject.toml`의 버전은 현재 `1.0.0`으로 맞춰져 있습니다.
 - FastAPI 런타임도 같은 버전(`1.0.0`)을 health / readiness / liveness 응답에 보고합니다.
 - `frontend/scripts/sync-desktop-version.mjs`를 추가해 `npm run tauri:dev*`, `npm run tauri:build` 실행 전 버전 드리프트를 자동으로 정리하도록 했습니다.
@@ -247,10 +252,12 @@ Windows에서는 이 자격증명이 DPAPI로 로컬 저장되며, 이후에는 
 - 연합학습 보강도 추가했습니다.
   - `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 있으면 각 site의 weight delta update에 HMAC 서명이 붙고, 중앙 registry는 서명을 검증합니다.
   - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned delta는 등록/집계 전에 거절됩니다.
+  - production/staging 같은 runtime에서는 `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`와 `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 같이 설정되지 않으면 FL round/aggregation이 차단됩니다.
   - aggregation 전략은 `KERA_FEDERATED_AGGREGATION_STRATEGY=fedavg|coordinate_median|trimmed_mean`으로 고를 수 있고, `trimmed_mean`은 `KERA_FEDERATED_AGGREGATION_TRIM_RATIO`를 사용합니다.
   - 선택형 client-side delta hardening으로 `KERA_FEDERATED_DELTA_CLIP_NORM`, `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER`, `KERA_FEDERATED_DELTA_QUANTIZATION_BITS=8|16`을 지원합니다.
   - clip + noise + `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`가 같이 설정되면 site update metadata에는 basic composition 기반 DP accounting entry가 붙고, aggregation payload에는 site별/전체 누적 summary가 기록됩니다.
   - formal DP accountant는 아직 없으므로, production/staging 같은 runtime에서 FL round/aggregation을 돌리려면 `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING=true`를 명시적으로 넣어야 합니다.
+  - `KERA_REQUIRE_SECURE_AGGREGATION=true`를 설정하면 secure aggregation이 구현되기 전까지 FL round/aggregation은 시작되지 않습니다.
   - `KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true`를 설정하면 formal DP accountant가 구현되기 전까지 FL round/aggregation은 시작되지 않습니다.
   - 이 보강은 trusted consortium 환경을 목표로 한 1차 가드입니다. secure aggregation이나 formal DP accountant를 대체하지는 않습니다.
   - admin-side aggregation job 상태는 control plane DB에 영속 저장되며, `GET /api/admin/aggregations/jobs`, `GET /api/admin/aggregations/jobs/{job_id}`로 poll할 수 있습니다.
@@ -321,8 +328,19 @@ KERA_SENTRY_PROFILES_SAMPLE_RATE=0.0
 web 배포가 control plane 전용일 때는, 승인된 사용자가 로그인한 뒤 병원을 선택하고 Windows CPU 설치본을 받을 수 있습니다.
 
 - 현재 구현은 `main-app bridge`가 control-plane DB에서 활성 desktop release metadata를 읽고, 다운로드 클릭 로그를 남긴 뒤 외부 링크로 보냅니다.
+- 새 버전이 나올 때마다 Vercel 환경변수를 다시 수정할 필요는 없습니다. platform admin이 web admin workspace의 `데스크톱 설치본 관리` 패널에서 release를 등록/활성화하면 됩니다.
 - 첫 배포는 OneDrive 같은 외부 저장소를 써도 되지만, 현재 방식은 `링크를 아는 사람 누구나` 접근 가능한 공유 링크라면 진짜 접근 통제는 아닙니다. `k-era.org`는 링크 노출과 다운로드 로그를 관리하는 문 역할만 합니다.
-- 버튼을 노출하려면 배포 환경에 아래 값이 필요합니다.
+- 배포 환경의 `KERA_DESKTOP_CPU_RELEASE_*` 값은 이제 필수가 아니라 `초기 시드(seed)`용입니다. control-plane DB에 release가 아직 하나도 없을 때만 한 번 가져와서 등록합니다.
+- 이후에는 admin workspace에서 DB 기준으로 관리하는 것이 기본입니다.
+
+권장 운영 순서:
+
+1. OneDrive 같은 외부 저장소에 새 CPU 설치본을 업로드합니다.
+2. platform admin으로 `k-era.org`에 로그인합니다.
+3. admin workspace의 `데스크톱 설치본 관리` 패널에서 버전 / URL / SHA256 / 크기를 저장합니다.
+4. 저장 시 해당 release를 active로 전환하면, 승인된 사용자의 다운로드 카드가 새 버전을 가리킵니다.
+
+선택적으로 첫 release를 자동으로 심고 싶다면 아래 env를 넣을 수 있습니다.
 
 ```dotenv
 KERA_DESKTOP_CPU_RELEASE_VERSION=1.0.0
@@ -486,14 +504,15 @@ node .\scripts\run-desktop-profile-command.mjs package gpu
 | `KERA_CONTROL_PLANE_NODE_ID` | 병원 PC에 발급된 node id. 보통 최초 등록 후 로컬 자격증명 저장소에서 자동 로드 |
 | `KERA_CONTROL_PLANE_NODE_TOKEN` | 병원 PC에 발급된 node token. 보통 최초 등록 후 로컬 자격증명 저장소에서 자동 로드 |
 | `KERA_SITE_STORAGE_SOURCE` | site 저장소 해석 기준. remote control plane 개발 중에는 `local` 권장 |
-| `KERA_FEDERATED_UPDATE_SIGNING_SECRET` | weight delta update 서명용 HMAC 비밀값. multi-site 운영 시 설정 권장 |
+| `KERA_FEDERATED_UPDATE_SIGNING_SECRET` | weight delta update 서명용 HMAC 비밀값. production/staging multi-site 운영에서는 사실상 필수 |
 | `KERA_FEDERATED_UPDATE_SIGNING_KEY_ID` | 서명 키 회전 시 추적용 key id |
-| `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES` | `true`면 unsigned federated delta 등록/집계를 거절 |
+| `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES` | `true`면 unsigned federated delta 등록/집계를 거절. production/staging runtime에서는 이 값과 signing secret이 같이 없으면 FL이 차단됨 |
 | `KERA_FEDERATED_AGGREGATION_STRATEGY` | `fedavg`, `coordinate_median`, `trimmed_mean` 중 선택 |
 | `KERA_FEDERATED_AGGREGATION_TRIM_RATIO` | `trimmed_mean`에서 양 끝을 자를 비율 (기본 `0.2`) |
 | `KERA_FEDERATED_DELTA_CLIP_NORM` | site-side delta L2 clipping 임계값 |
 | `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER` | clipping 후 추가할 Gaussian noise 배수. formal DP accountant는 아직 없음 |
 | `KERA_FEDERATED_DELTA_QUANTIZATION_BITS` | 전송/저장 delta 양자화 비트 수 (`8` 또는 `16`) |
+| `KERA_REQUIRE_SECURE_AGGREGATION` | `true`면 secure aggregation이 없는 빌드에서 FL round/aggregation을 시작하지 않음 |
 | `KERA_REQUIRE_FORMAL_DP_ACCOUNTING` | `true`면 formal DP accountant가 없는 빌드에서 FL round/aggregation을 시작하지 않음 |
 | `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING` | production/staging runtime에서 formal DP accountant 없이 FL을 돌릴 때 필요한 명시적 운영 승인 |
 | `KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK` | production/staging runtime에서 legacy `KERA_DATABASE_URL` / `DATABASE_URL` fallback을 계속 쓸 때 필요한 명시적 승인 |

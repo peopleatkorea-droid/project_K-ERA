@@ -750,6 +750,7 @@ describe("HomePage history guard", () => {
 
   it("shows the desktop installer card on the control-plane-only guard and opens the claimed release link", async () => {
     webDataPlaneMocks.probeWebDataPlaneAvailability.mockResolvedValue(false);
+    apiMocks.fetchDesktopReleases.mockReset();
     apiMocks.fetchDesktopReleases.mockResolvedValue([
       {
         release_id: "desktop_cpu_nsis_1_0_0",
@@ -774,7 +775,7 @@ describe("HomePage history guard", () => {
     render(<HomePage />);
 
     expect(await screen.findByText((content) => content.includes("Download the desktop app"))).toBeInTheDocument();
-    expect(screen.getByText("1.0.0")).toBeInTheDocument();
+    expect(await screen.findByText("1.0.0")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Download CPU installer" }));
 

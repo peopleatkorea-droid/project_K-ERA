@@ -5685,7 +5685,15 @@ class ApiHttpTests(unittest.TestCase):
             }
         )
 
-        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "signing-secret",
+            },
+            clear=False,
+        ):
             start_response = self.client.post(
                 f"/api/sites/{self.site_id}/training/federated/image-level",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -5694,6 +5702,49 @@ class ApiHttpTests(unittest.TestCase):
 
         self.assertEqual(start_response.status_code, 409, start_response.text)
         self.assertIn("KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING", start_response.json()["detail"])
+
+    def test_image_level_federated_round_requires_signed_updates_in_production_like_runtime_http(self):
+        admin_token = self._login("admin", "admin123")
+        self._seed_case(admin_token, patient_id="HTTP-FL-PROD-SIGN-001", visit_date="Initial")
+        self._join_and_include_research_case(admin_token, patient_id="HTTP-FL-PROD-SIGN-001", visit_date="Initial")
+
+        convnext_path = Path(self.tempdir.name) / "convnext_fl_prod_sign.pth"
+        convnext_path.write_bytes(b"convnext-prod-sign")
+        convnext_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_full_http_prod_sign",
+                "version_name": "global-convnext-tiny-full-http-prod-sign",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(convnext_path),
+                "created_at": "2026-04-14T01:02:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+            },
+            clear=False,
+        ):
+            start_response = self.client.post(
+                f"/api/sites/{self.site_id}/training/federated/image-level",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={"model_version_id": convnext_model["version_id"], "execution_mode": "cpu"},
+            )
+
+        self.assertEqual(start_response.status_code, 409, start_response.text)
+        self.assertIn("KERA_REQUIRE_SIGNED_FEDERATED_UPDATES", start_response.json()["detail"])
 
     def test_image_level_federated_round_allows_non_dp_acknowledgement_override_http(self):
         admin_token = self._login("admin", "admin123")
@@ -5726,6 +5777,8 @@ class ApiHttpTests(unittest.TestCase):
             {
                 "KERA_ENVIRONMENT": "production",
                 "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "signing-secret",
             },
             clear=False,
         ):
@@ -6310,7 +6363,15 @@ class ApiHttpTests(unittest.TestCase):
                 }
             )
 
-        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "signing-secret",
+            },
+            clear=False,
+        ):
             aggregation_response = self.client.post(
                 "/api/admin/aggregations/run",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -6319,6 +6380,45 @@ class ApiHttpTests(unittest.TestCase):
 
         self.assertEqual(aggregation_response.status_code, 409, aggregation_response.text)
         self.assertIn("KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING", aggregation_response.json()["detail"])
+
+    def test_aggregation_requires_signed_updates_in_production_like_runtime_http(self):
+        admin_token = self._login("admin", "admin123")
+        base_model = self.cp.current_global_model()
+        for index in range(2):
+            delta_path = self.site_store.update_dir / f"prod_sign_delta_{index}.pt"
+            delta_path.parent.mkdir(parents=True, exist_ok=True)
+            delta_path.write_bytes(b"delta")
+            self.cp.register_model_update(
+                {
+                    "update_id": self.app_module.make_id("update"),
+                    "site_id": self.site_id if index == 0 else "SITE-B",
+                    "base_model_version_id": base_model["version_id"],
+                    "architecture": base_model["architecture"],
+                    "upload_type": "weight delta",
+                    "execution_device": "cpu",
+                    "artifact_path": str(delta_path),
+                    "n_cases": 1,
+                    "created_at": f"2026-04-14T01:2{index}:00+00:00",
+                    "status": "approved",
+                }
+            )
+
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+            },
+            clear=False,
+        ):
+            aggregation_response = self.client.post(
+                "/api/admin/aggregations/run",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={},
+            )
+
+        self.assertEqual(aggregation_response.status_code, 409, aggregation_response.text)
+        self.assertIn("KERA_REQUIRE_SIGNED_FEDERATED_UPDATES", aggregation_response.json()["detail"])
 
     def test_aggregation_job_endpoints_persist_status_and_dp_accounting_http(self):
         from kera_research.services.federated_update_security import apply_federated_update_signature
@@ -8032,6 +8132,9 @@ class ApiHttpTests(unittest.TestCase):
         self.assertTrue(health_payload["database_connections"]["data_plane"]["ready"])
         self.assertIn("background_jobs", health_payload)
         self.assertIn("request_metrics", health_payload)
+        self.assertIn("federated_learning", health_payload)
+        self.assertIn("signed_updates_required", health_payload["federated_learning"])
+        self.assertIn("signed_updates_ready", health_payload["federated_learning"])
 
         metrics_response = self.client.get("/api/metrics")
         self.assertEqual(metrics_response.status_code, 200, metrics_response.text)

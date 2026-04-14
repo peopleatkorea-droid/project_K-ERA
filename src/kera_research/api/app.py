@@ -2451,6 +2451,10 @@ def _build_runtime_health_report(cp: ControlPlaneStore) -> dict[str, Any]:
         federated_learning.get("formal_dp_accounting")
     ):
         required_checks["federated_learning"] = {"ready": False}
+    if bool(federated_learning.get("signed_updates_required")) and not bool(
+        federated_learning.get("signed_updates_ready")
+    ):
+        required_checks["federated_signed_updates"] = {"ready": False}
     control_plane_cache_check = runtime_checks["control_plane_cache_database"]
     if bool(control_plane_cache_check.get("required")):
         required_checks["control_plane_cache_database"] = control_plane_cache_check

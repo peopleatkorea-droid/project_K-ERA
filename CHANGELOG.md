@@ -6,7 +6,9 @@
 
 - 승인된 사용자가 `k-era.org` 같은 web control-plane 배포에 로그인한 뒤, 선택한 병원 기준으로 Windows CPU 설치본을 받을 수 있는 desktop release 경로를 추가했습니다.
 - Next main-app bridge에 `desktop_releases`, `desktop_download_events` 테이블과 release metadata / download claim API를 추가했습니다.
-- 현재 배포 방식은 env 기반 release metadata를 control-plane DB로 sync한 뒤, 다운로드 클릭 시 로그를 남기고 외부 installer URL로 redirect 하는 구조입니다.
+- 현재 배포 방식은 control-plane DB의 active desktop release를 기준으로 다운로드 클릭 로그를 남기고 외부 installer URL로 redirect 하는 구조입니다.
+- platform admin은 admin workspace의 `데스크톱 설치본 관리` 패널에서 CPU release를 등록/활성화할 수 있고, 더 이상 버전 변경 때마다 Vercel env를 수정할 필요가 없습니다.
+- `KERA_DESKTOP_CPU_RELEASE_*`는 이제 필수 runtime 설정이 아니라, DB에 release가 아직 없을 때 한 번 초기 시드(seed)하는 용도로만 남겨 두었습니다.
 - home page의 `control-plane-only` guard 화면에는 최소 다운로드 카드가 추가되어, web data plane이 없는 환경에서도 바로 데스크톱 설치본으로 넘어갈 수 있습니다.
 - `.env.example`과 README에 `KERA_DESKTOP_CPU_RELEASE_*` 설정과 현재 CPU 설치본 메타데이터를 반영했습니다.
 
@@ -39,10 +41,12 @@
 
 - weight delta update에 선택형 HMAC 서명을 추가했습니다. `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 설정되면 site가 delta metadata에 서명하고, control plane registry는 제출과 집계 전에 서명을 검증합니다.
 - `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`이면 unsigned 또는 tampered delta update를 거절하도록 했습니다.
+- production/staging 같은 runtime에서는 `KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true`와 `KERA_FEDERATED_UPDATE_SIGNING_SECRET`가 같이 설정되지 않으면 FL round/aggregation이 차단되도록 가드를 강화했습니다.
 - aggregation 전략을 `fedavg`, `coordinate_median`, `trimmed_mean` 중에서 고를 수 있게 했고, aggregation payload에 실제 전략/trim ratio/weighting mode를 기록합니다.
 - site-side delta hardening으로 L2 clipping, Gaussian noise, 8/16-bit symmetric quantization을 추가했습니다. formal DP accountant나 secure aggregation은 아직 포함하지 않습니다.
 - `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`가 함께 설정되면 site update metadata에 basic composition 기반 DP accounting entry를 붙이고, aggregation payload에는 site별/전체 누적 summary를 기록합니다.
 - production/staging runtime에서는 formal DP accountant 부재를 명시적으로 승인하지 않으면 image-level / visit-level FL round와 aggregation을 시작하지 않도록 가드를 추가했습니다.
+- `KERA_REQUIRE_SECURE_AGGREGATION=true`를 설정하면 secure aggregation이 구현되기 전까지 FL round/aggregation이 `503`으로 차단됩니다.
 - `KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true`를 설정하면 formal DP accountant가 구현되기 전까지 FL round/aggregation이 `503`으로 차단됩니다.
 - admin aggregation job 상태를 control plane DB에 영속 저장하도록 바꿨고, aggregation job list/detail API가 프로세스 재시작 뒤에도 상태를 계속 보여주도록 정리했습니다.
 - federated update security/unit test, modeling delta quantization/robust aggregation test, API aggregation/signature 회귀 테스트를 추가했습니다.

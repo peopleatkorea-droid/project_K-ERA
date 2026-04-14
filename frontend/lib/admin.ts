@@ -6,6 +6,7 @@ import type {
   AdminOverviewResponse,
   AdminWorkspaceBootstrapResponse,
   AggregationRecord,
+  DesktopReleaseRecord,
   AggregationRunResponse,
   FederationMonitoringSummaryResponse,
   InstitutionDirectorySyncResponse,
@@ -66,6 +67,47 @@ export async function fetchAdminOverview(token: string) {
     return requestDesktopLocalAdminJson<AdminOverviewResponse>("/api/admin/overview", token);
   }
   return requestMainControlPlane<AdminOverviewResponse>("/admin/overview", {}, token);
+}
+
+export async function fetchAdminDesktopReleases(token: string) {
+  return requestMainControlPlane<DesktopReleaseRecord[]>("/admin/desktop-releases", {}, token);
+}
+
+export async function saveAdminDesktopRelease(
+  token: string,
+  payload: {
+    release_id?: string;
+    channel?: string;
+    label?: string;
+    version?: string;
+    platform?: string;
+    installer_type?: string;
+    download_url?: string;
+    folder_url?: string | null;
+    sha256?: string | null;
+    size_bytes?: number | null;
+    notes?: string | null;
+    active?: boolean;
+  },
+) {
+  return requestMainControlPlane<DesktopReleaseRecord>(
+    "/admin/desktop-releases",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function activateAdminDesktopRelease(token: string, releaseId: string) {
+  return requestMainControlPlane<DesktopReleaseRecord>(
+    `/admin/desktop-releases/${encodeURIComponent(releaseId)}/activate`,
+    {
+      method: "POST",
+    },
+    token,
+  );
 }
 
 export async function fetchAdminWorkspaceBootstrap(

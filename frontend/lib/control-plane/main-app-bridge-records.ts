@@ -26,6 +26,22 @@ import {
 
 const SYSTEM_PROJECT_OWNER_ID = "system";
 
+export type DesktopReleaseUpsertInput = {
+  releaseId?: string;
+  channel: string;
+  label: string;
+  version: string;
+  platform?: string;
+  installerType?: string;
+  downloadUrl: string;
+  folderUrl?: string | null;
+  sha256?: string | null;
+  sizeBytes?: number | null;
+  notes?: string | null;
+  active?: boolean;
+  metadataJson?: Record<string, unknown>;
+};
+
 type AccessRequestResolutionLookups = {
   directSitesById: Map<string, Row>;
   mappedSitesBySourceInstitutionId: Map<string, Row>;
@@ -66,8 +82,38 @@ function configuredDesktopReleases(): ConfiguredDesktopRelease[] {
   return cpuRelease ? [cpuRelease] : [];
 }
 
-export async function upsertDesktopReleaseRecord(record: ConfiguredDesktopRelease): Promise<void> {
+function slugifyDesktopReleaseSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function defaultDesktopReleaseId(input: { channel: string; version: string }): string {
+  return `${slugifyDesktopReleaseSegment(input.channel) || "desktop_release"}_${slugifyDesktopReleaseSegment(input.version) || "current"}`;
+}
+
+export async function upsertDesktopReleaseRecord(record: DesktopReleaseUpsertInput): Promise<DesktopReleaseRecord> {
   const sql = await controlPlaneSql();
+  const releaseId =
+    trimText(record.releaseId) ||
+    defaultDesktopReleaseId({
+      channel: record.channel,
+      version: record.version,
+    });
+  const normalizedChannel = trimText(record.channel);
+  const normalizedVersion = trimText(record.version);
+  const normalizedLabel = trimText(record.label) || normalizedVersion || normalizedChannel;
+  const normalizedPlatform = trimText(record.platform) || "windows";
+  const normalizedInstallerType = trimText(record.installerType) || "nsis";
+  const normalizedDownloadUrl = trimText(record.downloadUrl);
+  const normalizedFolderUrl = trimText(record.folderUrl) || null;
+  const normalizedSha256 = trimText(record.sha256) || null;
+  const normalizedNotes = trimText(record.notes) || null;
+  const normalizedActive = Boolean(record.active);
+  const normalizedMetadataJson =
+    record.metadataJson && typeof record.metadataJson === "object" ? record.metadataJson : {};
   await sql`
     insert into desktop_releases (
       release_id,
@@ -86,21 +132,19 @@ export async function upsertDesktopReleaseRecord(record: ConfiguredDesktopReleas
       created_at,
       updated_at
     ) values (
-      ${trimText(record.releaseId)},
-      ${trimText(record.channel)},
-      ${trimText(record.label)},
-      ${trimText(record.version)},
-      ${trimText(record.platform)},
-      ${trimText(record.installerType)},
-      ${trimText(record.downloadUrl)},
-      ${trimText(record.folderUrl) || null},
-      ${trimText(record.sha256)},
+      ${releaseId},
+      ${normalizedChannel},
+      ${normalizedLabel},
+      ${normalizedVersion},
+      ${normalizedPlatform},
+      ${normalizedInstallerType},
+      ${normalizedDownloadUrl},
+      ${normalizedFolderUrl},
+      ${normalizedSha256},
       ${record.sizeBytes ?? null},
-      ${trimText(record.notes) || null},
-      ${true},
-      ${JSON.stringify({
-        source: "env",
-      })}::jsonb,
+      ${normalizedNotes},
+      ${normalizedActive},
+      ${JSON.stringify(normalizedMetadataJson)}::jsonb,
       now(),
       now()
     )
@@ -119,30 +163,84 @@ export async function upsertDesktopReleaseRecord(record: ConfiguredDesktopReleas
       metadata_json = excluded.metadata_json,
       updated_at = now()
   `;
+  if (normalizedActive) {
+    await sql`
+      update desktop_releases
+      set
+        active = case when release_id = ${releaseId} then true else false end,
+        updated_at = now()
+      where channel = ${normalizedChannel}
+    `;
+  }
+  const refreshedRow = await desktopReleaseRowById(releaseId);
+  if (!refreshedRow) {
+    throw new Error("Unable to persist desktop release.");
+  }
+  return serializeDesktopReleaseRecord(refreshedRow);
 }
 
-export async function syncConfiguredDesktopReleases(): Promise<void> {
+export async function seedConfiguredDesktopReleasesIfEmpty(): Promise<void> {
   const configured = configuredDesktopReleases();
   if (configured.length === 0) {
     return;
   }
-  for (const release of configured) {
-    await upsertDesktopReleaseRecord(release);
-  }
   const sql = await controlPlaneSql();
-  const configuredIds = configured.map((release) => release.releaseId);
-  const configuredChannels = Array.from(new Set(configured.map((release) => release.channel)));
-  await sql`
-    update desktop_releases
-    set
-      active = case when release_id = any(${configuredIds}) then true else false end,
-      updated_at = now()
-    where channel = any(${configuredChannels})
+  for (const release of configured) {
+    const existingRows = await sql`
+      select release_id
+      from desktop_releases
+      where channel = ${trimText(release.channel)}
+      limit 1
+    `;
+    if (existingRows[0]) {
+      continue;
+    }
+    await upsertDesktopReleaseRecord({
+      releaseId: release.releaseId,
+      channel: release.channel,
+      label: release.label,
+      version: release.version,
+      platform: release.platform,
+      installerType: release.installerType,
+      downloadUrl: release.downloadUrl,
+      folderUrl: release.folderUrl,
+      sha256: release.sha256,
+      sizeBytes: release.sizeBytes,
+      notes: release.notes,
+      active: true,
+      metadataJson: { source: "env_seed" },
+    });
+  }
+}
+
+export async function listDesktopReleases(): Promise<DesktopReleaseRecord[]> {
+  await seedConfiguredDesktopReleasesIfEmpty();
+  const sql = await controlPlaneSql();
+  const rows = await sql`
+    select
+      release_id,
+      channel,
+      label,
+      version,
+      platform,
+      installer_type,
+      download_url,
+      folder_url,
+      sha256,
+      size_bytes,
+      notes,
+      active,
+      metadata_json,
+      created_at,
+      updated_at
+    from desktop_releases
+    order by active desc, updated_at desc, created_at desc
   `;
+  return rows.map((row) => serializeDesktopReleaseRecord(row));
 }
 
 export async function listActiveDesktopReleases(): Promise<DesktopReleaseRecord[]> {
-  await syncConfiguredDesktopReleases();
+  await seedConfiguredDesktopReleasesIfEmpty();
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
@@ -169,7 +267,7 @@ export async function listActiveDesktopReleases(): Promise<DesktopReleaseRecord[
 }
 
 export async function desktopReleaseRowById(releaseId: string): Promise<Row | null> {
-  await syncConfiguredDesktopReleases();
+  await seedConfiguredDesktopReleasesIfEmpty();
   const sql = await controlPlaneSql();
   const rows = await sql`
     select
@@ -193,6 +291,27 @@ export async function desktopReleaseRowById(releaseId: string): Promise<Row | nu
     limit 1
   `;
   return rows[0] ?? null;
+}
+
+export async function activateDesktopReleaseRecord(releaseId: string): Promise<DesktopReleaseRecord> {
+  const sql = await controlPlaneSql();
+  const existingRow = await desktopReleaseRowById(releaseId);
+  if (!existingRow) {
+    throw new Error("Desktop release not found.");
+  }
+  const channel = trimText(rowValue<string>(existingRow, "channel"));
+  await sql`
+    update desktop_releases
+    set
+      active = case when release_id = ${trimText(releaseId)} then true else false end,
+      updated_at = now()
+    where channel = ${channel}
+  `;
+  const refreshedRow = await desktopReleaseRowById(releaseId);
+  if (!refreshedRow) {
+    throw new Error("Desktop release not found after activation.");
+  }
+  return serializeDesktopReleaseRecord(refreshedRow);
 }
 
 export async function appendDesktopDownloadEvent(input: {

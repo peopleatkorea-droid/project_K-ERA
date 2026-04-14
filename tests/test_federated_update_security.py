@@ -111,6 +111,8 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
             {
                 "KERA_ENVIRONMENT": "production",
                 "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "signing-secret",
             },
             clear=False,
         ):
@@ -118,6 +120,32 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
             assert_federated_privacy_runtime_ready(operation="Image-level federated learning")
         self.assertTrue(report["non_dp_acknowledged"])
         self.assertFalse(report["warning_required"])
+
+    def test_privacy_runtime_report_requires_signed_updates_in_production_like_runtime(self):
+        with patch.dict(os.environ, {"KERA_ENVIRONMENT": "production"}, clear=False):
+            report = federated_privacy_runtime_report()
+            with self.assertRaises(ValueError):
+                assert_federated_privacy_runtime_ready(operation="Federated aggregation")
+        self.assertTrue(report["signed_updates_required"])
+        self.assertFalse(report["signed_updates_ready"])
+        self.assertFalse(report["signing_secret_configured"])
+
+    def test_privacy_runtime_report_accepts_signed_updates_when_required_and_secret_exists(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_ENVIRONMENT": "production",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "signing-secret",
+                "KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING": "true",
+            },
+            clear=False,
+        ):
+            report = federated_privacy_runtime_report()
+            assert_federated_privacy_runtime_ready(operation="Federated aggregation")
+        self.assertTrue(report["signed_updates_required"])
+        self.assertTrue(report["signed_updates_ready"])
+        self.assertTrue(report["signing_secret_configured"])
 
     def test_dp_accounting_entry_is_reported_when_clip_and_noise_are_configured(self):
         with patch.dict(

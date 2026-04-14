@@ -19,11 +19,13 @@ import { verifyGoogleIdentityToken } from "./google";
 import type { ControlPlaneUser } from "./types";
 import { getSiteAlias, getSiteDisplayName, getSiteOfficialName } from "../site-labels";
 export {
+  activateMainDesktopRelease,
   createMainAdminSite,
   createMainProject,
   fetchMainAdminOverview,
   fetchMainAdminWorkspaceBootstrap,
   fetchMainInstitutionDirectoryStatus,
+  listMainDesktopReleases,
   listMainAdminAccessRequests,
   listMainAdminSites,
   listMainProjects,
@@ -31,6 +33,7 @@ export {
   reviewMainAccessRequest,
   syncMainInstitutionDirectory,
   updateMainAdminSite,
+  upsertMainDesktopRelease,
   upsertMainUser,
 } from "./main-app-bridge-admin";
 export {

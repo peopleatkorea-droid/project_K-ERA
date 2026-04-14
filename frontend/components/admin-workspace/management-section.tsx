@@ -13,6 +13,7 @@ import { pick, translateApiError, translateRole, type Locale } from "../../lib/i
 import { filterVisibleSiteIds, filterVisibleSites, getSiteAlias, getSiteDisplayName } from "../../lib/site-labels";
 import { toStorageRootDisplayPath } from "../../lib/storage-paths";
 import { DesktopDiagnosticsPanel } from "./desktop-diagnostics-panel";
+import { DesktopReleasePanel } from "./desktop-release-panel";
 import type { SiteFormState } from "./use-admin-workspace-state";
 
 type UserFormState = {
@@ -448,6 +449,8 @@ export function ManagementSection({
         selectedManagedSite={selectedManagedSite}
         selectedSiteLabel={selectedSiteLabel}
       />
+
+      {canManagePlatform ? <DesktopReleasePanel token={token} locale={locale} /> : null}
 
       {canManageStorageRoot ? (
         <div className="grid gap-4">

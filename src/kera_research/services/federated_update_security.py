@@ -99,6 +99,20 @@ def require_secure_aggregation() -> bool:
     return _env_flag("KERA_REQUIRE_SECURE_AGGREGATION", default=False)
 
 
+def signing_secret_configured() -> bool:
+    return bool(federated_update_signing_secret())
+
+
+def signed_federated_updates_runtime_required() -> bool:
+    return require_signed_federated_updates() or _runtime_environment_is_production_like()
+
+
+def signed_federated_updates_runtime_ready() -> bool:
+    if not signed_federated_updates_runtime_required():
+        return True
+    return require_signed_federated_updates() and signing_secret_configured()
+
+
 def formal_dp_accounting_available() -> bool:
     controls = federated_delta_privacy_controls()
     return bool(
@@ -259,6 +273,8 @@ def federated_privacy_runtime_report() -> dict[str, Any]:
     non_dp_acknowledged = acknowledge_non_dp_federated_training()
     secure_aggregation_required = require_secure_aggregation()
     secure_aggregation_enabled = secure_aggregation_available()
+    signed_updates_required = signed_federated_updates_runtime_required()
+    signed_updates_ready = signed_federated_updates_runtime_ready()
     acknowledgement_required = (
         not formal_dp_enabled and not formal_dp_required and production_like_runtime
     )
@@ -270,6 +286,10 @@ def federated_privacy_runtime_report() -> dict[str, Any]:
         "require_formal_dp_accounting": formal_dp_required,
         "non_dp_acknowledged": non_dp_acknowledged,
         "require_secure_aggregation": secure_aggregation_required,
+        "require_signed_federated_updates": require_signed_federated_updates(),
+        "signed_updates_required": signed_updates_required,
+        "signed_updates_ready": signed_updates_ready,
+        "signing_secret_configured": signing_secret_configured(),
         "warning_required": warning_required,
         "dp_accountant_delta": federated_dp_accountant_delta(),
         "privacy_controls": federated_delta_privacy_controls(),
@@ -278,6 +298,13 @@ def federated_privacy_runtime_report() -> dict[str, Any]:
 
 def assert_federated_privacy_runtime_ready(*, operation: str) -> None:
     report = federated_privacy_runtime_report()
+    if report["signed_updates_required"] and not report["signed_updates_ready"]:
+        raise FederatedPrivacyRuntimePolicyError(
+            f"{operation} is blocked until signed federated updates are enforced in this runtime. "
+            "Set KERA_REQUIRE_SIGNED_FEDERATED_UPDATES=true and configure "
+            "KERA_FEDERATED_UPDATE_SIGNING_SECRET before running federated learning or aggregation.",
+            status_code=409,
+        )
     if report["require_formal_dp_accounting"] and not report["formal_dp_accounting"]:
         raise FederatedPrivacyRuntimePolicyError(
             f"{operation} is blocked because KERA_REQUIRE_FORMAL_DP_ACCOUNTING=true "

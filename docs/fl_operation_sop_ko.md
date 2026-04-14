@@ -211,6 +211,25 @@
 - 재집계 기준 base model
 - 새 validation 요약
 
+### 9.1 재집계 / replay 체크리스트
+
+실제 incident 대응에서는 아래 순서를 고정합니다.
+
+1. `GET /api/admin/aggregations/jobs`로 최근 aggregation job 상태를 확인한다.
+2. 마지막 실패 job이 있으면 `GET /api/admin/aggregations/jobs/{job_id}`로 payload, source update 수, error를 확인한다.
+3. 승인된 update 목록을 다시 검토해 제외할 update를 결정한다.
+4. 필요하면 먼저 stable version으로 rollout rollback을 걸어 확산을 멈춘다.
+5. 제외/재승인 정리가 끝난 뒤 `POST /api/admin/aggregations/run`으로 새 aggregation job을 시작한다.
+6. 새 job id를 incident 문서에 기록한다.
+7. 아래 항목을 함께 남긴다.
+
+- aggregation job id
+- source update id 목록
+- aggregation strategy / trim ratio
+- dp accounting summary 유무
+- rollout 여부
+- rollback 기준 version
+
 ---
 
 ## 10. 같은 base에서 site round 재실행 SOP
