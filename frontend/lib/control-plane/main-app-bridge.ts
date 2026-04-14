@@ -207,6 +207,28 @@ export async function fetchMainUserAuth(request: NextRequest): Promise<AuthRespo
   return buildLocalAuthResponse(user);
 }
 
+function promoteApprovedRequestUser(user: AuthUser, request: AccessRequestRecord | null): AuthUser {
+  if (!request || request.status !== "approved") {
+    return user;
+  }
+  const promotedSiteIds = Array.from(
+    new Set(
+      [
+        ...normalizeStringArray(user.site_ids),
+        trimText(request.resolved_site_id || ""),
+        trimText(request.requested_site_source) === "site" ? trimText(request.requested_site_id) : "",
+      ].filter(Boolean),
+    ),
+  );
+  return {
+    ...user,
+    role: user.role === "viewer" ? "researcher" : user.role,
+    site_ids: promotedSiteIds,
+    approval_status: "approved",
+    latest_access_request: request,
+  };
+}
+
 function assertDesktopDownloadPermission(user: AuthUser): void {
   if (user.approval_status !== "approved" && user.role !== "admin" && user.role !== "site_admin") {
     throw new Error("Approved hospital access is required.");
@@ -311,29 +333,42 @@ export async function fetchMainBootstrap(request: NextRequest): Promise<MainBoot
   const totalStartedAt = performance.now();
   const authStartedAt = performance.now();
   const { canonicalUser, canonicalUserId, user } = await requireMainAppBridgeUser(request);
-  const auth = await buildLocalAuthResponse(user);
-  const authCompletedAt = performance.now();
+  let effectiveUser = user;
+  let authCompletedAt = 0;
 
   let sites: SiteRecord[] = [];
   let myAccessRequests: AccessRequestRecord[] = [];
   let sitesMs = 0;
   let requestsMs = 0;
 
-  if (user.approval_status === "approved") {
+  if (effectiveUser.approval_status === "approved") {
     const sitesStartedAt = performance.now();
-    sites = await listSitesForMainUserRecord(user, canonicalUser);
+    sites = await listSitesForMainUserRecord(effectiveUser, canonicalUser);
     sitesMs = performance.now() - sitesStartedAt;
   } else {
     const requestsStartedAt = performance.now();
     myAccessRequests = await listAccessRequestsForCanonicalUser(canonicalUserId);
     requestsMs = performance.now() - requestsStartedAt;
+    const approvedRequest = myAccessRequests.find((item) => item.status === "approved") ?? null;
+    const promotedUser = promoteApprovedRequestUser(effectiveUser, approvedRequest);
+    const promotedSiteIds = Array.isArray(promotedUser.site_ids) ? promotedUser.site_ids : [];
+    if (promotedUser.approval_status === "approved" && promotedSiteIds.length > 0) {
+      effectiveUser = promotedUser;
+      myAccessRequests = [];
+      const sitesStartedAt = performance.now();
+      sites = await listSitesForMainUserRecord(effectiveUser, canonicalUser);
+      sitesMs = performance.now() - sitesStartedAt;
+    }
   }
+
+  const auth = await buildLocalAuthResponse(effectiveUser);
+  authCompletedAt = performance.now();
 
   const totalMs = performance.now() - totalStartedAt;
   logBootstrapTiming("completed", {
-    user_id: user.user_id,
-    role: user.role,
-    approval_status: user.approval_status,
+    user_id: effectiveUser.user_id,
+    role: effectiveUser.role,
+    approval_status: effectiveUser.approval_status,
     auth_ms: Math.round(authCompletedAt - authStartedAt),
     sites_ms: Math.round(sitesMs),
     requests_ms: Math.round(requestsMs),
@@ -475,10 +510,9 @@ export async function submitMainAccessRequest(
     request: AccessRequestRecord;
   }
 > {
-  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  const { canonicalUser, canonicalUserId, user } = await requireMainAppBridgeUser(request);
   const requestedRole = "researcher";
   const requestedSiteId = trimText(payload.requested_site_id);
-  const existingSiteIds = new Set(normalizeStringArray(user.site_ids));
   if (!requestedSiteId) {
     throw new Error("Requested institution is required.");
   }
@@ -490,6 +524,13 @@ export async function submitMainAccessRequest(
   const mappedSite = site ? null : await siteRowBySourceInstitutionId(requestedSiteId);
   const resolvedSite = site ?? mappedSite;
   const resolvedSiteId = resolvedSite ? trimText(rowValue<string>(resolvedSite, "site_id")) : "";
+  const existingSiteIds = new Set([
+    ...normalizeStringArray(user.site_ids),
+    ...canonicalUser.memberships
+      .filter((membership) => membership.status === "approved")
+      .map((membership) => trimText(membership.site_id))
+      .filter(Boolean),
+  ]);
   if (existingSiteIds.has(requestedSiteId) || (resolvedSiteId && existingSiteIds.has(resolvedSiteId))) {
     throw new Error("You already have access to this hospital.");
   }

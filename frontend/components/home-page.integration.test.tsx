@@ -499,6 +499,104 @@ describe("HomePage history guard", () => {
     expect(await screen.findByText("Workspace")).toBeInTheDocument();
   });
 
+  it("opens the workspace even when the auto-approved response user is still stale", async () => {
+    const pendingToken = makeStoredToken({
+      sub: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    });
+    setStoredAuthHint(pendingToken);
+    const approvedRequest = {
+      request_id: "access_auto_stale",
+      user_id: "user_pending",
+      email: "pending@example.com",
+      requested_site_id: "SITE_A",
+      requested_site_label: "Site A",
+      requested_site_source: "site",
+      resolved_site_id: "SITE_A",
+      resolved_site_label: "Site A",
+      requested_role: "researcher",
+      message: "Need access",
+      status: "approved",
+      reviewed_by: null,
+      reviewer_notes: "Automatically approved researcher access request.",
+      created_at: "2026-03-17T00:00:00Z",
+      reviewed_at: "2026-03-17T00:01:00Z",
+    };
+    apiMocks.fetchMainBootstrap.mockResolvedValueOnce({
+      auth_state: "application_required",
+      access_token: pendingToken,
+      token_type: "bearer",
+      user: {
+        user_id: "user_pending",
+        username: "pending",
+        full_name: "Pending User",
+        role: "viewer",
+        site_ids: [],
+        approval_status: "application_required",
+      },
+      sites: [],
+      my_access_requests: [],
+    });
+    apiMocks.fetchMe.mockResolvedValueOnce({
+      user_id: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    });
+    apiMocks.fetchPublicSites.mockResolvedValueOnce([
+      {
+        site_id: "SITE_A",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+      },
+    ]);
+    apiMocks.fetchMyAccessRequests.mockResolvedValueOnce([]).mockResolvedValueOnce([approvedRequest]);
+    apiMocks.fetchSites.mockResolvedValueOnce([
+      {
+        site_id: "SITE_A",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+      },
+    ]);
+    apiMocks.submitAccessRequest.mockResolvedValueOnce({
+      access_token: "test-token",
+      token_type: "bearer",
+      user: {
+        user_id: "user_pending",
+        username: "pending",
+        full_name: "Pending User",
+        role: "viewer",
+        site_ids: [],
+        approval_status: "application_required",
+      },
+      request: approvedRequest,
+      auth_state: "application_required",
+    });
+
+    render(<HomePage />);
+
+    const siteSelect = await screen.findByRole("combobox");
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "Hospital A" })).toBeInTheDocument();
+    });
+    fireEvent.change(siteSelect, { target: { value: "SITE_A" } });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Submit institution request" })).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit institution request" }));
+
+    await waitFor(() => {
+      expect(apiMocks.fetchSites).toHaveBeenCalledWith("test-token");
+    });
+    expect(await screen.findByText("Workspace")).toBeInTheDocument();
+  });
+
   it("routes approved users without linked hospitals back to the institution request screen", async () => {
     const approvedTokenWithoutSite = makeStoredToken({
       site_ids: [],

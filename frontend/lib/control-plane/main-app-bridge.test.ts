@@ -413,6 +413,92 @@ describe("fetchSitesForMainUser", () => {
     });
   });
 
+  it("promotes bootstrap users when the latest access request is already approved", async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        site_id: "SITE_A",
+        display_name: "Site A",
+        hospital_name: "Hospital A",
+      },
+    ]);
+    const pendingUser = {
+      user_id: "user_pending",
+      username: "pending",
+      full_name: "Pending User",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    };
+    const approvedRequest = {
+      request_id: "access_approved",
+      user_id: "user_pending",
+      email: "pending@example.com",
+      requested_site_id: "SITE_A",
+      requested_site_label: "Hospital A",
+      requested_site_source: "site",
+      resolved_site_id: "SITE_A",
+      resolved_site_label: "Hospital A",
+      requested_role: "researcher",
+      message: "",
+      status: "approved",
+      reviewed_by: null,
+      reviewer_notes: "Automatically approved researcher access request.",
+      created_at: "2026-04-14T00:00:00Z",
+      reviewed_at: "2026-04-14T00:00:05Z",
+    };
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_pending",
+      user: pendingUser,
+      canonicalUser: {
+        memberships: [],
+      },
+    });
+    controlPlaneSql.mockResolvedValue(sql);
+    listAccessRequestsForCanonicalUser.mockResolvedValue([approvedRequest]);
+    buildLocalAuthResponse.mockResolvedValue({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: {
+        ...pendingUser,
+        role: "researcher",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+        latest_access_request: approvedRequest,
+      },
+    });
+
+    const result = await fetchMainBootstrap({} as never);
+
+    expect(buildLocalAuthResponse).toHaveBeenCalledWith({
+      ...pendingUser,
+      role: "researcher",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+      latest_access_request: approvedRequest,
+    });
+    expect(result).toEqual({
+      auth_state: "approved",
+      access_token: "token-approved",
+      token_type: "bearer",
+      user: {
+        ...pendingUser,
+        role: "researcher",
+        site_ids: ["SITE_A"],
+        approval_status: "approved",
+        latest_access_request: approvedRequest,
+      },
+      sites: [
+        {
+          site_id: "SITE_A",
+          display_name: "Site A",
+          hospital_name: "Hospital A",
+        },
+      ],
+      my_access_requests: [],
+    });
+  });
+
   it("lists active desktop releases for approved users", async () => {
     const approvedUser = {
       user_id: "user_researcher",
@@ -555,6 +641,9 @@ describe("fetchSitesForMainUser", () => {
     requireMainAppBridgeUser.mockResolvedValue({
       canonicalUserId: "user_researcher",
       user: currentUser,
+      canonicalUser: {
+        memberships: [],
+      },
     });
     siteRowById.mockResolvedValue({
       site_id: "SITE_B",
@@ -589,5 +678,53 @@ describe("fetchSitesForMainUser", () => {
       user: currentUser,
       request: pendingRequest,
     });
+  });
+
+  it("rejects duplicate requests when a canonical membership already maps the institution-directory site", async () => {
+    const staleUser = {
+      user_id: "user_researcher",
+      username: "researcher",
+      full_name: "Researcher",
+      role: "viewer",
+      site_ids: [],
+      approval_status: "application_required",
+    };
+    requireMainAppBridgeUser.mockResolvedValue({
+      canonicalUserId: "user_researcher",
+      user: staleUser,
+      canonicalUser: {
+        memberships: [
+          {
+            membership_id: "membership_1",
+            site_id: "39100103",
+            role: "member",
+            status: "approved",
+            approved_at: "2026-04-14T00:00:00Z",
+            created_at: "2026-04-14T00:00:00Z",
+            site: null,
+          },
+        ],
+      },
+    });
+    siteRowById.mockResolvedValue(null);
+    institutionRowById.mockResolvedValue({
+      institution_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
+      name: "제주대학교병원",
+    });
+    siteRowBySourceInstitutionId.mockResolvedValue({
+      site_id: "39100103",
+      display_name: "",
+      hospital_name: "제주대학교병원",
+    });
+
+    await expect(
+      submitMainAccessRequest({} as never, {
+        requested_site_id: "JDQ4MTYyMiM4MSMkMSMkOCMkODkkMzgxMzUxIzExIyQxIyQzIyQ4OSQyNjE0ODEjNTEjJDEjJDYjJDgz",
+        requested_role: "researcher",
+        message: "duplicate",
+      }),
+    ).rejects.toThrow("You already have access to this hospital.");
+
+    expect(upsertAccessRequestRecord).not.toHaveBeenCalled();
   });
 });

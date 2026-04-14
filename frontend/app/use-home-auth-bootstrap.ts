@@ -64,6 +64,28 @@ type UseHomeAuthBootstrapOptions = {
   setRequestForm: Dispatch<SetStateAction<RequestFormState>>;
 };
 
+function promoteApprovedRequestUser(user: AuthUser, request: AccessRequestRecord | null): AuthUser {
+  if (!request || request.status !== "approved") {
+    return user;
+  }
+  const promotedSiteIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(user.site_ids) ? user.site_ids : []),
+        request.resolved_site_id,
+        request.requested_site_source === "site" ? request.requested_site_id : null,
+      ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+    ),
+  );
+  return {
+    ...user,
+    role: user.role === "viewer" ? "researcher" : user.role,
+    site_ids: promotedSiteIds,
+    approval_status: "approved",
+    latest_access_request: request,
+  };
+}
+
 export function useHomeAuthBootstrap({
   copy,
   deferredInstitutionQuery,
@@ -325,6 +347,27 @@ export function useHomeAuthBootstrap({
   }, [applyApprovedWorkspaceState, clearApprovedWorkspaceState, copy.failedConnect, describeError, token]);
 
   useEffect(() => {
+    if (!token || !user || user.approval_status === "approved") {
+      return;
+    }
+    const approvedRequest = myRequests.find((item) => item.status === "approved") ?? null;
+    if (!approvedRequest) {
+      return;
+    }
+    const promotedUser = promoteApprovedRequestUser(user, approvedRequest);
+    const promotedSiteIds = Array.isArray(promotedUser.site_ids) ? promotedUser.site_ids : [];
+    if (promotedUser.approval_status !== "approved" || promotedSiteIds.length === 0) {
+      return;
+    }
+    setUser(promotedUser);
+    cacheMainAuthHint(promotedUser, token);
+    setMyRequests([]);
+    applyApprovedWorkspaceState(promotedUser, {
+      preferredSiteId: approvedRequest.resolved_site_id || approvedRequest.requested_site_id,
+    });
+  }, [applyApprovedWorkspaceState, myRequests, token, user]);
+
+  useEffect(() => {
     if (!user || !approved) {
       setWorkspaceDataPlaneState("idle");
       return;
@@ -442,24 +485,25 @@ export function useHomeAuthBootstrap({
     try {
       const response = await submitAccessRequest(token, requestForm);
       const refreshedToken = response.access_token || token || null;
+      const refreshedUser = promoteApprovedRequestUser(response.user, response.request);
       if (refreshedToken && refreshedToken !== token) {
         setToken(refreshedToken);
       }
-      setUser(response.user);
-      cacheMainAuthHint(response.user, refreshedToken);
-      if (response.user.approval_status === "approved" && response.request.status === "approved") {
+      setUser(refreshedUser);
+      cacheMainAuthHint(refreshedUser, refreshedToken);
+      if (refreshedUser.approval_status === "approved" && response.request.status === "approved") {
         const preferredSiteId = response.request.resolved_site_id || response.request.requested_site_id;
         setMyRequests([]);
-        applyApprovedWorkspaceState(response.user, { preferredSiteId });
+        applyApprovedWorkspaceState(refreshedUser, { preferredSiteId });
         const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
         setMyRequests(nextRequests);
         const nextSites = await refreshApprovedSites(refreshedToken ?? undefined, { preferredSiteId });
-        applyApprovedWorkspaceState(response.user, { preferredSiteId, sites: nextSites });
-      } else if (response.user.approval_status === "approved") {
+        applyApprovedWorkspaceState(refreshedUser, { preferredSiteId, sites: nextSites });
+      } else if (refreshedUser.approval_status === "approved") {
         const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
         setMyRequests(nextRequests);
         const nextSites = await refreshApprovedSites(refreshedToken ?? undefined);
-        applyApprovedWorkspaceState(response.user, { sites: nextSites });
+        applyApprovedWorkspaceState(refreshedUser, { sites: nextSites });
       } else {
         clearApprovedWorkspaceState();
         const nextRequests = await fetchMyAccessRequests(refreshedToken ?? undefined);
