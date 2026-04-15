@@ -123,16 +123,15 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
     label: getSiteDisplayName(site),
     active: true,
   }));
-  const openHospitalSlots = Array.from({ length: Math.max(0, 5 - activeHospitals.length) }, () => ({
-    label: "추가 참여 기관 모집 중",
-    active: false,
-  }));
-  const hospitals = [...activeHospitals, ...openHospitalSlots];
+  const hasActiveHospitals = activeHospitals.length > 0;
 
   useEffect(() => {
     const html = document.documentElement;
-    html.style.scrollSnapType = "y proximity";
     html.style.scrollBehavior = "smooth";
+    const desktopSnapEnabled =
+      window.matchMedia("(min-width: 1024px)").matches &&
+      window.matchMedia("(pointer: fine)").matches;
+    html.style.scrollSnapType = desktopSnapEnabled ? "y proximity" : "";
     return () => {
       html.style.scrollSnapType = "";
       html.style.scrollBehavior = "";
@@ -165,6 +164,13 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            className="cursor-pointer rounded-full border border-[rgba(45,212,192,0.13)] px-3 py-1 text-[0.72rem] tracking-[0.06em] text-[#7b88a8] transition hover:border-[#2dd4c0] hover:text-[#2dd4c0] md:hidden"
+            type="button"
+            onClick={() => props.onLocaleChange("en")}
+          >
+            KO / EN
+          </button>
           <div className="hidden items-center gap-7 md:flex">
             <a className="text-[0.8rem] uppercase tracking-[0.08em] text-[#7b88a8] transition hover:text-[#2dd4c0]" href="#origin">
               시작 이야기
@@ -583,18 +589,30 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               />
             </div>
           </div>
-          <div className="mb-11 mt-11 flex flex-wrap justify-center gap-2.5">
-            {hospitals.map((hospital, index) => (
-              <div
-                key={`${hospital.label}-${index}`}
-                className={`landing-reveal flex items-center gap-2 rounded-full border px-4 py-[7px] text-[0.76rem] ${hospital.active ? "border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] text-[#e4e8f5]" : "border-[rgba(45,212,192,0.13)] border-dashed bg-white/[0.02] text-[#7b88a8] opacity-45"}`}
-                data-reveal=""
-                data-reveal-order={index + 1}
-              >
-                <span className="h-[5px] w-[5px] rounded-full bg-[#2dd4c0]" />
-                {hospital.label}
+          <div className="mb-11 mt-11">
+            {hasActiveHospitals ? (
+              <div className="flex flex-wrap justify-center gap-2.5">
+                {activeHospitals.map((hospital, index) => (
+                  <div
+                    key={`${hospital.label}-${index}`}
+                    className="landing-reveal flex items-center gap-2 rounded-full border border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] px-4 py-[7px] text-[0.76rem] text-[#e4e8f5]"
+                    data-reveal=""
+                    data-reveal-order={index + 1}
+                  >
+                    <span className="h-[5px] w-[5px] rounded-full bg-[#2dd4c0]" />
+                    {hospital.label}
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : (
+              <div className="landing-reveal mx-auto max-w-[720px] rounded-[18px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] px-7 py-8 text-center shadow-[0_18px_42px_rgba(6,10,20,0.24)]" data-reveal="" data-reveal-order={1}>
+                <div className="mb-2 text-[0.68rem] uppercase tracking-[0.18em] text-[#2dd4c0]">초기 파일럿 모집 중</div>
+                <div className="text-[1.05rem] font-medium text-[#e4e8f5]">첫 참여 기관과 임상 검증 네트워크를 준비하고 있습니다.</div>
+                <p className="mt-3 text-[0.82rem] leading-[1.8] text-[#7b88a8]">
+                  기관 승인이 끝나면 데스크톱 앱에서 바로 케이스를 등록하고, 이후 다기관 검증과 집계 흐름에 참여할 수 있습니다.
+                </p>
+              </div>
+            )}
           </div>
           <div className="text-center">
             <LandingGoogleCta

@@ -117,14 +117,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
     label: getEnglishSiteLabel(site),
     active: true,
   }));
-  const openSlots = Array.from({ length: Math.max(0, 5 - activeInstitutions.length) }, () => ({
-    label: "Additional department invited",
-    active: false,
-  }));
-  const institutions = [...activeInstitutions, ...openSlots];
-  const institutionFooter = activeInstitutions.length
-    ? "Founding site public today. Additional ophthalmology departments invited."
-    : "Ophthalmology departments invited.";
+  const hasActiveInstitutions = activeInstitutions.length > 0;
 
   return (
     <main className="bg-white text-[#111218] font-alt-sans">
@@ -392,30 +385,41 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-[6px] border border-[#d6d9e4]">
-              <div className="border-b border-[#d6d9e4] bg-white px-[18px] py-3 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095] font-mono-alt">
-                Participating institutions
-              </div>
-              {institutions.map((institution, index) => (
-                <div key={`${institution.label}-${index}`} className="flex items-center justify-between border-b border-[#eceef5] px-[18px] py-3 text-[0.78rem] last:border-b-0">
-                  <span className="text-[#393c4a]">{institution.label}</span>
-                  {institution.active ? (
-                    <span className="text-[0.6rem] tracking-[0.06em] text-[#1a6b46] font-mono-alt">● Active</span>
-                  ) : (
-                    <span className="rounded-[3px] border border-[#d6d9e4] px-1.5 py-0.5 text-[0.6rem] tracking-[0.06em] text-[#7c8095] font-mono-alt">
-                      Open
-                    </span>
-                  )}
+            {hasActiveInstitutions ? (
+              <div className="overflow-hidden rounded-[6px] border border-[#d6d9e4]">
+                <div className="border-b border-[#d6d9e4] bg-white px-[18px] py-3 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095] font-mono-alt">
+                  Participating institutions
                 </div>
-              ))}
-              <div className="border-t border-[#d6d9e4] bg-[#f7f8fc] px-[18px] py-3 text-center text-[0.77rem] text-[#7c8095]">
-                {institutionFooter}
-                <br />
-                <a className="text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
-                  Contact us to join →
-                </a>
+                {activeInstitutions.map((institution, index) => (
+                  <div key={`${institution.label}-${index}`} className="flex items-center justify-between border-b border-[#eceef5] px-[18px] py-3 text-[0.78rem] last:border-b-0">
+                    <span className="text-[#393c4a]">{institution.label}</span>
+                    <span className="text-[0.6rem] tracking-[0.06em] text-[#1a6b46] font-mono-alt">● Active</span>
+                  </div>
+                ))}
+                <div className="border-t border-[#d6d9e4] bg-[#f7f8fc] px-[18px] py-3 text-center text-[0.77rem] text-[#7c8095]">
+                  Founding site public today. Additional ophthalmology departments invited.
+                  <br />
+                  <a className="text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
+                    Contact us to join →
+                  </a>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="rounded-[6px] border border-[#d6d9e4] bg-white px-6 py-7 shadow-[0_18px_42px_rgba(10,18,34,0.08)]">
+                <div className="mb-2 text-[0.6rem] uppercase tracking-[0.12em] text-[#1a5fa8] font-mono-alt">Pilot enrollment open</div>
+                <div className="text-[1rem] font-medium leading-[1.45] text-[#111218]">
+                  We are preparing the first participating hospital for the clinical validation network.
+                </div>
+                <p className="mt-3 text-[0.78rem] leading-[1.72] text-[#7c8095]">
+                  After institutional approval, sites can install the desktop app, register cases locally, and join the review and aggregation workflow.
+                </p>
+                <div className="mt-4 text-[0.77rem] text-[#7c8095]">
+                  <a className="text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
+                    Contact us to join →
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </section>
