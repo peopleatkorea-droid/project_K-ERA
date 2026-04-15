@@ -6,6 +6,7 @@ import type {
   AggregationRecord,
   AggregationRunResponse,
   AuthUser,
+  FederatedPrivacyReportResponse,
   FederationMonitoringSummaryResponse,
   ModelUpdateRecord,
   ModelVersionRecord,
@@ -98,11 +99,45 @@ function serializeFederatedDpAccountingSummary(value: unknown): AggregationRecor
   return {
     formal_dp_accounting: Boolean(formalDpAccounting),
     accountant: stringFromValue(record.accountant),
+    accountant_scope: stringFromValue(record.accountant_scope),
+    subsampling_applied: booleanFromValue(record.subsampling_applied),
+    assumptions: normalizeStringArray(record.assumptions),
     accounted_updates: Math.max(0, Number(numberFromValue(record.accounted_updates) ?? 0)),
     accounted_sites: numberFromValue(record.accounted_sites),
     epsilon: numberFromValue(record.epsilon),
     delta: numberFromValue(record.delta),
     sites,
+  };
+}
+
+function serializeFederatedParticipationSummary(value: unknown): AggregationRecord["participation_summary"] {
+  const record = recordFromValue(value);
+  const aggregatedSiteIds = normalizeStringArray(record.aggregated_site_ids);
+  const availableSiteIds = normalizeStringArray(record.available_site_ids);
+  const missingSiteIds = normalizeStringArray(record.missing_site_ids);
+  const aggregatedSiteCount = Math.max(
+    0,
+    Number(numberFromValue(record.aggregated_site_count) ?? aggregatedSiteIds.length),
+  );
+  const availableSiteCount = numberFromValue(record.available_site_count);
+  const missingSiteCount = numberFromValue(record.missing_site_count);
+  const participationRate = numberFromValue(record.participation_rate);
+  if (
+    aggregatedSiteCount <= 0 &&
+    aggregatedSiteIds.length === 0 &&
+    availableSiteIds.length === 0 &&
+    missingSiteIds.length === 0
+  ) {
+    return null;
+  }
+  return {
+    aggregated_site_ids: aggregatedSiteIds,
+    aggregated_site_count: aggregatedSiteCount,
+    available_site_ids: availableSiteIds,
+    available_site_count: availableSiteCount,
+    missing_site_ids: missingSiteIds,
+    missing_site_count: missingSiteCount,
+    participation_rate: participationRate,
   };
 }
 
@@ -133,6 +168,9 @@ function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp
   return {
     formal_dp_accounting: Boolean(formalDpAccounting),
     accountant: stringFromValue(record.accountant),
+    accountant_scope: stringFromValue(record.accountant_scope),
+    subsampling_applied: booleanFromValue(record.subsampling_applied),
+    assumptions: normalizeStringArray(record.assumptions),
     accounted_updates: Math.max(0, Number(numberFromValue(record.accounted_updates) ?? 0)),
     accounted_aggregations: Math.max(0, Number(numberFromValue(record.accounted_aggregations) ?? 0)),
     accounted_sites: numberFromValue(record.accounted_sites),
@@ -143,6 +181,7 @@ function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp
     last_accounted_at: stringFromValue(record.last_accounted_at),
     last_accounted_new_version_name: stringFromValue(record.last_accounted_new_version_name),
     last_accounted_base_model_version_id: stringFromValue(record.last_accounted_base_model_version_id),
+    last_participation_summary: serializeFederatedParticipationSummary(record.last_participation_summary),
   };
 }
 
@@ -191,6 +230,17 @@ function summarizeFederatedDpAccountingFromUpdates(
   return {
     formal_dp_accounting: true,
     accountant,
+    accountant_scope: updates
+      .map((item) => serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.accountant_scope)
+      .find((item) => Boolean(item)) ?? null,
+    subsampling_applied: updates.some(
+      (item) => Boolean(serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.subsampling_applied),
+    ),
+    assumptions: Array.from(
+      new Set(
+        updates.flatMap((item) => serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.assumptions ?? []),
+      ),
+    ).sort(),
     accounted_updates: accountedUpdates,
     accounted_sites: bySite.size,
     epsilon,
@@ -207,6 +257,7 @@ function accumulateFederatedDpBudgetRecord(
     created_at?: string | null;
     new_version_name?: string | null;
     base_model_version_id?: string | null;
+    participation_summary?: AggregationRecord["participation_summary"];
   },
 ): AggregationRecord["dp_budget"] {
   const previousSites = new Map(
@@ -241,6 +292,11 @@ function accumulateFederatedDpBudgetRecord(
   return {
     formal_dp_accounting: true,
     accountant: currentSummary.accountant ?? priorBudget?.accountant ?? null,
+    accountant_scope: currentSummary.accountant_scope ?? priorBudget?.accountant_scope ?? null,
+    subsampling_applied: Boolean(currentSummary.subsampling_applied ?? priorBudget?.subsampling_applied ?? false),
+    assumptions: Array.from(
+      new Set([...(priorBudget?.assumptions ?? []), ...(currentSummary.assumptions ?? [])]),
+    ).sort(),
     accounted_updates: Number(priorBudget?.accounted_updates ?? 0) + Number(currentSummary.accounted_updates ?? 0),
     accounted_aggregations: Number(priorBudget?.accounted_aggregations ?? 0) + 1,
     accounted_sites: previousSites.size,
@@ -253,6 +309,7 @@ function accumulateFederatedDpBudgetRecord(
       trimText(metadata.new_version_name) || priorBudget?.last_accounted_new_version_name || null,
     last_accounted_base_model_version_id:
       trimText(metadata.base_model_version_id) || priorBudget?.last_accounted_base_model_version_id || null,
+    last_participation_summary: metadata.participation_summary ?? priorBudget?.last_participation_summary ?? null,
   };
 }
 
@@ -365,6 +422,9 @@ function serializeMainAggregationRow(row: Record<string, unknown>): AggregationR
     aggregation_trim_ratio: numberFromValue(summary.aggregation_trim_ratio) ?? numberFromValue(payload.aggregation_trim_ratio),
     weighting_mode: stringFromValue(summary.weighting_mode) || stringFromValue(payload.weighting_mode),
     site_weights: numberRecordFromValue(summary.site_weights) || numberRecordFromValue(payload.site_weights) || undefined,
+    participation_summary:
+      serializeFederatedParticipationSummary(summary.participation_summary) ||
+      serializeFederatedParticipationSummary(payload.participation_summary),
     total_cases: numberFromValue(summary.total_cases) ?? numberFromValue(payload.total_cases),
     dp_accounting: serializeFederatedDpAccountingSummary(summary.dp_accounting) || serializeFederatedDpAccountingSummary(payload.dp_accounting),
     dp_budget: serializeFederatedDpBudgetRecord(summary.dp_budget) || serializeFederatedDpBudgetRecord(payload.dp_budget),
@@ -785,6 +845,20 @@ export async function runMainFederatedAggregation(
   const baseModelVersionId = trimText(updateRows[0]?.base_model_version_id) || null;
   const aggregationId = makeControlPlaneId("aggregation");
   const newVersionName = trimText(payload.new_version_name) || `aggregation-${new Date().toISOString().slice(0, 10)}`;
+  const siteRows = await sql`
+    select site_id
+    from sites
+    where status = 'active'
+    order by site_id asc
+  `;
+  const participationSummary = serializeFederatedParticipationSummary({
+    aggregated_site_ids: Array.from(
+      new Set(updateRows.map((row) => trimText(row.site_id)).filter((value): value is string => Boolean(value))),
+    ).sort(),
+    available_site_ids: siteRows
+      .map((row) => trimText(rowValue<string>(row as never, "site_id")))
+      .filter((value): value is string => Boolean(value)),
+  });
   const dpAccounting = summarizeFederatedDpAccountingFromUpdates(
     updateRows.map((row) => ({
       site_id: trimText(row.site_id),
@@ -799,10 +873,12 @@ export async function runMainFederatedAggregation(
     created_at: new Date().toISOString(),
     new_version_name: newVersionName,
     base_model_version_id: baseModelVersionId,
+    participation_summary: participationSummary,
   });
   const summaryJson = {
     update_ids: selectedUpdateIds,
     new_version_name: newVersionName,
+    participation_summary: participationSummary,
     dp_accounting: dpAccounting,
     dp_budget: dpBudget,
   };
@@ -932,7 +1008,73 @@ export async function fetchMainFederationMonitoring(
     active_rollout: summary.active_rollout,
     recent_rollouts: summary.recent_rollouts,
     recent_audit_events: summary.recent_audit_events,
+    privacy_budget: serializeFederatedDpBudgetRecord(summary.privacy_budget),
     node_summary: summary.node_summary,
     site_adoption: summary.site_adoption,
   };
+}
+
+export async function fetchMainFederatedPrivacyReport(
+  request: NextRequest,
+): Promise<FederatedPrivacyReportResponse> {
+  const { canonicalUserId, user } = await requireMainAppBridgeUser(request);
+  assertPlatformAdmin(user);
+
+  const [summary, aggregations] = await Promise.all([
+    federationMonitoringSummary(),
+    listMainAggregationsForUser(user),
+  ]);
+  const privacyBudget =
+    serializeFederatedDpBudgetRecord(summary.privacy_budget) ??
+    aggregations.map((item) => item.dp_budget).find((item) => Boolean(item)) ??
+    null;
+  if (!privacyBudget?.formal_dp_accounting) {
+    throw new Error("A current privacy budget is not available yet.");
+  }
+
+  const report: FederatedPrivacyReportResponse = {
+    report_type: "federated_privacy_budget_report",
+    exported_at: new Date().toISOString(),
+    current_release: summary.current_release
+      ? {
+          version_id: summary.current_release.version_id,
+          version_name: summary.current_release.version_name,
+          architecture: summary.current_release.architecture,
+          created_at: summary.current_release.created_at,
+          ready: summary.current_release.ready,
+          is_current: summary.current_release.is_current,
+          download_url: summary.current_release.download_url,
+          source_provider: summary.current_release.source_provider,
+          size_bytes: summary.current_release.size_bytes,
+          sha256: summary.current_release.sha256,
+        }
+      : null,
+    active_rollout: summary.active_rollout,
+    node_summary: summary.node_summary,
+    site_adoption: summary.site_adoption,
+    privacy_budget: privacyBudget,
+    recent_aggregations: aggregations.slice(0, 12),
+    recent_rollouts: summary.recent_rollouts.slice(0, 12),
+    recent_audit_events: summary.recent_audit_events.slice(0, 20),
+  };
+
+  await appendAuditEvent({
+    actorType: "user",
+    actorId: canonicalUserId,
+    action: "federation.privacy_report.exported",
+    targetType: "federation",
+    targetId: privacyBudget.last_accounted_aggregation_id ?? null,
+    payload: {
+      report_type: report.report_type,
+      accountant: privacyBudget.accountant ?? null,
+      epsilon: privacyBudget.epsilon ?? null,
+      delta: privacyBudget.delta ?? null,
+      accounted_aggregations: privacyBudget.accounted_aggregations ?? 0,
+      accounted_updates: privacyBudget.accounted_updates ?? 0,
+      accounted_sites: privacyBudget.accounted_sites ?? 0,
+      last_accounted_new_version_name: privacyBudget.last_accounted_new_version_name ?? null,
+    },
+  });
+
+  return report;
 }

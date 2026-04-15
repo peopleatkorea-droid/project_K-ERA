@@ -258,6 +258,7 @@ export function AdminWorkspace({
     federationMonitoring,
     federationMonitoringBusy,
     recentAuditEvents,
+    privacyReportExportBusy,
     validationExportBusy,
     setValidationExportBusy,
     crossValidationExportBusy,
@@ -355,6 +356,7 @@ export function AdminWorkspace({
     handleExportCrossValidationReport,
     handleAggregation,
     handleAggregationAllReady,
+    handleExportPrivacyReport,
     handleRefreshFederationStatus,
     handleCreateReleaseRollout,
     handleDeleteModelVersion,
@@ -998,12 +1000,14 @@ export function AdminWorkspace({
               selectedSiteId={selectedSiteId}
               newVersionName={newVersionName}
               aggregationBusy={aggregationBusy}
+              privacyReportExportBusy={privacyReportExportBusy}
               setReleaseRolloutForm={setReleaseRolloutForm}
               setNewVersionName={setNewVersionName}
               formatDateTime={(value, emptyLabel = common.notAvailable) => formatDateTime(value, localeTag, emptyLabel)}
               onAggregation={(updateIds) => void handleAggregation(updateIds)}
               onAggregationAllReady={() => void handleAggregationAllReady()}
               onCreateReleaseRollout={() => void handleCreateReleaseRollout()}
+              onExportPrivacyReport={() => void handleExportPrivacyReport()}
               onRefreshFederationStatus={() => void handleRefreshFederationStatus()}
             />
           ) : null}

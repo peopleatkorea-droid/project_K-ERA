@@ -7,7 +7,7 @@ from typing import Any, Callable
 from sqlalchemy import select, update
 
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
-from kera_research.db import CONTROL_PLANE_ENGINE, admin_jobs, aggregations, contributions, model_updates, model_versions
+from kera_research.db import CONTROL_PLANE_ENGINE, admin_jobs, aggregations, audit_events, contributions, model_updates, model_versions
 from kera_research.domain import make_id, utc_now
 from kera_research.services.federated_update_security import verify_federated_update_signature
 
@@ -50,6 +50,18 @@ class ControlPlaneRegistryOps:
             "updated_at": row.get("updated_at"),
             "started_at": row.get("started_at"),
             "finished_at": row.get("finished_at"),
+        }
+
+    def _audit_event_row_to_dict(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "event_id": str(row.get("event_id") or "").strip(),
+            "actor_type": str(row.get("actor_type") or "").strip(),
+            "actor_id": str(row.get("actor_id") or "").strip() or None,
+            "action": str(row.get("action") or "").strip(),
+            "target_type": str(row.get("target_type") or "").strip(),
+            "target_id": str(row.get("target_id") or "").strip() or None,
+            "payload_json": dict(row.get("payload_json") or {}),
+            "created_at": row.get("created_at"),
         }
 
     def _normalize_model_metadata(self, model_metadata: dict[str, Any]) -> dict[str, Any]:
@@ -474,6 +486,38 @@ class ControlPlaneRegistryOps:
             self.payload_record(row, "payload_json", ["aggregation_id", "architecture", "created_at", "total_cases"])
             for row in rows
         ]
+
+    def write_audit_event(
+        self,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        action: str,
+        target_type: str,
+        target_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        record = {
+            "event_id": make_id("audit"),
+            "actor_type": str(actor_type or "").strip() or "system",
+            "actor_id": str(actor_id or "").strip() or None,
+            "action": str(action or "").strip(),
+            "target_type": str(target_type or "").strip(),
+            "target_id": str(target_id or "").strip() or None,
+            "payload_json": dict(payload or {}),
+            "created_at": utc_now(),
+        }
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            conn.execute(audit_events.insert().values(**record))
+        return self._audit_event_row_to_dict(record)
+
+    def list_audit_events(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        normalized_limit = max(1, min(int(limit or 20), 100))
+        with CONTROL_PLANE_ENGINE.begin() as conn:
+            rows = conn.execute(
+                select(audit_events).order_by(audit_events.c.created_at.desc()).limit(normalized_limit)
+            ).mappings().all()
+        return [self._audit_event_row_to_dict(row) for row in rows]
 
     def create_admin_job(
         self,

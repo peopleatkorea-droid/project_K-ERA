@@ -53,7 +53,9 @@ type Props = {
   onAggregation: (updateIds: string[]) => void;
   onAggregationAllReady: () => void;
   onCreateReleaseRollout: () => void;
+  onExportPrivacyReport: () => void;
   onRefreshFederationStatus: () => void;
+  privacyReportExportBusy?: boolean;
 };
 
 function buildAggregationLanes(approvedUpdates: ModelUpdateRecord[]): AggregationLane[] {
@@ -127,6 +129,66 @@ function formatDpMetric(value: number | null | undefined): string {
   return value.toFixed(2);
 }
 
+function formatParticipationCoverage(
+  value:
+    | AggregationRecord["participation_summary"]
+    | NonNullable<AggregationRecord["dp_budget"]>["last_participation_summary"]
+    | null
+    | undefined,
+  locale: Locale,
+  notAvailableLabel: string,
+): string {
+  if (!value) {
+    return notAvailableLabel;
+  }
+  const aggregated = Number(value.aggregated_site_count ?? 0);
+  const available = Number(value.available_site_count ?? 0);
+  const participationRate =
+    typeof value.participation_rate === "number" && Number.isFinite(value.participation_rate)
+      ? `${(value.participation_rate * 100).toFixed(1)}%`
+      : null;
+  if (available > 0) {
+    return pick(
+      locale,
+      `${aggregated} / ${available} hospitals${participationRate ? ` (${participationRate})` : ""}`,
+      `${aggregated} / ${available}개 병원${participationRate ? ` (${participationRate})` : ""}`,
+    );
+  }
+  return pick(locale, `${aggregated} hospitals`, `${aggregated}개 병원`);
+}
+
+function formatDpAssumptions(
+  assumptions: string[] | null | undefined,
+  accountantScope: string | null | undefined,
+  locale: Locale,
+  notAvailableLabel: string,
+): string {
+  const labels = [
+    accountantScope
+      ? pick(
+          locale,
+          accountantScope === "site_local_training" ? "site-local training scope" : accountantScope,
+          accountantScope === "site_local_training" ? "site 로컬 학습 범위" : accountantScope,
+        )
+      : null,
+    ...(assumptions ?? []).map((item) =>
+      pick(
+        locale,
+        item.replaceAll("_", " "),
+        item
+          .replace("full_participation", "전체 참여 가정")
+          .replace("no_subsampling", "subsampling 없음")
+          .replace("no_secure_aggregation", "secure aggregation 없음")
+          .replace("client_delta_noise", "클라이언트 delta noise")
+          .replace("gaussian_rdp", "Gaussian RDP")
+          .replace("gaussian_basic_composition", "Gaussian basic composition")
+          .replaceAll("_", " "),
+      ),
+    ),
+  ].filter((item): item is string => Boolean(item));
+  return labels.length > 0 ? labels.join(", ") : notAvailableLabel;
+}
+
 export function FederationSection({
   locale,
   notAvailableLabel,
@@ -150,12 +212,17 @@ export function FederationSection({
   onAggregation,
   onAggregationAllReady,
   onCreateReleaseRollout,
+  onExportPrivacyReport,
   onRefreshFederationStatus,
+  privacyReportExportBusy = false,
 }: Props) {
   const aggregationLanes = buildAggregationLanes(approvedUpdates);
   const readyAggregationLanes = aggregationLanes.filter((lane) => lane.duplicate_site_count === 0);
   const readyModelVersions = modelVersions.filter((item) => item.ready);
-  const latestDpBudget = aggregations.map((item) => item.dp_budget).find((item) => Boolean(item)) ?? null;
+  const latestDpBudget =
+    federationMonitoring?.privacy_budget ??
+    aggregations.map((item) => item.dp_budget).find((item) => Boolean(item)) ??
+    null;
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -585,6 +652,13 @@ export function FederationSection({
                   "Cumulative DP budget across aggregations that recorded formal accounting.",
                   "formal DP accounting이 기록된 집계들을 기준으로 누적한 프라이버시 budget입니다."
                 )}
+                aside={
+                  <Button type="button" variant="ghost" size="sm" disabled={privacyReportExportBusy} onClick={onExportPrivacyReport}>
+                    {privacyReportExportBusy
+                      ? pick(locale, "Exporting...", "내보내는 중...")
+                      : pick(locale, "Export JSON", "JSON 내보내기")}
+                  </Button>
+                }
               />
               <MetricGrid columns={3}>
                 <MetricItem value={latestDpBudget.accountant ?? notAvailableLabel} label={pick(locale, "Accountant", "Accountant")} />
@@ -596,7 +670,21 @@ export function FederationSection({
                 />
                 <MetricItem value={String(latestDpBudget.accounted_updates ?? 0)} label={pick(locale, "Updates", "업데이트")} />
                 <MetricItem value={String(latestDpBudget.accounted_sites ?? 0)} label={pick(locale, "Hospitals", "병원")} />
+                <MetricItem
+                  value={formatParticipationCoverage(latestDpBudget.last_participation_summary, locale, notAvailableLabel)}
+                  label={pick(locale, "Latest coverage", "최근 참여 범위")}
+                />
               </MetricGrid>
+              <p className="m-0 text-xs leading-5 text-muted">
+                {pick(locale, "Assumptions", "가정")}
+                {": "}
+                {formatDpAssumptions(
+                  latestDpBudget.assumptions,
+                  latestDpBudget.accountant_scope,
+                  locale,
+                  notAvailableLabel,
+                )}
+              </p>
               {latestDpBudget.sites.length > 0 ? (
                 <div className="flex flex-wrap gap-2 text-sm text-muted">
                   {latestDpBudget.sites.map((site) => (
@@ -605,6 +693,15 @@ export function FederationSection({
                     </span>
                   ))}
                 </div>
+              ) : null}
+              {latestDpBudget.last_accounted_new_version_name || latestDpBudget.last_accounted_at ? (
+                <p className="m-0 text-xs leading-5 text-muted">
+                  {pick(locale, "Latest snapshot", "최근 스냅샷")}
+                  {": "}
+                  {latestDpBudget.last_accounted_new_version_name ?? notAvailableLabel}
+                  {" · "}
+                  {formatDateTime(latestDpBudget.last_accounted_at, notAvailableLabel)}
+                </p>
               ) : null}
             </Card>
           ) : null}
@@ -667,7 +764,21 @@ export function FederationSection({
                             value={String(item.dp_accounting.accounted_sites ?? item.dp_accounting.sites.length ?? 0)}
                             label={pick(locale, "Hospitals", "병원")}
                           />
+                          <MetricItem
+                            value={formatParticipationCoverage(item.participation_summary, locale, notAvailableLabel)}
+                            label={pick(locale, "Coverage", "참여 범위")}
+                          />
                         </MetricGrid>
+                        <p className="m-0 text-xs leading-5 text-muted">
+                          {pick(locale, "Assumptions", "가정")}
+                          {": "}
+                          {formatDpAssumptions(
+                            item.dp_accounting.assumptions,
+                            item.dp_accounting.accountant_scope,
+                            locale,
+                            notAvailableLabel,
+                          )}
+                        </p>
                         {item.dp_accounting.sites.length > 0 ? (
                           <div className="flex flex-wrap gap-2 text-sm text-muted">
                             {item.dp_accounting.sites.map((site) => (

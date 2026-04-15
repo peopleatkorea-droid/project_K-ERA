@@ -40,6 +40,7 @@ export {
   autoPublishMainModelUpdate,
   autoPublishMainModelVersion,
   createMainReleaseRollout,
+  fetchMainFederatedPrivacyReport,
   deleteMainModelVersion,
   fetchMainFederationMonitoring,
   listMainAggregations,

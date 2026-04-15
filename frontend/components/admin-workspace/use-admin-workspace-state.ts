@@ -357,6 +357,7 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
   const [federationMonitoring, setFederationMonitoring] = useState<FederationMonitoringSummaryResponse | null>(null);
   const [federationMonitoringBusy, setFederationMonitoringBusy] = useState(false);
   const [recentAuditEvents, setRecentAuditEvents] = useState<AuditEventRecord[]>([]);
+  const [privacyReportExportBusy, setPrivacyReportExportBusy] = useState(false);
   const [validationExportBusy, setValidationExportBusy] = useState(false);
   const [crossValidationExportBusy, setCrossValidationExportBusy] = useState(false);
   const [crossValidationReports, setCrossValidationReports] = useState<CrossValidationReport[]>([]);
@@ -723,6 +724,8 @@ export function useAdminWorkspaceState({ user, initialSection, selectedSiteId }:
     setFederationMonitoringBusy,
     recentAuditEvents,
     setRecentAuditEvents,
+    privacyReportExportBusy,
+    setPrivacyReportExportBusy,
     validationExportBusy,
     setValidationExportBusy,
     crossValidationExportBusy,

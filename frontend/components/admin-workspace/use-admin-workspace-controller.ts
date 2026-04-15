@@ -507,6 +507,14 @@ export function useAdminWorkspaceController({
       ),
     modelPublished: (name: string) => pick(locale, `Published ${name}.`, `${name} 모델을 발행했습니다.`),
     modelPublishFailed: pick(locale, "Unable to publish the model.", "모델 발행에 실패했습니다."),
+    privacyReportExported: (filename: string) =>
+      pick(locale, `Exported ${filename}.`, `${filename} 파일을 내보냈습니다.`),
+    privacyReportExportFailed: pick(locale, "Privacy report export failed.", "프라이버시 리포트 내보내기에 실패했습니다."),
+    privacyReportUnavailable: pick(
+      locale,
+      "A current privacy budget is not available yet.",
+      "아직 현재 프라이버시 budget이 없습니다."
+    ),
     selectSiteForTemplate: pick(locale, "Select a hospital before downloading the template.", "템플릿을 내려받으려면 병원을 선택하세요."),
     templateDownloadFailed: pick(locale, "Template download failed.", "템플릿 다운로드에 실패했습니다."),
     selectSiteForImport: pick(locale, "Select a hospital before importing.", "임포트를 하려면 병원을 선택하세요."),
@@ -632,6 +640,9 @@ export function useAdminWorkspaceController({
       modelPublishConfirmCurrent: copy.modelPublishConfirmCurrent,
       modelPublished: copy.modelPublished,
       modelPublishFailed: copy.modelPublishFailed,
+      privacyReportExported: copy.privacyReportExported,
+      privacyReportExportFailed: copy.privacyReportExportFailed,
+      privacyReportUnavailable: copy.privacyReportUnavailable,
       modelActivated: copy.modelActivated,
       modelActivateFailed: copy.modelActivateFailed,
       updateReviewed: copy.updateReviewed,
@@ -1890,6 +1901,7 @@ export function useAdminWorkspaceController({
     handleExportCrossValidationReport: trainingController.handleExportCrossValidationReport,
     handleAggregation: registryController.handleAggregation,
     handleAggregationAllReady: registryController.handleAggregationAllReady,
+    handleExportPrivacyReport: registryController.handleExportPrivacyReport,
     handleRefreshFederationStatus: registryController.handleRefreshFederationStatus,
     handleCreateReleaseRollout: registryController.handleCreateReleaseRollout,
     handleDeleteModelVersion: registryController.handleDeleteModelVersion,

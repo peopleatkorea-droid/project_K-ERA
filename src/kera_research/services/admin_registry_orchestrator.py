@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 
 from kera_research.services.federated_update_security import (
     accumulate_federated_dp_budget,
+    build_federated_participation_summary,
     federated_aggregation_strategy,
     federated_aggregation_trim_ratio,
     latest_federated_dp_budget_snapshot,
@@ -349,6 +350,17 @@ class AdminRegistryOrchestrator:
         resolved_version_name = (new_version_name or "").strip() or f"global-{architecture}-{version_suffix}-{self.make_id('v')[:6]}"
         output_path = self.model_dir / f"global_{architecture}_{self.make_id('agg')}.pth"
         update_ids = [item["update_id"] for item in approved_updates]
+        available_site_ids = sorted(
+            {
+                str(site.get("site_id") or "").strip()
+                for site in cp.list_sites()
+                if str(site.get("site_id") or "").strip()
+            }
+        )
+        participation_summary = build_federated_participation_summary(
+            aggregated_site_ids=sorted(site_weights),
+            available_site_ids=available_site_ids,
+        )
         dp_accounting_summary = summarize_federated_dp_accounting(approved_updates)
         prior_dp_budget = latest_federated_dp_budget_snapshot(cp.list_aggregations())
         dp_budget_snapshot = accumulate_federated_dp_budget(
@@ -356,6 +368,7 @@ class AdminRegistryOrchestrator:
             dp_accounting_summary,
             new_version_name=resolved_version_name,
             base_model_version_id=str(base_model.get("version_id") or "").strip() or None,
+            participation_summary=participation_summary,
         )
         try:
             for update_record in approved_updates:
@@ -408,6 +421,7 @@ class AdminRegistryOrchestrator:
                         "signed_updates_required": require_signed_federated_updates(),
                         "aggregated_update_ids": list(update_ids),
                         "aggregated_site_ids": sorted(site_weights),
+                        "participation_summary": participation_summary,
                         "dp_accounting": dp_accounting_summary,
                         "dp_budget": dp_budget_snapshot,
                     },

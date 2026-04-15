@@ -488,6 +488,14 @@ class RemoteControlPlaneClient:
         )
         return dict(payload) if isinstance(payload, dict) else {}
 
+    def main_admin_federation_privacy_report(self, *, user_bearer_token: str) -> dict[str, Any]:
+        payload = self._request_json(
+            "GET",
+            "/main/admin/federation/privacy-report",
+            headers=self._user_headers(user_bearer_token),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def main_admin_review_access_request(
         self,
         *,

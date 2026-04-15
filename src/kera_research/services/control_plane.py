@@ -1059,6 +1059,28 @@ class ControlPlaneStore:
     def get_admin_job(self, job_id: str) -> dict[str, Any] | None:
         return self.registry.get_admin_job(job_id)
 
+    def write_audit_event(
+        self,
+        *,
+        actor_type: str,
+        actor_id: str | None,
+        action: str,
+        target_type: str,
+        target_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.registry.write_audit_event(
+            actor_type=actor_type,
+            actor_id=actor_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            payload=payload,
+        )
+
+    def list_audit_events(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return self.registry.list_audit_events(limit=limit)
+
     def register_aggregation(
         self,
         base_model_version_id: str,

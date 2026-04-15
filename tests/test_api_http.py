@@ -6951,6 +6951,58 @@ class ApiHttpTests(unittest.TestCase):
 
     def test_federation_monitoring_local_fallback_reports_current_release_http(self):
         admin_token = self._login("admin", "admin123")
+        self.cp.write_audit_event(
+            actor_type="user",
+            actor_id="admin_user",
+            action="federation.monitoring.checked",
+            target_type="federation",
+            target_id=None,
+            payload={"source": "test"},
+        )
+        model_path = Path(self.tempdir.name) / "monitoring_dp_budget_model.pth"
+        model_path.write_bytes(b"monitoring-dp-budget")
+        self.cp.register_aggregation(
+            base_model_version_id="model_http_seed",
+            new_model_path=str(model_path),
+            new_version_name="global-monitoring-dp",
+            architecture="densenet121",
+            site_weights={self.site_id: 2},
+            aggregation_metadata={
+                "dp_accounting": {
+                    "formal_dp_accounting": True,
+                    "accountant": "gaussian_basic_composition",
+                    "accounted_updates": 1,
+                    "epsilon": 0.4,
+                    "delta": 1e-5,
+                    "sites": [
+                        {
+                            "site_id": self.site_id,
+                            "accounted_updates": 1,
+                            "epsilon": 0.4,
+                            "delta": 1e-5,
+                        }
+                    ],
+                },
+                "dp_budget": {
+                    "formal_dp_accounting": True,
+                    "accountant": "gaussian_basic_composition",
+                    "accounted_updates": 1,
+                    "accounted_aggregations": 1,
+                    "accounted_sites": 1,
+                    "epsilon": 0.4,
+                    "delta": 1e-5,
+                    "sites": [
+                        {
+                            "site_id": self.site_id,
+                            "accounted_updates": 1,
+                            "accounted_aggregations": 1,
+                            "epsilon": 0.4,
+                            "delta": 1e-5,
+                        }
+                    ],
+                },
+            },
+        )
 
         monitoring_response = self.client.get(
             "/api/admin/federation/monitoring",
@@ -6958,15 +7010,125 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(monitoring_response.status_code, 200, monitoring_response.text)
         payload = monitoring_response.json()
-        self.assertEqual(payload["current_release"]["version_id"], "model_http_seed")
+        self.assertIsNotNone(payload["current_release"])
+        self.assertEqual(payload["current_release"]["architecture"], "densenet121")
         self.assertIsNone(payload["active_rollout"])
         self.assertEqual(payload["node_summary"]["total_nodes"], 0)
         self.assertEqual(payload["node_summary"]["aligned_nodes"], 0)
         self.assertEqual(len(payload["site_adoption"]), 1)
+        self.assertTrue(payload["privacy_budget"]["formal_dp_accounting"])
+        self.assertAlmostEqual(float(payload["privacy_budget"]["epsilon"] or 0.0), 0.4)
+        self.assertGreaterEqual(len(payload["recent_audit_events"]), 1)
+        self.assertEqual(payload["recent_audit_events"][0]["action"], "federation.monitoring.checked")
         site_summary = payload["site_adoption"][0]
         self.assertEqual(site_summary["site_id"], self.site_id)
-        self.assertEqual(site_summary["expected_version_id"], "model_http_seed")
+        self.assertEqual(site_summary["expected_version_id"], payload["current_release"]["version_id"])
         self.assertIsNone(site_summary["latest_reported_version_id"])
+
+    def test_federated_privacy_report_local_fallback_exports_current_budget_http(self):
+        admin_token = self._login("admin", "admin123")
+        model_path = Path(self.tempdir.name) / "privacy_report_model.pth"
+        model_path.write_bytes(b"privacy-report-model")
+        aggregation = self.cp.register_aggregation(
+            base_model_version_id="model_http_seed",
+            new_model_path=str(model_path),
+            new_version_name="global-privacy-report",
+            architecture="densenet121",
+            site_weights={self.site_id: 3},
+            aggregation_metadata={
+                "aggregation_strategy": "fedavg",
+                "dp_accounting": {
+                    "formal_dp_accounting": True,
+                    "accountant": "gaussian_rdp_full_participation",
+                    "accountant_scope": "site_local_training",
+                    "subsampling_applied": False,
+                    "assumptions": [
+                        "client_delta_noise",
+                        "full_participation",
+                        "gaussian_rdp",
+                        "no_secure_aggregation",
+                        "no_subsampling",
+                    ],
+                    "accounted_updates": 1,
+                    "epsilon": 0.25,
+                    "delta": 1e-6,
+                    "sites": [
+                        {
+                            "site_id": self.site_id,
+                            "accounted_updates": 1,
+                            "epsilon": 0.25,
+                            "delta": 1e-6,
+                        }
+                    ],
+                },
+                "dp_budget": {
+                    "formal_dp_accounting": True,
+                    "accountant": "gaussian_rdp_full_participation",
+                    "accountant_scope": "site_local_training",
+                    "subsampling_applied": False,
+                    "assumptions": [
+                        "client_delta_noise",
+                        "full_participation",
+                        "gaussian_rdp",
+                        "no_secure_aggregation",
+                        "no_subsampling",
+                    ],
+                    "accounted_updates": 1,
+                    "accounted_aggregations": 1,
+                    "accounted_sites": 1,
+                    "epsilon": 0.25,
+                    "delta": 1e-6,
+                    "sites": [
+                        {
+                            "site_id": self.site_id,
+                            "accounted_updates": 1,
+                            "accounted_aggregations": 1,
+                            "epsilon": 0.25,
+                            "delta": 1e-6,
+                        }
+                    ],
+                    "last_participation_summary": {
+                        "aggregated_site_ids": [self.site_id],
+                        "aggregated_site_count": 1,
+                        "available_site_ids": [self.site_id, "site_extra"],
+                        "available_site_count": 2,
+                        "missing_site_ids": ["site_extra"],
+                        "missing_site_count": 1,
+                        "participation_rate": 0.5,
+                    },
+                },
+                "participation_summary": {
+                    "aggregated_site_ids": [self.site_id],
+                    "aggregated_site_count": 1,
+                    "available_site_ids": [self.site_id, "site_extra"],
+                    "available_site_count": 2,
+                    "missing_site_ids": ["site_extra"],
+                    "missing_site_count": 1,
+                    "participation_rate": 0.5,
+                },
+            },
+        )
+
+        response = self.client.get(
+            "/api/admin/federation/privacy-report",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["report_type"], "federated_privacy_budget_report")
+        self.assertEqual(payload["privacy_budget"]["accountant"], "gaussian_rdp_full_participation")
+        self.assertEqual(payload["privacy_budget"]["accountant_scope"], "site_local_training")
+        self.assertFalse(payload["privacy_budget"]["subsampling_applied"])
+        self.assertIn("full_participation", payload["privacy_budget"]["assumptions"])
+        self.assertAlmostEqual(float(payload["privacy_budget"]["epsilon"] or 0.0), 0.25)
+        self.assertEqual(payload["privacy_budget"]["last_participation_summary"]["aggregated_site_count"], 1)
+        self.assertEqual(payload["privacy_budget"]["last_participation_summary"]["available_site_count"], 2)
+        self.assertEqual(payload["recent_aggregations"][0]["aggregation_id"], aggregation["aggregation_id"])
+        self.assertEqual(payload["recent_aggregations"][0]["participation_summary"]["missing_site_count"], 1)
+        self.assertEqual(payload["recent_aggregations"][0]["new_version_name"], "global-privacy-report")
+        self.assertEqual(payload["node_summary"]["total_nodes"], 0)
+        self.assertGreaterEqual(len(payload["recent_audit_events"]), 1)
+        self.assertEqual(payload["recent_audit_events"][0]["action"], "federation.privacy_report.exported")
 
     def test_access_request_auto_approval_http(self):
         requester_token = self._token_for_username("http_viewer")

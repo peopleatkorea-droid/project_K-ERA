@@ -1327,6 +1327,7 @@ export type AggregationRecord = {
   aggregation_trim_ratio?: number | null;
   weighting_mode?: string | null;
   site_weights?: Record<string, number>;
+  participation_summary?: FederatedParticipationSummary | null;
   total_cases?: number | null;
   dp_accounting?: FederatedDpAccountingSummary | null;
   dp_budget?: FederatedDpBudgetRecord | null;
@@ -1340,9 +1341,22 @@ export type FederatedDpAccountingSiteSummary = {
   delta?: number | null;
 };
 
+export type FederatedParticipationSummary = {
+  aggregated_site_ids: string[];
+  aggregated_site_count: number;
+  available_site_ids?: string[] | null;
+  available_site_count?: number | null;
+  missing_site_ids?: string[] | null;
+  missing_site_count?: number | null;
+  participation_rate?: number | null;
+};
+
 export type FederatedDpAccountingSummary = {
   formal_dp_accounting: boolean;
   accountant?: string | null;
+  accountant_scope?: string | null;
+  subsampling_applied?: boolean | null;
+  assumptions?: string[] | null;
   accounted_updates: number;
   accounted_sites?: number | null;
   epsilon?: number | null;
@@ -1361,6 +1375,9 @@ export type FederatedDpBudgetSiteRecord = {
 export type FederatedDpBudgetRecord = {
   formal_dp_accounting: boolean;
   accountant?: string | null;
+  accountant_scope?: string | null;
+  subsampling_applied?: boolean | null;
+  assumptions?: string[] | null;
   accounted_updates: number;
   accounted_aggregations: number;
   accounted_sites?: number | null;
@@ -1371,6 +1388,7 @@ export type FederatedDpBudgetRecord = {
   last_accounted_at?: string | null;
   last_accounted_new_version_name?: string | null;
   last_accounted_base_model_version_id?: string | null;
+  last_participation_summary?: FederatedParticipationSummary | null;
 };
 
 export type ReleaseRolloutRecord = {
@@ -1493,6 +1511,7 @@ export type FederationMonitoringSummaryResponse = {
   active_rollout: ReleaseRolloutRecord | null;
   recent_rollouts: ReleaseRolloutRecord[];
   recent_audit_events: AuditEventRecord[];
+  privacy_budget?: FederatedDpBudgetRecord | null;
   node_summary: {
     total_nodes: number;
     active_nodes: number;
@@ -1501,6 +1520,19 @@ export type FederationMonitoringSummaryResponse = {
     unknown_nodes: number;
   };
   site_adoption: FederationMonitoringSiteAdoptionRecord[];
+};
+
+export type FederatedPrivacyReportResponse = {
+  report_type: "federated_privacy_budget_report";
+  exported_at: string;
+  current_release: ModelVersionRecord | null;
+  active_rollout: ReleaseRolloutRecord | null;
+  node_summary: FederationMonitoringSummaryResponse["node_summary"] | null;
+  site_adoption: FederationMonitoringSiteAdoptionRecord[];
+  privacy_budget: FederatedDpBudgetRecord | null;
+  recent_aggregations: AggregationRecord[];
+  recent_rollouts: ReleaseRolloutRecord[];
+  recent_audit_events: AuditEventRecord[];
 };
 
 export type InitialTrainingPredictionRecord = {

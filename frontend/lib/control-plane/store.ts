@@ -162,6 +162,22 @@ function serializeAggregation(row: Row): ControlPlaneAggregation {
   };
 }
 
+function latestFederatedPrivacyBudgetFromAggregations(
+  aggregations: ControlPlaneAggregation[],
+): Record<string, unknown> | null {
+  for (const aggregation of aggregations) {
+    const summary = aggregation.summary_json || {};
+    const budget =
+      summary && typeof summary === "object" && !Array.isArray(summary)
+        ? (summary as Record<string, unknown>).dp_budget
+        : null;
+    if (budget && typeof budget === "object" && !Array.isArray(budget)) {
+      return budget as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
 function serializeReleaseRollout(row: Row): ControlPlaneReleaseRollout {
   return {
     rollout_id: rowValue<string>(row, "rollout_id"),
@@ -2090,13 +2106,14 @@ function latestRoundMonitoringFromUpdate(update: ControlPlaneModelUpdate | null)
 }
 
 export async function federationMonitoringSummary(): Promise<ControlPlaneFederationMonitoringSummary> {
-  const [currentRelease, activeRollout, recentRollouts, recentAuditEvents, nodes, modelUpdates] = await Promise.all([
+  const [currentRelease, activeRollout, recentRollouts, recentAuditEvents, nodes, modelUpdates, aggregations] = await Promise.all([
     currentReleaseManifest(),
     latestActiveReleaseRollout(),
     listReleaseRollouts().then((items) => items.slice(0, 8)),
     listAuditEvents({ limit: 12 }),
     listRegisteredNodes(),
     listModelUpdates(),
+    listAggregations(),
   ]);
   const sql = await controlPlaneSql();
   const siteRows = await sql`
@@ -2235,6 +2252,7 @@ export async function federationMonitoringSummary(): Promise<ControlPlaneFederat
     active_rollout: activeRollout,
     recent_rollouts: recentRollouts,
     recent_audit_events: recentAuditEvents,
+    privacy_budget: latestFederatedPrivacyBudgetFromAggregations(aggregations),
     node_summary: {
       total_nodes: nodes.length,
       active_nodes: activeNodes.length,

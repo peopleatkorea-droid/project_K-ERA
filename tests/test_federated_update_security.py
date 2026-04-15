@@ -16,6 +16,7 @@ from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
     assert_federated_privacy_runtime_ready,
     build_federated_dp_accounting_entry,
+    build_federated_participation_summary,
     federated_delta_privacy_controls,
     federated_privacy_runtime_report,
     latest_federated_dp_budget_snapshot,
@@ -168,13 +169,61 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
             )
             report = federated_privacy_runtime_report()
         self.assertTrue(entry["formal_dp_accounting"])
-        self.assertEqual(entry["accountant"], "gaussian_basic_composition")
+        self.assertEqual(entry["accountant"], "gaussian_rdp_full_participation")
+        self.assertEqual(entry["accountant_scope"], "site_local_training")
+        self.assertFalse(entry["subsampling_applied"])
+        self.assertIn("full_participation", entry["assumptions"])
         self.assertGreater(float(entry["epsilon"] or 0.0), 0.0)
         self.assertEqual(entry["local_steps"], 3)
         self.assertEqual(entry["participant_count"], 12)
         self.assertEqual(entry["patient_count"], 7)
+        self.assertGreater(float(entry["optimal_order"] or 0.0), 1.0)
         self.assertTrue(report["formal_dp_accounting"])
         self.assertEqual(report["dp_accountant_delta"], 1e-5)
+        self.assertEqual(report["dp_accountant_mode"], "gaussian_rdp_full_participation")
+
+    def test_dp_accounting_entry_supports_basic_composition_override(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+                "KERA_FEDERATED_DP_ACCOUNTANT_MODE": "gaussian_basic_composition",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            entry = build_federated_dp_accounting_entry(controls, local_steps=3)
+        self.assertTrue(entry["formal_dp_accounting"])
+        self.assertEqual(entry["accountant"], "gaussian_basic_composition")
+        self.assertIn("single_round_epsilon", entry)
+
+    def test_rdp_accountant_is_tighter_than_basic_composition_for_same_controls(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            rdp_entry = build_federated_dp_accounting_entry(controls, local_steps=3)
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+                "KERA_FEDERATED_DP_ACCOUNTANT_MODE": "gaussian_basic_composition",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            basic_entry = build_federated_dp_accounting_entry(controls, local_steps=3)
+        self.assertLess(float(rdp_entry["epsilon"] or 0.0), float(basic_entry["epsilon"] or 0.0))
 
     def test_dp_accounting_summary_accumulates_per_site(self):
         summary = summarize_federated_dp_accounting(
@@ -235,6 +284,9 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         current_summary = {
             "formal_dp_accounting": True,
             "accountant": "gaussian_basic_composition",
+            "accountant_scope": "site_local_training",
+            "subsampling_applied": False,
+            "assumptions": ["client_delta_noise", "gaussian_basic_composition", "no_secure_aggregation"],
             "accounted_updates": 2,
             "epsilon": 0.7,
             "delta": 1e-5,
@@ -260,13 +312,23 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
             created_at="2026-04-15T01:00:00+00:00",
             new_version_name="global-convnext-next",
             base_model_version_id="model_global_prev",
+            participation_summary=build_federated_participation_summary(
+                aggregated_site_ids=["SITE-A", "SITE-B"],
+                available_site_ids=["SITE-A", "SITE-B", "SITE-C"],
+            ),
         )
         self.assertTrue(budget["formal_dp_accounting"])
+        self.assertEqual(budget["accountant_scope"], "site_local_training")
+        self.assertFalse(budget["subsampling_applied"])
+        self.assertIn("gaussian_basic_composition", budget["assumptions"])
         self.assertEqual(budget["accounted_aggregations"], 2)
         self.assertEqual(budget["accounted_updates"], 4)
         self.assertAlmostEqual(float(budget["epsilon"] or 0.0), 1.6)
         self.assertAlmostEqual(float(budget["delta"] or 0.0), 3e-5)
         self.assertEqual(budget["last_accounted_aggregation_id"], "agg_next")
+        self.assertEqual(budget["last_participation_summary"]["aggregated_site_count"], 2)
+        self.assertEqual(budget["last_participation_summary"]["available_site_count"], 3)
+        self.assertAlmostEqual(float(budget["last_participation_summary"]["participation_rate"] or 0.0), 2 / 3, places=4)
         self.assertEqual(len(budget["sites"]), 2)
         self.assertEqual(budget["sites"][0]["site_id"], "SITE-A")
         self.assertEqual(budget["sites"][0]["accounted_aggregations"], 2)

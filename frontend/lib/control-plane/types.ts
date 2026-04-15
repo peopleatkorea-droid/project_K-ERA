@@ -276,6 +276,7 @@ export type ControlPlaneFederationMonitoringSummary = {
   active_rollout: ControlPlaneReleaseRollout | null;
   recent_rollouts: ControlPlaneReleaseRollout[];
   recent_audit_events: ControlPlaneAuditEvent[];
+  privacy_budget: Record<string, unknown> | null;
   node_summary: {
     total_nodes: number;
     active_nodes: number;

@@ -5,10 +5,15 @@
 ### Federated privacy accounting and admin reporting
 
 - federated update의 `dp_accounting` summary를 aggregation 결과에만 남기던 상태에서, aggregation마다 누적 `dp_budget` snapshot을 함께 영속 저장하도록 확장했습니다.
-- 현재 accountant는 `gaussian_basic_composition` 기준이며, site별/전체 `epsilon`, `delta`, `accounted_updates`, `accounted_aggregations`를 aggregation 시점 기준으로 누적합니다.
+- 기본 accountant를 `gaussian_rdp_full_participation`으로 올렸고, site별/전체 `epsilon`, `delta`, `accounted_updates`, `accounted_aggregations`를 aggregation 시점 기준으로 누적합니다. 필요하면 `gaussian_basic_composition`으로 override할 수 있습니다.
 - Python control-plane aggregation 경로와 Next main-app-bridge aggregation 경로가 같은 DP summary/budget 구조를 남기도록 맞췄습니다.
 - admin workspace의 federation 섹션에 `현재 프라이버시 budget` 카드와 aggregation별 `이번 라운드 privacy accounting` 요약을 추가했습니다.
-- README도 현재 상태에 맞게 정리했습니다. 이제 basic composition accountant와 aggregation별 누적 budget snapshot/report는 있다고 명시하고, 아직 없는 것은 고급 accountant와 secure aggregation이라고 구분합니다.
+- federation monitoring summary도 최신 `privacy_budget`를 직접 노출하도록 맞췄고, admin federation 화면에서 누적 budget JSON report를 바로 export할 수 있게 했습니다.
+- privacy budget JSON export는 이제 서버가 생성한 canonical report를 내려받는 방식이고, export 자체도 control-plane audit trail에 남습니다.
+- README도 현재 상태에 맞게 정리했습니다. 이제 기본 full-participation Gaussian RDP accountant와 aggregation별 누적 budget snapshot/report는 있다고 명시하고, 아직 없는 것은 subsampling accountant와 secure aggregation이라고 구분합니다.
+- aggregation별 privacy accounting은 이제 최신 참여 병원 범위(`aggregated_site_count / available_site_count / participation_rate`)와 accountant 가정(`full_participation`, `no_subsampling`, `no_secure_aggregation`)을 같이 남깁니다.
+- admin federation 화면에도 `Coverage`와 `Assumptions`를 추가해, 현재 budget과 각 aggregation이 몇 개 병원 참여 기준인지와 어떤 accountant 가정으로 계산됐는지를 바로 확인할 수 있게 했습니다.
+- Python/local control-plane fallback에도 `audit_events`를 추가했습니다. 이제 local admin runtime의 privacy report export와 federation monitoring 경로도 `recent_audit_events`에 같은 형식의 audit trail을 남깁니다.
 - 관련 검증:
   - `uv run pytest tests/test_federated_update_security.py -q`
   - `uv run pytest tests/test_api_http.py -q -k "aggregation_job_endpoints_persist_status_and_dp_accounting_http"`

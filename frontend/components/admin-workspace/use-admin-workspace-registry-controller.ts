@@ -9,6 +9,7 @@ import {
   autoPublishModelVersion,
   createReleaseRollout,
   deleteModelVersion,
+  fetchFederatedPrivacyReport,
   fetchFederationMonitoring,
   fetchAggregations,
   fetchModelUpdateArtifactBlob,
@@ -45,6 +46,9 @@ type RegistryControllerCopy = {
   updatePublishPrompt: (updateId: string) => string;
   updatePublished: (updateId: string) => string;
   updatePublishFailed: string;
+  privacyReportExported: (filename: string) => string;
+  privacyReportExportFailed: string;
+  privacyReportUnavailable: string;
 };
 
 type UseAdminWorkspaceRegistryControllerOptions = {
@@ -101,6 +105,7 @@ export function useAdminWorkspaceRegistryController({
     setFederationMonitoring,
     setFederationMonitoringBusy,
     setRecentAuditEvents,
+    setPrivacyReportExportBusy,
     newVersionName,
     setNewVersionName,
   } = state;
@@ -476,6 +481,33 @@ export function useAdminWorkspaceRegistryController({
     }
   }
 
+  async function handleExportPrivacyReport() {
+    setPrivacyReportExportBusy(true);
+    try {
+      const payload = await fetchFederatedPrivacyReport(token);
+      if (!payload.privacy_budget?.formal_dp_accounting) {
+        setToast({ tone: "error", message: copy.privacyReportUnavailable });
+        return;
+      }
+      const compactTimestamp = (payload.exported_at || new Date().toISOString())
+        .replace(/[-:]/g, "")
+        .replace(/\.\d{3}Z$/, "Z");
+      const filename = `federated-privacy-budget-${compactTimestamp}.json`;
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setToast({ tone: "success", message: copy.privacyReportExported(filename) });
+    } catch (nextError) {
+      setToast({ tone: "error", message: describeError(nextError, copy.privacyReportExportFailed) });
+    } finally {
+      setPrivacyReportExportBusy(false);
+    }
+  }
+
   return {
     loadRegistrySectionData,
     loadFederationSectionData,
@@ -488,5 +520,6 @@ export function useAdminWorkspaceRegistryController({
     handlePublishModelUpdate,
     handleRefreshFederationStatus,
     handleCreateReleaseRollout,
+    handleExportPrivacyReport,
   };
 }

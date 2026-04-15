@@ -636,6 +636,19 @@ admin_jobs = Table(
     Column("finished_at", String(64), nullable=True),
 )
 
+audit_events = Table(
+    "audit_events",
+    CONTROL_PLANE_METADATA,
+    Column("event_id", String(64), primary_key=True),
+    Column("actor_type", String(32), nullable=False),
+    Column("actor_id", String(64), nullable=True, index=True),
+    Column("action", String(128), nullable=False, index=True),
+    Column("target_type", String(64), nullable=False, index=True),
+    Column("target_id", String(64), nullable=True, index=True),
+    Column("payload_json", JSON, nullable=False, default=dict),
+    Column("created_at", String(64), nullable=False, index=True),
+)
+
 app_settings = Table(
     "app_settings",
     CONTROL_PLANE_METADATA,

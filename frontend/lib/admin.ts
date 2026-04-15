@@ -8,6 +8,7 @@ import type {
   AggregationRecord,
   DesktopReleaseRecord,
   AggregationRunResponse,
+  FederatedPrivacyReportResponse,
   FederationMonitoringSummaryResponse,
   InstitutionDirectorySyncResponse,
   ManagedSiteRecord,
@@ -836,6 +837,13 @@ export async function fetchFederationMonitoring(token: string) {
     return requestDesktopLocalAdminJson<FederationMonitoringSummaryResponse>("/api/admin/federation/monitoring", token);
   }
   return requestMainControlPlane<FederationMonitoringSummaryResponse>("/admin/federation/monitoring", {}, token);
+}
+
+export async function fetchFederatedPrivacyReport(token: string) {
+  if (canUseDesktopLocalApiTransport()) {
+    return requestDesktopLocalAdminJson<FederatedPrivacyReportResponse>("/api/admin/federation/privacy-report", token);
+  }
+  return requestMainControlPlane<FederatedPrivacyReportResponse>("/admin/federation/privacy-report", {}, token);
 }
 
 export async function fetchSiteComparison(token: string) {

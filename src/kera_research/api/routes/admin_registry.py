@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from kera_research.api.control_plane_proxy import call_remote_control_plane_meth
 from kera_research.services.federated_update_security import (
     FederatedPrivacyRuntimePolicyError,
     assert_federated_privacy_runtime_ready,
+    latest_federated_dp_budget_snapshot,
 )
 
 
@@ -385,7 +387,8 @@ def build_admin_registry_router(support: Any) -> APIRouter:
             "current_release": current_model,
             "active_rollout": None,
             "recent_rollouts": [],
-            "recent_audit_events": [],
+            "recent_audit_events": cp.list_audit_events(limit=12),
+            "privacy_budget": latest_federated_dp_budget_snapshot(cp.list_aggregations()),
             "node_summary": {
                 "total_nodes": 0,
                 "active_nodes": 0,
@@ -394,6 +397,95 @@ def build_admin_registry_router(support: Any) -> APIRouter:
                 "unknown_nodes": 0,
             },
             "site_adoption": site_adoption,
+        }
+
+    @router.get("/api/admin/federation/privacy-report")
+    def get_federated_privacy_report(
+        user: dict[str, Any] = Depends(get_approved_user),
+        cp=Depends(get_control_plane),
+        authorization: str | None = Header(default=None),
+        control_plane_owner: str | None = Header(default=None, alias="x-kera-control-plane-owner"),
+    ) -> dict[str, Any]:
+        require_platform_admin(user)
+        remote_report = call_remote_control_plane_method(
+            cp,
+            authorization=authorization,
+            control_plane_owner=control_plane_owner,
+            method_name="main_admin_federation_privacy_report",
+        )
+        if remote_report is not None:
+            return remote_report
+        if remote_control_plane_is_primary(cp, control_plane_owner=control_plane_owner):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Central control plane privacy report is unavailable.",
+            )
+
+        aggregations = cp.list_aggregations()
+        privacy_budget = latest_federated_dp_budget_snapshot(aggregations)
+        if not bool(privacy_budget.get("formal_dp_accounting")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A current privacy budget is not available yet.",
+            )
+
+        current_model = cp.current_global_model()
+        visible_sites = cp.list_sites()
+        site_adoption = [
+            {
+                "site_id": str(site.get("site_id") or ""),
+                "site_display_name": str(site.get("hospital_name") or site.get("display_name") or site.get("site_id") or ""),
+                "node_count": 0,
+                "active_node_count": 0,
+                "aligned_node_count": 0,
+                "unknown_node_count": 0,
+                "lagging_node_count": 0,
+                "expected_version_id": current_model.get("version_id") if isinstance(current_model, dict) else None,
+                "expected_version_name": current_model.get("version_name") if isinstance(current_model, dict) else None,
+                "latest_reported_version_id": None,
+                "latest_reported_version_name": None,
+                "latest_validation_version_id": None,
+                "latest_validation_version_name": None,
+                "latest_validation_run_date": None,
+                "last_seen_at": None,
+            }
+            for site in visible_sites
+        ]
+        cp.write_audit_event(
+            actor_type="user",
+            actor_id=str(user.get("user_id") or "").strip() or None,
+            action="federation.privacy_report.exported",
+            target_type="federation",
+            target_id=str(privacy_budget.get("last_accounted_aggregation_id") or "").strip() or None,
+            payload={
+                "report_type": "federated_privacy_budget_report",
+                "accountant": privacy_budget.get("accountant"),
+                "accountant_scope": privacy_budget.get("accountant_scope"),
+                "epsilon": privacy_budget.get("epsilon"),
+                "delta": privacy_budget.get("delta"),
+                "accounted_aggregations": privacy_budget.get("accounted_aggregations"),
+                "accounted_updates": privacy_budget.get("accounted_updates"),
+                "accounted_sites": privacy_budget.get("accounted_sites"),
+                "last_accounted_new_version_name": privacy_budget.get("last_accounted_new_version_name"),
+            },
+        )
+        return {
+            "report_type": "federated_privacy_budget_report",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "current_release": current_model,
+            "active_rollout": None,
+            "node_summary": {
+                "total_nodes": 0,
+                "active_nodes": 0,
+                "aligned_nodes": 0,
+                "lagging_nodes": 0,
+                "unknown_nodes": 0,
+            },
+            "site_adoption": site_adoption,
+            "privacy_budget": privacy_budget,
+            "recent_aggregations": aggregations[:12],
+            "recent_rollouts": [],
+            "recent_audit_events": cp.list_audit_events(limit=20),
         }
 
     @router.post("/api/admin/aggregations/run")
