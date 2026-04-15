@@ -217,13 +217,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               Infectious keratitis · AI research platform
             </div>
             <h1 className="mb-6 text-[clamp(1.9rem,3.8vw,3rem)] leading-[1.22] tracking-[-0.015em] font-editorial">
-              One honest benchmark.
+              Federated keratitis AI research.
               <br />
-              <em className="italic text-[#1a5fa8]">A network built to push it further.</em>
+              <em className="italic text-[#1a5fa8]">From one founding cohort to a multi-site clinical network.</em>
             </h1>
             <div className="mx-auto mb-8 max-w-[500px] text-[0.95rem] leading-[1.85] text-[#393c4a]">
-              <p>K-ERA starts from a strict founding benchmark and turns that starting point into a governed validation network across hospitals.</p>
-              <p className="mt-2.5">Apply on the web, then continue in the desktop app on a hospital PC. The goal is simple: grow validation across hospitals without moving raw patient data.</p>
+              <p>K-ERA is a governed research platform for infectious keratitis AI — built from the start for federated validation across hospitals, without moving raw patient data.</p>
+              <p className="mt-2.5">Apply on the web, install the desktop app on a hospital PC, and contribute local cases to a growing multi-site validation corpus.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
@@ -275,15 +275,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            One benchmark.
+            The founding evidence.
             <br />
-            One place to read it.
-            <br />
-            One honest starting point.
+            One site. Where the network begins.
           </h2>
           <div className="max-w-[680px] text-[0.92rem] leading-[1.88] text-[#393c4a]">
             <p>The public benchmark is intentionally strict: white-light images only, patient-disjoint evaluation, visit-level prediction, and leakage-aware controls.</p>
-            <p className="mt-3">We keep the benchmark numbers in one place here because they are the starting line for K-ERA, not the finished claim. The network exists to extend this evidence under broader hospital variation.</p>
+            <p className="mt-3">A single-center feasibility result tells you what is possible. Multi-site validation is what makes that evidence credible across institutions. That is the gap K-ERA is designed to close.</p>
           </div>
           <div className="mt-12 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-4">
             {enStats.map((stat) => (
@@ -292,9 +290,6 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 <div className="mt-2 text-[0.76rem] leading-[1.6] text-[#7c8095]">{stat.label}</div>
               </div>
             ))}
-          </div>
-          <div className="mt-7 border border-[#d6d9e4] border-l-[3px] border-l-[#b5291c] bg-[#f7f8fc] px-[22px] py-[18px] text-[0.84rem] leading-[1.72] text-[#393c4a]">
-            <strong className="font-medium text-[#b5291c]">The point is not to overstate one cohort. It is to make the starting evidence explicit before asking the network to extend it.</strong>
           </div>
           <div className="mt-4 text-[0.72rem] text-[#7c8095] font-mono-alt">
             Manuscript under peer review · Founding cohort: Dept. of Ophthalmology, Jeju National University Hospital
@@ -355,7 +350,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             ))}
           </div>
           <div className="mt-14 mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            Working Rails
+            Platform capabilities
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <div className="grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-3">
@@ -378,11 +373,9 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            The bottleneck is not only model design.
+            Raw data stays on-site.
             <br />
-            It is whether hospitals can validate together
-            <br />
-            without moving raw patient data.
+            Validation reaches across hospitals.
           </h2>
           <div className="mt-11 grid gap-13 md:grid-cols-[1fr_280px]">
             <div>
@@ -471,22 +464,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
       <section className="bg-white px-6 py-20 md:px-8" id="invitation">
         <div className="mx-auto max-w-[600px] text-center">
           <div className="mx-auto mb-9 h-px w-9 bg-[#d6d9e4]" />
-          <div className="mb-9 text-[1.18rem] leading-[2.2] text-[#393c4a] italic font-editorial">
-            Research does not always begin
+          <div className="mb-6 text-[1.2rem] leading-[1.55] tracking-[-0.01em] text-[#111218] font-editorial">
+            A single-center result tells you what is possible.
             <br />
-            with a large grant.
-            <br />
-            <br />
-            Sometimes it begins with
-            <br />
-            <em className="text-[#1a5fa8]">one patient.</em>
-            <br />
-            <em className="text-[#1a5fa8]">one visit.</em>
-            <br />
-            <em className="text-[#1a5fa8]">one image.</em>
+            Multi-site validation tells you what is true.
           </div>
-          <div className="mb-8 text-[1.45rem] italic text-[#111218] font-editorial">
-            One careful case is where the network starts.
+          <div className="mb-9 max-w-[480px] mx-auto text-[0.92rem] leading-[1.88] text-[#393c4a]">
+            As hospitals join, the validation corpus grows in geographic and device variation, the federated model becomes something that can be claimed across populations, and the evidence required for clinical deployment becomes buildable. That is the trajectory K-ERA is on — and participating institutions are part of shaping it.
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
             <LandingGoogleCta

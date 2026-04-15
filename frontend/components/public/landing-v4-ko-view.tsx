@@ -37,14 +37,14 @@ const koPainItems = [
 const koFeatures = [
   {
     title: "MedSAM 기반 반자동 병변 분할",
-    body: "병변 주변에 상자를 그리면 MedSAM이 관심영역 미리보기와 병변 잘라내기를 준비합니다. 현재 논문에서 병변 중심 비교는 수동 상자 지정 기반이었고, 앱은 그 과정을 반자동 흐름으로 정리합니다.",
+    body: "병변 주변에 상자를 그리면 MedSAM이 관심영역 미리보기와 병변 잘라내기를 준비합니다. 수동 ROI 작업 없이 임상 케이스를 연구 흐름으로 바로 이어갑니다.",
     chip: "MedSAM",
     previewSrc: "/landing/medSAM.png",
     previewAlt: "MedSAM 기반 반자동 병변 분할을 보여주는 이미지",
   },
   {
     title: "방문 단위 멀티모달 판독",
-    body: "플랫폼은 백색광 · 형광염색 · 세극등 이미지를 함께 저장하고 검토합니다. 다만 현재 공개 벤치마크는 백색광 기준이며, 방문 단위 판독과 유사 증례 탐색이 다음 확장 축입니다.",
+    body: "플랫폼은 백색광 · 형광염색 · 세극등 이미지를 함께 저장하고 검토합니다. 방문 단위 판독과 유사 증례 탐색을 하나의 흐름으로 연결합니다.",
     chip: "방문 단위",
     previewSrc: "/landing/multi_modal.png",
     previewAlt: "방문 단위 멀티모달 종합 판독을 보여주는 이미지",
@@ -77,9 +77,9 @@ const koFedPoints = [
 
 const koStats = [
   { number: "101명", label: "제주 단일기관\n초기 검증 코호트", context: "현재 공개 근거의 출발점입니다" },
-  { number: "258", label: "배양검사 확진 방문\n환자 분리 5겹 교차검증", context: "누수 통제를 강하게 둔 평가입니다" },
+  { number: "258", label: "배양검사 확진 방문\n환자 분리 5겹 교차검증", context: "환자 분리 교차검증, 엄격한 누수 통제 적용" },
   { number: "658", label: "백색광 세극등 이미지\n현재 논문 벤치마크", context: "공개 결과는 백색광 기준입니다" },
-  { number: "0.677", label: "방문 단위 최고 AUROC\n데이터 누수 통제 평가", context: "일반화 가능성 확인을 위해 더 큰 규모의 다기관 검증이 필요합니다" },
+  { number: "0.677", label: "방문 단위 최고 AUROC\n데이터 누수 통제 평가", context: "단일기관 파일럿 기준 · 다기관 검증으로 확장합니다" },
 ];
 
 const koFaqs = [
@@ -97,7 +97,7 @@ const koFaqs = [
   },
   {
     q: "참여하면 어떤 이점이 있나요?",
-    a: "현재 단일기관 초기 근거를 다기관 검증 기반으로 확장하는 데 직접 기여하게 됩니다. 참여 기관은 더 큰 검증 코호트와 집계 모델 개선의 일부가 됩니다.",
+    a: "등록한 케이스에 대해 K-ERA AI 추론 결과(신뢰도·GradCAM·앙상블 분석)를 바로 확인할 수 있습니다. DINO 임베딩 기반 유사 증례 검색도 참여 기관에 제공됩니다. 다기관 논문 게재 시 기여 기관은 ICMJE 기준에 따라 공동저자로 포함되며, 이는 제출 전 서면으로 합의합니다.",
   },
   {
     q: "어떤 진단 범주를 지원하나요?",
@@ -314,7 +314,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 실제 진료에서 쓸 수 없다는 것.</strong>
               </p>
-              <p className="mt-7 text-[0.76rem] italic tracking-[0.04em] text-[#3f4b6a]">— K-ERA 개발자 노트, 제주대학교병원 안과</p>
+              <p className="mt-7 text-[0.76rem] italic tracking-[0.04em] text-[#3f4b6a]">— 정진호, 안과 전문의 · 제주대학교병원 안과</p>
             </div>
 
             <div className="flex flex-col px-12 pb-8 pt-7">
@@ -387,7 +387,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI 연구를 이어갈 수 있도록 설계된 연구 플랫폼입니다. Google 로그인으로 기관 승인을 신청하고, 승인되면 K-ERA 앱에서 케이스 등록과 이미지 검토를 이어갈 수 있습니다.
               </p>
               <p className="text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-                현재 공개 근거는 제주 단일기관 백색광 벤치마크입니다. 그 위에서 참여 병원이 늘어날수록 더 넓은 외부 검증이 가능해지고, 문헌 전반에서 제시되는 것처럼 CNN 계열이 더 큰 데이터에서 실제로 좋아지는지 직접 검증할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
+                시작점은 제주 단일기관 백색광 벤치마크입니다. 참여 병원이 늘어날수록 다기관 외부 검증이 가능해지고, 모델이 실제 임상 환경에서 일반화되는지를 직접 확인할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
               </p>
             </div>
           </div>
@@ -519,11 +519,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             <div className="text-center">
               <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">지금까지</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                제주에서 시작된 벤치마크,
+                제주에서 출발한 벤치마크.
                 <br />
-                더 많은 병원에서
-                <br />
-                검증할 준비를 합니다
+                다기관 검증으로 이어갑니다.
               </h2>
             </div>
             <div className="landing-reveal justify-self-center w-full max-w-[420px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[280px]" data-reveal="" data-reveal-order={0}>
@@ -551,6 +549,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <div className="mt-3 text-[0.8rem] leading-[1.5] text-[#6b7a96]">{stat.context}</div>
               </div>
             ))}
+          </div>
+          <div className="mt-4 text-center text-[0.72rem] tracking-[0.04em] text-[#3f4b6a]">
+            투고 중인 논문 기준 · 정진호, 안과 전문의 · 제주대학교병원 안과
           </div>
         </div>
       </section>
