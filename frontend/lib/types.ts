@@ -1323,9 +1323,54 @@ export type AggregationRecord = {
   base_model_version_id?: string | null;
   new_version_name: string;
   architecture?: string | null;
+  aggregation_strategy?: string | null;
+  aggregation_trim_ratio?: number | null;
+  weighting_mode?: string | null;
   site_weights?: Record<string, number>;
   total_cases?: number | null;
+  dp_accounting?: FederatedDpAccountingSummary | null;
+  dp_budget?: FederatedDpBudgetRecord | null;
   created_at?: string | null;
+};
+
+export type FederatedDpAccountingSiteSummary = {
+  site_id: string;
+  accounted_updates: number;
+  epsilon?: number | null;
+  delta?: number | null;
+};
+
+export type FederatedDpAccountingSummary = {
+  formal_dp_accounting: boolean;
+  accountant?: string | null;
+  accounted_updates: number;
+  accounted_sites?: number | null;
+  epsilon?: number | null;
+  delta?: number | null;
+  sites: FederatedDpAccountingSiteSummary[];
+};
+
+export type FederatedDpBudgetSiteRecord = {
+  site_id: string;
+  accounted_updates: number;
+  accounted_aggregations: number;
+  epsilon?: number | null;
+  delta?: number | null;
+};
+
+export type FederatedDpBudgetRecord = {
+  formal_dp_accounting: boolean;
+  accountant?: string | null;
+  accounted_updates: number;
+  accounted_aggregations: number;
+  accounted_sites?: number | null;
+  epsilon?: number | null;
+  delta?: number | null;
+  sites: FederatedDpBudgetSiteRecord[];
+  last_accounted_aggregation_id?: string | null;
+  last_accounted_at?: string | null;
+  last_accounted_new_version_name?: string | null;
+  last_accounted_base_model_version_id?: string | null;
 };
 
 export type ReleaseRolloutRecord = {

@@ -164,7 +164,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
           slotClassName="rounded-[4px]"
         >
-          {props.authBusy ? props.connectingLabel : props.googleLoginLabel}
+          {props.authBusy ? props.connectingLabel : "Request approval"}
         </LandingGoogleCta>
       </nav>
 
@@ -181,8 +181,8 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               <em className="italic text-[#1a5fa8]">A network built to push it further.</em>
             </h1>
             <div className="mx-auto mb-8 max-w-[500px] text-[0.95rem] leading-[1.85] text-[#393c4a]">
-              <p>The current evidence is modest by design: 101 patients, patient-disjoint 5-fold splits, 0.677 visit-level AUROC. K-ERA starts here — not because the result is strong enough, but because this is what the evidence actually supports.</p>
-              <p className="mt-2.5">The broader keratitis AI literature suggests CNN-family models improve as datasets scale across hospitals. K-ERA is built to test that — with federated infrastructure that keeps patient data on-site.</p>
+              <p>The current evidence is modest: 101 patients, patient-disjoint 5-fold splits, and 0.677 visit-level AUROC. K-ERA starts with the evidence we actually have.</p>
+              <p className="mt-2.5">Request approval on the web, then continue in the desktop app on a hospital PC. The goal is simple: grow validation across hospitals without moving raw patient data.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
@@ -192,11 +192,14 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
                 slotClassName="rounded-[4px]"
               >
-                {props.authBusy ? props.connectingLabel : props.googleLoginLabel}
+                {props.authBusy ? props.connectingLabel : "Request approval with Google"}
               </LandingGoogleCta>
               <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
                 Read more ↓
               </a>
+            </div>
+            <div className="mt-4 text-[0.74rem] text-[#7c8095]">
+              1. Sign in on the web → 2. Get approved → 3. Install the desktop app → 4. Start local case work
             </div>
           </div>
 
@@ -206,6 +209,12 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 Platform type
               </div>
               <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">Federated extension · Clinician-facing research platform</div>
+            </div>
+            <div className="mb-5">
+              <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
+                Workflow
+              </div>
+              <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">Web approval → desktop app install → local case authoring</div>
             </div>
             <div className="mb-5">
               <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
@@ -262,7 +271,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               <div className="mt-7 border border-[#d6d9e4] border-l-[3px] border-l-[#b5291c] bg-[#f7f8fc] px-[22px] py-[18px] text-[0.84rem] leading-[1.72] text-[#393c4a]">
                 <strong className="font-medium text-[#b5291c]">The central constraint is not only model design. It is whether hospitals can build larger validation cohorts without moving raw patient data.</strong>
                 <br />
-                That is the gap K-ERA is trying to close: turn routine clinical cases into a shared validation and training pathway, while keeping raw images and identifiers local.
+                K-ERA closes that gap by handling approval on the web and keeping actual case work inside the desktop app on hospital PCs.
               </div>
             </div>
             <div className="flex flex-col">
@@ -478,7 +487,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
               slotClassName="rounded-[4px]"
             >
-              {props.authBusy ? props.connectingLabel : props.googleLoginLabel}
+              {props.authBusy ? props.connectingLabel : "Request approval with Google"}
             </LandingGoogleCta>
             <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
               Read from the beginning

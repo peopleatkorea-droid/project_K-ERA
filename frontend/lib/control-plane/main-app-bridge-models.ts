@@ -72,6 +72,190 @@ function booleanFromValue(value: unknown): boolean | undefined {
   return undefined;
 }
 
+function serializeFederatedDpAccountingSummary(value: unknown): AggregationRecord["dp_accounting"] {
+  const record = recordFromValue(value);
+  const formalDpAccounting = booleanFromValue(record.formal_dp_accounting);
+  const sites = Array.isArray(record.sites)
+    ? record.sites
+        .map((item) => {
+          const siteRecord = recordFromValue(item);
+          const siteId = stringFromValue(siteRecord.site_id);
+          if (!siteId) {
+            return null;
+          }
+          return {
+            site_id: siteId,
+            accounted_updates: Math.max(0, Number(numberFromValue(siteRecord.accounted_updates) ?? 0)),
+            epsilon: numberFromValue(siteRecord.epsilon),
+            delta: numberFromValue(siteRecord.delta),
+          };
+        })
+        .filter(Boolean) as NonNullable<AggregationRecord["dp_accounting"]>["sites"]
+    : [];
+  if (!formalDpAccounting && sites.length === 0 && !stringFromValue(record.accountant)) {
+    return null;
+  }
+  return {
+    formal_dp_accounting: Boolean(formalDpAccounting),
+    accountant: stringFromValue(record.accountant),
+    accounted_updates: Math.max(0, Number(numberFromValue(record.accounted_updates) ?? 0)),
+    accounted_sites: numberFromValue(record.accounted_sites),
+    epsilon: numberFromValue(record.epsilon),
+    delta: numberFromValue(record.delta),
+    sites,
+  };
+}
+
+function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp_budget"] {
+  const record = recordFromValue(value);
+  const formalDpAccounting = booleanFromValue(record.formal_dp_accounting);
+  const sites = Array.isArray(record.sites)
+    ? record.sites
+        .map((item) => {
+          const siteRecord = recordFromValue(item);
+          const siteId = stringFromValue(siteRecord.site_id);
+          if (!siteId) {
+            return null;
+          }
+          return {
+            site_id: siteId,
+            accounted_updates: Math.max(0, Number(numberFromValue(siteRecord.accounted_updates) ?? 0)),
+            accounted_aggregations: Math.max(0, Number(numberFromValue(siteRecord.accounted_aggregations) ?? 0)),
+            epsilon: numberFromValue(siteRecord.epsilon),
+            delta: numberFromValue(siteRecord.delta),
+          };
+        })
+        .filter(Boolean) as NonNullable<AggregationRecord["dp_budget"]>["sites"]
+    : [];
+  if (!formalDpAccounting && sites.length === 0 && !stringFromValue(record.accountant)) {
+    return null;
+  }
+  return {
+    formal_dp_accounting: Boolean(formalDpAccounting),
+    accountant: stringFromValue(record.accountant),
+    accounted_updates: Math.max(0, Number(numberFromValue(record.accounted_updates) ?? 0)),
+    accounted_aggregations: Math.max(0, Number(numberFromValue(record.accounted_aggregations) ?? 0)),
+    accounted_sites: numberFromValue(record.accounted_sites),
+    epsilon: numberFromValue(record.epsilon),
+    delta: numberFromValue(record.delta),
+    sites,
+    last_accounted_aggregation_id: stringFromValue(record.last_accounted_aggregation_id),
+    last_accounted_at: stringFromValue(record.last_accounted_at),
+    last_accounted_new_version_name: stringFromValue(record.last_accounted_new_version_name),
+    last_accounted_base_model_version_id: stringFromValue(record.last_accounted_base_model_version_id),
+  };
+}
+
+function summarizeFederatedDpAccountingFromUpdates(
+  updates: Array<{ site_id?: string | null; payload_json?: Record<string, unknown> | null }>,
+): AggregationRecord["dp_accounting"] {
+  const bySite = new Map<
+    string,
+    {
+      site_id: string;
+      accounted_updates: number;
+      epsilon: number;
+      delta: number;
+    }
+  >();
+  let formalDpAccounting = false;
+  let accountant: string | null = null;
+  let accountedUpdates = 0;
+  let epsilon = 0;
+  let delta = 0;
+  for (const update of updates) {
+    const accounting = serializeFederatedDpAccountingSummary(update.payload_json?.dp_accounting);
+    if (!accounting?.formal_dp_accounting) {
+      continue;
+    }
+    formalDpAccounting = true;
+    accountant ||= accounting.accountant ?? null;
+    const siteId = trimText(update.site_id) || "unknown";
+    const entry = bySite.get(siteId) ?? {
+      site_id: siteId,
+      accounted_updates: 0,
+      epsilon: 0,
+      delta: 0,
+    };
+    entry.accounted_updates += 1;
+    entry.epsilon += Number(accounting.epsilon ?? 0);
+    entry.delta += Number(accounting.delta ?? 0);
+    bySite.set(siteId, entry);
+    accountedUpdates += 1;
+    epsilon += Number(accounting.epsilon ?? 0);
+    delta += Number(accounting.delta ?? 0);
+  }
+  if (!formalDpAccounting) {
+    return null;
+  }
+  return {
+    formal_dp_accounting: true,
+    accountant,
+    accounted_updates: accountedUpdates,
+    accounted_sites: bySite.size,
+    epsilon,
+    delta,
+    sites: Array.from(bySite.values()).sort((left, right) => left.site_id.localeCompare(right.site_id)),
+  };
+}
+
+function accumulateFederatedDpBudgetRecord(
+  priorBudget: AggregationRecord["dp_budget"],
+  currentSummary: AggregationRecord["dp_accounting"],
+  metadata: {
+    aggregation_id?: string | null;
+    created_at?: string | null;
+    new_version_name?: string | null;
+    base_model_version_id?: string | null;
+  },
+): AggregationRecord["dp_budget"] {
+  const previousSites = new Map(
+    (priorBudget?.sites ?? []).map((item) => [
+      item.site_id,
+      {
+        ...item,
+        accounted_updates: Number(item.accounted_updates ?? 0),
+        accounted_aggregations: Number(item.accounted_aggregations ?? 0),
+        epsilon: Number(item.epsilon ?? 0),
+        delta: Number(item.delta ?? 0),
+      },
+    ]),
+  );
+  if (!currentSummary?.formal_dp_accounting) {
+    return priorBudget ?? null;
+  }
+  for (const site of currentSummary.sites) {
+    const existing = previousSites.get(site.site_id) ?? {
+      site_id: site.site_id,
+      accounted_updates: 0,
+      accounted_aggregations: 0,
+      epsilon: 0,
+      delta: 0,
+    };
+    existing.accounted_updates += Number(site.accounted_updates ?? 0);
+    existing.accounted_aggregations += 1;
+    existing.epsilon += Number(site.epsilon ?? 0);
+    existing.delta += Number(site.delta ?? 0);
+    previousSites.set(site.site_id, existing);
+  }
+  return {
+    formal_dp_accounting: true,
+    accountant: currentSummary.accountant ?? priorBudget?.accountant ?? null,
+    accounted_updates: Number(priorBudget?.accounted_updates ?? 0) + Number(currentSummary.accounted_updates ?? 0),
+    accounted_aggregations: Number(priorBudget?.accounted_aggregations ?? 0) + 1,
+    accounted_sites: previousSites.size,
+    epsilon: Number(priorBudget?.epsilon ?? 0) + Number(currentSummary.epsilon ?? 0),
+    delta: Number(priorBudget?.delta ?? 0) + Number(currentSummary.delta ?? 0),
+    sites: Array.from(previousSites.values()).sort((left, right) => left.site_id.localeCompare(right.site_id)),
+    last_accounted_aggregation_id: trimText(metadata.aggregation_id) || priorBudget?.last_accounted_aggregation_id || null,
+    last_accounted_at: trimText(metadata.created_at) || priorBudget?.last_accounted_at || null,
+    last_accounted_new_version_name:
+      trimText(metadata.new_version_name) || priorBudget?.last_accounted_new_version_name || null,
+    last_accounted_base_model_version_id:
+      trimText(metadata.base_model_version_id) || priorBudget?.last_accounted_base_model_version_id || null,
+  };
+}
+
 function isoStringOrNull(value: unknown): string | null {
   if (!value) {
     return null;
@@ -177,8 +361,13 @@ function serializeMainAggregationRow(row: Record<string, unknown>): AggregationR
       stringFromValue(payload.new_version_name) ||
       "pending-aggregation",
     architecture: stringFromValue(summary.architecture) || stringFromValue(payload.architecture),
+    aggregation_strategy: stringFromValue(summary.aggregation_strategy) || stringFromValue(payload.aggregation_strategy),
+    aggregation_trim_ratio: numberFromValue(summary.aggregation_trim_ratio) ?? numberFromValue(payload.aggregation_trim_ratio),
+    weighting_mode: stringFromValue(summary.weighting_mode) || stringFromValue(payload.weighting_mode),
     site_weights: numberRecordFromValue(summary.site_weights) || numberRecordFromValue(payload.site_weights) || undefined,
     total_cases: numberFromValue(summary.total_cases) ?? numberFromValue(payload.total_cases),
+    dp_accounting: serializeFederatedDpAccountingSummary(summary.dp_accounting) || serializeFederatedDpAccountingSummary(payload.dp_accounting),
+    dp_budget: serializeFederatedDpBudgetRecord(summary.dp_budget) || serializeFederatedDpBudgetRecord(payload.dp_budget),
     created_at: isoStringOrNull(rowValue<string | Date | null>(row as never, "created_at")),
   };
 }
@@ -580,17 +769,42 @@ export async function runMainFederatedAggregation(
     ? await sql`
         select
           update_id,
-          base_model_version_id
+          site_id,
+          base_model_version_id,
+          payload_json
         from model_updates
         where update_id = any(${selectedUpdateIds})
       `
     : [];
+  const existingAggregationRows = await sql`
+    select
+      summary_json
+    from aggregations
+    order by created_at desc
+  `;
   const baseModelVersionId = trimText(updateRows[0]?.base_model_version_id) || null;
   const aggregationId = makeControlPlaneId("aggregation");
   const newVersionName = trimText(payload.new_version_name) || `aggregation-${new Date().toISOString().slice(0, 10)}`;
+  const dpAccounting = summarizeFederatedDpAccountingFromUpdates(
+    updateRows.map((row) => ({
+      site_id: trimText(row.site_id),
+      payload_json: recordFromValue(row.payload_json),
+    })),
+  );
+  const priorBudget = existingAggregationRows
+    .map((row) => serializeFederatedDpBudgetRecord(recordFromValue(row.summary_json).dp_budget))
+    .find((item) => Boolean(item)) ?? null;
+  const dpBudget = accumulateFederatedDpBudgetRecord(priorBudget, dpAccounting, {
+    aggregation_id: aggregationId,
+    created_at: new Date().toISOString(),
+    new_version_name: newVersionName,
+    base_model_version_id: baseModelVersionId,
+  });
   const summaryJson = {
     update_ids: selectedUpdateIds,
     new_version_name: newVersionName,
+    dp_accounting: dpAccounting,
+    dp_budget: dpBudget,
   };
   await sql`
     insert into aggregations (

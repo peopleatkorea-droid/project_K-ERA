@@ -591,6 +591,14 @@ class ControlPlaneRegistryOps:
         }
         if aggregation_metadata:
             record.update({key: value for key, value in aggregation_metadata.items() if value is not None})
+        if isinstance(record.get("dp_budget"), dict):
+            dp_budget = dict(record["dp_budget"])
+            if dp_budget.get("formal_dp_accounting"):
+                dp_budget.setdefault("last_accounted_aggregation_id", agg_id)
+                dp_budget.setdefault("last_accounted_at", record["created_at"])
+                dp_budget.setdefault("last_accounted_new_version_name", new_version_name)
+                dp_budget.setdefault("last_accounted_base_model_version_id", base_model_version_id)
+            record["dp_budget"] = dp_budget
         with CONTROL_PLANE_ENGINE.begin() as conn:
             conn.execute(
                 aggregations.insert().values(

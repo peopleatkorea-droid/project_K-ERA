@@ -840,7 +840,7 @@ describe("HomePage history guard", () => {
     render(<HomePage />);
 
     expect(
-      await screen.findByText((content) => content.includes("Patient workspace is unavailable on this web deployment")),
+      await screen.findByText((content) => content.includes("Open patient cases in the desktop app")),
     ).toBeInTheDocument();
     expect(screen.queryByText(/^Workspace$/)).not.toBeInTheDocument();
     expect(apiMocks.fetchSiteSummary).not.toHaveBeenCalled();
@@ -872,7 +872,7 @@ describe("HomePage history guard", () => {
 
     render(<HomePage />);
 
-    expect(await screen.findByText((content) => content.includes("Download the desktop app"))).toBeInTheDocument();
+    expect(await screen.findByText((content) => content.includes("Download K-ERA Desktop"))).toBeInTheDocument();
     expect(await screen.findByText("1.0.0")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Download CPU installer" }));

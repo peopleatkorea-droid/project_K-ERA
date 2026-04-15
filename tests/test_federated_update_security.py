@@ -12,11 +12,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from kera_research.services.federated_update_security import (
+    accumulate_federated_dp_budget,
     apply_federated_update_signature,
     assert_federated_privacy_runtime_ready,
     build_federated_dp_accounting_entry,
     federated_delta_privacy_controls,
     federated_privacy_runtime_report,
+    latest_federated_dp_budget_snapshot,
     summarize_federated_data_distribution,
     summarize_federated_dp_accounting,
     verify_federated_update_signature,
@@ -210,6 +212,106 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         self.assertEqual(len(summary["sites"]), 2)
         self.assertEqual(summary["sites"][0]["site_id"], "SITE-A")
         self.assertAlmostEqual(float(summary["sites"][0]["epsilon"] or 0.0), 1.0)
+
+    def test_accumulate_federated_dp_budget_persists_cumulative_snapshot(self):
+        prior_budget = {
+            "formal_dp_accounting": True,
+            "accountant": "gaussian_basic_composition",
+            "accounted_updates": 2,
+            "accounted_aggregations": 1,
+            "epsilon": 0.9,
+            "delta": 2e-5,
+            "sites": [
+                {
+                    "site_id": "SITE-A",
+                    "accounted_updates": 2,
+                    "accounted_aggregations": 1,
+                    "epsilon": 0.9,
+                    "delta": 2e-5,
+                }
+            ],
+            "last_accounted_aggregation_id": "agg_prev",
+        }
+        current_summary = {
+            "formal_dp_accounting": True,
+            "accountant": "gaussian_basic_composition",
+            "accounted_updates": 2,
+            "epsilon": 0.7,
+            "delta": 1e-5,
+            "sites": [
+                {
+                    "site_id": "SITE-A",
+                    "accounted_updates": 1,
+                    "epsilon": 0.3,
+                    "delta": 5e-6,
+                },
+                {
+                    "site_id": "SITE-B",
+                    "accounted_updates": 1,
+                    "epsilon": 0.4,
+                    "delta": 5e-6,
+                },
+            ],
+        }
+        budget = accumulate_federated_dp_budget(
+            prior_budget,
+            current_summary,
+            aggregation_id="agg_next",
+            created_at="2026-04-15T01:00:00+00:00",
+            new_version_name="global-convnext-next",
+            base_model_version_id="model_global_prev",
+        )
+        self.assertTrue(budget["formal_dp_accounting"])
+        self.assertEqual(budget["accounted_aggregations"], 2)
+        self.assertEqual(budget["accounted_updates"], 4)
+        self.assertAlmostEqual(float(budget["epsilon"] or 0.0), 1.6)
+        self.assertAlmostEqual(float(budget["delta"] or 0.0), 3e-5)
+        self.assertEqual(budget["last_accounted_aggregation_id"], "agg_next")
+        self.assertEqual(len(budget["sites"]), 2)
+        self.assertEqual(budget["sites"][0]["site_id"], "SITE-A")
+        self.assertEqual(budget["sites"][0]["accounted_aggregations"], 2)
+
+    def test_latest_federated_dp_budget_snapshot_replays_historical_summaries(self):
+        budget = latest_federated_dp_budget_snapshot(
+            [
+                {
+                    "aggregation_id": "agg_a",
+                    "created_at": "2026-04-14T00:00:00+00:00",
+                    "new_version_name": "global-a",
+                    "base_model_version_id": "model_a",
+                    "dp_accounting": {
+                        "formal_dp_accounting": True,
+                        "accountant": "gaussian_basic_composition",
+                        "accounted_updates": 1,
+                        "epsilon": 0.4,
+                        "delta": 1e-5,
+                        "sites": [{"site_id": "SITE-A", "accounted_updates": 1, "epsilon": 0.4, "delta": 1e-5}],
+                    },
+                },
+                {
+                    "aggregation_id": "agg_b",
+                    "created_at": "2026-04-15T00:00:00+00:00",
+                    "new_version_name": "global-b",
+                    "base_model_version_id": "model_b",
+                    "dp_accounting": {
+                        "formal_dp_accounting": True,
+                        "accountant": "gaussian_basic_composition",
+                        "accounted_updates": 2,
+                        "epsilon": 0.9,
+                        "delta": 2e-5,
+                        "sites": [
+                            {"site_id": "SITE-A", "accounted_updates": 1, "epsilon": 0.4, "delta": 1e-5},
+                            {"site_id": "SITE-B", "accounted_updates": 1, "epsilon": 0.5, "delta": 1e-5},
+                        ],
+                    },
+                },
+            ]
+        )
+        self.assertTrue(budget["formal_dp_accounting"])
+        self.assertEqual(budget["accounted_aggregations"], 2)
+        self.assertEqual(budget["accounted_updates"], 3)
+        self.assertAlmostEqual(float(budget["epsilon"] or 0.0), 1.3)
+        self.assertEqual(budget["last_accounted_aggregation_id"], "agg_b")
 
     def test_privacy_runtime_report_rejects_when_formal_dp_is_required(self):
         with patch.dict(os.environ, {"KERA_REQUIRE_FORMAL_DP_ACCOUNTING": "true"}, clear=False):

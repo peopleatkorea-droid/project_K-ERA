@@ -6533,6 +6533,11 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(dp_accounting["accounted_updates"], 2)
         self.assertAlmostEqual(float(dp_accounting["epsilon"] or 0.0), 1.1)
         self.assertEqual(len(dp_accounting["sites"]), 2)
+        dp_budget = job_detail_payload["result"]["aggregation"]["dp_budget"]
+        self.assertTrue(dp_budget["formal_dp_accounting"])
+        self.assertEqual(dp_budget["accounted_aggregations"], 1)
+        self.assertEqual(dp_budget["accounted_updates"], 2)
+        self.assertAlmostEqual(float(dp_budget["epsilon"] or 0.0), 1.1)
 
     def test_register_model_update_rejects_tampered_federated_signature_http(self):
         from kera_research.services.federated_update_security import apply_federated_update_signature

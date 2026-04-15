@@ -2,6 +2,19 @@
 
 ## 2026-04-15
 
+### Federated privacy accounting and admin reporting
+
+- federated update의 `dp_accounting` summary를 aggregation 결과에만 남기던 상태에서, aggregation마다 누적 `dp_budget` snapshot을 함께 영속 저장하도록 확장했습니다.
+- 현재 accountant는 `gaussian_basic_composition` 기준이며, site별/전체 `epsilon`, `delta`, `accounted_updates`, `accounted_aggregations`를 aggregation 시점 기준으로 누적합니다.
+- Python control-plane aggregation 경로와 Next main-app-bridge aggregation 경로가 같은 DP summary/budget 구조를 남기도록 맞췄습니다.
+- admin workspace의 federation 섹션에 `현재 프라이버시 budget` 카드와 aggregation별 `이번 라운드 privacy accounting` 요약을 추가했습니다.
+- README도 현재 상태에 맞게 정리했습니다. 이제 basic composition accountant와 aggregation별 누적 budget snapshot/report는 있다고 명시하고, 아직 없는 것은 고급 accountant와 secure aggregation이라고 구분합니다.
+- 관련 검증:
+  - `uv run pytest tests/test_federated_update_security.py -q`
+  - `uv run pytest tests/test_api_http.py -q -k "aggregation_job_endpoints_persist_status_and_dp_accounting_http"`
+  - `frontend/npm run build`
+  - `frontend/npm exec vitest run`
+
 ### README 정보구조 재정리
 
 - README 상단을 현재 실제 운영 흐름 기준으로 다시 썼습니다.

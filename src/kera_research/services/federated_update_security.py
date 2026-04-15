@@ -233,12 +233,16 @@ def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str
     total_epsilon = 0.0
     total_delta = 0.0
     accounted_updates = 0
+    accountant: str | None = None
     for record in records:
         if not isinstance(record, dict):
             continue
         accounting = dict(record.get("dp_accounting") or {})
         if not accounting.get("formal_dp_accounting"):
             continue
+        if accountant is None:
+            normalized_accountant = str(accounting.get("accountant") or "").strip()
+            accountant = normalized_accountant or None
         epsilon = float(accounting.get("epsilon") or 0.0)
         delta = float(accounting.get("delta") or 0.0)
         site_id = str(record.get("site_id") or "unknown").strip() or "unknown"
@@ -259,11 +263,177 @@ def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str
         accounted_updates += 1
     return {
         "formal_dp_accounting": accounted_updates > 0,
+        "accountant": accountant if accounted_updates > 0 else None,
         "accounted_updates": accounted_updates,
         "epsilon": total_epsilon if accounted_updates > 0 else None,
         "delta": total_delta if accounted_updates > 0 else None,
+        "accounted_sites": len(by_site) if accounted_updates > 0 else 0,
         "sites": [by_site[key] for key in sorted(by_site)],
     }
+
+
+def _federated_dp_budget_template() -> dict[str, Any]:
+    return {
+        "formal_dp_accounting": False,
+        "accountant": None,
+        "accounted_updates": 0,
+        "accounted_aggregations": 0,
+        "accounted_sites": 0,
+        "epsilon": None,
+        "delta": None,
+        "sites": [],
+        "last_accounted_aggregation_id": None,
+        "last_accounted_at": None,
+        "last_accounted_new_version_name": None,
+        "last_accounted_base_model_version_id": None,
+    }
+
+
+def _normalize_federated_dp_site_budget(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "site_id": str(record.get("site_id") or "unknown").strip() or "unknown",
+        "accounted_updates": max(0, int(record.get("accounted_updates") or 0)),
+        "accounted_aggregations": max(0, int(record.get("accounted_aggregations") or 0)),
+        "epsilon": float(record.get("epsilon") or 0.0),
+        "delta": float(record.get("delta") or 0.0),
+    }
+
+
+def _normalize_federated_dp_budget_snapshot(record: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _federated_dp_budget_template()
+    if not isinstance(record, dict):
+        return normalized
+    normalized["formal_dp_accounting"] = bool(record.get("formal_dp_accounting"))
+    normalized["accountant"] = str(record.get("accountant") or "").strip() or None
+    normalized["accounted_updates"] = max(0, int(record.get("accounted_updates") or 0))
+    normalized["accounted_aggregations"] = max(0, int(record.get("accounted_aggregations") or 0))
+    normalized["epsilon"] = (
+        float(record.get("epsilon") or 0.0)
+        if normalized["formal_dp_accounting"]
+        else None
+    )
+    normalized["delta"] = (
+        float(record.get("delta") or 0.0)
+        if normalized["formal_dp_accounting"]
+        else None
+    )
+    normalized["sites"] = sorted(
+        [
+            _normalize_federated_dp_site_budget(item)
+            for item in list(record.get("sites") or [])
+            if isinstance(item, dict)
+        ],
+        key=lambda item: item["site_id"],
+    )
+    normalized["accounted_sites"] = len(normalized["sites"])
+    for key in (
+        "last_accounted_aggregation_id",
+        "last_accounted_at",
+        "last_accounted_new_version_name",
+        "last_accounted_base_model_version_id",
+    ):
+        normalized[key] = str(record.get(key) or "").strip() or None
+    if not normalized["formal_dp_accounting"]:
+        normalized["accountant"] = None
+        normalized["accounted_updates"] = 0
+        normalized["accounted_aggregations"] = 0
+        normalized["accounted_sites"] = 0
+        normalized["epsilon"] = None
+        normalized["delta"] = None
+        normalized["sites"] = []
+    return normalized
+
+
+def accumulate_federated_dp_budget(
+    prior_budget: dict[str, Any] | None,
+    current_summary: dict[str, Any] | None,
+    *,
+    aggregation_id: str | None = None,
+    created_at: str | None = None,
+    new_version_name: str | None = None,
+    base_model_version_id: str | None = None,
+) -> dict[str, Any]:
+    previous = _normalize_federated_dp_budget_snapshot(prior_budget)
+    current = dict(current_summary or {})
+    if not current.get("formal_dp_accounting"):
+        return previous
+
+    merged_sites: dict[str, dict[str, Any]] = {
+        item["site_id"]: dict(item)
+        for item in previous["sites"]
+        if isinstance(item, dict)
+    }
+    current_sites = [
+        _normalize_federated_dp_site_budget(item)
+        for item in list(current.get("sites") or [])
+        if isinstance(item, dict)
+    ]
+    for site_entry in current_sites:
+        existing = merged_sites.get(site_entry["site_id"]) or {
+            "site_id": site_entry["site_id"],
+            "accounted_updates": 0,
+            "accounted_aggregations": 0,
+            "epsilon": 0.0,
+            "delta": 0.0,
+        }
+        existing["accounted_updates"] = int(existing.get("accounted_updates") or 0) + int(site_entry["accounted_updates"] or 0)
+        existing["accounted_aggregations"] = int(existing.get("accounted_aggregations") or 0) + 1
+        existing["epsilon"] = float(existing.get("epsilon") or 0.0) + float(site_entry["epsilon"] or 0.0)
+        existing["delta"] = float(existing.get("delta") or 0.0) + float(site_entry["delta"] or 0.0)
+        merged_sites[site_entry["site_id"]] = existing
+
+    normalized_accountant = str(current.get("accountant") or "").strip() or previous.get("accountant")
+    return {
+        "formal_dp_accounting": True,
+        "accountant": normalized_accountant or None,
+        "accounted_updates": int(previous.get("accounted_updates") or 0) + max(0, int(current.get("accounted_updates") or 0)),
+        "accounted_aggregations": int(previous.get("accounted_aggregations") or 0) + 1,
+        "accounted_sites": len(merged_sites),
+        "epsilon": float(previous.get("epsilon") or 0.0) + float(current.get("epsilon") or 0.0),
+        "delta": float(previous.get("delta") or 0.0) + float(current.get("delta") or 0.0),
+        "sites": [merged_sites[key] for key in sorted(merged_sites)],
+        "last_accounted_aggregation_id": str(aggregation_id or "").strip() or previous.get("last_accounted_aggregation_id"),
+        "last_accounted_at": str(created_at or "").strip() or previous.get("last_accounted_at"),
+        "last_accounted_new_version_name": str(new_version_name or "").strip() or previous.get("last_accounted_new_version_name"),
+        "last_accounted_base_model_version_id": str(base_model_version_id or "").strip()
+        or previous.get("last_accounted_base_model_version_id"),
+    }
+
+
+def latest_federated_dp_budget_snapshot(records: list[dict[str, Any]]) -> dict[str, Any]:
+    snapshots: list[dict[str, Any]] = [dict(item) for item in records if isinstance(item, dict)]
+    direct_budget = next(
+        (
+            _normalize_federated_dp_budget_snapshot(dict(item.get("dp_budget") or {}))
+            for item in snapshots
+            if isinstance(item.get("dp_budget"), dict)
+        ),
+        None,
+    )
+    if direct_budget is not None and (
+        direct_budget.get("formal_dp_accounting")
+        or direct_budget.get("accounted_aggregations")
+    ):
+        return direct_budget
+
+    budget = _federated_dp_budget_template()
+    ordered = sorted(
+        snapshots,
+        key=lambda item: (
+            str(item.get("created_at") or "").strip(),
+            str(item.get("aggregation_id") or "").strip(),
+        ),
+    )
+    for item in ordered:
+        budget = accumulate_federated_dp_budget(
+            budget,
+            dict(item.get("dp_accounting") or {}),
+            aggregation_id=str(item.get("aggregation_id") or "").strip() or None,
+            created_at=str(item.get("created_at") or "").strip() or None,
+            new_version_name=str(item.get("new_version_name") or "").strip() or None,
+            base_model_version_id=str(item.get("base_model_version_id") or "").strip() or None,
+        )
+    return budget
 
 
 def federated_privacy_runtime_report() -> dict[str, Any]:

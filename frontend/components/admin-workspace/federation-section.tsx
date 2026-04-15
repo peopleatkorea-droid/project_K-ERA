@@ -111,6 +111,22 @@ function buildAggregationLanes(approvedUpdates: ModelUpdateRecord[]): Aggregatio
     .sort((left, right) => right.total_cases - left.total_cases || right.update_count - left.update_count);
 }
 
+function formatDpMetric(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  if (value === 0) {
+    return "0";
+  }
+  if (Math.abs(value) < 0.001) {
+    return value.toExponential(2);
+  }
+  if (Math.abs(value) < 10) {
+    return value.toFixed(3);
+  }
+  return value.toFixed(2);
+}
+
 export function FederationSection({
   locale,
   notAvailableLabel,
@@ -139,6 +155,7 @@ export function FederationSection({
   const aggregationLanes = buildAggregationLanes(approvedUpdates);
   const readyAggregationLanes = aggregationLanes.filter((lane) => lane.duplicate_site_count === 0);
   const readyModelVersions = modelVersions.filter((item) => item.ready);
+  const latestDpBudget = aggregations.map((item) => item.dp_budget).find((item) => Boolean(item)) ?? null;
 
   return (
     <Card as="section" variant="surface" className="grid gap-5 p-6">
@@ -558,6 +575,39 @@ export function FederationSection({
             titleAs="h4"
             aside={<span className={docSiteBadgeClass}>{aggregations.length}</span>}
           />
+          {latestDpBudget ? (
+            <Card as="div" variant="nested" className="grid gap-3 border border-border/80 p-4">
+              <SectionHeader
+                title={pick(locale, "Current privacy budget", "현재 프라이버시 budget")}
+                titleAs="h5"
+                description={pick(
+                  locale,
+                  "Cumulative DP budget across aggregations that recorded formal accounting.",
+                  "formal DP accounting이 기록된 집계들을 기준으로 누적한 프라이버시 budget입니다."
+                )}
+              />
+              <MetricGrid columns={3}>
+                <MetricItem value={latestDpBudget.accountant ?? notAvailableLabel} label={pick(locale, "Accountant", "Accountant")} />
+                <MetricItem value={formatDpMetric(latestDpBudget.epsilon)} label={pick(locale, "Epsilon", "Epsilon")} />
+                <MetricItem value={formatDpMetric(latestDpBudget.delta)} label={pick(locale, "Delta", "Delta")} />
+                <MetricItem
+                  value={String(latestDpBudget.accounted_aggregations ?? 0)}
+                  label={pick(locale, "Aggregations", "집계 횟수")}
+                />
+                <MetricItem value={String(latestDpBudget.accounted_updates ?? 0)} label={pick(locale, "Updates", "업데이트")} />
+                <MetricItem value={String(latestDpBudget.accounted_sites ?? 0)} label={pick(locale, "Hospitals", "병원")} />
+              </MetricGrid>
+              {latestDpBudget.sites.length > 0 ? (
+                <div className="flex flex-wrap gap-2 text-sm text-muted">
+                  {latestDpBudget.sites.map((site) => (
+                    <span key={site.site_id} className={docSiteBadgeClass}>
+                      {`${site.site_id} · ε ${formatDpMetric(site.epsilon)} · δ ${formatDpMetric(site.delta)}`}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </Card>
+          ) : null}
           {aggregations.length === 0 ? (
             <div className={emptySurfaceClass}>
               {pick(locale, "No aggregation record has been registered yet.", "아직 등록된 집계 기록이 없습니다.")}
@@ -576,6 +626,60 @@ export function FederationSection({
                     <MetricItem value={String(item.total_cases ?? 0)} label={pick(locale, "Cases", "케이스")} />
                     <MetricItem value={String(Object.keys(item.site_weights ?? {}).length)} label={pick(locale, "Hospitals", "병원")} />
                   </MetricGrid>
+                  <Card as="div" variant="nested" className="grid gap-3 border border-border/70 p-3">
+                    <SectionHeader
+                      title={pick(locale, "This round privacy accounting", "이번 라운드 privacy accounting")}
+                      titleAs="h5"
+                      description={
+                        item.dp_accounting?.formal_dp_accounting
+                          ? pick(
+                              locale,
+                              "Recorded from the approved site updates that were included in this aggregation.",
+                              "이번 집계에 포함된 승인 update를 기준으로 기록한 값입니다."
+                            )
+                          : pick(
+                              locale,
+                              "No formal DP accounting record was attached to this aggregation.",
+                              "이 집계에는 formal DP accounting 기록이 붙어 있지 않습니다."
+                            )
+                      }
+                    />
+                    {item.dp_accounting?.formal_dp_accounting ? (
+                      <>
+                        <MetricGrid columns={3}>
+                          <MetricItem
+                            value={item.dp_accounting.accountant ?? notAvailableLabel}
+                            label={pick(locale, "Accountant", "Accountant")}
+                          />
+                          <MetricItem
+                            value={formatDpMetric(item.dp_accounting.epsilon)}
+                            label={pick(locale, "Epsilon", "Epsilon")}
+                          />
+                          <MetricItem
+                            value={formatDpMetric(item.dp_accounting.delta)}
+                            label={pick(locale, "Delta", "Delta")}
+                          />
+                          <MetricItem
+                            value={String(item.dp_accounting.accounted_updates ?? 0)}
+                            label={pick(locale, "Updates", "업데이트")}
+                          />
+                          <MetricItem
+                            value={String(item.dp_accounting.accounted_sites ?? item.dp_accounting.sites.length ?? 0)}
+                            label={pick(locale, "Hospitals", "병원")}
+                          />
+                        </MetricGrid>
+                        {item.dp_accounting.sites.length > 0 ? (
+                          <div className="flex flex-wrap gap-2 text-sm text-muted">
+                            {item.dp_accounting.sites.map((site) => (
+                              <span key={site.site_id} className={docSiteBadgeClass}>
+                                {`${site.site_id} · ε ${formatDpMetric(site.epsilon)} · δ ${formatDpMetric(site.delta)}`}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </Card>
                 </Card>
               ))}
             </div>

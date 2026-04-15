@@ -7,10 +7,12 @@ from typing import Any, Callable
 from fastapi import HTTPException, status
 
 from kera_research.services.federated_update_security import (
-    summarize_federated_dp_accounting,
+    accumulate_federated_dp_budget,
     federated_aggregation_strategy,
     federated_aggregation_trim_ratio,
+    latest_federated_dp_budget_snapshot,
     require_signed_federated_updates,
+    summarize_federated_dp_accounting,
     verify_federated_update_signature,
 )
 from kera_research.services.model_artifacts import ModelArtifactStore
@@ -348,6 +350,13 @@ class AdminRegistryOrchestrator:
         output_path = self.model_dir / f"global_{architecture}_{self.make_id('agg')}.pth"
         update_ids = [item["update_id"] for item in approved_updates]
         dp_accounting_summary = summarize_federated_dp_accounting(approved_updates)
+        prior_dp_budget = latest_federated_dp_budget_snapshot(cp.list_aggregations())
+        dp_budget_snapshot = accumulate_federated_dp_budget(
+            prior_dp_budget,
+            dp_accounting_summary,
+            new_version_name=resolved_version_name,
+            base_model_version_id=str(base_model.get("version_id") or "").strip() or None,
+        )
         try:
             for update_record in approved_updates:
                 verify_federated_update_signature(update_record)
@@ -400,6 +409,7 @@ class AdminRegistryOrchestrator:
                         "aggregated_update_ids": list(update_ids),
                         "aggregated_site_ids": sorted(site_weights),
                         "dp_accounting": dp_accounting_summary,
+                        "dp_budget": dp_budget_snapshot,
                     },
                 )
                 cp.update_model_update_statuses(update_ids, "aggregated")
