@@ -16,6 +16,7 @@ from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
     assert_federated_privacy_runtime_ready,
     build_federated_dp_accounting_entry,
+    evaluate_federated_dp_budget_guardrail,
     build_federated_participation_summary,
     federated_delta_privacy_controls,
     federated_privacy_runtime_report,
@@ -180,7 +181,41 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         self.assertGreater(float(entry["optimal_order"] or 0.0), 1.0)
         self.assertTrue(report["formal_dp_accounting"])
         self.assertEqual(report["dp_accountant_delta"], 1e-5)
-        self.assertEqual(report["dp_accountant_mode"], "gaussian_rdp_full_participation")
+        self.assertEqual(report["dp_accountant_mode"], "gaussian_rdp_poisson_subsampled")
+
+    def test_dp_accounting_entry_supports_poisson_subsampling_when_participation_rate_is_available(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            subsampled_entry = build_federated_dp_accounting_entry(
+                controls,
+                local_steps=3,
+                participation_rate=0.4,
+                aggregated_participant_count=2,
+                available_participant_count=5,
+            )
+            full_participation_entry = build_federated_dp_accounting_entry(
+                controls,
+                local_steps=3,
+                participation_rate=1.0,
+                aggregated_participant_count=5,
+                available_participant_count=5,
+            )
+        self.assertTrue(subsampled_entry["formal_dp_accounting"])
+        self.assertEqual(subsampled_entry["accountant"], "gaussian_rdp_poisson_subsampled")
+        self.assertTrue(subsampled_entry["subsampling_applied"])
+        self.assertIn("poisson_subsampling", subsampled_entry["assumptions"])
+        self.assertAlmostEqual(float(subsampled_entry["participation_rate"] or 0.0), 0.4, places=4)
+        self.assertEqual(subsampled_entry["aggregated_participant_count"], 2)
+        self.assertEqual(subsampled_entry["available_participant_count"], 5)
+        self.assertLess(float(subsampled_entry["epsilon"] or 0.0), float(full_participation_entry["epsilon"] or 0.0))
 
     def test_dp_accounting_entry_supports_basic_composition_override(self):
         with patch.dict(
@@ -198,6 +233,26 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         self.assertTrue(entry["formal_dp_accounting"])
         self.assertEqual(entry["accountant"], "gaussian_basic_composition")
         self.assertIn("single_round_epsilon", entry)
+
+    def test_dp_budget_guardrail_reports_warning_and_blocked_states(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DP_WARN_EPSILON": "0.8",
+                "KERA_FEDERATED_DP_MAX_EPSILON": "1.0",
+            },
+            clear=False,
+        ):
+            warning_guardrail = evaluate_federated_dp_budget_guardrail(
+                {"formal_dp_accounting": True, "epsilon": 0.9}
+            )
+            blocked_guardrail = evaluate_federated_dp_budget_guardrail(
+                {"formal_dp_accounting": True, "epsilon": 1.1}
+            )
+        self.assertEqual(warning_guardrail["guardrail_status"], "warning")
+        self.assertIn("epsilon_warn_threshold_reached", warning_guardrail["guardrail_warnings"])
+        self.assertEqual(blocked_guardrail["guardrail_status"], "blocked")
+        self.assertIn("epsilon_max_threshold_exceeded", blocked_guardrail["guardrail_warnings"])
 
     def test_rdp_accountant_is_tighter_than_basic_composition_for_same_controls(self):
         with patch.dict(
@@ -261,6 +316,44 @@ class FederatedUpdateSecurityTests(unittest.TestCase):
         self.assertEqual(len(summary["sites"]), 2)
         self.assertEqual(summary["sites"][0]["site_id"], "SITE-A")
         self.assertAlmostEqual(float(summary["sites"][0]["epsilon"] or 0.0), 1.0)
+
+    def test_dp_accounting_summary_applies_participation_aware_subsampling(self):
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_DELTA_CLIP_NORM": "1.5",
+                "KERA_FEDERATED_DELTA_NOISE_MULTIPLIER": "0.8",
+                "KERA_FEDERATED_DP_ACCOUNTANT_DELTA": "1e-5",
+            },
+            clear=False,
+        ):
+            controls = federated_delta_privacy_controls()
+            update_entry = build_federated_dp_accounting_entry(
+                controls,
+                local_steps=3,
+                participant_count=9,
+                patient_count=4,
+            )
+            full_summary = summarize_federated_dp_accounting(
+                [{"site_id": "SITE-A", "dp_accounting": update_entry}],
+            )
+            subsampled_summary = summarize_federated_dp_accounting(
+                [{"site_id": "SITE-A", "dp_accounting": update_entry}],
+                participation_summary=build_federated_participation_summary(
+                    aggregated_site_ids=["SITE-A", "SITE-B"],
+                    available_site_ids=["SITE-A", "SITE-B", "SITE-C", "SITE-D", "SITE-E"],
+                ),
+            )
+        self.assertEqual(subsampled_summary["accountant"], "gaussian_rdp_poisson_subsampled")
+        self.assertTrue(subsampled_summary["subsampling_applied"])
+        self.assertIn("poisson_subsampling", subsampled_summary["assumptions"])
+        self.assertAlmostEqual(float(subsampled_summary["sampling_rate"] or 0.0), 0.4, places=4)
+        self.assertEqual(subsampled_summary["aggregated_participant_count"], 2)
+        self.assertEqual(subsampled_summary["available_participant_count"], 5)
+        self.assertLess(
+            float(subsampled_summary["epsilon"] or 0.0),
+            float(full_summary["epsilon"] or 0.0),
+        )
 
     def test_accumulate_federated_dp_budget_persists_cumulative_snapshot(self):
         prior_budget = {

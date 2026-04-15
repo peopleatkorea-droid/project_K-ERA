@@ -5,13 +5,16 @@
 ### Federated privacy accounting and admin reporting
 
 - federated update의 `dp_accounting` summary를 aggregation 결과에만 남기던 상태에서, aggregation마다 누적 `dp_budget` snapshot을 함께 영속 저장하도록 확장했습니다.
-- 기본 accountant를 `gaussian_rdp_full_participation`으로 올렸고, site별/전체 `epsilon`, `delta`, `accounted_updates`, `accounted_aggregations`를 aggregation 시점 기준으로 누적합니다. 필요하면 `gaussian_basic_composition`으로 override할 수 있습니다.
+- 기본 accountant를 `gaussian_rdp_poisson_subsampled`로 올렸고, site별/전체 `epsilon`, `delta`, `accounted_updates`, `accounted_aggregations`를 aggregation 시점 기준으로 누적합니다. 필요하면 `gaussian_rdp_full_participation` 또는 `gaussian_basic_composition`으로 override할 수 있습니다.
 - Python control-plane aggregation 경로와 Next main-app-bridge aggregation 경로가 같은 DP summary/budget 구조를 남기도록 맞췄습니다.
 - admin workspace의 federation 섹션에 `현재 프라이버시 budget` 카드와 aggregation별 `이번 라운드 privacy accounting` 요약을 추가했습니다.
 - federation monitoring summary도 최신 `privacy_budget`를 직접 노출하도록 맞췄고, admin federation 화면에서 누적 budget JSON report를 바로 export할 수 있게 했습니다.
-- privacy budget JSON export는 이제 서버가 생성한 canonical report를 내려받는 방식이고, export 자체도 control-plane audit trail에 남습니다.
-- README도 현재 상태에 맞게 정리했습니다. 이제 기본 full-participation Gaussian RDP accountant와 aggregation별 누적 budget snapshot/report는 있다고 명시하고, 아직 없는 것은 subsampling accountant와 secure aggregation이라고 구분합니다.
+- privacy budget JSON export는 이제 서버가 생성한 canonical report를 내려받는 방식이고, export 자체도 control-plane audit trail에 남습니다. audit payload에는 accountant scope, sampling rate, target delta, 참여 범위도 같이 기록됩니다.
+- canonical privacy report에는 `report_schema_version`과 `limitations`도 같이 들어갑니다. 그래서 보고서를 받은 운영자나 외부 검토자가 `full_participation_bound_used`, `prv_accountant_not_enabled`, `no_secure_aggregation` 같은 현재 한계를 JSON만 보고도 바로 파악할 수 있습니다.
+- `KERA_FEDERATED_DP_WARN_EPSILON`, `KERA_FEDERATED_DP_MAX_EPSILON` 가드레일도 추가했습니다. 이제 admin federation 화면에 budget guardrail 상태가 표시되고, projected privacy budget이 최대 임계값을 넘는 aggregation은 서버가 `409`로 차단합니다.
+- README도 현재 상태에 맞게 정리했습니다. 이제 기본 accountant가 `gaussian_rdp_poisson_subsampled`이며, aggregation별 누적 budget snapshot/report는 최신 참여율을 반영한다고 명시합니다. `gaussian_rdp_full_participation`과 `gaussian_basic_composition`은 override 모드로 남고, 아직 없는 것은 PRV accountant와 secure aggregation이라고 구분합니다.
 - aggregation별 privacy accounting은 이제 최신 참여 병원 범위(`aggregated_site_count / available_site_count / participation_rate`)와 accountant 가정(`full_participation`, `no_subsampling`, `no_secure_aggregation`)을 같이 남깁니다.
+- aggregation별 privacy accounting은 이제 최신 참여 병원 범위(`aggregated_site_count / available_site_count / participation_rate`)를 바탕으로 Poisson subsampling을 반영한 epsilon을 계산할 수 있고, accountant 가정도 `poisson_subsampling` 또는 `full_participation`으로 같이 남깁니다.
 - admin federation 화면에도 `Coverage`와 `Assumptions`를 추가해, 현재 budget과 각 aggregation이 몇 개 병원 참여 기준인지와 어떤 accountant 가정으로 계산됐는지를 바로 확인할 수 있게 했습니다.
 - Python/local control-plane fallback에도 `audit_events`를 추가했습니다. 이제 local admin runtime의 privacy report export와 federation monitoring 경로도 `recent_audit_events`에 같은 형식의 audit trail을 남깁니다.
 - 관련 검증:
@@ -27,6 +30,10 @@
 - `k-era.org`는 로그인, 기관 승인, 설치본 다운로드용 웹 포털이고, 실제 환자 케이스 작업은 Windows 데스크톱 앱에서 진행한다는 점을 앞부분에 명확히 반영했습니다.
 - 설치본 배포 절차도 현재 기준으로 정리했습니다. 새 버전은 OneDrive 같은 외부 저장소에 올린 뒤, 운영자 화면의 `데스크톱 설치본 관리`에서 버전 / URL / SHA256 / 크기를 등록하는 흐름을 기준으로 설명합니다.
 - README 초반을 `의료진 / 연구자용 빠른 시작`, `운영자용 배포 절차`, `개발자 / 운영 담당자용 실행 방법`으로 다시 나눠, 읽는 사람별로 필요한 내용이 먼저 보이도록 정리했습니다.
+
+### Landing copy refinement
+
+- 한글/영문 랜딩 문구를 현재 제품 구조에 맞게 다듬었습니다. 핵심 메시지는 `웹 포털에서 승인 신청 -> 승인 후 K-ERA 앱에서 실제 케이스 작업` 흐름으로 정리했고, FL 소개도 `signed update`, `review-gated aggregation`, `privacy budget reporting`을 반영하도록 업데이트했습니다.
 
 ## 2026-04-14
 

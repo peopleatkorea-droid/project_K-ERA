@@ -11,7 +11,11 @@ from typing import Any
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _ALLOWED_AGGREGATION_STRATEGIES = {"fedavg", "coordinate_median", "trimmed_mean"}
-_ALLOWED_DP_ACCOUNTANT_MODES = {"gaussian_rdp_full_participation", "gaussian_basic_composition"}
+_ALLOWED_DP_ACCOUNTANT_MODES = {
+    "gaussian_rdp_poisson_subsampled",
+    "gaussian_rdp_full_participation",
+    "gaussian_basic_composition",
+}
 _PRODUCTION_LIKE_ENVIRONMENTS = {"prod", "production", "stage", "staging"}
 _GAUSSIAN_RDP_ORDERS = (
     1.25,
@@ -34,6 +38,7 @@ _GAUSSIAN_RDP_ORDERS = (
     128.0,
     256.0,
 )
+_GAUSSIAN_RDP_INTEGER_ORDERS = tuple(int(order) for order in _GAUSSIAN_RDP_ORDERS if float(order).is_integer() and order > 1)
 
 _FEDERATED_DP_ACCOUNTANT_SCOPE = "site_local_training"
 
@@ -126,7 +131,7 @@ def require_secure_aggregation() -> bool:
 def federated_dp_accountant_mode() -> str:
     raw = str(os.getenv("KERA_FEDERATED_DP_ACCOUNTANT_MODE") or "").strip().lower()
     if raw not in _ALLOWED_DP_ACCOUNTANT_MODES:
-        return "gaussian_rdp_full_participation"
+        return "gaussian_rdp_poisson_subsampled"
     return raw
 
 
@@ -166,6 +171,14 @@ def federated_dp_accountant_delta() -> float | None:
     return float(raw)
 
 
+def federated_dp_warn_epsilon() -> float | None:
+    return _env_positive_float("KERA_FEDERATED_DP_WARN_EPSILON")
+
+
+def federated_dp_max_epsilon() -> float | None:
+    return _env_positive_float("KERA_FEDERATED_DP_MAX_EPSILON")
+
+
 def _gaussian_rdp_composed_epsilon(*, noise_multiplier: float, delta: float, steps: int) -> tuple[float, float]:
     if noise_multiplier <= 0.0:
         raise ValueError("noise_multiplier must be positive")
@@ -186,6 +199,94 @@ def _gaussian_rdp_composed_epsilon(*, noise_multiplier: float, delta: float, ste
             best_order = float(order)
     if best_epsilon is None or best_order is None:
         raise ValueError("Unable to compute Gaussian RDP epsilon.")
+    return best_epsilon, best_order
+
+
+def _log_add_exp(left: float, right: float) -> float:
+    if left == -math.inf:
+        return right
+    if right == -math.inf:
+        return left
+    if left < right:
+        left, right = right, left
+    return left + math.log1p(math.exp(right - left))
+
+
+def _normalize_participation_rate(participation_rate: float | None) -> float | None:
+    if participation_rate is None:
+        return None
+    try:
+        normalized = float(participation_rate)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(normalized) or normalized <= 0.0:
+        return None
+    return max(0.0, min(1.0, normalized))
+
+
+def _gaussian_poisson_subsampled_rdp(*, order: int, participation_rate: float, noise_multiplier: float) -> float:
+    if order <= 1:
+        raise ValueError("order must be greater than 1")
+    if noise_multiplier <= 0.0:
+        raise ValueError("noise_multiplier must be positive")
+    q = _normalize_participation_rate(participation_rate)
+    if q is None:
+        raise ValueError("participation_rate must be positive")
+    if q >= 1.0:
+        return float(order) / (2.0 * (noise_multiplier ** 2))
+    log_q = math.log(q)
+    log_one_minus_q = math.log1p(-q)
+    log_a = -math.inf
+    for index in range(order + 1):
+        log_binomial = math.log(math.comb(order, index))
+        privacy_loss = ((index * index) - index) / (2.0 * (noise_multiplier ** 2))
+        log_term = (
+            log_binomial
+            + (index * log_q)
+            + ((order - index) * log_one_minus_q)
+            + privacy_loss
+        )
+        log_a = _log_add_exp(log_a, log_term)
+    return log_a / (order - 1.0)
+
+
+def _gaussian_poisson_subsampled_rdp_composed_epsilon(
+    *,
+    participation_rate: float,
+    noise_multiplier: float,
+    delta: float,
+    steps: int,
+) -> tuple[float, float]:
+    if noise_multiplier <= 0.0:
+        raise ValueError("noise_multiplier must be positive")
+    if not (0.0 < delta < 1.0):
+        raise ValueError("delta must be between 0 and 1")
+    q = _normalize_participation_rate(participation_rate)
+    if q is None:
+        raise ValueError("participation_rate must be between 0 and 1")
+    if q >= 1.0:
+        return _gaussian_rdp_composed_epsilon(
+            noise_multiplier=noise_multiplier,
+            delta=delta,
+            steps=steps,
+        )
+    normalized_steps = max(1, int(steps or 1))
+    best_epsilon: float | None = None
+    best_order: float | None = None
+    for order in _GAUSSIAN_RDP_INTEGER_ORDERS:
+        rdp = normalized_steps * _gaussian_poisson_subsampled_rdp(
+            order=order,
+            participation_rate=q,
+            noise_multiplier=noise_multiplier,
+        )
+        epsilon = rdp + math.log(1.0 / delta) / (order - 1.0)
+        if not math.isfinite(epsilon):
+            continue
+        if best_epsilon is None or epsilon < best_epsilon:
+            best_epsilon = float(epsilon)
+            best_order = float(order)
+    if best_epsilon is None or best_order is None:
+        raise ValueError("Unable to compute subsampled Gaussian RDP epsilon.")
     return best_epsilon, best_order
 
 
@@ -276,11 +377,22 @@ def build_federated_dp_accounting_entry(
     local_steps: int = 1,
     participant_count: int | None = None,
     patient_count: int | None = None,
+    participation_rate: float | None = None,
+    aggregated_participant_count: int | None = None,
+    available_participant_count: int | None = None,
+    accountant_delta: float | None = None,
 ) -> dict[str, Any]:
     controls = dict(privacy_controls or {})
     clip_norm = controls.get("delta_clip_l2_norm")
     noise_multiplier = controls.get("delta_noise_multiplier")
-    delta = federated_dp_accountant_delta()
+    delta = accountant_delta if accountant_delta is not None else federated_dp_accountant_delta()
+    if delta is not None:
+        try:
+            delta = float(delta)
+        except (TypeError, ValueError):
+            delta = None
+    if delta is not None and not (0.0 < float(delta) < 1.0):
+        delta = None
     steps = max(1, int(local_steps or 1))
     if (
         clip_norm in (None, 0, 0.0)
@@ -314,6 +426,7 @@ def build_federated_dp_accounting_entry(
             "local_steps": steps,
             "clipping_norm": float(clip_norm),
             "noise_multiplier": float(noise_multiplier),
+            "target_delta": float(delta),
             "assumptions": [
                 "client_delta_noise",
                 "gaussian_basic_composition",
@@ -321,30 +434,64 @@ def build_federated_dp_accounting_entry(
             ],
         }
     else:
-        epsilon, optimal_order = _gaussian_rdp_composed_epsilon(
-            noise_multiplier=float(noise_multiplier),
-            delta=float(delta),
-            steps=steps,
-        )
-        entry = {
-            "formal_dp_accounting": True,
-            "accountant": "gaussian_rdp_full_participation",
-            "accountant_scope": _FEDERATED_DP_ACCOUNTANT_SCOPE,
-            "subsampling_applied": False,
-            "epsilon": float(epsilon),
-            "delta": float(delta),
-            "local_steps": steps,
-            "clipping_norm": float(clip_norm),
-            "noise_multiplier": float(noise_multiplier),
-            "optimal_order": float(optimal_order),
-            "assumptions": [
-                "client_delta_noise",
-                "gaussian_rdp",
-                "full_participation",
-                "no_subsampling",
-                "no_secure_aggregation",
-            ],
-        }
+        normalized_participation_rate = _normalize_participation_rate(participation_rate)
+        if accountant_mode == "gaussian_rdp_poisson_subsampled" and normalized_participation_rate not in (None, 1.0):
+            epsilon, optimal_order = _gaussian_poisson_subsampled_rdp_composed_epsilon(
+                participation_rate=float(normalized_participation_rate),
+                noise_multiplier=float(noise_multiplier),
+                delta=float(delta),
+                steps=steps,
+            )
+            entry = {
+                "formal_dp_accounting": True,
+                "accountant": "gaussian_rdp_poisson_subsampled",
+                "accountant_scope": _FEDERATED_DP_ACCOUNTANT_SCOPE,
+                "subsampling_applied": True,
+                "epsilon": float(epsilon),
+                "delta": float(delta),
+                "local_steps": steps,
+                "clipping_norm": float(clip_norm),
+                "noise_multiplier": float(noise_multiplier),
+                "optimal_order": float(optimal_order),
+                "target_delta": float(delta),
+                "participation_rate": float(normalized_participation_rate),
+                "assumptions": [
+                    "client_delta_noise",
+                    "gaussian_rdp",
+                    "poisson_subsampling",
+                    "no_secure_aggregation",
+                ],
+            }
+            if aggregated_participant_count is not None:
+                entry["aggregated_participant_count"] = max(0, int(aggregated_participant_count))
+            if available_participant_count is not None:
+                entry["available_participant_count"] = max(0, int(available_participant_count))
+        else:
+            epsilon, optimal_order = _gaussian_rdp_composed_epsilon(
+                noise_multiplier=float(noise_multiplier),
+                delta=float(delta),
+                steps=steps,
+            )
+            entry = {
+                "formal_dp_accounting": True,
+                "accountant": "gaussian_rdp_full_participation",
+                "accountant_scope": _FEDERATED_DP_ACCOUNTANT_SCOPE,
+                "subsampling_applied": False,
+                "epsilon": float(epsilon),
+                "delta": float(delta),
+                "local_steps": steps,
+                "clipping_norm": float(clip_norm),
+                "noise_multiplier": float(noise_multiplier),
+                "optimal_order": float(optimal_order),
+                "target_delta": float(delta),
+                "assumptions": [
+                    "client_delta_noise",
+                    "gaussian_rdp",
+                    "full_participation",
+                    "no_subsampling",
+                    "no_secure_aggregation",
+                ],
+            }
     if participant_count is not None:
         entry["participant_count"] = max(0, int(participant_count))
     if patient_count is not None:
@@ -352,7 +499,76 @@ def build_federated_dp_accounting_entry(
     return entry
 
 
-def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _apply_participation_adjusted_accounting(
+    accounting: dict[str, Any],
+    *,
+    participation_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(accounting, dict) or not accounting.get("formal_dp_accounting"):
+        return dict(accounting or {})
+    if federated_dp_accountant_mode() != "gaussian_rdp_poisson_subsampled":
+        return dict(accounting)
+    if bool(accounting.get("subsampling_applied")):
+        return dict(accounting)
+    normalized_summary = (
+        build_federated_participation_summary(
+            aggregated_site_ids=list((participation_summary or {}).get("aggregated_site_ids") or []),
+            available_site_ids=list((participation_summary or {}).get("available_site_ids") or []),
+        )
+        if isinstance(participation_summary, dict)
+        else None
+    )
+    normalized_participation_rate = _normalize_participation_rate(
+        (normalized_summary or {}).get("participation_rate")
+        if isinstance(normalized_summary, dict)
+        else None
+    )
+    if normalized_participation_rate in (None, 1.0):
+        return dict(accounting)
+    clip_norm = accounting.get("clipping_norm")
+    noise_multiplier = accounting.get("noise_multiplier")
+    local_steps = accounting.get("local_steps")
+    target_delta = (
+        accounting.get("target_delta")
+        if accounting.get("target_delta") is not None
+        else accounting.get("single_round_delta")
+        if accounting.get("single_round_delta") is not None
+        else accounting.get("delta")
+    )
+    if clip_norm in (None, 0, 0.0) or noise_multiplier in (None, 0, 0.0):
+        return dict(accounting)
+    return build_federated_dp_accounting_entry(
+        {
+            "delta_clip_l2_norm": clip_norm,
+            "delta_noise_multiplier": noise_multiplier,
+        },
+        local_steps=max(1, int(local_steps or 1)),
+        participant_count=(
+            int(accounting.get("participant_count") or 0)
+            if accounting.get("participant_count") is not None
+            else None
+        ),
+        patient_count=(
+            int(accounting.get("patient_count") or 0)
+            if accounting.get("patient_count") is not None
+            else None
+        ),
+        participation_rate=float(normalized_participation_rate),
+        aggregated_participant_count=int((normalized_summary or {}).get("aggregated_site_count") or 0),
+        available_participant_count=int((normalized_summary or {}).get("available_site_count") or 0),
+        accountant_delta=(
+            float(target_delta)
+            if target_delta not in (None, "", 0, 0.0)
+            else federated_dp_accountant_delta()
+        ),
+    )
+
+
+def summarize_federated_dp_accounting(
+    records: list[dict[str, Any]],
+    *,
+    participation_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     by_site: dict[str, dict[str, Any]] = {}
     total_epsilon = 0.0
     total_delta = 0.0
@@ -361,10 +577,17 @@ def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str
     accountant_scope: str | None = None
     subsampling_applied = False
     assumptions: set[str] = set()
+    sampling_rate: float | None = None
+    target_delta: float | None = None
+    aggregated_participant_count: int | None = None
+    available_participant_count: int | None = None
     for record in records:
         if not isinstance(record, dict):
             continue
-        accounting = dict(record.get("dp_accounting") or {})
+        accounting = _apply_participation_adjusted_accounting(
+            dict(record.get("dp_accounting") or {}),
+            participation_summary=participation_summary,
+        )
         if not accounting.get("formal_dp_accounting"):
             continue
         if accountant is None:
@@ -374,6 +597,20 @@ def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str
             normalized_accountant_scope = str(accounting.get("accountant_scope") or "").strip()
             accountant_scope = normalized_accountant_scope or None
         subsampling_applied = subsampling_applied or bool(accounting.get("subsampling_applied"))
+        if sampling_rate is None and accounting.get("participation_rate") is not None:
+            try:
+                sampling_rate = float(accounting.get("participation_rate") or 0.0)
+            except (TypeError, ValueError):
+                sampling_rate = None
+        if target_delta is None and accounting.get("target_delta") is not None:
+            try:
+                target_delta = float(accounting.get("target_delta") or 0.0)
+            except (TypeError, ValueError):
+                target_delta = None
+        if aggregated_participant_count is None and accounting.get("aggregated_participant_count") is not None:
+            aggregated_participant_count = max(0, int(accounting.get("aggregated_participant_count") or 0))
+        if available_participant_count is None and accounting.get("available_participant_count") is not None:
+            available_participant_count = max(0, int(accounting.get("available_participant_count") or 0))
         assumptions.update(
             str(item or "").strip()
             for item in list(accounting.get("assumptions") or [])
@@ -406,6 +643,10 @@ def summarize_federated_dp_accounting(records: list[dict[str, Any]]) -> dict[str
         "accounted_updates": accounted_updates,
         "epsilon": total_epsilon if accounted_updates > 0 else None,
         "delta": total_delta if accounted_updates > 0 else None,
+        "sampling_rate": sampling_rate if accounted_updates > 0 else None,
+        "target_delta": target_delta if accounted_updates > 0 else None,
+        "aggregated_participant_count": aggregated_participant_count if accounted_updates > 0 else None,
+        "available_participant_count": available_participant_count if accounted_updates > 0 else None,
         "accounted_sites": len(by_site) if accounted_updates > 0 else 0,
         "sites": [by_site[key] for key in sorted(by_site)],
     }
@@ -423,12 +664,67 @@ def _federated_dp_budget_template() -> dict[str, Any]:
         "accounted_sites": 0,
         "epsilon": None,
         "delta": None,
+        "sampling_rate": None,
+        "target_delta": None,
+        "warn_epsilon": None,
+        "max_epsilon": None,
+        "guardrail_status": "unavailable",
+        "guardrail_warnings": [],
+        "aggregated_participant_count": None,
+        "available_participant_count": None,
         "sites": [],
         "last_accounted_aggregation_id": None,
         "last_accounted_at": None,
         "last_accounted_new_version_name": None,
         "last_accounted_base_model_version_id": None,
         "last_participation_summary": None,
+    }
+
+
+def evaluate_federated_dp_budget_guardrail(
+    privacy_budget: dict[str, Any] | None,
+) -> dict[str, Any]:
+    warn_epsilon = federated_dp_warn_epsilon()
+    max_epsilon = federated_dp_max_epsilon()
+    if not isinstance(privacy_budget, dict) or not bool(privacy_budget.get("formal_dp_accounting")):
+        return {
+            "warn_epsilon": warn_epsilon,
+            "max_epsilon": max_epsilon,
+            "guardrail_status": "unavailable",
+            "guardrail_warnings": [],
+        }
+
+    epsilon = privacy_budget.get("epsilon")
+    try:
+        normalized_epsilon = float(epsilon) if epsilon is not None else None
+    except (TypeError, ValueError):
+        normalized_epsilon = None
+    if normalized_epsilon is None or not math.isfinite(normalized_epsilon):
+        return {
+            "warn_epsilon": warn_epsilon,
+            "max_epsilon": max_epsilon,
+            "guardrail_status": "unavailable",
+            "guardrail_warnings": [],
+        }
+
+    warnings: list[str] = []
+    status = "not_configured"
+    if warn_epsilon is not None and normalized_epsilon >= warn_epsilon:
+        status = "warning"
+        warnings.append("epsilon_warn_threshold_reached")
+    elif warn_epsilon is not None:
+        status = "ok"
+    if max_epsilon is not None and normalized_epsilon >= max_epsilon:
+        status = "blocked"
+        warnings.append("epsilon_max_threshold_exceeded")
+    elif status == "not_configured" and max_epsilon is not None:
+        status = "ok"
+
+    return {
+        "warn_epsilon": warn_epsilon,
+        "max_epsilon": max_epsilon,
+        "guardrail_status": status,
+        "guardrail_warnings": warnings,
     }
 
 
@@ -469,6 +765,28 @@ def _normalize_federated_dp_budget_snapshot(record: dict[str, Any] | None) -> di
         if normalized["formal_dp_accounting"]
         else None
     )
+    normalized["sampling_rate"] = (
+        float(record.get("sampling_rate") or 0.0)
+        if normalized["formal_dp_accounting"] and record.get("sampling_rate") is not None
+        else None
+    )
+    normalized["target_delta"] = (
+        float(record.get("target_delta") or 0.0)
+        if normalized["formal_dp_accounting"] and record.get("target_delta") is not None
+        else float(record.get("delta") or 0.0)
+        if normalized["formal_dp_accounting"] and record.get("delta") is not None
+        else None
+    )
+    normalized["aggregated_participant_count"] = (
+        max(0, int(record.get("aggregated_participant_count") or 0))
+        if normalized["formal_dp_accounting"] and record.get("aggregated_participant_count") is not None
+        else None
+    )
+    normalized["available_participant_count"] = (
+        max(0, int(record.get("available_participant_count") or 0))
+        if normalized["formal_dp_accounting"] and record.get("available_participant_count") is not None
+        else None
+    )
     normalized["sites"] = sorted(
         [
             _normalize_federated_dp_site_budget(item)
@@ -494,6 +812,26 @@ def _normalize_federated_dp_budget_snapshot(record: dict[str, Any] | None) -> di
         if isinstance(participation_summary, dict)
         else None
     )
+    if isinstance(normalized["last_participation_summary"], dict):
+        participation_summary_record = dict(normalized["last_participation_summary"] or {})
+        if normalized["sampling_rate"] is None and participation_summary_record.get("participation_rate") is not None:
+            normalized["sampling_rate"] = float(participation_summary_record.get("participation_rate") or 0.0)
+        if (
+            normalized["aggregated_participant_count"] is None
+            and participation_summary_record.get("aggregated_site_count") is not None
+        ):
+            normalized["aggregated_participant_count"] = max(
+                0,
+                int(participation_summary_record.get("aggregated_site_count") or 0),
+            )
+        if (
+            normalized["available_participant_count"] is None
+            and participation_summary_record.get("available_site_count") is not None
+        ):
+            normalized["available_participant_count"] = max(
+                0,
+                int(participation_summary_record.get("available_site_count") or 0),
+            )
     if not normalized["formal_dp_accounting"]:
         normalized["accountant"] = None
         normalized["accountant_scope"] = None
@@ -504,8 +842,13 @@ def _normalize_federated_dp_budget_snapshot(record: dict[str, Any] | None) -> di
         normalized["accounted_sites"] = 0
         normalized["epsilon"] = None
         normalized["delta"] = None
+        normalized["sampling_rate"] = None
+        normalized["target_delta"] = None
+        normalized["aggregated_participant_count"] = None
+        normalized["available_participant_count"] = None
         normalized["sites"] = []
         normalized["last_participation_summary"] = None
+    normalized.update(evaluate_federated_dp_budget_guardrail(normalized))
     return normalized
 
 
@@ -570,6 +913,26 @@ def accumulate_federated_dp_budget(
         "accounted_sites": len(merged_sites),
         "epsilon": float(previous.get("epsilon") or 0.0) + float(current.get("epsilon") or 0.0),
         "delta": float(previous.get("delta") or 0.0) + float(current.get("delta") or 0.0),
+        "sampling_rate": (
+            float(current.get("sampling_rate") or 0.0)
+            if current.get("sampling_rate") is not None
+            else previous.get("sampling_rate")
+        ),
+        "target_delta": (
+            float(current.get("target_delta") or 0.0)
+            if current.get("target_delta") is not None
+            else previous.get("target_delta")
+        ),
+        "aggregated_participant_count": (
+            max(0, int(current.get("aggregated_participant_count") or 0))
+            if current.get("aggregated_participant_count") is not None
+            else previous.get("aggregated_participant_count")
+        ),
+        "available_participant_count": (
+            max(0, int(current.get("available_participant_count") or 0))
+            if current.get("available_participant_count") is not None
+            else previous.get("available_participant_count")
+        ),
         "sites": [merged_sites[key] for key in sorted(merged_sites)],
         "last_accounted_aggregation_id": str(aggregation_id or "").strip() or previous.get("last_accounted_aggregation_id"),
         "last_accounted_at": str(created_at or "").strip() or previous.get("last_accounted_at"),
@@ -583,6 +946,12 @@ def accumulate_federated_dp_budget(
             )
             if isinstance(participation_summary, dict)
             else previous.get("last_participation_summary")
+        ),
+        **evaluate_federated_dp_budget_guardrail(
+            {
+                "formal_dp_accounting": True,
+                "epsilon": float(previous.get("epsilon") or 0.0) + float(current.get("epsilon") or 0.0),
+            }
         ),
     }
 
@@ -619,6 +988,7 @@ def latest_federated_dp_budget_snapshot(records: list[dict[str, Any]]) -> dict[s
             created_at=str(item.get("created_at") or "").strip() or None,
             new_version_name=str(item.get("new_version_name") or "").strip() or None,
             base_model_version_id=str(item.get("base_model_version_id") or "").strip() or None,
+            participation_summary=dict(item.get("participation_summary") or {}),
         )
     return budget
 
@@ -650,8 +1020,28 @@ def federated_privacy_runtime_report() -> dict[str, Any]:
         "warning_required": warning_required,
         "dp_accountant_delta": federated_dp_accountant_delta(),
         "dp_accountant_mode": federated_dp_accountant_mode(),
+        "dp_warn_epsilon": federated_dp_warn_epsilon(),
+        "dp_max_epsilon": federated_dp_max_epsilon(),
         "privacy_controls": federated_delta_privacy_controls(),
     }
+
+
+def build_federated_privacy_report_limitations(privacy_budget: dict[str, Any] | None) -> list[str]:
+    if not isinstance(privacy_budget, dict):
+        return ["privacy_budget_unavailable"]
+
+    limitations: list[str] = []
+    if not bool(privacy_budget.get("formal_dp_accounting")):
+        limitations.append("formal_dp_accounting_unavailable")
+        return limitations
+
+    if not bool(privacy_budget.get("subsampling_applied")):
+        limitations.append("full_participation_bound_used")
+    if not secure_aggregation_available():
+        limitations.append("no_secure_aggregation")
+    if str(privacy_budget.get("accountant") or "").strip() != "gaussian_prv_subsampled":
+        limitations.append("prv_accountant_not_enabled")
+    return limitations
 
 
 def assert_federated_privacy_runtime_ready(*, operation: str) -> None:

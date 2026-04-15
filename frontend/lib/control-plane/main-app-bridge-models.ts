@@ -96,6 +96,10 @@ function serializeFederatedDpAccountingSummary(value: unknown): AggregationRecor
   if (!formalDpAccounting && sites.length === 0 && !stringFromValue(record.accountant)) {
     return null;
   }
+  const guardrail = evaluateFederatedDpBudgetGuardrail({
+    formal_dp_accounting: Boolean(formalDpAccounting),
+    epsilon: numberFromValue(record.epsilon),
+  });
   return {
     formal_dp_accounting: Boolean(formalDpAccounting),
     accountant: stringFromValue(record.accountant),
@@ -106,6 +110,10 @@ function serializeFederatedDpAccountingSummary(value: unknown): AggregationRecor
     accounted_sites: numberFromValue(record.accounted_sites),
     epsilon: numberFromValue(record.epsilon),
     delta: numberFromValue(record.delta),
+    sampling_rate: numberFromValue(record.sampling_rate),
+    target_delta: numberFromValue(record.target_delta) ?? numberFromValue(record.delta),
+    aggregated_participant_count: numberFromValue(record.aggregated_participant_count),
+    available_participant_count: numberFromValue(record.available_participant_count),
     sites,
   };
 }
@@ -144,6 +152,7 @@ function serializeFederatedParticipationSummary(value: unknown): AggregationReco
 function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp_budget"] {
   const record = recordFromValue(value);
   const formalDpAccounting = booleanFromValue(record.formal_dp_accounting);
+  const lastParticipationSummary = serializeFederatedParticipationSummary(record.last_participation_summary);
   const sites = Array.isArray(record.sites)
     ? record.sites
         .map((item) => {
@@ -165,6 +174,10 @@ function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp
   if (!formalDpAccounting && sites.length === 0 && !stringFromValue(record.accountant)) {
     return null;
   }
+  const guardrail = evaluateFederatedDpBudgetGuardrail({
+    formal_dp_accounting: Boolean(formalDpAccounting),
+    epsilon: numberFromValue(record.epsilon),
+  });
   return {
     formal_dp_accounting: Boolean(formalDpAccounting),
     accountant: stringFromValue(record.accountant),
@@ -176,17 +189,252 @@ function serializeFederatedDpBudgetRecord(value: unknown): AggregationRecord["dp
     accounted_sites: numberFromValue(record.accounted_sites),
     epsilon: numberFromValue(record.epsilon),
     delta: numberFromValue(record.delta),
+    sampling_rate: numberFromValue(record.sampling_rate) ?? lastParticipationSummary?.participation_rate ?? null,
+    target_delta: numberFromValue(record.target_delta),
+    warn_epsilon: numberFromValue(record.warn_epsilon) ?? guardrail.warn_epsilon,
+    max_epsilon: numberFromValue(record.max_epsilon) ?? guardrail.max_epsilon,
+    guardrail_status: stringFromValue(record.guardrail_status) ?? guardrail.guardrail_status,
+    guardrail_warnings: normalizeStringArray(record.guardrail_warnings) ?? guardrail.guardrail_warnings,
+    aggregated_participant_count:
+      numberFromValue(record.aggregated_participant_count) ?? lastParticipationSummary?.aggregated_site_count ?? null,
+    available_participant_count:
+      numberFromValue(record.available_participant_count) ?? lastParticipationSummary?.available_site_count ?? null,
     sites,
     last_accounted_aggregation_id: stringFromValue(record.last_accounted_aggregation_id),
     last_accounted_at: stringFromValue(record.last_accounted_at),
     last_accounted_new_version_name: stringFromValue(record.last_accounted_new_version_name),
     last_accounted_base_model_version_id: stringFromValue(record.last_accounted_base_model_version_id),
-    last_participation_summary: serializeFederatedParticipationSummary(record.last_participation_summary),
+    last_participation_summary: lastParticipationSummary,
+  };
+}
+
+const GAUSSIAN_RDP_ORDERS = [2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128, 256] as const;
+
+function federatedDpAccountantMode(): string {
+  const raw = String(process.env.KERA_FEDERATED_DP_ACCOUNTANT_MODE ?? "").trim().toLowerCase();
+  if (raw === "gaussian_basic_composition" || raw === "gaussian_rdp_full_participation") {
+    return raw;
+  }
+  return "gaussian_rdp_poisson_subsampled";
+}
+
+function federatedDpWarnEpsilon(): number | null {
+  const value = numberFromValue(process.env.KERA_FEDERATED_DP_WARN_EPSILON);
+  return value !== null && value > 0 ? value : null;
+}
+
+function federatedDpMaxEpsilon(): number | null {
+  const value = numberFromValue(process.env.KERA_FEDERATED_DP_MAX_EPSILON);
+  return value !== null && value > 0 ? value : null;
+}
+
+function evaluateFederatedDpBudgetGuardrail(
+  privacyBudget: Pick<NonNullable<AggregationRecord["dp_budget"]>, "formal_dp_accounting" | "epsilon"> | null | undefined,
+): {
+  warn_epsilon: number | null;
+  max_epsilon: number | null;
+  guardrail_status: string;
+  guardrail_warnings: string[];
+} {
+  const warnEpsilon = federatedDpWarnEpsilon();
+  const maxEpsilon = federatedDpMaxEpsilon();
+  if (!privacyBudget?.formal_dp_accounting || typeof privacyBudget.epsilon !== "number" || Number.isNaN(privacyBudget.epsilon)) {
+    return {
+      warn_epsilon: warnEpsilon,
+      max_epsilon: maxEpsilon,
+      guardrail_status: "unavailable",
+      guardrail_warnings: [],
+    };
+  }
+  const warnings: string[] = [];
+  let status = "not_configured";
+  if (warnEpsilon !== null && privacyBudget.epsilon >= warnEpsilon) {
+    status = "warning";
+    warnings.push("epsilon_warn_threshold_reached");
+  } else if (warnEpsilon !== null) {
+    status = "ok";
+  }
+  if (maxEpsilon !== null && privacyBudget.epsilon >= maxEpsilon) {
+    status = "blocked";
+    warnings.push("epsilon_max_threshold_exceeded");
+  } else if (status === "not_configured" && maxEpsilon !== null) {
+    status = "ok";
+  }
+  return {
+    warn_epsilon: warnEpsilon,
+    max_epsilon: maxEpsilon,
+    guardrail_status: status,
+    guardrail_warnings: warnings,
+  };
+}
+
+function buildFederatedPrivacyReportLimitations(
+  privacyBudget: AggregationRecord["dp_budget"] | null | undefined,
+): string[] {
+  if (!privacyBudget) {
+    return ["privacy_budget_unavailable"];
+  }
+  if (!privacyBudget.formal_dp_accounting) {
+    return ["formal_dp_accounting_unavailable"];
+  }
+
+  const limitations: string[] = [];
+  if (!privacyBudget.subsampling_applied) {
+    limitations.push("full_participation_bound_used");
+  }
+  limitations.push("no_secure_aggregation");
+  if (privacyBudget.accountant !== "gaussian_prv_subsampled") {
+    limitations.push("prv_accountant_not_enabled");
+  }
+  return limitations;
+}
+
+function normalizeParticipationRate(value: unknown): number | null {
+  const normalized = numberFromValue(value);
+  if (normalized === null || !Number.isFinite(normalized) || normalized <= 0) {
+    return null;
+  }
+  return Math.min(1, Math.max(0, normalized));
+}
+
+function logAddExp(left: number, right: number): number {
+  if (left === Number.NEGATIVE_INFINITY) {
+    return right;
+  }
+  if (right === Number.NEGATIVE_INFINITY) {
+    return left;
+  }
+  const maxValue = Math.max(left, right);
+  const minValue = Math.min(left, right);
+  return maxValue + Math.log1p(Math.exp(minValue - maxValue));
+}
+
+function gaussianFullParticipationRdpComposedEpsilon(
+  noiseMultiplier: number,
+  delta: number,
+  steps: number,
+): { epsilon: number; optimalOrder: number } {
+  let best: { epsilon: number; optimalOrder: number } | null = null;
+  for (const order of GAUSSIAN_RDP_ORDERS) {
+    const rdp = Math.max(1, steps) * (order / (2 * noiseMultiplier ** 2));
+    const epsilon = rdp + Math.log(1 / delta) / (order - 1);
+    if (!Number.isFinite(epsilon)) {
+      continue;
+    }
+    if (!best || epsilon < best.epsilon) {
+      best = { epsilon, optimalOrder: order };
+    }
+  }
+  if (!best) {
+    throw new Error("Unable to compute Gaussian RDP epsilon.");
+  }
+  return best;
+}
+
+function gaussianPoissonSubsampledRdp(order: number, participationRate: number, noiseMultiplier: number): number {
+  if (participationRate >= 1) {
+    return order / (2 * noiseMultiplier ** 2);
+  }
+  const logQ = Math.log(participationRate);
+  const logOneMinusQ = Math.log1p(-participationRate);
+  let logA = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index <= order; index += 1) {
+    const logBinomial = Math.log(combination(order, index));
+    const privacyLoss = ((index * index) - index) / (2 * noiseMultiplier ** 2);
+    const logTerm = logBinomial + index * logQ + (order - index) * logOneMinusQ + privacyLoss;
+    logA = logAddExp(logA, logTerm);
+  }
+  return logA / (order - 1);
+}
+
+function combination(n: number, k: number): number {
+  if (k < 0 || k > n) {
+    return 0;
+  }
+  if (k === 0 || k === n) {
+    return 1;
+  }
+  const normalizedK = Math.min(k, n - k);
+  let result = 1;
+  for (let index = 1; index <= normalizedK; index += 1) {
+    result = (result * (n - normalizedK + index)) / index;
+  }
+  return result;
+}
+
+function gaussianPoissonSubsampledComposedEpsilon(
+  participationRate: number,
+  noiseMultiplier: number,
+  delta: number,
+  steps: number,
+): { epsilon: number; optimalOrder: number } {
+  if (participationRate >= 1) {
+    return gaussianFullParticipationRdpComposedEpsilon(noiseMultiplier, delta, steps);
+  }
+  let best: { epsilon: number; optimalOrder: number } | null = null;
+  for (const order of GAUSSIAN_RDP_ORDERS) {
+    const rdp = Math.max(1, steps) * gaussianPoissonSubsampledRdp(order, participationRate, noiseMultiplier);
+    const epsilon = rdp + Math.log(1 / delta) / (order - 1);
+    if (!Number.isFinite(epsilon)) {
+      continue;
+    }
+    if (!best || epsilon < best.epsilon) {
+      best = { epsilon, optimalOrder: order };
+    }
+  }
+  if (!best) {
+    throw new Error("Unable to compute subsampled Gaussian RDP epsilon.");
+  }
+  return best;
+}
+
+function serializeParticipationAwareAccounting(
+  accountingValue: unknown,
+  participationSummary?: AggregationRecord["participation_summary"],
+): AggregationRecord["dp_accounting"] {
+  const accounting = serializeFederatedDpAccountingSummary(accountingValue);
+  if (!accounting?.formal_dp_accounting) {
+    return accounting;
+  }
+  if (federatedDpAccountantMode() !== "gaussian_rdp_poisson_subsampled" || accounting.subsampling_applied) {
+    return accounting;
+  }
+  const rawRecord = recordFromValue(accountingValue);
+  const participationRate = normalizeParticipationRate(participationSummary?.participation_rate);
+  if (participationRate === null || participationRate >= 1) {
+    return accounting;
+  }
+  const noiseMultiplier = numberFromValue(rawRecord.noise_multiplier);
+  const clippingNorm = numberFromValue(rawRecord.clipping_norm);
+  const localSteps = Math.max(1, Number(numberFromValue(rawRecord.local_steps) ?? 1));
+  const delta =
+    numberFromValue(rawRecord.target_delta) ??
+    numberFromValue(rawRecord.single_round_delta) ??
+    numberFromValue(rawRecord.delta);
+  if (noiseMultiplier === null || clippingNorm === null || delta === null || !(delta > 0 && delta < 1)) {
+    return accounting;
+  }
+  const recomputed = gaussianPoissonSubsampledComposedEpsilon(participationRate, noiseMultiplier, delta, localSteps);
+  return {
+    ...accounting,
+    accountant: "gaussian_rdp_poisson_subsampled",
+    subsampling_applied: true,
+    epsilon: recomputed.epsilon,
+    delta,
+    assumptions: Array.from(
+      new Set(
+        [
+          ...(accounting.assumptions ?? []).filter((item) => item !== "full_participation" && item !== "no_subsampling"),
+          "poisson_subsampling",
+        ],
+      ),
+    ).sort(),
   };
 }
 
 function summarizeFederatedDpAccountingFromUpdates(
   updates: Array<{ site_id?: string | null; payload_json?: Record<string, unknown> | null }>,
+  participationSummary?: AggregationRecord["participation_summary"],
 ): AggregationRecord["dp_accounting"] {
   const bySite = new Map<
     string,
@@ -199,16 +447,26 @@ function summarizeFederatedDpAccountingFromUpdates(
   >();
   let formalDpAccounting = false;
   let accountant: string | null = null;
+  let accountantScope: string | null = null;
+  let subsamplingApplied = false;
+  const assumptions = new Set<string>();
   let accountedUpdates = 0;
   let epsilon = 0;
   let delta = 0;
   for (const update of updates) {
-    const accounting = serializeFederatedDpAccountingSummary(update.payload_json?.dp_accounting);
+    const accounting = serializeParticipationAwareAccounting(update.payload_json?.dp_accounting, participationSummary);
     if (!accounting?.formal_dp_accounting) {
       continue;
     }
     formalDpAccounting = true;
     accountant ||= accounting.accountant ?? null;
+    accountantScope ||= accounting.accountant_scope ?? null;
+    subsamplingApplied = subsamplingApplied || Boolean(accounting.subsampling_applied);
+    for (const item of accounting.assumptions ?? []) {
+      if (item) {
+        assumptions.add(item);
+      }
+    }
     const siteId = trimText(update.site_id) || "unknown";
     const entry = bySite.get(siteId) ?? {
       site_id: siteId,
@@ -230,21 +488,23 @@ function summarizeFederatedDpAccountingFromUpdates(
   return {
     formal_dp_accounting: true,
     accountant,
-    accountant_scope: updates
-      .map((item) => serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.accountant_scope)
-      .find((item) => Boolean(item)) ?? null,
-    subsampling_applied: updates.some(
-      (item) => Boolean(serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.subsampling_applied),
-    ),
-    assumptions: Array.from(
-      new Set(
-        updates.flatMap((item) => serializeFederatedDpAccountingSummary(item.payload_json?.dp_accounting)?.assumptions ?? []),
-      ),
-    ).sort(),
+    accountant_scope: accountantScope,
+    subsampling_applied: subsamplingApplied,
+    assumptions: Array.from(assumptions).sort(),
     accounted_updates: accountedUpdates,
     accounted_sites: bySite.size,
     epsilon,
     delta,
+    sampling_rate: participationSummary?.participation_rate ?? null,
+    target_delta:
+      updates
+        .map((item) => {
+          const record = recordFromValue(item.payload_json?.dp_accounting);
+          return numberFromValue(record.target_delta) ?? numberFromValue(record.single_round_delta) ?? numberFromValue(record.delta);
+        })
+        .find((item) => item !== null) ?? null,
+    aggregated_participant_count: participationSummary?.aggregated_site_count ?? null,
+    available_participant_count: participationSummary?.available_site_count ?? null,
     sites: Array.from(bySite.values()).sort((left, right) => left.site_id.localeCompare(right.site_id)),
   };
 }
@@ -289,7 +549,7 @@ function accumulateFederatedDpBudgetRecord(
     existing.delta += Number(site.delta ?? 0);
     previousSites.set(site.site_id, existing);
   }
-  return {
+  const accumulatedBudget: NonNullable<AggregationRecord["dp_budget"]> = {
     formal_dp_accounting: true,
     accountant: currentSummary.accountant ?? priorBudget?.accountant ?? null,
     accountant_scope: currentSummary.accountant_scope ?? priorBudget?.accountant_scope ?? null,
@@ -302,6 +562,16 @@ function accumulateFederatedDpBudgetRecord(
     accounted_sites: previousSites.size,
     epsilon: Number(priorBudget?.epsilon ?? 0) + Number(currentSummary.epsilon ?? 0),
     delta: Number(priorBudget?.delta ?? 0) + Number(currentSummary.delta ?? 0),
+    sampling_rate: currentSummary.sampling_rate ?? priorBudget?.sampling_rate ?? null,
+    target_delta: currentSummary.target_delta ?? priorBudget?.target_delta ?? null,
+    warn_epsilon: priorBudget?.warn_epsilon ?? null,
+    max_epsilon: priorBudget?.max_epsilon ?? null,
+    guardrail_status: priorBudget?.guardrail_status ?? null,
+    guardrail_warnings: priorBudget?.guardrail_warnings ?? [],
+    aggregated_participant_count:
+      currentSummary.aggregated_participant_count ?? priorBudget?.aggregated_participant_count ?? null,
+    available_participant_count:
+      currentSummary.available_participant_count ?? priorBudget?.available_participant_count ?? null,
     sites: Array.from(previousSites.values()).sort((left, right) => left.site_id.localeCompare(right.site_id)),
     last_accounted_aggregation_id: trimText(metadata.aggregation_id) || priorBudget?.last_accounted_aggregation_id || null,
     last_accounted_at: trimText(metadata.created_at) || priorBudget?.last_accounted_at || null,
@@ -310,6 +580,14 @@ function accumulateFederatedDpBudgetRecord(
     last_accounted_base_model_version_id:
       trimText(metadata.base_model_version_id) || priorBudget?.last_accounted_base_model_version_id || null,
     last_participation_summary: metadata.participation_summary ?? priorBudget?.last_participation_summary ?? null,
+  };
+  const guardrail = evaluateFederatedDpBudgetGuardrail(accumulatedBudget);
+  return {
+    ...accumulatedBudget,
+    warn_epsilon: guardrail.warn_epsilon,
+    max_epsilon: guardrail.max_epsilon,
+    guardrail_status: guardrail.guardrail_status,
+    guardrail_warnings: guardrail.guardrail_warnings,
   };
 }
 
@@ -864,6 +1142,7 @@ export async function runMainFederatedAggregation(
       site_id: trimText(row.site_id),
       payload_json: recordFromValue(row.payload_json),
     })),
+    participationSummary,
   );
   const priorBudget = existingAggregationRows
     .map((row) => serializeFederatedDpBudgetRecord(recordFromValue(row.summary_json).dp_budget))
@@ -1031,9 +1310,12 @@ export async function fetchMainFederatedPrivacyReport(
   if (!privacyBudget?.formal_dp_accounting) {
     throw new Error("A current privacy budget is not available yet.");
   }
+  const reportSchemaVersion = "federated_privacy_budget_report.v2";
+  const limitations = buildFederatedPrivacyReportLimitations(privacyBudget);
 
   const report: FederatedPrivacyReportResponse = {
     report_type: "federated_privacy_budget_report",
+    report_schema_version: reportSchemaVersion,
     exported_at: new Date().toISOString(),
     current_release: summary.current_release
       ? {
@@ -1053,6 +1335,7 @@ export async function fetchMainFederatedPrivacyReport(
     node_summary: summary.node_summary,
     site_adoption: summary.site_adoption,
     privacy_budget: privacyBudget,
+    limitations,
     recent_aggregations: aggregations.slice(0, 12),
     recent_rollouts: summary.recent_rollouts.slice(0, 12),
     recent_audit_events: summary.recent_audit_events.slice(0, 20),
@@ -1066,12 +1349,25 @@ export async function fetchMainFederatedPrivacyReport(
     targetId: privacyBudget.last_accounted_aggregation_id ?? null,
     payload: {
       report_type: report.report_type,
+      report_schema_version: reportSchemaVersion,
       accountant: privacyBudget.accountant ?? null,
+      accountant_scope: privacyBudget.accountant_scope ?? null,
       epsilon: privacyBudget.epsilon ?? null,
       delta: privacyBudget.delta ?? null,
+      sampling_rate: privacyBudget.sampling_rate ?? null,
+      target_delta: privacyBudget.target_delta ?? null,
+      subsampling_applied: privacyBudget.subsampling_applied ?? null,
+      warn_epsilon: privacyBudget.warn_epsilon ?? null,
+      max_epsilon: privacyBudget.max_epsilon ?? null,
+      guardrail_status: privacyBudget.guardrail_status ?? null,
+      guardrail_warnings: privacyBudget.guardrail_warnings ?? [],
       accounted_aggregations: privacyBudget.accounted_aggregations ?? 0,
       accounted_updates: privacyBudget.accounted_updates ?? 0,
       accounted_sites: privacyBudget.accounted_sites ?? 0,
+      aggregated_participant_count: privacyBudget.aggregated_participant_count ?? null,
+      available_participant_count: privacyBudget.available_participant_count ?? null,
+      assumptions: privacyBudget.assumptions ?? [],
+      limitations,
       last_accounted_new_version_name: privacyBudget.last_accounted_new_version_name ?? null,
     },
   });

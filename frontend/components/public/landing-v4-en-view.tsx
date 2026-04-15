@@ -118,7 +118,7 @@ const enWorkingRails = [
 ];
 
 const enParticipationBenefits = [
-  "Co-authorship on multi-site validation publications, per ICMJE criteria, agreed in advance of each submission.",
+  "Multi-site publications follow ICMJE authorship criteria and written contribution agreements established before submission.",
   "Access to the K-ERA AI inference model and confidence outputs for enrolled cases.",
   "Similar-case retrieval across the shared research corpus via the DINO embedding index.",
   "Federated weight updates distributed to approved nodes after central review.",
@@ -131,7 +131,7 @@ const enGovernance = [
   },
   {
     label: "Authorship",
-    body: "Contributing sites are included in multi-site publications per ICMJE criteria. Authorship scope and order are agreed upon in writing before each submission.",
+    body: "Multi-site publications follow ICMJE authorship criteria and written contribution agreements established before submission.",
   },
   {
     label: "Data flow",

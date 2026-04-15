@@ -6420,6 +6420,83 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(aggregation_response.status_code, 409, aggregation_response.text)
         self.assertIn("KERA_REQUIRE_SIGNED_FEDERATED_UPDATES", aggregation_response.json()["detail"])
 
+    def test_federated_aggregation_is_blocked_when_projected_privacy_budget_exceeds_guardrail_http(self):
+        from kera_research.services.federated_update_security import apply_federated_update_signature
+
+        admin_token = self._login("admin", "admin123")
+        base_model_path = Path(self.tempdir.name) / "dp_guardrail_base.pth"
+        base_model_path.write_bytes(b"base")
+        base_model = self.cp.ensure_model_version(
+            {
+                "version_id": "model_global_convnext_tiny_dp_guardrail",
+                "version_name": "global-convnext-tiny-dp-guardrail",
+                "architecture": "convnext_tiny",
+                "stage": "global",
+                "model_path": str(base_model_path),
+                "created_at": "2026-04-14T03:10:00+00:00",
+                "ready": True,
+                "is_current": False,
+                "crop_mode": "raw",
+                "case_aggregation": "mean",
+                "bag_level": False,
+                "training_input_policy": "raw_or_model_defined",
+                "preprocess_signature": "fakepreprocesssig",
+                "num_classes": 2,
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "KERA_FEDERATED_UPDATE_SIGNING_SECRET": "fed-signing-secret",
+                "KERA_REQUIRE_SIGNED_FEDERATED_UPDATES": "true",
+                "KERA_FEDERATED_DP_MAX_EPSILON": "1.0",
+            },
+            clear=False,
+        ):
+            for site_id, epsilon in (("SITE-A", 0.6), ("SITE-B", 0.5)):
+                delta_path = self.site_store.update_dir / f"{site_id}_dp_guardrail_delta.pt"
+                delta_path.parent.mkdir(parents=True, exist_ok=True)
+                delta_path.write_bytes(f"delta-{site_id}".encode("utf-8"))
+                update_id = self.app_module.make_id("update")
+                artifact_metadata = self.cp.store_model_update_artifact(
+                    delta_path,
+                    update_id=update_id,
+                    artifact_kind="delta",
+                )
+                update = apply_federated_update_signature(
+                    {
+                        "update_id": update_id,
+                        "site_id": site_id,
+                        "base_model_version_id": base_model["version_id"],
+                        "architecture": base_model["architecture"],
+                        "upload_type": "weight delta",
+                        "execution_device": "cpu",
+                        "artifact_path": str(delta_path),
+                        **artifact_metadata,
+                        "n_cases": 1,
+                        "aggregation_weight": 1,
+                        "aggregation_weight_unit": "cases",
+                        "federated_round_type": "visit_level_site_round",
+                        "dp_accounting": {
+                            "formal_dp_accounting": True,
+                            "epsilon": epsilon,
+                            "delta": 1e-5,
+                        },
+                        "created_at": "2026-04-14T03:11:00+00:00",
+                        "status": "approved",
+                    }
+                )
+                self.cp.register_model_update(update)
+
+            aggregation_response = self.client.post(
+                "/api/admin/aggregations/run",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={},
+            )
+
+        self.assertEqual(aggregation_response.status_code, 409, aggregation_response.text)
+        self.assertIn("projected privacy budget would exceed the configured epsilon guardrail", aggregation_response.json()["detail"])
+
     def test_aggregation_job_endpoints_persist_status_and_dp_accounting_http(self):
         from kera_research.services.federated_update_security import apply_federated_update_signature
 
@@ -7116,11 +7193,19 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["report_type"], "federated_privacy_budget_report")
+        self.assertEqual(payload["report_schema_version"], "federated_privacy_budget_report.v2")
         self.assertEqual(payload["privacy_budget"]["accountant"], "gaussian_rdp_full_participation")
         self.assertEqual(payload["privacy_budget"]["accountant_scope"], "site_local_training")
         self.assertFalse(payload["privacy_budget"]["subsampling_applied"])
         self.assertIn("full_participation", payload["privacy_budget"]["assumptions"])
+        self.assertIn("full_participation_bound_used", payload["limitations"])
+        self.assertIn("no_secure_aggregation", payload["limitations"])
+        self.assertIn("prv_accountant_not_enabled", payload["limitations"])
         self.assertAlmostEqual(float(payload["privacy_budget"]["epsilon"] or 0.0), 0.25)
+        self.assertAlmostEqual(float(payload["privacy_budget"]["sampling_rate"] or 0.0), 0.5)
+        self.assertAlmostEqual(float(payload["privacy_budget"]["target_delta"] or 0.0), 1e-6)
+        self.assertEqual(payload["privacy_budget"]["aggregated_participant_count"], 1)
+        self.assertEqual(payload["privacy_budget"]["available_participant_count"], 2)
         self.assertEqual(payload["privacy_budget"]["last_participation_summary"]["aggregated_site_count"], 1)
         self.assertEqual(payload["privacy_budget"]["last_participation_summary"]["available_site_count"], 2)
         self.assertEqual(payload["recent_aggregations"][0]["aggregation_id"], aggregation["aggregation_id"])
@@ -7129,6 +7214,16 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(payload["node_summary"]["total_nodes"], 0)
         self.assertGreaterEqual(len(payload["recent_audit_events"]), 1)
         self.assertEqual(payload["recent_audit_events"][0]["action"], "federation.privacy_report.exported")
+        audit_payload = payload["recent_audit_events"][0]["payload_json"]
+        self.assertEqual(audit_payload["report_schema_version"], "federated_privacy_budget_report.v2")
+        self.assertEqual(audit_payload["accountant_scope"], "site_local_training")
+        self.assertFalse(audit_payload["subsampling_applied"])
+        self.assertAlmostEqual(float(audit_payload["sampling_rate"] or 0.0), 0.5)
+        self.assertAlmostEqual(float(audit_payload["target_delta"] or 0.0), 1e-6)
+        self.assertEqual(audit_payload["aggregated_participant_count"], 1)
+        self.assertEqual(audit_payload["available_participant_count"], 2)
+        self.assertIn("full_participation", audit_payload["assumptions"])
+        self.assertIn("full_participation_bound_used", audit_payload["limitations"])
 
     def test_access_request_auto_approval_http(self):
         requester_token = self._token_for_username("http_viewer")

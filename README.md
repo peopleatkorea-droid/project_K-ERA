@@ -163,7 +163,7 @@ K-ERA는 현재 아래 두 화면을 함께 쓰는 구조입니다.
 
 ### 현재 한계
 
-- full-participation Gaussian RDP accountant와 누적 budget snapshot은 있습니다. 필요하면 `gaussian_basic_composition`으로 override할 수 있습니다. 다만 subsampling/RDP-PRV 계열 accountant는 아직 없습니다.
+- Poisson subsampling을 반영하는 Gaussian RDP accountant와 누적 budget snapshot은 있습니다. 필요하면 `gaussian_rdp_full_participation` 또는 `gaussian_basic_composition`으로 override할 수 있습니다. 다만 PRV 계열 accountant는 아직 없습니다.
 - secure aggregation도 아직 없습니다.
 - production/staging 같은 운영 환경에서는 signed federated update가 강제되지 않으면 FL round와 aggregation이 차단됩니다.
 
@@ -280,11 +280,13 @@ docker compose up --build
 - API에는 `live`, `ready`, `health`, `metrics` endpoint가 있습니다.
 - 선택형 Sentry hook이 있습니다.
 - signed federated update가 production/staging runtime에서 강제됩니다.
-- full-participation Gaussian RDP accountant와 aggregation별 누적 privacy budget 보고는 있습니다. 필요하면 `gaussian_basic_composition`으로 override할 수 있습니다. 다만 subsampling accountant와 secure aggregation은 아직 없습니다.
+- 기본값은 `gaussian_rdp_poisson_subsampled` accountant이며, aggregation별 누적 privacy budget 보고에 최신 참여율(`aggregated_site_count / available_site_count`)을 반영합니다. 필요하면 `gaussian_rdp_full_participation` 또는 `gaussian_basic_composition`으로 override할 수 있습니다. 다만 PRV accountant와 secure aggregation은 아직 없습니다.
 - admin workspace의 federation 섹션에서는 현재 privacy budget, aggregation별 round accounting, 누적 privacy budget JSON export를 바로 확인할 수 있습니다.
-- privacy budget JSON export는 이제 브라우저 조립이 아니라 서버가 생성한 canonical report를 내려받는 방식이고, export 이벤트는 control-plane audit trail에 기록됩니다.
-- canonical privacy report와 누적 budget snapshot에는 최신 aggregation의 참여 병원 범위(`aggregated_site_count / available_site_count / participation_rate`)와 accountant 가정(`full_participation`, `no_subsampling`, `no_secure_aggregation`)이 같이 포함됩니다.
+- privacy budget JSON export는 이제 브라우저 조립이 아니라 서버가 생성한 canonical report를 내려받는 방식이고, export 이벤트는 control-plane audit trail에 기록됩니다. audit payload에는 accountant, accountant scope, sampling rate, target delta, 참여 범위까지 같이 남습니다.
+- canonical privacy report에는 `report_schema_version`과 `limitations`가 같이 포함됩니다. 따라서 JSON만 봐도 현재 값이 `full_participation bound`, `PRV 미적용`, `secure aggregation 없음` 같은 한계 위에서 나온 숫자인지 바로 확인할 수 있습니다.
+- canonical privacy report와 누적 budget snapshot에는 최신 aggregation의 참여 병원 범위(`aggregated_site_count / available_site_count / participation_rate`)와 accountant 가정(`poisson_subsampling` 또는 `full_participation`, `no_secure_aggregation`)이 같이 포함됩니다.
 - admin federation 화면에서도 현재 budget과 각 aggregation에 대해 `Coverage`와 `Assumptions`를 직접 보여 주도록 맞췄습니다. 즉, 누적 epsilon/delta 숫자만이 아니라 최근 집계가 몇 개 병원 참여 기준인지와 어떤 accountant 가정으로 계산됐는지를 화면에서 바로 확인할 수 있습니다.
+- 필요하면 `KERA_FEDERATED_DP_WARN_EPSILON`, `KERA_FEDERATED_DP_MAX_EPSILON`로 누적 epsilon 가드레일을 걸 수 있습니다. 현재 budget 카드에는 `Budget guardrail` 상태가 보이고, 최대 임계값을 넘길 집계는 서버가 `409`로 차단합니다.
 - local/python control-plane fallback도 이제 `audit_events`를 저장합니다. 따라서 web main control-plane뿐 아니라 local admin runtime에서도 privacy report export와 federation monitoring 이력이 `recent_audit_events`에 함께 남습니다.
 
 ### 9. 참고: 현재 배포 자동화
@@ -333,11 +335,13 @@ docker compose up --build
 | `KERA_FEDERATED_AGGREGATION_STRATEGY` | `fedavg`, `coordinate_median`, `trimmed_mean` 중 선택 |
 | `KERA_FEDERATED_AGGREGATION_TRIM_RATIO` | `trimmed_mean`에서 양 끝을 자를 비율 (기본 `0.2`) |
 | `KERA_FEDERATED_DELTA_CLIP_NORM` | site-side delta L2 clipping 임계값 |
-| `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER` | clipping 후 추가할 Gaussian noise 배수. `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`와 같이 쓰면 기본 `gaussian_rdp_full_participation` accountant와 누적 budget snapshot을 계산 |
-| `KERA_FEDERATED_DP_ACCOUNTANT_MODE` | DP accountant 모드. 기본값은 `gaussian_rdp_full_participation`이고, 필요하면 `gaussian_basic_composition`으로 override 가능 |
+| `KERA_FEDERATED_DELTA_NOISE_MULTIPLIER` | clipping 후 추가할 Gaussian noise 배수. `KERA_FEDERATED_DP_ACCOUNTANT_DELTA`와 같이 쓰면 기본 `gaussian_rdp_poisson_subsampled` accountant와 누적 budget snapshot을 계산 |
+| `KERA_FEDERATED_DP_ACCOUNTANT_MODE` | DP accountant 모드. 기본값은 `gaussian_rdp_poisson_subsampled`이고, 필요하면 `gaussian_rdp_full_participation` 또는 `gaussian_basic_composition`으로 override 가능 |
+| `KERA_FEDERATED_DP_WARN_EPSILON` | 누적 epsilon 경고 임계값. 설정하면 admin federation 화면과 privacy report에 warning 상태가 표시 |
+| `KERA_FEDERATED_DP_MAX_EPSILON` | 누적 epsilon 최대 임계값. 설정하면 projected privacy budget이 이 값을 넘는 aggregation은 차단 |
 | `KERA_FEDERATED_DELTA_QUANTIZATION_BITS` | 전송/저장 delta 양자화 비트 수 (`8` 또는 `16`) |
 | `KERA_REQUIRE_SECURE_AGGREGATION` | `true`면 secure aggregation이 없는 빌드에서 FL round/aggregation을 시작하지 않음 |
-| `KERA_REQUIRE_FORMAL_DP_ACCOUNTING` | `true`면 DP accountant가 없는 빌드에서 FL round/aggregation을 시작하지 않음. 현재는 full-participation Gaussian RDP accountant까지 구현되어 있음 |
+| `KERA_REQUIRE_FORMAL_DP_ACCOUNTING` | `true`면 DP accountant가 없는 빌드에서 FL round/aggregation을 시작하지 않음. 현재는 Poisson subsampling을 반영하는 Gaussian RDP accountant까지 구현되어 있음 |
 | `KERA_ACKNOWLEDGE_NON_DP_FEDERATED_TRAINING` | production/staging runtime에서 DP accountant 없이 FL을 돌릴 때 필요한 명시적 운영 승인 |
 | `KERA_ALLOW_LEGACY_SINGLE_DB_FALLBACK` | production/staging runtime에서 legacy `KERA_DATABASE_URL` / `DATABASE_URL` fallback을 계속 쓸 때 필요한 명시적 승인 |
 | `KERA_ONEDRIVE_TENANT_ID` | OneDrive/SharePoint Graph app의 tenant ID |

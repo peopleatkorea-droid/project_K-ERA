@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from kera_research.services.federated_update_security import (
     accumulate_federated_dp_budget,
     build_federated_participation_summary,
+    evaluate_federated_dp_budget_guardrail,
     federated_aggregation_strategy,
     federated_aggregation_trim_ratio,
     latest_federated_dp_budget_snapshot,
@@ -361,7 +362,10 @@ class AdminRegistryOrchestrator:
             aggregated_site_ids=sorted(site_weights),
             available_site_ids=available_site_ids,
         )
-        dp_accounting_summary = summarize_federated_dp_accounting(approved_updates)
+        dp_accounting_summary = summarize_federated_dp_accounting(
+            approved_updates,
+            participation_summary=participation_summary,
+        )
         prior_dp_budget = latest_federated_dp_budget_snapshot(cp.list_aggregations())
         dp_budget_snapshot = accumulate_federated_dp_budget(
             prior_dp_budget,
@@ -370,6 +374,17 @@ class AdminRegistryOrchestrator:
             base_model_version_id=str(base_model.get("version_id") or "").strip() or None,
             participation_summary=participation_summary,
         )
+        guardrail = evaluate_federated_dp_budget_guardrail(dp_budget_snapshot)
+        if str(guardrail.get("guardrail_status") or "") == "blocked":
+            max_epsilon = guardrail.get("max_epsilon")
+            projected_epsilon = dp_budget_snapshot.get("epsilon")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Federated aggregation is blocked because the projected privacy budget would exceed the configured "
+                    f"epsilon guardrail ({projected_epsilon} >= {max_epsilon})."
+                ),
+            )
         try:
             for update_record in approved_updates:
                 verify_federated_update_signature(update_record)

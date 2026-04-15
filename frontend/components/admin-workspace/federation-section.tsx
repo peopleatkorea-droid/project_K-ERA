@@ -157,6 +157,53 @@ function formatParticipationCoverage(
   return pick(locale, `${aggregated} hospitals`, `${aggregated}개 병원`);
 }
 
+function formatSamplingRate(value: number | null | undefined, notAvailableLabel: string): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return notAvailableLabel;
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatGuardrailStatus(value: string | null | undefined, locale: Locale, notAvailableLabel: string): string {
+  if (!value) {
+    return notAvailableLabel;
+  }
+  if (value === "blocked") {
+    return pick(locale, "Blocked", "차단");
+  }
+  if (value === "warning") {
+    return pick(locale, "Warning", "경고");
+  }
+  if (value === "ok") {
+    return pick(locale, "OK", "정상");
+  }
+  if (value === "not_configured") {
+    return pick(locale, "Not configured", "미설정");
+  }
+  if (value === "unavailable") {
+    return notAvailableLabel;
+  }
+  return value;
+}
+
+function formatGuardrailWarnings(
+  warnings: string[] | null | undefined,
+  locale: Locale,
+  notAvailableLabel: string,
+): string {
+  const labels = (warnings ?? []).map((item) =>
+    pick(
+      locale,
+      item.replaceAll("_", " "),
+      item
+        .replace("epsilon_warn_threshold_reached", "epsilon 경고 임계값 도달")
+        .replace("epsilon_max_threshold_exceeded", "epsilon 최대 임계값 초과")
+        .replaceAll("_", " "),
+    ),
+  );
+  return labels.length > 0 ? labels.join(", ") : notAvailableLabel;
+}
+
 function formatDpAssumptions(
   assumptions: string[] | null | undefined,
   accountantScope: string | null | undefined,
@@ -177,10 +224,12 @@ function formatDpAssumptions(
         item.replaceAll("_", " "),
         item
           .replace("full_participation", "전체 참여 가정")
+          .replace("poisson_subsampling", "Poisson subsampling")
           .replace("no_subsampling", "subsampling 없음")
           .replace("no_secure_aggregation", "secure aggregation 없음")
           .replace("client_delta_noise", "클라이언트 delta noise")
           .replace("gaussian_rdp", "Gaussian RDP")
+          .replace("gaussian_rdp_poisson_subsampled", "Gaussian RDP with Poisson subsampling")
           .replace("gaussian_basic_composition", "Gaussian basic composition")
           .replaceAll("_", " "),
       ),
@@ -665,6 +714,14 @@ export function FederationSection({
                 <MetricItem value={formatDpMetric(latestDpBudget.epsilon)} label={pick(locale, "Epsilon", "Epsilon")} />
                 <MetricItem value={formatDpMetric(latestDpBudget.delta)} label={pick(locale, "Delta", "Delta")} />
                 <MetricItem
+                  value={formatSamplingRate(latestDpBudget.sampling_rate, notAvailableLabel)}
+                  label={pick(locale, "Sampling rate", "참여율")}
+                />
+                <MetricItem
+                  value={formatDpMetric(latestDpBudget.target_delta)}
+                  label={pick(locale, "Target delta", "목표 delta")}
+                />
+                <MetricItem
                   value={String(latestDpBudget.accounted_aggregations ?? 0)}
                   label={pick(locale, "Aggregations", "집계 횟수")}
                 />
@@ -673,6 +730,10 @@ export function FederationSection({
                 <MetricItem
                   value={formatParticipationCoverage(latestDpBudget.last_participation_summary, locale, notAvailableLabel)}
                   label={pick(locale, "Latest coverage", "최근 참여 범위")}
+                />
+                <MetricItem
+                  value={formatGuardrailStatus(latestDpBudget.guardrail_status, locale, notAvailableLabel)}
+                  label={pick(locale, "Budget guardrail", "예산 가드레일")}
                 />
               </MetricGrid>
               <p className="m-0 text-xs leading-5 text-muted">
@@ -685,6 +746,17 @@ export function FederationSection({
                   notAvailableLabel,
                 )}
               </p>
+              {(latestDpBudget.warn_epsilon ?? latestDpBudget.max_epsilon ?? latestDpBudget.guardrail_warnings?.length) ? (
+                <p className="m-0 text-xs leading-5 text-muted">
+                  {pick(locale, "Guardrail", "가드레일")}
+                  {": "}
+                  {pick(locale, "warn ε", "경고 ε")} {formatDpMetric(latestDpBudget.warn_epsilon)}
+                  {" · "}
+                  {pick(locale, "max ε", "최대 ε")} {formatDpMetric(latestDpBudget.max_epsilon)}
+                  {" · "}
+                  {formatGuardrailWarnings(latestDpBudget.guardrail_warnings, locale, notAvailableLabel)}
+                </p>
+              ) : null}
               {latestDpBudget.sites.length > 0 ? (
                 <div className="flex flex-wrap gap-2 text-sm text-muted">
                   {latestDpBudget.sites.map((site) => (
@@ -755,6 +827,14 @@ export function FederationSection({
                           <MetricItem
                             value={formatDpMetric(item.dp_accounting.delta)}
                             label={pick(locale, "Delta", "Delta")}
+                          />
+                          <MetricItem
+                            value={formatSamplingRate(item.dp_accounting.sampling_rate, notAvailableLabel)}
+                            label={pick(locale, "Sampling rate", "참여율")}
+                          />
+                          <MetricItem
+                            value={formatDpMetric(item.dp_accounting.target_delta)}
+                            label={pick(locale, "Target delta", "목표 delta")}
                           />
                           <MetricItem
                             value={String(item.dp_accounting.accounted_updates ?? 0)}

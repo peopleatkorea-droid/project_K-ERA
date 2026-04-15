@@ -1361,6 +1361,10 @@ export type FederatedDpAccountingSummary = {
   accounted_sites?: number | null;
   epsilon?: number | null;
   delta?: number | null;
+  sampling_rate?: number | null;
+  target_delta?: number | null;
+  aggregated_participant_count?: number | null;
+  available_participant_count?: number | null;
   sites: FederatedDpAccountingSiteSummary[];
 };
 
@@ -1383,6 +1387,14 @@ export type FederatedDpBudgetRecord = {
   accounted_sites?: number | null;
   epsilon?: number | null;
   delta?: number | null;
+  sampling_rate?: number | null;
+  target_delta?: number | null;
+  warn_epsilon?: number | null;
+  max_epsilon?: number | null;
+  guardrail_status?: string | null;
+  guardrail_warnings?: string[] | null;
+  aggregated_participant_count?: number | null;
+  available_participant_count?: number | null;
   sites: FederatedDpBudgetSiteRecord[];
   last_accounted_aggregation_id?: string | null;
   last_accounted_at?: string | null;
@@ -1524,12 +1536,14 @@ export type FederationMonitoringSummaryResponse = {
 
 export type FederatedPrivacyReportResponse = {
   report_type: "federated_privacy_budget_report";
+  report_schema_version?: string;
   exported_at: string;
   current_release: ModelVersionRecord | null;
   active_rollout: ReleaseRolloutRecord | null;
   node_summary: FederationMonitoringSummaryResponse["node_summary"] | null;
   site_adoption: FederationMonitoringSiteAdoptionRecord[];
   privacy_budget: FederatedDpBudgetRecord | null;
+  limitations?: string[];
   recent_aggregations: AggregationRecord[];
   recent_rollouts: ReleaseRolloutRecord[];
   recent_audit_events: AuditEventRecord[];

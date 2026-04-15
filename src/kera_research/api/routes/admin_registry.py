@@ -9,6 +9,7 @@ from kera_research.api.control_plane_proxy import call_remote_control_plane_meth
 from kera_research.services.federated_update_security import (
     FederatedPrivacyRuntimePolicyError,
     assert_federated_privacy_runtime_ready,
+    build_federated_privacy_report_limitations,
     latest_federated_dp_budget_snapshot,
 )
 
@@ -428,6 +429,8 @@ def build_admin_registry_router(support: Any) -> APIRouter:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A current privacy budget is not available yet.",
             )
+        report_schema_version = "federated_privacy_budget_report.v2"
+        limitations = build_federated_privacy_report_limitations(privacy_budget)
 
         current_model = cp.current_global_model()
         visible_sites = cp.list_sites()
@@ -459,18 +462,31 @@ def build_admin_registry_router(support: Any) -> APIRouter:
             target_id=str(privacy_budget.get("last_accounted_aggregation_id") or "").strip() or None,
             payload={
                 "report_type": "federated_privacy_budget_report",
+                "report_schema_version": report_schema_version,
                 "accountant": privacy_budget.get("accountant"),
                 "accountant_scope": privacy_budget.get("accountant_scope"),
                 "epsilon": privacy_budget.get("epsilon"),
                 "delta": privacy_budget.get("delta"),
+                "sampling_rate": privacy_budget.get("sampling_rate"),
+                "target_delta": privacy_budget.get("target_delta"),
+                "subsampling_applied": privacy_budget.get("subsampling_applied"),
+                "warn_epsilon": privacy_budget.get("warn_epsilon"),
+                "max_epsilon": privacy_budget.get("max_epsilon"),
+                "guardrail_status": privacy_budget.get("guardrail_status"),
+                "guardrail_warnings": privacy_budget.get("guardrail_warnings"),
                 "accounted_aggregations": privacy_budget.get("accounted_aggregations"),
                 "accounted_updates": privacy_budget.get("accounted_updates"),
                 "accounted_sites": privacy_budget.get("accounted_sites"),
+                "aggregated_participant_count": privacy_budget.get("aggregated_participant_count"),
+                "available_participant_count": privacy_budget.get("available_participant_count"),
+                "assumptions": privacy_budget.get("assumptions"),
+                "limitations": limitations,
                 "last_accounted_new_version_name": privacy_budget.get("last_accounted_new_version_name"),
             },
         )
         return {
             "report_type": "federated_privacy_budget_report",
+            "report_schema_version": report_schema_version,
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "current_release": current_model,
             "active_rollout": None,
@@ -483,6 +499,7 @@ def build_admin_registry_router(support: Any) -> APIRouter:
             },
             "site_adoption": site_adoption,
             "privacy_budget": privacy_budget,
+            "limitations": limitations,
             "recent_aggregations": aggregations[:12],
             "recent_rollouts": [],
             "recent_audit_events": cp.list_audit_events(limit=20),
