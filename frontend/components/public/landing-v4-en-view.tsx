@@ -33,21 +33,40 @@ const enStats = [
   },
 ];
 
-const enApproach = [
+const enAtGlance = [
   {
-    number: "Today",
-    title: "An honest baseline",
-    body: "A leakage-aware single-center benchmark: 101 patients, patient-disjoint 5-fold splits, 0.677 visit-level AUROC. Modest by design — this is where the evidence actually stands.",
+    label: "Platform type",
+    body: "Clinician-facing research platform with a federated validation workflow.",
   },
   {
-    number: "The hypothesis",
-    title: "Scale should improve it",
-    body: "Across the keratitis AI literature, CNN-family models tend to improve as datasets grow more heterogeneous. K-ERA is built to test that under real hospital variation — not assume it.",
+    label: "Workflow",
+    body: "Web approval first, then desktop case work and local training on a hospital PC.",
   },
   {
-    number: "The constraint",
-    title: "Patient data cannot leave the hospital",
-    body: "Raw images and identifiers stay on-site. Only weight updates, de-identified metadata, and low-resolution thumbnails reach the central server — after human review.",
+    label: "Focus disease",
+    body: "Infectious keratitis, with bacterial-versus-fungal differentiation as the current public benchmark task.",
+  },
+  {
+    label: "Data boundary",
+    body: "Raw images and patient identifiers stay inside each hospital.",
+  },
+];
+
+const enWhyItMatters = [
+  {
+    label: "Clinical reality",
+    title: "The decision is time-sensitive",
+    body: "Bacterial and fungal keratitis often overlap visually early on, yet treatment direction can diverge quickly and delay can cost vision.",
+  },
+  {
+    label: "Evidence gap",
+    title: "Internal benchmarks do not solve external validation",
+    body: "Most keratitis AI work still depends on single-site evidence. The real bottleneck is building broader validation under real hospital variation.",
+  },
+  {
+    label: "Operational barrier",
+    title: "Governance is part of the model problem",
+    body: "Hospitals need a way to review, validate, and contribute cases without exporting raw patient data. That workflow gap is what K-ERA is designed to close.",
   },
 ];
 
@@ -74,7 +93,7 @@ const enWorkflow = [
   },
 ];
 
-const enTechnology = [
+const enWorkingRails = [
   {
     tag: "Lesion preparation",
     title: "MedSAM-assisted ROI workflow",
@@ -87,14 +106,36 @@ const enTechnology = [
     title: "AI inference and similar case retrieval",
     body: "The desktop app returns a visit-level prediction with confidence percentage, GradCAM activation, and multi-model ensemble breakdown. A separate DINO retrieval rail surfaces the most similar cases from the research corpus — both are working features today.",
     detail:
-      "Inference runs locally on the hospital PC. Retrieval queries the central embedding index. The published benchmark is white-light; the app stores White, Fluorescein, and Slit views.",
+      "Inference runs locally on the hospital PC. Retrieval queries the central embedding index. The published benchmark is white-light; the app already stores white-light, fluorescein, and slit views.",
   },
   {
     tag: "Federated training",
     title: "Review-gated aggregation across hospitals",
     body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Weight deltas go to central review before FedAvg aggregation — no blind automatic merging.",
     detail:
-      "The full training pipeline is implemented and tested. Active multi-site rounds await the next participating hospital beyond the founding site.",
+      "The full training pipeline is implemented and tested. Active multi-site rounds begin as additional hospitals join beyond the founding site.",
+  },
+];
+
+const enParticipationBenefits = [
+  "Co-authorship on multi-site validation publications, per ICMJE criteria, agreed in advance of each submission.",
+  "Access to the K-ERA AI inference model and confidence outputs for enrolled cases.",
+  "Similar-case retrieval across the shared research corpus via the DINO embedding index.",
+  "Federated weight updates distributed to approved nodes after central review.",
+];
+
+const enGovernance = [
+  {
+    label: "IRB",
+    body: "Founding site (JNUH) IRB-approved. Each participating site obtains its own institutional IRB approval prior to case enrollment — K-ERA provides protocol documentation on request.",
+  },
+  {
+    label: "Authorship",
+    body: "Contributing sites are included in multi-site publications per ICMJE criteria. Authorship scope and order are agreed upon in writing before each submission.",
+  },
+  {
+    label: "Data flow",
+    body: "Raw images and identifiers never leave the site. The central server receives only reviewed weight deltas, de-identified metadata, and low-resolution thumbnails.",
   },
 ];
 
@@ -144,17 +185,17 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           K<span className="text-[#1a5fa8]">-ERA</span>
         </div>
         <div className="hidden items-center gap-7 md:flex">
-          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#problem">
-            The Problem
+          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#evidence">
+            Evidence
           </a>
-          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#platform">
-            Platform
+          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#why-it-matters">
+            Why It Matters
           </a>
-          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#technology">
-            Technology
+          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#how-it-works">
+            How It Works
           </a>
-          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#network">
-            Network
+          <a className="text-[0.78rem] tracking-[0.03em] text-[#7c8095] transition hover:text-[#1a5fa8]" href="#why-federated">
+            Why Federated
           </a>
         </div>
         <LandingGoogleCta
@@ -164,7 +205,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
           slotClassName="rounded-[4px]"
         >
-          {props.authBusy ? props.connectingLabel : "Request approval"}
+          {props.authBusy ? props.connectingLabel : "Apply to join"}
         </LandingGoogleCta>
       </nav>
 
@@ -181,8 +222,8 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               <em className="italic text-[#1a5fa8]">A network built to push it further.</em>
             </h1>
             <div className="mx-auto mb-8 max-w-[500px] text-[0.95rem] leading-[1.85] text-[#393c4a]">
-              <p>The current evidence is modest: 101 patients, patient-disjoint 5-fold splits, and 0.677 visit-level AUROC. K-ERA starts with the evidence we actually have.</p>
-              <p className="mt-2.5">Request approval on the web, then continue in the desktop app on a hospital PC. The goal is simple: grow validation across hospitals without moving raw patient data.</p>
+              <p>K-ERA starts from a strict founding benchmark and turns that starting point into a governed validation network across hospitals.</p>
+              <p className="mt-2.5">Apply on the web, then continue in the desktop app on a hospital PC. The goal is simple: grow validation across hospitals without moving raw patient data.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
@@ -192,9 +233,9 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
                 slotClassName="rounded-[4px]"
               >
-                {props.authBusy ? props.connectingLabel : "Request approval with Google"}
+                {props.authBusy ? props.connectingLabel : "Apply with Google"}
               </LandingGoogleCta>
-              <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
+              <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#evidence">
                 Read more ↓
               </a>
             </div>
@@ -204,106 +245,84 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           </div>
 
           <div className="border-t border-[#d6d9e4] pt-6 text-center md:border-t-0 md:border-l md:pl-7 md:pt-0 md:text-center">
-            <div className="mb-5">
-              <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
-                Platform type
+            {enAtGlance.map((item, index) => (
+              <div key={item.label} className={index < enAtGlance.length - 1 ? "mb-5" : ""}>
+                <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
+                  {item.label}
+                </div>
+                <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">{item.body}</div>
               </div>
-              <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">Federated extension · Clinician-facing research platform</div>
-            </div>
-            <div className="mb-5">
+            ))}
+            <div className="my-[18px] h-px bg-[#eceef5]" />
+            <div>
               <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
-                Workflow
-              </div>
-              <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">Web approval → desktop app install → local case authoring</div>
-            </div>
-            <div className="mb-5">
-              <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
-                Focus disease
+                Principal Investigator
               </div>
               <div className="text-[0.8rem] leading-[1.6] text-[#393c4a]">
-                <strong className="font-medium text-[#111218]">Infectious keratitis</strong>
+                Jinho Jeong, M.D., Ph.D.
                 <br />
-                Bacterial vs fungal differentiation
+                <span className="text-[0.75rem] text-[#7c8095]">Dept. of Ophthalmology · Jeju National University Hospital</span>
               </div>
-            </div>
-            <div className="mb-5">
-              <div className="mb-1 text-[0.6rem] uppercase tracking-[0.13em] text-[#7c8095] font-mono-alt">
-                Keywords
-              </div>
-              <div className="flex flex-wrap gap-1.5 text-[0.65rem] text-[#1a5fa8]">
-                {["leakage-aware benchmark", "keratitis", "MedSAM", "federated learning", "visit-level AI"].map((tag) => (
-                  <span key={tag} className="rounded-[3px] bg-[rgba(26,95,168,0.08)] px-2 py-0.5">
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="my-[18px] h-px bg-[#eceef5]" />
-            <div className="mb-4">
-              <div className="text-[2.1rem] leading-none text-[#1a5fa8] font-editorial">101</div>
-              <div className="mt-1 text-[0.74rem] leading-[1.5] text-[#7c8095]">Patients in the founding study</div>
-            </div>
-            <div>
-              <div className="text-[2.1rem] leading-none text-[#1a5fa8] font-editorial">0.677</div>
-              <div className="mt-1 text-[0.74rem] leading-[1.5] text-[#7c8095]">Best visit-level AUROC under patient-disjoint evaluation</div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="border-b border-[#d6d9e4] bg-white px-6 py-20 md:px-8" id="problem">
+      <section className="border-b border-[#d6d9e4] bg-white px-6 py-20 md:px-8" id="evidence">
         <div className="mx-auto max-w-[900px]">
           <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            The Problem
+            Current Evidence
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            The diagnosis is urgent.
+            One benchmark.
             <br />
-            The evidence is thin.
+            One place to read it.
             <br />
-            External validation is where it breaks down.
+            One honest starting point.
           </h2>
-          <div className="mt-12 grid gap-14 md:grid-cols-[1fr_240px]">
-            <div>
-              <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Infectious keratitis remains one of the leading causes of preventable corneal blindness worldwide. Bacterial and fungal keratitis present with overlapping clinical features, making early differential diagnosis challenging even for experienced clinicians.</p>
-              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">The founding K-ERA benchmark was intentionally strict: white-light images only, patient-disjoint 5-fold splitting, visit-level prediction, and leakage-aware controls. Under that setup, performance remained modest, which is exactly why larger and more heterogeneous cohorts matter.</p>
-              <div className="mt-7 border border-[#d6d9e4] border-l-[3px] border-l-[#b5291c] bg-[#f7f8fc] px-[22px] py-[18px] text-[0.84rem] leading-[1.72] text-[#393c4a]">
-                <strong className="font-medium text-[#b5291c]">The central constraint is not only model design. It is whether hospitals can build larger validation cohorts without moving raw patient data.</strong>
-                <br />
-                K-ERA closes that gap by handling approval on the web and keeping actual case work inside the desktop app on hospital PCs.
+          <div className="max-w-[680px] text-[0.92rem] leading-[1.88] text-[#393c4a]">
+            <p>The public benchmark is intentionally strict: white-light images only, patient-disjoint evaluation, visit-level prediction, and leakage-aware controls.</p>
+            <p className="mt-3">We keep the benchmark numbers in one place here because they are the starting line for K-ERA, not the finished claim. The network exists to extend this evidence under broader hospital variation.</p>
+          </div>
+          <div className="mt-12 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-4">
+            {enStats.map((stat) => (
+              <div key={stat.number + stat.label} className="border-r border-[#d6d9e4] bg-[#f7f8fc] px-6 py-7 last:border-r-0">
+                <div className="text-[2.2rem] leading-none text-[#1a5fa8] font-editorial">{stat.number}</div>
+                <div className="mt-2 text-[0.76rem] leading-[1.6] text-[#7c8095]">{stat.label}</div>
               </div>
-            </div>
-            <div className="flex flex-col">
-              {enStats.map((stat) => (
-                <div key={stat.number + stat.label} className="border-b border-[#eceef5] py-5 first:pt-0">
-                  <div className="text-[2.2rem] leading-none text-[#1a5fa8] font-editorial">{stat.number}</div>
-                  <div className="mt-1 text-[0.76rem] leading-[1.55] text-[#7c8095]">{stat.label}</div>
-                </div>
-              ))}
-            </div>
+            ))}
+          </div>
+          <div className="mt-7 border border-[#d6d9e4] border-l-[3px] border-l-[#b5291c] bg-[#f7f8fc] px-[22px] py-[18px] text-[0.84rem] leading-[1.72] text-[#393c4a]">
+            <strong className="font-medium text-[#b5291c]">The point is not to overstate one cohort. It is to make the starting evidence explicit before asking the network to extend it.</strong>
+          </div>
+          <div className="mt-4 text-[0.72rem] text-[#7c8095] font-mono-alt">
+            Manuscript under peer review · Founding cohort: Dept. of Ophthalmology, Jeju National University Hospital
           </div>
         </div>
       </section>
 
-      <section className="bg-[#1a5fa8] px-6 py-20 text-white md:px-8">
+      <section className="bg-[#1a5fa8] px-6 py-20 text-white md:px-8" id="why-it-matters">
         <div className="mx-auto max-w-[900px]">
           <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-white/50 font-mono-alt">
-            The Approach
+            Why This Matters
             <span className="h-px w-8 bg-white/15" />
           </div>
           <h2 className="mb-7 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Instead of over-claiming one hospital&apos;s model,
+            Urgent decisions.
             <br />
-            <em className="italic text-white/65">build the validation network first.</em>
+            Thin external evidence.
+            <br />
+            <em className="italic text-white/65">A workflow problem as much as a model problem.</em>
           </h2>
           <div className="mb-11 max-w-[560px] text-[0.95rem] leading-[1.85] text-white/78">
-            <p>K-ERA turns routine care into a reviewable research workflow. A single-center benchmark establishes the starting point; federated site rounds create the path toward broader validation, larger cohorts, and stronger CNN performance at scale.</p>
+            <p>Infectious keratitis remains one of the leading causes of preventable corneal blindness worldwide. Bacterial and fungal keratitis can present with overlapping features, making early differential diagnosis difficult even for experienced clinicians.</p>
+            <p className="mt-2.5">What is missing is not another internal demo. It is a governed way for hospitals to build broader validation cohorts under real privacy constraints.</p>
           </div>
           <div className="grid overflow-hidden rounded-[6px] border border-white/14 md:grid-cols-3">
-            {enApproach.map((item) => (
-              <div key={item.number} className="border-r border-white/10 bg-white/6 px-[22px] py-[26px] last:border-r-0">
-                <div className="mb-2.5 text-[0.6rem] uppercase tracking-[0.14em] text-white/38 font-mono-alt">{item.number}</div>
+            {enWhyItMatters.map((item) => (
+              <div key={item.label} className="border-r border-white/10 bg-white/6 px-[22px] py-[26px] last:border-r-0">
+                <div className="mb-2.5 text-[0.6rem] uppercase tracking-[0.14em] text-white/38 font-mono-alt">{item.label}</div>
                 <div className="mb-2 text-[1.05rem] leading-[1.3] text-white font-editorial">{item.title}</div>
                 <div className="text-[0.79rem] leading-[1.72] text-white/63">{item.body}</div>
               </div>
@@ -312,16 +331,18 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
         </div>
       </section>
 
-      <section className="border-b border-[#d6d9e4] bg-[#f7f8fc] px-6 py-20 md:px-8" id="platform">
+      <section className="border-b border-[#d6d9e4] bg-[#f7f8fc] px-6 py-20 md:px-8" id="how-it-works">
         <div className="mx-auto max-w-[900px]">
           <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            The Platform
+            How It Works — Workflow &amp; Technology
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Every routine case becomes
+            Approval on the web.
             <br />
-            a research-grade observation.
+            Case work on the desktop.
+            <br />
+            Review stays in the loop.
           </h2>
           <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Case authoring, image upload, and AI assessment all run from the K-ERA desktop app installed on a hospital PC. The web portal handles account approval only — patient images never reach a web server. This is a deliberate security boundary, not a technical limitation.</p>
           <div className="mt-11 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-4">
@@ -333,26 +354,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               </div>
             ))}
           </div>
-          <div className="mt-7 border-t border-[#eceef5] px-8 py-5 text-center text-[1.2rem] italic text-[#1a5fa8] font-editorial">
-            Each approved case can become a research observation.
-          </div>
-        </div>
-      </section>
-
-      <section className="border-b border-[#d6d9e4] bg-white px-6 py-20 md:px-8" id="technology">
-        <div className="mx-auto max-w-[900px]">
-          <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            Core Technology
+          <div className="mt-14 mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
+            Working Rails
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
-          <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Three working rails.
-            <br />
-            One honest boundary between what ships and what scales.
-          </h2>
-          <div className="mt-11 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-3">
-            {enTechnology.map((item) => (
-              <div key={item.tag} className="border-r border-[#d6d9e4] bg-[#f7f8fc] px-6 py-7 last:border-r-0">
+          <div className="grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-3">
+            {enWorkingRails.map((item) => (
+              <div key={item.tag} className="border-r border-[#d6d9e4] bg-white px-6 py-7 last:border-r-0">
                 <span className="mb-3 inline-block rounded-[3px] bg-[rgba(26,95,168,0.08)] px-2 py-0.5 text-[0.62rem] uppercase tracking-[0.1em] text-[#1a5fa8]">{item.tag}</span>
                 <div className="mb-2 text-[0.92rem] font-medium leading-[1.35]">{item.title}</div>
                 <div className="text-[0.79rem] leading-[1.75] text-[#393c4a]">{item.body}</div>
@@ -363,22 +371,24 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
         </div>
       </section>
 
-      <section className="border-b border-[#d6d9e4] bg-[#f7f8fc] px-6 py-20 md:px-8" id="network">
+      <section className="border-b border-[#d6d9e4] bg-white px-6 py-20 md:px-8" id="why-federated">
         <div className="mx-auto max-w-[900px]">
           <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            The Network
+            Why Federated
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Today: a founding-site benchmark.
+            The bottleneck is not only model design.
             <br />
-            Next: a multi-center validation network.
+            It is whether hospitals can validate together
+            <br />
+            without moving raw patient data.
           </h2>
           <div className="mt-11 grid gap-13 md:grid-cols-[1fr_280px]">
             <div>
-              <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">The current public evidence starts at Jeju National University Hospital. The purpose of the network is to make the next step explicit: more sites, more heterogeneity, and cleaner external validation.</p>
-              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Broader ophthalmic AI literature suggests CNN-based models usually improve as datasets expand. K-ERA is designed to test that expectation prospectively — not assume it from one internal study. The federated training pipeline is implemented and tested; active multi-site rounds await the next participating hospital.</p>
-              <div className="mt-6 rounded-[4px] border border-[#d6d9e4] bg-white px-5 py-[18px] text-[0.72rem] leading-[2.2] text-[#7c8095] font-mono-alt">
+              <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Raw images and identifiers stay on-site. The web handles approval; the desktop app handles patient cases and local training; the central server sees reviewed weight deltas, de-identified metadata, and low-resolution thumbnails only.</p>
+              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">That is why K-ERA is federated. It gives hospitals a governed way to contribute to broader validation and future multi-site training without collapsing the privacy boundary that made external validation so hard in the first place.</p>
+              <div className="mt-6 rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-5 py-[18px] text-[0.72rem] leading-[2.2] text-[#7c8095] font-mono-alt">
                 <span className="text-[#1a5fa8]">Hospital A</span> → local training → <span className="text-[#1a5fa8]">Δ weights</span>
                 <br />
                 <span className="text-[#1a5fa8]">Hospital B</span> → local training → <span className="text-[#1a5fa8]">Δ weights</span> → <span className="text-[#1a5fa8]">Central review</span>
@@ -408,7 +418,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 <div className="border-t border-[#d6d9e4] bg-[#f7f8fc] px-[18px] py-3 text-center text-[0.77rem] text-[#7c8095]">
                   Founding site public today. Additional ophthalmology departments invited.
                   <br />
-                  <a className="text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
+                  <a className="text-[#1a5fa8]" href="mailto:dr.jinho.jeong@gmail.com">
                     Contact us to join →
                   </a>
                 </div>
@@ -423,38 +433,37 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                   After institutional approval, sites can install the desktop app, register cases locally, and join the review and aggregation workflow.
                 </p>
                 <div className="mt-4 text-[0.77rem] text-[#7c8095]">
-                  <a className="text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
+                  <a className="text-[#1a5fa8]" href="mailto:dr.jinho.jeong@gmail.com">
                     Contact us to join →
                   </a>
                 </div>
               </div>
             )}
           </div>
-        </div>
-      </section>
 
-      <section className="border-b border-[#d6d9e4] bg-white px-6 py-20 md:px-8">
-        <div className="mx-auto max-w-[900px]">
-          <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            The Long-term Goal
-            <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
-          </div>
-          <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Build the infrastructure first,
-            <br />
-            then earn the larger model.
-          </h2>
-          <div className="mt-10 rounded-r-[4px] border-l-[3px] border-l-[#1a5fa8] bg-[#f7f8fc] px-10 py-8">
-            <div className="mb-1 text-[1.3rem] italic leading-[1.65] text-[#111218] font-editorial">
-              "Not by pretending one cohort is enough. By building the network that makes the next cohort possible."
+          <div className="mt-10 grid gap-6 md:grid-cols-2">
+            <div className="rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-6 py-5">
+              <div className="mb-3 text-[0.6rem] uppercase tracking-[0.12em] text-[#1a5fa8] font-mono-alt">What participating sites receive</div>
+              <ul className="space-y-2.5">
+                {enParticipationBenefits.map((benefit) => (
+                  <li key={benefit} className="flex items-start gap-2 text-[0.82rem] leading-[1.65] text-[#393c4a]">
+                    <span className="mt-[2px] shrink-0 text-[#1a5fa8]">→</span>
+                    {benefit}
+                  </li>
+                ))}
+              </ul>
             </div>
-            <div className="text-[0.62rem] uppercase tracking-[0.1em] text-[#7c8095] font-mono-alt">
-              K-ERA Project · Jeju National University Hospital, Department of Ophthalmology
+            <div className="rounded-[4px] border border-[#d6d9e4] bg-white px-6 py-5">
+              <div className="mb-3 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095] font-mono-alt">Governance</div>
+              <div className="space-y-4">
+                {enGovernance.map((item) => (
+                  <div key={item.label}>
+                    <div className="mb-0.5 text-[0.6rem] uppercase tracking-[0.1em] text-[#7c8095] font-mono-alt">{item.label}</div>
+                    <div className="text-[0.8rem] leading-[1.65] text-[#393c4a]">{item.body}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="mt-9 grid gap-11 md:grid-cols-2">
-            <p className="text-[0.92rem] leading-[1.88] text-[#393c4a]">The founding white-light benchmark is still modest. That is precisely the point. K-ERA is not presenting a finished answer; it is building the workflow, review logic, and site infrastructure required to produce stronger external evidence.</p>
-            <p className="text-[0.92rem] leading-[1.88] text-[#393c4a]">If the broader CNN scaling pattern holds in this disease area as well, larger multi-center cohorts should improve robustness. The platform is designed so that claim can be tested transparently, under real governance constraints.</p>
           </div>
         </div>
       </section>
@@ -487,13 +496,22 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               pulseClassName="ring-4 ring-[rgba(26,95,168,0.18)]"
               slotClassName="rounded-[4px]"
             >
-              {props.authBusy ? props.connectingLabel : "Request approval with Google"}
+              {props.authBusy ? props.connectingLabel : "Apply with Google"}
             </LandingGoogleCta>
-            <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#problem">
-              Read from the beginning
+            <a className="rounded-[4px] border border-[#d6d9e4] px-5 py-2.5 text-[0.82rem] text-[#393c4a] transition hover:border-[#1a5fa8] hover:text-[#1a5fa8]" href="#evidence">
+              Read the evidence
             </a>
           </div>
-          <div className="mt-4 text-[0.74rem] text-[#7c8095]">Open to ophthalmology departments · Contact: kera-research@jnuh.ac.kr</div>
+          <div className="mt-6 text-[0.74rem] text-[#7c8095]">
+            Open to ophthalmology departments worldwide
+          </div>
+          <div className="mt-3 text-[0.74rem] text-[#7c8095]">
+            Jinho Jeong, M.D., Ph.D. · Dept. of Ophthalmology, Jeju National University Hospital
+            <br />
+            <a className="text-[#1a5fa8] hover:underline" href="mailto:dr.jinho.jeong@gmail.com">
+              dr.jinho.jeong@gmail.com
+            </a>
+          </div>
         </div>
       </section>
 
@@ -509,7 +527,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           <a className="text-[0.71rem] text-[#7c8095] transition hover:text-[#1a5fa8]" href="/terms">
             Terms
           </a>
-          <a className="text-[0.71rem] text-[#7c8095] transition hover:text-[#1a5fa8]" href="mailto:kera-research@jnuh.ac.kr">
+          <a className="text-[0.71rem] text-[#7c8095] transition hover:text-[#1a5fa8]" href="mailto:dr.jinho.jeong@gmail.com">
             Contact
           </a>
         </div>

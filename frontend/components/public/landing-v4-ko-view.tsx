@@ -21,12 +21,12 @@ type KoreanLandingViewProps = {
 
 const koPainItems = [
   {
-    title: "Python 환경 설정, 수동 Annotation",
-    body: "Anaconda 충돌, 터미널 에러, 수천 장의 ROI 작업. 연구를 시작하기도 전에 지칩니다.",
+    title: "Python 환경 설정, 수동 라벨링",
+    body: "Anaconda 충돌, 터미널 오류, 수천 장의 ROI 표시 작업. 연구를 시작하기도 전에 지칩니다.",
   },
   {
-    title: "Single-center의 한계",
-    body: "데이터를 병원 밖으로 꺼낼 수 없어, 힘들게 만든 모델도 external validation을 받지 못합니다.",
+    title: "단일기관 연구의 한계",
+    body: "데이터를 병원 밖으로 꺼낼 수 없어, 힘들게 만든 모델도 외부 검증을 받지 못합니다.",
   },
   {
     title: "논문은 쓰지만 진료엔 못 쓰는 AI",
@@ -37,24 +37,24 @@ const koPainItems = [
 const koFeatures = [
   {
     title: "MedSAM 기반 반자동 병변 분할",
-    body: "병변 주변에 box를 그리면 MedSAM이 ROI preview와 lesion crop을 준비합니다. 현재 논문에서 lesion-centered 비교는 manual prompt 기반이었고, 앱은 그 과정을 반자동 워크플로로 정리합니다.",
+    body: "병변 주변에 상자를 그리면 MedSAM이 관심영역 미리보기와 병변 잘라내기를 준비합니다. 현재 논문에서 병변 중심 비교는 수동 상자 지정 기반이었고, 앱은 그 과정을 반자동 흐름으로 정리합니다.",
     chip: "MedSAM",
     previewSrc: "/landing/medSAM.png",
     previewAlt: "MedSAM 기반 반자동 병변 분할을 보여주는 이미지",
   },
   {
-    title: "Visit 단위 멀티모달 판독",
-    body: "플랫폼은 White · Fluorescein · Slit 이미지를 함께 저장하고 검토합니다. 다만 현재 공개 benchmark는 white-light 기준이며, visit 단위 판독과 유사 증례 탐색이 그 다음 확장 축입니다.",
-    chip: "Visit-level",
+    title: "방문 단위 멀티모달 판독",
+    body: "플랫폼은 백색광 · 형광염색 · 세극등 이미지를 함께 저장하고 검토합니다. 다만 현재 공개 벤치마크는 백색광 기준이며, 방문 단위 판독과 유사 증례 탐색이 다음 확장 축입니다.",
+    chip: "방문 단위",
     previewSrc: "/landing/multi_modal.png",
-    previewAlt: "Visit 단위 멀티모달 종합 판독을 보여주는 이미지",
+    previewAlt: "방문 단위 멀티모달 종합 판독을 보여주는 이미지",
   },
   {
     title: "연합학습 확장",
-    body: "이미지-level과 visit-level site round, pending review, FedAvg 집계가 구현돼 있습니다. Retrieval은 별도 federated corpus expansion 레일로 분리해 운영합니다.",
-    chip: "Federated",
+    body: "이미지 단위와 방문 단위의 기관별 학습 라운드, 검토 대기, FedAvg 집계가 구현돼 있습니다. 유사 증례 검색은 별도의 연합 코퍼스 확장 흐름으로 분리해 운영합니다.",
+    chip: "연합학습",
     previewSrc: "/landing/federated.png",
-    previewAlt: "Federated Learning 다기관 협력을 보여주는 이미지",
+    previewAlt: "연합학습 기반 다기관 협력을 보여주는 이미지",
   },
 ];
 
@@ -76,16 +76,16 @@ const koFedPoints = [
 ];
 
 const koStats = [
-  { number: "101명", label: "제주 단일기관\nfeasibility cohort", context: "현재 공개 근거의 출발점입니다" },
-  { number: "258", label: "Culture-confirmed visits\npatient-disjoint 5-fold", context: "누수 통제를 강하게 둔 평가입니다" },
-  { number: "658", label: "White-light slit-lamp images\n현재 논문 benchmark", context: "공개 결과는 white-light 기준입니다" },
-  { number: "0.677", label: "Best visit-level AUROC\nleakage-aware evaluation", context: "아직 modest해서 더 큰 다기관 검증이 필요합니다" },
+  { number: "101명", label: "제주 단일기관\n초기 검증 코호트", context: "현재 공개 근거의 출발점입니다" },
+  { number: "258", label: "배양검사 확진 방문\n환자 분리 5겹 교차검증", context: "누수 통제를 강하게 둔 평가입니다" },
+  { number: "658", label: "백색광 세극등 이미지\n현재 논문 벤치마크", context: "공개 결과는 백색광 기준입니다" },
+  { number: "0.677", label: "방문 단위 최고 AUROC\n데이터 누수 통제 평가", context: "일반화 가능성 확인을 위해 더 큰 규모의 다기관 검증이 필요합니다" },
 ];
 
 const koFaqs = [
   {
     q: "K-ERA는 AI 모델을 대신 만들어 주나요?",
-    a: "아닙니다. K-ERA는 케이스 등록, 병변 ROI 준비, 학습 실행 같은 반복 작업을 줄여 주는 연구 워크플로입니다. 최종 판단과 처방은 여전히 임상 의사의 몫입니다.",
+    a: "아닙니다. K-ERA는 케이스 등록, 병변 ROI 준비, 학습 실행 같은 반복 작업을 줄여 주는 연구 흐름입니다. 최종 판단과 처방은 여전히 임상 의사의 몫입니다.",
   },
   {
     q: "코딩을 전혀 몰라도 쓸 수 있나요?",
@@ -93,15 +93,15 @@ const koFaqs = [
   },
   {
     q: "환자 데이터가 외부로 유출되지 않나요?",
-    a: "원본 이미지와 환자 정보는 병원 내부에만 남습니다. 중앙으로는 weight delta, 비식별 메타데이터, 검토용 저해상도 thumbnail만 올라가며, review 이후에만 집계가 진행됩니다.",
+    a: "원본 이미지와 환자 정보는 병원 내부에만 남습니다. 중앙으로는 가중치 변화량, 비식별 메타데이터, 검토용 저해상도 썸네일만 올라가며, 검토 이후에만 집계가 진행됩니다.",
   },
   {
     q: "참여하면 어떤 이점이 있나요?",
-    a: "현재 단일기관 feasibility를 다기관 validation infrastructure로 확장하는 데 직접 기여하게 됩니다. 참여 기관은 더 큰 검증 코호트와 집계 모델 개선의 일부가 됩니다.",
+    a: "현재 단일기관 초기 근거를 다기관 검증 기반으로 확장하는 데 직접 기여하게 됩니다. 참여 기관은 더 큰 검증 코호트와 집계 모델 개선의 일부가 됩니다.",
   },
   {
     q: "어떤 진단 범주를 지원하나요?",
-    a: "현재 공개 benchmark는 culture-confirmed BK vs FK, white-light slit-lamp 이미지 기준입니다. 앱은 White · Fluorescein · Slit 저장과 visit-level review를 지원하지만, 그 전체가 아직 같은 수준으로 검증된 것은 아닙니다.",
+    a: "현재 공개 벤치마크는 배양검사로 확진된 세균성 각막염(BK)과 진균성 각막염(FK)의 백색광 세극등 이미지 기준입니다. 앱은 백색광 · 형광염색 · 세극등 저장과 방문 단위 검토를 지원하지만, 그 전체가 아직 같은 수준으로 검증된 것은 아닙니다.",
   },
   {
     q: "병원 IT 인프라가 복잡해야 하나요?",
@@ -231,7 +231,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               className="landing-hero-fade mx-auto mb-12 max-w-[520px] text-base leading-[1.85] text-[#7b88a8]"
               style={{ animationDelay: "0.13s" }}
             >
-              파이썬도, 엑셀 manifest도, 수동 annotation도 필요 없습니다.
+              파이썬도, 엑셀 목록 정리도, 수동 라벨링도 필요 없습니다.
               <br />
               K-ERA 앱에 오늘 찍은 사진을 올리면, 함께 판단을 돕습니다.
             </p>
@@ -271,7 +271,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
 
         <div className="landing-hero-fade absolute bottom-8 z-10 flex flex-col items-center gap-2 text-[0.68rem] tracking-[0.12em] text-[#3f4b6a]" style={{ animationDelay: "0.42s" }}>
           <div className="h-9 w-px animate-pulse bg-gradient-to-b from-[#3f4b6a] to-transparent" />
-          scroll
+          아래로
         </div>
       </section>
 
@@ -355,21 +355,21 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
           <div className="grid items-center gap-15 md:grid-cols-2">
             <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-[rgba(45,212,192,0.13)] bg-[#121a30]">
               <div className="absolute left-3.5 top-3.5 rounded-full border border-[rgba(245,158,11,0.28)] bg-[rgba(245,158,11,0.14)] px-2.5 py-1 text-[0.62rem] tracking-[0.1em] text-[#f59e0b]">
-                1st Visit · 2026.03.15
+                첫 방문 · 2026.03.15
               </div>
               <div className="flex h-full flex-col items-center justify-center gap-3.5 p-7">
                 <div className="flex items-start justify-center gap-2">
-                  {["White", "Fluorescein", "Slit"].map((label) => (
+                  {["백색광", "형광염색", "세극등"].map((label) => (
                     <div key={label} className="flex w-[72px] flex-col items-center overflow-hidden rounded-[8px] border border-[rgba(45,212,192,0.13)] bg-black/45 px-1.5 pb-1.5 pt-2">
                       <div className="h-6 w-6 rounded-full bg-[rgba(45,212,192,0.22)]" />
                       <div className="mt-1 text-[0.58rem] tracking-[0.08em] text-[#3f4b6a]">{label}</div>
                     </div>
                   ))}
                 </div>
-                <div className="text-[0.9rem] text-[#2dd4c0]">↓ Visit 단위 종합 판독</div>
+                <div className="text-[0.9rem] text-[#2dd4c0]">↓ 방문 단위 종합 판독</div>
                 <div className="rounded-[8px] border border-[#2dd4c0] bg-[rgba(45,212,192,0.22)] px-[18px] py-3 text-center text-[0.76rem] tracking-[0.06em] text-[#2dd4c0]">
-                  Fungal Keratitis · 76%
-                  <div className="mt-1 text-[0.62rem] opacity-65">MedSAM · Ensemble</div>
+                  진균성 각막염 · 76%
+                  <div className="mt-1 text-[0.62rem] opacity-65">MedSAM · 앙상블</div>
                 </div>
               </div>
             </div>
@@ -381,13 +381,13 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 "코딩"이 아니라
                 <br />
-                <span className="text-[#2dd4c0]">"임상 워크플로"</span>로
+                <span className="text-[#2dd4c0]">"임상 흐름"</span>으로
               </h2>
               <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">
                 K-ERA는 임상 안과의사가 <strong className="font-medium text-[#2dd4c0]">코드 없이</strong> 각막염 AI 연구를 이어갈 수 있도록 설계된 연구 플랫폼입니다. Google 로그인으로 기관 승인을 신청하고, 승인되면 K-ERA 앱에서 케이스 등록과 이미지 검토를 이어갈 수 있습니다.
               </p>
               <p className="text-[0.93rem] leading-[1.9] text-[#7b88a8]">
-                현재 공개 근거는 제주 단일기관 white-light benchmark입니다. 그 위에서 참여 병원이 늘어날수록 더 넓은 external validation이 가능해지고, 문헌 전반에서 기대되는 것처럼 CNN 계열이 더 큰 데이터에서 좋아지는지 직접 검증할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
+                현재 공개 근거는 제주 단일기관 백색광 벤치마크입니다. 그 위에서 참여 병원이 늘어날수록 더 넓은 외부 검증이 가능해지고, 문헌 전반에서 제시되는 것처럼 CNN 계열이 더 큰 데이터에서 실제로 좋아지는지 직접 검증할 수 있습니다. <strong className="font-medium text-[#e4e8f5]">원본 데이터는 병원 밖으로 나가지 않습니다.</strong>
               </p>
             </div>
           </div>
@@ -404,7 +404,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
                 <br />
                 반나절 쓰셨다면
               </h2>
-              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">box 하나로 ROI 초안을 만들고, 정리와 review 흐름은 K-ERA가 이어받습니다.</p>
+              <p className="mx-auto max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">상자 하나로 ROI 초안을 만들고, 정리와 검토 흐름은 K-ERA가 이어받습니다.</p>
             </div>
             <div
               className="landing-reveal justify-self-center w-full max-w-[460px] overflow-hidden rounded-[24px] border border-[rgba(45,212,192,0.13)] bg-[rgba(13,20,38,0.55)] shadow-[0_20px_48px_rgba(6,10,20,0.24)] lg:max-w-[320px]"
@@ -473,14 +473,14 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             </div>
 
             <div>
-              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">데이터 프라이버시</div>
+              <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">데이터 보호</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
                 원본은 병원 안에 두고,
                 <br />
                 모델만 함께 키웁니다
               </h2>
-              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">다기관 AI 연구의 가장 큰 벽은 <strong className="font-medium text-[#e4e8f5]">데이터를 꺼낼 수 없다는 것</strong>이었습니다. K-ERA는 raw data 이동 대신 review-first federated workflow를 선택했습니다.</p>
-              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">가중치 변화량과 검토용 요약 자산만 중앙으로 전달</strong>합니다. 이후 pending review를 거친 뒤에만 집계가 진행됩니다.</p>
+              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">다기관 AI 연구의 가장 큰 벽은 <strong className="font-medium text-[#e4e8f5]">데이터를 꺼낼 수 없다는 것</strong>이었습니다. K-ERA는 원본 데이터 이동 대신 검토 우선의 연합학습 흐름을 선택했습니다.</p>
+              <p className="mb-4 text-[0.93rem] leading-[1.9] text-[#7b88a8]">각 병원이 자체 환경에서 모델을 학습하고, 학습 결과인 <strong className="font-medium text-[#e4e8f5]">가중치 변화량과 검토용 요약 자산만 중앙으로 전달</strong>합니다. 이후 검토 절차를 거친 뒤에만 집계가 진행됩니다.</p>
               <div className="mt-1 flex flex-col gap-3.5">
                 {koFedPoints.map((point) => {
                   const [strong, rest] = point.split(": ");
@@ -519,7 +519,7 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
             <div className="text-center">
               <div className="mb-3 text-[0.68rem] uppercase tracking-[0.18em] text-[#8a96b0]">지금까지</div>
               <h2 className="mb-4 text-[clamp(1.55rem,2.8vw,2.3rem)] leading-[1.26] font-ko-serif">
-                제주에서 시작된 benchmark,
+                제주에서 시작된 벤치마크,
                 <br />
                 더 많은 병원에서
                 <br />
@@ -568,9 +568,9 @@ export function KoreanLandingView(props: KoreanLandingViewProps) {
               <p className="mx-auto mb-11 max-w-[580px] text-[0.93rem] leading-[1.9] text-[#7b88a8]">
                 한국의 안과의사들이 각자의 케이스를 기여할 때마다,
                 <br />
-                그것은 동시에 실제 임상 환경에서의 external validation 후보가 됩니다.
+                그것은 동시에 실제 임상 환경에서의 외부 검증 후보가 됩니다.
                 <br />
-                현재는 single-center 근거를 다기관 검증으로 넓히는 단계입니다.
+                현재는 단일기관 근거를 다기관 검증으로 넓혀 가는 단계입니다.
                 <br />
                 논문을 직접 쓰지 않아도, 참여 자체가 연구 데이터와 모델 개선에 기여합니다.
               </p>
