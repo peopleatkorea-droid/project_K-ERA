@@ -35,66 +35,66 @@ const enStats = [
 
 const enApproach = [
   {
-    number: "Enables 01",
-    title: "A strict starting benchmark",
-    body: "Begin with leakage-aware single-center evidence, then expand into multi-center validation without changing the clinician workflow.",
+    number: "Today",
+    title: "An honest baseline",
+    body: "A leakage-aware single-center benchmark: 101 patients, patient-disjoint 5-fold splits, 0.677 visit-level AUROC. Modest by design — this is where the evidence actually stands.",
   },
   {
-    number: "Enables 02",
-    title: "A realistic scaling path",
-    body: "Across the broader literature, CNN-family models usually improve as datasets become larger and more heterogeneous. K-ERA is built to test that under real hospital variation.",
+    number: "The hypothesis",
+    title: "Scale should improve it",
+    body: "Across the keratitis AI literature, CNN-family models tend to improve as datasets grow more heterogeneous. K-ERA is built to test that under real hospital variation — not assume it.",
   },
   {
-    number: "Enables 03",
-    title: "Privacy-preserving collaboration",
-    body: "Local site rounds, pending-review model updates, and FedAvg aggregation support collaboration without moving raw images or patient identifiers.",
+    number: "The constraint",
+    title: "Patient data cannot leave the hospital",
+    body: "Raw images and identifiers stay on-site. Only weight updates, de-identified metadata, and low-resolution thumbnails reach the central server — after human review.",
   },
 ];
 
 const enWorkflow = [
   {
     step: "Step 01",
-    title: "Sign in and request approval",
-    body: "Sign in with Google on this website to request institutional approval. The web portal handles account management and hospital access only — not case authoring.",
+    title: "Sign in. Request access.",
+    body: "Sign in with Google on this website to request institutional approval. The web portal is for account management and hospital access only — patient images never reach a web server.",
   },
   {
     step: "Step 02",
-    title: "Install the desktop app and upload images",
-    body: "After approval, install the K-ERA desktop app on a hospital PC. Upload white-light, fluorescein, and slit images from a visit. The current published benchmark is white-light only.",
+    title: "Install the desktop app. Upload images.",
+    body: "After approval, install the K-ERA desktop app on a hospital PC. Upload white-light, fluorescein, and slit images per visit. The current published benchmark is white-light only.",
   },
   {
     step: "Step 03",
-    title: "Prepare lesion ROI",
-    body: "In the desktop app, draw a loose lesion box and K-ERA prepares ROI previews and lesion crops for review. The current paper's lesion-centered comparison was evaluated with manual prompts.",
+    title: "Draw the lesion box.",
+    body: "Draw a loose box around the lesion. K-ERA runs MedSAM to refine it into ROI previews and lesion crops. No manual annotation pipeline required.",
   },
   {
     step: "Step 04",
-    title: "Review and contribute",
-    body: "From the desktop app, approved sites run local training rounds. Weight updates are reviewed centrally before aggregation — raw images stay on the hospital PC.",
+    title: "Run a local training round.",
+    body: "Approved sites trigger image-level or visit-level training from the desktop app. Weight deltas go to central review before aggregation — raw data stays on-site.",
   },
 ];
 
 const enTechnology = [
   {
-    tag: "Prompt-guided ROI",
-    title: "MedSAM-assisted lesion workflow",
-    body: "MedSAM converts a clinician-drawn box into ROI previews and lesion crops. This reduces manual preprocessing while keeping the clinician in the loop.",
+    tag: "Lesion preparation",
+    title: "MedSAM-assisted ROI workflow",
+    body: "Draw a box around the lesion. K-ERA runs MedSAM to refine it into a cornea mask and lesion crop — reducing manual preprocessing while keeping the clinician in the loop.",
     detail:
-      "In the current paper, lesion-centered gains were shown with manual lesion prompts rather than a fully automated deployment pipeline.",
+      "The current benchmark used manual lesion prompts. The desktop app operationalizes the same workflow for routine clinical cases.",
   },
   {
-    tag: "Visit-level benchmark",
-    title: "EfficientNetV2-S MIL plus DINO retrieval rail",
-    body: "The active operating rail is visit-level EfficientNetV2-S MIL, with DINO lesion retrieval retained as a complementary comparison path. The platform can store multiple slit-lamp views, but the published benchmark is white-light.",
+    tag: "Case assessment",
+    title: "AI inference and similar case retrieval",
+    body: "The desktop app returns a visit-level prediction with confidence percentage, GradCAM activation, and multi-model ensemble breakdown. A separate DINO retrieval rail surfaces the most similar cases from the research corpus — both are working features today.",
     detail:
-      "This keeps current evidence separate from the future multimodal roadmap instead of treating them as the same claim.",
+      "Inference runs locally on the hospital PC. Retrieval queries the central embedding index. The published benchmark is white-light; the app stores White, Fluorescein, and Slit views.",
   },
   {
-    tag: "Federated extension",
-    title: "Review-first aggregation across hospitals",
-    body: "Site nodes can run local image-level ConvNeXt-Tiny rounds and visit-level EfficientNetV2-S MIL rounds. Aggregation happens after central review rather than blind automatic merging.",
+    tag: "Federated training",
+    title: "Review-gated aggregation across hospitals",
+    body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Weight deltas go to central review before FedAvg aggregation — no blind automatic merging.",
     detail:
-      "The central service receives weight deltas, de-identified metadata, and low-resolution thumbnails for review. Retrieval sharing runs on a separate corpus-expansion rail.",
+      "The full training pipeline is implemented and tested. Active multi-site rounds await the next participating hospital beyond the founding site.",
   },
 ];
 
@@ -180,16 +180,16 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           <div className="text-center md:text-center">
             <div className="mb-6 flex items-center justify-center gap-2.5 text-[0.63rem] uppercase tracking-[0.16em] text-[#7c8095] font-mono-alt">
               <span className="h-px w-5 bg-[#d6d9e4]" />
-              A clinician-facing research platform
+              Infectious keratitis · AI research platform
             </div>
             <h1 className="mb-6 text-[clamp(1.9rem,3.8vw,3rem)] leading-[1.22] tracking-[-0.015em] font-editorial">
-              A stricter keratitis benchmark,
+              One honest benchmark.
               <br />
-              built for <em className="italic text-[#1a5fa8]">multi-center growth.</em>
+              <em className="italic text-[#1a5fa8]">A network built to push it further.</em>
             </h1>
             <div className="mx-auto mb-8 max-w-[500px] text-[0.95rem] leading-[1.85] text-[#393c4a]">
-              <p>K-ERA starts from a leakage-aware single-center study: 101 patients, 258 visits, and 658 white-light slit-lamp images.</p>
-              <p className="mt-2.5">The current result is modest, but the broader literature suggests CNN-family models improve as datasets scale. The platform is built to test that next step across hospitals.</p>
+              <p>The current evidence is modest by design: 101 patients, patient-disjoint 5-fold splits, 0.677 visit-level AUROC. K-ERA starts here — not because the result is strong enough, but because this is what the evidence actually supports.</p>
+              <p className="mt-2.5">The broader keratitis AI literature suggests CNN-family models improve as datasets scale across hospitals. K-ERA is built to test that — with federated infrastructure that keeps patient data on-site.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
@@ -256,11 +256,11 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Early diagnosis is difficult.
+            The diagnosis is urgent.
             <br />
-            AI has shown promise.
+            The evidence is thin.
             <br />
-            External validation is still the bottleneck.
+            External validation is where it breaks down.
           </h2>
           <div className="mt-12 grid gap-14 md:grid-cols-[1fr_240px]">
             <div>
@@ -317,11 +317,11 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Designed for clinicians.
+            Every routine case becomes
             <br />
-            Structured enough for real research.
+            a research-grade observation.
           </h2>
-          <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">A research dataset grows through routine care, but the landing now draws a firmer line between what is already benchmarked, what the app already supports, and what the federated extension is still validating.</p>
+          <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Case authoring, image upload, and AI assessment all run from the K-ERA desktop app installed on a hospital PC. The web portal handles account approval only — patient images never reach a web server. This is a deliberate security boundary, not a technical limitation.</p>
           <div className="mt-11 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-4">
             {enWorkflow.map((item) => (
               <div key={item.step} className="border-r border-[#d6d9e4] bg-white px-5 py-[26px] last:border-r-0">
@@ -344,9 +344,9 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Three rails.
+            Three working rails.
             <br />
-            One honest boundary between evidence and roadmap.
+            One honest boundary between what ships and what scales.
           </h2>
           <div className="mt-11 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-3">
             {enTechnology.map((item) => (
@@ -375,7 +375,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           <div className="mt-11 grid gap-13 md:grid-cols-[1fr_280px]">
             <div>
               <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">The current public evidence starts at Jeju National University Hospital. The purpose of the network is to make the next step explicit: more sites, more heterogeneity, and cleaner external validation.</p>
-              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Broader ophthalmic AI literature suggests CNN-based models usually improve as datasets expand. K-ERA is designed to test that expectation prospectively, rather than assume it from one internal study.</p>
+              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Broader ophthalmic AI literature suggests CNN-based models usually improve as datasets expand. K-ERA is designed to test that expectation prospectively — not assume it from one internal study. The federated training pipeline is implemented and tested; active multi-site rounds await the next participating hospital.</p>
               <div className="mt-6 rounded-[4px] border border-[#d6d9e4] bg-white px-5 py-[18px] text-[0.72rem] leading-[2.2] text-[#7c8095] font-mono-alt">
                 <span className="text-[#1a5fa8]">Hospital A</span> → local training → <span className="text-[#1a5fa8]">Δ weights</span>
                 <br />
@@ -436,7 +436,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               "Not by pretending one cohort is enough. By building the network that makes the next cohort possible."
             </div>
             <div className="text-[0.62rem] uppercase tracking-[0.1em] text-[#7c8095] font-mono-alt">
-              K-ERA founding principle
+              K-ERA Project · Jeju National University Hospital, Department of Ophthalmology
             </div>
           </div>
           <div className="mt-9 grid gap-11 md:grid-cols-2">
