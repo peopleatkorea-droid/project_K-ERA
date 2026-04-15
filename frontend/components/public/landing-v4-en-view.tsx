@@ -65,8 +65,8 @@ const enWhyItMatters = [
   },
   {
     label: "Operational barrier",
-    title: "Governance is part of the model problem",
-    body: "Hospitals need a way to review, validate, and contribute cases without exporting raw patient data. That workflow gap is what K-ERA is designed to close.",
+    title: "Multi-site validation requires governance",
+    body: "Hospitals need a practical way to review, validate, and contribute cases without exporting raw patient data. K-ERA is designed around that operational requirement.",
   },
 ];
 
@@ -217,13 +217,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               Infectious keratitis · AI research platform
             </div>
             <h1 className="mb-6 text-[clamp(1.9rem,3.8vw,3rem)] leading-[1.22] tracking-[-0.015em] font-editorial">
-              Federated keratitis AI research.
+              Federated validation for
               <br />
-              <em className="italic text-[#1a5fa8]">From one founding cohort to a multi-site clinical network.</em>
+              <em className="italic text-[#1a5fa8]">infectious keratitis AI.</em>
             </h1>
             <div className="mx-auto mb-8 max-w-[500px] text-[0.95rem] leading-[1.85] text-[#393c4a]">
-              <p>K-ERA is a governed research platform for infectious keratitis AI — built from the start for federated validation across hospitals, without moving raw patient data.</p>
-              <p className="mt-2.5">Apply on the web, install the desktop app on a hospital PC, and contribute local cases to a growing multi-site validation corpus.</p>
+              <p>K-ERA is a research platform for evaluating infectious keratitis AI across hospitals while raw patient data remain on local systems.</p>
+              <p className="mt-2.5">Sites apply on the web, continue in the desktop app on a hospital PC, and contribute local cases under institutional approval.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2.5">
               <LandingGoogleCta
@@ -275,9 +275,9 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            The founding evidence.
+            Founding benchmark results
             <br />
-            One site. Where the network begins.
+            from the initial single-site cohort.
           </h2>
           <div className="max-w-[680px] text-[0.92rem] leading-[1.88] text-[#393c4a]">
             <p>The public benchmark is intentionally strict: white-light images only, patient-disjoint evaluation, visit-level prediction, and leakage-aware controls.</p>
@@ -304,15 +304,13 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             <span className="h-px w-8 bg-white/15" />
           </div>
           <h2 className="mb-7 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
-            Urgent decisions.
+            Early treatment decisions are difficult,
             <br />
-            Thin external evidence.
-            <br />
-            <em className="italic text-white/65">A workflow problem as much as a model problem.</em>
+            and external validation remains limited.
           </h2>
           <div className="mb-11 max-w-[560px] text-[0.95rem] leading-[1.85] text-white/78">
             <p>Infectious keratitis remains one of the leading causes of preventable corneal blindness worldwide. Bacterial and fungal keratitis can present with overlapping features, making early differential diagnosis difficult even for experienced clinicians.</p>
-            <p className="mt-2.5">What is missing is not another internal demo. It is a governed way for hospitals to build broader validation cohorts under real privacy constraints.</p>
+            <p className="mt-2.5">What remains limited is not only model performance, but the ability to build broader validation cohorts under real privacy and governance constraints.</p>
           </div>
           <div className="grid overflow-hidden rounded-[6px] border border-white/14 md:grid-cols-3">
             {enWhyItMatters.map((item) => (
@@ -329,7 +327,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
       <section className="border-b border-[#d6d9e4] bg-[#f7f8fc] px-6 py-20 md:px-8" id="how-it-works">
         <div className="mx-auto max-w-[900px]">
           <div className="mb-5 flex items-center gap-2.5 text-[0.63rem] uppercase tracking-[0.18em] text-[#1a5fa8] font-mono-alt">
-            How It Works — Workflow &amp; Technology
+            How It Works
             <span className="h-px w-8 bg-[rgba(26,95,168,0.18)]" />
           </div>
           <h2 className="mb-5 text-[clamp(1.65rem,2.6vw,2.3rem)] leading-[1.28] font-editorial">
@@ -379,8 +377,8 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           </h2>
           <div className="mt-11 grid gap-13 md:grid-cols-[1fr_280px]">
             <div>
-              <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Raw images and identifiers stay on-site. The web handles approval; the desktop app handles patient cases and local training; the central server sees reviewed weight deltas, de-identified metadata, and low-resolution thumbnails only.</p>
-              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">That is why K-ERA is federated. It gives hospitals a governed way to contribute to broader validation and future multi-site training without collapsing the privacy boundary that made external validation so hard in the first place.</p>
+              <p className="max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">Multi-site validation is difficult when institutions cannot transfer raw images and patient identifiers. A federated workflow allows each hospital to keep patient data on-site while still contributing to a shared research network.</p>
+              <p className="mt-3 max-w-[620px] text-[0.92rem] leading-[1.88] text-[#393c4a]">In K-ERA, participating sites contribute reviewed weight updates, de-identified metadata, and limited review assets rather than raw clinical data. This keeps the privacy boundary intact while making broader validation possible.</p>
               <div className="mt-6 rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-5 py-[18px] text-[0.72rem] leading-[2.2] text-[#7c8095] font-mono-alt">
                 <span className="text-[#1a5fa8]">Hospital A</span> → local training → <span className="text-[#1a5fa8]">Δ weights</span>
                 <br />
@@ -393,7 +391,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
               </div>
               <div className="mt-4 rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-5 py-4">
                 <div className="mb-1 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095]">K-ERA Desktop App</div>
-                <p className="text-[0.82rem] leading-[1.65] text-[#393c4a]">Local training runs on the K-ERA desktop app, installed on a hospital PC. Case authoring and image upload also happen in the app — not in the browser. A download link is provided after institutional approval.</p>
+                <p className="text-[0.82rem] leading-[1.65] text-[#393c4a]">All patient-facing case work and local training remain on the K-ERA desktop app installed on a hospital PC. The browser is used only for approval and access management.</p>
               </div>
             </div>
 
@@ -465,12 +463,12 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
         <div className="mx-auto max-w-[600px] text-center">
           <div className="mx-auto mb-9 h-px w-9 bg-[#d6d9e4]" />
           <div className="mb-6 text-[1.2rem] leading-[1.55] tracking-[-0.01em] text-[#111218] font-editorial">
-            A single-center result tells you what is possible.
+            A founding-site result is a starting point.
             <br />
-            Multi-site validation tells you what is true.
+            Multi-site validation is the next step.
           </div>
           <div className="mb-9 max-w-[480px] mx-auto text-[0.92rem] leading-[1.88] text-[#393c4a]">
-            As hospitals join, the validation corpus grows in geographic and device variation, the federated model becomes something that can be claimed across populations, and the evidence required for clinical deployment becomes buildable. That is the trajectory K-ERA is on — and participating institutions are part of shaping it.
+            K-ERA is open to ophthalmology departments interested in prospective case registration, federated validation, and participation in multi-site publications under local IRB approval.
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
             <LandingGoogleCta
