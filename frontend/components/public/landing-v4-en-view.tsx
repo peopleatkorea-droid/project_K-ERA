@@ -111,9 +111,9 @@ const enWorkingRails = [
   {
     tag: "Federated training",
     title: "Review-gated aggregation across hospitals",
-    body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Weight deltas go to central review before FedAvg aggregation — no blind automatic merging.",
+    body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Signed weight deltas go to central review before aggregation, and privacy budget reporting is tracked alongside each round.",
     detail:
-      "The full training pipeline is implemented and tested. Active multi-site rounds begin as additional hospitals join beyond the founding site.",
+      "The full training pipeline is implemented and tested. Aggregation remains review-gated rather than blind auto-merge, and active multi-site rounds begin as additional hospitals join beyond the founding site.",
   },
 ];
 
@@ -126,8 +126,8 @@ const enParticipationBenefits = [
 
 const enGovernance = [
   {
-    label: "IRB",
-    body: "Founding site (JNUH) IRB-approved. Each participating site obtains its own institutional IRB approval prior to case enrollment — K-ERA provides protocol documentation on request.",
+    label: "Site governance",
+    body: "The founding site is already operating under its own approved research workflow. Participating hospitals can follow their own institutional review and governance process before case enrollment, and K-ERA can provide protocol documentation on request.",
   },
   {
     label: "Authorship",
@@ -468,7 +468,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
             Multi-site validation is the next step.
           </div>
           <div className="mb-9 max-w-[480px] mx-auto text-[0.92rem] leading-[1.88] text-[#393c4a]">
-            K-ERA is open to ophthalmology departments interested in prospective case registration, federated validation, and participation in multi-site publications under local IRB approval.
+            K-ERA is open to ophthalmology departments interested in prospective case registration, federated validation, and participation in multi-site publications under their own institutional governance process.
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
             <LandingGoogleCta
