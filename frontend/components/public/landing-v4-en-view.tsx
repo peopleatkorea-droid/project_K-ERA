@@ -79,7 +79,7 @@ const enWorkflow = [
   {
     step: "Step 02",
     title: "Install the desktop app. Upload images.",
-    body: "After approval, install the K-ERA desktop app on a hospital PC. Upload white-light, fluorescein, and slit images per visit. The current published benchmark is white-light only.",
+    body: "After approval, install the K-ERA desktop app on a hospital PC. Upload white-light, fluorescein, and slit images per visit. The app supports multimodal visits, but the current default AI path still follows the white-light benchmark used in the submitted study.",
   },
   {
     step: "Step 03",
@@ -106,14 +106,14 @@ const enWorkingRails = [
     title: "AI inference and similar case retrieval",
     body: "The desktop app returns a visit-level prediction with confidence percentage, GradCAM activation, and multi-model ensemble breakdown. A separate DINO retrieval rail surfaces the most similar cases from the research corpus — both are working features today.",
     detail:
-      "Inference runs locally on the hospital PC. Retrieval queries the central embedding index. The published benchmark is white-light; the app already stores white-light, fluorescein, and slit views.",
+      "Inference runs locally on the hospital PC. Retrieval queries the central embedding index. The app already stores white-light, fluorescein, and slit views, but the current default AI path remains white-light-based because that is the benchmark most fully validated in the submitted study.",
   },
   {
     tag: "Federated training",
     title: "Review-gated aggregation across hospitals",
-    body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Signed weight deltas go to central review before aggregation, and privacy budget reporting is tracked alongside each round.",
+    body: "Approved sites trigger local image-level or visit-level training rounds from the desktop app. Signed weight deltas go to central review before aggregation, and privacy budget reporting with budget guardrails is tracked alongside each round.",
     detail:
-      "The full training pipeline is implemented and tested. Aggregation remains review-gated rather than blind auto-merge, and active multi-site rounds begin as additional hospitals join beyond the founding site.",
+      "The full training pipeline is implemented and tested. Aggregation remains review-gated rather than blind auto-merge, and privacy budget guardrails can warn or block a round before rollout.",
   },
 ];
 
@@ -281,7 +281,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
           </h2>
           <div className="max-w-[680px] text-[0.92rem] leading-[1.88] text-[#393c4a]">
             <p>The public benchmark is intentionally strict: white-light images only, patient-disjoint evaluation, visit-level prediction, and leakage-aware controls.</p>
-            <p className="mt-3">A single-center feasibility result tells you what is possible. Multi-site validation is what makes that evidence credible across institutions. That is the gap K-ERA is designed to close.</p>
+            <p className="mt-3">The app can still register multimodal visits, including fluorescein, but the current default AI path remains anchored to that white-light benchmark. A single-center feasibility result tells you what is possible. Multi-site validation is what makes that evidence credible across institutions.</p>
           </div>
           <div className="mt-12 grid overflow-hidden rounded-[6px] border border-[#d6d9e4] md:grid-cols-4">
             {enStats.map((stat) => (
@@ -387,7 +387,7 @@ export function EnglishLandingView(props: EnglishLandingViewProps) {
                 <span className="text-[#1a5fa8]">Hospital C</span> → local training → <span className="text-[#1a5fa8]">Δ weights</span>
                 <br />
                 <br />
-                <span className="text-[#1a5fa8]">FedAvg aggregation</span> → redistributed to approved nodes
+                <span className="text-[#1a5fa8]">Reviewed aggregation</span> → redistributed to approved nodes
               </div>
               <div className="mt-4 rounded-[4px] border border-[#d6d9e4] bg-[#f7f8fc] px-5 py-4">
                 <div className="mb-1 text-[0.6rem] uppercase tracking-[0.12em] text-[#7c8095]">K-ERA Desktop App</div>
