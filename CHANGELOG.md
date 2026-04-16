@@ -22,6 +22,14 @@
 - 로컬 retrieval index가 없을 때 brute-force fallback으로만 남지 않도록, 검색 시점에 FAISS local index를 자동 재빌드하는 복구 경로를 추가했습니다.
 - validation artifact stack과 빈 상태 문구도 다듬어, 이번 실행 모델이 Grad-CAM/crop을 만들지 않는 경우 사용자가 이유를 화면에서 직접 알 수 있게 정리했습니다.
 
+### Live saved-case 3-step verification and final runtime closures
+
+- 실제 저장 케이스를 기준으로 `1단계 모델 비교 -> 기준 모델 단일 판정 -> 3단계 유사 환자 검색 -> 근거/가이드 확장 -> 3D 클러스터 맵`까지 end-to-end smoke를 다시 확인했습니다.
+- image-level support 모델과 retrieval 보조 모델이 `module 'kera_research.services.modeling' has no attribute 'INDEX_TO_LABEL'` / `Image`로 실패하던 런타임 회귀를 수정했습니다. 이제 `ConvNeXt-Tiny`와 `DINOv2` 경로도 다시 판정과 Grad-CAM 생성에 참여합니다.
+- 데스크톱 ML sidecar도 로컬 API와 동일하게 `approved + site access` 세션을 researcher capability로 정규화하도록 맞췄습니다. 그래서 stale `viewer` 토큰이 남아 있어도 데스크톱에서 분석 1~3단계가 막히지 않도록 정리했습니다.
+- `3D 클러스터 맵`의 `cluster-position` API 권한을 admin 전용에서 validation 권한으로 낮춰, researcher 계정도 AI Clinic 단계에서 바로 임베딩 위치를 열 수 있게 했습니다.
+- 관련 회귀 테스트를 추가해 `modeling runtime export`, `desktop sidecar role normalization`, `researcher cluster-position access`를 고정했습니다.
+
 ### Desktop auth, landing, and updater operation
 
 - 승인된 site access가 있는 데스크톱 세션은 stale `viewer` 토큰이 잠시 남아 있어도 실행 경로에서 `researcher` capability로 정규화되도록 중앙/로컬 auth 해석과 minting 경로를 맞췄습니다.
@@ -38,7 +46,10 @@
 - `npx vitest run components/case-workspace.integration.test.tsx -t "uses multi-model compare as the primary AI validation flow|runs AI Clinic in staged similar-cases then expanded-evidence flow"`
 - `npm run test:run -- lib/control-plane/main-app-bridge-users.test.ts lib/control-plane/main-app-bridge-shared.test.ts lib/desktop-updater.test.ts`
 - `uv run pytest tests/test_control_plane_regressions.py tests/test_data_plane_normalizers.py tests/test_modeling.py -q`
+- `uv run pytest tests/test_modeling.py -k "runtime_constants_and_image_class" -q`
+- `uv run pytest tests/test_api_http.py -k "desktop_sidecar_promotes_approved_viewer_with_site_access or cluster_position_allows_researcher_http or desktop_sidecar_validation_skips_postmortem_for_inference_only" -q`
 - `uv run python -m py_compile src/kera_research/api/app.py`
+- 실제 저장 케이스 smoke: `17196699 / FU #9` 기준 `1단계 compare`, `anchor validation(Grad-CAM)`, `3단계 similar cases`, `expanded evidence`, `3D cluster map` 확인
 
 ## 2026-04-15
 

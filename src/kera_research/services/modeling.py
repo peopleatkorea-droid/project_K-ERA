@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 from kera_research.domain import (
     DENSENET_VARIANTS,
+    INDEX_TO_LABEL,
     LABEL_TO_INDEX,
     MODEL_OUTPUT_CLASS_COUNT,
     LESION_GUIDED_FUSION_ARCHITECTURES,

@@ -16,6 +16,7 @@ from kera_research.api.app import (
     _get_semantic_prompt_scorer,
     _get_workflow,
     _latest_embedding_backfill_job,
+    _normalize_user_access_state,
     _project_id_for_site,
     _queue_site_embedding_backfill,
     _require_admin_workspace_permission,
@@ -161,15 +162,27 @@ def _ensure_shared_workflow(cp: Any) -> Any:
 
 def _decode_user(token: str) -> dict[str, Any]:
     payload = _decode_access_token(str(token or "").strip())
+    normalized = _normalize_user_access_state(
+        {
+            "user_id": payload["sub"],
+            "username": payload.get("username", ""),
+            "role": payload.get("role", "viewer"),
+            "site_ids": payload.get("site_ids") or [],
+            "approval_status": payload.get("approval_status", "approved"),
+            "full_name": payload.get("full_name", ""),
+            "public_alias": payload.get("public_alias"),
+            "registry_consents": payload.get("registry_consents") or {},
+        }
+    )
     return {
-        "user_id": payload["sub"],
-        "username": payload.get("username", ""),
-        "role": payload.get("role", "viewer"),
-        "site_ids": payload.get("site_ids") or [],
-        "approval_status": payload.get("approval_status", "approved"),
-        "full_name": payload.get("full_name", ""),
-        "public_alias": payload.get("public_alias"),
-        "registry_consents": payload.get("registry_consents") or {},
+        "user_id": normalized["user_id"],
+        "username": normalized.get("username", ""),
+        "role": normalized.get("role", "viewer"),
+        "site_ids": normalized.get("site_ids") or [],
+        "approval_status": normalized.get("approval_status", "approved"),
+        "full_name": normalized.get("full_name", ""),
+        "public_alias": normalized.get("public_alias"),
+        "registry_consents": normalized.get("registry_consents") or {},
     }
 
 

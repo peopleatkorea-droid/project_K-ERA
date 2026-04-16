@@ -170,6 +170,7 @@ def build_site_overview_router(support: Any) -> APIRouter:
     get_control_plane = support.get_control_plane
     get_approved_user = support.get_approved_user
     require_admin_workspace_permission = support.require_admin_workspace_permission
+    require_validation_permission = support.require_validation_permission
     require_site_access = support.require_site_access
     user_can_access_site = support.user_can_access_site
     control_plane_split_enabled = support.control_plane_split_enabled
@@ -530,7 +531,7 @@ def build_site_overview_router(support: Any) -> APIRouter:
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
-        require_admin_workspace_permission(user)
+        require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
 
         if not (

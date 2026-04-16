@@ -17,6 +17,7 @@ from kera_research.cli import build_parser
 from kera_research.domain import MODEL_OUTPUT_CLASS_COUNT
 from kera_research.services.modeling import (
     DEFAULT_NUM_CLASSES,
+    INDEX_TO_LABEL,
     ModelManager,
     VisitBagDataset,
     collate_visit_bags,
@@ -27,6 +28,13 @@ from kera_research.services.modeling import (
 
 @unittest.skipIf(torch is None, "PyTorch is required for modeling tests.")
 class ModelManagerTests(unittest.TestCase):
+    def test_modeling_exports_runtime_constants_and_image_class(self):
+        import kera_research.services.modeling as modeling
+
+        self.assertEqual(INDEX_TO_LABEL[0], "bacterial")
+        self.assertEqual(INDEX_TO_LABEL[1], "fungal")
+        self.assertIs(modeling.Image, Image)
+
     def test_fine_tune_uses_attention_mil_visit_bag_path_for_mil_models(self):
         class TinyAttentionMil(torch.nn.Module):
             def __init__(self) -> None:

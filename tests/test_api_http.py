@@ -4690,6 +4690,126 @@ class ApiHttpTests(unittest.TestCase):
         self.assertIsNone(payload["post_mortem"])
         fake_workflow.run_case_postmortem.assert_not_called()
 
+    def test_desktop_sidecar_promotes_approved_viewer_with_site_access(self):
+        import kera_research.desktop_sidecar as desktop_sidecar
+
+        token = jwt.encode(
+            {
+                "sub": "user_sidecar_viewer",
+                "username": "sidecar.viewer@example.com",
+                "role": "viewer",
+                "site_ids": [self.site_id],
+                "approval_status": "approved",
+                "exp": int(time.time()) + 3600,
+            },
+            self.app_module.API_SECRET,
+            algorithm=self.app_module.API_ALGORITHM,
+        )
+
+        user = desktop_sidecar._approved_user(token)
+
+        self.assertEqual(user["role"], "researcher")
+        self.assertEqual(user["site_ids"], [self.site_id])
+        self.assertEqual(user["approval_status"], "approved")
+
+    def test_cluster_position_allows_researcher_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-CLUSTER-001"
+        visit_date = "Initial"
+        self._seed_case(token, patient_id=patient_id, visit_date=visit_date)
+
+        import numpy as np
+        import kera_research.api.routes.site_overview as site_overview
+
+        cluster_dir = Path(self.tempdir.name) / "cluster_artifacts"
+        cluster_dir.mkdir(parents=True, exist_ok=True)
+        reducer_path = cluster_dir / "umap_reducer_3d.pkl"
+        embeddings_path = cluster_dir / "cluster_embeddings.npy"
+        metadata_path = cluster_dir / "cluster_metadata.json"
+        reducer_path.write_bytes(b"placeholder")
+        embeddings_path.write_bytes(b"placeholder")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "points": [
+                        {
+                            "patient_id": "CLUSTER-NEIGHBOR-001",
+                            "visit_date": "FU #1",
+                            "culture_category": "fungal",
+                            "culture_species": "Fusarium",
+                            "age": "67",
+                            "sex": "female",
+                            "coords_3d": [0.1, 0.2, 0.3],
+                        },
+                        {
+                            "patient_id": "CLUSTER-NEIGHBOR-002",
+                            "visit_date": "FU #2",
+                            "culture_category": "bacterial",
+                            "culture_species": "Pseudomonas aeruginosa",
+                            "age": "59",
+                            "sex": "male",
+                            "coords_3d": [0.4, 0.5, 0.6],
+                        },
+                        {
+                            "patient_id": "CLUSTER-NEIGHBOR-003",
+                            "visit_date": "FU #3",
+                            "culture_category": "fungal",
+                            "culture_species": "Aspergillus",
+                            "age": "73",
+                            "sex": "female",
+                            "coords_3d": [0.7, 0.8, 0.9],
+                        },
+                    ],
+                    "backbone": "official",
+                    "crop_mode": "full",
+                    "view_filter": "all",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fake_cluster_embeddings = np.asarray(
+            [
+                [0.99, 0.01, 0.0],
+                [0.95, 0.05, 0.0],
+                [0.90, 0.10, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        class FakeReducer:
+            def transform(self, values):
+                del values
+                return np.asarray([[0.12, 0.34, 0.56]], dtype=np.float32)
+
+        class FakeRetriever:
+            def __init__(self, ssl_checkpoint_path=None):
+                self.ssl_checkpoint_path = ssl_checkpoint_path
+
+            def encode_images(self, image_paths, execution_device, persistence_dir=None):
+                del image_paths, execution_device, persistence_dir
+                return np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        with (
+            patch.object(site_overview, "_CLUSTER_VIZ_DIR", cluster_dir),
+            patch.object(site_overview, "_CLUSTER_REDUCER_3D_PKL", reducer_path),
+            patch.object(site_overview, "_CLUSTER_EMBEDDINGS_NPY", embeddings_path),
+            patch.object(site_overview, "_CLUSTER_METADATA_JSON", metadata_path),
+            patch("pickle.load", return_value=FakeReducer()),
+            patch("numpy.load", return_value=fake_cluster_embeddings),
+            patch("kera_research.services.retrieval.Dinov2ImageRetriever", FakeRetriever),
+        ):
+            response = self.client.post(
+                f"/api/sites/{self.site_id}/cluster-position",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"patient_id": patient_id, "visit_date": visit_date},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(len(payload["neighbors"]), 3)
+        self.assertIn("plotly", payload["html"].lower())
+
     def test_validation_case_listing_excludes_inference_only_rows_from_misclassified_filter_http(self):
         token = self._token_for_username("http_researcher")
         patient_id = "HTTP-INF-LIST-001"
