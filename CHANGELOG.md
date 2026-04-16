@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-04-16
+
+### Saved-case analysis flow hardening and clinician-facing review hub
+
+- 저장 케이스 진입 직후 걸리던 데스크톱 ML backend prewarm을 case-open critical path에서 분리하고, 비필수 background warm-up을 늦춰 patient list → saved case open 체감 속도를 보존하도록 정리했습니다.
+- 저장 케이스 분석 화면을 `1단계 단일 케이스 판정 -> 2단계 모델 간 합의 확인 -> 3단계 유사 환자 검토` 허브 구조로 다시 정리했습니다.
+- 상단 1x3 허브 카드에 진행 상태, 실행 가능 여부, 단계 선택을 모으고, 하단에는 현재 선택한 단계의 상세 패널만 보이도록 바꿨습니다.
+- `상세 보기` 같은 중복 액션은 제거하고, 카드 본문 클릭은 단계 전환, 파란 버튼은 즉시 실행으로 역할을 분리했습니다.
+- 1단계에서는 `기준 모델(anchor)`과 `비교 모델 집합`을 분리했습니다. 이제 image artifact용 모델과 main judgment용 모델을 따로 둘 수 있고, 선택한 3개 모델 결과를 같은 화면에서 함께 확인할 수 있습니다.
+- 1단계 결과 카드에는 `검토 이미지 모델`, `메인 판정 모델`, `retrieval 보조 모델` 역할 라벨을 붙여 각 모델이 무엇을 담당하는지 더 명확하게 했습니다.
+- 3단계 AI Clinic에는 `유사 환자 retrieval`, `근거와 가이드`, `3D 클러스터 맵` 경로를 더 직접적으로 드러냈고, `클러스터에서 위치 보기` 버튼을 단계 상단에서 바로 접근 가능하게 정리했습니다.
+- 버튼 대비와 disabled styling도 고쳤습니다. 실행 가능한 버튼만 강한 primary로 보이고, 실행 불가 상태는 회색과 명시적 막힘 이유로 보이도록 정리했습니다.
+
+### Case validation / AI Clinic runtime fixes
+
+- 케이스 단위 validation이 `expected 5 classes / found 2` mismatch로 실패하던 경로를 수정했습니다. 이제 checkpoint class count를 실제 운영 모델 구성에 맞게 해석합니다.
+- case validation과 training/inference 경로의 class-count 해석을 맞추고, 관련 modeling 회귀 테스트를 보강했습니다.
+- positive culture normalization을 정리해 `culture_status='unknown'`인데 `culture_confirmed=True`와 species가 있는 케이스도 retrieval/registry positive corpus에서 누락되지 않도록 수정했습니다.
+- AI Clinic text evidence 경로의 `site_store is not defined` 버그를 수정해 similar-case 이후 expanded evidence 단계가 실제로 이어지도록 고쳤습니다.
+- 로컬 retrieval index가 없을 때 brute-force fallback으로만 남지 않도록, 검색 시점에 FAISS local index를 자동 재빌드하는 복구 경로를 추가했습니다.
+- validation artifact stack과 빈 상태 문구도 다듬어, 이번 실행 모델이 Grad-CAM/crop을 만들지 않는 경우 사용자가 이유를 화면에서 직접 알 수 있게 정리했습니다.
+
+### Desktop auth, landing, and updater operation
+
+- 승인된 site access가 있는 데스크톱 세션은 stale `viewer` 토큰이 잠시 남아 있어도 실행 경로에서 `researcher` capability로 정규화되도록 중앙/로컬 auth 해석과 minting 경로를 맞췄습니다.
+- control-plane effective role 계산도 `approved` membership가 있으면 researcher 실행 권한으로 이어지도록 정리해, 승인 후에도 AI 실행이 막히는 경로를 줄였습니다.
+- Tauri 랜딩은 웹 승인가이드 중심 화면이 아니라 실행 중심 desktop landing으로 단순화했습니다. 로그인 주 버튼을 전면에 두고, approved sites와 로컬 작업 정보만 남기며, 관리자 로그인은 희미한 보조 액션으로 뒤로 뺐습니다.
+- Tauri 앱 시작 후 백그라운드에서 GitHub Release updater를 자동 확인하도록 연결했습니다. 웹 포털 설치 다운로드는 OneDrive 기반을 유지하되, 이미 설치된 앱의 후속 업데이트는 GitHub Release를 사용하는 혼합 운영을 기준으로 정리했습니다.
+- updater signing key rotation 스크립트를 Windows 경로에서도 다시 안정적으로 동작하도록 고쳤고, 새 public key를 desktop updater 설정에 반영했습니다.
+
+### Verification
+
+- `npm run build`
+- `npm run desktop:build`
+- `npm run test:run -- components/case-workspace/case-workspace-side-panel-props.test.tsx`
+- `npx vitest run components/case-workspace.integration.test.tsx -t "uses multi-model compare as the primary AI validation flow|runs AI Clinic in staged similar-cases then expanded-evidence flow"`
+- `npm run test:run -- lib/control-plane/main-app-bridge-users.test.ts lib/control-plane/main-app-bridge-shared.test.ts lib/desktop-updater.test.ts`
+- `uv run pytest tests/test_control_plane_regressions.py tests/test_data_plane_normalizers.py tests/test_modeling.py -q`
+- `uv run python -m py_compile src/kera_research/api/app.py`
+
 ## 2026-04-15
 
 ### Federated privacy accounting and admin reporting

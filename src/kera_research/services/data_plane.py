@@ -807,7 +807,8 @@ class SiteStore(SiteStorePathIntegrityMixin):
             .where(
                 and_(
                     patient_table.c.site_id == self.site_id,
-                    visit_table.c.culture_status == "positive" if positive_only else True,
+                    visit_table.c.soft_deleted_at.is_(None),
+                    image_table.c.soft_deleted_at.is_(None),
                 )
             )
             .order_by(patient_table.c.patient_id, visit_table.c.visit_index, visit_table.c.visit_date, image_table.c.uploaded_at)
@@ -816,6 +817,14 @@ class SiteStore(SiteStorePathIntegrityMixin):
             rows = conn.execute(query).mappings().all()
         records: list[dict[str, Any]] = []
         for row in rows:
+            normalized_culture_status = _derive_culture_status(
+                row.get("culture_status"),
+                row.get("culture_confirmed"),
+                row.get("culture_category"),
+                row.get("culture_species"),
+            )
+            if positive_only and normalized_culture_status != "positive":
+                continue
             resolved_image_record = self._resolve_image_record_path(
                 {
                     "image_id": row["image_id"],
@@ -834,8 +843,8 @@ class SiteStore(SiteStorePathIntegrityMixin):
                     "sex": row["sex"],
                     "age": row["age"],
                     "visit_date": row["visit_date"],
-                    "culture_status": row.get("culture_status") or ("positive" if row["culture_confirmed"] else "unknown"),
-                    "culture_confirmed": row["culture_confirmed"],
+                    "culture_status": normalized_culture_status,
+                    "culture_confirmed": bool(row["culture_confirmed"]) or normalized_culture_status == "positive",
                     "culture_category": row["culture_category"],
                     "culture_species": row["culture_species"],
                     "additional_organisms": row["additional_organisms"] or [],

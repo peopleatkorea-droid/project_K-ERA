@@ -39,6 +39,7 @@ type Args = {
   selectedSiteId: string | null;
   selectedCase: CaseSummaryRecord | null;
   selectedCompareModelVersionIds: string[];
+  selectedValidationModelVersionId: string | null;
   pick: LocalePick;
   copy: ValidationCopy;
   executionModeFromDevice: (
@@ -79,6 +80,7 @@ export function useCaseWorkspaceValidation({
   selectedSiteId,
   selectedCase,
   selectedCompareModelVersionIds,
+  selectedValidationModelVersionId,
   pick,
   copy,
   executionModeFromDevice,
@@ -255,6 +257,8 @@ export function useCaseWorkspaceValidation({
     }
 
     const requestedModelVersionIds = normalizeSelectedCompareModelVersionIds();
+    const requestedValidationModelVersionId =
+      String(selectedValidationModelVersionId || "").trim() || null;
     const previousValidationModelVersionId =
       String(validationResult?.model_version.version_id || "").trim() || null;
     const previousExecutionMode = executionModeFromDevice(
@@ -291,7 +295,9 @@ export function useCaseWorkspaceValidation({
           requestedModelVersionIds,
           previousValidationModelVersionId,
         );
-        if (!anchorModelVersionId) {
+        const effectiveValidationModelVersionId =
+          requestedValidationModelVersionId ?? anchorModelVersionId;
+        if (!effectiveValidationModelVersionId) {
           throw new Error(
             pick(
               locale,
@@ -304,7 +310,7 @@ export function useCaseWorkspaceValidation({
         result = await runAnchorValidation({
           patientId: selectedCase.patient_id,
           visitDate: selectedCase.visit_date,
-          modelVersionId: anchorModelVersionId,
+          modelVersionId: effectiveValidationModelVersionId,
           executionMode: executionModeFromDevice(
             compareResult.execution_device,
           ),
@@ -313,7 +319,8 @@ export function useCaseWorkspaceValidation({
         result = await runAnchorValidation({
           patientId: selectedCase.patient_id,
           visitDate: selectedCase.visit_date,
-          modelVersionId: previousValidationModelVersionId,
+          modelVersionId:
+            requestedValidationModelVersionId ?? previousValidationModelVersionId,
           executionMode: previousExecutionMode,
         });
       }
@@ -373,6 +380,7 @@ export function useCaseWorkspaceValidation({
     setPanelOpen,
     setToast,
     token,
+    selectedValidationModelVersionId,
     validationResult?.execution_device,
     validationResult?.model_version.version_id,
   ]);

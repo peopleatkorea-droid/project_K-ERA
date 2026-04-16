@@ -4209,11 +4209,16 @@ describe("CaseWorkspace integration", () => {
         expect.any(AbortSignal),
       );
     });
-    expect(await screen.findByText("vit")).toBeInTheDocument();
-    expect(screen.getByText("lgf-eff-v1")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Anchor model")).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Anchor model"), {
+      target: { value: "model_vit" },
+    });
+    expect(screen.getByText(/Current anchor:/)).toHaveTextContent(
+      "Current anchor: vit-v1. Role: Review image model",
+    );
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run AI validation" }),
+      await screen.findByRole("button", { name: "Run single-case judgment" }),
     );
 
     await waitFor(() => {
@@ -4241,11 +4246,23 @@ describe("CaseWorkspace integration", () => {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
           execution_mode: "cpu",
-          model_version_id: "model_eff",
+          model_version_id: "model_vit",
         },
       );
     });
 
+    expect(
+      await screen.findByText("Compared models at a glance"),
+    ).toBeInTheDocument();
+    const agreementHubCard = screen
+      .getByText("Model agreement check")
+      .closest("article");
+    expect(agreementHubCard).toBeTruthy();
+    fireEvent.click(
+      within(agreementHubCard as HTMLElement).getByRole("button", {
+        name: /Model agreement check/,
+      }),
+    );
     expect(await screen.findByText("Consensus snapshot")).toBeInTheDocument();
     expect(screen.getAllByText("4 / 5").length).toBeGreaterThan(0);
   });
@@ -4255,7 +4272,7 @@ describe("CaseWorkspace integration", () => {
     await openSavedCase();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run AI validation" }),
+      await screen.findByRole("button", { name: "Run single-case judgment" }),
     );
 
     expect(
@@ -4381,10 +4398,10 @@ describe("CaseWorkspace integration", () => {
         expect.any(AbortSignal),
       );
     });
-    expect(await screen.findByText("vit")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Anchor model")).toBeInTheDocument();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run AI validation" }),
+      await screen.findByRole("button", { name: "Run single-case judgment" }),
     );
 
     await waitFor(() => {
@@ -4392,12 +4409,12 @@ describe("CaseWorkspace integration", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: "Find similar cases" }),
+        screen.getByRole("button", { name: "Find similar patients" }),
       ).not.toBeDisabled();
     });
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Find similar cases" }),
+      await screen.findByRole("button", { name: "Find similar patients" }),
     );
 
     await waitFor(() => {
@@ -4416,10 +4433,19 @@ describe("CaseWorkspace integration", () => {
       );
     });
 
-    expect(await screen.findByText("Expanded evidence")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Optional evidence and guidance"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Show cluster position" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("SIM-001")).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Load evidence" }));
+    fireEvent.click(
+      (await screen.findAllByRole("button", {
+        name: "Load evidence & guidance",
+      }))[0],
+    );
 
     await waitFor(() => {
       expect(apiMocks.runCaseAiClinic).toHaveBeenCalledWith(

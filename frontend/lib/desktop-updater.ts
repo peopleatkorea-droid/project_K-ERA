@@ -45,6 +45,26 @@ export type DesktopUpdateCheckResult = {
 
 export type DesktopUpdateInstallResult = "relaunched" | "restart_required";
 
+export type DesktopStartupUpdateStatus =
+  | "unavailable"
+  | "up_to_date"
+  | "deferred"
+  | "not_installable"
+  | "installed"
+  | "check_failed"
+  | "install_failed";
+
+export type DesktopStartupUpdateResult = {
+  error: string | null;
+  installResult: DesktopUpdateInstallResult | null;
+  status: DesktopStartupUpdateStatus;
+  update: DesktopUpdateCheckResult | null;
+};
+
+type DesktopUpdateSkipStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+const SKIPPED_UPDATE_VERSION_KEY = "kera_desktop_skipped_update_version";
+
 function normalizeVersion(value: string | null | undefined) {
   return String(value || "")
     .trim()
@@ -83,6 +103,32 @@ function compareSemver(left: string, right: string) {
     return -1;
   }
   return a.prerelease.localeCompare(b.prerelease);
+}
+
+function resolveDesktopUpdateSkipStorage(storage?: DesktopUpdateSkipStorage): DesktopUpdateSkipStorage | null {
+  if (storage) {
+    return storage;
+  }
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage;
+}
+
+function readSkippedDesktopUpdateVersion(storage: DesktopUpdateSkipStorage | null): string | null {
+  return normalizeVersion(storage?.getItem(SKIPPED_UPDATE_VERSION_KEY) || null) || null;
+}
+
+function rememberSkippedDesktopUpdateVersion(storage: DesktopUpdateSkipStorage | null, version: string | null) {
+  const normalizedVersion = normalizeVersion(version);
+  if (!storage || !normalizedVersion) {
+    return;
+  }
+  storage.setItem(SKIPPED_UPDATE_VERSION_KEY, normalizedVersion);
+}
+
+function clearSkippedDesktopUpdateVersion(storage: DesktopUpdateSkipStorage | null) {
+  storage?.removeItem(SKIPPED_UPDATE_VERSION_KEY);
 }
 
 async function desktopAppVersion(): Promise<string | null> {
@@ -211,5 +257,93 @@ export async function installDesktopUpdate(
     return "relaunched";
   } catch {
     return "restart_required";
+  }
+}
+
+export async function runDesktopStartupUpdate(
+  options: {
+    confirmInstall?: (result: DesktopUpdateCheckResult) => boolean | Promise<boolean>;
+    onEvent?: (event: { event: string; data?: { chunkLength?: number; contentLength?: number } }) => void;
+    storage?: DesktopUpdateSkipStorage;
+  } = {},
+): Promise<DesktopStartupUpdateResult> {
+  let update: DesktopUpdateCheckResult | null = null;
+  try {
+    update = await checkDesktopForUpdates();
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      installResult: null,
+      status: "check_failed",
+      update: null,
+    };
+  }
+
+  if (!update) {
+    return {
+      error: null,
+      installResult: null,
+      status: "unavailable",
+      update: null,
+    };
+  }
+
+  const storage = resolveDesktopUpdateSkipStorage(options.storage);
+  if (!update.available) {
+    clearSkippedDesktopUpdateVersion(storage);
+    return {
+      error: update.error,
+      installResult: null,
+      status: "up_to_date",
+      update,
+    };
+  }
+
+  const availableVersion = normalizeVersion(update.availableVersion);
+  if (!update.installable || !update.updateHandle) {
+    return {
+      error: update.error,
+      installResult: null,
+      status: "not_installable",
+      update,
+    };
+  }
+
+  if (availableVersion && readSkippedDesktopUpdateVersion(storage) === availableVersion) {
+    return {
+      error: update.error,
+      installResult: null,
+      status: "deferred",
+      update,
+    };
+  }
+
+  const accepted = options.confirmInstall ? await options.confirmInstall(update) : true;
+  if (!accepted) {
+    rememberSkippedDesktopUpdateVersion(storage, availableVersion);
+    return {
+      error: update.error,
+      installResult: null,
+      status: "deferred",
+      update,
+    };
+  }
+
+  clearSkippedDesktopUpdateVersion(storage);
+  try {
+    const installResult = await installDesktopUpdate(update.updateHandle, options.onEvent);
+    return {
+      error: null,
+      installResult,
+      status: "installed",
+      update,
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      installResult: null,
+      status: "install_failed",
+      update,
+    };
   }
 }

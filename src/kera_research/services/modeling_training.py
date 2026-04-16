@@ -9,6 +9,7 @@ import numpy as np
 from kera_research.domain import (
     DENSENET_VARIANTS,
     LABEL_TO_INDEX,
+    MODEL_OUTPUT_CLASS_COUNT,
     is_attention_mil_architecture,
     is_lesion_guided_fusion_architecture,
     is_paired_attention_mil_architecture,
@@ -235,9 +236,9 @@ def fine_tune_attention_mil(
         lr=float(learning_rate),
     )
     train_case_labels = [LABEL_TO_INDEX[str(visit_records[0]["culture_category"])] for visit_records in train_ds.visit_records]
-    class_counts = np.bincount(train_case_labels, minlength=len(LABEL_TO_INDEX))
+    class_counts = np.bincount(train_case_labels, minlength=MODEL_OUTPUT_CLASS_COUNT)
     class_weights = np.array(
-        [0.0 if count == 0 else len(train_case_labels) / (len(LABEL_TO_INDEX) * count) for count in class_counts],
+        [0.0 if count == 0 else len(train_case_labels) / (MODEL_OUTPUT_CLASS_COUNT * count) for count in class_counts],
         dtype=np.float32,
     )
     loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
@@ -878,7 +879,7 @@ def build_model_for_training(
     pretraining_source: str | None = None,
     use_pretrained: bool = True,
     ssl_checkpoint_path: str | Path | None = None,
-    num_classes: int = len(LABEL_TO_INDEX),
+    num_classes: int = MODEL_OUTPUT_CLASS_COUNT,
 ) -> tuple[nn.Module, str, dict[str, Any] | None]:
     normalized_source = normalize_training_pretraining_source(
         pretraining_source,

@@ -234,12 +234,12 @@ function AiClinicResultInner({
         <Message>
           {pick(
             locale,
-            "AI Clinic is ready. Use the saved validation result as the anchor, pull similar cases first, then expand into narrative evidence only when needed.",
-            "AI Clinic 준비가 끝났습니다. 저장된 validation 결과를 anchor로 쓰고, 먼저 유사 케이스를 불러온 뒤 필요할 때만 확장 근거를 추가로 불러옵니다."
+            'Step 3 is ready. First click "Find similar patients". If you need more explanation after that, click "Load evidence & guidance".',
+            '3단계 준비가 끝났습니다. 먼저 "비슷한 환자 찾기"를 누르고, 추가 설명이 필요할 때만 "근거와 가이드 불러오기"를 누르세요.'
           )}
         </Message>
         {readySummary ? (
-          <Section title={pick(locale, "AI Clinic ready", "AI Clinic 준비 상태")}>
+          <Section title={pick(locale, "Step 3 ready", "3단계 준비 상태")}>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <KpiCard
                 label={pick(locale, "Anchor label", "Anchor 라벨")}
@@ -279,7 +279,7 @@ function AiClinicResultInner({
   return (
     <div className="grid gap-4">
       <Section
-        title={pick(locale, "AI Clinic overview", "AI Clinic 개요")}
+        title={pick(locale, "Similar-patient review overview", "유사 환자 해석 개요")}
         subtitle={result.ai_clinic_profile?.label ?? pick(locale, "AI Clinic standard", "AI Clinic standard")}
       >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -312,10 +312,43 @@ function AiClinicResultInner({
           <Message>
             {pick(
               locale,
-              "Similar cases are ready. Load evidence only when you want narrative support, differential ranking, and workflow guidance.",
-              "유사 케이스 검색은 준비됐습니다. narrative support, differential ranking, workflow guidance가 필요할 때만 확장 근거를 불러오세요."
+              'Similar patients are ready. Click "Load evidence & guidance" only if you want extra explanation, differential support, and workflow suggestions.',
+              '비슷한 환자 목록은 준비됐습니다. 추가 설명, 감별 지원, workflow 제안이 필요할 때만 "근거와 가이드 불러오기"를 누르세요.'
             )}
           </Message>
+        ) : null}
+        {siteId ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={clusterLoading}
+              onClick={() =>
+                void loadClusterPosition(queryCase.patient_id, queryCase.visit_date)
+              }
+            >
+              {clusterLoading
+                ? pick(
+                    locale,
+                    "Loading cluster position... (first time may take ~10s)",
+                    "클러스터 위치 계산 중... (첫 번째는 ~10초 소요)",
+                  )
+                : pick(
+                    locale,
+                    "Show cluster position",
+                    "클러스터에서 위치 보기",
+                  )}
+            </Button>
+            {clusterResult ? (
+              <span className="inline-flex min-h-9 items-center rounded-full border border-border bg-surface px-3 text-xs font-semibold text-ink">
+                {pick(
+                  locale,
+                  "3D cluster view loaded below",
+                  "아래에 3D 클러스터 뷰가 열려 있습니다",
+                )}
+              </span>
+            ) : null}
+          </div>
         ) : null}
       </Section>
 
@@ -395,18 +428,13 @@ function AiClinicResultInner({
           )}
         >
           {!clusterResult && !clusterError ? (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={clusterLoading}
-                onClick={() => void loadClusterPosition(queryCase.patient_id, queryCase.visit_date)}
-              >
-                {clusterLoading
-                  ? pick(locale, "Loading cluster position... (first time may take ~10s)", "클러스터 위치 계산 중... (첫 번째는 ~10초 소요)")
-                  : pick(locale, "Show cluster position", "클러스터에서 위치 보기")}
-              </Button>
-            </div>
+            <Message>
+              {pick(
+                locale,
+                'Use the "Show cluster position" button above to place this visit in the 3D embedding map.',
+                '위의 "클러스터에서 위치 보기" 버튼을 누르면 이 방문을 3D 임베딩 맵에 배치합니다.',
+              )}
+            </Message>
           ) : clusterError ? (
             <div className="grid gap-3">
               <div className="rounded-[18px] border border-danger/25 bg-danger/6 px-4 py-3 text-sm text-danger">
@@ -474,7 +502,7 @@ function AiClinicResultInner({
       ) : null}
 
       <Section
-        title={pick(locale, "Similar patients", "유사 환자")}
+        title={pick(locale, "Similar patients to review", "검토할 유사 환자")}
         subtitle={pick(locale, `${result.similar_cases.length} ranked results`, `${result.similar_cases.length}개 순위 결과`)}
       >
         {result.similar_cases.length === 0 ? (
@@ -562,19 +590,19 @@ function AiClinicResultInner({
       </Section>
 
       {!isExpanded ? (
-        <Section title={pick(locale, "Expanded evidence", "확장 근거")} subtitle={pick(locale, "On demand", "필요할 때만")}>
+        <Section title={pick(locale, "Optional evidence and guidance", "선택형 근거와 가이드")} subtitle={pick(locale, "Only when needed", "필요할 때만")}>
           <Message>
             {pick(
               locale,
-              "Load evidence when you want narrative retrieval, differential ranking, and workflow guidance on top of the similar-patient list.",
-              "유사 환자 목록 위에 narrative retrieval, differential ranking, workflow guidance가 필요할 때만 확장 근거를 불러오세요."
+              'Load this only when the similar-patient list alone is not enough and you want extra explanation or suggested next steps.',
+              '유사 환자 목록만으로 부족하고 추가 설명이나 다음 단계 제안이 필요할 때만 이 단계를 불러오세요.'
             )}
           </Message>
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="ghost" onClick={onExpandAiClinic} disabled={!canExpandAiClinic || aiClinicExpandedBusy}>
               {aiClinicExpandedBusy
-                ? pick(locale, "Loading evidence...", "근거 불러오는 중...")
-                : pick(locale, "Load evidence and workflow", "근거와 workflow 불러오기")}
+                ? pick(locale, "Loading evidence and guidance...", "근거와 가이드 불러오는 중...")
+                : pick(locale, "Load evidence & guidance", "근거와 가이드 불러오기")}
             </Button>
           </div>
         </Section>

@@ -1,6 +1,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 function localAppDataDir() {
   const explicit = process.env.LOCALAPPDATA?.trim();
@@ -17,9 +20,11 @@ function localAppDataDir() {
 const privateKeyPath = join(localAppDataDir(), "KERA", "release-signing", "kera-updater.key");
 mkdirSync(dirname(privateKeyPath), { recursive: true });
 
+const tauriCliPath = require.resolve("@tauri-apps/cli/tauri.js");
+
 const result = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
-  ["tauri", "signer", "generate", "--ci", "--force", "--write-keys", privateKeyPath],
+  process.execPath,
+  [tauriCliPath, "signer", "generate", "--ci", "--force", "--write-keys", privateKeyPath],
   {
     stdio: "inherit",
     cwd: process.cwd(),

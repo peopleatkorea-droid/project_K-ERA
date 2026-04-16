@@ -115,6 +115,32 @@ describe("main-app-bridge-shared local auth secret", () => {
     expect(claims.approval_status).toBe("application_required");
   });
 
+  it("promotes approved viewer accounts with site access to researcher in the minted token", async () => {
+    process.env.KERA_LOCAL_API_JWT_SECRET = "desktop-shared-secret";
+
+    const { buildLocalAuthResponse, readMainAppTokenClaims } = await import("./main-app-bridge-shared");
+
+    const auth = await buildLocalAuthResponse({
+      user_id: "user_viewer_promoted",
+      username: "viewer-promoted",
+      full_name: "Viewer Promoted",
+      role: "viewer",
+      site_ids: ["SITE_A"],
+      approval_status: "approved",
+      public_alias: null,
+      registry_consents: {},
+    });
+    const claims = await readMainAppTokenClaims({
+      headers: new Headers({
+        authorization: `Bearer ${auth.access_token}`,
+      }),
+    } as never);
+
+    expect(auth.user.role).toBe("researcher");
+    expect(claims.role).toBe("researcher");
+    expect(auth.user.approval_status).toBe("approved");
+  });
+
   it("throws when neither RSA key material nor shared secret is configured", async () => {
     const { buildLocalAuthResponse } = await import("./main-app-bridge-shared");
 

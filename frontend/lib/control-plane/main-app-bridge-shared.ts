@@ -265,11 +265,18 @@ export async function readMainAppTokenClaims(request: NextRequest): Promise<Main
 
 export async function buildLocalAuthResponse(user: AuthUser): Promise<AuthResponse> {
   const normalizedSiteIds = normalizeSiteIds(user.site_ids);
+  const normalizedRole =
+    user.role === "viewer" &&
+    user.approval_status === "approved" &&
+    normalizedSiteIds.length > 0
+      ? "researcher"
+      : user.role;
   const normalizedUser: AuthUser = {
     ...user,
+    role: normalizedRole,
     site_ids: normalizedSiteIds,
     approval_status: normalizeEffectiveApprovalStatus({
-      role: user.role,
+      role: normalizedRole,
       site_ids: normalizedSiteIds,
       approval_status: user.approval_status,
     }),

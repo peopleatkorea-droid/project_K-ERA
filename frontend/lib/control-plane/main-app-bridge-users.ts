@@ -610,11 +610,8 @@ function deriveLegacyRoleFromCanonical(
   if (approvedMemberships.some((membership) => membership.role === "site_admin")) {
     return "site_admin";
   }
-  if (approvedMemberships.some((membership) => membership.role === "member")) {
+  if (approvedMemberships.length > 0) {
     return "researcher";
-  }
-  if (approvedMemberships.some((membership) => membership.role === "viewer")) {
-    return "viewer";
   }
   return fallbackRole;
 }

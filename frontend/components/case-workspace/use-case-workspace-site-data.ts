@@ -30,6 +30,9 @@ type Args = {
   unableLoadSiteValidationHistory: string;
   unableLoadCaseHistory: string;
   defaultModelCompareSelection: (modelVersions: ModelVersionRecord[]) => string[];
+  defaultValidationModelVersionSelection: (
+    modelVersions: ModelVersionRecord[],
+  ) => string | null;
   describeError: (error: unknown, fallback: string) => string;
   pick: (locale: "en" | "ko", en: string, ko: string) => string;
   setToast: (toast: ToastState) => void;
@@ -47,6 +50,7 @@ export function useCaseWorkspaceSiteData({
   unableLoadSiteValidationHistory,
   unableLoadCaseHistory,
   defaultModelCompareSelection,
+  defaultValidationModelVersionSelection,
   describeError,
   pick,
   setToast,
@@ -81,6 +85,8 @@ export function useCaseWorkspaceSiteData({
     setSiteModelVersions,
     selectedCompareModelVersionIds,
     setSelectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
+    setSelectedValidationModelVersionId,
     loadSiteActivity,
     loadSiteValidationRuns,
     loadSiteModelVersions,
@@ -93,6 +99,7 @@ export function useCaseWorkspaceSiteData({
     unableLoadSiteActivity,
     unableLoadSiteValidationHistory,
     defaultModelCompareSelection,
+    defaultValidationModelVersionSelection,
     describeError,
     setToast,
   });
@@ -249,6 +256,8 @@ export function useCaseWorkspaceSiteData({
     setSiteModelVersions,
     selectedCompareModelVersionIds,
     setSelectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
+    setSelectedValidationModelVersionId,
     historyBusy,
     caseHistory,
     setCaseHistory,

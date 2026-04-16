@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState, type FormEvent } from "react";
+import { startTransition, useEffect, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AdminWorkspace, type WorkspaceSection } from "../components/admin-workspace";
@@ -45,6 +45,7 @@ import {
   probeDesktopControlPlaneStatus,
   type DesktopControlPlaneProbe,
 } from "../lib/desktop-control-plane-status";
+import { runDesktopStartupUpdate } from "../lib/desktop-updater";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
 import { prewarmDesktopWorker } from "../lib/desktop-runtime-prewarm";
 import { isTokenExpired, readTokenExpiresAt } from "../lib/token-payload";
@@ -97,6 +98,12 @@ function DesktopShellApp() {
   const [error, setError] = useState<string | null>(null);
   const [controlPlaneStatus, setControlPlaneStatus] = useState<DesktopControlPlaneProbe | null>(null);
   const [controlPlaneStatusBusy, setControlPlaneStatusBusy] = useState(false);
+  const startupUpdateCheckStartedRef = useRef(false);
+  const startupUpdatePrompt = pick(
+    locale,
+    "K-ERA Desktop {version} is available. Install it now? The app will restart after the update.",
+    "K-ERA Desktop {version} 업데이트가 있습니다. 지금 설치할까요? 업데이트 후 앱이 다시 시작됩니다.",
+  );
 
   const copy = {
     loginFailed: pick(locale, "Login failed.", "로그인에 실패했습니다."),
@@ -105,8 +112,8 @@ function DesktopShellApp() {
     sessionExpired: pick(locale, "Your session expired. Sign in again.", "세션이 만료되었습니다. 다시 로그인해 주세요."),
     sessionBlocked: pick(
       locale,
-      "This desktop app opens only approved local workspace accounts. Use the web admin app for access requests and central operations.",
-      "이 데스크톱 앱은 승인된 로컬 워크스페이스 계정만 엽니다. 접근 요청과 중앙 운영은 웹 관리자 앱에서 진행하세요.",
+      "This desktop app opens only approved local workspace accounts. Use the web portal for access requests and central operations.",
+      "이 데스크톱 앱은 승인된 로컬 워크스페이스 계정만 엽니다. 접근 요청과 중앙 운영은 웹 포털에서 진행하세요.",
     ),
     signOut: pick(locale, "Sign out", "로그아웃"),
     adminLoginEyebrow: pick(locale, "Operator Sign-In", "운영 계정 로그인"),
@@ -114,14 +121,14 @@ function DesktopShellApp() {
     adminLoginTitle: pick(locale, "Local admin / site admin sign-in", "로컬 admin / site admin 로그인"),
     adminLoginDescription: pick(
       locale,
-      "Use this path for admin and site admin accounts. Research users should return to Google sign-in.",
-      "이 경로는 admin 및 site admin 계정 전용입니다. 연구 사용자는 Google 로그인으로 돌아가야 합니다."
+      "Use this path for admin and site admin accounts. Research users should return to the desktop sign-in screen.",
+      "이 경로는 admin 및 site admin 계정 전용입니다. 연구 사용자는 데스크톱 로그인 화면으로 돌아가야 합니다."
     ),
     adminUsername: pick(locale, "Username", "아이디"),
     adminPassword: pick(locale, "Password", "비밀번호"),
     adminSubmit: pick(locale, "Enter operator workspace", "운영 계정으로 입장"),
     adminSubmitting: pick(locale, "Signing in...", "로그인 중..."),
-    adminBackToMain: pick(locale, "Back to Google sign-in", "Google 로그인으로 돌아가기"),
+    adminBackToMain: pick(locale, "Back to desktop sign-in", "데스크톱 로그인으로 돌아가기"),
     adminSafetyTitle: pick(locale, "Restricted entry", "제한된 진입"),
     adminSafetyBody: pick(
       locale,
@@ -379,6 +386,55 @@ function DesktopShellApp() {
       controller.abort();
     };
   }, [token, user, workspaceMode]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      return;
+    }
+    if (startupUpdateCheckStartedRef.current) {
+      return;
+    }
+    startupUpdateCheckStartedRef.current = true;
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void runDesktopStartupUpdate({
+        confirmInstall: (update) => {
+          if (cancelled) {
+            return false;
+          }
+          const version = update.availableVersion || pick(locale, "the latest version", "최신 버전");
+          return window.confirm(startupUpdatePrompt.replace("{version}", version));
+        },
+      })
+        .then((result) => {
+          if (cancelled) {
+            return;
+          }
+          if (result.status === "check_failed" || result.status === "install_failed") {
+            console.warn("[kera-desktop-updater]", result.error || "Desktop updater failed.", result.update);
+            return;
+          }
+          if (result.status === "not_installable" && result.update?.availableVersion) {
+            console.warn(
+              "[kera-desktop-updater] auto-install is unavailable for",
+              result.update.availableVersion,
+              result.update,
+            );
+          }
+        })
+        .catch((nextError) => {
+          if (!cancelled) {
+            console.warn("[kera-desktop-updater]", nextError);
+          }
+        });
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [locale, startupUpdatePrompt]);
 
   useEffect(() => {
     if (!token || !user || user.approval_status !== "approved" || workspaceMode !== "operations") {

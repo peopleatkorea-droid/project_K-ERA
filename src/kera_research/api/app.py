@@ -367,10 +367,15 @@ def _normalize_user_access_state(user: dict[str, Any]) -> dict[str, Any]:
     normalized_site_ids = _normalize_string_list(normalized.get("site_ids"))
     role = str(normalized.get("role") or "viewer").strip().lower()
     approval_status = str(normalized.get("approval_status") or "application_required").strip() or "application_required"
+    # Approved site access should remain executable in the clinic workspace even
+    # if an older control-plane token still labels the membership as viewer.
+    if role == "viewer" and approval_status == "approved" and normalized_site_ids:
+        role = "researcher"
     if role == "admin":
         approval_status = "approved"
     elif approval_status == "approved" and not normalized_site_ids:
         approval_status = "application_required"
+    normalized["role"] = role
     normalized["site_ids"] = normalized_site_ids
     normalized["approval_status"] = approval_status
     return normalized
@@ -458,12 +463,22 @@ def _decode_access_token(token: str) -> dict[str, Any]:
             return remote_payload
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
     try:
-        return jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
+        payload = jwt.decode(token, API_SECRET, algorithms=[API_ALGORITHM])
     except jwt.PyJWTError as exc:
         remote_payload = _decode_remote_control_plane_access_token(token)
         if remote_payload is not None:
             return remote_payload
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.") from exc
+    role = str(payload.get("role") or "").strip().lower()
+    approval_status = str(payload.get("approval_status") or "").strip().lower()
+    # Desktop sessions can briefly carry an older HS256 token after a central role
+    # promotion. If an approved token still says viewer, try the remote control-plane
+    # auth view once and use the fresher role when available.
+    if role == "viewer" and approval_status == "approved":
+        remote_payload = _decode_remote_control_plane_access_token(token)
+        if remote_payload is not None:
+            return remote_payload
+    return payload
 
 
 def _verify_google_id_token(id_token: str) -> dict[str, str]:

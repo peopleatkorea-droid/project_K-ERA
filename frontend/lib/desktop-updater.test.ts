@@ -21,6 +21,21 @@ vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: mockRelaunch,
 }));
 
+function createStorageMock() {
+  const entries = new Map<string, string>();
+  return {
+    getItem(key: string) {
+      return entries.has(key) ? entries.get(key) ?? null : null;
+    },
+    removeItem(key: string) {
+      entries.delete(key);
+    },
+    setItem(key: string, value: string) {
+      entries.set(key, value);
+    },
+  };
+}
+
 describe("checkDesktopForUpdates", () => {
   beforeEach(() => {
     mockHasDesktopRuntime.mockReturnValue(true);
@@ -108,5 +123,69 @@ describe("checkDesktopForUpdates", () => {
     expect(downloadAndInstall).toHaveBeenCalledTimes(1);
     expect(mockRelaunch).toHaveBeenCalledTimes(1);
     expect(result).toBe("relaunched");
+  });
+});
+
+describe("runDesktopStartupUpdate", () => {
+  beforeEach(() => {
+    mockHasDesktopRuntime.mockReturnValue(true);
+    mockGetVersion.mockResolvedValue("1.0.0");
+    mockCheck.mockReset();
+    mockRelaunch.mockReset();
+    vi.resetModules();
+  });
+
+  it("installs a startup update after confirmation", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    mockCheck.mockResolvedValue({
+      version: "1.1.0",
+      currentVersion: "1.0.0",
+      date: "2026-03-22T00:00:00.000Z",
+      body: "Desktop fixes",
+      downloadAndInstall,
+    });
+    const confirmInstall = vi.fn(async () => true);
+
+    const { runDesktopStartupUpdate } = await import("./desktop-updater");
+    const result = await runDesktopStartupUpdate({
+      confirmInstall,
+      storage: createStorageMock(),
+    });
+
+    expect(confirmInstall).toHaveBeenCalledTimes(1);
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1);
+    expect(mockRelaunch).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("installed");
+    expect(result.installResult).toBe("relaunched");
+  });
+
+  it("remembers a skipped startup update version and does not prompt again for it", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    mockCheck.mockResolvedValue({
+      version: "1.1.0",
+      currentVersion: "1.0.0",
+      date: "2026-03-22T00:00:00.000Z",
+      body: "Desktop fixes",
+      downloadAndInstall,
+    });
+    const storage = createStorageMock();
+    const confirmInstall = vi.fn(async () => false);
+
+    const { runDesktopStartupUpdate } = await import("./desktop-updater");
+    const firstResult = await runDesktopStartupUpdate({
+      confirmInstall,
+      storage,
+    });
+    const confirmRetry = vi.fn(async () => true);
+    const secondResult = await runDesktopStartupUpdate({
+      confirmInstall: confirmRetry,
+      storage,
+    });
+
+    expect(firstResult.status).toBe("deferred");
+    expect(confirmInstall).toHaveBeenCalledTimes(1);
+    expect(secondResult.status).toBe("deferred");
+    expect(confirmRetry).not.toHaveBeenCalled();
+    expect(downloadAndInstall).not.toHaveBeenCalled();
   });
 });

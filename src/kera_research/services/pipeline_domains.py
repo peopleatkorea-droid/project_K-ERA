@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kera_research.config import CASE_REFERENCE_SALT_FINGERPRINT, MODEL_DISTRIBUTION_MODE
-from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, make_id, utc_now
+from kera_research.domain import INDEX_TO_LABEL, LABEL_TO_INDEX, MODEL_OUTPUT_CLASS_COUNT, make_id, utc_now
 from kera_research.services.data_plane import SiteStore
 from kera_research.services.federated_update_security import (
     apply_federated_update_signature,
@@ -427,7 +427,7 @@ class ResearchContributionWorkflow:
             "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
             "created_at": utc_now(),
             "preprocess_signature": service.model_manager.preprocess_signature(),
-            "num_classes": len(LABEL_TO_INDEX),
+            "num_classes": MODEL_OUTPUT_CLASS_COUNT,
             "crop_mode": crop_mode,
             "training_input_policy": self.service.training_workflow._training_input_policy_for_crop_mode(crop_mode),
             "training_summary": result,
@@ -862,7 +862,7 @@ class ResearchTrainingWorkflow:
             "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
             "created_at": utc_now(),
             "preprocess_signature": service.model_manager.preprocess_signature(),
-            "num_classes": len(LABEL_TO_INDEX),
+            "num_classes": MODEL_OUTPUT_CLASS_COUNT,
             "crop_mode": crop_mode,
             "training_input_policy": self._training_input_policy_for_crop_mode(crop_mode),
             "training_summary": {
@@ -1162,7 +1162,7 @@ class ResearchTrainingWorkflow:
             "salt_fingerprint": CASE_REFERENCE_SALT_FINGERPRINT,
             "created_at": utc_now(),
             "preprocess_signature": service.model_manager.preprocess_signature(),
-            "num_classes": len(LABEL_TO_INDEX),
+            "num_classes": MODEL_OUTPUT_CLASS_COUNT,
             "crop_mode": crop_mode,
             "training_input_policy": self._training_input_policy_for_crop_mode(crop_mode),
             "training_summary": {
@@ -1405,7 +1405,7 @@ class ResearchTrainingWorkflow:
                 "bag_level": bool(result.get("bag_level", False)),
                 "training_input_policy": self._training_input_policy_for_crop_mode(component_crop_mode),
                 "preprocess_signature": service.model_manager.preprocess_signature(),
-                "num_classes": len(LABEL_TO_INDEX),
+                "num_classes": MODEL_OUTPUT_CLASS_COUNT,
                 "decision_threshold": result.get("decision_threshold", 0.5),
                 "threshold_selection_metric": result.get("threshold_selection_metric"),
                 "threshold_selection_metrics": result.get("threshold_selection_metrics"),
@@ -1538,7 +1538,7 @@ class ResearchTrainingWorkflow:
                 "ensemble_weights": ensemble_selection["ensemble_weights"],
                 "training_input_policy": "medsam_cornea_plus_lesion_ensemble",
                 "preprocess_signature": service.model_manager.preprocess_signature(),
-                "num_classes": len(LABEL_TO_INDEX),
+                "num_classes": MODEL_OUTPUT_CLASS_COUNT,
                 "decision_threshold": ensemble_selection["decision_threshold"],
                 "threshold_selection_metric": ensemble_selection["threshold_selection_metric"],
                 "threshold_selection_metrics": ensemble_selection["threshold_selection_metrics"],
@@ -1744,7 +1744,7 @@ class ResearchTrainingWorkflow:
             "bag_level": bool(result.get("bag_level", False)),
             "training_input_policy": self._training_input_policy_for_crop_mode(normalized_crop_mode),
             "preprocess_signature": service.model_manager.preprocess_signature(),
-            "num_classes": len(LABEL_TO_INDEX),
+            "num_classes": MODEL_OUTPUT_CLASS_COUNT,
             "decision_threshold": result.get("decision_threshold", 0.5),
             "threshold_selection_metric": result.get("threshold_selection_metric", "default"),
             "threshold_selection_metrics": result.get("threshold_selection_metrics"),

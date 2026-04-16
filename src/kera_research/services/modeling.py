@@ -11,6 +11,7 @@ import numpy as np
 from kera_research.domain import (
     DENSENET_VARIANTS,
     LABEL_TO_INDEX,
+    MODEL_OUTPUT_CLASS_COUNT,
     LESION_GUIDED_FUSION_ARCHITECTURES,
     is_attention_mil_architecture,
     is_dual_input_training_architecture,
@@ -173,7 +174,7 @@ def seed_everything(seed: int = 42) -> None:
             torch.cuda.manual_seed_all(seed)
 
 
-DEFAULT_NUM_CLASSES = len(LABEL_TO_INDEX)
+DEFAULT_NUM_CLASSES = MODEL_OUTPUT_CLASS_COUNT
 DEFAULT_CASE_AGGREGATION = "mean"
 CASE_AGGREGATIONS = ("mean", "logit_mean", "quality_weighted_mean", "attention_mil")
 DUAL_INPUT_ARCHITECTURES = ("dual_input_concat", *LESION_GUIDED_FUSION_ARCHITECTURES)

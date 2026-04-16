@@ -85,6 +85,7 @@ type Props = {
   medsamMaskUrl: string | null | undefined;
   lesionCropUrl: string | null | undefined;
   lesionMaskUrl: string | null | undefined;
+  emptyMessage?: string | null;
 };
 
 function ValidationArtifactStackInner({
@@ -97,6 +98,7 @@ function ValidationArtifactStackInner({
   medsamMaskUrl,
   lesionCropUrl,
   lesionMaskUrl,
+  emptyMessage,
 }: Props) {
   return (
     <div className={panelImageStackClass}>
@@ -187,7 +189,12 @@ function ValidationArtifactStackInner({
       ) : null}
       {!roiCropUrl && !gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl && !medsamMaskUrl && !lesionCropUrl && !lesionMaskUrl ? (
         <div className={panelImageFallbackClass}>
-          {pick(locale, "No validation artifacts were produced for this run.", "이 실행에서는 검증 아티팩트가 생성되지 않았습니다.")}
+          {emptyMessage ??
+            pick(
+              locale,
+              "No validation artifacts were produced for this run.",
+              "이 실행에서는 검증 아티팩트가 생성되지 않았습니다.",
+            )}
         </div>
       ) : null}
     </div>

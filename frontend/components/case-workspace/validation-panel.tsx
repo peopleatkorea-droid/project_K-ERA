@@ -28,6 +28,8 @@ import { pick, type Locale } from "../../lib/i18n";
 type Props = {
   locale: Locale;
   common: { notAvailable: string };
+  view?: "all" | "judgment" | "agreement";
+  showStepActions?: boolean;
   validationResult: CaseValidationResponse | null;
   validationBusy: boolean;
   canRunValidation: boolean;
@@ -35,7 +37,9 @@ type Props = {
   validationConfidence: number;
   validationConfidenceTone: "high" | "medium" | "low";
   validationPredictedConfidence: number | null;
+  selectedValidationModelVersionId: string | null;
   onRunValidation: () => void;
+  onSelectValidationModelVersion: (versionId: string | null) => void;
   artifactContent: ReactNode;
   modelCompareBusy: boolean;
   selectedCompareModelVersionIds: string[];
@@ -205,9 +209,44 @@ function isInferenceOnlyValidation(
   );
 }
 
+function normalizedModelField(value: string | null | undefined): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function modelRoleLabel(
+  locale: Locale,
+  args: {
+    architecture?: string | null;
+    caseAggregation?: string | null;
+    cropMode?: string | null;
+  },
+): string {
+  const architecture = normalizedModelField(args.architecture);
+  const caseAggregation = normalizedModelField(args.caseAggregation);
+  const cropMode = normalizedModelField(args.cropMode);
+  if (
+    architecture.includes("mil") ||
+    caseAggregation.includes("mil") ||
+    caseAggregation.includes("attention")
+  ) {
+    return pick(locale, "Main judgment model", "메인 판정 모델");
+  }
+  if (architecture === "dinov2") {
+    return pick(locale, "Retrieval support model", "retrieval 보조 모델");
+  }
+  if (cropMode === "raw") {
+    return pick(locale, "Raw judgment model", "raw 판정 모델");
+  }
+  return pick(locale, "Review image model", "검토 이미지 모델");
+}
+
 function ValidationPanelInner({
   locale,
   common,
+  view = "all",
+  showStepActions = true,
   validationResult,
   validationBusy,
   canRunValidation,
@@ -215,7 +254,9 @@ function ValidationPanelInner({
   validationConfidence,
   validationConfidenceTone,
   validationPredictedConfidence,
+  selectedValidationModelVersionId,
   onRunValidation,
+  onSelectValidationModelVersion,
   artifactContent,
   modelCompareBusy,
   selectedCompareModelVersionIds,
@@ -315,48 +356,178 @@ function ValidationPanelInner({
   const cultureLabelPlaceholder = inferenceOnlyValidation
     ? pick(locale, "Unavailable for inference-only analysis", "추론 전용 분석에서는 제공되지 않음")
     : pick(locale, "Pending or unrecorded", "미확정 또는 미기록");
+  const compareCandidatesAvailable = compareModelCandidates.length > 0;
+  const normalizedSelectedValidationModelVersionId =
+    String(selectedValidationModelVersionId || "").trim() || null;
+  const selectedValidationModel =
+    compareModelCandidates.find(
+      (modelVersion) =>
+        modelVersion.version_id === normalizedSelectedValidationModelVersionId,
+    ) ??
+    successfulComparisons.find(
+      (item) =>
+        item.model_version?.version_id === normalizedSelectedValidationModelVersionId,
+    )?.model_version ??
+    (validationResult?.model_version.version_id ===
+    normalizedSelectedValidationModelVersionId
+      ? validationResult.model_version
+      : null) ??
+    null;
+  const selectedValidationModelRoleLabel = selectedValidationModel
+    ? modelRoleLabel(locale, {
+        architecture: selectedValidationModel.architecture,
+        caseAggregation: selectedValidationModel.case_aggregation,
+        cropMode: selectedValidationModel.crop_mode,
+      })
+    : null;
+  const anchorModelVersionId =
+    normalizedSelectedValidationModelVersionId ??
+    (validationResult?.model_version?.version_id
+      ? String(validationResult.model_version.version_id).trim()
+      : null);
+  const comparedModelsSnapshot = [...successfulComparisons].sort((left, right) => {
+    const leftIsAnchor =
+      anchorModelVersionId != null &&
+      left.model_version?.version_id === anchorModelVersionId;
+    const rightIsAnchor =
+      anchorModelVersionId != null &&
+      right.model_version?.version_id === anchorModelVersionId;
+    if (leftIsAnchor === rightIsAnchor) {
+      return 0;
+    }
+    return leftIsAnchor ? -1 : 1;
+  });
 
   return (
     <>
-      <Card as="section" variant="panel" className="grid gap-4 p-5">
+      {view !== "agreement" ? (
+        <Card as="section" variant="panel" className="grid gap-4 p-5">
         <SectionHeader
           className={validationPanelHeadClass}
           eyebrow={
             <div className={docSectionLabelClass}>
-              {pick(locale, "Validation", "검증")}
+              {pick(locale, "Step 1", "1단계")}
             </div>
           }
-          title={pick(locale, "Validation insight", "검증 인사이트")}
+          title={pick(locale, "Single-case AI judgment", "단일 케이스 AI 판정")}
           titleAs="h4"
           description={pick(
             locale,
-            "Run case-level validation to generate the saved prediction, crop artifacts, and reviewable confidence signals.",
-            "케이스 단위 검증을 실행하면 저장 가능한 예측 결과와 crop artifact, 신뢰도 신호가 함께 생성됩니다.",
+            "Start here. Run one AI judgment for this case to see the predicted organism, confidence, and any review images the selected model can generate.",
+            "여기서 시작합니다. 이 케이스를 한 번 판정해 예측 균종, 신뢰도, 그리고 선택된 모델이 생성할 수 있는 검토 이미지를 확인합니다.",
           )}
           aside={
             <div className={validationPanelActionsClass}>
               <span className={validationPanelIdClass}>
                 {validationResult
                   ? validationResult.summary.validation_id
-                  : pick(locale, "Not run yet", "아직 실행 안 됨")}
+                  : pick(locale, "Step 1 not run yet", "1단계 아직 실행 안 됨")}
               </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={validationRunButtonClass}
-                onClick={onRunValidation}
-                disabled={
-                  validationBusy || !hasSelectedCase || !canRunValidation
-                }
-              >
-                {validationBusy
-                  ? pick(locale, "Validating...", "검증 중...")
-                  : pick(locale, "Run AI validation", "AI 검증 실행")}
-              </Button>
+              {showStepActions ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={validationRunButtonClass}
+                  onClick={onRunValidation}
+                  disabled={
+                    validationBusy || !hasSelectedCase || !canRunValidation
+                  }
+                >
+                  {validationBusy
+                    ? pick(locale, "Running judgment...", "판정 중...")
+                    : pick(locale, "Run single-case judgment", "단일 케이스 판정 실행")}
+                </Button>
+              ) : null}
             </div>
           }
         />
+
+        {compareCandidatesAvailable ? (
+          <Card
+            as="div"
+            variant="nested"
+            className="grid gap-3 border border-border/80 p-4"
+          >
+            <SectionHeader
+              className={docSectionHeadClass}
+              title={pick(locale, "Judgment anchor model", "판정 기준 모델")}
+              titleAs="h4"
+              description={pick(
+                locale,
+                "This model creates the saved judgment card and any review images. The agreement check below can still use a separate multi-model set.",
+                "이 모델이 저장되는 판정 카드와 검토 이미지를 만듭니다. 아래 합의 확인용 모델들은 별도로 선택할 수 있습니다.",
+              )}
+            />
+            {selectedValidationModelRoleLabel ? (
+              <div className="flex flex-wrap gap-2">
+                <span
+                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                    "neutral",
+                  )}`}
+                >
+                  {selectedValidationModelRoleLabel}
+                </span>
+              </div>
+            ) : null}
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-ink">
+                {pick(locale, "Anchor model", "기준 모델")}
+              </span>
+              <select
+                className="min-h-11 rounded-[16px] border border-border bg-surface px-3 py-2 text-sm text-ink outline-none transition focus:border-brand/40"
+                value={normalizedSelectedValidationModelVersionId ?? ""}
+                onChange={(event) =>
+                  onSelectValidationModelVersion(
+                    event.target.value.trim() || null,
+                  )
+                }
+                disabled={validationBusy}
+              >
+                <option value="">
+                  {pick(
+                    locale,
+                    "Use the default saved judgment model",
+                    "기본 판정 기준 모델 사용",
+                  )}
+                </option>
+                {compareModelCandidates.map((modelVersion) => {
+                  const parts = [
+                    String(modelVersion.version_name || "").trim(),
+                    String(modelVersion.architecture || "").trim(),
+                    String(modelVersion.crop_mode || "").trim(),
+                  ].filter((value, index, array) => {
+                    if (!value) {
+                      return false;
+                    }
+                    return array.indexOf(value) === index;
+                  });
+                  return (
+                    <option
+                      key={modelVersion.version_id}
+                      value={modelVersion.version_id}
+                    >
+                      {parts.join(" / ") || modelVersion.version_id}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            <p className="m-0 text-sm leading-6 text-muted">
+              {selectedValidationModel
+                ? pick(
+                    locale,
+                    `Current anchor: ${selectedValidationModel.version_name || selectedValidationModel.version_id}. Role: ${selectedValidationModelRoleLabel ?? ""}`,
+                    `현재 기준 모델: ${selectedValidationModel.version_name || selectedValidationModel.version_id}. 역할: ${selectedValidationModelRoleLabel ?? ""}`,
+                  )
+                : pick(
+                    locale,
+                    "If you want crop or Grad-CAM images, choose an image-based model here instead of a raw MIL-only model.",
+                    "crop 또는 Grad-CAM 이미지를 보려면 raw MIL 전용 모델 대신 이미지 기반 모델을 여기서 고르세요.",
+                  )}
+            </p>
+          </Card>
+        ) : null}
 
         {validationResult ? (
           <div className="grid gap-4">
@@ -379,6 +550,19 @@ function ValidationPanelInner({
                   )}`}
                 >
                   {validationConfidence}% {pick(locale, "confidence", "신뢰도")}
+                </span>
+                <span
+                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                    "neutral",
+                  )}`}
+                >
+                  {modelRoleLabel(locale, {
+                    architecture: validationResult.model_version.architecture,
+                    caseAggregation:
+                      validationResult.summary.case_aggregation ??
+                      validationResult.model_version.case_aggregation,
+                    cropMode: validationResult.model_version.crop_mode,
+                  })}
                 </span>
                 <span
                   className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
@@ -531,6 +715,132 @@ function ValidationPanelInner({
                       "예측이 배양 결과와 다릅니다.",
                     )}
             </p>
+
+            {comparedModelsSnapshot.length > 0 ? (
+              <Card
+                as="div"
+                variant="nested"
+                className="grid gap-4 border border-border/80 p-4"
+              >
+                <SectionHeader
+                  className={docSectionHeadClass}
+                  title={pick(
+                    locale,
+                    "Compared models at a glance",
+                    "함께 본 모델 결과",
+                  )}
+                  titleAs="h4"
+                  description={pick(
+                    locale,
+                    "These model calls were refreshed together with Step 1. The anchor model drives the saved judgment and review images.",
+                    "이 모델 호출들은 1단계와 함께 갱신됐습니다. 기준 모델이 저장 판정과 검토 이미지를 담당합니다.",
+                  )}
+                />
+                <div className="grid gap-3 lg:grid-cols-3">
+                  {comparedModelsSnapshot.map((item, index) => {
+                    const itemVersionId =
+                      item.model_version?.version_id != null
+                        ? String(item.model_version.version_id).trim()
+                        : null;
+                    const isAnchor =
+                      anchorModelVersionId != null &&
+                      itemVersionId === anchorModelVersionId;
+                    const itemTone =
+                      item.summary?.validation_mode === "inference_only" ||
+                      item.summary?.is_correct == null
+                        ? "neutral"
+                        : item.summary.is_correct
+                          ? "match"
+                          : "mismatch";
+                    const itemModelLabel =
+                      item.model_version?.version_name ??
+                      item.model_version?.architecture ??
+                      item.model_version_id ??
+                      `${pick(locale, "Model", "모델")} ${index + 1}`;
+                    return (
+                      <Card
+                        key={itemVersionId ?? `${itemModelLabel}-${index}`}
+                        as="article"
+                        variant="panel"
+                        className="grid gap-3 p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong className="text-sm font-semibold text-ink">
+                            {itemModelLabel}
+                          </strong>
+                          {isAnchor ? (
+                            <span
+                              className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                                "high",
+                              )}`}
+                            >
+                              {pick(locale, "Anchor model", "기준 모델")}
+                            </span>
+                          ) : null}
+                          <span
+                            className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                              "neutral",
+                            )}`}
+                          >
+                            {modelRoleLabel(locale, {
+                              architecture: item.model_version?.architecture,
+                              caseAggregation:
+                                item.summary?.case_aggregation ??
+                                item.model_version?.case_aggregation,
+                              cropMode: item.model_version?.crop_mode,
+                            })}
+                          </span>
+                          <span
+                            className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                              itemTone,
+                            )}`}
+                          >
+                            {item.summary?.validation_mode === "inference_only" ||
+                            item.summary?.is_correct == null
+                              ? pick(locale, "Inference-only", "추론 전용")
+                              : item.summary.is_correct
+                                ? pick(locale, "Match", "일치")
+                                : pick(locale, "Mismatch", "불일치")}
+                          </span>
+                        </div>
+                        <MetricGrid columns={2}>
+                          <MetricItem
+                            value={
+                              item.summary?.predicted_label ??
+                              common.notAvailable
+                            }
+                            label={
+                              item.summary?.validation_mode === "inference_only"
+                                ? pick(
+                                    locale,
+                                    "pattern support",
+                                    "패턴 지지",
+                                  )
+                                : pick(locale, "predicted", "예측")
+                            }
+                          />
+                          <MetricItem
+                            value={formatProbability(
+                              item.summary?.prediction_probability,
+                              common.notAvailable,
+                            )}
+                            label={pick(locale, "confidence", "신뢰도")}
+                          />
+                        </MetricGrid>
+                        <p className="m-0 text-sm leading-6 text-muted">
+                          {[
+                            item.model_version?.architecture,
+                            item.model_version?.crop_mode,
+                          ]
+                            .filter((value) => String(value || "").trim().length > 0)
+                            .join(" / ") || common.notAvailable}
+                        </p>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </Card>
+            ) : null}
 
             {artifactContent}
 
@@ -1103,42 +1413,46 @@ function ValidationPanelInner({
           <div className={emptySurfaceClass}>
             {pick(
               locale,
-              "Run validation from this panel to generate crop artifacts, Grad-CAM, and a saved case-level prediction.",
-              "이 패널에서 검증을 실행하면 crop artifact, Grad-CAM, 저장 가능한 케이스 단위 예측이 생성됩니다.",
+              'Start here. Click "Run single-case judgment" to save the prediction and any crop or Grad-CAM review images supported by the selected model.',
+              '여기서 시작하세요. "단일 케이스 판정 실행"을 누르면 선택된 모델이 지원하는 예측 결과와 crop 또는 Grad-CAM 검토 이미지가 저장됩니다.',
             )}
           </div>
         )}
-      </Card>
+        </Card>
+      ) : null}
 
-      <Card as="section" variant="panel" className="grid gap-4 p-5">
+      {view !== "judgment" ? (
+        <Card as="section" variant="panel" className="grid gap-4 p-5">
         <SectionHeader
           eyebrow={
             <div className={docSectionLabelClass}>
-              {pick(locale, "Comparison", "비교")}
+              {pick(locale, "Step 2", "2단계")}
             </div>
           }
-          title={pick(locale, "Multi-model analysis", "다중 모델 분석")}
+          title={pick(locale, "Model agreement check", "모델 간 합의 확인")}
           titleAs="h4"
           description={pick(
             locale,
-            "AI validation refreshes this section with the selected latest models by default. You can keep or adjust the selection and re-run it anytime.",
-            "AI 검증을 실행하면 이 섹션도 기본 선택된 최신 모델들로 함께 갱신됩니다. 필요하면 선택을 조정해 다시 실행할 수 있습니다.",
+            "Use this after Step 1 to choose which models join the agreement check. This does not change the anchor model used for the saved judgment above.",
+            "1단계 이후에 사용합니다. 여기서는 합의 확인에 넣을 모델만 고릅니다. 위의 저장 판정 기준 모델은 여기서 바뀌지 않습니다.",
           )}
           aside={
-            <Button
-              variant="ghost"
-              type="button"
-              onClick={onRunModelCompare}
-              disabled={
-                modelCompareBusy ||
-                !hasSelectedCase ||
-                selectedCompareModelVersionIds.length === 0
-              }
-            >
-              {modelCompareBusy
-                ? pick(locale, "Comparing...", "비교 중...")
-                : pick(locale, "Compare selected models", "선택 모델 비교")}
-            </Button>
+            showStepActions ? (
+              <Button
+                variant="ghost"
+                type="button"
+                onClick={onRunModelCompare}
+                disabled={
+                  modelCompareBusy ||
+                  !hasSelectedCase ||
+                  selectedCompareModelVersionIds.length === 0
+                }
+              >
+                {modelCompareBusy
+                  ? pick(locale, "Checking agreement...", "합의 확인 중...")
+                  : pick(locale, "Check model agreement", "모델 합의 확인")}
+              </Button>
+            ) : undefined
           }
         />
 
@@ -1195,6 +1509,28 @@ function ValidationPanelInner({
             );
           })}
         </div>
+
+        {!modelCompareResult ? (
+          <div className={emptySurfaceClass}>
+            {!compareCandidatesAvailable
+              ? pick(
+                  locale,
+                  "No ready comparison models are loaded yet. If you just opened the case, wait a moment and this list should fill in automatically. If it stays empty, this site does not currently have extra ready models.",
+                  "비교 가능한 준비 완료 모델이 아직 불러와지지 않았습니다. 방금 케이스를 열었다면 잠시 후 이 목록이 자동으로 채워집니다. 계속 비어 있으면 현재 이 사이트에 추가 준비 완료 모델이 없는 상태입니다.",
+                )
+              : selectedCompareModelVersionIds.length > 0
+              ? pick(
+                  locale,
+                  `${selectedCompareModelVersionIds.length} model(s) selected. Click "Check model agreement" to compare them on this case.`,
+                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "모델 합의 확인"을 눌러 이 케이스에서 결과를 비교하세요.`,
+                )
+              : pick(
+                  locale,
+                  'Select one or more models below, then click "Check model agreement". Agreement is most useful with two or more models.',
+                  '아래에서 모델을 하나 이상 고른 뒤 "모델 합의 확인"을 누르세요. 합의 확인은 2개 이상 모델일 때 특히 유용합니다.',
+                )}
+          </div>
+        ) : null}
 
         {modelCompareResult ? (
           <div className="grid gap-4">
@@ -1382,7 +1718,8 @@ function ValidationPanelInner({
             })}
           </div>
         ) : null}
-      </Card>
+        </Card>
+      ) : null}
     </>
   );
 }

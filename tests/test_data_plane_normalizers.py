@@ -16,6 +16,18 @@ _CULTURE_STATUS_OPTIONS = {"positive", "negative", "not_done", "unknown"}
 
 
 class DataPlaneNormalizersTests(unittest.TestCase):
+    def test_unknown_status_yields_positive_when_confirmed_fields_exist(self) -> None:
+        self.assertEqual(
+            normalizers._derive_culture_status(
+                "unknown",
+                True,
+                "fungal",
+                "Fusarium",
+                _CULTURE_STATUS_OPTIONS,
+            ),
+            "positive",
+        )
+
     def test_positive_culture_normalizes_and_deduplicates_additional_organisms(self) -> None:
         normalized = normalizers._normalize_visit_culture_fields(
             culture_status="positive",

@@ -11,8 +11,10 @@ import time
 import unittest
 import warnings
 from pathlib import Path
+import numpy as np
 from PIL import Image
 from sqlalchemy import select, update
+from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"
@@ -20,6 +22,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from kera_research.api.control_plane_proxy import site_record_for_request
+from kera_research.services.retrieval import BiomedClipTextRetriever
+from kera_research.services.vector_index import FaissCaseIndexManager
 
 
 def reload_app_module(
@@ -1233,6 +1237,170 @@ class ControlPlaneRegressionTests(unittest.TestCase):
         self.assertEqual(len(site_store.list_patients()), 0)
         self.assertEqual(len(site_store.list_visits()), 0)
         self.assertEqual(len(site_store.list_images()), 0)
+
+    def test_dataset_records_treats_confirmed_cases_as_positive_even_when_status_is_unknown(self) -> None:
+        project = self.cp.create_project("Derived Positive Project", "test", "owner")
+        site_id = self._unique_site_id("DERIVED_POSITIVE")
+        self.cp.create_site(project["project_id"], site_id, "Derived Positive Site", "Derived Positive Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+
+        site_store.create_patient("POS-DERIVED-001", "female", 54, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id="POS-DERIVED-001",
+            visit_date="Initial",
+            actual_visit_date="2026-03-24",
+            culture_status="unknown",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Fusarium",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        site_store.add_image(
+            patient_id="POS-DERIVED-001",
+            visit_date="Initial",
+            view="white",
+            is_representative=True,
+            file_name="derived_positive.png",
+            content=self._make_test_image_bytes(color="purple"),
+            created_by_user_id="owner",
+        )
+
+        records = site_store.dataset_records()
+        summaries = site_store.list_case_summaries(patient_id="POS-DERIVED-001")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["culture_status"], "positive")
+        self.assertTrue(bool(records[0]["culture_confirmed"]))
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["culture_status"], "positive")
+        self.assertTrue(bool(summaries[0]["culture_confirmed"]))
+
+    def test_faiss_search_rebuilds_missing_index_from_cached_embeddings(self) -> None:
+        project = self.cp.create_project("Vector Index Project", "test", "owner")
+        site_id = self._unique_site_id("VECTOR_INDEX")
+        self.cp.create_site(project["project_id"], site_id, "Vector Index Site", "Vector Index Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+
+        for patient_id, visit_date, color in (
+            ("EMB-001", "Initial", "white"),
+            ("EMB-002", "FU #1", "gray"),
+        ):
+            site_store.create_patient(patient_id, "female", 61, created_by_user_id="owner")
+            site_store.create_visit(
+                patient_id=patient_id,
+                visit_date=visit_date,
+                actual_visit_date="2026-03-24",
+                culture_status="unknown",
+                culture_confirmed=True,
+                culture_category="fungal",
+                culture_species="Fusarium",
+                additional_organisms=[],
+                contact_lens_use="none",
+                predisposing_factor=["trauma"],
+                other_history="",
+                created_by_user_id="owner",
+            )
+            site_store.add_image(
+                patient_id=patient_id,
+                visit_date=visit_date,
+                view="white",
+                is_representative=True,
+                file_name=f"{patient_id}.png",
+                content=self._make_test_image_bytes(color=color),
+                created_by_user_id="owner",
+            )
+
+        embedding_root = site_store.embedding_dir / "test-model" / "classifier"
+        embedding_root.mkdir(parents=True, exist_ok=True)
+        for patient_id, visit_date, vector in (
+            ("EMB-001", "Initial", np.asarray([1.0, 0.0, 0.0], dtype=np.float32)),
+            ("EMB-002", "FU #1", np.asarray([0.8, 0.2, 0.0], dtype=np.float32)),
+        ):
+            stem = embedding_root / f"{patient_id}__{visit_date.replace('#', 'num').replace(' ', '_')}"
+            np.save(stem.with_suffix(".npy"), vector)
+            stem.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "patient_id": patient_id,
+                        "visit_date": visit_date,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        manager = FaissCaseIndexManager()
+        index_path, metadata_path = manager._index_paths(site_store, "test-model", "classifier")
+        self.assertFalse(index_path.exists())
+        self.assertFalse(metadata_path.exists())
+
+        hits = manager.search(
+            site_store,
+            model_version_id="test-model",
+            backend="classifier",
+            query_embedding=np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+            top_k=2,
+        )
+
+        self.assertTrue(index_path.exists())
+        self.assertTrue(metadata_path.exists())
+        self.assertEqual([hit["patient_id"] for hit in hits], ["EMB-001", "EMB-002"])
+
+    def test_biomedclip_text_retrieval_accepts_site_store_for_disk_cache(self) -> None:
+        project = self.cp.create_project("BiomedClip Project", "test", "owner")
+        site_id = self._unique_site_id("BIOMEDCLIP")
+        self.cp.create_site(project["project_id"], site_id, "BiomedClip Site", "BiomedClip Hospital")
+        site_store = self.app_module.SiteStore(site_id)
+        site_store.create_patient("TXT-001", "female", 48, created_by_user_id="owner")
+        site_store.create_visit(
+            patient_id="TXT-001",
+            visit_date="Initial",
+            actual_visit_date="2026-03-25",
+            culture_confirmed=True,
+            culture_category="fungal",
+            culture_species="Candida",
+            additional_organisms=[],
+            contact_lens_use="none",
+            predisposing_factor=["trauma"],
+            other_history="",
+            created_by_user_id="owner",
+        )
+        image = site_store.add_image(
+            patient_id="TXT-001",
+            visit_date="Initial",
+            view="white",
+            is_representative=True,
+            file_name="text_query.png",
+            content=self._make_test_image_bytes(),
+            created_by_user_id="owner",
+        )
+
+        retriever = BiomedClipTextRetriever()
+        with (
+            patch.object(retriever, "encode_images", return_value=np.asarray([[1.0, 0.0]], dtype=np.float32)),
+            patch.object(retriever, "encode_texts", return_value=np.asarray([[1.0, 0.0]], dtype=np.float32)),
+        ):
+            result = retriever.retrieve_texts(
+                site_store=site_store,
+                query_image_paths=[image["image_path"]],
+                text_records=[
+                    {
+                        "case_id": "TXT-002::Initial",
+                        "patient_id": "TXT-002",
+                        "visit_date": "Initial",
+                        "text": "fungal keratitis with trauma history",
+                    }
+                ],
+                requested_device="cpu",
+                top_k=1,
+            )
+
+        self.assertEqual(result["eligible_text_count"], 1)
+        self.assertEqual(len(result["text_evidence"]), 1)
+        self.assertTrue((site_store.artifact_dir / "embeddings" / "biomedclip").exists())
 
     def test_site_store_restores_placeholder_raw_sync_metadata_from_local_backup_db(self) -> None:
         storage_root = Path(self.tempdir.name) / "KERA_DATA"

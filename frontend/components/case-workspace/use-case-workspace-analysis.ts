@@ -4,6 +4,7 @@ import {
   type Dispatch,
   type SetStateAction,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -51,9 +52,11 @@ type Args = {
   token: string;
   selectedSiteId: string | null;
   selectedCase: CaseSummaryRecord | null;
+  panelBusy: boolean;
   selectedCaseImages: SavedImagePreview[];
   patientVisitGallery: Record<string, SavedImagePreview[]>;
   selectedCompareModelVersionIds: string[];
+  selectedValidationModelVersionId: string | null;
   showOnlyMine: boolean;
   copy: AnalysisCopy;
   pick: LocalePick;
@@ -91,9 +94,11 @@ export function useCaseWorkspaceAnalysis({
   token,
   selectedSiteId,
   selectedCase,
+  panelBusy,
   selectedCaseImages,
   patientVisitGallery,
   selectedCompareModelVersionIds,
+  selectedValidationModelVersionId,
   showOnlyMine,
   copy,
   pick,
@@ -116,13 +121,31 @@ export function useCaseWorkspaceAnalysis({
   const [representativeBusyImageId, setRepresentativeBusyImageId] = useState<
     string | null
   >(null);
+  const desktopMlPrewarmedSiteIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!selectedSiteId || !selectedCase) {
+    desktopMlPrewarmedSiteIdRef.current = null;
+  }, [selectedSiteId]);
+
+  useEffect(() => {
+    if (!selectedSiteId || !selectedCase || panelBusy) {
       return;
     }
-    void prewarmDesktopMlBackend().catch(() => undefined);
-  }, [selectedSiteId, selectedCase?.case_id]);
+    if (desktopMlPrewarmedSiteIdRef.current === selectedSiteId) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      desktopMlPrewarmedSiteIdRef.current = selectedSiteId;
+      void prewarmDesktopMlBackend().catch(() => {
+        if (desktopMlPrewarmedSiteIdRef.current === selectedSiteId) {
+          desktopMlPrewarmedSiteIdRef.current = null;
+        }
+      });
+    }, 2500);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [panelBusy, selectedSiteId, selectedCase?.case_id]);
 
   const representativeSavedImage =
     selectedCaseImages.find((image) => image.is_representative) ?? null;
@@ -168,6 +191,7 @@ export function useCaseWorkspaceAnalysis({
     selectedSiteId,
     selectedCase,
     selectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
     pick,
     copy: {
       selectSavedCaseForValidation: copy.selectSavedCaseForValidation,

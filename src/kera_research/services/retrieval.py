@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PIL import Image
 from kera_research.services.biomedclip_runtime import BIOMEDCLIP_MODEL_ID, ensure_biomedclip_runtime
 
 DINOv2_MODEL_ID = "facebook/dinov2-base"
+
+if TYPE_CHECKING:
+    from kera_research.services.data_plane import SiteStore
 
 
 class BiomedClipTextRetriever:
@@ -152,6 +155,7 @@ class BiomedClipTextRetriever:
     def retrieve_texts(
         self,
         *,
+        site_store: SiteStore,
         query_image_paths: list[str | Path],
         text_records: list[dict[str, Any]],
         requested_device: str,

@@ -50,9 +50,6 @@ export function useCaseWorkspaceSiteBackgroundLoads({
   ]);
 
   useEffect(() => {
-    if (canUseDesktopTransport()) {
-      return;
-    }
     if (
       !selectedSiteId ||
       railView === "patients" ||
@@ -62,8 +59,11 @@ export function useCaseWorkspaceSiteBackgroundLoads({
       return;
     }
     const controller = new AbortController();
-    void ensureSiteModelVersionsLoaded(selectedSiteId, controller.signal);
+    const timeoutId = window.setTimeout(() => {
+      void ensureSiteModelVersionsLoaded(selectedSiteId, controller.signal);
+    }, canUseDesktopTransport() ? 220 : 0);
     return () => {
+      window.clearTimeout(timeoutId);
       controller.abort();
     };
   }, [

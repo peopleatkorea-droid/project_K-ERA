@@ -97,6 +97,7 @@ class FaissCaseIndexManager:
 
         if not vectors:
             index_path.unlink(missing_ok=True)
+            self._index_cache.pop(str(index_path), None)
             write_json(
                 metadata_path,
                 {
@@ -151,6 +152,12 @@ class FaissCaseIndexManager:
     ) -> list[dict[str, Any]]:
         faiss = self._ensure_faiss()
         index_path, metadata_path = self._index_paths(site_store, model_version_id, backend)
+        if not (index_path.exists() and metadata_path.exists()):
+            self.rebuild_index(
+                site_store,
+                model_version_id=model_version_id,
+                backend=backend,
+            )
         if not (index_path.exists() and metadata_path.exists()):
             raise FileNotFoundError("FAISS index is not available.")
         cache_key = str(index_path)

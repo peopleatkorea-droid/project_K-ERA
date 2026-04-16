@@ -302,6 +302,42 @@ export function sortCompareModelVersions(
   );
 }
 
+function normalizedModelVersionArchitecture(modelVersion: ModelVersionRecord) {
+  return String(modelVersion.architecture || "").trim().toLowerCase();
+}
+
+function normalizedModelVersionCropMode(modelVersion: ModelVersionRecord) {
+  return String(modelVersion.crop_mode || "").trim().toLowerCase();
+}
+
+function supportsValidationReviewArtifacts(modelVersion: ModelVersionRecord) {
+  const architecture = normalizedModelVersionArchitecture(modelVersion);
+  if (!architecture) {
+    return false;
+  }
+  if (
+    architecture === "cnn" ||
+    architecture === "vit" ||
+    architecture === "swin" ||
+    architecture === "convnext_tiny" ||
+    architecture === "efficientnet_v2_s" ||
+    architecture === "dinov2" ||
+    architecture === "dinov2_mil" ||
+    architecture === "swin_mil" ||
+    architecture === "dual_input_concat" ||
+    architecture === "densenet121" ||
+    architecture === "densenet169" ||
+    architecture === "densenet201" ||
+    architecture.includes("lesion_guided_fusion")
+  ) {
+    return true;
+  }
+  const cropMode = normalizedModelVersionCropMode(modelVersion);
+  return (
+    cropMode === "automated" || cropMode === "paired" || cropMode === "manual"
+  );
+}
+
 function modelVersionSearchText(modelVersion: ModelVersionRecord): string {
   return [
     modelVersion.version_id,
@@ -413,4 +449,60 @@ export function defaultModelCompareSelection(
     }
   }
   return selected;
+}
+
+export function defaultValidationModelVersionSelection(
+  modelVersions: ModelVersionRecord[],
+): string | null {
+  const sortedModelVersions = sortCompareModelVersions(modelVersions);
+  const preferredMatchers: Array<
+    (modelVersion: ModelVersionRecord, searchText: string) => boolean
+  > = [
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "convnext_tiny",
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      normalizedModelVersionCropMode(modelVersion) !== "raw" &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s" &&
+      !searchText.includes("lesion_guided_fusion"),
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s" &&
+      !searchText.includes("lesion_guided_fusion"),
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "convnext_tiny",
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "dinov2" &&
+      !searchText.includes("mil"),
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() === "vit",
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      normalizedModelVersionCropMode(modelVersion) !== "raw",
+    (modelVersion) => supportsValidationReviewArtifacts(modelVersion),
+    (modelVersion) => isSelectableCompareModelVersion(modelVersion),
+  ];
+
+  for (const matcher of preferredMatchers) {
+    const match =
+      sortedModelVersions.find(
+        (modelVersion) =>
+          isSelectableCompareModelVersion(modelVersion) &&
+          matcher(modelVersion, modelVersionSearchText(modelVersion)),
+      ) ?? null;
+    if (match?.version_id) {
+      return match.version_id;
+    }
+  }
+
+  return null;
 }

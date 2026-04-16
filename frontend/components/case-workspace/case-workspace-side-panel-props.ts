@@ -141,6 +141,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
   selectedCaseImageCount: AnalysisSectionProps["selectedCaseImageCount"];
   representativePreviewUrl: AnalysisSectionProps["representativePreviewUrl"];
   selectedCompareModelVersionIds: AnalysisSectionProps["selectedCompareModelVersionIds"];
+  selectedValidationModelVersionId: AnalysisSectionProps["selectedValidationModelVersionId"];
   siteModelVersions: AnalysisSectionProps["compareModelCandidates"];
   validationBusy: AnalysisSectionProps["validationBusy"];
   validationResult: AnalysisSectionProps["validationResult"];
@@ -160,6 +161,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
   translateOption: AnalysisSectionProps["translateOption"];
   setToast: AnalysisSectionProps["setToast"];
   setSelectedCompareModelVersionIds: AnalysisSectionProps["setSelectedCompareModelVersionIds"];
+  setSelectedValidationModelVersionId: AnalysisSectionProps["setSelectedValidationModelVersionId"];
   displayVisitReference: VisitReferenceFormatter;
   aiClinicTextUnavailableLabel: AnalysisSectionProps["aiClinicTextUnavailableLabel"];
   onRunValidation: () => void | Promise<void>;
@@ -183,6 +185,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     selectedCaseImageCount,
     representativePreviewUrl,
     selectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
     siteModelVersions,
     validationBusy,
     validationResult,
@@ -202,6 +205,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     translateOption,
     setToast,
     setSelectedCompareModelVersionIds,
+    setSelectedValidationModelVersionId,
     displayVisitReference,
     aiClinicTextUnavailableLabel,
     onRunValidation,
@@ -217,16 +221,16 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     token,
     selectedSiteId,
     mounted,
-    analysisEyebrow: pick(locale, "Validation and AI Clinic", "검증 및 AI Clinic"),
+    analysisEyebrow: pick(locale, "Clinical AI review", "진료용 AI 검토"),
     analysisTitle: pick(
       locale,
-      "Validation, artifacts, and retrieval support",
-      "검증, 아티팩트, 검색 지원",
+      "Single-case judgment, model agreement, and similar-patient review",
+      "단일 케이스 판정, 모델 합의 확인, 유사 환자 검토",
     ),
     analysisDescription: pick(
       locale,
-      "Review model validation, artifacts, similar-patient retrieval, and differential support in a wider layout.",
-      "모델 검증, 아티팩트, 유사 환자 검색, differential support를 넓은 레이아웃에서 확인합니다.",
+      "Use this in order: judge one case, check whether models agree, then review similar patients and optional evidence.",
+      "보통 이 순서로 사용합니다: 케이스 하나를 판정하고, 모델 합의를 확인한 뒤, 유사 환자와 필요 시 추가 근거를 검토합니다.",
     ),
     imageCountLabel: pick(locale, "images", "이미지"),
     commonLoading,
@@ -238,6 +242,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     selectedCaseImageCount,
     representativePreviewUrl,
     selectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
     compareModelCandidates: sortCompareModelVersions(
       siteModelVersions.filter(isSelectableCompareModelVersion),
     ),
@@ -259,6 +264,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     translateOption,
     setToast,
     setSelectedCompareModelVersionIds,
+    setSelectedValidationModelVersionId,
     onRunValidation: () => {
       void onRunValidation();
     },

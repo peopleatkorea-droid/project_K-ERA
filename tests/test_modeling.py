@@ -14,8 +14,9 @@ if str(SRC_DIR) not in sys.path:
 from PIL import Image
 
 from kera_research.cli import build_parser
-from kera_research.domain import LABEL_TO_INDEX
+from kera_research.domain import MODEL_OUTPUT_CLASS_COUNT
 from kera_research.services.modeling import (
+    DEFAULT_NUM_CLASSES,
     ModelManager,
     VisitBagDataset,
     collate_visit_bags,
@@ -36,7 +37,7 @@ class ModelManagerTests(unittest.TestCase):
                     torch.nn.ReLU(),
                 )
                 self.attention_pool = torch.nn.Linear(16, 1)
-                self.classifier = torch.nn.Linear(16, len(LABEL_TO_INDEX))
+                self.classifier = torch.nn.Linear(16, MODEL_OUTPUT_CLASS_COUNT)
 
             def forward(self, inputs, bag_mask=None, return_attention=False):
                 batch_size, bag_size = inputs.shape[:2]
@@ -266,6 +267,27 @@ class ModelManagerTests(unittest.TestCase):
                 },
                 checkpoint,
             )
+
+    def test_default_num_classes_counts_only_trainable_labels(self):
+        manager = ModelManager()
+        checkpoint = {
+            "architecture": "convnext_tiny",
+            "artifact_metadata": manager.build_artifact_metadata(
+                architecture="convnext_tiny",
+                num_classes=2,
+            ),
+        }
+
+        self.assertEqual(DEFAULT_NUM_CLASSES, 2)
+        self.assertEqual(
+            manager.validate_model_artifact(
+                {
+                    "architecture": "convnext_tiny",
+                },
+                checkpoint,
+            )["num_classes"],
+            2,
+        )
 
     def test_build_model_for_training_uses_imagenet_builder_when_supported(self):
         manager = ModelManager()

@@ -41,7 +41,7 @@
         "https://github.com/peopleatkorea-droid/project_K-ERA/releases/latest/download/latest.json"
       ],
       "dialog": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBOEJDMENFQTRGNjhCNDUKUldSRmkvYWt6c0NMZWpEZE1OSnd2amFtZ1E5S0h4TmNQRjlMZE9nVy9acmRhcXg3SG0zTkFYUU0K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDREOUQxMjRDM0VBMEY3MTEKUldRUjk2QStUQktkVFpRMWFvZ3JqNTZDaDR1cGNNd2QzbE1NY1pFUW9uSGR1OTdPMWE2S0c5SHkK",
       "windows": {
         "installMode": "passive"
       }

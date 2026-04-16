@@ -98,13 +98,13 @@ def _derive_culture_status(
         culture_status_options,
         default="",
     )
-    if normalized_status:
+    if normalized_status and normalized_status != "unknown":
         return normalized_status
     if _coerce_optional_bool(culture_confirmed, False):
         return "positive"
     if str(culture_category or "").strip() or str(culture_species or "").strip():
         return "positive"
-    return "unknown"
+    return normalized_status or "unknown"
 
 
 def _normalize_visit_culture_fields(

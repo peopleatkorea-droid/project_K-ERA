@@ -65,6 +65,7 @@ describe("case-workspace side panel props", () => {
       selectedCaseImageCount: 3,
       representativePreviewUrl: "/preview.png",
       selectedCompareModelVersionIds: ["v2"],
+      selectedValidationModelVersionId: "v1",
       siteModelVersions: [
         {
           version_id: "v1",
@@ -107,6 +108,7 @@ describe("case-workspace side panel props", () => {
       translateOption: (_locale, _group, value) => value,
       setToast: vi.fn(),
       setSelectedCompareModelVersionIds: vi.fn(),
+      setSelectedValidationModelVersionId: vi.fn(),
       displayVisitReference: (_locale, visitReference) => `Visit ${visitReference}`,
       aiClinicTextUnavailableLabel: "Unavailable",
       onRunValidation: runValidation,
@@ -122,7 +124,7 @@ describe("case-workspace side panel props", () => {
       "v1",
     ]);
     expect(props.analysisTitle).toBe(
-      "Validation, artifacts, and retrieval support",
+      "Single-case judgment, model agreement, and similar-patient review",
     );
     expect(props.displayVisitReference("FU #1")).toBe("Visit FU #1");
     await props.onRunValidation();
@@ -210,6 +212,7 @@ describe("case-workspace side panel props", () => {
         selectedCaseImageCount: 2,
         representativePreviewUrl: null,
         selectedCompareModelVersionIds: [],
+        selectedValidationModelVersionId: null,
         compareModelCandidates: [],
         validationBusy: false,
         validationResult: null,
@@ -229,6 +232,7 @@ describe("case-workspace side panel props", () => {
         translateOption: vi.fn(),
         setToast: vi.fn(),
         setSelectedCompareModelVersionIds: vi.fn(),
+        setSelectedValidationModelVersionId: vi.fn(),
         onRunValidation: vi.fn(),
         onRunModelCompare: vi.fn(),
         onRunAiClinic: vi.fn(),

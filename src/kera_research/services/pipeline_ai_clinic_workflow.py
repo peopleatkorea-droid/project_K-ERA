@@ -484,6 +484,7 @@ class ResearchAiClinicWorkflow:
             )
 
         result = service.text_retriever.retrieve_texts(
+            site_store=site_store,
             query_image_paths=query_image_paths,
             text_records=text_records,
             requested_device=execution_device,

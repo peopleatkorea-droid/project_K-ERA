@@ -161,6 +161,7 @@ def order_culture_species(category: str | None, species_names: Iterable[str]) ->
 
 LABEL_TO_INDEX = {"bacterial": 0, "fungal": 1, "unknown": -1, "pending": -1, "none": -1}
 INDEX_TO_LABEL = {0: "bacterial", 1: "fungal", -1: "unknown"}
+MODEL_OUTPUT_CLASS_COUNT = len({index for index in INDEX_TO_LABEL if index >= 0})
 
 MANIFEST_COLUMNS = [
     "site_id",

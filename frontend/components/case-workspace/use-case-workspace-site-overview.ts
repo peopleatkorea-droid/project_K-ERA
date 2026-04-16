@@ -24,6 +24,9 @@ type Args = {
   defaultModelCompareSelection: (
     modelVersions: ModelVersionRecord[],
   ) => string[];
+  defaultValidationModelVersionSelection: (
+    modelVersions: ModelVersionRecord[],
+  ) => string | null;
   describeError: (error: unknown, fallback: string) => string;
   setToast: (toast: ToastState) => void;
 };
@@ -41,6 +44,7 @@ export function useCaseWorkspaceSiteOverview({
   unableLoadSiteActivity,
   unableLoadSiteValidationHistory,
   defaultModelCompareSelection,
+  defaultValidationModelVersionSelection,
   describeError,
   setToast,
 }: Args) {
@@ -57,6 +61,8 @@ export function useCaseWorkspaceSiteOverview({
   >([]);
   const [selectedCompareModelVersionIds, setSelectedCompareModelVersionIds] =
     useState<string[]>([]);
+  const [selectedValidationModelVersionId, setSelectedValidationModelVersionId] =
+    useState<string | null>(null);
 
   const siteActivityLoadedSiteIdRef = useRef<string | null>(null);
   const siteValidationLoadedSiteIdRef = useRef<string | null>(null);
@@ -72,6 +78,7 @@ export function useCaseWorkspaceSiteOverview({
     setSiteValidationRuns([]);
     setSiteModelVersions([]);
     setSelectedCompareModelVersionIds([]);
+    setSelectedValidationModelVersionId(null);
   }, [selectedSiteId]);
 
   const loadSiteActivity = useCallback(
@@ -161,6 +168,18 @@ export function useCaseWorkspaceSiteOverview({
             ? retained
             : defaultModelCompareSelection(nextVersions);
         });
+        setSelectedValidationModelVersionId((current) => {
+          const normalizedCurrent = String(current || "").trim();
+          if (
+            normalizedCurrent.length > 0 &&
+            nextVersions.some(
+              (modelVersion) => modelVersion.version_id === normalizedCurrent,
+            )
+          ) {
+            return normalizedCurrent;
+          }
+          return defaultValidationModelVersionSelection(nextVersions);
+        });
         return nextVersions;
       } catch (nextError) {
         if (isAbortError(nextError)) {
@@ -168,10 +187,11 @@ export function useCaseWorkspaceSiteOverview({
         }
         setSiteModelVersions([]);
         setSelectedCompareModelVersionIds([]);
+        setSelectedValidationModelVersionId(null);
         return [];
       }
     },
-    [defaultModelCompareSelection, token],
+    [defaultModelCompareSelection, defaultValidationModelVersionSelection, token],
   );
 
   const ensureSiteModelVersionsLoaded = useCallback(
@@ -196,6 +216,8 @@ export function useCaseWorkspaceSiteOverview({
     setSiteModelVersions,
     selectedCompareModelVersionIds,
     setSelectedCompareModelVersionIds,
+    selectedValidationModelVersionId,
+    setSelectedValidationModelVersionId,
     loadSiteActivity,
     loadSiteValidationRuns,
     loadSiteModelVersions,

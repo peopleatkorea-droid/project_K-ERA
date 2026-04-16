@@ -41,6 +41,13 @@ def _representative_images_subquery(dp: Any, store: Any, image_table: Any) -> An
 
 
 def _case_summary_record(row: dict[str, Any]) -> dict[str, Any]:
+    dp = _deps()
+    normalized_culture_status = dp._derive_culture_status(
+        row.get("culture_status"),
+        row.get("culture_confirmed"),
+        row.get("culture_category"),
+        row.get("culture_species"),
+    )
     return {
         "case_id": f"{row['patient_id']}::{row['visit_date']}",
         "visit_id": row["visit_id"],
@@ -53,7 +60,7 @@ def _case_summary_record(row: dict[str, Any]) -> dict[str, Any]:
         "local_case_code": row["local_case_code"] or "",
         "sex": row["sex"] or "",
         "age": row["age"],
-        "culture_status": row.get("culture_status") or ("positive" if row["culture_confirmed"] else "unknown"),
+        "culture_status": normalized_culture_status,
         "culture_category": row["culture_category"] or "",
         "culture_species": row["culture_species"] or "",
         "additional_organisms": row["additional_organisms"] or [],
@@ -63,7 +70,7 @@ def _case_summary_record(row: dict[str, Any]) -> dict[str, Any]:
         "visit_status": row["visit_status"] or "active",
         "active_stage": bool(row["active_stage"]) if row["active_stage"] is not None else (row["visit_status"] == "active"),
         "is_initial_visit": bool(row["is_initial_visit"]),
-        "culture_confirmed": bool(row["culture_confirmed"]),
+        "culture_confirmed": bool(row["culture_confirmed"]) or normalized_culture_status == "positive",
         "smear_result": row["smear_result"] or "",
         "polymicrobial": bool(row["polymicrobial"] or row["additional_organisms"]),
         "research_registry_status": row["research_registry_status"] or "analysis_only",

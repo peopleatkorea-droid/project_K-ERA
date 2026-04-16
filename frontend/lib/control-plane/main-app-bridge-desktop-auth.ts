@@ -7,7 +7,7 @@ import { jwtVerify, SignJWT } from "jose";
 import type { AuthResponse } from "../types";
 import { controlPlaneSessionSecret } from "./config";
 import { verifyGoogleIdentityToken } from "./google";
-import { trimText } from "./main-app-bridge-shared";
+import { buildLocalAuthResponse, trimText } from "./main-app-bridge-shared";
 import { buildMainAuthResponse } from "./main-app-bridge-users";
 import { ensureControlPlaneIdentity } from "./store";
 
@@ -254,6 +254,12 @@ async function loginMainWithDesktopGoogleIdToken(idToken: string): Promise<AuthR
   });
   if (auth.user.role === "admin" || auth.user.role === "site_admin") {
     throw new Error("Admin and site admin accounts must use local password sign-in.");
+  }
+  if (auth.user.approval_status === "approved" && auth.user.role === "viewer") {
+    return buildLocalAuthResponse({
+      ...auth.user,
+      role: "researcher",
+    });
   }
   return auth;
 }

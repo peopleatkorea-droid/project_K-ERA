@@ -153,4 +153,51 @@ describe("buildMainAuthUser", () => {
     expect(user.approval_status).toBe("approved");
     expect(latestAccessRequestForCanonicalUser).not.toHaveBeenCalled();
   });
+
+  it("treats approved site memberships as researcher access even when the membership role is viewer", async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        user_id: "user_3",
+        username: "viewer_user",
+        public_alias: null,
+        full_name: "Viewer User",
+        role: "viewer",
+        site_ids: ["SITE_A"],
+        registry_consents: {},
+      },
+    ]);
+    controlPlaneSql.mockResolvedValue(sql);
+    getControlPlaneUser.mockResolvedValue({
+      user_id: "user_3",
+      email: "viewer@example.com",
+      full_name: "Viewer User",
+      google_sub: "google_sub_3",
+      global_role: "member",
+      status: "active",
+      created_at: "2026-04-14T00:00:00Z",
+      memberships: [
+        {
+          membership_id: "membership_1",
+          user_id: "user_3",
+          site_id: "SITE_A",
+          role: "viewer",
+          status: "approved",
+          approved_at: "2026-04-14T00:00:00Z",
+          created_at: "2026-04-14T00:00:00Z",
+          updated_at: "2026-04-14T00:00:00Z",
+        },
+      ],
+    });
+    siteRowById.mockImplementation(async (siteId: string) =>
+      siteId === "SITE_A" ? { site_id: "SITE_A", display_name: "Site A", hospital_name: "Hospital A" } : null,
+    );
+    siteRowBySourceInstitutionId.mockResolvedValue(null);
+    latestApprovedAccessRequestForCanonicalUser.mockResolvedValue(null);
+
+    const user = await buildMainAuthUser("user_3");
+
+    expect(user.role).toBe("researcher");
+    expect(user.site_ids).toEqual(["SITE_A"]);
+    expect(user.approval_status).toBe("approved");
+  });
 });

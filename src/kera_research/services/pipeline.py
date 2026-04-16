@@ -7,7 +7,15 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-from kera_research.domain import DENSENET_VARIANTS, INDEX_TO_LABEL, LABEL_TO_INDEX, is_attention_mil_architecture, make_id, utc_now
+from kera_research.domain import (
+    DENSENET_VARIANTS,
+    INDEX_TO_LABEL,
+    LABEL_TO_INDEX,
+    MODEL_OUTPUT_CLASS_COUNT,
+    is_attention_mil_architecture,
+    make_id,
+    utc_now,
+)
 from kera_research.services.ai_clinic_advisor import AiClinicWorkflowAdvisor
 from kera_research.services.artifacts import MedSAMService
 from kera_research.services.control_plane import ControlPlaneStore
@@ -2006,7 +2014,7 @@ class ResearchWorkflowService:
             ),
             "created_at": utc_now(),
             "preprocess_signature": self.model_manager.preprocess_signature(),
-            "num_classes": len(LABEL_TO_INDEX),
+            "num_classes": MODEL_OUTPUT_CLASS_COUNT,
             "crop_mode": crop_mode,
             "training_input_policy": training_input_policy,
             "training_summary": result,
