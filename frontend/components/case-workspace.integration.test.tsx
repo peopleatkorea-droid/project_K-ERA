@@ -3980,7 +3980,7 @@ describe("CaseWorkspace integration", () => {
     expect(apiMocks.fetchMedsamArtifactStatus).not.toHaveBeenCalled();
   });
 
-  it("uses multi-model compare as the primary AI validation flow", async () => {
+  it("uses the prepared single-case judgment first, then runs the dedicated Efficient MIL review", async () => {
     apiMocks.fetchCases.mockReset();
     apiMocks.fetchCases.mockResolvedValue([
       {
@@ -4046,6 +4046,13 @@ describe("CaseWorkspace integration", () => {
         ready: true,
       },
       {
+        version_id: "model_eff_mil",
+        version_name: "eff-mil-v1",
+        architecture: "efficientnet_v2_s_mil",
+        bag_level: true,
+        ready: true,
+      },
+      {
         version_id: "model_lgf_eff",
         version_name: "lgf-eff-v1",
         architecture: "lesion_guided_fusion__efficientnet_v2_s",
@@ -4059,6 +4066,37 @@ describe("CaseWorkspace integration", () => {
         ready: true,
       },
     ]);
+    apiMocks.runCaseValidation.mockResolvedValue({
+      summary: {
+        validation_id: "validation_case_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        predicted_label: "fungal",
+        true_label: "bacterial",
+        prediction_probability: 0.79,
+        is_correct: false,
+      },
+      case_prediction: null,
+      model_version: {
+        version_id: "model_convnext",
+        version_name: "conv-v1",
+        architecture: "convnext_tiny",
+        requires_medsam_crop: false,
+        crop_mode: "raw",
+        ensemble_mode: null,
+      },
+      execution_device: "cpu",
+      artifact_availability: {
+        gradcam: true,
+        gradcam_cornea: false,
+        gradcam_lesion: false,
+        roi_crop: false,
+        medsam_mask: false,
+        lesion_crop: false,
+        lesion_mask: false,
+      },
+      post_mortem: null,
+    });
     apiMocks.runCaseValidationCompare.mockResolvedValue({
       patient_id: "KERA-2026-001",
       visit_date: "Initial",
@@ -4066,123 +4104,19 @@ describe("CaseWorkspace integration", () => {
       comparisons: [
         {
           summary: {
-            validation_id: "cmp_1",
-            patient_id: "KERA-2026-001",
-            visit_date: "Initial",
-            predicted_label: "fungal",
-            true_label: "bacterial",
-            prediction_probability: 0.81,
-            is_correct: false,
-          },
-          model_version: {
-            version_id: "model_vit",
-            version_name: "vit-v1",
-            architecture: "vit",
-            crop_mode: "automated",
-          },
-          artifact_availability: {
-            gradcam: false,
-            gradcam_cornea: false,
-            gradcam_lesion: false,
-            roi_crop: false,
-            medsam_mask: false,
-            lesion_crop: false,
-            lesion_mask: false,
-          },
-        },
-        {
-          summary: {
-            validation_id: "cmp_2",
-            patient_id: "KERA-2026-001",
-            visit_date: "Initial",
-            predicted_label: "fungal",
-            true_label: "bacterial",
-            prediction_probability: 0.77,
-            is_correct: false,
-          },
-          model_version: {
-            version_id: "model_swin",
-            version_name: "swin-v1",
-            architecture: "swin",
-            crop_mode: "automated",
-          },
-          artifact_availability: {
-            gradcam: false,
-            gradcam_cornea: false,
-            gradcam_lesion: false,
-            roi_crop: false,
-            medsam_mask: false,
-            lesion_crop: false,
-            lesion_mask: false,
-          },
-        },
-        {
-          summary: {
-            validation_id: "cmp_3",
-            patient_id: "KERA-2026-001",
-            visit_date: "Initial",
-            predicted_label: "fungal",
-            true_label: "bacterial",
-            prediction_probability: 0.79,
-            is_correct: false,
-          },
-          model_version: {
-            version_id: "model_convnext",
-            version_name: "conv-v1",
-            architecture: "convnext_tiny",
-            crop_mode: "automated",
-          },
-          artifact_availability: {
-            gradcam: false,
-            gradcam_cornea: false,
-            gradcam_lesion: false,
-            roi_crop: false,
-            medsam_mask: false,
-            lesion_crop: false,
-            lesion_mask: false,
-          },
-        },
-        {
-          summary: {
-            validation_id: "cmp_4",
+            validation_id: "cmp_mil",
             patient_id: "KERA-2026-001",
             visit_date: "Initial",
             predicted_label: "bacterial",
             true_label: "bacterial",
-            prediction_probability: 0.41,
+            prediction_probability: 0.79,
             is_correct: true,
           },
           model_version: {
-            version_id: "model_dense",
-            version_name: "dense-v1",
-            architecture: "densenet121",
-            crop_mode: "automated",
-          },
-          artifact_availability: {
-            gradcam: false,
-            gradcam_cornea: false,
-            gradcam_lesion: false,
-            roi_crop: false,
-            medsam_mask: false,
-            lesion_crop: false,
-            lesion_mask: false,
-          },
-        },
-        {
-          summary: {
-            validation_id: "cmp_5",
-            patient_id: "KERA-2026-001",
-            visit_date: "Initial",
-            predicted_label: "fungal",
-            true_label: "bacterial",
-            prediction_probability: 0.74,
-            is_correct: false,
-          },
-          model_version: {
-            version_id: "model_eff",
-            version_name: "eff-v1",
-            architecture: "efficientnet_v2_s",
-            crop_mode: "automated",
+            version_id: "model_eff_mil",
+            version_name: "eff-mil-v1",
+            architecture: "efficientnet_v2_s_mil",
+            crop_mode: "raw",
           },
           artifact_availability: {
             gradcam: false,
@@ -4210,15 +4144,29 @@ describe("CaseWorkspace integration", () => {
       );
     });
     expect(await screen.findByLabelText("Anchor model")).toBeInTheDocument();
-    fireEvent.change(await screen.findByLabelText("Anchor model"), {
-      target: { value: "model_vit" },
-    });
-    expect(screen.getByText(/Current anchor:/)).toHaveTextContent(
-      "Current anchor: vit-v1. Role: Review image model",
-    );
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Run single-case judgment" }),
+    );
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          execution_mode: "auto",
+          model_version_id: undefined,
+          selection_profile: "single_case_review",
+        },
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Run Efficient MIL/,
+      }),
     );
 
     await waitFor(() => {
@@ -4228,15 +4176,90 @@ describe("CaseWorkspace integration", () => {
         {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
-          model_version_ids: [
-            "model_eff",
-            "model_dinov2",
-            "model_convnext",
-          ],
-          execution_mode: "auto",
+          execution_mode: "cpu",
+          model_version_ids: ["model_eff_mil"],
         },
       );
     });
+
+    expect((await screen.findAllByText("eff-mil-v1")).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("falls back to backend review profiles when the site model catalog is unavailable", async () => {
+    apiMocks.fetchSiteModelVersions.mockResolvedValue([]);
+    apiMocks.runCaseValidation.mockResolvedValue({
+      summary: {
+        validation_id: "validation_fallback_step_1",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        predicted_label: "bacterial",
+        true_label: "bacterial",
+        prediction_probability: 0.84,
+        is_correct: true,
+      },
+      case_prediction: null,
+      model_version: {
+        version_id: "model_global_convnext_tiny_full_p101_fold01",
+        version_name: "global-convnext-tiny-full-p101-fold01",
+        architecture: "convnext_tiny",
+        requires_medsam_crop: false,
+        crop_mode: "raw",
+        ensemble_mode: null,
+      },
+      execution_device: "cpu",
+      artifact_availability: {
+        gradcam: true,
+        gradcam_cornea: false,
+        gradcam_lesion: false,
+        roi_crop: false,
+        medsam_mask: false,
+        lesion_crop: false,
+        lesion_mask: false,
+      },
+      post_mortem: null,
+    });
+    apiMocks.runCaseValidationCompare.mockResolvedValue({
+      patient_id: "KERA-2026-001",
+      visit_date: "Initial",
+      execution_device: "cpu",
+      comparisons: [
+        {
+          summary: {
+            validation_id: "validation_fallback_step_2",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            predicted_label: "bacterial",
+            true_label: "bacterial",
+            prediction_probability: 0.79,
+            is_correct: true,
+          },
+          model_version: {
+            version_id: "model_global_efficientnet_v2_s_mil_full_p101_fold01",
+            version_name: "global-efficientnet-v2-s-mil-full-p101-fold01",
+            architecture: "efficientnet_v2_s_mil",
+            crop_mode: "raw",
+          },
+          artifact_availability: {
+            gradcam: false,
+            gradcam_cornea: false,
+            gradcam_lesion: false,
+            roi_crop: false,
+            medsam_mask: false,
+            lesion_crop: false,
+            lesion_mask: false,
+          },
+        },
+      ],
+    });
+
+    renderWorkspace();
+    await openSavedCase();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Run steps 1-3" }),
+    );
 
     await waitFor(() => {
       expect(apiMocks.runCaseValidation).toHaveBeenCalledWith(
@@ -4245,26 +4268,40 @@ describe("CaseWorkspace integration", () => {
         {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
-          execution_mode: "cpu",
-          model_version_id: "model_vit",
+          execution_mode: "auto",
+          selection_profile: "single_case_review",
         },
       );
     });
 
-    expect(
-      await screen.findByText("Compared models at a glance"),
-    ).toBeInTheDocument();
-    const agreementHubCard = screen
-      .getByText("Model agreement check")
-      .closest("article");
-    expect(agreementHubCard).toBeTruthy();
-    fireEvent.click(
-      within(agreementHubCard as HTMLElement).getByRole("button", {
-        name: /Model agreement check/,
-      }),
-    );
-    expect(await screen.findByText("Consensus snapshot")).toBeInTheDocument();
-    expect(screen.getAllByText("4 / 5").length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidationCompare).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          execution_mode: "cpu",
+          selection_profile: "visit_level_review",
+        },
+      );
+    });
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseAiClinicSimilarCases).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          execution_mode: "cpu",
+          model_version_id: "model_global_convnext_tiny_full_p101_fold01",
+          top_k: 3,
+          retrieval_backend: "dinov2",
+          retrieval_profile: "dinov2_lesion_crop",
+        },
+      );
+    });
   });
 
   it("renders prediction post-mortem after AI validation", async () => {
@@ -4335,28 +4372,14 @@ describe("CaseWorkspace integration", () => {
         architecture: "efficientnet_v2_s",
         ready: true,
       },
+      {
+        version_id: "model_eff_mil",
+        version_name: "eff-mil-v1",
+        architecture: "efficientnet_v2_s_mil",
+        bag_level: true,
+        ready: true,
+      },
     ]);
-    apiMocks.runCaseValidationCompare.mockResolvedValue({
-      patient_id: "KERA-2026-001",
-      visit_date: "Initial",
-      execution_device: "cpu",
-      comparisons: [
-        {
-          model_version: {
-            version_id: "model_vit",
-            version_name: "vit-v1",
-            architecture: "vit",
-            crop_mode: "automated",
-          },
-          summary: {
-            predicted_label: "fungal",
-            prediction_probability: 0.81,
-            model_version: "vit-v1",
-          },
-          error: null,
-        },
-      ],
-    });
     apiMocks.runCaseValidation.mockResolvedValue({
       summary: {
         validation_id: "validation_ai_clinic",
@@ -4369,11 +4392,11 @@ describe("CaseWorkspace integration", () => {
       },
       case_prediction: null,
       model_version: {
-        version_id: "model_vit",
-        version_name: "vit-v1",
-        architecture: "vit",
+        version_id: "model_convnext",
+        version_name: "conv-v1",
+        architecture: "convnext_tiny",
         requires_medsam_crop: false,
-        crop_mode: "automated",
+        crop_mode: "raw",
         ensemble_mode: null,
       },
       execution_device: "cpu",
@@ -4405,12 +4428,16 @@ describe("CaseWorkspace integration", () => {
     );
 
     await waitFor(() => {
-      expect(apiMocks.runCaseValidationCompare).toHaveBeenCalled();
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: "Find similar patients" }),
-      ).not.toBeDisabled();
+      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          execution_mode: "auto",
+          selection_profile: "single_case_review",
+        },
+      );
     });
 
     fireEvent.click(
@@ -4425,9 +4452,9 @@ describe("CaseWorkspace integration", () => {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
           execution_mode: "cpu",
-          model_version_id: "model_vit",
+          model_version_id: "model_convnext",
           top_k: 3,
-          retrieval_backend: "standard",
+          retrieval_backend: "dinov2",
           retrieval_profile: "dinov2_lesion_crop",
         },
       );
@@ -4455,9 +4482,9 @@ describe("CaseWorkspace integration", () => {
           patient_id: "KERA-2026-001",
           visit_date: "Initial",
           execution_mode: "cpu",
-          model_version_id: "model_vit",
+          model_version_id: "model_convnext",
           top_k: 3,
-          retrieval_backend: "standard",
+          retrieval_backend: "dinov2",
           retrieval_profile: "dinov2_lesion_crop",
         },
       );
@@ -4689,6 +4716,77 @@ describe("CaseWorkspace integration", () => {
             "model_dinov2",
             "model_convnext",
           ],
+        },
+      );
+    });
+  });
+
+  it("respects a manually selected Step 1 anchor model override", async () => {
+    apiMocks.fetchSiteModelVersions.mockResolvedValue([
+      {
+        version_id: "model_convnext",
+        version_name: "conv-v1",
+        architecture: "convnext_tiny",
+        ready: true,
+      },
+      {
+        version_id: "model_eff",
+        version_name: "eff-v1",
+        architecture: "efficientnet_v2_s",
+        ready: true,
+      },
+    ]);
+    apiMocks.runCaseValidation.mockResolvedValue({
+      summary: {
+        validation_id: "validation_manual_anchor",
+        patient_id: "KERA-2026-001",
+        visit_date: "Initial",
+        predicted_label: "bacterial",
+        true_label: "bacterial",
+        prediction_probability: 0.81,
+        is_correct: true,
+      },
+      case_prediction: null,
+      model_version: {
+        version_id: "model_eff",
+        version_name: "eff-v1",
+        architecture: "efficientnet_v2_s",
+        requires_medsam_crop: false,
+        crop_mode: "raw",
+        ensemble_mode: null,
+      },
+      execution_device: "cpu",
+      artifact_availability: {
+        gradcam: true,
+        gradcam_cornea: false,
+        gradcam_lesion: false,
+        roi_crop: false,
+        medsam_mask: false,
+        lesion_crop: false,
+        lesion_mask: false,
+      },
+      post_mortem: null,
+    });
+
+    renderWorkspace();
+    await openSavedCase();
+    const anchorSelect = await screen.findByLabelText("Anchor model");
+    fireEvent.change(anchorSelect, { target: { value: "model_eff" } });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Run single-case judgment" }),
+    );
+
+    await waitFor(() => {
+      expect(apiMocks.runCaseValidation).toHaveBeenCalledWith(
+        "SITE_A",
+        "test-token",
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          execution_mode: "auto",
+          model_version_id: "model_eff",
+          selection_profile: "single_case_review",
         },
       );
     });

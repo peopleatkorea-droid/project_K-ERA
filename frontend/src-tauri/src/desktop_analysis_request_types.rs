@@ -7,6 +7,7 @@ struct CaseValidationCommandRequest {
     execution_mode: Option<String>,
     model_version_id: Option<String>,
     model_version_ids: Option<Vec<String>>,
+    selection_profile: Option<String>,
     generate_gradcam: Option<bool>,
     generate_medsam: Option<bool>,
 }
@@ -17,7 +18,8 @@ struct CaseValidationCompareCommandRequest {
     token: String,
     patient_id: String,
     visit_date: String,
-    model_version_ids: Vec<String>,
+    model_version_ids: Option<Vec<String>>,
+    selection_profile: Option<String>,
     execution_mode: Option<String>,
     generate_gradcam: Option<bool>,
     generate_medsam: Option<bool>,

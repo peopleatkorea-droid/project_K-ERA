@@ -76,6 +76,7 @@ export async function runAnalysisCaseValidation(
     execution_mode?: "auto" | "cpu" | "gpu";
     model_version_id?: string;
     model_version_ids?: string[];
+    selection_profile?: "single_case_review" | "visit_level_review";
     generate_gradcam?: boolean;
     generate_medsam?: boolean;
   },
@@ -111,18 +112,31 @@ export async function runAnalysisCaseValidationCompare(
   payload: {
     patient_id: string;
     visit_date: string;
-    model_version_ids: string[];
+    model_version_ids?: string[];
+    selection_profile?: "single_case_review" | "visit_level_review";
     execution_mode?: "auto" | "cpu" | "gpu";
     generate_gradcam?: boolean;
     generate_medsam?: boolean;
   },
 ) {
+  const normalizedModelVersionIds = Array.isArray(payload.model_version_ids)
+    ? payload.model_version_ids
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0)
+    : undefined;
+  const normalizedPayload = {
+    ...payload,
+    model_version_ids:
+      normalizedModelVersionIds && normalizedModelVersionIds.length > 0
+        ? normalizedModelVersionIds
+        : undefined,
+  };
   if (canUseDesktopAnalysisTransport()) {
     return invokeDesktop<CaseValidationCompareResponse>("run_case_validation_compare", {
       payload: {
         site_id: siteId,
         token,
-        ...payload,
+        ...normalizedPayload,
       },
     });
   }
@@ -135,7 +149,7 @@ export async function runAnalysisCaseValidationCompare(
         execution_mode: "auto",
         generate_gradcam: false,
         generate_medsam: false,
-        ...payload,
+        ...normalizedPayload,
       }),
     },
     token,
@@ -156,12 +170,17 @@ export async function runAnalysisCaseAiClinic(
     retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
+  const normalizedPayload = {
+    ...payload,
+    retrieval_backend: payload.retrieval_backend ?? "dinov2",
+    retrieval_profile: payload.retrieval_profile ?? "dinov2_lesion_crop",
+  };
   if (canUseDesktopAnalysisTransport()) {
     return invokeDesktop<AiClinicResponse>("run_case_ai_clinic", {
       payload: {
         site_id: siteId,
         token,
-        ...payload,
+        ...normalizedPayload,
       },
     });
   }
@@ -173,9 +192,9 @@ export async function runAnalysisCaseAiClinic(
       body: JSON.stringify({
         execution_mode: "auto",
         top_k: 3,
-        retrieval_backend: "standard",
+        retrieval_backend: "dinov2",
         retrieval_profile: "dinov2_lesion_crop",
-        ...payload,
+        ...normalizedPayload,
       }),
     },
     token,
@@ -196,12 +215,17 @@ export async function runAnalysisCaseAiClinicSimilarCases(
     retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
   },
 ) {
+  const normalizedPayload = {
+    ...payload,
+    retrieval_backend: payload.retrieval_backend ?? "dinov2",
+    retrieval_profile: payload.retrieval_profile ?? "dinov2_lesion_crop",
+  };
   if (canUseDesktopAnalysisTransport()) {
     return invokeDesktop<AiClinicResponse>("run_case_ai_clinic_similar_cases", {
       payload: {
         site_id: siteId,
         token,
-        ...payload,
+        ...normalizedPayload,
       },
     });
   }
@@ -213,9 +237,9 @@ export async function runAnalysisCaseAiClinicSimilarCases(
       body: JSON.stringify({
         execution_mode: "auto",
         top_k: 3,
-        retrieval_backend: "standard",
+        retrieval_backend: "dinov2",
         retrieval_profile: "dinov2_lesion_crop",
-        ...payload,
+        ...normalizedPayload,
       }),
     },
     token,

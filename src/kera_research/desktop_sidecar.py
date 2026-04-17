@@ -27,6 +27,7 @@ from kera_research.api.app import (
     get_control_plane,
 )
 from kera_research.api.case_model_versions import (
+    resolve_requested_compare_model_versions,
     resolve_requested_contribution_models,
     resolve_requested_image_level_federated_model,
     resolve_requested_model_version,
@@ -244,6 +245,7 @@ def _resolve_case_model_version(cp: Any, params: dict[str, Any]) -> dict[str, An
         get_model_version=_get_model_version,
         model_version_id=str(params.get("model_version_id") or "").strip() or None,
         model_version_ids=[str(item).strip() for item in params.get("model_version_ids") or [] if str(item).strip()],
+        selection_profile=str(params.get("selection_profile") or "").strip() or None,
     )
     if model_version is None or not model_version.get("ready", True):
         raise HTTPException(status_code=503, detail="No ready global model is available for validation.")
@@ -325,18 +327,18 @@ def _run_case_validation_compare(params: dict[str, Any]) -> dict[str, Any]:
     site_id = str(params.get("site_id") or "").strip()
     site_store = _require_site_access(cp, user, site_id)
     workflow = _ensure_shared_workflow(cp)
-    requested_ids = list(dict.fromkeys(str(item).strip() for item in params.get("model_version_ids") or [] if str(item).strip()))
-    if not requested_ids:
+    requested_models = resolve_requested_compare_model_versions(
+        cp,
+        model_version_ids=[str(item).strip() for item in params.get("model_version_ids") or [] if str(item).strip()],
+        selection_profile=str(params.get("selection_profile") or "").strip() or None,
+    )
+    if not requested_models:
         raise HTTPException(status_code=400, detail="At least one model version is required.")
     execution_device = _resolve_execution_device(str(params.get("execution_mode") or "auto"))
     patient_id = str(params.get("patient_id") or "").strip()
     visit_date = str(params.get("visit_date") or "").strip()
     comparisons: list[dict[str, Any]] = []
-    for model_version_id in requested_ids[:8]:
-        model_version = _get_model_version(cp, model_version_id)
-        if model_version is None or not model_version.get("ready", True):
-            comparisons.append({"model_version_id": model_version_id, "error": "Model version is not available or not ready."})
-            continue
+    for model_version in requested_models[:8]:
         try:
             summary, case_predictions = workflow.run_case_validation(
                 project_id=_project_id_for_site(cp, site_id),
@@ -387,7 +389,7 @@ def _run_case_ai_clinic(params: dict[str, Any]) -> dict[str, Any]:
         model_version=model_version,
         execution_device=execution_device,
         top_k=int(params.get("top_k") or 3),
-        retrieval_backend=str(params.get("retrieval_backend") or "standard"),
+        retrieval_backend=str(params.get("retrieval_backend") or "dinov2"),
         retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
     sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)
@@ -415,7 +417,7 @@ def _run_case_ai_clinic_similar_cases(params: dict[str, Any]) -> dict[str, Any]:
         model_version=model_version,
         execution_device=execution_device,
         top_k=int(params.get("top_k") or 3),
-        retrieval_backend=str(params.get("retrieval_backend") or "standard"),
+        retrieval_backend=str(params.get("retrieval_backend") or "dinov2"),
         retrieval_profile=str(params.get("retrieval_profile") or "dinov2_lesion_crop"),
     )
     sync_case_artifact_cache_with_response_budget(workflow, site_store, patient_id=patient_id, visit_date=visit_date)

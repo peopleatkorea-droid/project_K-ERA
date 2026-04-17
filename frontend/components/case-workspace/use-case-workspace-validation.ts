@@ -11,7 +11,9 @@ import {
   type CaseSummaryRecord,
   type CaseValidationCompareResponse,
   type CaseValidationResponse,
+  type ModelVersionRecord,
 } from "../../lib/api";
+import { convertDesktopFilePath, hasDesktopRuntime } from "../../lib/desktop-ipc";
 import type { Locale } from "../../lib/i18n";
 import type {
   CaseWorkspaceExecutionMode,
@@ -19,13 +21,12 @@ import type {
   CaseWorkspaceValidationArtifactKind,
   CaseWorkspaceValidationArtifactPreviews,
 } from "./case-workspace-definitions";
-import type { LocalePick } from "./shared";
-
-type ModelCompareItem = CaseValidationCompareResponse["comparisons"][number];
-type SuccessfulModelCompareItem = ModelCompareItem & {
-  summary: NonNullable<ModelCompareItem["summary"]>;
-  model_version: NonNullable<ModelCompareItem["model_version"]>;
-};
+import { preferredVisitLevelMilModelVersion } from "./case-workspace-core-helpers";
+import type {
+  CaseWorkspaceModelCompareRunOptions,
+  CaseWorkspaceValidationRunOptions,
+  LocalePick,
+} from "./shared";
 
 type ValidationCopy = {
   selectSavedCaseForValidation: string;
@@ -38,6 +39,7 @@ type Args = {
   token: string;
   selectedSiteId: string | null;
   selectedCase: CaseSummaryRecord | null;
+  siteModelVersions: ModelVersionRecord[];
   selectedCompareModelVersionIds: string[];
   selectedValidationModelVersionId: string | null;
   pick: LocalePick;
@@ -57,6 +59,13 @@ type Args = {
     visitDate: string,
   ) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
+  ensureSiteModelVersionsLoaded: (
+    siteId: string,
+    signal?: AbortSignal,
+  ) => Promise<ModelVersionRecord[]>;
+  defaultValidationModelVersionSelection: (
+    modelVersions: ModelVersionRecord[],
+  ) => string | null;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onValidationCompleted?: (args: {
     siteId: string;
@@ -79,6 +88,7 @@ export function useCaseWorkspaceValidation({
   token,
   selectedSiteId,
   selectedCase,
+  siteModelVersions,
   selectedCompareModelVersionIds,
   selectedValidationModelVersionId,
   pick,
@@ -90,6 +100,8 @@ export function useCaseWorkspaceValidation({
   setContributionResult,
   loadCaseHistory,
   loadSiteActivity,
+  ensureSiteModelVersionsLoaded,
+  defaultValidationModelVersionSelection,
   onSiteDataChanged,
   onValidationCompleted,
   onArtifactsChanged,
@@ -152,6 +164,30 @@ export function useCaseWorkspaceValidation({
       "lesion_crop",
       "lesion_mask",
     ];
+    const prediction = result.case_prediction;
+    const artifactPathForKind = (
+      artifactKind: CaseWorkspaceValidationArtifactKind,
+    ) => {
+      if (!prediction) {
+        return null;
+      }
+      switch (artifactKind) {
+        case "gradcam":
+          return prediction.gradcam_path ?? null;
+        case "gradcam_cornea":
+          return prediction.gradcam_cornea_path ?? null;
+        case "gradcam_lesion":
+          return prediction.gradcam_lesion_path ?? null;
+        case "roi_crop":
+          return prediction.roi_crop_path ?? null;
+        case "medsam_mask":
+          return prediction.medsam_mask_path ?? null;
+        case "lesion_crop":
+          return prediction.lesion_crop_path ?? null;
+        case "lesion_mask":
+          return prediction.lesion_mask_path ?? null;
+      }
+    };
 
     for (const artifactKind of artifactKinds) {
       const isAvailable =
@@ -172,6 +208,15 @@ export function useCaseWorkspaceValidation({
         continue;
       }
       try {
+        const desktopArtifactPath =
+          hasDesktopRuntime() ? artifactPathForKind(artifactKind) : null;
+        if (desktopArtifactPath) {
+          const desktopUrl = await convertDesktopFilePath(desktopArtifactPath);
+          if (desktopUrl) {
+            nextArtifacts[artifactKind] = desktopUrl;
+            continue;
+          }
+        }
         const url = await fetchValidationArtifactUrl(
           selectedSiteId!,
           result.summary.validation_id,
@@ -192,44 +237,11 @@ export function useCaseWorkspaceValidation({
     return nextArtifacts;
   }
 
-  function resolveAnchorModelVersionId(
-    compareResult: CaseValidationCompareResponse,
-    requestedModelVersionIds: string[],
-    fallbackModelVersionId?: string | null,
-  ): string | null {
-    const successfulComparisons = compareResult.comparisons.filter(
-      (item): item is SuccessfulModelCompareItem =>
-        Boolean(item.summary && !item.error && item.model_version?.version_id),
-    );
-    for (const requestedId of requestedModelVersionIds) {
-      const match = successfulComparisons.find(
-        (item) =>
-          String(item.model_version.version_id || "").trim() === requestedId,
-      );
-      if (match?.model_version.version_id) {
-        return String(match.model_version.version_id).trim();
-      }
-    }
-    const normalizedFallback = String(fallbackModelVersionId || "").trim();
-    if (normalizedFallback) {
-      const match = successfulComparisons.find(
-        (item) =>
-          String(item.model_version.version_id || "").trim() ===
-          normalizedFallback,
-      );
-      if (match?.model_version.version_id) {
-        return String(match.model_version.version_id).trim();
-      }
-    }
-    return successfulComparisons[0]?.model_version?.version_id
-      ? String(successfulComparisons[0].model_version.version_id).trim()
-      : null;
-  }
-
   async function runAnchorValidation(args: {
     patientId: string;
     visitDate: string;
     modelVersionId?: string | null;
+    selectionProfile?: "single_case_review" | "visit_level_review";
     executionMode?: "auto" | "cpu" | "gpu";
   }) {
     const result = await runCaseValidation(selectedSiteId!, token, {
@@ -239,6 +251,7 @@ export function useCaseWorkspaceValidation({
       model_version_id: args.modelVersionId
         ? String(args.modelVersionId).trim()
         : undefined,
+      selection_profile: args.selectionProfile,
     });
     const nextArtifacts = await resolveValidationArtifacts(
       result,
@@ -250,80 +263,59 @@ export function useCaseWorkspaceValidation({
     return result;
   }
 
-  const handleRunValidation = useCallback(async () => {
+  const handleRunValidation = useCallback(async (
+    options?: CaseWorkspaceValidationRunOptions,
+  ) => {
     if (!selectedSiteId || !selectedCase) {
       setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
-      return;
+      return null;
     }
 
-    const requestedModelVersionIds = normalizeSelectedCompareModelVersionIds();
-    const requestedValidationModelVersionId =
+    let availableModelVersions = siteModelVersions;
+    if (availableModelVersions.length === 0) {
+      try {
+        availableModelVersions = await ensureSiteModelVersionsLoaded(
+          selectedSiteId,
+        );
+      } catch {
+        availableModelVersions = [];
+      }
+    }
+    const explicitModelVersionId =
+      String(options?.modelVersionId || "").trim() || null;
+    const normalizedSelectedValidationModelVersionId =
       String(selectedValidationModelVersionId || "").trim() || null;
-    const previousValidationModelVersionId =
-      String(validationResult?.model_version.version_id || "").trim() || null;
+    const shouldUsePreparedSelectionProfile =
+      Boolean(options?.selectionProfile) && !explicitModelVersionId;
+    const requestedValidationModelVersionId = options?.ignoreSelectedModel
+      ? explicitModelVersionId
+      : explicitModelVersionId ||
+        normalizedSelectedValidationModelVersionId ||
+        (shouldUsePreparedSelectionProfile
+          ? null
+          : defaultValidationModelVersionSelection(availableModelVersions)) ||
+        null;
     const previousExecutionMode = executionModeFromDevice(
       validationResult?.execution_device,
     );
 
     setValidationBusy(true);
-    setModelCompareBusy(requestedModelVersionIds.length > 0);
     clearValidationArtifacts();
     setValidationResult(null);
     setModelCompareResult(null);
     setContributionResult(null);
     setPanelOpen(true);
     try {
-      let result: CaseValidationResponse;
-      let autoCompareCount = 0;
-
-      if (requestedModelVersionIds.length > 0) {
-        const compareResult = await runCaseValidationCompare(
-          selectedSiteId,
-          token,
-          {
-            patient_id: selectedCase.patient_id,
-            visit_date: selectedCase.visit_date,
-            model_version_ids: requestedModelVersionIds,
-            execution_mode: previousExecutionMode,
-          },
-        );
-        setModelCompareResult(compareResult);
-        autoCompareCount = compareResult.comparisons.length;
-
-        const anchorModelVersionId = resolveAnchorModelVersionId(
-          compareResult,
-          requestedModelVersionIds,
-          previousValidationModelVersionId,
-        );
-        const effectiveValidationModelVersionId =
-          requestedValidationModelVersionId ?? anchorModelVersionId;
-        if (!effectiveValidationModelVersionId) {
-          throw new Error(
-            pick(
-              locale,
-              "No selected model completed successfully for anchor validation.",
-              "anchor validation을 진행할 수 있는 모델이 없습니다.",
-            ),
-          );
-        }
-
-        result = await runAnchorValidation({
-          patientId: selectedCase.patient_id,
-          visitDate: selectedCase.visit_date,
-          modelVersionId: effectiveValidationModelVersionId,
-          executionMode: executionModeFromDevice(
-            compareResult.execution_device,
-          ),
-        });
-      } else {
-        result = await runAnchorValidation({
-          patientId: selectedCase.patient_id,
-          visitDate: selectedCase.visit_date,
-          modelVersionId:
-            requestedValidationModelVersionId ?? previousValidationModelVersionId,
-          executionMode: previousExecutionMode,
-        });
-      }
+      const effectiveValidationModelVersionId = requestedValidationModelVersionId;
+      const result = await runAnchorValidation({
+        patientId: selectedCase.patient_id,
+        visitDate: selectedCase.visit_date,
+        modelVersionId: effectiveValidationModelVersionId,
+        selectionProfile:
+          options?.selectionProfile ??
+          (effectiveValidationModelVersionId ? undefined : "single_case_review"),
+        executionMode: previousExecutionMode,
+      });
 
       await onSiteDataChanged(selectedSiteId);
       await loadCaseHistory(
@@ -340,23 +332,18 @@ export function useCaseWorkspaceValidation({
       onArtifactsChanged?.();
       setToast({
         tone: "success",
-        message:
-          autoCompareCount > 0
-            ? pick(
-                locale,
-                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}-model analysis refreshed.`,
-                `${copy.validationSaved(selectedCase.patient_id, selectedCase.visit_date)} ${autoCompareCount}개 모델 분석 결과를 갱신했습니다.`,
-              )
-            : copy.validationSaved(
-                selectedCase.patient_id,
-                selectedCase.visit_date,
-              ),
+        message: copy.validationSaved(
+          selectedCase.patient_id,
+          selectedCase.visit_date,
+        ),
       });
+      return result;
     } catch (nextError) {
       setToast({
         tone: "error",
         message: describeError(nextError, copy.validationFailed),
       });
+      return null;
     } finally {
       setValidationBusy(false);
       setModelCompareBusy(false);
@@ -364,12 +351,13 @@ export function useCaseWorkspaceValidation({
   }, [
     clearValidationArtifacts,
     copy,
+    defaultValidationModelVersionSelection,
     describeError,
+    ensureSiteModelVersionsLoaded,
     executionModeFromDevice,
     loadCaseHistory,
     loadSiteActivity,
     locale,
-    normalizeSelectedCompareModelVersionIds,
     onArtifactsChanged,
     onSiteDataChanged,
     onValidationCompleted,
@@ -379,80 +367,125 @@ export function useCaseWorkspaceValidation({
     setContributionResult,
     setPanelOpen,
     setToast,
+    siteModelVersions,
     token,
     selectedValidationModelVersionId,
     validationResult?.execution_device,
-    validationResult?.model_version.version_id,
   ]);
 
-  const handleRunModelCompare = useCallback(async () => {
-    if (!selectedSiteId || !selectedCase) {
-      setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
-      return;
-    }
-    const requestedModelVersionIds = normalizeSelectedCompareModelVersionIds();
-    if (requestedModelVersionIds.length === 0) {
-      setToast({
-        tone: "error",
-        message: pick(
-          locale,
-          "Select at least one model version for comparison.",
-          "비교할 모델 버전을 하나 이상 선택해 주세요.",
+  const handleRunModelCompare = useCallback(
+    async (options?: CaseWorkspaceModelCompareRunOptions) => {
+      if (!selectedSiteId || !selectedCase) {
+        setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
+        return null;
+      }
+      let availableModelVersions = siteModelVersions;
+      if (availableModelVersions.length === 0) {
+        try {
+          availableModelVersions =
+            await ensureSiteModelVersionsLoaded(selectedSiteId);
+        } catch {
+          availableModelVersions = [];
+        }
+      }
+      const requestedModelVersionIds = Array.from(
+        new Set(
+          (
+            options?.modelVersionIds ??
+            normalizeSelectedCompareModelVersionIds()
+          )
+            .map((item) => String(item).trim())
+            .filter((item) => item.length > 0),
         ),
-      });
-      return;
-    }
-
-    setModelCompareBusy(true);
-    setModelCompareResult(null);
-    setPanelOpen(true);
-    try {
-      const result = await runCaseValidationCompare(selectedSiteId, token, {
-        patient_id: selectedCase.patient_id,
-        visit_date: selectedCase.visit_date,
-        model_version_ids: requestedModelVersionIds,
-        execution_mode: executionModeFromDevice(
-          validationResult?.execution_device,
-        ),
-      });
-      setModelCompareResult(result);
-      setToast({
-        tone: "success",
-        message: pick(
-          locale,
-          `Compared ${result.comparisons.length} model(s).`,
-          `${result.comparisons.length}개 모델을 비교했습니다.`,
-        ),
-      });
-    } catch (nextError) {
-      setToast({
-        tone: "error",
-        message: describeError(
-          nextError,
-          pick(
+      ).slice(0, maxCompareSelections);
+      const preparedMilVersionId =
+        options?.preferPreparedMil === true
+          ? preferredVisitLevelMilModelVersion(availableModelVersions)
+              ?.version_id ?? null
+          : null;
+      const effectiveModelVersionIds =
+        requestedModelVersionIds.length > 0
+          ? requestedModelVersionIds
+          : preparedMilVersionId
+            ? [preparedMilVersionId]
+            : [];
+      const selectionProfile =
+        effectiveModelVersionIds.length === 0 &&
+        options?.preferPreparedMil === true
+          ? "visit_level_review"
+          : undefined;
+      if (effectiveModelVersionIds.length === 0 && !selectionProfile) {
+        setToast({
+          tone: "error",
+          message: pick(
             locale,
-            "Unable to compare models for this case.",
-            "이 케이스에서 모델 비교를 실행할 수 없습니다.",
+            "Select at least one model version for comparison.",
+            "비교할 모델 버전을 하나 이상 선택해 주세요.",
           ),
-        ),
-      });
-    } finally {
-      setModelCompareBusy(false);
-    }
-  }, [
-    copy.selectSavedCaseForValidation,
-    describeError,
-    executionModeFromDevice,
-    locale,
-    normalizeSelectedCompareModelVersionIds,
-    pick,
-    selectedCase,
-    selectedSiteId,
-    setPanelOpen,
-    setToast,
-    token,
-    validationResult?.execution_device,
-  ]);
+        });
+        return null;
+      }
+
+      setModelCompareBusy(true);
+      setModelCompareResult(null);
+      setPanelOpen(true);
+      try {
+        const result = await runCaseValidationCompare(selectedSiteId, token, {
+          patient_id: selectedCase.patient_id,
+          visit_date: selectedCase.visit_date,
+          model_version_ids:
+            effectiveModelVersionIds.length > 0
+              ? effectiveModelVersionIds
+              : undefined,
+          selection_profile: selectionProfile,
+          execution_mode: executionModeFromDevice(
+            options?.executionDevice ?? validationResult?.execution_device,
+          ),
+        });
+        setModelCompareResult(result);
+        setToast({
+          tone: "success",
+          message: pick(
+            locale,
+            `Compared ${result.comparisons.length} model(s).`,
+            `${result.comparisons.length}개 모델을 비교했습니다.`,
+          ),
+        });
+        return result;
+      } catch (nextError) {
+        setToast({
+          tone: "error",
+          message: describeError(
+            nextError,
+            pick(
+              locale,
+              "Unable to compare models for this case.",
+              "이 케이스에서 모델 비교를 실행할 수 없습니다.",
+            ),
+          ),
+        });
+        return null;
+      } finally {
+        setModelCompareBusy(false);
+      }
+    },
+    [
+      copy.selectSavedCaseForValidation,
+      describeError,
+      ensureSiteModelVersionsLoaded,
+      executionModeFromDevice,
+      locale,
+      normalizeSelectedCompareModelVersionIds,
+      pick,
+      selectedCase,
+      selectedSiteId,
+      setPanelOpen,
+      setToast,
+      siteModelVersions,
+      token,
+      validationResult?.execution_device,
+    ],
+  );
 
   return {
     validationBusy,

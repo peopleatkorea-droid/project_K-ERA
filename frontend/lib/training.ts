@@ -138,6 +138,7 @@ export async function runCaseValidation(
     execution_mode?: "auto" | "cpu" | "gpu";
     model_version_id?: string;
     model_version_ids?: string[];
+    selection_profile?: "single_case_review" | "visit_level_review";
     generate_gradcam?: boolean;
     generate_medsam?: boolean;
   },
@@ -151,7 +152,8 @@ export async function runCaseValidationCompare(
   payload: {
     patient_id: string;
     visit_date: string;
-    model_version_ids: string[];
+    model_version_ids?: string[];
+    selection_profile?: "single_case_review" | "visit_level_review";
     execution_mode?: "auto" | "cpu" | "gpu";
     generate_gradcam?: boolean;
     generate_medsam?: boolean;

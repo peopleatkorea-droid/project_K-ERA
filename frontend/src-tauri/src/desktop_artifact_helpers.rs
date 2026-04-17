@@ -69,9 +69,14 @@ pub(super) fn validation_artifact_path(
     let items = payload
         .as_array()
         .ok_or_else(|| "Validation case prediction file is invalid.".to_string())?;
+    let expected_case_reference_id = make_case_reference_id(site_id, patient_id, visit_date);
     let prediction = items.iter().find(|item| {
-        json_string_field(item, "patient_id").as_deref() == Some(patient_id)
-            && json_string_field(item, "visit_date").as_deref() == Some(visit_date)
+        let matches_identity = json_string_field(item, "patient_id").as_deref() == Some(patient_id)
+            && json_string_field(item, "visit_date").as_deref() == Some(visit_date);
+        let matches_case_reference = json_string_field(item, "case_reference_id")
+            .as_deref()
+            == Some(expected_case_reference_id.as_str());
+        matches_identity || matches_case_reference
     });
     let prediction =
         prediction.ok_or_else(|| "Validation case prediction not found.".to_string())?;
@@ -124,4 +129,74 @@ pub(super) fn lesion_preview_artifact_path(
         _ => return Err("Unknown lesion preview artifact.".to_string()),
     };
     ensure_path_within_site(site_id, &site_dir(site_id)?.join(relative))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn validation_artifact_path_falls_back_to_case_reference_id() {
+        let _guard = test_env_lock().lock().expect("test env lock");
+        let suffix = Uuid::new_v4().simple().to_string();
+        let root = std::env::temp_dir().join(format!("kera_validation_artifact_{suffix}"));
+        let storage_dir = root.join("storage");
+        let control_plane_dir = storage_dir.join("control_plane");
+        let site_id = "39100103";
+        let patient_id = "17196699";
+        let visit_date = "FU #9";
+        let validation_id = "validation_test";
+        let site_root = storage_dir.join("sites").join(site_id);
+        let artifact_path = site_root
+            .join("artifacts")
+            .join("gradcam")
+            .join("image_gradcam.png");
+        let case_path = control_plane_dir
+            .join("validation_cases")
+            .join(format!("{validation_id}.json"));
+
+        std::env::set_var("KERA_STORAGE_DIR", &storage_dir);
+        std::env::set_var("KERA_CONTROL_PLANE_DIR", &control_plane_dir);
+        std::env::set_var("KERA_CASE_REFERENCE_SALT", "desktop-test-case-salt");
+        fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("artifact dir");
+        fs::create_dir_all(case_path.parent().expect("case parent")).expect("case dir");
+        fs::write(&artifact_path, b"gradcam").expect("artifact write");
+        let payload = serde_json::json!([
+            {
+                "validation_id": validation_id,
+                "case_reference_id": make_case_reference_id(site_id, patient_id, visit_date),
+                "gradcam_path": artifact_path.to_string_lossy().to_string()
+            }
+        ]);
+        fs::write(
+            &case_path,
+            serde_json::to_string_pretty(&payload).expect("case payload"),
+        )
+        .expect("case write");
+
+        let resolved = validation_artifact_path(
+            site_id,
+            validation_id,
+            patient_id,
+            visit_date,
+            "gradcam",
+        )
+        .expect("artifact path");
+
+        assert_eq!(
+            resolved,
+            artifact_path.canonicalize().expect("artifact canonicalize")
+        );
+
+        std::env::remove_var("KERA_CASE_REFERENCE_SALT");
+        std::env::remove_var("KERA_CONTROL_PLANE_DIR");
+        std::env::remove_var("KERA_STORAGE_DIR");
+        let _ = fs::remove_dir_all(root);
+    }
 }

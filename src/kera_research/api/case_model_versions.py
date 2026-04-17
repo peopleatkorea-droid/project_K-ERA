@@ -23,6 +23,8 @@ _PREFERRED_VISIT_FL_MODEL_PATTERNS = (
     "efficientnet v2 s mil full",
     "efficientnet_v2_s_mil",
 )
+_SELECTION_PROFILE_SINGLE_CASE_REVIEW = "single_case_review"
+_SELECTION_PROFILE_VISIT_LEVEL_REVIEW = "visit_level_review"
 
 
 def _preferred_operating_model(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -121,6 +123,55 @@ def _preferred_visit_level_federated_model(versions: list[dict[str, Any]]) -> di
     return sorted(ready_versions, key=lambda item: item.get("created_at", ""))[-1]
 
 
+def _normalize_selection_profile(selection_profile: str | None) -> str:
+    return str(selection_profile or "").strip().lower()
+
+
+def _preferred_single_case_review_model(
+    versions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    image_level_model = _preferred_image_level_federated_model(versions)
+    if image_level_model is not None:
+        return image_level_model
+    ready_versions = [
+        item
+        for item in versions
+        if item.get("ready", True) and not bool(item.get("bag_level", False))
+    ]
+    if not ready_versions:
+        return None
+    for architecture in ("efficientnet_v2_s", "dinov2", "vit", "swin", "densenet121"):
+        match = next(
+            (
+                item
+                for item in ready_versions
+                if str(item.get("architecture") or "").strip().lower() == architecture
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+    return _preferred_operating_model(ready_versions)
+
+
+def _preferred_visit_level_review_model(
+    versions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    mil_model = _preferred_visit_level_federated_model(versions)
+    if mil_model is not None:
+        return mil_model
+    ready_versions = [
+        item
+        for item in versions
+        if item.get("ready", True)
+        and str(item.get("architecture") or "").strip().lower() == "efficientnet_v2_s_mil"
+        and bool(item.get("bag_level", False))
+    ]
+    if not ready_versions:
+        return None
+    return sorted(ready_versions, key=lambda item: item.get("created_at", ""))[-1]
+
+
 def resolve_model_crop_mode(model_version: dict[str, Any]) -> str:
     if model_version.get("ensemble_mode") == "weighted_average":
         crop_mode = str(model_version.get("crop_mode") or "").strip().lower()
@@ -141,6 +192,7 @@ def resolve_requested_model_version(
     get_model_version: Callable[[Any, str | None], dict[str, Any] | None],
     model_version_id: str | None,
     model_version_ids: list[str] | None,
+    selection_profile: str | None = None,
 ) -> dict[str, Any] | None:
     ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
     normalized_ids = list(dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip()))
@@ -211,7 +263,52 @@ def resolve_requested_model_version(
         return cp.ensure_model_version(ensemble_record)
     if model_version_id:
         return get_model_version(cp, model_version_id)
+    normalized_selection_profile = _normalize_selection_profile(selection_profile)
+    if normalized_selection_profile == _SELECTION_PROFILE_SINGLE_CASE_REVIEW:
+        return _preferred_single_case_review_model(ready_versions)
+    if normalized_selection_profile == _SELECTION_PROFILE_VISIT_LEVEL_REVIEW:
+        return _preferred_visit_level_review_model(ready_versions)
     return _preferred_operating_model(ready_versions)
+
+
+def resolve_requested_compare_model_versions(
+    cp: Any,
+    *,
+    model_version_ids: list[str] | None,
+    selection_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    ready_versions = [item for item in cp.list_model_versions() if item.get("ready", True)]
+    versions_by_id = {
+        str(item.get("version_id") or ""): item
+        for item in ready_versions
+    }
+    normalized_ids = list(
+        dict.fromkeys(str(item).strip() for item in (model_version_ids or []) if str(item).strip())
+    )
+    if normalized_ids:
+        comparisons: list[dict[str, Any]] = []
+        missing_ids: list[str] = []
+        for version_id in normalized_ids:
+            model_version = versions_by_id.get(version_id)
+            if model_version is None:
+                missing_ids.append(version_id)
+            else:
+                comparisons.append(model_version)
+        if missing_ids:
+            raise ValueError(f"Unknown or unavailable model version(s): {', '.join(missing_ids)}")
+        return comparisons
+    normalized_selection_profile = _normalize_selection_profile(selection_profile)
+    if normalized_selection_profile == _SELECTION_PROFILE_VISIT_LEVEL_REVIEW:
+        preferred_model = _preferred_visit_level_review_model(ready_versions)
+        if preferred_model is None:
+            raise ValueError("No ready EfficientNetV2-S MIL model version is available for visit-level review.")
+        return [preferred_model]
+    if normalized_selection_profile == _SELECTION_PROFILE_SINGLE_CASE_REVIEW:
+        preferred_model = _preferred_single_case_review_model(ready_versions)
+        if preferred_model is None:
+            raise ValueError("No ready single-case review model version is available.")
+        return [preferred_model]
+    return []
 
 
 def resolve_requested_contribution_models(

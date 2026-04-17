@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from kera_research.api.case_model_versions import (
+    resolve_requested_compare_model_versions,
     resolve_requested_contribution_models as select_requested_contribution_models,
     resolve_requested_model_version as select_requested_model_version,
     serialize_case_artifact_availability,
@@ -71,6 +72,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 get_model_version=get_model_version,
                 model_version_id=payload.model_version_id,
                 model_version_ids=payload.model_version_ids,
+                selection_profile=payload.selection_profile,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -155,9 +157,19 @@ def build_case_analysis_router(support: Any) -> APIRouter:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
         workflow = get_workflow(cp)
-        requested_ids = list(dict.fromkeys(str(item).strip() for item in payload.model_version_ids if str(item).strip()))
-        if not requested_ids:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one model version is required.")
+        try:
+            requested_models = resolve_requested_compare_model_versions(
+                cp,
+                model_version_ids=payload.model_version_ids,
+                selection_profile=payload.selection_profile,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if not requested_models:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one model version is required.",
+            )
 
         try:
             execution_device = resolve_execution_device(payload.execution_mode)
@@ -170,16 +182,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
             ) from exc
 
         comparisons: list[dict[str, Any]] = []
-        for model_version_id in requested_ids[:8]:
-            model_version = get_model_version(cp, model_version_id)
-            if model_version is None or not model_version.get("ready", True):
-                comparisons.append(
-                    {
-                        "model_version_id": model_version_id,
-                        "error": "Model version is not available or not ready.",
-                    }
-                )
-                continue
+        for model_version in requested_models[:8]:
             try:
                 summary, case_predictions = workflow.run_case_validation(
                     project_id=project_id_for_site(cp, site_id),

@@ -286,6 +286,86 @@ describe("analysis-runtime desktop routing", () => {
     expect(apiCoreMocks.request).not.toHaveBeenCalled();
   });
 
+  it("passes review selection profiles through the desktop validation commands", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({ summary: { validation_id: "validation_1" } });
+
+    const mod = await import("./analysis-runtime");
+    await mod.runAnalysisCaseValidation("39100103", "desktop-token", {
+      patient_id: "17452298",
+      visit_date: "Initial",
+      selection_profile: "single_case_review",
+    });
+    await mod.runAnalysisCaseValidationCompare("39100103", "desktop-token", {
+      patient_id: "17452298",
+      visit_date: "Initial",
+      model_version_ids: [],
+      selection_profile: "visit_level_review",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenNthCalledWith(1, "run_case_validation", {
+      payload: {
+        site_id: "39100103",
+        token: "desktop-token",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        selection_profile: "single_case_review",
+      },
+    });
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenNthCalledWith(2, "run_case_validation_compare", {
+      payload: {
+        site_id: "39100103",
+        token: "desktop-token",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        selection_profile: "visit_level_review",
+      },
+    });
+  });
+
+  it("uses DINOv2 defaults for desktop AI Clinic commands when callers omit retrieval settings", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockResolvedValue({
+      analysis_stage: "similar_cases",
+      similar_cases: [],
+    });
+
+    const mod = await import("./analysis-runtime");
+    await mod.runAnalysisCaseAiClinic("39100103", "desktop-token", {
+      patient_id: "17452298",
+      visit_date: "Initial",
+      model_version_id: "model_1",
+    });
+    await mod.runAnalysisCaseAiClinicSimilarCases("39100103", "desktop-token", {
+      patient_id: "17452298",
+      visit_date: "Initial",
+      model_version_id: "model_1",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenNthCalledWith(1, "run_case_ai_clinic", {
+      payload: {
+        site_id: "39100103",
+        token: "desktop-token",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        model_version_id: "model_1",
+        retrieval_backend: "dinov2",
+        retrieval_profile: "dinov2_lesion_crop",
+      },
+    });
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenNthCalledWith(2, "run_case_ai_clinic_similar_cases", {
+      payload: {
+        site_id: "39100103",
+        token: "desktop-token",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        model_version_id: "model_1",
+        retrieval_backend: "dinov2",
+        retrieval_profile: "dinov2_lesion_crop",
+      },
+    });
+  });
+
   it("uses the desktop site-job reader when the desktop runtime is available", async () => {
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
     desktopIpcMocks.invokeDesktop.mockResolvedValue({ job_id: "job_1", status: "running" });

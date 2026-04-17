@@ -13,7 +13,7 @@ pub(super) async fn run_case_ai_clinic(payload: CaseAiClinicCommandRequest) -> R
     let top_k = payload.top_k.unwrap_or(3);
     let retrieval_backend = payload
         .retrieval_backend
-        .unwrap_or_else(|| "standard".to_string());
+        .unwrap_or_else(|| "dinov2".to_string());
     let retrieval_profile = payload
         .retrieval_profile
         .unwrap_or_else(|| "dinov2_lesion_crop".to_string());
@@ -74,7 +74,7 @@ pub(super) async fn run_case_ai_clinic_similar_cases(
     let top_k = payload.top_k.unwrap_or(3);
     let retrieval_backend = payload
         .retrieval_backend
-        .unwrap_or_else(|| "standard".to_string());
+        .unwrap_or_else(|| "dinov2".to_string());
     let retrieval_profile = payload
         .retrieval_profile
         .unwrap_or_else(|| "dinov2_lesion_crop".to_string());

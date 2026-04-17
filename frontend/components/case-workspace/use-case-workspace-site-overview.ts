@@ -178,7 +178,7 @@ export function useCaseWorkspaceSiteOverview({
           ) {
             return normalizedCurrent;
           }
-          return defaultValidationModelVersionSelection(nextVersions);
+          return null;
         });
         return nextVersions;
       } catch (nextError) {
@@ -191,7 +191,7 @@ export function useCaseWorkspaceSiteOverview({
         return [];
       }
     },
-    [defaultModelCompareSelection, defaultValidationModelVersionSelection, token],
+    [defaultModelCompareSelection, token],
   );
 
   const ensureSiteModelVersionsLoaded = useCallback(

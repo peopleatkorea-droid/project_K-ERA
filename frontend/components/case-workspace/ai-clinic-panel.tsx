@@ -8,6 +8,7 @@ import { SectionHeader } from "../ui/section-header";
 import { docSectionLabelClass, emptySurfaceClass } from "../ui/workspace-patterns";
 import type { CaseValidationResponse } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
+import type { AiClinicPreviewResponse, CaseWorkspaceAiClinicRunOptions } from "./shared";
 
 type Props = {
   locale: Locale;
@@ -17,7 +18,9 @@ type Props = {
   aiClinicExpandedBusy: boolean;
   canRunAiClinic: boolean;
   canExpandAiClinic: boolean;
-  onRunAiClinic: () => void;
+  onRunAiClinic: (
+    options?: CaseWorkspaceAiClinicRunOptions,
+  ) => Promise<AiClinicPreviewResponse | null>;
   onExpandAiClinic: () => void;
   children: ReactNode;
 };

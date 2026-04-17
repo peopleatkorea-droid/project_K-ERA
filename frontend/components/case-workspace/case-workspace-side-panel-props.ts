@@ -15,6 +15,7 @@ import {
   isSelectableCompareModelVersion,
   sortCompareModelVersions,
 } from "./case-workspace-core-helpers";
+import type { CaseWorkspaceValidationRunOptions } from "./shared";
 
 type LeftRailProps = ComponentProps<typeof CaseWorkspaceLeftRail>;
 type AnalysisSectionProps = ComponentProps<typeof CaseWorkspaceAnalysisSection>;
@@ -164,9 +165,9 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
   setSelectedValidationModelVersionId: AnalysisSectionProps["setSelectedValidationModelVersionId"];
   displayVisitReference: VisitReferenceFormatter;
   aiClinicTextUnavailableLabel: AnalysisSectionProps["aiClinicTextUnavailableLabel"];
-  onRunValidation: () => void | Promise<void>;
-  onRunModelCompare: () => void | Promise<void>;
-  onRunAiClinic: () => void | Promise<void>;
+  onRunValidation: AnalysisSectionProps["onRunValidation"];
+  onRunModelCompare: AnalysisSectionProps["onRunModelCompare"];
+  onRunAiClinic: AnalysisSectionProps["onRunAiClinic"];
   onExpandAiClinic: () => void | Promise<void>;
   onRunRoiPreview: AnalysisSectionProps["onRunRoiPreview"];
   onRunLesionPreview: AnalysisSectionProps["onRunLesionPreview"];
@@ -224,13 +225,13 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     analysisEyebrow: pick(locale, "Clinical AI review", "진료용 AI 검토"),
     analysisTitle: pick(
       locale,
-      "Single-case judgment, model agreement, and similar-patient review",
-      "단일 케이스 판정, 모델 합의 확인, 유사 환자 검토",
+      "Single-case judgment, Efficient MIL review, and DINOv2 similar-patient review",
+      "단일 케이스 판정, Efficient MIL 검토, DINOv2 유사 환자 검토",
     ),
     analysisDescription: pick(
       locale,
-      "Use this in order: judge one case, check whether models agree, then review similar patients and optional evidence.",
-      "보통 이 순서로 사용합니다: 케이스 하나를 판정하고, 모델 합의를 확인한 뒤, 유사 환자와 필요 시 추가 근거를 검토합니다.",
+      "Use this in order: run the tiny judgment with review images, run the prepared Efficient MIL visit-level review, then review three DINOv2 similar patients and optional evidence. You can also run Steps 1-3 in one action.",
+      "보통 이 순서로 사용합니다: review image가 나오는 tiny 판정을 실행하고, 준비된 Efficient MIL visit-level 검토를 실행한 뒤, DINOv2 유사 환자 3개와 필요 시 추가 근거를 검토합니다. 이제 1-3단계를 한 번에 순차 실행할 수도 있습니다.",
     ),
     imageCountLabel: pick(locale, "images", "이미지"),
     commonLoading,
@@ -265,15 +266,10 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     setToast,
     setSelectedCompareModelVersionIds,
     setSelectedValidationModelVersionId,
-    onRunValidation: () => {
-      void onRunValidation();
-    },
-    onRunModelCompare: () => {
-      void onRunModelCompare();
-    },
-    onRunAiClinic: () => {
-      void onRunAiClinic();
-    },
+    onRunValidation: (options?: CaseWorkspaceValidationRunOptions) =>
+      onRunValidation(options),
+    onRunModelCompare: (options) => onRunModelCompare(options),
+    onRunAiClinic: (options) => onRunAiClinic(options),
     onExpandAiClinic: () => {
       void onExpandAiClinic();
     },

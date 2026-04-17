@@ -156,6 +156,25 @@ class ModelArtifactStoreTests(unittest.TestCase):
         self.assertEqual(resolved.resolve(), (new_bundle / "models" / "portable_model.pt").resolve())
         self.assertEqual(resolved.read_bytes(), b"portable-model")
 
+    def test_resolve_model_path_writes_active_manifest_for_local_path(self) -> None:
+        local_model_path = Path(self.tempdir.name) / "local_model.pt"
+        local_model_path.write_bytes(b"local-model")
+
+        resolved = self.store.resolve_model_path(
+            {
+                "version_id": "model_local_v1",
+                "version_name": "local-v1",
+                "model_name": "keratitis_cls",
+                "model_path": str(local_model_path),
+            },
+            allow_download=False,
+        )
+
+        self.assertEqual(resolved.resolve(), local_model_path.resolve())
+        active_manifest = self.store.active_manifest()
+        self.assertEqual(active_manifest["version_id"], "model_local_v1")
+        self.assertEqual(Path(active_manifest["local_path"]).resolve(), local_model_path.resolve())
+
     def _write_temp_payload(self, payload: bytes) -> Path:
         path = Path(self.tempdir.name) / "payload.bin"
         path.write_bytes(payload)

@@ -54,7 +54,10 @@ class ModelArtifactStore:
         if local_path:
             candidate, remapped = resolve_portable_path(local_path, require_exists=True)
             if candidate.exists():
-                return candidate.resolve()
+                resolved_candidate = candidate.resolve()
+                expected_sha = str(model_reference.get("sha256") or "").strip().lower()
+                self._write_active_manifest(model_reference, resolved_candidate, expected_sha)
+                return resolved_candidate
             if remapped:
                 local_path = str(candidate)
 

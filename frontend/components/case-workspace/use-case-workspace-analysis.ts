@@ -13,6 +13,7 @@ import {
   setRepresentativeImage as setRepresentativeImageOnServer,
   type CaseContributionResponse,
   type CaseHistoryResponse,
+  type ModelVersionRecord,
   type CaseSummaryRecord,
   type CaseValidationResponse,
 } from "../../lib/api";
@@ -55,6 +56,7 @@ type Args = {
   panelBusy: boolean;
   selectedCaseImages: SavedImagePreview[];
   patientVisitGallery: Record<string, SavedImagePreview[]>;
+  siteModelVersions: ModelVersionRecord[];
   selectedCompareModelVersionIds: string[];
   selectedValidationModelVersionId: string | null;
   showOnlyMine: boolean;
@@ -80,6 +82,13 @@ type Args = {
     visitDate: string,
   ) => Promise<void>;
   loadSiteActivity: (siteId: string) => Promise<unknown>;
+  ensureSiteModelVersionsLoaded: (
+    siteId: string,
+    signal?: AbortSignal,
+  ) => Promise<ModelVersionRecord[]>;
+  defaultValidationModelVersionSelection: (
+    modelVersions: ModelVersionRecord[],
+  ) => string | null;
   onSiteDataChanged: (siteId: string) => Promise<void>;
   onValidationCompleted?: (args: {
     siteId: string;
@@ -97,6 +106,7 @@ export function useCaseWorkspaceAnalysis({
   panelBusy,
   selectedCaseImages,
   patientVisitGallery,
+  siteModelVersions,
   selectedCompareModelVersionIds,
   selectedValidationModelVersionId,
   showOnlyMine,
@@ -114,6 +124,8 @@ export function useCaseWorkspaceAnalysis({
   setContributionResult,
   loadCaseHistory,
   loadSiteActivity,
+  ensureSiteModelVersionsLoaded,
+  defaultValidationModelVersionSelection,
   onSiteDataChanged,
   onValidationCompleted,
   onArtifactsChanged,
@@ -190,6 +202,7 @@ export function useCaseWorkspaceAnalysis({
     token,
     selectedSiteId,
     selectedCase,
+    siteModelVersions,
     selectedCompareModelVersionIds,
     selectedValidationModelVersionId,
     pick,
@@ -205,6 +218,8 @@ export function useCaseWorkspaceAnalysis({
     setContributionResult,
     loadCaseHistory,
     loadSiteActivity,
+    ensureSiteModelVersionsLoaded,
+    defaultValidationModelVersionSelection,
     onSiteDataChanged,
     onValidationCompleted,
     onArtifactsChanged,

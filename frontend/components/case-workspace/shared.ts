@@ -2,6 +2,7 @@ import type {
   AiClinicResponse,
   AiClinicSimilarCaseRecord,
   CaseSummaryRecord,
+  CaseValidationResponse,
   ImageRecord,
   LesionPreviewRecord,
   PatientListRowRecord,
@@ -64,6 +65,22 @@ export type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
 
 export type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
   similar_cases: AiClinicSimilarCasePreview[];
+};
+
+export type CaseWorkspaceValidationRunOptions = {
+  modelVersionId?: string | null;
+  selectionProfile?: "single_case_review" | "visit_level_review";
+  ignoreSelectedModel?: boolean;
+};
+
+export type CaseWorkspaceModelCompareRunOptions = {
+  modelVersionIds?: string[];
+  executionDevice?: string | undefined;
+  preferPreparedMil?: boolean;
+};
+
+export type CaseWorkspaceAiClinicRunOptions = {
+  validationResult?: CaseValidationResponse | null;
 };
 
 export type LocalePick = (locale: Locale, en: string, ko: string) => string;

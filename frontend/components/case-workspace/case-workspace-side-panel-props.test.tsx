@@ -50,7 +50,7 @@ describe("case-workspace side panel props", () => {
   });
 
   it("builds analysis props with selectable model sorting and wrapped callbacks", async () => {
-    const runValidation = vi.fn(async () => undefined);
+    const runValidation = vi.fn(async () => null);
     const props = buildCaseWorkspaceAnalysisSectionProps({
       locale: "en",
       token: "token",
@@ -112,8 +112,8 @@ describe("case-workspace side panel props", () => {
       displayVisitReference: (_locale, visitReference) => `Visit ${visitReference}`,
       aiClinicTextUnavailableLabel: "Unavailable",
       onRunValidation: runValidation,
-      onRunModelCompare: vi.fn(),
-      onRunAiClinic: vi.fn(),
+      onRunModelCompare: vi.fn(async () => null),
+      onRunAiClinic: vi.fn(async () => null),
       onExpandAiClinic: vi.fn(),
       onRunRoiPreview: vi.fn(),
       onRunLesionPreview: vi.fn(),
@@ -124,7 +124,7 @@ describe("case-workspace side panel props", () => {
       "v1",
     ]);
     expect(props.analysisTitle).toBe(
-      "Single-case judgment, model agreement, and similar-patient review",
+      "Single-case judgment, Efficient MIL review, and DINOv2 similar-patient review",
     );
     expect(props.displayVisitReference("FU #1")).toBe("Visit FU #1");
     await props.onRunValidation();

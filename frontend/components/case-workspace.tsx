@@ -546,6 +546,7 @@ export function CaseWorkspace({
     panelBusy,
     selectedCaseImages,
     patientVisitGallery,
+    siteModelVersions,
     selectedCompareModelVersionIds,
     selectedValidationModelVersionId,
     showOnlyMine,
@@ -563,6 +564,8 @@ export function CaseWorkspace({
     setContributionResult,
     loadCaseHistory,
     loadSiteActivity,
+    ensureSiteModelVersionsLoaded,
+    defaultValidationModelVersionSelection,
     onSiteDataChanged,
     onArtifactsChanged,
     onValidationCompleted: async ({ siteId, selectedCase: validatedCase }) => {

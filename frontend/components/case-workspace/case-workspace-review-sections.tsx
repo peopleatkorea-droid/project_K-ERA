@@ -3,6 +3,7 @@
 import {
   type Dispatch,
   type ReactNode,
+  useRef,
   type SetStateAction,
   useCallback,
   useMemo,
@@ -28,6 +29,9 @@ import { ContributionHistoryPanel } from "./contribution-history-panel";
 import { SavedCasePreviewPanels } from "./saved-case-preview-panels";
 import type {
   AiClinicPreviewResponse,
+  CaseWorkspaceAiClinicRunOptions,
+  CaseWorkspaceModelCompareRunOptions,
+  CaseWorkspaceValidationRunOptions,
   LesionPreviewCard,
   LocalePick,
   RoiPreviewCard,
@@ -35,6 +39,7 @@ import type {
 } from "./shared";
 import { ValidationArtifactStack } from "./validation-artifact-stack";
 import { ValidationPanel } from "./validation-panel";
+import { preferredVisitLevelMilModelVersion } from "./case-workspace-core-helpers";
 import {
   confidencePercent,
   confidenceTone,
@@ -140,9 +145,15 @@ type AnalysisSectionProps = {
   setToast: Dispatch<SetStateAction<ToastState>>;
   setSelectedCompareModelVersionIds: Dispatch<SetStateAction<string[]>>;
   setSelectedValidationModelVersionId: Dispatch<SetStateAction<string | null>>;
-  onRunValidation: () => void;
-  onRunModelCompare: () => void;
-  onRunAiClinic: () => void;
+  onRunValidation: (
+    options?: CaseWorkspaceValidationRunOptions,
+  ) => Promise<CaseValidationResponse | null>;
+  onRunModelCompare: (
+    options?: CaseWorkspaceModelCompareRunOptions,
+  ) => Promise<CaseValidationCompareResponse | null>;
+  onRunAiClinic: (
+    options?: CaseWorkspaceAiClinicRunOptions,
+  ) => Promise<AiClinicPreviewResponse | null>;
   onExpandAiClinic: () => void;
   onRunRoiPreview: () => void | Promise<void>;
   onRunLesionPreview: () => void | Promise<void>;
@@ -198,6 +209,9 @@ export function CaseWorkspaceAnalysisSection({
   displayVisitReference,
   aiClinicTextUnavailableLabel,
 }: AnalysisSectionProps) {
+  const judgmentPanelRef = useRef<HTMLDivElement | null>(null);
+  const agreementPanelRef = useRef<HTMLDivElement | null>(null);
+  const aiClinicPanelRef = useRef<HTMLDivElement | null>(null);
   const validationPredictedConfidence = predictedClassConfidence(
     validationResult?.summary.predicted_label,
     validationResult?.summary.prediction_probability,
@@ -358,7 +372,14 @@ export function CaseWorkspaceAnalysisSection({
 
   const [activeReviewStep, setActiveReviewStep] =
     useState<AnalysisReviewStep>("judgment");
+  const [fullReviewBusy, setFullReviewBusy] = useState(false);
+  const [fullReviewBusyStep, setFullReviewBusyStep] =
+    useState<AnalysisReviewStep | null>(null);
   const compareCandidatesAvailable = compareModelCandidates.length > 0;
+  const preferredVisitLevelMilModel = useMemo(
+    () => preferredVisitLevelMilModelVersion(compareModelCandidates),
+    [compareModelCandidates],
+  );
   const successfulCompareCount = useMemo(
     () =>
       (modelCompareResult?.comparisons ?? []).filter(
@@ -368,42 +389,115 @@ export function CaseWorkspaceAnalysisSection({
   );
   const aiClinicSimilarCount = aiClinicResult?.similar_cases.length ?? 0;
 
+  const scrollToReviewStep = useCallback((step: AnalysisReviewStep) => {
+    const target =
+      step === "judgment"
+        ? judgmentPanelRef.current
+        : step === "agreement"
+          ? agreementPanelRef.current
+          : aiClinicPanelRef.current;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
+
   const handleShowJudgmentDetails = useCallback(
-    () => setActiveReviewStep("judgment"),
-    [],
+    () => {
+      setActiveReviewStep("judgment");
+      scrollToReviewStep("judgment");
+    },
+    [scrollToReviewStep],
   );
   const handleShowAgreementDetails = useCallback(
-    () => setActiveReviewStep("agreement"),
-    [],
+    () => {
+      setActiveReviewStep("agreement");
+      scrollToReviewStep("agreement");
+    },
+    [scrollToReviewStep],
   );
   const handleShowAiClinicDetails = useCallback(
-    () => setActiveReviewStep("ai_clinic"),
-    [],
+    () => {
+      setActiveReviewStep("ai_clinic");
+      scrollToReviewStep("ai_clinic");
+    },
+    [scrollToReviewStep],
   );
   const handleRunValidationFromHub = useCallback(() => {
     setActiveReviewStep("judgment");
-    onRunValidation();
+    return onRunValidation({
+      selectionProfile: "single_case_review",
+    });
   }, [onRunValidation]);
   const handleRunModelCompareFromHub = useCallback(() => {
     setActiveReviewStep("agreement");
-    onRunModelCompare();
-  }, [onRunModelCompare]);
+    return onRunModelCompare({
+      modelVersionIds: preferredVisitLevelMilModel?.version_id
+        ? [preferredVisitLevelMilModel.version_id]
+        : undefined,
+      preferPreparedMil: true,
+    });
+  }, [onRunModelCompare, preferredVisitLevelMilModel?.version_id]);
   const handleRunAiClinicFromHub = useCallback(() => {
     setActiveReviewStep("ai_clinic");
-    onRunAiClinic();
+    return onRunAiClinic();
   }, [onRunAiClinic]);
   const handleExpandAiClinicFromHub = useCallback(() => {
     setActiveReviewStep("ai_clinic");
     onExpandAiClinic();
   }, [onExpandAiClinic]);
+  const handleRunFullReviewFromHub = useCallback(async () => {
+    if (fullReviewBusy) {
+      return;
+    }
+    setFullReviewBusy(true);
+    try {
+      setActiveReviewStep("judgment");
+      scrollToReviewStep("judgment");
+      setFullReviewBusyStep("judgment");
+      const nextValidationResult = await onRunValidation({
+        ignoreSelectedModel: true,
+        selectionProfile: "single_case_review",
+      });
+      if (!nextValidationResult) {
+        return;
+      }
+
+      setActiveReviewStep("agreement");
+      scrollToReviewStep("agreement");
+      setFullReviewBusyStep("agreement");
+      const nextModelCompareResult = await onRunModelCompare({
+        modelVersionIds: preferredVisitLevelMilModel?.version_id
+          ? [preferredVisitLevelMilModel.version_id]
+          : undefined,
+        executionDevice: nextValidationResult.execution_device,
+        preferPreparedMil: true,
+      });
+      if (!nextModelCompareResult) {
+        return;
+      }
+
+      setActiveReviewStep("ai_clinic");
+      scrollToReviewStep("ai_clinic");
+      setFullReviewBusyStep("ai_clinic");
+      await onRunAiClinic({
+        validationResult: nextValidationResult,
+      });
+    } finally {
+      setFullReviewBusyStep(null);
+      setFullReviewBusy(false);
+    }
+  }, [
+    fullReviewBusy,
+    onRunAiClinic,
+    onRunModelCompare,
+    onRunValidation,
+    preferredVisitLevelMilModel?.version_id,
+    scrollToReviewStep,
+  ]);
 
   const analysisHubContent = useMemo(() => {
     const judgmentActionEnabled = hasSelectedCase && canRunValidation;
-    const agreementActionEnabled =
-      hasSelectedCase &&
-      canRunValidation &&
-      compareCandidatesAvailable &&
-      selectedCompareModelVersionIds.length > 0;
+    const agreementActionEnabled = hasSelectedCase && canRunValidation;
     const aiClinicActionEnabled = canRunAiClinic;
     const executionBlockedDetail = pick(
       locale,
@@ -463,8 +557,8 @@ export function CaseWorkspaceAnalysisSection({
           label: pick(locale, "Open a case first", "먼저 케이스 열기"),
           detail: pick(
             locale,
-            "Agreement checks need an opened saved case.",
-            "합의 확인은 저장된 케이스를 연 뒤 사용할 수 있습니다.",
+            "The prepared Efficient MIL review needs an opened saved case.",
+            "준비된 Efficient MIL 검토는 저장된 케이스를 연 뒤 사용할 수 있습니다.",
           ),
         }
       : !canRunValidation
@@ -473,57 +567,64 @@ export function CaseWorkspaceAnalysisSection({
             label: pick(locale, "Execution locked", "실행 권한 없음"),
             detail: executionBlockedDetail,
           }
-      : !compareCandidatesAvailable
+      : modelCompareBusy
         ? {
-            tone: "waiting" as const,
-            label: pick(locale, "Loading models", "모델 불러오는 중"),
+            tone: "running" as const,
+            label: pick(locale, "Running Efficient MIL", "Efficient MIL 실행 중"),
             detail: pick(
               locale,
-              "Ready comparison models will appear here automatically.",
-              "준비된 비교 모델이 자동으로 채워질 때까지 잠시 기다리세요.",
+              "The prepared visit-level MIL model is running on this case.",
+              "준비된 visit-level MIL 모델을 이 케이스에서 실행하고 있습니다.",
             ),
           }
-        : selectedCompareModelVersionIds.length === 0
+      : modelCompareResult
+        ? {
+            tone: "complete" as const,
+            label: pick(locale, "MIL result ready", "MIL 결과 준비됨"),
+            detail: pick(
+              locale,
+              `${successfulCompareCount} model result(s) are ready to review.`,
+              `${successfulCompareCount}개 모델 결과를 확인할 수 있습니다.`,
+            ),
+          }
+      : !compareCandidatesAvailable
+        ? {
+            tone: validationResult ? ("ready" as const) : ("waiting" as const),
+            label: validationResult
+              ? pick(locale, "Ready to run", "실행 준비")
+              : pick(locale, "MIL catalog loading", "MIL 모델 불러오는 중"),
+            detail: pick(
+              locale,
+              "The prepared Efficient MIL fallback can already run even while the visible model catalog is still loading.",
+              "표시용 모델 목록이 아직 로드 중이어도 준비된 Efficient MIL fallback은 이미 실행할 수 있습니다.",
+            ),
+          }
+        : !preferredVisitLevelMilModel &&
+            selectedCompareModelVersionIds.length === 0
           ? {
               tone: validationResult ? ("waiting" as const) : ("waiting" as const),
-              label: pick(locale, "Choose models", "비교 모델 선택 필요"),
+              label: pick(locale, "Choose a MIL model", "MIL 모델 선택 필요"),
               detail: pick(
                 locale,
-                "Pick one or more prepared models below before running the agreement check.",
-                "합의 확인을 실행하기 전에 아래에서 준비된 모델을 하나 이상 고르세요.",
-              ),
-            }
-        : modelCompareBusy
-          ? {
-              tone: "running" as const,
-              label: pick(locale, "Checking agreement", "합의 확인 중"),
-              detail: pick(
-                locale,
-                `${selectedCompareModelVersionIds.length} model(s) are being compared on this case.`,
-                `${selectedCompareModelVersionIds.length}개 모델을 이 케이스에서 비교하고 있습니다.`,
-              ),
-            }
-          : modelCompareResult
-            ? {
-                tone: "complete" as const,
-                label: pick(locale, "Agreement ready", "합의 결과 준비됨"),
-                detail: pick(
-                  locale,
-                  `${successfulCompareCount} model result(s) are ready to review.`,
-                  `${successfulCompareCount}개 모델 결과를 확인할 수 있습니다.`,
+                "Pick a prepared visit-level MIL model below before running Step 2.",
+                  "2단계를 실행하기 전에 아래에서 준비된 visit-level MIL 모델을 고르세요.",
                 ),
               }
-            : {
-                tone: validationResult ? ("ready" as const) : ("waiting" as const),
-                label: validationResult
-                  ? pick(locale, "Ready to compare", "비교 준비")
-                  : pick(locale, "Recommended after Step 1", "1단계 후 권장"),
-                detail: pick(
-                  locale,
-                  `${selectedCompareModelVersionIds.length} model(s) selected for agreement check.`,
-                  `${selectedCompareModelVersionIds.length}개 모델이 합의 확인 대상으로 선택되어 있습니다.`,
-                ),
-              };
+        : {
+            tone: validationResult ? ("ready" as const) : ("waiting" as const),
+            label: validationResult
+              ? pick(locale, "Ready to run", "실행 준비")
+              : pick(locale, "Recommended after Step 1", "1단계 후 권장"),
+            detail: pick(
+              locale,
+              preferredVisitLevelMilModel?.version_name
+                ? `Prepared Efficient MIL: ${preferredVisitLevelMilModel.version_name}.`
+                : `${selectedCompareModelVersionIds.length} model(s) selected for Step 2.`,
+              preferredVisitLevelMilModel?.version_name
+                ? `준비된 Efficient MIL: ${preferredVisitLevelMilModel.version_name}.`
+                : `${selectedCompareModelVersionIds.length}개 모델이 2단계 대상으로 선택되어 있습니다.`,
+            ),
+          };
 
     const aiClinicStatus = !hasSelectedCase
       ? {
@@ -675,7 +776,7 @@ export function CaseWorkspaceAnalysisSection({
                 variant="primary"
                 className="min-w-[11.5rem] justify-center"
                 onClick={handleRunValidationFromHub}
-                disabled={validationBusy || !judgmentActionEnabled}
+                disabled={fullReviewBusy || validationBusy || !judgmentActionEnabled}
               >
                 {validationBusy
                   ? pick(locale, "Running...", "실행 중...")
@@ -706,7 +807,7 @@ export function CaseWorkspaceAnalysisSection({
                     {pick(locale, "Step 2", "2단계")}
                   </div>
                   <strong className="text-base font-semibold text-ink">
-                    {pick(locale, "Model agreement check", "모델 간 합의 확인")}
+                    {pick(locale, "Efficient MIL review", "Efficient MIL 검토")}
                   </strong>
                 </div>
                 {activeReviewStep === "agreement" ? (
@@ -718,8 +819,8 @@ export function CaseWorkspaceAnalysisSection({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Review whether the selected models converge on the same answer for this case.",
-                  "선택한 모델들이 이 케이스에서 같은 결론을 내리는지 확인합니다.",
+                  "Run the prepared visit-level Efficient MIL model on this case.",
+                  "준비된 visit-level Efficient MIL 모델을 이 케이스에서 실행합니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -742,13 +843,13 @@ export function CaseWorkspaceAnalysisSection({
                 variant="primary"
                 className="min-w-[11.5rem] justify-center"
                 onClick={handleRunModelCompareFromHub}
-                disabled={modelCompareBusy || !agreementActionEnabled}
+                disabled={fullReviewBusy || modelCompareBusy || !agreementActionEnabled}
               >
                 {modelCompareBusy
-                  ? pick(locale, "Checking...", "확인 중...")
+                  ? pick(locale, "Running MIL...", "MIL 실행 중...")
                   : !agreementActionEnabled
                     ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Check model agreement", "모델 합의 확인")}
+                  : pick(locale, "Run Efficient MIL", "Efficient MIL 실행")}
               </Button>
             </div>
           </Card>
@@ -773,7 +874,11 @@ export function CaseWorkspaceAnalysisSection({
                     {pick(locale, "Step 3", "3단계")}
                   </div>
                   <strong className="text-base font-semibold text-ink">
-                    {pick(locale, "Similar-patient review", "유사 환자 검토")}
+                    {pick(
+                      locale,
+                      "DINOv2 similar-patient review",
+                      "DINOv2 유사 환자 검토",
+                    )}
                   </strong>
                 </div>
                 {activeReviewStep === "ai_clinic" ? (
@@ -785,8 +890,8 @@ export function CaseWorkspaceAnalysisSection({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Search similar patients first, then expand into evidence, guidance, and the 3D cluster map.",
-                  "먼저 유사 환자를 찾고, 필요하면 근거, 가이드, 3D 클러스터 맵까지 이어서 봅니다.",
+                  "Use DINOv2 retrieval to show three similar patients first, then expand into evidence, guidance, and the 3D cluster map.",
+                  "DINOv2 retrieval로 유사 환자 3개를 먼저 보여주고, 필요하면 근거, 가이드, 3D 클러스터 맵까지 이어서 봅니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -809,7 +914,7 @@ export function CaseWorkspaceAnalysisSection({
                 variant="primary"
                 className="min-w-[11.5rem] justify-center"
                 onClick={handleRunAiClinicFromHub}
-                disabled={aiClinicBusy || !aiClinicActionEnabled}
+                disabled={fullReviewBusy || aiClinicBusy || !aiClinicActionEnabled}
               >
                 {aiClinicBusy
                   ? pick(locale, "Searching...", "검색 중...")
@@ -822,7 +927,7 @@ export function CaseWorkspaceAnalysisSection({
                 size="sm"
                 variant="ghost"
                 onClick={handleExpandAiClinicFromHub}
-                disabled={aiClinicExpandedBusy || !canExpandAiClinic}
+                disabled={fullReviewBusy || aiClinicExpandedBusy || !canExpandAiClinic}
               >
                 {aiClinicExpandedBusy
                   ? pick(locale, "Loading guidance...", "가이드 불러오는 중...")
@@ -844,6 +949,7 @@ export function CaseWorkspaceAnalysisSection({
     commonNotAvailable,
     compareCandidatesAvailable,
     formatProbability,
+    fullReviewBusy,
     handleExpandAiClinicFromHub,
     handleRunAiClinicFromHub,
     handleRunModelCompareFromHub,
@@ -855,6 +961,7 @@ export function CaseWorkspaceAnalysisSection({
     locale,
     modelCompareBusy,
     modelCompareResult,
+    preferredVisitLevelMilModel,
     selectedCompareModelVersionIds.length,
     successfulCompareCount,
     validationBusy,
@@ -1026,13 +1133,6 @@ export function CaseWorkspaceAnalysisSection({
     ],
   );
 
-  const selectedAnalysisContent =
-    activeReviewStep === "judgment"
-      ? judgmentPanelContent
-      : activeReviewStep === "agreement"
-        ? agreementPanelContent
-        : aiClinicPanelContent;
-
   if (!mounted) {
     return null;
   }
@@ -1065,14 +1165,67 @@ export function CaseWorkspaceAnalysisSection({
           titleAs="h4"
           description={analysisDescription}
           aside={
-            <span
-              className={docSiteBadgeClass}
-            >{`${selectedCaseImageCount} ${imageCountLabel}`}</span>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span
+                className={docSiteBadgeClass}
+              >{`${selectedCaseImageCount} ${imageCountLabel}`}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="primary"
+                onClick={handleRunFullReviewFromHub}
+                disabled={
+                  fullReviewBusy ||
+                  validationBusy ||
+                  modelCompareBusy ||
+                  aiClinicBusy ||
+                  aiClinicExpandedBusy ||
+                  !(hasSelectedCase && canRunValidation)
+                }
+              >
+                {fullReviewBusy
+                  ? fullReviewBusyStep === "judgment"
+                    ? pick(locale, "Running Step 1...", "1단계 실행 중...")
+                    : fullReviewBusyStep === "agreement"
+                      ? pick(locale, "Running Step 2...", "2단계 실행 중...")
+                      : pick(locale, "Running Step 3...", "3단계 실행 중...")
+                  : pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
+              </Button>
+            </div>
           }
         />
         <div className={panelStackClass}>
           {analysisHubContent}
-          {selectedAnalysisContent}
+          <div
+            ref={judgmentPanelRef}
+            className={`grid gap-4 ${
+              activeReviewStep === "judgment"
+                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
+                : ""
+            }`}
+          >
+            {judgmentPanelContent}
+          </div>
+          <div
+            ref={agreementPanelRef}
+            className={`grid gap-4 ${
+              activeReviewStep === "agreement"
+                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
+                : ""
+            }`}
+          >
+            {agreementPanelContent}
+          </div>
+          <div
+            ref={aiClinicPanelRef}
+            className={`grid gap-4 ${
+              activeReviewStep === "ai_clinic"
+                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
+                : ""
+            }`}
+          >
+            {aiClinicPanelContent}
+          </div>
         </div>
       </section>
     </>

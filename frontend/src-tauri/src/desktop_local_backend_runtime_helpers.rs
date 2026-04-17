@@ -32,6 +32,29 @@ fn local_backend_health_url(base_url: &str) -> String {
     format!("{}/api/health", base_url.trim_end_matches('/'))
 }
 
+fn local_backend_startup_allows_required_check_failure(check: &str) -> bool {
+    matches!(check.trim(), "model_artifacts")
+}
+
+fn local_backend_health_body_allows_startup(body: &str) -> bool {
+    let Ok(payload) = serde_json::from_str::<JsonValue>(body) else {
+        return false;
+    };
+    let Some(failing_required_checks) = payload
+        .get("failing_required_checks")
+        .and_then(|value| value.as_array())
+    else {
+        return false;
+    };
+    !failing_required_checks.is_empty()
+        && failing_required_checks.iter().all(|value| {
+            value
+                .as_str()
+                .map(local_backend_startup_allows_required_check_failure)
+                .unwrap_or(false)
+        })
+}
+
 pub(super) fn local_backend_port_is_occupied(base_url: &str) -> bool {
     let Ok(url) = HttpUrl::parse(base_url) else {
         return false;
@@ -59,7 +82,14 @@ fn local_backend_is_healthy(base_url: &str) -> bool {
     let Ok(response) = client.get(local_backend_health_url(base_url)).send() else {
         return false;
     };
-    response.status().is_success()
+    if response.status().is_success() {
+        return true;
+    }
+    let Ok(body) = response.text() else {
+        return false;
+    };
+    // Missing local model artifacts should not block desktop login or case-list startup.
+    local_backend_health_body_allows_startup(&body)
 }
 
 fn wait_for_local_backend_health(base_url: &str, timeout: Duration) -> Result<(), String> {
@@ -138,4 +168,42 @@ pub(super) fn local_backend_python_candidates() -> Vec<String> {
         .into_iter()
         .map(|candidate| candidate.value)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_accepts_model_artifact_only_health_failure() {
+        let body = r#"{
+            "status": "error",
+            "ready": false,
+            "failing_required_checks": ["model_artifacts"]
+        }"#;
+
+        assert!(local_backend_health_body_allows_startup(body));
+    }
+
+    #[test]
+    fn startup_rejects_storage_or_database_health_failures() {
+        let body = r#"{
+            "status": "error",
+            "ready": false,
+            "failing_required_checks": ["data_plane_database"]
+        }"#;
+
+        assert!(!local_backend_health_body_allows_startup(body));
+    }
+
+    #[test]
+    fn startup_rejects_mixed_required_failures() {
+        let body = r#"{
+            "status": "error",
+            "ready": false,
+            "failing_required_checks": ["model_artifacts", "storage.storage_dir"]
+        }"#;
+
+        assert!(!local_backend_health_body_allows_startup(body));
+    }
 }

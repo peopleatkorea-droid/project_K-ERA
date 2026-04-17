@@ -1,16 +1,70 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import requests
 
 from kera_research.db import DATABASE_TOPOLOGY
 from kera_research.services.bundled_model_seed import ensure_bundled_current_model, reference_matches_bundled_seed
+from kera_research.services.model_artifacts import ModelArtifactStore
+from kera_research.services.preferred_operating_models import preferred_operating_model_versions
 
 
 class ControlPlaneModelFacade:
     def __init__(self, store: Any) -> None:
         self.store = store
+
+    def _model_reference_is_usable(self, model_reference: dict[str, Any] | None) -> bool:
+        if not isinstance(model_reference, dict) or not model_reference:
+            return False
+        if reference_matches_bundled_seed(model_reference) is not None:
+            return True
+        download_url = str(model_reference.get("download_url") or "").strip()
+        try:
+            ModelArtifactStore().resolve_model_path(model_reference, allow_download=False)
+            return True
+        except FileNotFoundError:
+            return bool(download_url)
+        except Exception:
+            local_path = str(model_reference.get("model_path") or model_reference.get("local_path") or "").strip()
+            return bool(local_path) and Path(local_path).expanduser().exists()
+
+    def _select_local_current_model(self) -> dict[str, Any] | None:
+        local_current = ensure_bundled_current_model(self.store)
+        if self._model_reference_is_usable(local_current):
+            return reference_matches_bundled_seed(local_current) or local_current
+
+        registry_current = self.store.registry.current_global_model()
+        if self._model_reference_is_usable(registry_current):
+            return reference_matches_bundled_seed(registry_current) or registry_current
+
+        for preferred_model in preferred_operating_model_versions():
+            self.store.registry.ensure_model_version(preferred_model)
+
+        registry_current = self.store.registry.current_global_model()
+        if self._model_reference_is_usable(registry_current):
+            return reference_matches_bundled_seed(registry_current) or registry_current
+
+        local_versions = [
+            item
+            for item in self.store.registry.list_model_versions()
+            if item.get("stage") == "global" and item.get("ready", True)
+        ]
+        usable_versions = [item for item in local_versions if self._model_reference_is_usable(item)]
+        if not usable_versions:
+            return None
+
+        chosen = sorted(
+            usable_versions,
+            key=lambda item: (
+                1 if item.get("is_current") else 0,
+                str(item.get("created_at") or ""),
+                str(item.get("version_id") or ""),
+            ),
+        )[-1]
+        promoted = self.store.registry.ensure_model_version({**chosen, "is_current": True})
+        return reference_matches_bundled_seed(promoted) or promoted
 
     def list_model_versions(self) -> list[dict[str, Any]]:
         remote_release = self.store._remote_current_release_manifest()
@@ -26,11 +80,15 @@ class ControlPlaneModelFacade:
         remote_release = self.store._remote_current_release_manifest() if use_remote_release else None
         if remote_release is not None:
             normalized_remote_release = self.store._normalize_remote_release(remote_release)
-            return reference_matches_bundled_seed(normalized_remote_release) or normalized_remote_release
-        return ensure_bundled_current_model(self.store)
+            effective_remote_release = (
+                reference_matches_bundled_seed(normalized_remote_release) or normalized_remote_release
+            )
+            if self._model_reference_is_usable(effective_remote_release):
+                return effective_remote_release
+        return self._select_local_current_model()
 
     def local_current_model(self) -> dict[str, Any] | None:
-        return ensure_bundled_current_model(self.store)
+        return self._select_local_current_model()
 
     def archive_model_version(self, version_id: str) -> dict[str, Any]:
         return self.store.registry.archive_model_version(version_id)

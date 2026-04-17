@@ -24,6 +24,10 @@ import type {
   ModelVersionRecord,
 } from "../../lib/api";
 import { pick, type Locale } from "../../lib/i18n";
+import type {
+  CaseWorkspaceModelCompareRunOptions,
+  CaseWorkspaceValidationRunOptions,
+} from "./shared";
 
 type Props = {
   locale: Locale;
@@ -38,14 +42,18 @@ type Props = {
   validationConfidenceTone: "high" | "medium" | "low";
   validationPredictedConfidence: number | null;
   selectedValidationModelVersionId: string | null;
-  onRunValidation: () => void;
+  onRunValidation: (
+    options?: CaseWorkspaceValidationRunOptions,
+  ) => Promise<CaseValidationResponse | null>;
   onSelectValidationModelVersion: (versionId: string | null) => void;
   artifactContent: ReactNode;
   modelCompareBusy: boolean;
   selectedCompareModelVersionIds: string[];
   compareModelCandidates: ModelVersionRecord[];
   onToggleModelVersion: (versionId: string, checked: boolean) => void;
-  onRunModelCompare: () => void;
+  onRunModelCompare: (
+    options?: CaseWorkspaceModelCompareRunOptions,
+  ) => Promise<CaseValidationCompareResponse | null>;
   modelCompareResult: CaseValidationCompareResponse | null;
   formatProbability: (
     value: number | null | undefined,
@@ -429,7 +437,10 @@ function ValidationPanelInner({
                   variant="ghost"
                   size="sm"
                   className={validationRunButtonClass}
-                  onClick={onRunValidation}
+                  onClick={() =>
+                    onRunValidation({
+                      selectionProfile: "single_case_review",
+                    })}
                   disabled={
                     validationBusy || !hasSelectedCase || !canRunValidation
                   }
@@ -1429,28 +1440,26 @@ function ValidationPanelInner({
               {pick(locale, "Step 2", "2단계")}
             </div>
           }
-          title={pick(locale, "Model agreement check", "모델 간 합의 확인")}
+          title={pick(locale, "Efficient MIL review", "Efficient MIL 검토")}
           titleAs="h4"
           description={pick(
             locale,
-            "Use this after Step 1 to choose which models join the agreement check. This does not change the anchor model used for the saved judgment above.",
-            "1단계 이후에 사용합니다. 여기서는 합의 확인에 넣을 모델만 고릅니다. 위의 저장 판정 기준 모델은 여기서 바뀌지 않습니다.",
+            "Use this after Step 1. The prepared visit-level Efficient MIL model is the default Step 2 path, and you can still add extra models here for an advanced comparison if needed.",
+            "1단계 이후에 사용합니다. 준비된 visit-level Efficient MIL 모델이 기본 2단계 경로이고, 필요하면 여기서 추가 모델을 넣어 고급 비교도 할 수 있습니다.",
           )}
           aside={
             showStepActions ? (
               <Button
                 variant="ghost"
                 type="button"
-                onClick={onRunModelCompare}
+                onClick={() => onRunModelCompare({ preferPreparedMil: true })}
                 disabled={
-                  modelCompareBusy ||
-                  !hasSelectedCase ||
-                  selectedCompareModelVersionIds.length === 0
+                  modelCompareBusy || !hasSelectedCase
                 }
               >
                 {modelCompareBusy
-                  ? pick(locale, "Checking agreement...", "합의 확인 중...")
-                  : pick(locale, "Check model agreement", "모델 합의 확인")}
+                  ? pick(locale, "Running Step 2...", "2단계 실행 중...")
+                  : pick(locale, "Run Step 2 review", "2단계 검토 실행")}
               </Button>
             ) : undefined
           }
@@ -1515,19 +1524,19 @@ function ValidationPanelInner({
             {!compareCandidatesAvailable
               ? pick(
                   locale,
-                  "No ready comparison models are loaded yet. If you just opened the case, wait a moment and this list should fill in automatically. If it stays empty, this site does not currently have extra ready models.",
-                  "비교 가능한 준비 완료 모델이 아직 불러와지지 않았습니다. 방금 케이스를 열었다면 잠시 후 이 목록이 자동으로 채워집니다. 계속 비어 있으면 현재 이 사이트에 추가 준비 완료 모델이 없는 상태입니다.",
+                  'The explicit Step 2 model list is still loading, but you can already run the prepared Efficient MIL fallback. If the list stays empty, the backend will still use the prepared visit-level MIL path.',
+                  "표시용 2단계 모델 목록은 아직 불러오는 중이지만, 준비된 Efficient MIL fallback은 이미 실행할 수 있습니다. 목록이 계속 비어 있어도 백엔드는 준비된 visit-level MIL 경로를 사용합니다.",
                 )
               : selectedCompareModelVersionIds.length > 0
               ? pick(
                   locale,
-                  `${selectedCompareModelVersionIds.length} model(s) selected. Click "Check model agreement" to compare them on this case.`,
-                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "모델 합의 확인"을 눌러 이 케이스에서 결과를 비교하세요.`,
+                  `${selectedCompareModelVersionIds.length} model(s) selected. Click "Run Step 2 review" to execute the prepared MIL path or your advanced comparison set on this case.`,
+                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "2단계 검토 실행"을 눌러 준비된 MIL 경로 또는 고급 비교 세트를 이 케이스에서 실행하세요.`,
                 )
               : pick(
                   locale,
-                  'Select one or more models below, then click "Check model agreement". Agreement is most useful with two or more models.',
-                  '아래에서 모델을 하나 이상 고른 뒤 "모델 합의 확인"을 누르세요. 합의 확인은 2개 이상 모델일 때 특히 유용합니다.',
+                  'Select one or more models below, then click "Run Step 2 review". The default recommendation is the prepared Efficient MIL model.',
+                  '아래에서 모델을 하나 이상 고른 뒤 "2단계 검토 실행"을 누르세요. 기본 권장 경로는 준비된 Efficient MIL 모델입니다.',
                 )}
           </div>
         ) : null}

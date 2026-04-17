@@ -373,6 +373,89 @@ function pickPreferredCompareModel(
   );
 }
 
+function findPreferredSelectableModelVersion(
+  modelVersions: ModelVersionRecord[],
+  preferredMatchers: Array<
+    (modelVersion: ModelVersionRecord, searchText: string) => boolean
+  >,
+): ModelVersionRecord | null {
+  const sortedModelVersions = sortCompareModelVersions(modelVersions);
+  for (const matcher of preferredMatchers) {
+    const match =
+      sortedModelVersions.find(
+        (modelVersion) =>
+          isSelectableCompareModelVersion(modelVersion) &&
+          matcher(modelVersion, modelVersionSearchText(modelVersion)),
+      ) ?? null;
+    if (match != null) {
+      return match;
+    }
+  }
+  return (
+    sortedModelVersions.find((modelVersion) =>
+      isSelectableCompareModelVersion(modelVersion),
+    ) ?? null
+  );
+}
+
+export function preferredValidationModelVersion(
+  modelVersions: ModelVersionRecord[],
+): ModelVersionRecord | null {
+  return findPreferredSelectableModelVersion(modelVersions, [
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "convnext_tiny",
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      normalizedModelVersionCropMode(modelVersion) !== "raw" &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s" &&
+      !searchText.includes("lesion_guided_fusion"),
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s" &&
+      !searchText.includes("lesion_guided_fusion"),
+    (modelVersion, searchText) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      searchText.includes("convnext_tiny_full"),
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "dinov2" &&
+      !String(modelVersion.case_aggregation || "")
+        .trim()
+        .toLowerCase()
+        .includes("mil"),
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      String(modelVersion.architecture || "").trim().toLowerCase() === "vit",
+    (modelVersion) =>
+      supportsValidationReviewArtifacts(modelVersion) &&
+      normalizedModelVersionCropMode(modelVersion) !== "raw",
+    (modelVersion) => supportsValidationReviewArtifacts(modelVersion),
+    (modelVersion) => isSelectableCompareModelVersion(modelVersion),
+  ]);
+}
+
+export function preferredVisitLevelMilModelVersion(
+  modelVersions: ModelVersionRecord[],
+): ModelVersionRecord | null {
+  return findPreferredSelectableModelVersion(modelVersions, [
+    (modelVersion, searchText) =>
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s_mil" &&
+      Boolean(modelVersion.bag_level) &&
+      (searchText.includes("efficientnet_v2_s_mil_full") ||
+        searchText.includes("efficientnet-v2-s-mil-full") ||
+        searchText.includes("efficientnet v2 s mil full")),
+    (modelVersion) =>
+      String(modelVersion.architecture || "").trim().toLowerCase() ===
+        "efficientnet_v2_s_mil" && Boolean(modelVersion.bag_level),
+  ]);
+}
+
 export function defaultModelCompareSelection(
   modelVersions: ModelVersionRecord[],
 ): string[] {
@@ -454,55 +537,5 @@ export function defaultModelCompareSelection(
 export function defaultValidationModelVersionSelection(
   modelVersions: ModelVersionRecord[],
 ): string | null {
-  const sortedModelVersions = sortCompareModelVersions(modelVersions);
-  const preferredMatchers: Array<
-    (modelVersion: ModelVersionRecord, searchText: string) => boolean
-  > = [
-    (modelVersion) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      String(modelVersion.architecture || "").trim().toLowerCase() ===
-        "convnext_tiny",
-    (modelVersion, searchText) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      normalizedModelVersionCropMode(modelVersion) !== "raw" &&
-      String(modelVersion.architecture || "").trim().toLowerCase() ===
-        "efficientnet_v2_s" &&
-      !searchText.includes("lesion_guided_fusion"),
-    (modelVersion, searchText) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      String(modelVersion.architecture || "").trim().toLowerCase() ===
-        "efficientnet_v2_s" &&
-      !searchText.includes("lesion_guided_fusion"),
-    (modelVersion) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      String(modelVersion.architecture || "").trim().toLowerCase() ===
-        "convnext_tiny",
-    (modelVersion, searchText) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      String(modelVersion.architecture || "").trim().toLowerCase() ===
-        "dinov2" &&
-      !searchText.includes("mil"),
-    (modelVersion) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      String(modelVersion.architecture || "").trim().toLowerCase() === "vit",
-    (modelVersion) =>
-      supportsValidationReviewArtifacts(modelVersion) &&
-      normalizedModelVersionCropMode(modelVersion) !== "raw",
-    (modelVersion) => supportsValidationReviewArtifacts(modelVersion),
-    (modelVersion) => isSelectableCompareModelVersion(modelVersion),
-  ];
-
-  for (const matcher of preferredMatchers) {
-    const match =
-      sortedModelVersions.find(
-        (modelVersion) =>
-          isSelectableCompareModelVersion(modelVersion) &&
-          matcher(modelVersion, modelVersionSearchText(modelVersion)),
-      ) ?? null;
-    if (match?.version_id) {
-      return match.version_id;
-    }
-  }
-
-  return null;
+  return preferredValidationModelVersion(modelVersions)?.version_id ?? null;
 }

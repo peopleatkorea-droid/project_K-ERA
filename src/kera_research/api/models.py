@@ -91,6 +91,7 @@ class CaseValidationRequest(BaseModel):
     execution_mode: str = "auto"
     model_version_id: str | None = None
     model_version_ids: list[str] = Field(default_factory=list)
+    selection_profile: str | None = None
     generate_gradcam: bool = True
     generate_medsam: bool = True
 
@@ -210,6 +211,7 @@ class CaseValidationCompareRequest(BaseModel):
     patient_id: str
     visit_date: str
     model_version_ids: list[str] = Field(default_factory=list)
+    selection_profile: str | None = None
     execution_mode: str = "auto"
     generate_gradcam: bool = False
     generate_medsam: bool = False

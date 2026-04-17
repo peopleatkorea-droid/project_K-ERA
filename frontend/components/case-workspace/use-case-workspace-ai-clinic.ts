@@ -13,7 +13,10 @@ import {
 import {
   withAiClinicSimilarCasePreviews,
 } from "./case-workspace-ai-clinic-helpers";
-import type { AiClinicPreviewResponse } from "./shared";
+import type {
+  AiClinicPreviewResponse,
+  CaseWorkspaceAiClinicRunOptions,
+} from "./shared";
 
 type ToastState = {
   tone: "success" | "error";
@@ -62,7 +65,7 @@ export function useCaseWorkspaceAiClinic({
   setPanelOpen,
   copy,
 }: Args) {
-  const AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND = "standard" as const;
+  const AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND = "dinov2" as const;
   const AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE = "dinov2_lesion_crop" as const;
   const [aiClinicBusy, setAiClinicBusy] = useState(false);
   const [aiClinicExpandedBusy, setAiClinicExpandedBusy] = useState(false);
@@ -166,74 +169,84 @@ export function useCaseWorkspaceAiClinic({
     clearAiClinicPreview();
   }, [clearAiClinicPreview, validationResult]);
 
-  const handleRunAiClinic = useCallback(async () => {
-    if (!selectedSiteId || !selectedCase) {
-      setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
-      return;
-    }
-    if (!validationResult) {
-      setToast({ tone: "error", message: copy.selectValidationBeforeAiClinic });
-      return;
-    }
-
-    clearAiClinicPreview();
-    setAiClinicBusy(true);
-    setPanelOpen(true);
-    const requestId = aiClinicRequestRef.current;
-    try {
-      const result = await runCaseAiClinicSimilarCases(selectedSiteId, token, {
-        patient_id: selectedCase.patient_id,
-        visit_date: selectedCase.visit_date,
-        execution_mode: executionModeFromDevice(
-          validationResult.execution_device,
-        ),
-        model_version_id: validationResult.model_version.version_id,
-        top_k: 3,
-        retrieval_backend: AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND,
-        retrieval_profile: AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE,
-      });
-      if (aiClinicRequestRef.current !== requestId) {
-        return;
+  const handleRunAiClinic = useCallback(
+    async (options?: CaseWorkspaceAiClinicRunOptions) => {
+      const anchorValidationResult =
+        options?.validationResult ?? validationResult ?? null;
+      if (!selectedSiteId || !selectedCase) {
+        setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
+        return null;
       }
-      const nextResult = withAiClinicSimilarCasePreviews(result, null);
-      const previewRequestId = aiClinicPreviewRequestRef.current;
-      setAiClinicResult(nextResult);
-      setToast({
-        tone: "success",
-        message: copy.aiClinicReady(nextResult.similar_cases.length),
-      });
-      void hydrateAiClinicSimilarCasePreviews(
-        nextResult.similar_cases,
-        previewRequestId,
-      );
-    } catch (nextError) {
-      if (aiClinicRequestRef.current === requestId) {
+      if (!anchorValidationResult) {
         setToast({
           tone: "error",
-          message: describeError(nextError, copy.aiClinicFailed),
+          message: copy.selectValidationBeforeAiClinic,
         });
+        return null;
       }
-    } finally {
-      if (aiClinicRequestRef.current === requestId) {
-        setAiClinicBusy(false);
+
+      clearAiClinicPreview();
+      setAiClinicBusy(true);
+      setPanelOpen(true);
+      const requestId = aiClinicRequestRef.current;
+      try {
+        const result = await runCaseAiClinicSimilarCases(selectedSiteId, token, {
+          patient_id: selectedCase.patient_id,
+          visit_date: selectedCase.visit_date,
+          execution_mode: executionModeFromDevice(
+            anchorValidationResult.execution_device,
+          ),
+          model_version_id: anchorValidationResult.model_version.version_id,
+          top_k: 3,
+          retrieval_backend: AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND,
+          retrieval_profile: AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE,
+        });
+        if (aiClinicRequestRef.current !== requestId) {
+          return null;
+        }
+        const nextResult = withAiClinicSimilarCasePreviews(result, null);
+        const previewRequestId = aiClinicPreviewRequestRef.current;
+        setAiClinicResult(nextResult);
+        setToast({
+          tone: "success",
+          message: copy.aiClinicReady(nextResult.similar_cases.length),
+        });
+        void hydrateAiClinicSimilarCasePreviews(
+          nextResult.similar_cases,
+          previewRequestId,
+        );
+        return nextResult;
+      } catch (nextError) {
+        if (aiClinicRequestRef.current === requestId) {
+          setToast({
+            tone: "error",
+            message: describeError(nextError, copy.aiClinicFailed),
+          });
+        }
+        return null;
+      } finally {
+        if (aiClinicRequestRef.current === requestId) {
+          setAiClinicBusy(false);
+        }
       }
-    }
-  }, [
-    clearAiClinicPreview,
-    copy.aiClinicFailed,
-    copy.aiClinicReady,
-    copy.selectSavedCaseForValidation,
-    copy.selectValidationBeforeAiClinic,
-    describeError,
-    executionModeFromDevice,
-    hydrateAiClinicSimilarCasePreviews,
-    selectedCase,
-    selectedSiteId,
-    setPanelOpen,
-    setToast,
-    token,
-    validationResult,
-  ]);
+    },
+    [
+      clearAiClinicPreview,
+      copy.aiClinicFailed,
+      copy.aiClinicReady,
+      copy.selectSavedCaseForValidation,
+      copy.selectValidationBeforeAiClinic,
+      describeError,
+      executionModeFromDevice,
+      hydrateAiClinicSimilarCasePreviews,
+      selectedCase,
+      selectedSiteId,
+      setPanelOpen,
+      setToast,
+      token,
+      validationResult,
+    ],
+  );
 
   const handleExpandAiClinic = useCallback(async () => {
     if (!selectedSiteId || !selectedCase) {

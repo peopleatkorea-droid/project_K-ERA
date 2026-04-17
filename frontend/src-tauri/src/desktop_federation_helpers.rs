@@ -83,9 +83,28 @@ fn patient_reference_salt() -> String {
         .unwrap_or_else(|| DEFAULT_CASE_REFERENCE_SALT.to_string())
 }
 
+fn case_reference_salt() -> String {
+    resolve_federation_salt_config()
+        .case_reference_salt
+        .unwrap_or_else(|| DEFAULT_CASE_REFERENCE_SALT.to_string())
+}
+
 pub(super) fn make_id(prefix: &str) -> String {
     let identifier = Uuid::new_v4().simple().to_string();
     format!("{prefix}_{}", &identifier[..10])
+}
+
+pub(super) fn make_case_reference_id(site_id: &str, patient_id: &str, visit_date: &str) -> String {
+    let payload = format!(
+        "{}::{}::{}::{}",
+        case_reference_salt(),
+        site_id.trim(),
+        patient_id.trim(),
+        visit_date.trim()
+    );
+    let digest = Sha256::digest(payload.as_bytes());
+    let hex = format!("{digest:x}");
+    format!("caseref_{}", &hex[..20])
 }
 
 pub(super) fn make_patient_reference_id(site_id: &str, patient_id: &str) -> String {
