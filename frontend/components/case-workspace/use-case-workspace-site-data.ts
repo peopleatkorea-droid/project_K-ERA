@@ -138,7 +138,6 @@ export function useCaseWorkspaceSiteData({
     markPatientVisitGalleryError,
     commitCaseImages,
     primeCaseImageCache,
-    warmDesktopVisitImagePreviews,
     loadPatientImageRecords,
     ensurePatientVisitImagesLoaded,
   } = useCaseWorkspaceImageCache({
@@ -180,7 +179,6 @@ export function useCaseWorkspaceSiteData({
     markPatientVisitGalleryError,
     ensurePatientVisitImagesLoaded,
     loadPatientImageRecords,
-    warmDesktopVisitImagePreviews,
     commitCaseImages,
     selectedCaseImageCaseIdRef,
     caseImageCacheRef,

@@ -86,6 +86,7 @@ type Props = {
   lesionCropUrl: string | null | undefined;
   lesionMaskUrl: string | null | undefined;
   emptyMessage?: string | null;
+  compact?: boolean;
 };
 
 function ValidationArtifactStackInner({
@@ -99,10 +100,120 @@ function ValidationArtifactStackInner({
   lesionCropUrl,
   lesionMaskUrl,
   emptyMessage,
+  compact = false,
 }: Props) {
+  const stackClass = compact ? "grid gap-3" : panelImageStackClass;
+  const cardClass = compact
+    ? "grid gap-2 rounded-[14px] border border-border bg-surface-muted/80 p-3"
+    : panelImageCardClass;
+  const copyClass = compact ? "grid gap-0.5 text-xs leading-5 text-muted" : panelImageCopyClass;
+  const previewClass = compact
+    ? "aspect-[4/3] max-h-[220px] w-full rounded-[12px] border border-border/60 bg-surface object-contain"
+    : panelImagePreviewClass;
+  const artifacts = compact
+    ? [
+        {
+          key: "gradcam",
+          enabled: Boolean(gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl),
+          title: pick(locale, "Grad-CAM", "Grad-CAM"),
+          subtitle: pick(locale, "Model evidence overlay", "모델 근거 오버레이"),
+          content: gradcamUrl ? (
+            <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={previewClass} loading="lazy" decoding="async" />
+          ) : null,
+        },
+        {
+          key: "roi_crop",
+          enabled: Boolean(roiCropUrl),
+          title: pick(locale, "Cornea crop", "각막 crop"),
+          subtitle: pick(locale, "Cornea-focused crop", "각막 중심 crop"),
+          content: roiCropUrl ? (
+            <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={previewClass} loading="lazy" decoding="async" />
+          ) : null,
+        },
+        {
+          key: "medsam_mask",
+          enabled: Boolean(medsamMaskUrl),
+          title: pick(locale, "Cornea mask", "각막 mask"),
+          subtitle: pick(locale, "Cornea segmentation", "각막 분할"),
+          content: medsamMaskUrl ? (
+            <MaskOverlayPreview
+              sourceUrl={representativePreviewUrl}
+              maskUrl={medsamMaskUrl}
+              alt={pick(locale, "Cornea mask overlay", "각막 mask 오버레이")}
+              tint={[231, 211, 111]}
+            />
+          ) : null,
+        },
+        {
+          key: "lesion_crop",
+          enabled: Boolean(lesionCropUrl),
+          title: pick(locale, "Lesion crop", "병변 crop"),
+          subtitle: pick(locale, "Lesion-centered crop", "병변 중심 crop"),
+          content: lesionCropUrl ? (
+            <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={previewClass} loading="lazy" decoding="async" />
+          ) : null,
+        },
+        {
+          key: "lesion_mask",
+          enabled: Boolean(lesionMaskUrl),
+          title: pick(locale, "Lesion mask", "병변 mask"),
+          subtitle: pick(locale, "Lesion segmentation", "병변 분할"),
+          content: lesionMaskUrl ? (
+            <MaskOverlayPreview
+              sourceUrl={representativePreviewUrl}
+              maskUrl={lesionMaskUrl}
+              alt={pick(locale, "Lesion mask overlay", "병변 mask 오버레이")}
+              tint={[242, 164, 154]}
+            />
+          ) : null,
+        },
+        {
+          key: "gradcam_cornea",
+          enabled: Boolean(gradcamCorneaUrl),
+          title: pick(locale, "Cornea Grad-CAM", "각막 Grad-CAM"),
+          subtitle: pick(locale, "Context branch attention", "문맥 branch attention"),
+          content: gradcamCorneaUrl ? (
+            <img
+              src={gradcamCorneaUrl}
+              alt={pick(locale, "Cornea branch Grad-CAM", "각막 branch Grad-CAM")}
+              className={previewClass}
+              loading="lazy"
+              decoding="async"
+            />
+          ) : null,
+        },
+        {
+          key: "gradcam_lesion",
+          enabled: Boolean(gradcamLesionUrl),
+          title: pick(locale, "Lesion Grad-CAM", "병변 Grad-CAM"),
+          subtitle: pick(locale, "Lesion-detail branch attention", "병변 세부 branch attention"),
+          content: gradcamLesionUrl ? (
+            <img
+              src={gradcamLesionUrl}
+              alt={pick(locale, "Lesion branch Grad-CAM", "병변 branch Grad-CAM")}
+              className={previewClass}
+              loading="lazy"
+              decoding="async"
+            />
+          ) : null,
+        },
+      ].filter((item) => item.enabled)
+    : null;
+
   return (
-    <div className={panelImageStackClass}>
-      {roiCropUrl ? (
+    <div className={stackClass}>
+      {compact && artifacts ? (
+        artifacts.map((artifact) => (
+          <div key={artifact.key} className={cardClass}>
+            {artifact.content}
+            <div className={copyClass}>
+              <strong>{artifact.title}</strong>
+              <span>{artifact.subtitle}</span>
+            </div>
+          </div>
+        ))
+      ) : null}
+      {!compact && roiCropUrl ? (
         <div className={panelImageCardClass}>
           <img src={roiCropUrl} alt={pick(locale, "Cornea crop", "각막 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
@@ -111,7 +222,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl ? (
+      {!compact && gradcamUrl && !gradcamCorneaUrl && !gradcamLesionUrl ? (
         <div className={panelImageCardClass}>
           <img src={gradcamUrl} alt={pick(locale, "Grad-CAM", "Grad-CAM")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
@@ -120,7 +231,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {gradcamCorneaUrl ? (
+      {!compact && gradcamCorneaUrl ? (
         <div className={panelImageCardClass}>
           <img
             src={gradcamCorneaUrl}
@@ -135,7 +246,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {gradcamLesionUrl ? (
+      {!compact && gradcamLesionUrl ? (
         <div className={panelImageCardClass}>
           <img
             src={gradcamLesionUrl}
@@ -150,7 +261,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {medsamMaskUrl ? (
+      {!compact && medsamMaskUrl ? (
         <div className={panelImageCardClass}>
           <MaskOverlayPreview
             sourceUrl={representativePreviewUrl}
@@ -164,7 +275,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {lesionCropUrl ? (
+      {!compact && lesionCropUrl ? (
         <div className={panelImageCardClass}>
           <img src={lesionCropUrl} alt={pick(locale, "Lesion crop", "병변 crop")} className={panelImagePreviewClass} loading="lazy" decoding="async" />
           <div className={panelImageCopyClass}>
@@ -173,7 +284,7 @@ function ValidationArtifactStackInner({
           </div>
         </div>
       ) : null}
-      {lesionMaskUrl ? (
+      {!compact && lesionMaskUrl ? (
         <div className={panelImageCardClass}>
           <MaskOverlayPreview
             sourceUrl={representativePreviewUrl}

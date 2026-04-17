@@ -83,6 +83,18 @@ function revokeUrls(urls: string[]) {
   }
 }
 
+function appendArtifactVersion(
+  url: string | null,
+  validationId: string,
+  artifactKind: CaseWorkspaceValidationArtifactKind,
+) {
+  if (!url || url.startsWith("blob:")) {
+    return url;
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}kera_v=${encodeURIComponent(`${validationId}:${artifactKind}`)}`;
+}
+
 export function useCaseWorkspaceValidation({
   locale,
   token,
@@ -213,7 +225,11 @@ export function useCaseWorkspaceValidation({
         if (desktopArtifactPath) {
           const desktopUrl = await convertDesktopFilePath(desktopArtifactPath);
           if (desktopUrl) {
-            nextArtifacts[artifactKind] = desktopUrl;
+            nextArtifacts[artifactKind] = appendArtifactVersion(
+              desktopUrl,
+              result.summary.validation_id,
+              artifactKind,
+            );
             continue;
           }
         }
@@ -228,7 +244,11 @@ export function useCaseWorkspaceValidation({
         if (url) {
           validationArtifactUrlsRef.current.push(url);
         }
-        nextArtifacts[artifactKind] = url;
+        nextArtifacts[artifactKind] = appendArtifactVersion(
+          url,
+          result.summary.validation_id,
+          artifactKind,
+        );
       } catch {
         nextArtifacts[artifactKind] = null;
       }

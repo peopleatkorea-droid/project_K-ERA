@@ -63,12 +63,6 @@ type Args = {
     patientId: string,
     signal?: AbortSignal,
   ) => Promise<Map<string, SavedImagePreview[]>>;
-  warmDesktopVisitImagePreviews: (
-    siteId: string,
-    caseRecord: CaseSummaryRecord,
-    images: SavedImagePreview[],
-    signal?: AbortSignal,
-  ) => Promise<void>;
   commitCaseImages: (caseId: string, images: SavedImagePreview[]) => void;
   selectedCaseImageCaseIdRef: MutableRefObject<string | null>;
   caseImageCacheRef: MutableRefObject<Map<string, SavedImagePreview[]>>;
@@ -107,7 +101,6 @@ export function useCaseWorkspaceSelectedCaseReview({
   markPatientVisitGalleryError,
   ensurePatientVisitImagesLoaded,
   loadPatientImageRecords,
-  warmDesktopVisitImagePreviews,
   commitCaseImages,
   selectedCaseImageCaseIdRef,
   caseImageCacheRef,
@@ -193,17 +186,6 @@ export function useCaseWorkspaceSelectedCaseReview({
           ? cachedPatientVisitGallery
           : { [currentCase.case_id]: [] },
       );
-    }
-
-    if (hasCachedSelectedCaseImages) {
-      setTimeout(() => {
-        void warmDesktopVisitImagePreviews(
-          currentSiteId,
-          currentCase,
-          cachedSelectedCaseImages,
-          controller.signal,
-        );
-      }, 500);
     }
 
     async function loadSelectedCaseImages(): Promise<void> {
@@ -294,12 +276,6 @@ export function useCaseWorkspaceSelectedCaseReview({
           commitCaseImages(caseItem.case_id, visitImages);
           markPatientVisitGalleryError(caseItem.case_id, false);
           markPatientVisitGalleryLoading(caseItem.case_id, false);
-          void warmDesktopVisitImagePreviews(
-            currentSiteId,
-            caseItem,
-            visitImages,
-            controller.signal,
-          );
         }
       } catch (nextError) {
         if (isAbortError(nextError)) {

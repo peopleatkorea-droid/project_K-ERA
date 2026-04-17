@@ -123,6 +123,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 "predicted_label": case_prediction.get("predicted_label"),
                 "true_label": case_prediction.get("true_label"),
                 "prediction_probability": case_prediction.get("prediction_probability"),
+                "predicted_confidence": case_prediction.get("predicted_confidence"),
                 "is_correct": case_prediction.get("is_correct"),
             }
             post_mortem = resolve_case_postmortem_with_response_budget(

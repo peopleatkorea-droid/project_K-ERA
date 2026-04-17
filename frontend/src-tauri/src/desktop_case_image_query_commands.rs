@@ -176,6 +176,7 @@ pub(super) fn ensure_image_previews(
     }
 
     let mut records = Vec::new();
+    let mut warm_preview_jobs = Vec::new();
     for image_id in unique_ids {
         let Some(stored_image_path) = path_by_id.get(&image_id) else {
             records.push(ImagePreviewPathRecord {
@@ -188,7 +189,18 @@ pub(super) fn ensure_image_previews(
         };
         let source_path = resolve_site_runtime_path(&site_id, stored_image_path)?;
         let fallback_path = existing_file_path_string(&source_path);
-        let preview_path = preview_file_path(&site_id, &image_id, &source_path, max_side).ok();
+        let preview_path = match cached_preview_file_path(&site_id, &image_id, max_side) {
+            Ok(Some(path)) => Some(path),
+            Ok(None) => {
+                if let Some(job) =
+                    maybe_queue_preview_job(&site_id, &image_id, &source_path, max_side)
+                {
+                    warm_preview_jobs.push(job);
+                }
+                None
+            }
+            Err(_) => None,
+        };
         records.push(ImagePreviewPathRecord {
             image_id,
             ready: preview_path.is_some(),
@@ -196,6 +208,7 @@ pub(super) fn ensure_image_previews(
             fallback_path,
         });
     }
+    queue_preview_generation_batch(warm_preview_jobs);
     Ok(records)
 }
 
@@ -204,11 +217,17 @@ mod desktop_case_image_query_command_tests {
     use std::env;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rusqlite::{params, Connection};
 
-    use super::query_visible_workspace_images;
+    use super::{ensure_image_previews, query_visible_workspace_images, EnsureImagePreviewsRequest};
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn temp_image_path(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -217,6 +236,17 @@ mod desktop_case_image_query_command_tests {
             .as_nanos();
         let path = env::temp_dir().join(format!("kera_image_query_test_{suffix}_{name}.png"));
         fs::write(&path, b"test-image").expect("write image");
+        path
+    }
+
+    fn temp_valid_image_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = env::temp_dir().join(format!("kera_image_query_valid_{suffix}_{name}.png"));
+        let image = image::RgbImage::from_pixel(32, 32, image::Rgb([180, 80, 60]));
+        image.save(&path).expect("save image");
         path
     }
 
@@ -495,5 +525,78 @@ mod desktop_case_image_query_command_tests {
 
         fs::remove_file(hidden_path).ok();
         fs::remove_file(visible_path).ok();
+    }
+
+    #[test]
+    fn ensure_image_previews_returns_fallback_without_sync_generation() {
+        let _guard = test_env_lock().lock().expect("test env lock");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("kera_image_preview_query_{suffix}"));
+        let storage_dir = root.join("storage");
+        let db_path = root.join("data-plane.sqlite3");
+        let image_path = temp_valid_image_path("preview");
+
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        let conn = Connection::open(&db_path).expect("sqlite file");
+        conn.execute_batch(
+            "
+            create table images (
+              site_id text not null,
+              visit_id text not null,
+              image_id text not null,
+              patient_id text not null,
+              visit_date text not null,
+              image_path text,
+              soft_deleted_at text
+            );
+            ",
+        )
+        .expect("schema");
+        conn.execute(
+            "insert into images (
+               site_id, visit_id, image_id, patient_id, visit_date, image_path, soft_deleted_at
+             ) values (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "site_a",
+                "visit_a",
+                "img_preview",
+                "PAT-001",
+                "Initial",
+                image_path.to_string_lossy().to_string(),
+                Option::<&str>::None,
+            ],
+        )
+        .expect("insert image");
+        drop(conn);
+
+        env::set_var(
+            "KERA_DATA_PLANE_DATABASE_URL",
+            format!("sqlite:///{}", db_path.to_string_lossy()),
+        );
+        env::set_var("KERA_STORAGE_DIR", &storage_dir);
+
+        let records = ensure_image_previews(EnsureImagePreviewsRequest {
+            site_id: "site_a".to_string(),
+            image_ids: vec!["img_preview".to_string()],
+            max_side: Some(640),
+        })
+        .expect("ensure previews");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].image_id, "img_preview");
+        assert_eq!(
+            records[0].fallback_path.as_deref(),
+            Some(image_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(records[0].preview_path, None);
+        assert!(!records[0].ready);
+
+        env::remove_var("KERA_STORAGE_DIR");
+        env::remove_var("KERA_DATA_PLANE_DATABASE_URL");
+        fs::remove_file(image_path).ok();
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -124,7 +124,7 @@ describe("case-workspace side panel props", () => {
       "v1",
     ]);
     expect(props.analysisTitle).toBe(
-      "Single-case judgment, Efficient MIL review, and DINOv2 similar-patient review",
+      "Image-level analysis, visit-level analysis, and image retrieval",
     );
     expect(props.displayVisitReference("FU #1")).toBe("Visit FU #1");
     await props.onRunValidation();

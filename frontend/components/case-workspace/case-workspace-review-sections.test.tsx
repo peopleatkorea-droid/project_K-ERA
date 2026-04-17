@@ -60,7 +60,7 @@ describe("case-workspace review sections", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Run single-case judgment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run image-level analysis" }));
 
     await waitFor(() => {
       expect(onRunValidation).toHaveBeenCalledWith({
@@ -172,15 +172,15 @@ describe("case-workspace review sections", () => {
       />,
     );
 
-    expect(screen.getByText("Single-case AI judgment")).toBeInTheDocument();
-    expect(screen.getByText("Similar-patient review")).toBeInTheDocument();
+    expect(screen.getAllByText("Image-level analysis").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Image retrieval").length).toBeGreaterThan(0);
     expect(
       screen.getByText(
-        "Use this after Step 1. The prepared visit-level Efficient MIL model is the default Step 2 path, and you can still add extra models here for an advanced comparison if needed.",
+        "Use this after Step 1. The prepared Efficient MIL visit-level pass is the default Step 2 path, and extra models are optional.",
       ),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Run steps 1-3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run analyses 1-3" }));
 
     await waitFor(() => {
       expect(onRunValidation).toHaveBeenCalledTimes(1);
@@ -299,7 +299,7 @@ describe("case-workspace review sections", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Run steps 1-3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run analyses 1-3" }));
 
     await waitFor(() => {
       expect(onRunValidation).toHaveBeenCalledTimes(1);
@@ -308,5 +308,110 @@ describe("case-workspace review sections", () => {
 
     expect(onRunAiClinic).not.toHaveBeenCalled();
     expect(callOrder).toEqual(["validation", "compare"]);
+  });
+
+  it("runs Step 3 retrieval when the cluster tab is selected without a prepared result", async () => {
+    const onRunAiClinic = vi.fn(async () => ({
+      analysis_stage: "similar_cases",
+      query_case: {
+        patient_id: "P-001",
+        visit_date: "Initial",
+      },
+      similar_cases: [],
+      eligible_candidate_count: 0,
+      ai_clinic_profile: null,
+      text_evidence: [],
+    } as any));
+
+    render(
+      <CaseWorkspaceAnalysisSection
+        locale="en"
+        token="token"
+        selectedSiteId="SITE_A"
+        mounted
+        analysisEyebrow="Clinical AI review"
+        analysisTitle="Analysis"
+        analysisDescription="Description"
+        imageCountLabel="images"
+        commonLoading="Loading"
+        commonNotAvailable="N/A"
+        hasSelectedCase
+        canRunRoiPreview
+        canRunValidation
+        canRunAiClinic
+        selectedCaseImageCount={3}
+        representativePreviewUrl={null}
+        selectedCompareModelVersionIds={[]}
+        selectedValidationModelVersionId={null}
+        compareModelCandidates={[]}
+        validationBusy={false}
+        validationResult={{
+          summary: {
+            validation_id: "validation_1",
+            patient_id: "P-001",
+            visit_date: "Initial",
+            predicted_label: "bacterial",
+            true_label: "bacterial",
+            prediction_probability: 0.79,
+            is_correct: true,
+          },
+          model_version: {
+            version_id: "model_convnext",
+            version_name: "conv-v1",
+            architecture: "convnext_tiny",
+            crop_mode: "raw",
+          },
+          execution_device: "gpu",
+          artifact_availability: {
+            gradcam: true,
+            gradcam_cornea: false,
+            gradcam_lesion: false,
+            roi_crop: false,
+            medsam_mask: false,
+            lesion_crop: false,
+            lesion_mask: false,
+          },
+          case_prediction: null,
+          post_mortem: null,
+        } as any}
+        validationArtifacts={{}}
+        modelCompareBusy={false}
+        modelCompareResult={null}
+        aiClinicBusy={false}
+        aiClinicExpandedBusy={false}
+        aiClinicResult={null}
+        aiClinicPreviewBusy={false}
+        hasAnySavedLesionBox={false}
+        roiPreviewBusy={false}
+        lesionPreviewBusy={false}
+        roiPreviewItems={[]}
+        lesionPreviewItems={[]}
+        pickLabel={(_locale, en) => en}
+        translateOption={(_locale, _group, value) => value}
+        setToast={vi.fn()}
+        setSelectedCompareModelVersionIds={vi.fn()}
+        setSelectedValidationModelVersionId={vi.fn()}
+        onRunValidation={vi.fn()}
+        onRunModelCompare={vi.fn()}
+        onRunAiClinic={onRunAiClinic}
+        onExpandAiClinic={vi.fn()}
+        onRunRoiPreview={vi.fn()}
+        onRunLesionPreview={vi.fn()}
+        displayVisitReference={(visitReference) => visitReference}
+        aiClinicTextUnavailableLabel="Unavailable"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "3D cluster map" }));
+
+    await waitFor(() => {
+      expect(onRunAiClinic).toHaveBeenCalledWith({
+        validationResult: expect.objectContaining({
+          summary: expect.objectContaining({
+            validation_id: "validation_1",
+          }),
+        }),
+      });
+    });
   });
 });

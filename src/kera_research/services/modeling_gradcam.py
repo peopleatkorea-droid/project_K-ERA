@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import ImageFilter
 
 
 def _deps():
@@ -156,9 +157,13 @@ def dinov2_gradcam_projection(model: Any, label: str) -> Any:
 def normalize_cam_feature_map(tensor: Any) -> Any:
     if tensor.ndim != 3:
         raise RuntimeError(f"Grad-CAM target layer must produce a 3D feature map, got shape {tuple(tensor.shape)}.")
-    if tensor.shape[0] <= tensor.shape[-1]:
+    shape = tuple(int(dim) for dim in tensor.shape)
+    channel_axis = max(range(3), key=lambda index: shape[index])
+    if channel_axis == 0:
         return tensor
-    return tensor.permute(2, 0, 1).contiguous()
+    if channel_axis == 2:
+        return tensor.permute(2, 0, 1).contiguous()
+    return tensor.permute(1, 0, 2).contiguous()
 
 
 def cam_array_from_tensors(manager: Any, activation_tensor: Any, gradient_tensor: Any) -> np.ndarray:
@@ -340,20 +345,29 @@ def generate_paired_cam_artifacts_from_layer(
 def overlay_heatmap(manager: Any, original_array: np.ndarray, heatmap: np.ndarray) -> np.ndarray:
     del manager
     md = _deps()
-    resized_heatmap = np.array(
-        md.Image.fromarray((heatmap * 255).astype(np.uint8)).resize(
-            (original_array.shape[1], original_array.shape[0]),
-        ),
+    resampling = getattr(md.Image, "Resampling", md.Image)
+    resized_heatmap = md.Image.fromarray((np.clip(heatmap, 0.0, 1.0) * 255).astype(np.uint8))
+    resized_heatmap = resized_heatmap.resize(
+        (original_array.shape[1], original_array.shape[0]),
+        resample=resampling.BICUBIC,
     )
-    normalized = resized_heatmap.astype(np.float32) / 255.0
-    emphasis = np.clip((normalized - 0.35) / 0.65, 0.0, 1.0)
-    alpha = np.where(emphasis > 0, 0.12 + emphasis * 0.43, 0.0).astype(np.float32)
+    blur_radius = max(1.4, min(max(original_array.shape[:2]) / 120.0, 6.0))
+    resized_heatmap = resized_heatmap.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    normalized = np.asarray(resized_heatmap, dtype=np.float32) / 255.0
+    focus_floor = float(np.quantile(normalized, 0.72))
+    focus_ceiling = float(np.quantile(normalized, 0.995))
+    if focus_ceiling <= focus_floor:
+        focus_ceiling = float(normalized.max())
+        focus_floor = max(0.0, focus_ceiling * 0.55)
+    emphasis = np.clip((normalized - focus_floor) / max(focus_ceiling - focus_floor, 1e-6), 0.0, 1.0)
+    emphasis = np.power(emphasis, 1.85, dtype=np.float32)
+    alpha = (0.58 * emphasis).astype(np.float32)
     alpha = alpha[..., None]
 
     color = np.zeros_like(original_array, dtype=np.float32)
     color[..., 0] = 255.0
-    color[..., 1] = 90.0 + emphasis * 120.0
-    color[..., 2] = 20.0 + (1.0 - emphasis) * 35.0
+    color[..., 1] = 175.0 + emphasis * 55.0
+    color[..., 2] = 40.0 + (1.0 - emphasis) * 24.0
 
     original = original_array.astype(np.float32)
     blended = original * (1.0 - alpha) + color * alpha

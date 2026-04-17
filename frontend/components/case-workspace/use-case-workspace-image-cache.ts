@@ -411,12 +411,6 @@ export function useCaseWorkspaceImageCache({
           return images;
         }
         commitCaseImages(caseRecord.case_id, images);
-        void warmDesktopVisitImagePreviews(
-          siteId,
-          caseRecord,
-          images,
-          options.signal,
-        );
         return images;
       } catch (nextError) {
         if (!isAbortError(nextError)) {

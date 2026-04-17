@@ -835,6 +835,7 @@ export type AiClinicResponse = {
     predicted_label?: string | null;
     true_label?: string | null;
     prediction_probability?: number | null;
+    predicted_confidence?: number | null;
     is_correct?: boolean | null;
   } | null;
   differential?: AiClinicDifferential | null;

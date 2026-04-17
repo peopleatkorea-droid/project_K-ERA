@@ -1182,6 +1182,7 @@ class ResearchWorkflowService:
                     "predicted_label": matched.get("predicted_label"),
                     "true_label": matched.get("true_label"),
                     "prediction_probability": matched.get("prediction_probability"),
+                    "predicted_confidence": matched.get("predicted_confidence"),
                     "is_correct": matched.get("is_correct"),
                 }
         return None

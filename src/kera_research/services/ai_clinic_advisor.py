@@ -84,31 +84,62 @@ class AiClinicWorkflowAdvisor:
         normalized = str(value or "").strip()
         return normalized if normalized else "unknown"
 
-    def _format_query_metadata_summary(self, query_case: dict[str, Any]) -> str | None:
-        fragments: list[str] = []
-        sex = self._format_label(query_case.get("sex"))
-        age = query_case.get("age")
-        if sex != "unknown" or age not in (None, ""):
-            fragments.append(f"Demographics: {sex}, age {age if age not in (None, '') else 'unknown'}.")
-        view = self._format_label(query_case.get("representative_view"))
-        visit_status = self._format_label(query_case.get("visit_status"))
-        if view != "unknown" or visit_status != "unknown":
-            fragments.append(f"Image/view context: {view} view, visit status {visit_status}.")
-        contact_lens = self._format_label(query_case.get("contact_lens_use"))
-        if contact_lens != "unknown":
-            fragments.append(f"Contact lens history: {contact_lens}.")
-        smear_result = self._format_label(query_case.get("smear_result"))
-        if smear_result != "unknown":
-            fragments.append(f"Smear result: {smear_result}.")
-        if bool(query_case.get("polymicrobial")):
-            fragments.append("Case metadata indicates polymicrobial risk.")
-        predisposing = [str(item).strip() for item in list(query_case.get("predisposing_factor") or []) if str(item).strip()]
+    def _clamp01(self, value: Any) -> float | None:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    def _predicted_class_confidence(self, prediction: dict[str, Any]) -> float | None:
+        direct_confidence = self._clamp01(prediction.get("predicted_confidence"))
+        if direct_confidence is not None:
+            return direct_confidence
+        predicted_label = self._format_label(prediction.get("predicted_label")).lower()
+        positive_probability = self._clamp01(prediction.get("prediction_probability"))
+        if positive_probability is None:
+            return None
+        if predicted_label == "bacterial":
+            return round(1.0 - positive_probability, 4)
+        if predicted_label == "fungal":
+            return round(positive_probability, 4)
+        return round(max(positive_probability, 1.0 - positive_probability), 4)
+
+    def _format_confidence(self, confidence: float | None) -> str | None:
+        if confidence is None:
+            return None
+        return f"{confidence:.0%}"
+
+    def _key_case_context_notes(self, query_case: dict[str, Any]) -> list[str]:
+        notes: list[str] = []
+        smear_result = self._format_label(query_case.get("smear_result")).lower()
+        if smear_result == "not done":
+            notes.append("Smear is not available yet.")
+        elif smear_result not in {"unknown", ""}:
+            notes.append(f"Smear result: {smear_result}.")
+
+        contact_lens = self._format_label(query_case.get("contact_lens_use")).lower()
+        if contact_lens not in {"unknown", "", "none"}:
+            notes.append(f"Contact lens history: {contact_lens}.")
+
+        predisposing = [
+            str(item).strip()
+            for item in list(query_case.get("predisposing_factor") or [])
+            if str(item).strip()
+        ]
         if predisposing:
-            fragments.append(f"Predisposing factors: {', '.join(predisposing)}.")
-        quality_score = query_case.get("quality_score")
-        if isinstance(quality_score, (int, float)):
-            fragments.append(f"Representative image quality score: {float(quality_score):.1f}.")
-        return " ".join(fragments) if fragments else None
+            notes.append(f"Predisposing factors: {', '.join(predisposing)}.")
+
+        if bool(query_case.get("polymicrobial")):
+            notes.append("Polymicrobial risk is present.")
+
+        quality_score = self._clamp01((float(query_case.get("quality_score")) / 100.0) if isinstance(query_case.get("quality_score"), (int, float)) else None)
+        if quality_score is not None and quality_score < 0.7:
+            notes.append(f"Representative image quality is limited ({float(query_case.get('quality_score')):.1f}/100).")
+
+        visit_status = self._format_label(query_case.get("visit_status")).lower()
+        if visit_status not in {"unknown", "", "active"}:
+            notes.append(f"Current visit status is {visit_status}.")
+        return notes
 
     def _metadata_conflict_flags(self, similar_cases: list[dict[str, Any]]) -> list[str]:
         flags: list[str] = []
@@ -119,8 +150,11 @@ class AiClinicWorkflowAdvisor:
             if not conflicted:
                 continue
             case_code = str(item.get("local_case_code") or item.get("chart_alias") or item.get("patient_id") or "retrieved case").strip()
-            flags.append(f"{case_code} conflicts on metadata: {', '.join(conflicted)}.")
+            flags.append(f"{case_code} metadata conflict: {', '.join(conflicted)}.")
         return flags
+
+    def _confidence_is_low(self, confidence: float | None) -> bool:
+        return confidence is None or confidence < 0.7
 
     def _build_local_fallback(
         self,
@@ -130,76 +164,83 @@ class AiClinicWorkflowAdvisor:
     ) -> dict[str, Any]:
         prediction = classification_context or {}
         predicted_label = self._format_label(prediction.get("predicted_label"))
-        probability = prediction.get("prediction_probability")
-        confidence = float(probability) if isinstance(probability, (int, float)) else None
+        confidence = self._predicted_class_confidence(prediction)
         similar_cases = list(report.get("similar_cases") or [])
         text_evidence = list(report.get("text_evidence") or [])
         similar_majority = self._majority_category(similar_cases)
         text_majority = self._majority_category(text_evidence)
         query_case = dict(report.get("query_case") or {})
-        low_confidence = confidence is None or confidence < 0.7
+        low_confidence = self._confidence_is_low(confidence)
         signals = [item for item in [predicted_label, similar_majority, text_majority] if item and item != "unknown"]
         aligned = len(set(signals)) <= 1 if signals else False
         differential = dict(report.get("differential") or {})
         top_differential = list(differential.get("differential") or [])[:1]
 
-        summary_parts = [
-            f"The classifier currently favors {predicted_label}.",
-        ]
-        if confidence is not None:
-            summary_parts.append(f"Case-level confidence is {confidence:.3f}.")
+        summary_parts = []
+        classifier_summary = f"Classifier: {predicted_label}"
+        formatted_confidence = self._format_confidence(confidence)
+        if formatted_confidence:
+            classifier_summary += f" ({formatted_confidence} confidence)"
+        classifier_summary += "."
+        summary_parts.append(classifier_summary)
         if top_differential:
             summary_parts.append(
-                f"Differential ranking currently places {top_differential[0].get('label', 'unknown')} first "
-                f"with score {float(top_differential[0].get('score') or 0.0):.2f}."
+                f"Differential lead: {top_differential[0].get('label', 'unknown')} "
+                f"({float(top_differential[0].get('score') or 0.0):.2f})."
             )
-        query_metadata_summary = self._format_query_metadata_summary(query_case)
-        if query_metadata_summary:
-            summary_parts.append(query_metadata_summary)
-        if similar_majority:
-            summary_parts.append(f"Similar patient retrieval leans toward {similar_majority}.")
-        if text_majority:
-            summary_parts.append(f"Retrieved case text leans toward {text_majority}.")
+        if similar_majority and text_majority and similar_majority != text_majority:
+            summary_parts.append(
+                f"Evidence is mixed: similar cases lean {similar_majority} while text evidence leans {text_majority}."
+            )
+        elif similar_majority and similar_majority != predicted_label:
+            summary_parts.append(f"Similar cases lean {similar_majority}, not {predicted_label}.")
+        elif text_majority and text_majority != predicted_label:
+            summary_parts.append(f"Text evidence leans {text_majority}, not {predicted_label}.")
+        elif similar_majority and text_majority and similar_majority == text_majority == predicted_label:
+            summary_parts.append("Classifier, similar cases, and text evidence are broadly aligned.")
+        summary_parts.extend(self._key_case_context_notes(query_case)[:2])
 
         recommended_steps = [
-            "Review the corneal crop, lesion crop, and Grad-CAM together before accepting the classifier output.",
-            "Compare the top similar patients against the current slit-lamp pattern, especially lesion morphology and surrounding corneal context.",
-            "Cross-check smear, culture, contact lens exposure, trauma, steroid use, and visit trajectory against the retrieved evidence.",
+            "Review the representative image, crop views, and Grad-CAM together before accepting the label.",
+            (
+                "Compare the top similar cases to lesion morphology and surrounding corneal context."
+                if similar_cases
+                else "Rely on microbiology and serial slit-lamp change because similar-case support is unavailable."
+            ),
         ]
         if aligned and not low_confidence:
             recommended_steps.append(
-                "Because classifier and retrieval signals are aligned, prioritize confirming that the microbiology and clinical course support the same category."
+                f"If microbiology and follow-up agree, you can narrow the review toward {predicted_label}."
             )
         else:
             recommended_steps.append(
-                "Because the signals are mixed or low-confidence, escalate to manual review and keep the differential broad until microbiology and serial follow-up are reconciled."
+                "Keep the differential broad until smear, culture, risk factors, and follow-up are reconciled."
             )
 
         flags_to_review: list[str] = []
         if low_confidence:
-            flags_to_review.append("Classifier confidence is limited for this case.")
+            flags_to_review.append("Classifier confidence is low.")
         if similar_majority and similar_majority != predicted_label:
-            flags_to_review.append("Similar-patient retrieval does not agree with the classifier-leading category.")
+            flags_to_review.append(f"Similar cases favor {similar_majority}, not {predicted_label}.")
         if text_majority and text_majority != predicted_label:
-            flags_to_review.append("Retrieved text evidence does not agree with the classifier-leading category.")
+            flags_to_review.append(f"Text evidence favors {text_majority}, not {predicted_label}.")
         if report.get("text_retrieval_mode") == "unavailable":
-            flags_to_review.append("BiomedCLIP text retrieval is unavailable in the current runtime.")
+            flags_to_review.append("Text retrieval is unavailable in this runtime.")
         flags_to_review.extend(self._metadata_conflict_flags(similar_cases))
         if not similar_cases:
             flags_to_review.append("No patient-level similar cases were retrieved.")
         if not text_evidence:
-            flags_to_review.append("No text evidence was retrieved.")
+            flags_to_review.append("No case-text evidence was retrieved.")
         if not flags_to_review:
-            flags_to_review.append("No major conflict was detected across the currently available signals.")
+            flags_to_review.append("No major cross-signal conflict is currently visible.")
 
-        uncertainty = (
-            "Retrieval and classifier signals are directionally aligned."
-            if aligned and not low_confidence
-            else "Workflow advice should be treated cautiously because the available signals are mixed, weak, or incomplete."
-        )
-        rationale = (
-            "The recommendation combines the latest classifier output with patient-deduplicated similar cases and case-text retrieval, then converts agreement and disagreement into review steps."
-        )
+        if aligned and not low_confidence:
+            uncertainty = "Lower uncertainty: classifier and retrieval signals are broadly aligned."
+        elif low_confidence and any(flag for flag in flags_to_review if "favor" in flag or "unavailable" in flag.lower()):
+            uncertainty = "High uncertainty: classifier confidence is low and supporting evidence is mixed or incomplete."
+        else:
+            uncertainty = "Moderate uncertainty: only partial agreement is present across classifier, retrieval, and metadata."
+        rationale = "Built from the latest classifier result, patient-deduplicated similar cases, and case-text retrieval."
         return {
             "mode": "local_fallback",
             "provider_label": self._provider_label("local_fallback"),
@@ -277,7 +318,9 @@ class AiClinicWorkflowAdvisor:
             "Focus on what a clinician should review next, what conflicts need reconciliation, and where uncertainty remains. "
             "Prioritize microbiology, visit stage, and risk-factor conflicts over pure visual similarity. "
             "Do not treat scar or improving visits as equivalent to active infectious presentations. "
-            "If retrieved cases differ in contact lens history, smear result, polymicrobial status, or predisposing factors, explicitly mention those differences."
+            "If retrieved cases differ in contact lens history, smear result, polymicrobial status, or predisposing factors, explicitly mention those differences. "
+            "Keep the summary to at most two short sentences. Return exactly three concise recommended_steps and at most three concise flags_to_review. "
+            "Avoid repeating low-value metadata unless it changes the review decision."
         )
         payload = self._build_llm_payload(
             report=report,
@@ -369,7 +412,8 @@ class AiClinicWorkflowAdvisor:
         system_prompt = (
             "You are AI Clinic, a clinical workflow support assistant for infectious keratitis review. "
             "Return JSON only with keys: summary, recommended_steps, flags_to_review, rationale, uncertainty. "
-            "Do not output markdown. Do not make a definitive diagnosis or prescribe treatment."
+            "Do not output markdown. Do not make a definitive diagnosis or prescribe treatment. "
+            "Keep the summary to at most two short sentences. Return exactly three concise recommended_steps and at most three concise flags_to_review."
         )
         payload = self._build_llm_payload(
             report=report,

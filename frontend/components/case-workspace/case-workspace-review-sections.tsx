@@ -354,6 +354,7 @@ export function CaseWorkspaceAnalysisSection({
         lesionCropUrl={validationArtifacts.lesion_crop}
         lesionMaskUrl={validationArtifacts.lesion_mask}
         emptyMessage={validationArtifactEmptyMessage}
+        compact
       />
     ),
     [
@@ -375,6 +376,9 @@ export function CaseWorkspaceAnalysisSection({
   const [fullReviewBusy, setFullReviewBusy] = useState(false);
   const [fullReviewBusyStep, setFullReviewBusyStep] =
     useState<AnalysisReviewStep | null>(null);
+  const [aiClinicPanelView, setAiClinicPanelView] = useState<
+    "retrieval" | "cluster"
+  >("retrieval");
   const compareCandidatesAvailable = compareModelCandidates.length > 0;
   const preferredVisitLevelMilModel = useMemo(
     () => preferredVisitLevelMilModelVersion(compareModelCandidates),
@@ -385,6 +389,13 @@ export function CaseWorkspaceAnalysisSection({
       (modelCompareResult?.comparisons ?? []).filter(
         (item) => item.summary && !item.error,
       ).length,
+    [modelCompareResult],
+  );
+  const primarySuccessfulComparison = useMemo(
+    () =>
+      (modelCompareResult?.comparisons ?? []).find(
+        (item) => item.summary && !item.error,
+      ) ?? null,
     [modelCompareResult],
   );
   const aiClinicSimilarCount = aiClinicResult?.similar_cases.length ?? 0;
@@ -439,12 +450,44 @@ export function CaseWorkspaceAnalysisSection({
   }, [onRunModelCompare, preferredVisitLevelMilModel?.version_id]);
   const handleRunAiClinicFromHub = useCallback(() => {
     setActiveReviewStep("ai_clinic");
+    setAiClinicPanelView("retrieval");
     return onRunAiClinic();
   }, [onRunAiClinic]);
   const handleExpandAiClinicFromHub = useCallback(() => {
     setActiveReviewStep("ai_clinic");
+    setAiClinicPanelView("retrieval");
     onExpandAiClinic();
   }, [onExpandAiClinic]);
+  const handleSelectAiClinicRetrievalView = useCallback(() => {
+    setActiveReviewStep("ai_clinic");
+    setAiClinicPanelView("retrieval");
+    scrollToReviewStep("ai_clinic");
+    if (!aiClinicResult && validationResult && canRunAiClinic && !aiClinicBusy) {
+      void onRunAiClinic({ validationResult });
+    }
+  }, [
+    aiClinicBusy,
+    aiClinicResult,
+    canRunAiClinic,
+    onRunAiClinic,
+    scrollToReviewStep,
+    validationResult,
+  ]);
+  const handleSelectAiClinicClusterView = useCallback(() => {
+    setActiveReviewStep("ai_clinic");
+    setAiClinicPanelView("cluster");
+    scrollToReviewStep("ai_clinic");
+    if (!aiClinicResult && validationResult && canRunAiClinic && !aiClinicBusy) {
+      void onRunAiClinic({ validationResult });
+    }
+  }, [
+    aiClinicBusy,
+    aiClinicResult,
+    canRunAiClinic,
+    onRunAiClinic,
+    scrollToReviewStep,
+    validationResult,
+  ]);
   const handleRunFullReviewFromHub = useCallback(async () => {
     if (fullReviewBusy) {
       return;
@@ -477,6 +520,7 @@ export function CaseWorkspaceAnalysisSection({
       }
 
       setActiveReviewStep("ai_clinic");
+      setAiClinicPanelView("retrieval");
       scrollToReviewStep("ai_clinic");
       setFullReviewBusyStep("ai_clinic");
       await onRunAiClinic({
@@ -527,14 +571,14 @@ export function CaseWorkspaceAnalysisSection({
             label: pick(locale, "Running", "실행 중"),
             detail: pick(
               locale,
-              "Creating the single-case judgment and any review images.",
-              "단일 케이스 판정과 검토 이미지를 생성하고 있습니다.",
+              "Running the image-level model and generating review images.",
+              "이미지 레벨 분석과 검토 이미지를 생성하고 있습니다.",
             ),
           }
         : validationResult
           ? {
               tone: "complete" as const,
-              label: pick(locale, "Judgment ready", "판정 완료"),
+              label: pick(locale, "Analysis ready", "분석 완료"),
               detail: pick(
                 locale,
                 `${validationResult.summary.predicted_label} · ${formatProbability(validationPredictedConfidence, commonNotAvailable)} · ${validationResult.summary.validation_id}`,
@@ -546,8 +590,8 @@ export function CaseWorkspaceAnalysisSection({
               label: pick(locale, "Ready to run", "실행 준비"),
               detail: pick(
                 locale,
-                "Run Step 1 to save the AI call, confidence, and review images.",
-                "1단계를 실행하면 AI 판정, 신뢰도, 검토 이미지가 저장됩니다.",
+                "Run Step 1 to save the image-level result, confidence, and review images.",
+                "1단계를 실행하면 이미지 레벨 결과, 신뢰도, 검토 이미지가 저장됩니다.",
               ),
             };
 
@@ -579,12 +623,22 @@ export function CaseWorkspaceAnalysisSection({
           }
       : modelCompareResult
         ? {
-            tone: "complete" as const,
-            label: pick(locale, "MIL result ready", "MIL 결과 준비됨"),
+              tone: "complete" as const,
+            label: pick(locale, "Visit-level ready", "방문 레벨 완료"),
             detail: pick(
               locale,
-              `${successfulCompareCount} model result(s) are ready to review.`,
-              `${successfulCompareCount}개 모델 결과를 확인할 수 있습니다.`,
+              primarySuccessfulComparison?.summary?.validation_id
+                ? `${primarySuccessfulComparison.summary.predicted_label} · ${formatProbability(
+                    primarySuccessfulComparison.summary.prediction_probability,
+                    commonNotAvailable,
+                  )} · ${primarySuccessfulComparison.summary.validation_id}`
+                : `${successfulCompareCount} model result(s) are ready to review.`,
+              primarySuccessfulComparison?.summary?.validation_id
+                ? `${primarySuccessfulComparison.summary.predicted_label} · ${formatProbability(
+                    primarySuccessfulComparison.summary.prediction_probability,
+                    commonNotAvailable,
+                  )} · ${primarySuccessfulComparison.summary.validation_id}`
+                : `${successfulCompareCount}개 모델 결과를 확인할 수 있습니다.`,
             ),
           }
       : !compareCandidatesAvailable
@@ -630,11 +684,11 @@ export function CaseWorkspaceAnalysisSection({
       ? {
           tone: "blocked" as const,
           label: pick(locale, "Open a case first", "먼저 케이스 열기"),
-          detail: pick(
-            locale,
-            "Similar-patient review starts after you open a saved case.",
-            "유사 환자 검토는 저장된 케이스를 연 뒤 시작할 수 있습니다.",
-          ),
+            detail: pick(
+              locale,
+              "Image retrieval starts after you open a saved case.",
+              "이미지 검색은 저장된 케이스를 연 뒤 시작할 수 있습니다.",
+            ),
         }
       : !canRunValidation
         ? {
@@ -648,18 +702,18 @@ export function CaseWorkspaceAnalysisSection({
             label: pick(locale, "Run Step 1 first", "먼저 1단계 실행"),
             detail: pick(
               locale,
-              "AI Clinic uses the single-case judgment as its anchor.",
-              "AI Clinic은 단일 케이스 판정을 기준으로 시작합니다.",
+              "Image retrieval uses the image-level analysis as its anchor.",
+              "이미지 검색은 이미지 레벨 분석을 기준으로 시작합니다.",
             ),
           }
         : aiClinicBusy
           ? {
               tone: "running" as const,
-              label: pick(locale, "Finding similar patients", "유사 환자 찾는 중"),
+              label: pick(locale, "Running retrieval", "검색 실행 중"),
               detail: pick(
                 locale,
-                "Retrieval is running for similar patients and cluster position.",
-                "유사 환자 검색과 클러스터 위치 계산을 진행하고 있습니다.",
+                "Image retrieval and cluster preparation are running.",
+                "이미지 검색과 클러스터 준비를 진행하고 있습니다.",
               ),
             }
           : aiClinicExpandedBusy
@@ -685,11 +739,11 @@ export function CaseWorkspaceAnalysisSection({
               : aiClinicResult
                 ? {
                     tone: "complete" as const,
-                    label: pick(locale, "Similar patients ready", "유사 환자 준비됨"),
+                    label: pick(locale, "Retrieval ready", "검색 준비됨"),
                     detail: pick(
                       locale,
-                      `${aiClinicSimilarCount} similar patient(s) and the 3D cluster view are ready.`,
-                      `${aiClinicSimilarCount}개 유사 환자와 3D 클러스터 보기를 확인할 수 있습니다.`,
+                      `${aiClinicSimilarCount} retrieved case(s) and the 3D cluster view are ready.`,
+                      `${aiClinicSimilarCount}개 검색 결과와 3D 클러스터 보기를 확인할 수 있습니다.`,
                     ),
                   }
                 : {
@@ -697,8 +751,8 @@ export function CaseWorkspaceAnalysisSection({
                     label: pick(locale, "Ready to search", "검색 준비"),
                     detail: pick(
                       locale,
-                      "Find similar patients first, then load extra guidance only if needed.",
-                      "먼저 유사 환자를 찾고, 필요할 때만 추가 가이드를 불러오세요.",
+                      "Run image retrieval first, then load extra guidance only if needed.",
+                      "먼저 이미지 검색을 실행하고, 필요할 때만 추가 가이드를 불러오세요.",
                     ),
                   };
 
@@ -740,7 +794,7 @@ export function CaseWorkspaceAnalysisSection({
                     {pick(locale, "Step 1", "1단계")}
                   </div>
                   <strong className="text-base font-semibold text-ink">
-                    {pick(locale, "Single-case judgment", "단일 케이스 판정")}
+                    {pick(locale, "Image-level analysis", "이미지 레벨 분석")}
                   </strong>
                 </div>
                 {activeReviewStep === "judgment" ? (
@@ -752,8 +806,8 @@ export function CaseWorkspaceAnalysisSection({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Save the AI call, confidence, and image-based review artifacts for this case.",
-                  "이 케이스의 AI 판정, 신뢰도, 이미지 기반 검토 아티팩트를 저장합니다.",
+                  "Save the image-level prediction, confidence, and compact review artifacts for this case.",
+                  "이 케이스의 이미지 레벨 예측, 신뢰도, 검토 아티팩트를 저장합니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -782,7 +836,7 @@ export function CaseWorkspaceAnalysisSection({
                   ? pick(locale, "Running...", "실행 중...")
                   : !judgmentActionEnabled
                     ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Run single-case judgment", "단일 케이스 판정 실행")}
+                  : pick(locale, "Run image-level analysis", "이미지 레벨 분석 실행")}
               </Button>
             </div>
           </Card>
@@ -807,7 +861,7 @@ export function CaseWorkspaceAnalysisSection({
                     {pick(locale, "Step 2", "2단계")}
                   </div>
                   <strong className="text-base font-semibold text-ink">
-                    {pick(locale, "Efficient MIL review", "Efficient MIL 검토")}
+                    {pick(locale, "Visit-level analysis", "방문 레벨 분석")}
                   </strong>
                 </div>
                 {activeReviewStep === "agreement" ? (
@@ -819,8 +873,8 @@ export function CaseWorkspaceAnalysisSection({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Run the prepared visit-level Efficient MIL model on this case.",
-                  "준비된 visit-level Efficient MIL 모델을 이 케이스에서 실행합니다.",
+                  "Run the prepared visit-level Efficient MIL pass on this case.",
+                  "준비된 visit-level Efficient MIL 분석을 이 케이스에서 실행합니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -849,7 +903,7 @@ export function CaseWorkspaceAnalysisSection({
                   ? pick(locale, "Running MIL...", "MIL 실행 중...")
                   : !agreementActionEnabled
                     ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Run Efficient MIL", "Efficient MIL 실행")}
+                  : pick(locale, "Run visit-level analysis", "방문 레벨 분석 실행")}
               </Button>
             </div>
           </Card>
@@ -876,8 +930,8 @@ export function CaseWorkspaceAnalysisSection({
                   <strong className="text-base font-semibold text-ink">
                     {pick(
                       locale,
-                      "DINOv2 similar-patient review",
-                      "DINOv2 유사 환자 검토",
+                      "Image retrieval",
+                      "이미지 검색",
                     )}
                   </strong>
                 </div>
@@ -890,8 +944,8 @@ export function CaseWorkspaceAnalysisSection({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Use DINOv2 retrieval to show three similar patients first, then expand into evidence, guidance, and the 3D cluster map.",
-                  "DINOv2 retrieval로 유사 환자 3개를 먼저 보여주고, 필요하면 근거, 가이드, 3D 클러스터 맵까지 이어서 봅니다.",
+                  "Use DINOv2 retrieval to surface three similar cases first, then expand into evidence, guidance, and the 3D cluster map.",
+                  "DINOv2 retrieval로 유사 케이스 3개를 먼저 보여주고, 필요하면 근거, 가이드, 3D 클러스터 맵까지 이어서 봅니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -920,7 +974,7 @@ export function CaseWorkspaceAnalysisSection({
                   ? pick(locale, "Searching...", "검색 중...")
                   : !aiClinicActionEnabled
                     ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Find similar patients", "비슷한 환자 찾기")}
+                  : pick(locale, "Run image retrieval", "이미지 검색 실행")}
               </Button>
               <Button
                 type="button"
@@ -1084,18 +1138,22 @@ export function CaseWorkspaceAnalysisSection({
         locale={locale}
         showStepActions={false}
         validationResult={validationResult}
+        activeView={aiClinicPanelView}
         aiClinicBusy={aiClinicBusy}
         aiClinicExpandedBusy={aiClinicExpandedBusy}
         canRunAiClinic={canRunAiClinic}
         canExpandAiClinic={canExpandAiClinic}
         onRunAiClinic={onRunAiClinic}
         onExpandAiClinic={onExpandAiClinic}
+        onSelectRetrievalView={handleSelectAiClinicRetrievalView}
+        onSelectClusterView={handleSelectAiClinicClusterView}
       >
         <AiClinicResult
           locale={locale}
           validationResult={validationResult}
           modelCompareResult={modelCompareResult}
           result={aiClinicResult}
+          activeView={aiClinicPanelView}
           aiClinicPreviewBusy={aiClinicPreviewBusy}
           aiClinicExpandedBusy={aiClinicExpandedBusy}
           canExpandAiClinic={canExpandAiClinic}
@@ -1117,12 +1175,15 @@ export function CaseWorkspaceAnalysisSection({
       aiClinicExpandedBusy,
       aiClinicPreviewBusy,
       aiClinicResult,
+      aiClinicPanelView,
       aiClinicTextUnavailableLabel,
       canExpandAiClinic,
       canRunAiClinic,
       commonNotAvailable,
       displayVisitReference,
       formatMetadataField,
+      handleSelectAiClinicClusterView,
+      handleSelectAiClinicRetrievalView,
       locale,
       modelCompareResult,
       onExpandAiClinic,
@@ -1189,7 +1250,7 @@ export function CaseWorkspaceAnalysisSection({
                     : fullReviewBusyStep === "agreement"
                       ? pick(locale, "Running Step 2...", "2단계 실행 중...")
                       : pick(locale, "Running Step 3...", "3단계 실행 중...")
-                  : pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
+                  : pick(locale, "Run analyses 1-3", "1-3 순차 분석 실행")}
               </Button>
             </div>
           }

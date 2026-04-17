@@ -17,6 +17,7 @@ import {
   useI18n,
   type Locale,
 } from "../lib/i18n";
+import { messageFromUnknownError } from "../lib/error-message";
 import { useCaseWorkspaceCaseSaveDelete } from "./case-workspace/use-case-workspace-case-save-delete";
 import { useCaseWorkspaceAlertsPanel } from "./case-workspace/use-case-workspace-alerts-panel";
 import { buildCaseWorkspaceHeaderProps } from "./case-workspace/case-workspace-header-props";
@@ -208,10 +209,10 @@ export function CaseWorkspace({
   const { locale, localeTag, common } = useI18n();
   const visibleSites = filterVisibleSites(sites);
   const describeError = useCallback(
-    (nextError: unknown, fallback: string) =>
-      nextError instanceof Error
-        ? translateApiError(locale, nextError.message)
-        : fallback,
+    (nextError: unknown, fallback: string) => {
+      const message = messageFromUnknownError(nextError);
+      return message ? translateApiError(locale, message) : fallback;
+    },
     [locale],
   );
   const selectedSiteRecord =

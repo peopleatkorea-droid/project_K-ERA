@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
 import {
@@ -143,11 +143,13 @@ export function useCaseWorkspaceAiClinic({
           return;
         }
         aiClinicPreviewUrlsRef.current.push(...nextUrls);
-        setAiClinicResult((current) => {
-          if (!current) {
-            return current;
-          }
-          return { ...current, similar_cases: resolvedCases };
+        startTransition(() => {
+          setAiClinicResult((current) => {
+            if (!current) {
+              return current;
+            }
+            return { ...current, similar_cases: resolvedCases };
+          });
         });
       } finally {
         if (aiClinicPreviewRequestRef.current === previewRequestId) {
@@ -206,7 +208,9 @@ export function useCaseWorkspaceAiClinic({
         }
         const nextResult = withAiClinicSimilarCasePreviews(result, null);
         const previewRequestId = aiClinicPreviewRequestRef.current;
-        setAiClinicResult(nextResult);
+        startTransition(() => {
+          setAiClinicResult(nextResult);
+        });
         setToast({
           tone: "success",
           message: copy.aiClinicReady(nextResult.similar_cases.length),
@@ -288,7 +292,9 @@ export function useCaseWorkspaceAiClinic({
       );
       const previewRequestId = aiClinicPreviewRequestRef.current + 1;
       aiClinicPreviewRequestRef.current = previewRequestId;
-      setAiClinicResult(nextResult);
+      startTransition(() => {
+        setAiClinicResult(nextResult);
+      });
       void hydrateAiClinicSimilarCasePreviews(
         nextResult.similar_cases,
         previewRequestId,

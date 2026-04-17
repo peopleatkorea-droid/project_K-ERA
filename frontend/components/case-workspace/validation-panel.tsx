@@ -7,12 +7,10 @@ import { Card } from "../ui/card";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
 import { SectionHeader } from "../ui/section-header";
 import {
-  docBadgeRowClass,
   docSectionHeadClass,
   docSectionLabelClass,
   emptySurfaceClass,
   panelImageFallbackClass,
-  panelMetricGridClass,
   validationPanelActionsClass,
   validationPanelHeadClass,
   validationPanelIdClass,
@@ -417,12 +415,12 @@ function ValidationPanelInner({
               {pick(locale, "Step 1", "1단계")}
             </div>
           }
-          title={pick(locale, "Single-case AI judgment", "단일 케이스 AI 판정")}
+          title={pick(locale, "Image-level analysis", "이미지 레벨 분석")}
           titleAs="h4"
           description={pick(
             locale,
-            "Start here. Run one AI judgment for this case to see the predicted organism, confidence, and any review images the selected model can generate.",
-            "여기서 시작합니다. 이 케이스를 한 번 판정해 예측 균종, 신뢰도, 그리고 선택된 모델이 생성할 수 있는 검토 이미지를 확인합니다.",
+            "Start here. Run one image-level model for this case to review the predicted organism, confidence, and compact review images.",
+            "여기서 시작합니다. 이 케이스에 이미지 레벨 모델을 한 번 실행해 예측 균종, 신뢰도, 검토 이미지를 확인합니다.",
           )}
           aside={
             <div className={validationPanelActionsClass}>
@@ -446,8 +444,8 @@ function ValidationPanelInner({
                   }
                 >
                   {validationBusy
-                    ? pick(locale, "Running judgment...", "판정 중...")
-                    : pick(locale, "Run single-case judgment", "단일 케이스 판정 실행")}
+                    ? pick(locale, "Running analysis...", "분석 중...")
+                    : pick(locale, "Run image-level analysis", "이미지 레벨 분석 실행")}
                 </Button>
               ) : null}
             </div>
@@ -462,12 +460,12 @@ function ValidationPanelInner({
           >
             <SectionHeader
               className={docSectionHeadClass}
-              title={pick(locale, "Judgment anchor model", "판정 기준 모델")}
+              title={pick(locale, "Image-level model", "이미지 레벨 모델")}
               titleAs="h4"
               description={pick(
                 locale,
-                "This model creates the saved judgment card and any review images. The agreement check below can still use a separate multi-model set.",
-                "이 모델이 저장되는 판정 카드와 검토 이미지를 만듭니다. 아래 합의 확인용 모델들은 별도로 선택할 수 있습니다.",
+                "This model creates the saved result card and review images for Step 1.",
+                "이 모델이 1단계 결과 카드와 검토 이미지를 만듭니다.",
               )}
             />
             {selectedValidationModelRoleLabel ? (
@@ -498,8 +496,8 @@ function ValidationPanelInner({
                 <option value="">
                   {pick(
                     locale,
-                    "Use the default saved judgment model",
-                    "기본 판정 기준 모델 사용",
+                    "Use the default image-level model",
+                    "기본 이미지 레벨 모델 사용",
                   )}
                 </option>
                 {compareModelCandidates.map((modelVersion) => {
@@ -533,8 +531,8 @@ function ValidationPanelInner({
                   )
                 : pick(
                     locale,
-                    "If you want crop or Grad-CAM images, choose an image-based model here instead of a raw MIL-only model.",
-                    "crop 또는 Grad-CAM 이미지를 보려면 raw MIL 전용 모델 대신 이미지 기반 모델을 여기서 고르세요.",
+                    "If you want crop or Grad-CAM images, keep an image model here instead of a raw MIL-only model.",
+                    "crop 또는 Grad-CAM 이미지를 보려면 raw MIL 전용 모델 대신 이미지 모델을 여기서 고르세요.",
                   )}
             </p>
           </Card>
@@ -542,318 +540,308 @@ function ValidationPanelInner({
 
         {validationResult ? (
           <div className="grid gap-4">
-            <div className="rounded-[22px] border border-border bg-surface-muted/80 p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                {!inferenceOnlyValidation ? (
-                  <span
-                    className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                      validationResult.summary.is_correct ? "match" : "mismatch",
-                    )}`}
-                  >
-                    {validationResult.summary.is_correct
-                      ? pick(locale, "Match", "일치")
-                      : pick(locale, "Mismatch", "불일치")}
-                  </span>
-                ) : null}
-                <span
-                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                    validationConfidenceTone,
-                  )}`}
-                >
-                  {validationConfidence}% {pick(locale, "confidence", "신뢰도")}
-                </span>
-                <span
-                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                    "neutral",
-                  )}`}
-                >
-                  {modelRoleLabel(locale, {
-                    architecture: validationResult.model_version.architecture,
-                    caseAggregation:
-                      validationResult.summary.case_aggregation ??
-                      validationResult.model_version.case_aggregation,
-                    cropMode: validationResult.model_version.crop_mode,
-                  })}
-                </span>
-                <span
-                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                    "neutral",
-                  )}`}
-                >
-                  {validationResult.execution_device}
-                </span>
-              </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
-                  <span className="block text-xs uppercase tracking-[0.08em] text-muted">
-                    {predictedLabelTitle}
-                  </span>
-                  <strong className="mt-2 block text-lg font-semibold text-ink">
-                    {validationResult.summary.predicted_label}
-                  </strong>
-                </div>
-                {!inferenceOnlyValidation ? (
-                  <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
-                    <span className="block text-xs uppercase tracking-[0.08em] text-muted">
-                      {pick(locale, "Culture label", "배양 라벨")}
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,1fr)] xl:items-start">
+              <div className="grid gap-4">
+                <div className="rounded-[22px] border border-border bg-surface-muted/80 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!inferenceOnlyValidation ? (
+                      <span
+                        className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                          validationResult.summary.is_correct ? "match" : "mismatch",
+                        )}`}
+                      >
+                        {validationResult.summary.is_correct
+                          ? pick(locale, "Match", "일치")
+                          : pick(locale, "Mismatch", "불일치")}
+                      </span>
+                    ) : null}
+                    <span
+                      className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                        validationConfidenceTone,
+                      )}`}
+                    >
+                      {validationConfidence}% {pick(locale, "confidence", "신뢰도")}
                     </span>
-                    <strong className="mt-2 block text-lg font-semibold text-ink">
-                      {validationResult.summary.true_label}
-                    </strong>
-                  </div>
-                ) : (
-                  <div className="rounded-[18px] border border-border bg-dashed bg-surface-muted/30 px-4 py-3">
-                    <span className="block text-xs uppercase tracking-[0.08em] text-muted">
-                      {pick(locale, "Culture label", "배양 라벨")}
+                    <span
+                      className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                        "neutral",
+                      )}`}
+                    >
+                      {modelRoleLabel(locale, {
+                        architecture: validationResult.model_version.architecture,
+                        caseAggregation:
+                          validationResult.summary.case_aggregation ??
+                          validationResult.model_version.case_aggregation,
+                        cropMode: validationResult.model_version.crop_mode,
+                      })}
                     </span>
-                    <strong className="mt-2 block text-sm font-medium text-muted">
-                      {cultureLabelPlaceholder}
-                    </strong>
+                    <span
+                      className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                        "neutral",
+                      )}`}
+                    >
+                      {validationResult.execution_device}
+                    </span>
                   </div>
-                )}
-              </div>
 
-              <div className="mt-4 flex items-center justify-between gap-3 text-sm">
-                <span className="text-muted">
-                  {predictionConfidenceTitle}
-                </span>
-                <strong className="text-ink">
-                  {formatProbability(
-                    validationPredictedConfidence,
-                    common.notAvailable,
-                  )}
-                </strong>
-              </div>
-
-              <div
-                className="mt-3 h-2.5 overflow-hidden rounded-full bg-brand/10"
-                aria-hidden="true"
-              >
-                <div
-                  className={`h-full rounded-full ${
-                    validationConfidenceTone === "high"
-                      ? "bg-emerald-500"
-                      : validationConfidenceTone === "medium"
-                        ? "bg-amber-500"
-                        : "bg-rose-500"
-                  }`}
-                  style={{ width: `${validationConfidence}%` }}
-                />
-              </div>
-            </div>
-
-            <MetricGrid className={panelMetricGridClass}>
-              <MetricItem
-                value={validationResult.summary.predicted_label}
-                label={predictedLabelTitle}
-              />
-              <MetricItem
-                value={
-                  inferenceOnlyValidation
-                    ? cultureLabelPlaceholder
-                    : validationResult.summary.true_label
-                }
-                label={pick(locale, "culture label", "배양 라벨")}
-              />
-              <MetricItem
-                value={formatProbability(
-                  validationPredictedConfidence,
-                  common.notAvailable,
-                )}
-                label={
-                  inferenceOnlyValidation
-                    ? pick(locale, "support score", "지지 점수")
-                    : pick(locale, "confidence", "신뢰도")
-                }
-              />
-              <MetricItem
-                value={validationResult.execution_device}
-                label={pick(locale, "device", "디바이스")}
-              />
-              <MetricItem
-                value={
-                  validationResult.summary.case_aggregation ??
-                  validationResult.model_version.case_aggregation ??
-                  common.notAvailable
-                }
-                label={pick(locale, "visit aggregation", "visit 집계")}
-              />
-              <MetricItem
-                value={
-                  topAttention
-                    ? `${Math.round(topAttention.attention * 100)}%`
-                    : common.notAvailable
-                }
-                label={pick(locale, "top attention", "최고 attention")}
-              />
-            </MetricGrid>
-
-            <p className="m-0 text-sm leading-6 text-muted">
-              {pick(locale, "Model", "모델")}{" "}
-              {validationResult.model_version.version_name} (
-              {validationModelLabel}){" "}
-              {validationResult.model_version.crop_mode
-                ? pick(
-                    locale,
-                    `mode ${validationResult.model_version.crop_mode}`,
-                    `모드 ${validationResult.model_version.crop_mode}`,
-                  )
-                : null}
-              {validationResult.model_version.crop_mode ? " · " : ""}
-              {(validationResult.summary.case_aggregation ??
-              validationResult.model_version.case_aggregation)
-                ? `${pick(locale, "aggregation", "집계")} ${
-                    validationResult.summary.case_aggregation ??
-                    validationResult.model_version.case_aggregation
-                  } · `
-                : ""}
-              {inferenceOnlyValidation
-                ? pick(
-                    locale,
-                    `${validationResult.summary.predicted_label} pattern support was estimated without a recorded culture label.`,
-                    `기록된 배양 라벨 없이 ${validationResult.summary.predicted_label} 패턴 지지도를 추정한 결과입니다.`,
-                  )
-                : validationResult.summary.is_correct
-                  ? pick(
-                      locale,
-                      "prediction matched culture",
-                      "예측이 배양 결과와 일치합니다.",
-                    )
-                  : pick(
-                      locale,
-                      "prediction diverged from culture",
-                      "예측이 배양 결과와 다릅니다.",
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
+                      <span className="block text-xs uppercase tracking-[0.08em] text-muted">
+                        {predictedLabelTitle}
+                      </span>
+                      <strong className="mt-2 block text-lg font-semibold text-ink">
+                        {validationResult.summary.predicted_label}
+                      </strong>
+                    </div>
+                    {!inferenceOnlyValidation ? (
+                      <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
+                        <span className="block text-xs uppercase tracking-[0.08em] text-muted">
+                          {pick(locale, "Culture label", "배양 라벨")}
+                        </span>
+                        <strong className="mt-2 block text-lg font-semibold text-ink">
+                          {validationResult.summary.true_label}
+                        </strong>
+                      </div>
+                    ) : (
+                      <div className="rounded-[18px] border border-border bg-dashed bg-surface-muted/30 px-4 py-3">
+                        <span className="block text-xs uppercase tracking-[0.08em] text-muted">
+                          {pick(locale, "Culture label", "배양 라벨")}
+                        </span>
+                        <strong className="mt-2 block text-sm font-medium text-muted">
+                          {cultureLabelPlaceholder}
+                        </strong>
+                      </div>
                     )}
-            </p>
+                  </div>
 
-            {comparedModelsSnapshot.length > 0 ? (
+                  <div className="mt-4 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted">{predictionConfidenceTitle}</span>
+                    <strong className="text-ink">
+                      {formatProbability(
+                        validationPredictedConfidence,
+                        common.notAvailable,
+                      )}
+                    </strong>
+                  </div>
+
+                  <div
+                    className="mt-3 h-2.5 overflow-hidden rounded-full bg-brand/10"
+                    aria-hidden="true"
+                  >
+                    <div
+                      className={`h-full rounded-full ${
+                        validationConfidenceTone === "high"
+                          ? "bg-emerald-500"
+                          : validationConfidenceTone === "medium"
+                            ? "bg-amber-500"
+                            : "bg-rose-500"
+                      }`}
+                      style={{ width: `${validationConfidence}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-[16px] border border-border bg-surface px-4 py-3">
+                    <span className="block text-[0.78rem] text-muted">
+                      {pick(locale, "Device", "디바이스")}
+                    </span>
+                    <strong className="mt-1 block text-base font-semibold text-ink">
+                      {validationResult.execution_device}
+                    </strong>
+                  </div>
+                  <div className="rounded-[16px] border border-border bg-surface px-4 py-3">
+                    <span className="block text-[0.78rem] text-muted">
+                      {pick(locale, "Visit aggregation", "visit 집계")}
+                    </span>
+                    <strong className="mt-1 block text-base font-semibold text-ink">
+                      {validationResult.summary.case_aggregation ??
+                        validationResult.model_version.case_aggregation ??
+                        common.notAvailable}
+                    </strong>
+                  </div>
+                  <div className="rounded-[16px] border border-border bg-surface px-4 py-3">
+                    <span className="block text-[0.78rem] text-muted">
+                      {pick(locale, "Top attention", "최고 attention")}
+                    </span>
+                    <strong className="mt-1 block text-base font-semibold text-ink">
+                      {topAttention
+                        ? `${Math.round(topAttention.attention * 100)}%`
+                        : common.notAvailable}
+                    </strong>
+                  </div>
+                </div>
+
+                <p className="m-0 text-sm leading-6 text-muted">
+                  {pick(locale, "Model", "모델")}{" "}
+                  {validationResult.model_version.version_name} (
+                  {validationModelLabel}){" "}
+                  {validationResult.model_version.crop_mode
+                    ? pick(
+                        locale,
+                        `mode ${validationResult.model_version.crop_mode}`,
+                        `모드 ${validationResult.model_version.crop_mode}`,
+                      )
+                    : null}
+                  {validationResult.model_version.crop_mode ? " · " : ""}
+                  {(validationResult.summary.case_aggregation ??
+                  validationResult.model_version.case_aggregation)
+                    ? `${pick(locale, "aggregation", "집계")} ${
+                        validationResult.summary.case_aggregation ??
+                        validationResult.model_version.case_aggregation
+                      } · `
+                    : ""}
+                  {inferenceOnlyValidation
+                    ? pick(
+                        locale,
+                        `${validationResult.summary.predicted_label} pattern support was estimated without a recorded culture label.`,
+                        `기록된 배양 라벨 없이 ${validationResult.summary.predicted_label} 패턴 지지도를 추정한 결과입니다.`,
+                      )
+                    : validationResult.summary.is_correct
+                      ? pick(
+                          locale,
+                          "prediction matched culture",
+                          "예측이 배양 결과와 일치합니다.",
+                        )
+                      : pick(
+                          locale,
+                          "prediction diverged from culture",
+                          "예측이 배양 결과와 다릅니다.",
+                        )}
+                </p>
+
+              </div>
+
               <Card
-                as="div"
+                as="aside"
                 variant="nested"
-                className="grid gap-4 border border-border/80 p-4"
+                className="grid h-fit gap-4 border border-border/80 p-4 xl:sticky xl:top-4"
               >
                 <SectionHeader
                   className={docSectionHeadClass}
-                  title={pick(
-                    locale,
-                    "Compared models at a glance",
-                    "함께 본 모델 결과",
-                  )}
+                  title={pick(locale, "Review images", "검토 이미지")}
                   titleAs="h4"
                   description={pick(
                     locale,
-                    "These model calls were refreshed together with Step 1. The anchor model drives the saved judgment and review images.",
-                    "이 모델 호출들은 1단계와 함께 갱신됐습니다. 기준 모델이 저장 판정과 검토 이미지를 담당합니다.",
+                    "Compact crops, masks, and Grad-CAM for the representative image.",
+                    "대표 이미지 기준 crop, mask, Grad-CAM을 압축해서 보여줍니다.",
                   )}
                 />
-                <div className="grid gap-3 lg:grid-cols-3">
-                  {comparedModelsSnapshot.map((item, index) => {
-                    const itemVersionId =
-                      item.model_version?.version_id != null
-                        ? String(item.model_version.version_id).trim()
-                        : null;
-                    const isAnchor =
-                      anchorModelVersionId != null &&
-                      itemVersionId === anchorModelVersionId;
-                    const itemTone =
-                      item.summary?.validation_mode === "inference_only" ||
-                      item.summary?.is_correct == null
-                        ? "neutral"
-                        : item.summary.is_correct
-                          ? "match"
-                          : "mismatch";
-                    const itemModelLabel =
-                      item.model_version?.version_name ??
-                      item.model_version?.architecture ??
-                      item.model_version_id ??
-                      `${pick(locale, "Model", "모델")} ${index + 1}`;
-                    return (
-                      <Card
-                        key={itemVersionId ?? `${itemModelLabel}-${index}`}
-                        as="article"
-                        variant="panel"
-                        className="grid gap-3 p-4"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <strong className="text-sm font-semibold text-ink">
-                            {itemModelLabel}
-                          </strong>
-                          {isAnchor ? (
-                            <span
-                              className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                                "high",
-                              )}`}
-                            >
-                              {pick(locale, "Anchor model", "기준 모델")}
-                            </span>
-                          ) : null}
-                          <span
-                            className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                              "neutral",
-                            )}`}
-                          >
-                            {modelRoleLabel(locale, {
-                              architecture: item.model_version?.architecture,
-                              caseAggregation:
-                                item.summary?.case_aggregation ??
-                                item.model_version?.case_aggregation,
-                              cropMode: item.model_version?.crop_mode,
-                            })}
-                          </span>
-                          <span
-                            className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                              itemTone,
-                            )}`}
-                          >
-                            {item.summary?.validation_mode === "inference_only" ||
-                            item.summary?.is_correct == null
-                              ? pick(locale, "Inference-only", "추론 전용")
-                              : item.summary.is_correct
-                                ? pick(locale, "Match", "일치")
-                                : pick(locale, "Mismatch", "불일치")}
-                          </span>
-                        </div>
-                        <MetricGrid columns={2}>
-                          <MetricItem
-                            value={
-                              item.summary?.predicted_label ??
-                              common.notAvailable
-                            }
-                            label={
-                              item.summary?.validation_mode === "inference_only"
-                                ? pick(
-                                    locale,
-                                    "pattern support",
-                                    "패턴 지지",
-                                  )
-                                : pick(locale, "predicted", "예측")
-                            }
-                          />
-                          <MetricItem
-                            value={formatProbability(
-                              item.summary?.prediction_probability,
-                              common.notAvailable,
-                            )}
-                            label={pick(locale, "confidence", "신뢰도")}
-                          />
-                        </MetricGrid>
-                        <p className="m-0 text-sm leading-6 text-muted">
-                          {[
-                            item.model_version?.architecture,
-                            item.model_version?.crop_mode,
-                          ]
-                            .filter((value) => String(value || "").trim().length > 0)
-                            .join(" / ") || common.notAvailable}
-                        </p>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </Card>
-            ) : null}
+                {artifactContent}
 
-            {artifactContent}
+                {comparedModelsSnapshot.length > 0 ? (
+                  <Card
+                    as="div"
+                    variant="panel"
+                    className="grid gap-3 p-4"
+                  >
+                    <SectionHeader
+                      className={docSectionHeadClass}
+                      title={pick(
+                        locale,
+                        "Step 1 model snapshot",
+                        "1단계 모델 스냅샷",
+                      )}
+                      titleAs="h4"
+                      description={pick(
+                        locale,
+                        "Connected model calls refreshed together with Step 1.",
+                        "1단계와 함께 갱신된 연결 모델 호출입니다.",
+                      )}
+                    />
+                    <div className="grid gap-3">
+                      {comparedModelsSnapshot.map((item, index) => {
+                        const itemVersionId =
+                          item.model_version?.version_id != null
+                            ? String(item.model_version.version_id).trim()
+                            : null;
+                        const isAnchor =
+                          anchorModelVersionId != null &&
+                          itemVersionId === anchorModelVersionId;
+                        const itemTone =
+                          item.summary?.validation_mode === "inference_only" ||
+                          item.summary?.is_correct == null
+                            ? "neutral"
+                            : item.summary.is_correct
+                              ? "match"
+                              : "mismatch";
+                        const itemModelLabel =
+                          item.model_version?.version_name ??
+                          item.model_version?.architecture ??
+                          item.model_version_id ??
+                          `${pick(locale, "Model", "모델")} ${index + 1}`;
+                        return (
+                          <Card
+                            key={itemVersionId ?? `${itemModelLabel}-${index}`}
+                            as="article"
+                            variant="nested"
+                            className="grid gap-3 border border-border/80 p-4"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <strong className="text-sm font-semibold text-ink">
+                                {itemModelLabel}
+                              </strong>
+                              {isAnchor ? (
+                                <span
+                                  className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                                    "high",
+                                  )}`}
+                                >
+                                  {pick(locale, "Anchor model", "기준 모델")}
+                                </span>
+                              ) : null}
+                              <span
+                                className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
+                                  itemTone,
+                                )}`}
+                              >
+                                {item.summary?.validation_mode === "inference_only" ||
+                                item.summary?.is_correct == null
+                                  ? pick(locale, "Inference-only", "추론 전용")
+                                  : item.summary.is_correct
+                                    ? pick(locale, "Match", "일치")
+                                    : pick(locale, "Mismatch", "불일치")}
+                              </span>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="rounded-[14px] border border-border bg-surface px-3 py-3">
+                                <span className="block text-[0.76rem] text-muted">
+                                  {item.summary?.validation_mode === "inference_only"
+                                    ? pick(locale, "Pattern support", "패턴 지지")
+                                    : pick(locale, "Predicted", "예측")}
+                                </span>
+                                <strong className="mt-1 block text-base font-semibold text-ink">
+                                  {item.summary?.predicted_label ?? common.notAvailable}
+                                </strong>
+                              </div>
+                              <div className="rounded-[14px] border border-border bg-surface px-3 py-3">
+                                <span className="block text-[0.76rem] text-muted">
+                                  {pick(locale, "Confidence", "신뢰도")}
+                                </span>
+                                <strong className="mt-1 block text-base font-semibold text-ink">
+                                  {formatProbability(
+                                    item.summary?.prediction_probability,
+                                    common.notAvailable,
+                                  )}
+                                </strong>
+                              </div>
+                            </div>
+                            <p className="m-0 text-sm leading-6 text-muted">
+                              {[
+                                item.model_version?.architecture,
+                                item.model_version?.crop_mode,
+                              ]
+                                .filter((value) => String(value || "").trim().length > 0)
+                                .join(" / ") || common.notAvailable}
+                            </p>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                ) : null}
+              </Card>
+            </div>
 
             {postMortem ? (
               <Card
@@ -864,14 +852,14 @@ function ValidationPanelInner({
                 <SectionHeader
                   title={pick(
                     locale,
-                    "Prediction post-mortem",
-                    "예측 post-mortem",
+                    "Advanced review notes",
+                    "고급 검토 메모",
                   )}
                   titleAs="h4"
                   description={pick(
                     locale,
-                    "A structured review of why this prediction likely matched or missed the culture label.",
-                    "이 예측이 왜 배양 라벨과 맞았거나 어긋났는지 구조화해 다시 정리한 결과입니다.",
+                    "Open this only when you need the detailed post-hoc explanation for Step 1.",
+                    "1단계 결과에 대한 자세한 사후 설명이 필요할 때만 펼쳐서 보세요.",
                   )}
                   className={docSectionHeadClass}
                   aside={
@@ -1424,8 +1412,8 @@ function ValidationPanelInner({
           <div className={emptySurfaceClass}>
             {pick(
               locale,
-              'Start here. Click "Run single-case judgment" to save the prediction and any crop or Grad-CAM review images supported by the selected model.',
-              '여기서 시작하세요. "단일 케이스 판정 실행"을 누르면 선택된 모델이 지원하는 예측 결과와 crop 또는 Grad-CAM 검토 이미지가 저장됩니다.',
+              'Start here. Click "Run image-level analysis" to save the prediction and any crop or Grad-CAM review images supported by the selected model.',
+              '여기서 시작하세요. "이미지 레벨 분석 실행"을 누르면 선택된 모델이 지원하는 예측 결과와 crop 또는 Grad-CAM 검토 이미지가 저장됩니다.',
             )}
           </div>
         )}
@@ -1440,12 +1428,12 @@ function ValidationPanelInner({
               {pick(locale, "Step 2", "2단계")}
             </div>
           }
-          title={pick(locale, "Efficient MIL review", "Efficient MIL 검토")}
+          title={pick(locale, "Visit-level analysis", "방문 레벨 분석")}
           titleAs="h4"
           description={pick(
             locale,
-            "Use this after Step 1. The prepared visit-level Efficient MIL model is the default Step 2 path, and you can still add extra models here for an advanced comparison if needed.",
-            "1단계 이후에 사용합니다. 준비된 visit-level Efficient MIL 모델이 기본 2단계 경로이고, 필요하면 여기서 추가 모델을 넣어 고급 비교도 할 수 있습니다.",
+            "Use this after Step 1. The prepared Efficient MIL visit-level pass is the default Step 2 path, and extra models are optional.",
+            "1단계 이후에 사용합니다. 준비된 Efficient MIL 방문 레벨 분석이 기본 2단계 경로이고, 추가 모델은 선택 사항입니다.",
           )}
           aside={
             showStepActions ? (
@@ -1459,7 +1447,7 @@ function ValidationPanelInner({
               >
                 {modelCompareBusy
                   ? pick(locale, "Running Step 2...", "2단계 실행 중...")
-                  : pick(locale, "Run Step 2 review", "2단계 검토 실행")}
+                  : pick(locale, "Run visit-level analysis", "방문 레벨 분석 실행")}
               </Button>
             ) : undefined
           }
@@ -1530,13 +1518,13 @@ function ValidationPanelInner({
               : selectedCompareModelVersionIds.length > 0
               ? pick(
                   locale,
-                  `${selectedCompareModelVersionIds.length} model(s) selected. Click "Run Step 2 review" to execute the prepared MIL path or your advanced comparison set on this case.`,
-                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "2단계 검토 실행"을 눌러 준비된 MIL 경로 또는 고급 비교 세트를 이 케이스에서 실행하세요.`,
+                  `${selectedCompareModelVersionIds.length} model(s) selected. Click "Run visit-level analysis" to execute the prepared MIL path or your advanced comparison set on this case.`,
+                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "방문 레벨 분석 실행"을 눌러 준비된 MIL 경로 또는 고급 비교 세트를 이 케이스에서 실행하세요.`,
                 )
               : pick(
                   locale,
-                  'Select one or more models below, then click "Run Step 2 review". The default recommendation is the prepared Efficient MIL model.',
-                  '아래에서 모델을 하나 이상 고른 뒤 "2단계 검토 실행"을 누르세요. 기본 권장 경로는 준비된 Efficient MIL 모델입니다.',
+                  'Select one or more models below, then click "Run visit-level analysis". The default recommendation is the prepared Efficient MIL model.',
+                  '아래에서 모델을 하나 이상 고른 뒤 "방문 레벨 분석 실행"을 누르세요. 기본 권장 경로는 준비된 Efficient MIL 모델입니다.',
                 )}
           </div>
         ) : null}
@@ -1636,8 +1624,8 @@ function ValidationPanelInner({
                     titleAs="h4"
                     description={pick(
                       locale,
-                      "Model comparison snapshot for the selected saved case.",
-                      "선택된 저장 케이스에 대한 모델 비교 스냅샷입니다.",
+                      "Compact visit-level result for this saved case.",
+                      "이 저장 케이스의 방문 레벨 결과입니다.",
                     )}
                     aside={
                       <div className="flex flex-wrap gap-2">
@@ -1697,29 +1685,39 @@ function ValidationPanelInner({
                           value={
                             item.summary?.validation_id ?? common.notAvailable
                           }
-                          label={pick(locale, "Validation ID", "Validation ID")}
+                          label={pick(locale, "Result ID", "결과 ID")}
                         />
                       </MetricGrid>
-                      <div className={docBadgeRowClass}>
-                        <span
-                          className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                            "neutral",
-                          )}`}
-                        >
-                          {pick(locale, "Crop", "Crop")}{" "}
-                          {item.model_version?.crop_mode ?? common.notAvailable}
-                        </span>
-                        <span
-                          className={`inline-flex min-h-9 items-center rounded-full border px-3 text-xs font-semibold ${toneClass(
-                            "neutral",
-                          )}`}
-                        >
-                          {pick(locale, "Artifacts", "Artifacts")}{" "}
-                          {item.artifact_availability?.gradcam
-                            ? "Grad-CAM"
-                            : pick(locale, "compare-only", "비교 전용")}
-                        </span>
-                      </div>
+                      <p className="m-0 text-sm leading-6 text-muted">
+                        {item.summary?.validation_mode === "inference_only"
+                          ? pick(
+                              locale,
+                              "This visit-level model returned support without a recorded culture label.",
+                              "이 방문 레벨 모델은 기록된 배양 라벨 없이 지지 신호를 반환했습니다.",
+                            )
+                          : item.summary?.is_correct
+                            ? pick(
+                                locale,
+                                "The visit-level prediction matched the recorded culture label.",
+                                "방문 레벨 예측이 기록된 배양 라벨과 일치합니다.",
+                              )
+                            : pick(
+                                locale,
+                                "The visit-level prediction diverged from the recorded culture label.",
+                                "방문 레벨 예측이 기록된 배양 라벨과 다릅니다.",
+                              )}{" "}
+                        {item.artifact_availability?.gradcam
+                          ? pick(
+                              locale,
+                              "Review images are available for this run.",
+                              "이번 실행에서는 검토 이미지를 확인할 수 있습니다.",
+                            )
+                          : pick(
+                              locale,
+                              "This visit-level MIL run stores the score and label, but usually does not export Grad-CAM.",
+                              "이 방문 레벨 MIL 실행은 점수와 라벨을 저장하지만, 보통 Grad-CAM은 내보내지 않습니다.",
+                            )}
+                      </p>
                     </>
                   )}
                 </Card>

@@ -62,9 +62,48 @@ function warnAnalysisFallback(operation: string) {
   warnDesktopMlFallback(operation);
 }
 
+async function requestAiClinicHttp<T>(
+  siteId: string,
+  token: string,
+  path: string,
+  payload: {
+    patient_id: string;
+    visit_date: string;
+    execution_mode?: "auto" | "cpu" | "gpu";
+    model_version_id?: string;
+    model_version_ids?: string[];
+    top_k?: number;
+    retrieval_backend?: "standard" | "classifier" | "dinov2" | "hybrid";
+    retrieval_profile?: "dinov2_lesion_crop" | "dinov2_cornea_roi" | "dinov2_full_frame";
+  },
+) {
+  return request<T>(
+    `/api/sites/${siteId}${path}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        execution_mode: "auto",
+        top_k: 3,
+        retrieval_backend: "dinov2",
+        retrieval_profile: "dinov2_lesion_crop",
+        ...payload,
+      }),
+    },
+    token,
+  );
+}
+
 async function resolveDesktopArtifactUrl(command: string, payload: Record<string, unknown>) {
   const response = await invokeDesktop<DesktopPathResponse>(command, { payload });
   return convertDesktopFilePath(response.path);
+}
+
+function appendArtifactVersion(url: string | null, versionTag: string | null | undefined) {
+  if (!url || !versionTag || url.startsWith("blob:")) {
+    return url;
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}kera_v=${encodeURIComponent(versionTag)}`;
 }
 
 export async function runAnalysisCaseValidation(
@@ -176,28 +215,29 @@ export async function runAnalysisCaseAiClinic(
     retrieval_profile: payload.retrieval_profile ?? "dinov2_lesion_crop",
   };
   if (canUseDesktopAnalysisTransport()) {
-    return invokeDesktop<AiClinicResponse>("run_case_ai_clinic", {
-      payload: {
-        site_id: siteId,
+    try {
+      return await invokeDesktop<AiClinicResponse>("run_case_ai_clinic", {
+        payload: {
+          site_id: siteId,
+          token,
+          ...normalizedPayload,
+        },
+      });
+    } catch {
+      return requestAiClinicHttp<AiClinicResponse>(
+        siteId,
         token,
-        ...normalizedPayload,
-      },
-    });
+        "/cases/ai-clinic",
+        normalizedPayload,
+      );
+    }
   }
   warnAnalysisFallback("runCaseAiClinic");
-  return request<AiClinicResponse>(
-    `/api/sites/${siteId}/cases/ai-clinic`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        top_k: 3,
-        retrieval_backend: "dinov2",
-        retrieval_profile: "dinov2_lesion_crop",
-        ...normalizedPayload,
-      }),
-    },
+  return requestAiClinicHttp<AiClinicResponse>(
+    siteId,
     token,
+    "/cases/ai-clinic",
+    normalizedPayload,
   );
 }
 
@@ -221,28 +261,29 @@ export async function runAnalysisCaseAiClinicSimilarCases(
     retrieval_profile: payload.retrieval_profile ?? "dinov2_lesion_crop",
   };
   if (canUseDesktopAnalysisTransport()) {
-    return invokeDesktop<AiClinicResponse>("run_case_ai_clinic_similar_cases", {
-      payload: {
-        site_id: siteId,
+    try {
+      return await invokeDesktop<AiClinicResponse>("run_case_ai_clinic_similar_cases", {
+        payload: {
+          site_id: siteId,
+          token,
+          ...normalizedPayload,
+        },
+      });
+    } catch {
+      return requestAiClinicHttp<AiClinicResponse>(
+        siteId,
         token,
-        ...normalizedPayload,
-      },
-    });
+        "/cases/ai-clinic/similar-cases",
+        normalizedPayload,
+      );
+    }
   }
   warnAnalysisFallback("runCaseAiClinicSimilarCases");
-  return request<AiClinicResponse>(
-    `/api/sites/${siteId}/cases/ai-clinic/similar-cases`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        execution_mode: "auto",
-        top_k: 3,
-        retrieval_backend: "dinov2",
-        retrieval_profile: "dinov2_lesion_crop",
-        ...normalizedPayload,
-      }),
-    },
+  return requestAiClinicHttp<AiClinicResponse>(
+    siteId,
     token,
+    "/cases/ai-clinic/similar-cases",
+    normalizedPayload,
   );
 }
 
@@ -401,13 +442,14 @@ export async function fetchAnalysisValidationArtifactUrl(
   token: string,
 ) {
   if (canUseDesktopAnalysisTransport()) {
-    return resolveDesktopArtifactUrl("resolve_validation_artifact_path", {
+    const url = await resolveDesktopArtifactUrl("resolve_validation_artifact_path", {
       site_id: siteId,
       validation_id: validationId,
       patient_id: patientId,
       visit_date: visitDate,
       artifact_kind: artifactKind,
     });
+    return appendArtifactVersion(url, `${validationId}:${artifactKind}`);
   }
   const blob = await fetchAnalysisValidationArtifactBlob(
     siteId,

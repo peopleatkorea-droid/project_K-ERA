@@ -94,7 +94,7 @@ describe("analysis-runtime desktop routing", () => {
       },
     });
     expect(desktopIpcMocks.convertDesktopFilePath).toHaveBeenCalledWith("C:/artifacts/roi_crop.png");
-    expect(url).toBe("C:/artifacts/roi_crop.png");
+    expect(url).toBe("C:/artifacts/roi_crop.png?kera_v=validation_1%3Aroi_crop");
   });
 
   it("uses the desktop ROI artifact reader when the desktop runtime is available", async () => {
@@ -364,6 +364,50 @@ describe("analysis-runtime desktop routing", () => {
         retrieval_profile: "dinov2_lesion_crop",
       },
     });
+  });
+
+  it("falls back to the local API when the desktop similar-cases command fails", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    desktopIpcMocks.invokeDesktop.mockRejectedValue("Desktop ML sidecar request failed.");
+    apiCoreMocks.request.mockResolvedValue({
+      analysis_stage: "similar_cases",
+      similar_cases: [],
+    });
+
+    const mod = await import("./analysis-runtime");
+    await mod.runAnalysisCaseAiClinicSimilarCases("39100103", "desktop-token", {
+      patient_id: "17452298",
+      visit_date: "Initial",
+      model_version_id: "model_1",
+    });
+
+    expect(desktopIpcMocks.invokeDesktop).toHaveBeenCalledWith("run_case_ai_clinic_similar_cases", {
+      payload: {
+        site_id: "39100103",
+        token: "desktop-token",
+        patient_id: "17452298",
+        visit_date: "Initial",
+        model_version_id: "model_1",
+        retrieval_backend: "dinov2",
+        retrieval_profile: "dinov2_lesion_crop",
+      },
+    });
+    expect(apiCoreMocks.request).toHaveBeenCalledWith(
+      "/api/sites/39100103/cases/ai-clinic/similar-cases",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          execution_mode: "auto",
+          top_k: 3,
+          retrieval_backend: "dinov2",
+          retrieval_profile: "dinov2_lesion_crop",
+          patient_id: "17452298",
+          visit_date: "Initial",
+          model_version_id: "model_1",
+        }),
+      },
+      "desktop-token",
+    );
   });
 
   it("uses the desktop site-job reader when the desktop runtime is available", async () => {

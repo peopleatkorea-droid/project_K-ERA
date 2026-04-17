@@ -2951,6 +2951,9 @@ describe("CaseWorkspace integration", () => {
     const followUpPreview = await screen.findByAltText("image_2");
     expect(followUpPreview.getAttribute("src")).toContain("/preview/image_2");
     expect(
+      desktopTransportMocks.ensureDesktopImagePreviews,
+    ).not.toHaveBeenCalled();
+    expect(
       screen.queryByText("Open this visit to load saved images."),
     ).not.toBeInTheDocument();
   });
@@ -4146,7 +4149,7 @@ describe("CaseWorkspace integration", () => {
     expect(await screen.findByLabelText("Anchor model")).toBeInTheDocument();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run single-case judgment" }),
+      await screen.findByRole("button", { name: "Run image-level analysis" }),
     );
 
     await waitFor(() => {
@@ -4165,7 +4168,7 @@ describe("CaseWorkspace integration", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /Run Efficient MIL/,
+        name: /Run visit-level analysis/,
       }),
     );
 
@@ -4309,7 +4312,7 @@ describe("CaseWorkspace integration", () => {
     await openSavedCase();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run single-case judgment" }),
+      await screen.findByRole("button", { name: "Run image-level analysis" }),
     );
 
     expect(
@@ -4424,7 +4427,7 @@ describe("CaseWorkspace integration", () => {
     expect(await screen.findByLabelText("Anchor model")).toBeInTheDocument();
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run single-case judgment" }),
+      await screen.findByRole("button", { name: "Run image-level analysis" }),
     );
 
     await waitFor(() => {
@@ -4441,7 +4444,7 @@ describe("CaseWorkspace integration", () => {
     });
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Find similar patients" }),
+      await screen.findByRole("button", { name: "Run image retrieval" }),
     );
 
     await waitFor(() => {
@@ -4497,6 +4500,7 @@ describe("CaseWorkspace integration", () => {
       screen.getByText("Dense stromal infiltrate with satellite lesions."),
     ).toBeInTheDocument();
     expect(screen.getByText("Workflow recommendation")).toBeInTheDocument();
+    expect(screen.getByText("Local workflow guidance")).toBeInTheDocument();
   });
 
   it("submits contribution with the default three-model set", async () => {
@@ -4774,7 +4778,7 @@ describe("CaseWorkspace integration", () => {
     fireEvent.change(anchorSelect, { target: { value: "model_eff" } });
 
     fireEvent.click(
-      await screen.findByRole("button", { name: "Run single-case judgment" }),
+      await screen.findByRole("button", { name: "Run image-level analysis" }),
     );
 
     await waitFor(() => {

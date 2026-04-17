@@ -225,13 +225,13 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     analysisEyebrow: pick(locale, "Clinical AI review", "진료용 AI 검토"),
     analysisTitle: pick(
       locale,
-      "Single-case judgment, Efficient MIL review, and DINOv2 similar-patient review",
-      "단일 케이스 판정, Efficient MIL 검토, DINOv2 유사 환자 검토",
+      "Image-level analysis, visit-level analysis, and image retrieval",
+      "이미지 레벨 분석, 방문 레벨 분석, 이미지 검색",
     ),
     analysisDescription: pick(
       locale,
-      "Use this in order: run the tiny judgment with review images, run the prepared Efficient MIL visit-level review, then review three DINOv2 similar patients and optional evidence. You can also run Steps 1-3 in one action.",
-      "보통 이 순서로 사용합니다: review image가 나오는 tiny 판정을 실행하고, 준비된 Efficient MIL visit-level 검토를 실행한 뒤, DINOv2 유사 환자 3개와 필요 시 추가 근거를 검토합니다. 이제 1-3단계를 한 번에 순차 실행할 수도 있습니다.",
+      "Use this in order: run the image-level model with review images, run the prepared visit-level Efficient MIL pass, then retrieve three similar images with optional evidence and cluster context. You can also run Steps 1-3 in one action.",
+      "보통 이 순서로 사용합니다: 검토 이미지가 나오는 이미지 레벨 분석을 실행하고, 준비된 Efficient MIL 방문 레벨 분석을 실행한 뒤, 이미지 검색으로 유사 케이스 3개와 필요 시 추가 근거를 봅니다. 이제 1-3단계를 한 번에 순차 실행할 수도 있습니다.",
     ),
     imageCountLabel: pick(locale, "images", "이미지"),
     commonLoading,

@@ -64,17 +64,6 @@ pub(super) fn cached_preview_file_path(
     Ok(existing_file_path_string(&preview_path))
 }
 
-pub(super) fn preview_file_path(
-    site_id: &str,
-    image_id: &str,
-    image_path: &Path,
-    max_side: u32,
-) -> Result<String, String> {
-    let preview_path = preview_cache_path(site_id, image_id, max_side)?;
-    ensure_preview(image_path, &preview_path, max_side)?;
-    Ok(preview_path.to_string_lossy().to_string())
-}
-
 pub(super) fn maybe_queue_preview_job(
     site_id: &str,
     image_id: &str,
