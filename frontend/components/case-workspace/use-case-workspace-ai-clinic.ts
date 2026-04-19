@@ -12,6 +12,8 @@ import {
 } from "../../lib/api";
 import {
   aiClinicSimilarCaseKey,
+  collectAiClinicSimilarCases,
+  countDisplayedAiClinicSimilarCases,
   withAiClinicSimilarCasePreviewPatch,
   withAiClinicSimilarCasePreviews,
 } from "./case-workspace-ai-clinic-helpers";
@@ -231,10 +233,12 @@ export function useCaseWorkspaceAiClinic({
         });
         setToast({
           tone: "success",
-          message: copy.aiClinicReady(nextResult.similar_cases.length),
+          message: copy.aiClinicReady(
+            countDisplayedAiClinicSimilarCases(nextResult),
+          ),
         });
         void hydrateAiClinicSimilarCasePreviews(
-          nextResult.similar_cases,
+          collectAiClinicSimilarCases(nextResult),
           previewRequestId,
         );
         return nextResult;
@@ -314,7 +318,7 @@ export function useCaseWorkspaceAiClinic({
         setAiClinicResult(nextResult);
       });
       void hydrateAiClinicSimilarCasePreviews(
-        nextResult.similar_cases,
+        collectAiClinicSimilarCases(nextResult),
         previewRequestId,
       );
       setToast({

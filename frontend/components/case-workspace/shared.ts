@@ -63,8 +63,13 @@ export type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
   preview_url: string | null;
 };
 
-export type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
+export type AiClinicPreviewResponse = Omit<
+  AiClinicResponse,
+  "similar_cases" | "local_similar_cases" | "cross_site_similar_cases"
+> & {
   similar_cases: AiClinicSimilarCasePreview[];
+  local_similar_cases?: AiClinicSimilarCasePreview[];
+  cross_site_similar_cases?: AiClinicSimilarCasePreview[];
 };
 
 export type CaseWorkspaceValidationRunOptions = {

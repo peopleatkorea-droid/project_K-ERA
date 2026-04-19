@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   aiClinicSimilarCaseKey,
+  collectAiClinicSimilarCases,
+  countDisplayedAiClinicSimilarCases,
   withAiClinicSimilarCasePreviewPatch,
   withAiClinicSimilarCasePreviews,
 } from "./case-workspace-ai-clinic-helpers";
@@ -45,6 +47,18 @@ describe("case-workspace ai clinic helpers", () => {
             image_count: 1,
           },
         ],
+        local_similar_cases: [
+          {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            representative_image_id: "image_1",
+            similarity: 0.91,
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            image_count: 1,
+          },
+        ],
       },
       {
         analysis_stage: "similar_cases",
@@ -71,6 +85,18 @@ describe("case-workspace ai clinic helpers", () => {
             culture_category: "bacterial",
             culture_species: "Staphylococcus aureus",
             image_count: 1,
+          },
+        ],
+        local_similar_cases: [
+          {
+            case_id: "case_1",
+            patient_id: "KERA-2026-001",
+            visit_date: "Initial",
+            representative_image_id: "image_1",
+            similarity: 0.91,
+            culture_category: "bacterial",
+            culture_species: "Staphylococcus aureus",
+            image_count: 1,
             preview_url: "/preview/image_1",
           },
         ],
@@ -78,6 +104,7 @@ describe("case-workspace ai clinic helpers", () => {
     );
 
     expect(result.similar_cases[0]?.preview_url).toBe("/preview/image_1");
+    expect(result.local_similar_cases?.[0]?.preview_url).toBe("/preview/image_1");
   });
 
   it("keeps a fresh preview when there is no previous cached preview", () => {
@@ -110,14 +137,31 @@ describe("case-workspace ai clinic helpers", () => {
             image_count: 3,
           },
         ],
+        cross_site_similar_cases: [
+          {
+            case_id: "remote_case_2",
+            patient_id: "REMOTE-2026-002",
+            visit_date: "cross-site",
+            representative_image_id: null,
+            similarity: 0.8,
+            preview_url: "/preview/remote_case_2",
+            culture_category: "fungal",
+            culture_species: "Fusarium",
+            image_count: 3,
+            source_site_display_name: "Partner Hospital",
+          },
+        ],
       },
       null,
     );
 
     expect(result.similar_cases[0]?.preview_url).toBe("/preview/image_2");
+    expect(result.cross_site_similar_cases?.[0]?.preview_url).toBe(
+      "/preview/remote_case_2",
+    );
   });
 
-  it("applies preview patches only to matching similar cases", () => {
+  it("applies preview patches across local and cross-site sections", () => {
     const result = withAiClinicSimilarCasePreviewPatch(
       {
         analysis_stage: "similar_cases",
@@ -158,11 +202,81 @@ describe("case-workspace ai clinic helpers", () => {
             image_count: 2,
           },
         ],
+        local_similar_cases: [
+          {
+            case_id: "case_2",
+            patient_id: "KERA-2026-002",
+            visit_date: "FU #2",
+            representative_image_id: "image_2",
+            similarity: 0.84,
+            preview_url: null,
+            culture_category: "fungal",
+            culture_species: "Fusarium",
+            image_count: 3,
+          },
+        ],
+        cross_site_similar_cases: [
+          {
+            case_id: "remote_case_4",
+            patient_id: "REMOTE-2026-004",
+            visit_date: "cross-site",
+            representative_image_id: null,
+            similarity: 0.79,
+            preview_url: null,
+            culture_category: "bacterial",
+            culture_species: "Pseudomonas",
+            image_count: 2,
+            source_site_display_name: "Partner Hospital",
+          },
+        ],
       },
-      new Map([["KERA-2026-002::FU #2", "/preview/image_2"]]),
+      new Map([
+        ["KERA-2026-002::FU #2", "/preview/image_2"],
+        ["REMOTE-2026-004::cross-site", "/preview/remote_case_4"],
+      ]),
     );
 
     expect(result.similar_cases[0]?.preview_url).toBe("/preview/image_2");
     expect(result.similar_cases[1]?.preview_url).toBeNull();
+    expect(result.local_similar_cases?.[0]?.preview_url).toBe(
+      "/preview/image_2",
+    );
+    expect(result.cross_site_similar_cases?.[0]?.preview_url).toBe(
+      "/preview/remote_case_4",
+    );
+  });
+
+  it("counts and collects displayed cases from split sections without duplicates", () => {
+    const result = {
+      similar_cases: [
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          preview_url: null,
+        },
+        {
+          patient_id: "REMOTE-2026-002",
+          visit_date: "cross-site",
+          preview_url: null,
+        },
+      ],
+      local_similar_cases: [
+        {
+          patient_id: "KERA-2026-001",
+          visit_date: "Initial",
+          preview_url: null,
+        },
+      ],
+      cross_site_similar_cases: [
+        {
+          patient_id: "REMOTE-2026-002",
+          visit_date: "cross-site",
+          preview_url: null,
+        },
+      ],
+    };
+
+    expect(countDisplayedAiClinicSimilarCases(result)).toBe(2);
+    expect(collectAiClinicSimilarCases(result)).toHaveLength(2);
   });
 });

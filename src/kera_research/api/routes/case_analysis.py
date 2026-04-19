@@ -5,6 +5,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
+from kera_research.api.cross_site_retrieval import (
+    enrich_cross_site_retrieval_details,
+)
 from kera_research.api.case_model_versions import (
     resolve_requested_compare_model_versions,
     resolve_requested_contribution_models as select_requested_contribution_models,
@@ -32,6 +35,7 @@ def build_case_analysis_router(support: Any) -> APIRouter:
     resolve_execution_device = support.resolve_execution_device
     project_id_for_site = support.project_id_for_site
     make_id = support.make_id
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
 
     CaseValidationRequest = support.CaseValidationRequest
     CaseAiClinicRequest = support.CaseAiClinicRequest
@@ -55,6 +59,38 @@ def build_case_analysis_router(support: Any) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file not found on disk.")
         media_type = mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"
         return FileResponse(path=artifact_path, media_type=media_type, filename=artifact_path.name)
+
+    def attach_cross_site_retrieval_status(
+        result: dict[str, Any],
+        *,
+        cp: Any,
+        site_store: Any,
+        workflow: Any,
+        retrieval_profile: str,
+    ) -> dict[str, Any]:
+        technical_details = dict(result.get("technical_details") or {})
+        cross_site_details = dict(technical_details.get("cross_site_retrieval") or {})
+        cross_site_candidates = list(result.get("cross_site_similar_cases") or [])
+        cross_site_status = str(cross_site_details.get("status") or "").strip().lower()
+        enriched_details = enrich_cross_site_retrieval_details(
+            cp=cp,
+            site_store=site_store,
+            workflow=workflow,
+            requested_profile_id=str(cross_site_details.get("requested_profile_id") or retrieval_profile),
+            requested_profile_label=str(cross_site_details.get("requested_profile_label") or ""),
+            effective_profile_id=str(cross_site_details.get("effective_profile_id") or ""),
+            effective_profile_label=str(cross_site_details.get("effective_profile_label") or ""),
+            cross_site_status=cross_site_status,
+            candidate_count=len(cross_site_candidates),
+            queue_sync=queue_federated_retrieval_corpus_sync,
+            sync_trigger="ai_clinic_cross_site_recovery",
+        )
+        cross_site_details.update(enriched_details)
+        technical_details["cross_site_retrieval"] = cross_site_details
+        return {
+            **result,
+            "technical_details": technical_details,
+        }
 
     @router.post("/api/sites/{site_id}/cases/validate")
     def validate_case(
@@ -263,6 +299,13 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 retrieval_backend=payload.retrieval_backend,
                 retrieval_profile=payload.retrieval_profile,
             )
+            result = attach_cross_site_retrieval_status(
+                result,
+                cp=cp,
+                site_store=site_store,
+                workflow=workflow,
+                retrieval_profile=payload.retrieval_profile,
+            )
             sync_case_artifact_cache_with_response_budget(
                 workflow,
                 site_store,
@@ -316,6 +359,13 @@ def build_case_analysis_router(support: Any) -> APIRouter:
                 execution_device=execution_device,
                 top_k=payload.top_k,
                 retrieval_backend=payload.retrieval_backend,
+                retrieval_profile=payload.retrieval_profile,
+            )
+            result = attach_cross_site_retrieval_status(
+                result,
+                cp=cp,
+                site_store=site_store,
+                workflow=workflow,
                 retrieval_profile=payload.retrieval_profile,
             )
             sync_case_artifact_cache_with_response_budget(

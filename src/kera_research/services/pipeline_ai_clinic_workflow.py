@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from kera_research.services.data_plane import SiteStore
-
 if TYPE_CHECKING:
+    from kera_research.services.data_plane import SiteStore
     from kera_research.services.pipeline import ResearchWorkflowService
 
 
@@ -64,6 +66,170 @@ class ResearchAiClinicWorkflow:
             },
         }
         return profile_map.get(normalized, profile_map["dinov2_lesion_crop"])
+
+    def _append_warning(self, current: str | None, next_warning: str | None) -> str | None:
+        normalized_next = str(next_warning or "").strip()
+        if not normalized_next:
+            return current
+        normalized_current = str(current or "").strip()
+        if not normalized_current:
+            return normalized_next
+        if normalized_next in normalized_current:
+            return normalized_current
+        return f"{normalized_current} {normalized_next}".strip()
+
+    def _retrieval_profile_fallbacks(self, retrieval_profile: str | None) -> list[dict[str, Any]]:
+        requested = self._normalize_retrieval_profile(retrieval_profile)
+        requested_id = str(requested.get("profile_id") or "").strip() or "dinov2_lesion_crop"
+        fallback_map = {
+            "dinov2_lesion_crop": [
+                "dinov2_lesion_crop",
+                "dinov2_cornea_roi",
+                "dinov2_full_frame",
+            ],
+            "dinov2_cornea_roi": [
+                "dinov2_cornea_roi",
+                "dinov2_full_frame",
+            ],
+            "dinov2_full_frame": [
+                "dinov2_full_frame",
+            ],
+        }
+        fallback_ids = fallback_map.get(requested_id, [requested_id, "dinov2_full_frame"])
+        profiles: list[dict[str, Any]] = []
+        seen_profile_ids: set[str] = set()
+        for profile_id in fallback_ids:
+            profile_record = self._normalize_retrieval_profile(profile_id)
+            normalized_profile_id = str(profile_record.get("profile_id") or "").strip()
+            if not normalized_profile_id or normalized_profile_id in seen_profile_ids:
+                continue
+            seen_profile_ids.add(normalized_profile_id)
+            profiles.append(profile_record)
+        return profiles or [requested]
+
+    def _resolve_query_dinov2_embedding(
+        self,
+        site_store: SiteStore,
+        *,
+        query_records: list[dict[str, Any]],
+        execution_device: str,
+        retrieval_profile: str | None,
+    ) -> tuple[np.ndarray | None, dict[str, Any], str | None]:
+        service = self.service
+        requested_record = self._normalize_retrieval_profile(retrieval_profile)
+        errors: list[str] = []
+        for profile_record in self._retrieval_profile_fallbacks(retrieval_profile):
+            try:
+                embedding = service._prepare_case_dinov2_embedding(
+                    site_store,
+                    query_records,
+                    dict(profile_record["model_version"]),
+                    execution_device,
+                )
+            except Exception as exc:
+                errors.append(f"{profile_record['label']}: {exc}")
+                continue
+            warning = None
+            if str(profile_record.get("profile_id") or "") != str(requested_record.get("profile_id") or ""):
+                warning = (
+                    f"Requested DINOv2 retrieval profile {requested_record['label']} is unavailable and "
+                    f"AI Clinic used {profile_record['label']}."
+                )
+            return embedding, profile_record, warning
+
+        if not errors:
+            return None, requested_record, None
+        return (
+            None,
+            requested_record,
+            f"DINOv2 retrieval is unavailable across retrieval profiles. {' '.join(errors)}",
+        )
+
+    def _remote_retrieval_cache_path(
+        self,
+        site_store: SiteStore,
+        *,
+        patient_id: str,
+        visit_date: str,
+        requested_profile_id: str,
+    ):
+        cache_key = hashlib.sha1(
+            f"{site_store.site_id}|{patient_id}|{visit_date}|{requested_profile_id}".encode("utf-8")
+        ).hexdigest()[:16]
+        return site_store.artifact_dir / "ai_clinic_remote_retrieval_cache" / f"{cache_key}.json"
+
+    def _load_remote_retrieval_cache(
+        self,
+        site_store: SiteStore,
+        *,
+        patient_id: str,
+        visit_date: str,
+        requested_profile_id: str,
+        top_k: int,
+    ) -> dict[str, Any] | None:
+        cache_path = self._remote_retrieval_cache_path(
+            site_store,
+            patient_id=patient_id,
+            visit_date=visit_date,
+            requested_profile_id=requested_profile_id,
+        )
+        if not cache_path.exists():
+            return None
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if (
+            str(payload.get("patient_id") or "").strip() != str(patient_id).strip()
+            or str(payload.get("visit_date") or "").strip() != str(visit_date).strip()
+            or str(payload.get("requested_profile_id") or "").strip() != str(requested_profile_id).strip()
+        ):
+            return None
+        cached_candidates = payload.get("candidates")
+        if not isinstance(cached_candidates, list) or not cached_candidates:
+            return None
+        return {
+            "saved_at": str(payload.get("saved_at") or "").strip() or None,
+            "used_profile_id": str(payload.get("used_profile_id") or "").strip() or None,
+            "candidates": [dict(item) for item in cached_candidates[: max(1, int(top_k or 3))] if isinstance(item, dict)],
+        }
+
+    def _save_remote_retrieval_cache(
+        self,
+        site_store: SiteStore,
+        *,
+        patient_id: str,
+        visit_date: str,
+        requested_profile_id: str,
+        used_profile_id: str,
+        candidates: list[dict[str, Any]],
+    ) -> None:
+        normalized_candidates = [dict(item) for item in candidates if isinstance(item, dict)]
+        if not normalized_candidates:
+            return
+        cache_path = self._remote_retrieval_cache_path(
+            site_store,
+            patient_id=patient_id,
+            visit_date=visit_date,
+            requested_profile_id=requested_profile_id,
+        )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "requested_profile_id": requested_profile_id,
+                    "used_profile_id": used_profile_id,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "candidates": normalized_candidates,
+                },
+                ensure_ascii=True,
+            ),
+            encoding="utf-8",
+        )
 
     def _normalize_requested_backend(self, retrieval_backend: str | None) -> tuple[str, str]:
         normalized = str(retrieval_backend or "standard").strip().lower()
@@ -146,7 +312,16 @@ class ResearchAiClinicWorkflow:
         loaded_models: dict[str, Any] = {}
         query_classifier_embedding: np.ndarray | None = None
         query_dinov2_embedding: np.ndarray | None = None
+        resolved_dinov2_embedding: np.ndarray | None = None
+        resolved_dinov2_profile_record = retrieval_profile_record
         retrieval_warning: str | None = None
+        remote_node_sync_enabled = bool(service.control_plane.remote_node_sync_enabled())
+        cross_site_status = "disabled" if not remote_node_sync_enabled else "pending"
+        cross_site_warning: str | None = None
+        cross_site_cache_used = False
+        cross_site_cache_saved_at: str | None = None
+        if not remote_node_sync_enabled:
+            cross_site_warning = "Cross-site retrieval corpus sync is not configured."
 
         if requested_backend in {"classifier", "hybrid"}:
             query_classifier_embedding = service._prepare_case_embedding(
@@ -156,15 +331,22 @@ class ResearchAiClinicWorkflow:
                 execution_device,
                 loaded_models=loaded_models,
             )
+        if remote_node_sync_enabled or requested_backend in {"dinov2", "hybrid"}:
+            (
+                resolved_dinov2_embedding,
+                resolved_dinov2_profile_record,
+                dinov2_warning,
+            ) = self._resolve_query_dinov2_embedding(
+                site_store,
+                query_records=query_records,
+                execution_device=execution_device,
+                retrieval_profile=retrieval_profile_record["profile_id"],
+            )
+            retrieval_warning = self._append_warning(retrieval_warning, dinov2_warning)
         if requested_backend in {"dinov2", "hybrid"}:
-            try:
-                query_dinov2_embedding = service._prepare_case_dinov2_embedding(
-                    site_store,
-                    query_records,
-                    retrieval_model_version,
-                    execution_device,
-                )
-            except Exception as exc:
+            query_dinov2_embedding = resolved_dinov2_embedding
+            retrieval_model_version = dict(resolved_dinov2_profile_record["model_version"])
+            if query_dinov2_embedding is None:
                 if requested_backend == "dinov2":
                     query_classifier_embedding = service._prepare_case_embedding(
                         site_store,
@@ -174,11 +356,17 @@ class ResearchAiClinicWorkflow:
                         loaded_models=loaded_models,
                     )
                     requested_backend = "classifier"
-                    retrieval_warning = f"DINOv2 retrieval is unavailable and AI Clinic fell back to classifier retrieval. {exc}"
+                    retrieval_warning = self._append_warning(
+                        retrieval_warning,
+                        "DINOv2 retrieval is unavailable and AI Clinic fell back to classifier retrieval.",
+                    )
                 else:
-                    retrieval_warning = f"DINOv2 retrieval is unavailable and AI Clinic used classifier retrieval only. {exc}"
+                    retrieval_warning = self._append_warning(
+                        retrieval_warning,
+                        "DINOv2 retrieval is unavailable and AI Clinic used classifier retrieval only.",
+                    )
 
-        candidates: list[dict[str, Any]] = []
+        local_candidates: list[dict[str, Any]] = []
         faiss_hits_by_backend: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
         candidate_keys: list[tuple[str, str]] = []
         search_limit = max(normalized_top_k * 20, 50)
@@ -254,7 +442,7 @@ class ResearchAiClinicWorkflow:
                 candidate_metadata = service._case_metadata_snapshot(summary, candidate_records, quality_cache)
                 metadata_reranking = service._metadata_reranking_adjustment(query_metadata, candidate_metadata)
                 similarity = max(-1.0, min(1.0, base_similarity + float(metadata_reranking["adjustment"])))
-                candidates.append(
+                local_candidates.append(
                     {
                         "patient_id": candidate_patient_id,
                         "visit_date": candidate_visit_date,
@@ -281,6 +469,7 @@ class ResearchAiClinicWorkflow:
                         "similarity": round(similarity, 4),
                         "classifier_similarity": round(similarity_components["classifier"], 4) if "classifier" in similarity_components else None,
                         "dinov2_similarity": round(similarity_components["dinov2"], 4) if "dinov2" in similarity_components else None,
+                        "retrieval_source": "local_site",
                     }
                 )
         else:
@@ -318,7 +507,7 @@ class ResearchAiClinicWorkflow:
                 candidate_metadata = service._case_metadata_snapshot(summary, case_records, quality_cache)
                 metadata_reranking = service._metadata_reranking_adjustment(query_metadata, candidate_metadata)
                 similarity = max(-1.0, min(1.0, base_similarity + float(metadata_reranking["adjustment"])))
-                candidates.append(
+                local_candidates.append(
                     {
                         "patient_id": candidate_patient_id,
                         "visit_date": candidate_visit_date,
@@ -345,36 +534,117 @@ class ResearchAiClinicWorkflow:
                         "similarity": round(similarity, 4),
                         "classifier_similarity": round(similarity_components["classifier"], 4) if "classifier" in similarity_components else None,
                         "dinov2_similarity": round(similarity_components["dinov2"], 4) if "dinov2" in similarity_components else None,
+                        "retrieval_source": "local_site",
                     }
                 )
 
-        if query_dinov2_embedding is not None:
-            try:
-                remote_candidates = service.search_remote_retrieval_corpus(
+        remote_candidates: list[dict[str, Any]] = []
+        remote_query_dinov2_embedding = resolved_dinov2_embedding if remote_node_sync_enabled else None
+        remote_retrieval_profile_record = (
+            resolved_dinov2_profile_record
+            if remote_query_dinov2_embedding is not None
+            else retrieval_profile_record
+        )
+        requested_profile_id = str(retrieval_profile_record["profile_id"] or "").strip()
+        if remote_node_sync_enabled:
+            if remote_query_dinov2_embedding is not None:
+                try:
+                    remote_candidates = service.search_remote_retrieval_corpus(
+                        site_store,
+                        query_embedding=remote_query_dinov2_embedding,
+                        query_metadata=query_metadata,
+                        patient_id=patient_id,
+                        visit_date=visit_date,
+                        retrieval_profile=remote_retrieval_profile_record["profile_id"],
+                        top_k=search_limit,
+                    )
+                    self._save_remote_retrieval_cache(
+                        site_store,
+                        patient_id=patient_id,
+                        visit_date=visit_date,
+                        requested_profile_id=requested_profile_id,
+                        used_profile_id=str(remote_retrieval_profile_record["profile_id"] or "").strip(),
+                        candidates=remote_candidates,
+                    )
+                    cross_site_status = "ready" if remote_candidates else "empty"
+                except Exception as exc:
+                    cached_remote = self._load_remote_retrieval_cache(
+                        site_store,
+                        patient_id=patient_id,
+                        visit_date=visit_date,
+                        requested_profile_id=requested_profile_id,
+                        top_k=search_limit,
+                    )
+                    if cached_remote is not None:
+                        remote_candidates = list(cached_remote.get("candidates") or [])
+                        cross_site_cache_used = True
+                        cross_site_cache_saved_at = str(cached_remote.get("saved_at") or "").strip() or None
+                        cached_profile_id = str(
+                            cached_remote.get("used_profile_id") or requested_profile_id
+                        ).strip() or requested_profile_id
+                        remote_retrieval_profile_record = self._normalize_retrieval_profile(cached_profile_id)
+                        cross_site_status = "cache_fallback"
+                        cross_site_warning = (
+                            f"Cross-site retrieval is unavailable and AI Clinic used the last successful cached "
+                            f"cross-site results. {exc}"
+                        )
+                        retrieval_warning = self._append_warning(retrieval_warning, cross_site_warning)
+                    else:
+                        cross_site_status = "unavailable"
+                        cross_site_warning = (
+                            f"Cross-site retrieval is unavailable and AI Clinic continued with local candidates only. {exc}"
+                        )
+                        retrieval_warning = self._append_warning(retrieval_warning, cross_site_warning)
+            else:
+                cached_remote = self._load_remote_retrieval_cache(
                     site_store,
-                    query_embedding=query_dinov2_embedding,
-                    query_metadata=query_metadata,
                     patient_id=patient_id,
                     visit_date=visit_date,
-                    retrieval_profile=retrieval_profile_record["profile_id"],
+                    requested_profile_id=requested_profile_id,
                     top_k=search_limit,
                 )
-                candidates.extend(remote_candidates)
-            except Exception as exc:
-                warning = f"Cross-site retrieval is unavailable and AI Clinic continued with local candidates only. {exc}"
-                retrieval_warning = f"{retrieval_warning} {warning}".strip() if retrieval_warning else warning
+                if cached_remote is not None:
+                    remote_candidates = list(cached_remote.get("candidates") or [])
+                    cross_site_cache_used = True
+                    cross_site_cache_saved_at = str(cached_remote.get("saved_at") or "").strip() or None
+                    cached_profile_id = str(
+                        cached_remote.get("used_profile_id") or requested_profile_id
+                    ).strip() or requested_profile_id
+                    remote_retrieval_profile_record = self._normalize_retrieval_profile(cached_profile_id)
+                    cross_site_status = "cache_fallback"
+                    cross_site_warning = (
+                        "Live cross-site retrieval query embedding is unavailable and AI Clinic used the last "
+                        "successful cached cross-site results."
+                    )
+                    retrieval_warning = self._append_warning(retrieval_warning, cross_site_warning)
+                else:
+                    cross_site_status = "no_query_embedding"
+                    cross_site_warning = "Cross-site retrieval query embedding is unavailable."
+                    retrieval_warning = self._append_warning(retrieval_warning, cross_site_warning)
 
-        candidates.sort(key=lambda item: item["similarity"], reverse=True)
-        unique_patient_candidates: list[dict[str, Any]] = []
-        seen_patient_ids: set[str] = set()
-        for candidate in candidates:
-            candidate_patient_id = str(candidate["patient_id"])
-            if candidate_patient_id in seen_patient_ids:
-                continue
-            seen_patient_ids.add(candidate_patient_id)
-            unique_patient_candidates.append(candidate)
-            if len(unique_patient_candidates) >= normalized_top_k:
-                break
+        candidates = [*local_candidates, *remote_candidates]
+
+        def top_unique_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            ranked_items = sorted(
+                items,
+                key=lambda item: item["similarity"],
+                reverse=True,
+            )
+            unique_candidates: list[dict[str, Any]] = []
+            seen_patient_ids: set[str] = set()
+            for candidate in ranked_items:
+                candidate_patient_id = str(candidate["patient_id"])
+                if candidate_patient_id in seen_patient_ids:
+                    continue
+                seen_patient_ids.add(candidate_patient_id)
+                unique_candidates.append(candidate)
+                if len(unique_candidates) >= normalized_top_k:
+                    break
+            return unique_candidates
+
+        unique_patient_candidates = top_unique_candidates(candidates)
+        local_similar_cases = top_unique_candidates(local_candidates)
+        cross_site_similar_cases = top_unique_candidates(remote_candidates)
         retrieval_mode = {
             "classifier": "classifier_penultimate_feature",
             "dinov2": "dinov2_visual_embedding",
@@ -402,6 +672,26 @@ class ResearchAiClinicWorkflow:
                 "reference_corpus": "positive_labeled_cases_only",
             }
         }
+        technical_details["cross_site_retrieval"] = {
+            "status": cross_site_status,
+            "warning": cross_site_warning,
+            "attempted": remote_node_sync_enabled,
+            "cache_used": cross_site_cache_used,
+            "cache_saved_at": cross_site_cache_saved_at,
+            "candidate_count": len(remote_candidates),
+            "requested_profile_id": retrieval_profile_record["profile_id"],
+            "requested_profile_label": retrieval_profile_record["label"],
+            "effective_profile_id": (
+                remote_retrieval_profile_record["profile_id"]
+                if remote_node_sync_enabled
+                else None
+            ),
+            "effective_profile_label": (
+                remote_retrieval_profile_record["label"]
+                if remote_node_sync_enabled
+                else None
+            ),
+        }
         return {
             "query_case": {
                 "patient_id": patient_id,
@@ -426,6 +716,8 @@ class ResearchAiClinicWorkflow:
             "eligible_candidate_count": len(candidates),
             "metadata_reranking": "enabled",
             "similar_cases": unique_patient_candidates,
+            "local_similar_cases": local_similar_cases,
+            "cross_site_similar_cases": cross_site_similar_cases,
         }
 
     def run_ai_clinic_text_evidence(

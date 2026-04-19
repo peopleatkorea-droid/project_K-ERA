@@ -9,7 +9,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 
 import { Button } from "../ui/button";
@@ -17,22 +19,17 @@ import { Card } from "../ui/card";
 import { SectionHeader } from "../ui/section-header";
 import { docSectionHeadClass } from "../ui/workspace-patterns";
 import type {
-  AiClinicResponse,
-  AiClinicSimilarCaseRecord,
   CaseValidationCompareResponse,
   CaseValidationResponse,
 } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
 import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "../../lib/desktop-local-api";
+import { countDisplayedAiClinicSimilarCases } from "./case-workspace-ai-clinic-helpers";
 import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
-
-type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
-  preview_url: string | null;
-};
-
-type AiClinicPreviewResponse = Omit<AiClinicResponse, "similar_cases"> & {
-  similar_cases: AiClinicSimilarCasePreview[];
-};
+import type {
+  AiClinicPreviewResponse,
+  AiClinicSimilarCasePreview,
+} from "./shared";
 
 type ClusterNeighbor = {
   patient_id: string;
@@ -47,11 +44,50 @@ type ClusterNeighbor = {
 type ClusterPositionPayload = {
   html: string;
   neighbors: ClusterNeighbor[];
+  cluster_message?: string | null;
+  cross_site_neighbors?: AiClinicSimilarCasePreview[];
+  cross_site_status?: string | null;
+  cross_site_message?: string | null;
+  cross_site_cache_used?: boolean | null;
+  cross_site_cache_saved_at?: string | null;
+  cross_site_corpus_status?: {
+    profile_id?: string | null;
+    profile_label?: string | null;
+    remote_node_sync_enabled?: boolean | null;
+    eligible_case_count?: number | null;
+    active_job?: Record<string, unknown> | null;
+    latest_sync?: {
+      prepared_entry_count?: number | null;
+    } | null;
+  } | null;
+  cross_site_opportunistic_sync?: Record<string, unknown> | null;
+  cross_site_retrieval_profile?: string | null;
+  cross_site_requested_retrieval_profile?: string | null;
+  cross_site_requested_retrieval_label?: string | null;
+  cross_site_effective_retrieval_profile?: string | null;
+  cross_site_effective_retrieval_label?: string | null;
+  cross_site_status_retrieval_profile?: string | null;
+  cross_site_status_retrieval_label?: string | null;
 };
 
 type ClusterPositionResult = {
   frame_url: string | null;
   neighbors: ClusterNeighbor[];
+  cluster_message: string | null;
+  cross_site_neighbors: AiClinicSimilarCasePreview[];
+  cross_site_status: string | null;
+  cross_site_message: string | null;
+  cross_site_cache_used: boolean;
+  cross_site_cache_saved_at: string | null;
+  cross_site_corpus_status: ClusterPositionPayload["cross_site_corpus_status"];
+  cross_site_opportunistic_sync: Record<string, unknown> | null;
+  cross_site_retrieval_profile: string | null;
+  cross_site_requested_retrieval_profile: string | null;
+  cross_site_requested_retrieval_label: string | null;
+  cross_site_effective_retrieval_profile: string | null;
+  cross_site_effective_retrieval_label: string | null;
+  cross_site_status_retrieval_profile: string | null;
+  cross_site_status_retrieval_label: string | null;
 };
 
 type Props = {
@@ -280,12 +316,21 @@ function AiClinicResultInner({
   const [clusterFrameReady, setClusterFrameReady] = useState(false);
   const [clusterLoading, setClusterLoading] = useState(false);
   const [clusterError, setClusterError] = useState<string | null>(null);
-  const [visibleRetrievedCaseCount, setVisibleRetrievedCaseCount] = useState(0);
+  const [visibleLocalRetrievedCaseCount, setVisibleLocalRetrievedCaseCount] =
+    useState(0);
+  const [visibleCrossSiteRetrievedCaseCount, setVisibleCrossSiteRetrievedCaseCount] =
+    useState(0);
   const clusterLoadedForRef = useRef<string | null>(null);
   const clusterFrameUrlRef = useRef<string | null>(null);
   const similarPatientsSectionRef = useRef<HTMLDivElement | null>(null);
   const clusterSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollSignatureRef = useRef<string | null>(null);
+  const localRetrievedCases =
+    result?.local_similar_cases ?? result?.similar_cases ?? [];
+  const crossSiteRetrievedCases = result?.cross_site_similar_cases ?? [];
+  const displayedSimilarCaseCount = countDisplayedAiClinicSimilarCases(result);
+  const clusterRetrievalProfileId = result?.ai_clinic_profile?.profile_id ?? undefined;
+  const crossSiteRetrievalDetails = result?.technical_details?.cross_site_retrieval ?? null;
 
   const clearClusterFrameUrl = useCallback(() => {
     const currentFrameUrl = clusterFrameUrlRef.current;
@@ -305,18 +350,22 @@ function AiClinicResultInner({
     setClusterResult(null);
   }, [
     clearClusterFrameUrl,
+    clusterRetrievalProfileId,
     result?.query_case.patient_id,
     result?.query_case.visit_date,
   ]);
 
   const loadClusterPosition = useCallback(async (patientId: string, visitDate: string) => {
     if (!siteId || clusterLoading) return;
-    const key = `${patientId}|${visitDate}`;
+    const key = `${patientId}|${visitDate}|${clusterRetrievalProfileId ?? ""}`;
     if (clusterLoadedForRef.current === key) return;
     setClusterLoading(true);
     setClusterError(null);
     try {
       const params = new URLSearchParams({ patient_id: patientId, visit_date: visitDate });
+      if (clusterRetrievalProfileId) {
+        params.set("retrieval_profile", clusterRetrievalProfileId);
+      }
       const path = `/api/sites/${siteId}/cluster-position?${params.toString()}`;
       let data: ClusterPositionPayload;
       if (canUseDesktopLocalApiTransport()) {
@@ -342,6 +391,29 @@ function AiClinicResultInner({
         setClusterResult({
           frame_url: nextFrameUrl,
           neighbors: data.neighbors,
+          cluster_message: data.cluster_message ?? null,
+          cross_site_neighbors: data.cross_site_neighbors ?? [],
+          cross_site_status: data.cross_site_status ?? null,
+          cross_site_message: data.cross_site_message ?? null,
+          cross_site_cache_used: Boolean(data.cross_site_cache_used),
+          cross_site_cache_saved_at: data.cross_site_cache_saved_at ?? null,
+          cross_site_corpus_status: data.cross_site_corpus_status ?? null,
+          cross_site_opportunistic_sync: data.cross_site_opportunistic_sync ?? null,
+          cross_site_retrieval_profile: data.cross_site_retrieval_profile ?? null,
+          cross_site_requested_retrieval_profile:
+            data.cross_site_requested_retrieval_profile ??
+            data.cross_site_retrieval_profile ??
+            null,
+          cross_site_requested_retrieval_label:
+            data.cross_site_requested_retrieval_label ?? null,
+          cross_site_effective_retrieval_profile:
+            data.cross_site_effective_retrieval_profile ?? null,
+          cross_site_effective_retrieval_label:
+            data.cross_site_effective_retrieval_label ?? null,
+          cross_site_status_retrieval_profile:
+            data.cross_site_status_retrieval_profile ?? null,
+          cross_site_status_retrieval_label:
+            data.cross_site_status_retrieval_label ?? null,
         });
       });
     } catch (err: unknown) {
@@ -349,7 +421,7 @@ function AiClinicResultInner({
     } finally {
       setClusterLoading(false);
     }
-  }, [siteId, token, clusterLoading]);
+  }, [siteId, token, clusterLoading, clusterRetrievalProfileId]);
 
   useEffect(() => {
     if (!clusterResult?.frame_url || activeView !== "cluster") {
@@ -429,52 +501,81 @@ function AiClinicResultInner({
   ]);
 
   useEffect(() => {
-    const totalSimilarCases = result?.similar_cases.length ?? 0;
-    if (activeView !== "retrieval" || totalSimilarCases <= 0) {
-      setVisibleRetrievedCaseCount(0);
+    if (activeView !== "retrieval") {
+      setVisibleLocalRetrievedCaseCount(0);
+      setVisibleCrossSiteRetrievedCaseCount(0);
       return;
     }
 
-    setVisibleRetrievedCaseCount(1);
-    if (totalSimilarCases === 1) {
-      return;
-    }
-
-    let cancelled = false;
-    let revealedCount = 1;
-    let cancelDeferredReveal = () => undefined;
-
-    const revealNextCase = () => {
-      if (cancelled) {
-        return;
+    const stageRetrievedCases = (
+      totalCount: number,
+      setVisibleCount: Dispatch<SetStateAction<number>>,
+    ) => {
+      if (totalCount <= 0) {
+        setVisibleCount(0);
+        return () => undefined;
       }
-      revealedCount += 1;
-      startTransition(() => {
-        setVisibleRetrievedCaseCount((current) =>
-          current >= revealedCount ? current : revealedCount,
-        );
-      });
-      if (revealedCount < totalSimilarCases) {
-        cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+
+      setVisibleCount(1);
+      if (totalCount === 1) {
+        return () => undefined;
       }
+
+      let cancelled = false;
+      let revealedCount = 1;
+      let cancelDeferredReveal = () => undefined;
+
+      const revealNextCase = () => {
+        if (cancelled) {
+          return;
+        }
+        revealedCount += 1;
+        startTransition(() => {
+          setVisibleCount((current) =>
+            current >= revealedCount ? current : revealedCount,
+          );
+        });
+        if (revealedCount < totalCount) {
+          cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+        }
+      };
+
+      cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+      return () => {
+        cancelled = true;
+        cancelDeferredReveal();
+      };
     };
 
-    cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+    const cancelLocalReveal = stageRetrievedCases(
+      localRetrievedCases.length,
+      setVisibleLocalRetrievedCaseCount,
+    );
+    const cancelCrossSiteReveal = stageRetrievedCases(
+      crossSiteRetrievedCases.length,
+      setVisibleCrossSiteRetrievedCaseCount,
+    );
     return () => {
-      cancelled = true;
-      cancelDeferredReveal();
+      cancelLocalReveal();
+      cancelCrossSiteReveal();
     };
   }, [
     activeView,
+    crossSiteRetrievedCases.length,
+    localRetrievedCases.length,
     result?.analysis_stage,
     result?.query_case.patient_id,
     result?.query_case.visit_date,
-    result?.similar_cases.length,
   ]);
 
   const visibleRetrievedCases = useMemo(
-    () => (result?.similar_cases ?? []).slice(0, visibleRetrievedCaseCount),
-    [result?.similar_cases, visibleRetrievedCaseCount],
+    () => localRetrievedCases.slice(0, visibleLocalRetrievedCaseCount),
+    [localRetrievedCases, visibleLocalRetrievedCaseCount],
+  );
+  const visibleCrossSiteRetrievedCases = useMemo(
+    () =>
+      crossSiteRetrievedCases.slice(0, visibleCrossSiteRetrievedCaseCount),
+    [crossSiteRetrievedCases, visibleCrossSiteRetrievedCaseCount],
   );
 
   const classification = result?.classification_context ?? null;
@@ -567,6 +668,368 @@ function AiClinicResultInner({
       visibleRetrievedCases,
     ],
   );
+  const crossSiteRetrievedCaseCards = useMemo(
+    () =>
+      visibleCrossSiteRetrievedCases.map((item, index) => (
+        <Card
+          key={`cross-site-${item.patient_id}-${item.visit_date}`}
+          as="article"
+          variant="nested"
+          className="grid min-w-0 gap-3 border border-border/80 p-4"
+          style={{ contentVisibility: "auto", containIntrinsicSize: "420px" }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="grid gap-1">
+              <strong className="text-sm font-semibold text-ink">
+                {pick(locale, `Case ${index + 1}`, `케이스 ${index + 1}`)}
+              </strong>
+              <span className="text-xs text-muted">
+                {displayVisitReference(item.visit_date)}
+              </span>
+            </div>
+            <Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>
+          </div>
+          {item.preview_url ? (
+            <Card as="div" variant="panel" className="overflow-hidden">
+              <img
+                src={resolvePreviewImageSrc(item.preview_url, token)}
+                alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
+                className="aspect-[4/3] w-full object-cover"
+                width={320}
+                height={240}
+                loading={index === 0 ? "eager" : "lazy"}
+                decoding="async"
+                fetchPriority={index === 0 ? "high" : "low"}
+              />
+            </Card>
+          ) : (
+            <Message>
+              {pick(
+                locale,
+                "Representative image preview is unavailable.",
+                "대표 이미지 미리보기를 불러올 수 없습니다.",
+              )}
+            </Message>
+          )}
+          <FieldGrid
+            columns={2}
+            items={[
+              { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
+              {
+                label: pick(locale, "Source site", "참여 기관"),
+                value:
+                  item.source_site_display_name ||
+                  item.source_site_hospital_name ||
+                  item.chart_alias ||
+                  notAvailableLabel,
+              },
+              {
+                label: pick(locale, "Culture", "배양"),
+                value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
+              },
+              {
+                label: pick(locale, "View / status", "View / 상태"),
+                value: `${translateOption(locale, "view", item.representative_view ?? "white")} / ${translateOption(locale, "visitStatus", item.visit_status ?? "active")}`,
+              },
+            ]}
+          />
+          {item.metadata_reranking?.alignment ? (
+            <Message>
+              {pick(locale, "Matched", "일치")}:{" "}
+              {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.matched_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+              {" · "}
+              {pick(locale, "Conflict", "충돌")}:{" "}
+              {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.conflicted_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+            </Message>
+          ) : null}
+        </Card>
+      )),
+    [
+      displayVisitReference,
+      formatMetadataField,
+      formatSemanticScore,
+      locale,
+      notAvailableLabel,
+      token,
+      visibleCrossSiteRetrievedCases,
+    ],
+  );
+  const clusterCrossSiteNeighborCards = useMemo(
+    () =>
+      (clusterResult?.cross_site_neighbors ?? []).map((item, index) => (
+        <Card
+          key={`cluster-cross-site-${item.patient_id}-${item.visit_date}`}
+          as="article"
+          variant="nested"
+          className="grid min-w-0 gap-3 border border-border/80 p-4"
+          style={{ contentVisibility: "auto", containIntrinsicSize: "420px" }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="grid gap-1">
+              <strong className="text-sm font-semibold text-ink">
+                {pick(locale, `Reference ${index + 1}`, `참고 사례 ${index + 1}`)}
+              </strong>
+              <span className="text-xs text-muted">
+                {displayVisitReference(item.visit_date)}
+              </span>
+            </div>
+            <Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>
+          </div>
+          {item.preview_url ? (
+            <Card as="div" variant="panel" className="overflow-hidden">
+              <img
+                src={resolvePreviewImageSrc(item.preview_url, token)}
+                alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
+                className="aspect-[4/3] w-full object-cover"
+                width={320}
+                height={240}
+                loading={index === 0 ? "eager" : "lazy"}
+                decoding="async"
+                fetchPriority={index === 0 ? "high" : "low"}
+              />
+            </Card>
+          ) : (
+            <Message>
+              {pick(
+                locale,
+                "Representative image preview is unavailable.",
+                "대표 이미지 미리보기를 불러올 수 없습니다.",
+              )}
+            </Message>
+          )}
+          <FieldGrid
+            columns={2}
+            items={[
+              { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
+              {
+                label: pick(locale, "Source site", "참여 기관"),
+                value:
+                  item.source_site_display_name ||
+                  item.source_site_hospital_name ||
+                  item.chart_alias ||
+                  notAvailableLabel,
+              },
+              {
+                label: pick(locale, "Culture", "배양"),
+                value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
+              },
+              {
+                label: pick(locale, "View / status", "View / 상태"),
+                value: `${translateOption(locale, "view", item.representative_view ?? "white")} / ${translateOption(locale, "visitStatus", item.visit_status ?? "active")}`,
+              },
+            ]}
+          />
+          {item.metadata_reranking?.alignment ? (
+            <Message>
+              {pick(locale, "Matched", "일치")}:{" "}
+              {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.matched_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+              {" · "}
+              {pick(locale, "Conflict", "충돌")}:{" "}
+              {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.conflicted_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+            </Message>
+          ) : null}
+        </Card>
+      )),
+    [
+      clusterResult?.cross_site_neighbors,
+      displayVisitReference,
+      formatMetadataField,
+      formatSemanticScore,
+      locale,
+      notAvailableLabel,
+      token,
+    ],
+  );
+  const crossSiteStatusMessages = useMemo(() => {
+    if (!crossSiteRetrievalDetails) {
+      return [] as string[];
+    }
+    const messages: string[] = [];
+    const requestedLabel = String(
+      crossSiteRetrievalDetails.requested_profile_label || "",
+    ).trim();
+    const effectiveLabel = String(
+      crossSiteRetrievalDetails.effective_profile_label || "",
+    ).trim();
+    if (
+      requestedLabel &&
+      effectiveLabel &&
+      requestedLabel !== effectiveLabel
+    ) {
+      messages.push(
+        pick(
+          locale,
+          `Cross-site search used ${effectiveLabel} because ${requestedLabel} was unavailable.`,
+          `다기관 검색은 ${requestedLabel} 대신 ${effectiveLabel} 프로필로 자동 전환되었습니다.`,
+        ),
+      );
+    }
+    if (crossSiteRetrievalDetails.cache_used) {
+      const cachedAt = String(crossSiteRetrievalDetails.cache_saved_at || "").trim();
+      messages.push(
+        pick(
+          locale,
+          cachedAt
+            ? `Cross-site results are coming from the last successful cached snapshot (${cachedAt}).`
+            : "Cross-site results are coming from the last successful cached snapshot.",
+          cachedAt
+            ? `다기관 결과는 마지막 성공 캐시(${cachedAt})에서 제공되고 있습니다.`
+            : "다기관 결과는 마지막 성공 캐시에서 제공되고 있습니다.",
+        ),
+      );
+    }
+    if (crossSiteRetrievalDetails.opportunistic_sync?.queued) {
+      messages.push(
+        pick(
+          locale,
+          "A background retrieval corpus sync has been queued for this site.",
+          "이 사이트에 대한 retrieval corpus 동기화가 백그라운드에서 큐잉되었습니다.",
+        ),
+      );
+    }
+    if (
+      crossSiteRetrievalDetails.status === "disabled" ||
+      crossSiteRetrievalDetails.corpus_status?.remote_node_sync_enabled === false
+    ) {
+      messages.push(
+        pick(
+          locale,
+          "Cross-site retrieval corpus sync is not configured.",
+          "Cross-site retrieval corpus sync is not configured.",
+        ),
+      );
+    }
+    if (crossSiteRetrievalDetails.corpus_status?.active_job) {
+      messages.push(
+        pick(
+          locale,
+          "A retrieval corpus sync is already running for this site.",
+          "A retrieval corpus sync is already running for this site.",
+        ),
+      );
+    }
+    const eligibleCount = crossSiteRetrievalDetails.corpus_status?.eligible_case_count;
+    const preparedCount =
+      crossSiteRetrievalDetails.corpus_status?.latest_sync?.prepared_entry_count;
+    const corpusProfileLabel = String(
+      crossSiteRetrievalDetails.corpus_status?.profile_label ||
+        crossSiteRetrievalDetails.status_profile_label ||
+        "",
+    ).trim();
+    if (
+      typeof eligibleCount === "number" &&
+      eligibleCount > 0 &&
+      typeof preparedCount === "number" &&
+      preparedCount < eligibleCount
+    ) {
+      messages.push(
+        pick(
+          locale,
+          corpusProfileLabel
+            ? `Central retrieval corpus for ${corpusProfileLabel} is behind this site (${preparedCount}/${eligibleCount} cases synced).`
+            : `Central retrieval corpus is behind this site (${preparedCount}/${eligibleCount} cases synced).`,
+          `중앙 retrieval corpus가 이 사이트 최신 상태보다 뒤처져 있습니다. (${preparedCount}/${eligibleCount} 케이스 동기화됨)`,
+        ),
+      );
+    }
+    const warning = String(crossSiteRetrievalDetails.warning || "").trim();
+    if (warning && crossSiteRetrievedCases.length === 0) {
+      messages.push(warning);
+    }
+    return [...new Set(messages)];
+  }, [crossSiteRetrievalDetails, crossSiteRetrievedCases.length, locale]);
+  const clusterCrossSiteStatusMessages = useMemo(() => {
+    if (!clusterResult) {
+      return [] as string[];
+    }
+    const messages: string[] = [];
+    const requestedLabel = String(
+      clusterResult.cross_site_requested_retrieval_label || "",
+    ).trim();
+    const effectiveLabel = String(
+      clusterResult.cross_site_effective_retrieval_label || "",
+    ).trim();
+    if (requestedLabel && effectiveLabel && requestedLabel !== effectiveLabel) {
+      messages.push(
+        pick(
+          locale,
+          `Cross-site references used ${effectiveLabel} because ${requestedLabel} was unavailable.`,
+          `Cross-site references used ${effectiveLabel} because ${requestedLabel} was unavailable.`,
+        ),
+      );
+    }
+    if (clusterResult.cross_site_cache_used) {
+      const cachedAt = String(clusterResult.cross_site_cache_saved_at || "").trim();
+      messages.push(
+        pick(
+          locale,
+          cachedAt
+            ? `Cluster cross-site references are coming from the last successful cached snapshot (${cachedAt}).`
+            : "Cluster cross-site references are coming from the last successful cached snapshot.",
+          cachedAt
+            ? `Cluster cross-site references are coming from the last successful cached snapshot (${cachedAt}).`
+            : "Cluster cross-site references are coming from the last successful cached snapshot.",
+        ),
+      );
+    }
+    if (clusterResult.cross_site_opportunistic_sync?.queued) {
+      messages.push(
+        pick(
+          locale,
+          "A background retrieval corpus sync has been queued for this site.",
+          "A background retrieval corpus sync has been queued for this site.",
+        ),
+      );
+    }
+    if (clusterResult.cross_site_corpus_status?.active_job) {
+      messages.push(
+        pick(
+          locale,
+          "A retrieval corpus sync is already running for this site.",
+          "A retrieval corpus sync is already running for this site.",
+        ),
+      );
+    }
+    const eligibleCount = clusterResult.cross_site_corpus_status?.eligible_case_count;
+    const preparedCount =
+      clusterResult.cross_site_corpus_status?.latest_sync?.prepared_entry_count;
+    const corpusProfileLabel = String(
+      clusterResult.cross_site_corpus_status?.profile_label ||
+        clusterResult.cross_site_status_retrieval_label ||
+        "",
+    ).trim();
+    if (
+      typeof eligibleCount === "number" &&
+      eligibleCount > 0 &&
+      typeof preparedCount === "number" &&
+      preparedCount < eligibleCount
+    ) {
+      messages.push(
+        pick(
+          locale,
+          corpusProfileLabel
+            ? `Central retrieval corpus for ${corpusProfileLabel} is behind this site (${preparedCount}/${eligibleCount} cases synced).`
+            : `Central retrieval corpus is behind this site (${preparedCount}/${eligibleCount} cases synced).`,
+          corpusProfileLabel
+            ? `Central retrieval corpus for ${corpusProfileLabel} is behind this site (${preparedCount}/${eligibleCount} cases synced).`
+            : `Central retrieval corpus is behind this site (${preparedCount}/${eligibleCount} cases synced).`,
+        ),
+      );
+    }
+    const routeMessage = String(clusterResult.cross_site_message || "").trim();
+    if (routeMessage) {
+      messages.push(routeMessage);
+    }
+    return [...new Set(messages)];
+  }, [clusterResult, locale]);
   const clusterNeighborCards = useMemo(
     () =>
       clusterResult?.neighbors.map((n, i) => (
@@ -677,7 +1140,7 @@ function AiClinicResultInner({
         }
       >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <KpiCard label={pick(locale, "retrieved cases", "검색 케이스")} value={result.similar_cases.length} />
+          <KpiCard label={pick(locale, "retrieved cases", "검색 케이스")} value={displayedSimilarCaseCount} />
           <KpiCard label={pick(locale, "eligible cases", "검색 가능 케이스")} value={result.eligible_candidate_count} />
           <KpiCard
             label={pick(locale, "anchor label", "기준 라벨")}
@@ -739,6 +1202,9 @@ function AiClinicResultInner({
               "이 단계는 먼저 시각적으로 비슷한 케이스를 찾고, 펼쳤을 때만 텍스트 근거와 워크플로 가이드를 더합니다.",
             )}
         </Message>
+        {crossSiteStatusMessages.map((message, index) => (
+          <Message key={`cross-site-status-${index}`}>{message}</Message>
+        ))}
         {!isExpanded ? (
           <Message>
             {pick(
@@ -801,6 +1267,7 @@ function AiClinicResultInner({
     readySummary,
     result,
     siteId,
+    crossSiteStatusMessages,
     validationResult?.model_version.version_name,
   ]);
   const readySummaryContent = useMemo(() => {
@@ -918,8 +1385,8 @@ function AiClinicResultInner({
           title={pick(locale, "3D cluster map", "3D 클러스터 맵")}
           subtitle={pick(
             locale,
-            "3D UMAP position of this visit within the site embedding space. Nearest neighbors exclude the same patient.",
-            "전체 데이터셋 내 이 방문의 3D UMAP 위치입니다. 동일 환자는 제외한 가장 가까운 방문을 표시합니다.",
+            "3D UMAP position of this visit within the same-site embedding space. Cross-site references are listed separately below.",
+            "같은 병원 임베딩 공간에서의 3D UMAP 위치입니다. 다기관 참고 사례는 아래에 별도로 표시합니다.",
           )}
         >
           {!clusterResult && !clusterError ? (
@@ -977,10 +1444,48 @@ function AiClinicResultInner({
                   className="grid gap-3"
                   style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
                 >
+                  {clusterResult.cluster_message ? (
+                    <Message>{clusterResult.cluster_message}</Message>
+                  ) : null}
                   <span className="text-sm font-semibold text-ink">
                     {pick(locale, "Nearest neighbors (no same-patient duplicates)", "최근접 방문 (동일 환자 제외)")}
                   </span>
                   {clusterNeighborCards}
+                </div>
+              ) : null}
+              {clusterResult.cross_site_neighbors.length > 0 ? (
+                <div
+                  className="grid gap-3"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "520px" }}
+                >
+                  <span className="text-sm font-semibold text-ink">
+                    {pick(locale, "Cross-site nearest references", "다기관 nearest references")}
+                  </span>
+                  <Message>
+                    {pick(
+                      locale,
+                      "These reference cases come from the central retrieval corpus and are not projected into the same-site 3D map.",
+                      "이 참고 사례들은 중앙 retrieval corpus에서 온 결과이며, 같은 병원 3D 맵 위에는 직접 투영되지 않습니다.",
+                    )}
+                  </Message>
+                  {clusterCrossSiteStatusMessages.map((message) => (
+                    <Message key={message}>{message}</Message>
+                  ))}
+                  <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                    {clusterCrossSiteNeighborCards}
+                  </div>
+                </div>
+              ) : clusterCrossSiteStatusMessages.length > 0 ? (
+                <div
+                  className="grid gap-3"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "180px" }}
+                >
+                  <span className="text-sm font-semibold text-ink">
+                    {pick(locale, "Cross-site nearest references", "다기관 nearest references")}
+                  </span>
+                  {clusterCrossSiteStatusMessages.map((message) => (
+                    <Message key={message}>{message}</Message>
+                  ))}
                 </div>
               ) : null}
             </div>
@@ -994,24 +1499,52 @@ function AiClinicResultInner({
           ref={similarPatientsSectionRef}
           style={{ contentVisibility: "auto", containIntrinsicSize: "980px" }}
         >
-          <Section
-            title={pick(locale, "Top retrieved cases", "상위 검색 케이스")}
-            subtitle={pick(locale, `${result.similar_cases.length} ranked results`, `${result.similar_cases.length}개 순위 결과`)}
-          >
-            {result.similar_cases.length === 0 ? (
-              <Message>
-                {pick(
-                  locale,
-                  "No eligible similar case was found for this model and crop setup yet.",
-                  "현재 이 모델과 crop 설정 기준으로 검색 가능한 유사 케이스가 아직 없습니다.",
-                )}
-              </Message>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-                {retrievedCaseCards}
-              </div>
-            )}
-          </Section>
+          <div className="grid gap-4">
+            <Section
+              title={pick(locale, "Local similar cases", "내 병원 유사 케이스")}
+              subtitle={pick(
+                locale,
+                `${localRetrievedCases.length} same-site result(s)`,
+                `${localRetrievedCases.length}개 원내 결과`,
+              )}
+            >
+              {localRetrievedCases.length === 0 ? (
+                <Message>
+                  {pick(
+                    locale,
+                    "No same-site similar case was found for this model and crop setup yet.",
+                    "현재 이 모델과 crop 설정 기준으로 같은 병원 유사 케이스가 아직 없습니다.",
+                  )}
+                </Message>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                  {retrievedCaseCards}
+                </div>
+              )}
+            </Section>
+            <Section
+              title={pick(locale, "Cross-site similar cases", "다기관 유사 케이스")}
+              subtitle={pick(
+                locale,
+                `${crossSiteRetrievedCases.length} cross-site reference result(s)`,
+                `${crossSiteRetrievedCases.length}개 다기관 참고 결과`,
+              )}
+            >
+              {crossSiteRetrievedCases.length === 0 ? (
+                <Message>
+                  {pick(
+                    locale,
+                    "No cross-site reference case is available for this retrieval profile yet.",
+                    "현재 이 retrieval profile 기준으로 사용할 수 있는 다기관 참고 케이스가 아직 없습니다.",
+                  )}
+                </Message>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                  {crossSiteRetrievedCaseCards}
+                </div>
+              )}
+            </Section>
+          </div>
         </div>
       ) : null}
 

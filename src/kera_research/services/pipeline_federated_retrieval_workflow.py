@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
-from kera_research.services.data_plane import SiteStore
-
 if TYPE_CHECKING:
+    from kera_research.services.data_plane import SiteStore
     from kera_research.services.pipeline import ResearchWorkflowService
 
 
@@ -94,14 +93,25 @@ class ResearchFederatedRetrievalWorkflow:
 
         signature_record = self.retrieval_signature(retrieval_profile)
         exclude_case_reference_id = cp.case_reference_id(site_store.site_id, patient_id, visit_date)
-        remote_hits = cp.remote_control_plane.search_retrieval_corpus(
-            profile_id=str(signature_record["profile_id"]),
-            retrieval_signature=str(signature_record["retrieval_signature"]),
-            query_embedding=np.asarray(query_embedding, dtype=np.float32).round(6).tolist(),
-            top_k=max(1, min(int(top_k or 3), 10)),
-            exclude_site_id=site_store.site_id,
-            exclude_case_reference_id=exclude_case_reference_id,
-        )
+        query_embedding_payload = np.asarray(query_embedding, dtype=np.float32).round(6).tolist()
+        last_error: Exception | None = None
+        remote_hits: list[dict[str, Any]] = []
+        for _attempt in range(2):
+            try:
+                remote_hits = cp.remote_control_plane.search_retrieval_corpus(
+                    profile_id=str(signature_record["profile_id"]),
+                    retrieval_signature=str(signature_record["retrieval_signature"]),
+                    query_embedding=query_embedding_payload,
+                    top_k=max(1, min(int(top_k or 3), 10)),
+                    exclude_site_id=site_store.site_id,
+                    exclude_case_reference_id=exclude_case_reference_id,
+                )
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
 
         candidates: list[dict[str, Any]] = []
         for item in remote_hits:

@@ -110,7 +110,7 @@ class ControlPlaneCatalogFacade:
         with CONTROL_PLANE_ENGINE.begin() as conn:
             rows = conn.execute(query).mappings().all()
         serialized_rows = [dict(row) for row in rows]
-        if serialized_rows or not normalized_search or not self.hira_api_key.strip():
+        if serialized_rows or not normalized_search:
             return serialized_rows
         return self._search_hira_live(
             search=search,

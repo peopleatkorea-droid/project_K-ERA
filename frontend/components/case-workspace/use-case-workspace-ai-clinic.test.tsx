@@ -50,6 +50,30 @@ describe("useCaseWorkspaceAiClinic", () => {
             image_count: 1,
           },
           {
+            case_id: "remote_case_4",
+            patient_id: "REMOTE-4",
+            visit_date: "cross-site",
+            representative_image_id: null,
+            preview_url: "/preview/remote_case_4",
+            similarity: 0.92,
+            culture_category: "amoeba",
+            culture_species: "Acanthamoeba",
+            image_count: 1,
+            source_site_display_name: "Partner Hospital",
+          },
+        ],
+        local_similar_cases: [
+          {
+            case_id: "case_1",
+            patient_id: "SIM-1",
+            visit_date: "Initial",
+            representative_image_id: "image_1",
+            similarity: 0.98,
+            culture_category: "bacterial",
+            culture_species: "Pseudomonas",
+            image_count: 1,
+          },
+          {
             case_id: "case_2",
             patient_id: "SIM-2",
             visit_date: "FU #1",
@@ -59,6 +83,8 @@ describe("useCaseWorkspaceAiClinic", () => {
             culture_species: "Fusarium",
             image_count: 2,
           },
+        ],
+        cross_site_similar_cases: [
           {
             case_id: "case_3",
             patient_id: "SIM-3",
@@ -69,6 +95,18 @@ describe("useCaseWorkspaceAiClinic", () => {
             culture_species: "Aspergillus",
             image_count: 1,
           },
+          {
+            case_id: "remote_case_4",
+            patient_id: "REMOTE-4",
+            visit_date: "cross-site",
+            representative_image_id: null,
+            preview_url: "/preview/remote_case_4",
+            similarity: 0.92,
+            culture_category: "amoeba",
+            culture_species: "Acanthamoeba",
+            image_count: 1,
+            source_site_display_name: "Partner Hospital",
+          },
         ],
       });
       apiMocks.fetchImagePreviewUrl
@@ -76,6 +114,7 @@ describe("useCaseWorkspaceAiClinic", () => {
         .mockResolvedValueOnce("/preview/image_2")
         .mockResolvedValueOnce("/preview/image_3");
 
+      const setToast = vi.fn();
       const { result } = renderHook(() =>
         useCaseWorkspaceAiClinic({
           token: "token",
@@ -93,7 +132,7 @@ describe("useCaseWorkspaceAiClinic", () => {
           executionModeFromDevice: () => "cpu",
           describeError: (error, fallback) =>
             error instanceof Error ? error.message : fallback,
-          setToast: vi.fn(),
+          setToast,
           setPanelOpen: vi.fn(),
           copy: {
             selectSavedCaseForValidation: "need case",
@@ -132,6 +171,11 @@ describe("useCaseWorkspaceAiClinic", () => {
         "token",
         { maxSide: 224 },
       );
+      expect(apiMocks.fetchImagePreviewUrl).toHaveBeenCalledTimes(3);
+      expect(setToast).toHaveBeenCalledWith({
+        tone: "success",
+        message: "ready 4",
+      });
     } finally {
       vi.useRealTimers();
     }

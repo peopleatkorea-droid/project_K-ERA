@@ -9,6 +9,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
+from kera_research.api.cross_site_retrieval import (
+    enrich_cross_site_retrieval_details,
+)
 from kera_research.api.control_plane_proxy import (
     call_remote_control_plane_method,
     remote_control_plane_is_primary,
@@ -49,6 +52,15 @@ _DEFAULT_SSL_CHECKPOINT = (
     / "ssl_runs" / "dinov2_ssl_weak_ocular" / "ssl_encoder_latest.pth"
 )
 _VISUALIZE_SCRIPT = _REPO_ROOT / "scripts" / "visualize_dinov2_clusters_3d.py"
+
+
+def _default_cluster_retrieval_profile(crop_mode: str) -> str:
+    normalized = str(crop_mode or "").strip().lower()
+    if normalized == "lesion_crop":
+        return "dinov2_lesion_crop"
+    if normalized == "cornea_roi":
+        return "dinov2_cornea_roi"
+    return "dinov2_full_frame"
 
 
 def _build_cluster_position_html(
@@ -176,6 +188,8 @@ def build_site_overview_router(support: Any) -> APIRouter:
     control_plane_split_enabled = support.control_plane_split_enabled
     local_site_records_for_user = support.local_site_records_for_user
     build_site_activity = support.build_site_activity
+    get_workflow = support.get_workflow
+    queue_federated_retrieval_corpus_sync = support.queue_federated_retrieval_corpus_sync
 
     @router.get("/api/sites")
     def list_sites(
@@ -528,6 +542,7 @@ def build_site_overview_router(support: Any) -> APIRouter:
         site_id: str,
         patient_id: str,
         visit_date: str,
+        retrieval_profile: str | None = None,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
@@ -568,42 +583,80 @@ def build_site_overview_router(support: Any) -> APIRouter:
                 detail=f"Manifest load failed: {exc}",
             )
 
-        visit_records = [
+        case_records = [
             r for r in manifest_records
             if str(r.get("patient_id", "")) == patient_id
             and str(r.get("visit_date", "")) == visit_date
             and str(r.get("image_path") or "").strip()
         ]
-        if not visit_records:
+        if not case_records:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No images found for patient {patient_id} visit {visit_date}.",
             )
 
+        visit_records = list(case_records)
+        cluster_message: str | None = None
+        workflow_for_query = None
         if crop_mode == "cornea_roi":
             resolved = []
+            fallback_used = False
             for r in visit_records:
                 stem = Path(str(r.get("image_path") or "")).stem
                 crop_path = site_store.roi_crop_dir / f"{stem}_crop.png"
                 if crop_path.exists():
                     resolved.append({**r, "image_path": str(crop_path)})
-            if not resolved:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="No cached cornea ROI crops found for this visit.",
+                    continue
+                if workflow_for_query is None:
+                    workflow_for_query = get_workflow(cp)
+                ensure_roi_crop = getattr(workflow_for_query, "_ensure_roi_crop", None)
+                if callable(ensure_roi_crop):
+                    try:
+                        roi = ensure_roi_crop(site_store, str(r.get("image_path") or ""))
+                    except Exception:
+                        roi = None
+                    if isinstance(roi, dict) and str(roi.get("roi_crop_path") or "").strip():
+                        resolved.append({**r, "image_path": str(roi["roi_crop_path"])})
+                        continue
+                fallback_used = True
+                resolved.append(dict(r))
+            if fallback_used:
+                cluster_message = (
+                    "Cornea ROI crops were unavailable for part of this visit, so the 3D position is using source "
+                    "frames for those images."
                 )
             visit_records = resolved
         elif crop_mode == "lesion_crop":
             resolved = []
+            fallback_used = False
             for r in visit_records:
                 stem = Path(str(r.get("image_path") or "")).stem
                 crop_path = site_store.lesion_crop_dir / f"{stem}_crop.png"
                 if crop_path.exists():
                     resolved.append({**r, "image_path": str(crop_path)})
-            if not resolved:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="No cached lesion crops found for this visit.",
+                    continue
+                if workflow_for_query is None:
+                    workflow_for_query = get_workflow(cp)
+                ensure_lesion_crop = getattr(workflow_for_query, "_ensure_lesion_crop", None)
+                lesion_prompt_box = r.get("lesion_prompt_box")
+                if callable(ensure_lesion_crop) and isinstance(lesion_prompt_box, dict):
+                    try:
+                        lesion = ensure_lesion_crop(
+                            site_store,
+                            r,
+                            lesion_prompt_box=lesion_prompt_box,
+                        )
+                    except Exception:
+                        lesion = None
+                    if isinstance(lesion, dict) and str(lesion.get("lesion_crop_path") or "").strip():
+                        resolved.append({**r, "image_path": str(lesion["lesion_crop_path"])})
+                        continue
+                fallback_used = True
+                resolved.append(dict(r))
+            if fallback_used:
+                cluster_message = (
+                    "Lesion crops were unavailable for part of this visit, so the 3D position is using source "
+                    "frames for those images."
                 )
             visit_records = resolved
 
@@ -668,6 +721,189 @@ def build_site_overview_router(support: Any) -> APIRouter:
             if len(neighbors) >= 3:
                 break
 
+        normalized_retrieval_profile = (
+            str(retrieval_profile or "").strip()
+            or _default_cluster_retrieval_profile(crop_mode)
+        )
+        cross_site_neighbors: list[dict[str, Any]] = []
+        cross_site_status = "disabled"
+        cross_site_message: str | None = None
+        cross_site_cache_used = False
+        cross_site_cache_saved_at: str | None = None
+        cross_site_opportunistic_sync: dict[str, Any] | None = None
+        cross_site_corpus_status: dict[str, Any] | None = None
+        cross_site_effective_retrieval_profile: str | None = None
+        cross_site_effective_retrieval_label: str | None = None
+        cross_site_requested_retrieval_label: str | None = None
+        cross_site_status_retrieval_profile: str | None = None
+        cross_site_status_retrieval_label: str | None = None
+        if cp.remote_node_sync_enabled():
+            quality_cache: dict[str, dict[str, Any] | None] = {}
+            query_summary = next(
+                (
+                    dict(item)
+                    for item in site_store.list_case_summaries(patient_id=patient_id)
+                    if str(item.get("visit_date") or "") == visit_date
+                ),
+                {},
+            )
+            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+            policy_summary = dict(policy_state.get("case_summary") or {})
+            if policy_summary:
+                query_summary = {**query_summary, **policy_summary}
+            workflow = get_workflow(cp)
+            ai_clinic_workflow = workflow.ai_clinic_workflow
+            cross_site_requested_retrieval_label = str(
+                ai_clinic_workflow._normalize_retrieval_profile(normalized_retrieval_profile).get("label") or ""
+            ).strip() or None
+            try:
+                query_metadata = workflow._case_metadata_snapshot(
+                    query_summary,
+                    case_records,
+                    quality_cache,
+                )
+                (
+                    query_retrieval_vec,
+                    resolved_profile_record,
+                    profile_warning,
+                ) = ai_clinic_workflow._resolve_query_dinov2_embedding(
+                    site_store,
+                    query_records=case_records,
+                    execution_device="auto",
+                    retrieval_profile=normalized_retrieval_profile,
+                )
+                if query_retrieval_vec is None:
+                    cached_remote = ai_clinic_workflow._load_remote_retrieval_cache(
+                        site_store,
+                        patient_id=patient_id,
+                        visit_date=visit_date,
+                        requested_profile_id=normalized_retrieval_profile,
+                        top_k=3,
+                    )
+                    if cached_remote is not None:
+                        cross_site_neighbors = list(cached_remote.get("candidates") or [])
+                        cross_site_status = "cache_fallback"
+                        cross_site_cache_used = True
+                        cross_site_cache_saved_at = str(cached_remote.get("saved_at") or "").strip() or None
+                        cached_profile_id = str(
+                            cached_remote.get("used_profile_id") or normalized_retrieval_profile
+                        ).strip() or normalized_retrieval_profile
+                        resolved_profile_record = ai_clinic_workflow._normalize_retrieval_profile(cached_profile_id)
+                        cross_site_message = (
+                            "Live cross-site reference query embedding is unavailable, so the cluster view is using "
+                            "the last successful cached cross-site references."
+                        )
+                        if cross_site_cache_saved_at:
+                            cross_site_message = (
+                                f"{cross_site_message} Cached at {cross_site_cache_saved_at}."
+                            )
+                    else:
+                        cross_site_status = "no_query_embedding"
+                        cross_site_message = profile_warning or (
+                            "Cross-site reference query embedding is unavailable for this retrieval profile."
+                        )
+                else:
+                    try:
+                        cross_site_neighbors = workflow.search_remote_retrieval_corpus(
+                            site_store,
+                            query_embedding=query_retrieval_vec,
+                            query_metadata=query_metadata,
+                            patient_id=patient_id,
+                            visit_date=visit_date,
+                            retrieval_profile=str(resolved_profile_record.get("profile_id") or normalized_retrieval_profile),
+                            top_k=3,
+                        )
+                        ai_clinic_workflow._save_remote_retrieval_cache(
+                            site_store,
+                            patient_id=patient_id,
+                            visit_date=visit_date,
+                            requested_profile_id=normalized_retrieval_profile,
+                            used_profile_id=str(resolved_profile_record.get("profile_id") or normalized_retrieval_profile),
+                            candidates=cross_site_neighbors,
+                        )
+                    except Exception as exc:
+                        cached_remote = ai_clinic_workflow._load_remote_retrieval_cache(
+                            site_store,
+                            patient_id=patient_id,
+                            visit_date=visit_date,
+                            requested_profile_id=normalized_retrieval_profile,
+                            top_k=3,
+                        )
+                        if cached_remote is not None:
+                            cross_site_neighbors = list(cached_remote.get("candidates") or [])
+                            cross_site_status = "cache_fallback"
+                            cross_site_cache_used = True
+                            cross_site_cache_saved_at = str(cached_remote.get("saved_at") or "").strip() or None
+                            cached_profile_id = str(
+                                cached_remote.get("used_profile_id") or normalized_retrieval_profile
+                            ).strip() or normalized_retrieval_profile
+                            resolved_profile_record = ai_clinic_workflow._normalize_retrieval_profile(cached_profile_id)
+                            cross_site_message = (
+                                "Cross-site reference retrieval is unavailable, so the cluster view is using the "
+                                f"last successful cached cross-site references. {exc}"
+                            )
+                        else:
+                            cross_site_status = "unavailable"
+                            cross_site_message = f"Cross-site reference retrieval is unavailable. {exc}"
+                    else:
+                        cross_site_status = "ready" if cross_site_neighbors else "empty"
+                        if profile_warning and str(resolved_profile_record.get("profile_id") or "").strip() != normalized_retrieval_profile:
+                            cross_site_message = profile_warning
+                        if not cross_site_neighbors and not cross_site_message:
+                            cross_site_message = (
+                                "No cross-site reference case is available for this retrieval profile yet."
+                            )
+
+                enriched_details = enrich_cross_site_retrieval_details(
+                    cp=cp,
+                    site_store=site_store,
+                    workflow=workflow,
+                    requested_profile_id=normalized_retrieval_profile,
+                    requested_profile_label=cross_site_requested_retrieval_label,
+                    effective_profile_id=str(resolved_profile_record.get("profile_id") or ""),
+                    effective_profile_label=str(resolved_profile_record.get("label") or ""),
+                    cross_site_status=cross_site_status,
+                    candidate_count=len(cross_site_neighbors),
+                    queue_sync=queue_federated_retrieval_corpus_sync,
+                    sync_trigger="cluster_cross_site_recovery",
+                )
+                cross_site_effective_retrieval_profile = str(
+                    enriched_details.get("effective_profile_id") or ""
+                ).strip() or None
+                cross_site_effective_retrieval_label = str(
+                    enriched_details.get("effective_profile_label") or ""
+                ).strip() or None
+                cross_site_status_retrieval_profile = str(
+                    enriched_details.get("status_profile_id") or ""
+                ).strip() or None
+                cross_site_status_retrieval_label = str(
+                    enriched_details.get("status_profile_label") or ""
+                ).strip() or None
+                cross_site_corpus_status = (
+                    dict(enriched_details.get("corpus_status") or {})
+                    if isinstance(enriched_details.get("corpus_status"), dict)
+                    else None
+                )
+                cross_site_opportunistic_sync = (
+                    dict(enriched_details.get("opportunistic_sync") or {})
+                    if isinstance(enriched_details.get("opportunistic_sync"), dict)
+                    else None
+                )
+                if bool((cross_site_opportunistic_sync or {}).get("queued")):
+                    sync_message = (
+                        "A background retrieval corpus sync has been queued for this site."
+                    )
+                    cross_site_message = (
+                        f"{cross_site_message} {sync_message}".strip()
+                        if cross_site_message
+                        else sync_message
+                    )
+            except Exception as exc:
+                cross_site_status = "unavailable"
+                cross_site_message = f"Cross-site reference retrieval is unavailable. {exc}"
+        else:
+            cross_site_message = "Cross-site retrieval corpus sync is not configured."
+
         html = _build_cluster_position_html(
             cluster_points=cluster_points,
             query_coords=query_coords_3d.tolist(),
@@ -675,6 +911,24 @@ def build_site_overview_router(support: Any) -> APIRouter:
             query_visit_date=visit_date,
             neighbor_patient_ids=[n["patient_id"] for n in neighbors],
         )
-        return {"html": html, "neighbors": neighbors}
+        return {
+            "html": html,
+            "neighbors": neighbors,
+            "cluster_message": cluster_message,
+            "cross_site_neighbors": cross_site_neighbors,
+            "cross_site_status": cross_site_status,
+            "cross_site_message": cross_site_message,
+            "cross_site_cache_used": cross_site_cache_used,
+            "cross_site_cache_saved_at": cross_site_cache_saved_at,
+            "cross_site_corpus_status": cross_site_corpus_status,
+            "cross_site_opportunistic_sync": cross_site_opportunistic_sync,
+            "cross_site_retrieval_profile": normalized_retrieval_profile,
+            "cross_site_requested_retrieval_profile": normalized_retrieval_profile,
+            "cross_site_requested_retrieval_label": cross_site_requested_retrieval_label,
+            "cross_site_effective_retrieval_profile": cross_site_effective_retrieval_profile,
+            "cross_site_effective_retrieval_label": cross_site_effective_retrieval_label,
+            "cross_site_status_retrieval_profile": cross_site_status_retrieval_profile,
+            "cross_site_status_retrieval_label": cross_site_status_retrieval_label,
+        }
 
     return router

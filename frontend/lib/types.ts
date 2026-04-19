@@ -679,6 +679,7 @@ export type AiClinicSimilarCaseRecord = {
   representative_view?: string | null;
   chart_alias?: string;
   local_case_code?: string;
+  retrieval_source?: string | null;
   source_site_id?: string | null;
   source_site_display_name?: string | null;
   source_site_hospital_name?: string | null;
@@ -800,6 +801,44 @@ export type AiClinicResponse = {
       backends_used?: string[];
       metadata_reranking?: string | null;
       warning?: string | null;
+      retrieval_profile_id?: string | null;
+      retrieval_profile_label?: string | null;
+      reference_corpus?: string | null;
+    } | null;
+    cross_site_retrieval?: {
+      status?: string | null;
+      warning?: string | null;
+      attempted?: boolean | null;
+      cache_used?: boolean | null;
+      cache_saved_at?: string | null;
+      candidate_count?: number | null;
+      requested_profile_id?: string | null;
+      requested_profile_label?: string | null;
+      effective_profile_id?: string | null;
+      effective_profile_label?: string | null;
+      status_profile_id?: string | null;
+      status_profile_label?: string | null;
+      corpus_status?: {
+        profile_id?: string | null;
+        profile_label?: string | null;
+        remote_node_sync_enabled?: boolean | null;
+        eligible_case_count?: number | null;
+        latest_sync?: {
+          job_id?: string | null;
+          status?: string | null;
+          finished_at?: string | null;
+          retrieval_profile?: string | null;
+          retrieval_signature?: string | null;
+          prepared_entry_count?: number | null;
+          eligible_case_count?: number | null;
+          failed_case_count?: number | null;
+          inserted_count?: number | null;
+          updated_count?: number | null;
+          deleted_count?: number | null;
+        } | null;
+        active_job?: Record<string, unknown> | null;
+      } | null;
+      opportunistic_sync?: Record<string, unknown> | null;
     } | null;
     narrative_evidence_engine?: {
       mode?: string | null;
@@ -822,6 +861,8 @@ export type AiClinicResponse = {
   top_k: number;
   eligible_candidate_count: number;
   similar_cases: AiClinicSimilarCaseRecord[];
+  local_similar_cases?: AiClinicSimilarCaseRecord[];
+  cross_site_similar_cases?: AiClinicSimilarCaseRecord[];
   text_retrieval_mode?: string | null;
   text_embedding_model?: string | null;
   eligible_text_count?: number;

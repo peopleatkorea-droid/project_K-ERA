@@ -41,6 +41,7 @@ import type {
 } from "./shared";
 import { ValidationArtifactStack } from "./validation-artifact-stack";
 import { ValidationPanel } from "./validation-panel";
+import { countDisplayedAiClinicSimilarCases } from "./case-workspace-ai-clinic-helpers";
 import { preferredVisitLevelMilModelVersion } from "./case-workspace-core-helpers";
 import {
   confidencePercent,
@@ -411,7 +412,7 @@ function CaseWorkspaceAnalysisSectionInner({
       ) ?? null,
     [modelCompareResult],
   );
-  const aiClinicSimilarCount = aiClinicResult?.similar_cases.length ?? 0;
+  const aiClinicSimilarCount = countDisplayedAiClinicSimilarCases(aiClinicResult);
   const milFallbackReady = hasSelectedCase && canRunValidation;
 
   const scrollToReviewStep = useCallback((step: AnalysisReviewStep) => {

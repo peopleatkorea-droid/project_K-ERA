@@ -4810,6 +4810,225 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(len(payload["neighbors"]), 3)
         self.assertIn("plotly", payload["html"].lower())
 
+    def test_cluster_position_includes_cross_site_references_when_remote_sync_is_enabled_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-CLUSTER-REMOTE-001"
+        visit_date = "Initial"
+        self._seed_case(token, patient_id=patient_id, visit_date=visit_date)
+        lazy_cp = self.app_module.get_control_plane()
+
+        import numpy as np
+        import kera_research.api.routes.site_overview as site_overview
+
+        cluster_dir = Path(self.tempdir.name) / "cluster_remote_artifacts"
+        cluster_dir.mkdir(parents=True, exist_ok=True)
+        reducer_path = cluster_dir / "umap_reducer_3d.pkl"
+        embeddings_path = cluster_dir / "cluster_embeddings.npy"
+        metadata_path = cluster_dir / "cluster_metadata.json"
+        reducer_path.write_bytes(b"placeholder")
+        embeddings_path.write_bytes(b"placeholder")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "points": [
+                        {
+                            "patient_id": "CLUSTER-LOCAL-001",
+                            "visit_date": "FU #1",
+                            "culture_category": "fungal",
+                            "culture_species": "Fusarium",
+                            "age": "64",
+                            "sex": "female",
+                            "coords_3d": [0.1, 0.2, 0.3],
+                        }
+                    ],
+                    "backbone": "official",
+                    "crop_mode": "lesion_crop",
+                    "view_filter": "all",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fake_cluster_embeddings = np.asarray([[0.99, 0.01, 0.0]], dtype=np.float32)
+
+        class FakeReducer:
+            def transform(self, values):
+                del values
+                return np.asarray([[0.12, 0.34, 0.56]], dtype=np.float32)
+
+        class FakeRetriever:
+            def __init__(self, ssl_checkpoint_path=None):
+                self.ssl_checkpoint_path = ssl_checkpoint_path
+
+            def encode_images(self, image_paths, execution_device, persistence_dir=None):
+                del image_paths, execution_device, persistence_dir
+                return np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        class FakeWorkflow:
+            def __init__(self):
+                self.ai_clinic_workflow = self
+
+            def retrieval_signature(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "retrieval_signature": "statussig12345678",
+                    "model_version": {
+                        "version_id": f"retrieval_profile_{retrieval_profile}",
+                        "version_name": f"retrieval-profile-{retrieval_profile}",
+                        "architecture": "retrieval_dinov2",
+                        "crop_mode": "manual",
+                        "requires_medsam_crop": True,
+                        "case_aggregation": "mean",
+                    },
+                }
+
+            def _normalize_retrieval_profile(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "label": retrieval_profile,
+                    "model_version": {
+                        "version_id": f"retrieval_profile_{retrieval_profile}",
+                        "version_name": f"retrieval-profile-{retrieval_profile}",
+                        "architecture": "retrieval_dinov2",
+                        "crop_mode": "manual",
+                        "requires_medsam_crop": True,
+                        "case_aggregation": "mean",
+                    },
+                }
+
+            def _case_metadata_snapshot(self, summary, case_records, quality_cache):
+                del summary, case_records, quality_cache
+                return {
+                    "representative_view": "white",
+                    "visit_status": "active",
+                    "active_stage": True,
+                }
+
+            def _resolve_query_dinov2_embedding(
+                self,
+                site_store,
+                *,
+                query_records,
+                execution_device,
+                retrieval_profile,
+            ):
+                del site_store, query_records, execution_device
+                return (
+                    np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+                    self._normalize_retrieval_profile(retrieval_profile),
+                    None,
+                )
+
+            def _load_remote_retrieval_cache(
+                self,
+                site_store,
+                *,
+                patient_id,
+                visit_date,
+                requested_profile_id,
+                top_k,
+            ):
+                del site_store, patient_id, visit_date, requested_profile_id, top_k
+                return None
+
+            def _save_remote_retrieval_cache(
+                self,
+                site_store,
+                *,
+                patient_id,
+                visit_date,
+                requested_profile_id,
+                used_profile_id,
+                candidates,
+            ):
+                del (
+                    site_store,
+                    patient_id,
+                    visit_date,
+                    requested_profile_id,
+                    used_profile_id,
+                    candidates,
+                )
+
+            def _prepare_case_dinov2_embedding(
+                self,
+                site_store,
+                case_records,
+                model_version,
+                execution_device,
+                *,
+                force_refresh=False,
+            ):
+                del site_store, case_records, model_version, execution_device, force_refresh
+                return np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+
+            def search_remote_retrieval_corpus(
+                self,
+                site_store,
+                *,
+                query_embedding,
+                query_metadata,
+                patient_id,
+                visit_date,
+                retrieval_profile="dinov2_lesion_crop",
+                top_k=3,
+            ):
+                del site_store, query_embedding, query_metadata, patient_id, visit_date, retrieval_profile, top_k
+                return [
+                    {
+                        "case_id": "remote_case_001",
+                        "patient_id": "caseref_remote_001",
+                        "visit_date": "cross-site",
+                        "local_case_code": "Partner Site / caseref_re",
+                        "chart_alias": "Partner Site",
+                        "preview_url": "data:image/jpeg;base64,cmVtb3RlLXRodW1i",
+                        "similarity": 0.93,
+                        "culture_category": "fungal",
+                        "culture_species": "Fusarium",
+                        "representative_view": "white",
+                        "visit_status": "active",
+                        "metadata_reranking": {
+                            "alignment": {
+                                "matched_fields": ["representative_view"],
+                                "conflicted_fields": [],
+                            }
+                        },
+                        "source_site_display_name": "Partner Site",
+                    }
+                ]
+
+        with (
+            patch.object(site_overview, "_CLUSTER_VIZ_DIR", cluster_dir),
+            patch.object(site_overview, "_CLUSTER_REDUCER_3D_PKL", reducer_path),
+            patch.object(site_overview, "_CLUSTER_EMBEDDINGS_NPY", embeddings_path),
+            patch.object(site_overview, "_CLUSTER_METADATA_JSON", metadata_path),
+            patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True),
+            patch.object(self.app_module, "_get_workflow", return_value=FakeWorkflow()),
+            patch("pickle.load", return_value=FakeReducer()),
+            patch("numpy.load", return_value=fake_cluster_embeddings),
+            patch("kera_research.services.retrieval.Dinov2ImageRetriever", FakeRetriever),
+        ):
+            response = self.client.post(
+                f"/api/sites/{self.site_id}/cluster-position",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "retrieval_profile": "dinov2_lesion_crop",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertIn("source frames", str(payload.get("cluster_message") or ""))
+        self.assertEqual(payload["cross_site_status"], "ready")
+        self.assertEqual(payload["cross_site_retrieval_profile"], "dinov2_lesion_crop")
+        self.assertEqual(len(payload["cross_site_neighbors"]), 1)
+        self.assertEqual(
+            payload["cross_site_neighbors"][0]["source_site_display_name"],
+            "Partner Site",
+        )
+
     def test_validation_case_listing_excludes_inference_only_rows_from_misclassified_filter_http(self):
         token = self._token_for_username("http_researcher")
         patient_id = "HTTP-INF-LIST-001"
