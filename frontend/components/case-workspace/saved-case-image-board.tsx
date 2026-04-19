@@ -1,6 +1,10 @@
 "use client";
 
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  memo,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 import type { SemanticPromptInputMode, SemanticPromptReviewResponse } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
@@ -28,6 +32,7 @@ import {
   togglePillClass,
 } from "../ui/workspace-patterns";
 import { MaskOverlayPreview } from "./preview-media";
+import { sameSavedImagePreviewLists } from "./case-workspace-site-data-helpers";
 import type {
   LesionBoxMap,
   LiveLesionPreviewMap,
@@ -225,7 +230,67 @@ function SemanticPromptReviewPanel({
   );
 }
 
-export function SavedCaseImageBoard({
+function samePromptOpenIds(left: string[], right: string[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameLesionBox(
+  left:
+    | { x0: number; y0: number; x1: number; y1: number }
+    | null
+    | undefined,
+  right:
+    | { x0: number; y0: number; x1: number; y1: number }
+    | null
+    | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.x0 === right.x0 &&
+    left.y0 === right.y0 &&
+    left.x1 === right.x1 &&
+    left.y1 === right.y1
+  );
+}
+
+function sameLivePreviewState(
+  left: LiveLesionPreviewMap[string] | undefined,
+  right: LiveLesionPreviewMap[string] | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.job_id === right.job_id &&
+    left.status === right.status &&
+    left.error === right.error &&
+    left.backend === right.backend &&
+    left.prompt_signature === right.prompt_signature &&
+    left.lesion_mask_url === right.lesion_mask_url &&
+    left.lesion_crop_url === right.lesion_crop_url
+  );
+}
+
+function SavedCaseImageBoardInner({
   locale,
   commonLoading,
   commonNotAvailable,
@@ -340,7 +405,7 @@ export function SavedCaseImageBoard({
             const maskReady = Boolean(
               sourceModeActive && liveLesionMaskEnabled && livePreview?.status === "done" && livePreview?.lesion_mask_url
             );
-            const prioritizeImage = index < 2;
+            const prioritizeImage = image.is_representative || index === 0;
             const statusCopy =
               lesionBoxBusyImageId === image.image_id
                 ? pick(locale, "Saving...", "저장 중...")
@@ -372,7 +437,16 @@ export function SavedCaseImageBoard({
                 : pick(locale, "Preview unavailable", "미리보기를 표시할 수 없습니다");
 
             return (
-              <Card as="section" variant="panel" key={`doc-${image.image_id}`} className="grid content-start gap-2.5 p-3">
+              <Card
+                as="section"
+                variant="panel"
+                key={`doc-${image.image_id}`}
+                className="grid content-start gap-2.5 p-3"
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: "560px",
+                }}
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5 text-[0.88rem] leading-5 text-muted">
                     <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
@@ -548,3 +622,66 @@ export function SavedCaseImageBoard({
     </section>
   );
 }
+
+function areSavedCaseImageBoardPropsEqual(
+  previous: SavedCaseImageBoardProps,
+  next: SavedCaseImageBoardProps,
+): boolean {
+  if (
+    previous.locale !== next.locale ||
+    previous.commonLoading !== next.commonLoading ||
+    previous.commonNotAvailable !== next.commonNotAvailable ||
+    previous.selectedVisitLabel !== next.selectedVisitLabel ||
+    previous.panelBusy !== next.panelBusy ||
+    previous.selectedCaseImageCountHint !== next.selectedCaseImageCountHint ||
+    previous.liveLesionMaskEnabled !== next.liveLesionMaskEnabled ||
+    previous.semanticPromptInputMode !== next.semanticPromptInputMode ||
+    previous.semanticPromptBusyImageId !== next.semanticPromptBusyImageId ||
+    previous.savedImageRoiCropBusy !== next.savedImageRoiCropBusy ||
+    previous.savedImageLesionCropBusy !== next.savedImageLesionCropBusy ||
+    previous.lesionBoxBusyImageId !== next.lesionBoxBusyImageId ||
+    previous.representativeBusyImageId !== next.representativeBusyImageId ||
+    !sameSavedImagePreviewLists(
+      previous.selectedCaseImages,
+      next.selectedCaseImages,
+    ) ||
+    !samePromptOpenIds(
+      previous.semanticPromptOpenImageIds,
+      next.semanticPromptOpenImageIds,
+    )
+  ) {
+    return false;
+  }
+
+  for (const image of next.selectedCaseImages) {
+    const imageId = image.image_id;
+    if (
+      previous.savedImageRoiCropUrls[imageId] !== next.savedImageRoiCropUrls[imageId] ||
+      previous.savedImageLesionCropUrls[imageId] !==
+        next.savedImageLesionCropUrls[imageId] ||
+      !sameLesionBox(
+        previous.lesionPromptDrafts[imageId],
+        next.lesionPromptDrafts[imageId],
+      ) ||
+      !sameLesionBox(
+        previous.lesionPromptSaved[imageId],
+        next.lesionPromptSaved[imageId],
+      ) ||
+      !sameLivePreviewState(
+        previous.liveLesionPreviews[imageId],
+        next.liveLesionPreviews[imageId],
+      ) ||
+      previous.semanticPromptErrors[imageId] !== next.semanticPromptErrors[imageId] ||
+      previous.semanticPromptReviews[imageId] !== next.semanticPromptReviews[imageId]
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export const SavedCaseImageBoard = memo(
+  SavedCaseImageBoardInner,
+  areSavedCaseImageBoardPropsEqual,
+);

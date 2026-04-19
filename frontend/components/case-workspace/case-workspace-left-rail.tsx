@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { pick, type Locale } from "../../lib/i18n";
 import { getSiteDisplayName } from "../../lib/site-labels";
 import type { SiteRecord, SiteSummary, SiteValidationRunRecord } from "../../lib/api";
@@ -71,7 +73,7 @@ type CaseWorkspaceLeftRailProps = {
   onRunSiteValidation: () => void;
 };
 
-export function CaseWorkspaceLeftRail({
+function CaseWorkspaceLeftRailInner({
   locale,
   visibleSites,
   selectedSiteId,
@@ -316,3 +318,5 @@ export function CaseWorkspaceLeftRail({
     </aside>
   );
 }
+
+export const CaseWorkspaceLeftRail = memo(CaseWorkspaceLeftRailInner);

@@ -15,6 +15,7 @@ import {
   type AuthUser,
   type SiteRecord,
   type SiteSummary,
+  type SiteSummaryCounts,
 } from "../lib/api";
 import { prewarmPatientListPage } from "../lib/cases";
 import {
@@ -47,7 +48,12 @@ import {
 } from "../lib/desktop-control-plane-status";
 import { runDesktopStartupUpdate } from "../lib/desktop-updater";
 import { LocaleProvider, LocaleToggle, pick, translateApiError, useI18n } from "../lib/i18n";
-import { prewarmDesktopWorker } from "../lib/desktop-runtime-prewarm";
+import {
+  markDesktopInteraction,
+  prewarmDesktopRuntime,
+  prewarmDesktopWorker,
+  runAfterDesktopInteractionIdle,
+} from "../lib/desktop-runtime-prewarm";
 import { isTokenExpired, readTokenExpiresAt } from "../lib/token-payload";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import { isOperatorUiEnabled } from "../lib/ui-mode";
@@ -71,6 +77,21 @@ function createEmptyConfigForm(): ConfigFormState {
 
 function formatApproxGiB(bytes: number) {
   return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+}
+
+function serializeSiteSummary(summary: SiteSummary | null) {
+  return summary ? JSON.stringify(summary) : "null";
+}
+
+function mergeSiteSummaryCountsIfChanged(
+  currentSummary: SiteSummary | null,
+  counts: SiteSummaryCounts,
+) {
+  const nextSummary = mergeSiteSummaryCounts(currentSummary, counts);
+  if (serializeSiteSummary(currentSummary) === serializeSiteSummary(nextSummary)) {
+    return null;
+  }
+  return nextSummary;
 }
 
 function DesktopShellApp() {
@@ -99,6 +120,18 @@ function DesktopShellApp() {
   const [controlPlaneStatus, setControlPlaneStatus] = useState<DesktopControlPlaneProbe | null>(null);
   const [controlPlaneStatusBusy, setControlPlaneStatusBusy] = useState(false);
   const startupUpdateCheckStartedRef = useRef(false);
+  const summaryRef = useRef<SiteSummary | null>(null);
+  const selectedSiteIdRef = useRef<string | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const siteRefreshQueueRef = useRef<
+    Map<
+      string,
+      {
+        inFlight: Promise<void> | null;
+        pending: boolean;
+      }
+    >
+  >(new Map());
   const startupUpdatePrompt = pick(
     locale,
     "K-ERA Desktop {version} is available. Install it now? The app will restart after the update.",
@@ -437,13 +470,87 @@ function DesktopShellApp() {
   }, [locale, startupUpdatePrompt]);
 
   useEffect(() => {
-    if (!token || !user || user.approval_status !== "approved" || workspaceMode !== "operations") {
+    const handleDesktopInteraction = () => {
+      markDesktopInteraction();
+    };
+    window.addEventListener("pointerdown", handleDesktopInteraction, {
+      passive: true,
+    });
+    window.addEventListener("keydown", handleDesktopInteraction, true);
+    window.addEventListener("wheel", handleDesktopInteraction, {
+      passive: true,
+    });
+    return () => {
+      window.removeEventListener("pointerdown", handleDesktopInteraction);
+      window.removeEventListener("keydown", handleDesktopInteraction, true);
+      window.removeEventListener("wheel", handleDesktopInteraction);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !token ||
+      !user ||
+      user.approval_status !== "approved" ||
+      runtimeBusy ||
+      workspaceSettingsOpen
+    ) {
       return;
     }
-    void prewarmDesktopWorker().catch((nextError) => {
-      console.warn("[kera-desktop-worker-prewarm]", nextError);
-    });
-  }, [token, user, workspaceMode]);
+    let cancelled = false;
+    let cancelInteractionAwareWarmup = () => undefined;
+    const runPrewarm = () => {
+      if (cancelled) {
+        return;
+      }
+      cancelInteractionAwareWarmup = runAfterDesktopInteractionIdle(
+        () => {
+          if (cancelled) {
+            return;
+          }
+          const warmPromise =
+            workspaceMode === "operations"
+              ? prewarmDesktopWorker()
+              : prewarmDesktopRuntime();
+          void warmPromise.catch((nextError) => {
+            console.warn("[kera-desktop-runtime-prewarm]", nextError);
+          });
+        },
+        workspaceMode === "operations" ? 2200 : 3000,
+      );
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(runPrewarm, {
+        timeout: workspaceMode === "operations" ? 2400 : 4800,
+      });
+      return () => {
+        cancelled = true;
+        cancelInteractionAwareWarmup();
+        window.cancelIdleCallback(idleId);
+      };
+    }
+    const timeoutId = window.setTimeout(
+      runPrewarm,
+      workspaceMode === "operations" ? 2400 : 4800,
+    );
+    return () => {
+      cancelled = true;
+      cancelInteractionAwareWarmup();
+      window.clearTimeout(timeoutId);
+    };
+  }, [runtimeBusy, token, user, workspaceMode, workspaceSettingsOpen]);
+
+  useEffect(() => {
+    summaryRef.current = summary;
+  }, [summary]);
+
+  useEffect(() => {
+    selectedSiteIdRef.current = selectedSiteId;
+  }, [selectedSiteId]);
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
   useEffect(() => {
     if (!token || !selectedSiteId || !user || user.approval_status !== "approved") {
@@ -457,11 +564,25 @@ function DesktopShellApp() {
     const currentToken = token;
     let cancelled = false;
 
+    const commitSummaryIfChanged = (nextSummary: SiteSummary | null) => {
+      if (cancelled || !nextSummary || selectedSiteIdRef.current !== currentSiteId) {
+        return;
+      }
+      if (serializeSiteSummary(summaryRef.current) === serializeSiteSummary(nextSummary)) {
+        return;
+      }
+      startTransition(() => {
+        summaryRef.current = nextSummary;
+        setSummary(nextSummary);
+      });
+    };
+
     async function loadSiteSummary() {
       try {
         const nextCounts = await fetchSiteSummaryCounts(currentSiteId, currentToken);
+        const nextSummary = mergeSiteSummaryCountsIfChanged(summaryRef.current, nextCounts);
         if (!cancelled) {
-          setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
+          commitSummaryIfChanged(nextSummary);
         }
       } catch {
         // Counts are an optimization; fall back to the full summary request.
@@ -470,7 +591,7 @@ function DesktopShellApp() {
       try {
         const nextSummary = await fetchSiteSummary(currentSiteId, currentToken);
         if (!cancelled) {
-          setSummary(nextSummary);
+          commitSummaryIfChanged(nextSummary);
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -591,21 +712,62 @@ function DesktopShellApp() {
   }
 
   async function handleRefreshSite(siteId: string) {
-    if (!token) {
+    const currentToken = tokenRef.current;
+    if (!currentToken) {
       return;
     }
-    try {
-      const nextCounts = await fetchSiteSummaryCounts(siteId, token);
-      startTransition(() => {
-        setSummary((current) => mergeSiteSummaryCounts(current, nextCounts));
-      });
-    } catch {
-      // Explicit refresh still falls back to the full summary if the quick path is unavailable.
+
+    const queueState =
+      siteRefreshQueueRef.current.get(siteId) ??
+      {
+        inFlight: null as Promise<void> | null,
+        pending: false,
+      };
+    siteRefreshQueueRef.current.set(siteId, queueState);
+
+    if (queueState.inFlight) {
+      queueState.pending = true;
+      await queueState.inFlight;
+      return;
     }
-    const nextSummary = await fetchSiteSummary(siteId, token);
-    startTransition(() => {
-      setSummary(nextSummary);
+
+    const commitSummaryIfChanged = (nextSummary: SiteSummary | null) => {
+      if (!nextSummary || selectedSiteIdRef.current !== siteId) {
+        return;
+      }
+      if (serializeSiteSummary(summaryRef.current) === serializeSiteSummary(nextSummary)) {
+        return;
+      }
+      startTransition(() => {
+        summaryRef.current = nextSummary;
+        setSummary(nextSummary);
+      });
+    };
+
+    const runRefresh = async () => {
+      do {
+        queueState.pending = false;
+        try {
+          const nextCounts = await fetchSiteSummaryCounts(siteId, currentToken);
+          commitSummaryIfChanged(
+            mergeSiteSummaryCountsIfChanged(summaryRef.current, nextCounts),
+          );
+        } catch {
+          // Explicit refresh still falls back to the full summary if the quick path is unavailable.
+        }
+
+        const nextSummary = await fetchSiteSummary(siteId, currentToken);
+        commitSummaryIfChanged(nextSummary);
+      } while (queueState.pending);
+    };
+
+    queueState.inFlight = runRefresh().finally(() => {
+      queueState.inFlight = null;
+      if (!queueState.pending) {
+        siteRefreshQueueRef.current.delete(siteId);
+      }
     });
+    await queueState.inFlight;
   }
 
   async function refreshApprovedSites(currentToken: string) {

@@ -144,9 +144,11 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
   selectedCompareModelVersionIds: AnalysisSectionProps["selectedCompareModelVersionIds"];
   selectedValidationModelVersionId: AnalysisSectionProps["selectedValidationModelVersionId"];
   siteModelVersions: AnalysisSectionProps["compareModelCandidates"];
+  siteModelCatalogState: AnalysisSectionProps["modelCatalogState"];
   validationBusy: AnalysisSectionProps["validationBusy"];
   validationResult: AnalysisSectionProps["validationResult"];
   validationArtifacts: AnalysisSectionProps["validationArtifacts"];
+  validationArtifactsBusy: AnalysisSectionProps["validationArtifactsBusy"];
   modelCompareBusy: AnalysisSectionProps["modelCompareBusy"];
   modelCompareResult: AnalysisSectionProps["modelCompareResult"];
   aiClinicBusy: AnalysisSectionProps["aiClinicBusy"];
@@ -185,13 +187,15 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     canRunAiClinic,
     selectedCaseImageCount,
     representativePreviewUrl,
-    selectedCompareModelVersionIds,
-    selectedValidationModelVersionId,
-    siteModelVersions,
-    validationBusy,
-    validationResult,
-    validationArtifacts,
-    modelCompareBusy,
+  selectedCompareModelVersionIds,
+  selectedValidationModelVersionId,
+  siteModelVersions,
+  siteModelCatalogState,
+  validationBusy,
+  validationResult,
+  validationArtifacts,
+  validationArtifactsBusy,
+  modelCompareBusy,
     modelCompareResult,
     aiClinicBusy,
     aiClinicExpandedBusy,
@@ -247,9 +251,11 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
     compareModelCandidates: sortCompareModelVersions(
       siteModelVersions.filter(isSelectableCompareModelVersion),
     ),
+    modelCatalogState: siteModelCatalogState,
     validationBusy,
     validationResult,
     validationArtifacts,
+    validationArtifactsBusy,
     modelCompareBusy,
     modelCompareResult,
     aiClinicBusy,
@@ -283,6 +289,7 @@ export function buildCaseWorkspaceAnalysisSectionProps(args: {
 
 export function buildCaseWorkspaceContributionSectionProps(args: {
   locale: ContributionSectionProps["locale"];
+  mounted: ContributionSectionProps["mounted"];
   selectedCase: ContributionSectionProps["selectedCase"];
   completionState: ContributionSectionProps["completionState"];
   summary: {
@@ -311,6 +318,7 @@ export function buildCaseWorkspaceContributionSectionProps(args: {
 }): ContributionSectionProps {
   const {
     locale,
+    mounted,
     selectedCase,
     completionState,
     summary,
@@ -346,6 +354,7 @@ export function buildCaseWorkspaceContributionSectionProps(args: {
 
   return {
     locale,
+    mounted,
     selectedCase,
     completionState,
     hospitalValidationCount: summary?.n_validation_runs ?? 0,
@@ -396,6 +405,18 @@ export function buildCaseWorkspaceReviewPanelProps(args: {
   return { ...args };
 }
 
+export function buildCaseWorkspaceAnalysisSectionContent(
+  props: AnalysisSectionProps,
+): ReactNode {
+  return createElement(CaseWorkspaceAnalysisSection, props);
+}
+
+export function buildCaseWorkspaceSelectedCasePanelContent(
+  props: ContributionSectionProps,
+): ReactNode {
+  return createElement(CaseWorkspaceContributionSection, props);
+}
+
 export function buildCaseWorkspaceReviewContentProps(args: {
   analysisSectionProps: AnalysisSectionProps;
   contributionSectionProps: ContributionSectionProps;
@@ -426,16 +447,12 @@ export function buildCaseWorkspaceReviewContentProps(args: {
     draftPendingItems,
   } = args;
 
-  const selectedCasePanelContent = createElement(
-    CaseWorkspaceContributionSection,
-    contributionSectionProps,
-  );
+  const selectedCasePanelContent =
+    buildCaseWorkspaceSelectedCasePanelContent(contributionSectionProps);
 
   return {
-    analysisSectionContent: createElement(
-      CaseWorkspaceAnalysisSection,
-      analysisSectionProps,
-    ),
+    analysisSectionContent:
+      buildCaseWorkspaceAnalysisSectionContent(analysisSectionProps),
     reviewPanelProps: buildCaseWorkspaceReviewPanelProps({
       locale,
       selectedCasePanelContent,

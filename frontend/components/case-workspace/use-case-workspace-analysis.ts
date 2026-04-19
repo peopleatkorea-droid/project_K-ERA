@@ -4,7 +4,6 @@ import {
   type Dispatch,
   type SetStateAction,
   useEffect,
-  useRef,
   useState,
 } from "react";
 
@@ -18,8 +17,9 @@ import {
   type CaseValidationResponse,
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
-import { prewarmDesktopMlBackend } from "../../lib/desktop-runtime-prewarm";
+import { prewarmDesktopMlBackend, runAfterDesktopInteractionIdle } from "../../lib/desktop-runtime-prewarm";
 import type { LocalePick, SavedImagePreview } from "./shared";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 import { useCaseWorkspaceAiClinic } from "./use-case-workspace-ai-clinic";
 import { useCaseWorkspaceLiveLesion } from "./use-case-workspace-live-lesion";
 import { useCaseWorkspacePreviewArtifacts } from "./use-case-workspace-preview-artifacts";
@@ -133,31 +133,6 @@ export function useCaseWorkspaceAnalysis({
   const [representativeBusyImageId, setRepresentativeBusyImageId] = useState<
     string | null
   >(null);
-  const desktopMlPrewarmedSiteIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    desktopMlPrewarmedSiteIdRef.current = null;
-  }, [selectedSiteId]);
-
-  useEffect(() => {
-    if (!selectedSiteId || !selectedCase || panelBusy) {
-      return;
-    }
-    if (desktopMlPrewarmedSiteIdRef.current === selectedSiteId) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      desktopMlPrewarmedSiteIdRef.current = selectedSiteId;
-      void prewarmDesktopMlBackend().catch(() => {
-        if (desktopMlPrewarmedSiteIdRef.current === selectedSiteId) {
-          desktopMlPrewarmedSiteIdRef.current = null;
-        }
-      });
-    }, 2500);
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [panelBusy, selectedSiteId, selectedCase?.case_id]);
 
   const representativeSavedImage =
     selectedCaseImages.find((image) => image.is_representative) ?? null;
@@ -194,6 +169,7 @@ export function useCaseWorkspaceAnalysis({
     modelCompareBusy,
     modelCompareResult,
     validationArtifacts,
+    validationArtifactsBusy,
     resetValidationState,
     handleRunValidation,
     handleRunModelCompare,
@@ -318,6 +294,30 @@ export function useCaseWorkspaceAnalysis({
   });
 
   useEffect(() => {
+    if (!selectedSiteId || !selectedCase || panelBusy) {
+      return;
+    }
+    let cancelled = false;
+    let cancelInteractionAwarePrewarm = () => undefined;
+    const cancelDeferredPrewarm = scheduleDeferredBrowserTask(() => {
+      cancelInteractionAwarePrewarm = runAfterDesktopInteractionIdle(
+        () => {
+          if (cancelled) {
+            return;
+          }
+          void prewarmDesktopMlBackend().catch(() => undefined);
+        },
+        1800,
+      );
+    }, 1200);
+    return () => {
+      cancelled = true;
+      cancelDeferredPrewarm();
+      cancelInteractionAwarePrewarm();
+    };
+  }, [panelBusy, selectedCase?.case_id, selectedSiteId]);
+
+  useEffect(() => {
     clearSemanticPromptState();
   }, [clearSemanticPromptState, selectedCase?.case_id, selectedSiteId]);
 
@@ -333,7 +333,7 @@ export function useCaseWorkspaceAnalysis({
     resetPreviewArtifacts,
     resetLiveLesionState,
     resetValidationState,
-    selectedCase,
+    selectedCase?.case_id,
     selectedSiteId,
   ]);
 
@@ -406,6 +406,7 @@ export function useCaseWorkspaceAnalysis({
     modelCompareBusy,
     modelCompareResult,
     validationArtifacts,
+    validationArtifactsBusy,
     aiClinicBusy,
     aiClinicExpandedBusy,
     aiClinicPreviewBusy,

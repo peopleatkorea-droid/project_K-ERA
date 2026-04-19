@@ -39,6 +39,10 @@ import {
   toSavedCaseImagePreview,
 } from "./case-workspace-core-helpers";
 import {
+  sameCaseSummaryRecordList,
+  samePatientListRows,
+} from "./case-workspace-records";
+import {
   buildVisitReference,
   computeNextFollowUpNumber,
   displayVisitReference,
@@ -407,11 +411,21 @@ export async function handleSaveCase({
           const nextTotalCount = currentPatientRow
             ? patientListTotalCount
             : patientListTotalCount + 1;
-          setPatientListRows(nextPatientListRows);
-          setPatientListTotalCount(nextTotalCount);
-          setPatientListTotalPages(
-            Math.max(1, Math.ceil(nextTotalCount / PATIENT_LIST_PAGE_SIZE)),
+          setPatientListRows((current) =>
+            samePatientListRows(current, nextPatientListRows)
+              ? current
+              : nextPatientListRows,
           );
+          setPatientListTotalCount((current) =>
+            current === nextTotalCount ? current : nextTotalCount,
+          );
+          setPatientListTotalPages((current) => {
+            const nextTotalPages = Math.max(
+              1,
+              Math.ceil(nextTotalCount / PATIENT_LIST_PAGE_SIZE),
+            );
+            return current === nextTotalPages ? current : nextTotalPages;
+          });
           if (patientListPage === 1) {
             setPatientListPage(1);
           }
@@ -500,12 +514,23 @@ export async function handleSaveCase({
           primeCaseImageCache(refreshedCase, uploadedImages);
         }
         startTransition(() => {
-          setCases(nextCases);
-          setPatientListRows(nextPatientList.items);
-          setPatientListTotalCount(nextPatientList.total_count);
-          setPatientListTotalPages(
-            Math.max(1, nextPatientList.total_pages || 1),
+          setCases((current) =>
+            sameCaseSummaryRecordList(current, nextCases) ? current : nextCases,
           );
+          setPatientListRows((current) =>
+            samePatientListRows(current, nextPatientList.items)
+              ? current
+              : nextPatientList.items,
+          );
+          setPatientListTotalCount((current) =>
+            current === nextPatientList.total_count
+              ? current
+              : nextPatientList.total_count,
+          );
+          setPatientListTotalPages((current) => {
+            const nextTotalPages = Math.max(1, nextPatientList.total_pages || 1);
+            return current === nextTotalPages ? current : nextTotalPages;
+          });
           setPatientListPage(nextPatientList.page);
           setSelectedCase((current) => {
             if (!current) {

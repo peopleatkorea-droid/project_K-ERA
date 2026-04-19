@@ -11,7 +11,8 @@ describe("case-workspace surface props", () => {
       actionNeededLabel: "Action needed",
       leftRailProps: {} as any,
       workspaceMainClass: "workspace-main",
-      headerProps: {} as any,
+      headerFrameProps: {} as any,
+      headerAlertsProps: {} as any,
       railView: "patients",
       mainLayoutClass: "layout",
       patientListViewProps: {} as any,
@@ -36,8 +37,27 @@ describe("case-workspace surface props", () => {
     expect(props.researchRegistryModalProps).toBeNull();
     expect(props.shellProps).toMatchObject({
       theme: "light",
+    });
+    expect(props.toastOverlayProps).toMatchObject({
+      toast: null,
       savedLabel: "Saved",
       actionNeededLabel: "Action needed",
+    });
+    expect(props.headerFrameProps).toEqual({});
+    expect(props.headerAlertsProps).toEqual({});
+    expect(props.mainLayoutClass).toBe("layout");
+    expect(props.mainPrimaryContentProps).toMatchObject({
+      railView: "patients",
+      patientListViewProps: {},
+      savedCaseViewProps: null,
+      selectedSiteId: null,
+      locale: "en",
+      draftViewProps: {},
+      onOpenHospitalAccessRequest: undefined,
+    });
+    expect(props.secondaryPanelProps).toMatchObject({
+      showSecondaryPanel: false,
+      reviewPanelProps: {},
     });
   });
 
@@ -50,7 +70,8 @@ describe("case-workspace surface props", () => {
       actionNeededLabel: "Action needed",
       leftRailProps: {} as any,
       workspaceMainClass: "workspace-main",
-      headerProps: {} as any,
+      headerFrameProps: {} as any,
+      headerAlertsProps: {} as any,
       railView: "cases",
       mainLayoutClass: "layout",
       patientListViewProps: {} as any,
@@ -73,6 +94,11 @@ describe("case-workspace surface props", () => {
     });
 
     expect(props.researchRegistryModalProps).not.toBeNull();
+    expect(props.mainLayoutClass).toBe("layout");
+    expect(props.secondaryPanelProps).toMatchObject({
+      showSecondaryPanel: true,
+      reviewPanelProps: {},
+    });
     props.researchRegistryModalProps?.onJoin();
     expect(handleJoinResearchRegistry).toHaveBeenCalledOnce();
   });

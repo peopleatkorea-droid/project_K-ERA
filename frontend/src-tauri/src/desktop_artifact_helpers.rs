@@ -28,6 +28,35 @@ pub(super) fn ensure_path_within_site(site_id: &str, path: &Path) -> Result<Path
     Ok(resolved_candidate)
 }
 
+fn artifact_preview_cache_path(
+    site_id: &str,
+    artifact_path: &Path,
+    max_side: u32,
+) -> Result<PathBuf, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(artifact_path.to_string_lossy().as_bytes());
+    let hashed_name = format!("{:x}", hasher.finalize());
+    Ok(site_dir(site_id)?
+        .join("artifacts")
+        .join("render_previews")
+        .join(max_side.to_string())
+        .join(format!("{hashed_name}.jpg")))
+}
+
+pub(super) fn resolve_artifact_display_path(
+    site_id: &str,
+    artifact_path: &Path,
+    preview_max_side: Option<u32>,
+) -> Result<PathBuf, String> {
+    let Some(max_side) = preview_max_side else {
+        return Ok(artifact_path.to_path_buf());
+    };
+    let clamped_side = max_side.clamp(192, 1024);
+    let preview_path = artifact_preview_cache_path(site_id, artifact_path, clamped_side)?;
+    ensure_preview(artifact_path, &preview_path, clamped_side)?;
+    Ok(preview_path)
+}
+
 pub(super) fn find_visit_image_record(
     conn: &Connection,
     site_id: &str,
@@ -171,7 +200,11 @@ mod tests {
             {
                 "validation_id": validation_id,
                 "case_reference_id": make_case_reference_id(site_id, patient_id, visit_date),
-                "gradcam_path": artifact_path.to_string_lossy().to_string()
+                "gradcam_path": PathBuf::from("artifacts")
+                    .join("gradcam")
+                    .join("image_gradcam.png")
+                    .to_string_lossy()
+                    .to_string()
             }
         ]);
         fs::write(

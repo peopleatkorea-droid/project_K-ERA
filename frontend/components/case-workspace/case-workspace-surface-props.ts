@@ -3,10 +3,17 @@
 import type { ReactNode } from "react";
 
 import type { Locale } from "../../lib/i18n";
-import type { CaseWorkspaceDraftViewProps } from "./case-workspace-main-content";
+import type {
+  CaseWorkspaceDraftViewProps,
+  CaseWorkspaceMainPrimaryContentProps,
+  CaseWorkspaceSecondaryPanelSlotProps,
+} from "./case-workspace-main-content";
 import type { CaseWorkspaceToastState } from "./case-workspace-definitions";
 import type { CaseWorkspaceReviewPanelProps } from "./case-workspace-review-panel";
-import type { CaseWorkspaceHeaderProps } from "./case-workspace-header";
+import type {
+  CaseWorkspaceHeaderAlertsProps,
+  CaseWorkspaceHeaderFrameProps,
+} from "./case-workspace-header";
 import type { CaseWorkspacePatientListViewProps } from "./case-workspace-main-content";
 import type { CaseWorkspaceSavedCaseViewProps } from "./case-workspace-main-content";
 import type { CaseWorkspaceResearchRegistryModalProps } from "./case-workspace-research-registry-modal";
@@ -19,7 +26,8 @@ export function buildCaseWorkspaceSurfaceProps(args: {
   actionNeededLabel: string;
   leftRailProps: CaseWorkspaceSurfaceProps["leftRailProps"];
   workspaceMainClass: string;
-  headerProps: CaseWorkspaceHeaderProps;
+  headerFrameProps: CaseWorkspaceHeaderFrameProps;
+  headerAlertsProps: CaseWorkspaceHeaderAlertsProps;
   railView: "cases" | "patients";
   mainLayoutClass: string;
   patientListViewProps: CaseWorkspacePatientListViewProps;
@@ -48,7 +56,8 @@ export function buildCaseWorkspaceSurfaceProps(args: {
     actionNeededLabel,
     leftRailProps,
     workspaceMainClass,
-    headerProps,
+    headerFrameProps,
+    headerAlertsProps,
     railView,
     mainLayoutClass,
     patientListViewProps,
@@ -89,26 +98,31 @@ export function buildCaseWorkspaceSurfaceProps(args: {
   return {
     shellProps: {
       theme,
+    },
+    toastOverlayProps: {
       toast,
       savedLabel,
       actionNeededLabel,
     },
     leftRailProps,
     workspaceMainClass,
-    headerProps,
-    mainLayoutProps: {
+    headerFrameProps,
+    headerAlertsProps,
+    mainLayoutClass,
+    mainPrimaryContentProps: {
       railView,
-      mainLayoutClass,
       patientListViewProps,
       savedCaseViewProps,
       analysisSectionContent,
       selectedSiteId,
       locale,
       draftViewProps,
+      onOpenHospitalAccessRequest,
+    } satisfies CaseWorkspaceMainPrimaryContentProps,
+    secondaryPanelProps: {
       showSecondaryPanel,
       reviewPanelProps,
-      onOpenHospitalAccessRequest,
-    },
+    } satisfies CaseWorkspaceSecondaryPanelSlotProps,
     researchRegistryModalProps,
   };
 }

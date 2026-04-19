@@ -113,3 +113,31 @@ export function hasSettledCaseImageCache(
   }
   return Number(caseRecord.image_count || 0) <= 0;
 }
+
+export function sameSavedImagePreviewLists(
+  left: SavedImagePreview[] | undefined,
+  right: SavedImagePreview[] | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const leftImage = left[index];
+    const rightImage = right[index];
+    if (
+      leftImage.image_id !== rightImage.image_id ||
+      leftImage.patient_id !== rightImage.patient_id ||
+      leftImage.visit_date !== rightImage.visit_date ||
+      leftImage.view !== rightImage.view ||
+      leftImage.preview_url !== rightImage.preview_url ||
+      leftImage.content_url !== rightImage.content_url ||
+      leftImage.is_representative !== rightImage.is_representative
+    ) {
+      return false;
+    }
+  }
+  return true;
+}

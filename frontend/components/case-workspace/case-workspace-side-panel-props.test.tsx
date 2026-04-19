@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildCaseWorkspaceAnalysisSectionContent,
   buildCaseWorkspaceAnalysisSectionProps,
   buildCaseWorkspaceContributionSectionProps,
   buildCaseWorkspaceLeftRailProps,
   buildCaseWorkspaceReviewContentProps,
+  buildCaseWorkspaceReviewPanelProps,
+  buildCaseWorkspaceSelectedCasePanelContent,
 } from "./case-workspace-side-panel-props";
 
 describe("case-workspace side panel props", () => {
@@ -90,6 +93,7 @@ describe("case-workspace side panel props", () => {
           stage: "analysis",
         },
       ] as any,
+      siteModelCatalogState: "ready",
       validationBusy: false,
       validationResult: null,
       validationArtifacts: {},
@@ -135,6 +139,7 @@ describe("case-workspace side panel props", () => {
     const contributeCase = vi.fn(async () => undefined);
     const props = buildCaseWorkspaceContributionSectionProps({
       locale: "en",
+      mounted: true,
       selectedCase: {
         patient_id: "P-001",
         visit_date: "Initial",
@@ -183,6 +188,7 @@ describe("case-workspace side panel props", () => {
     });
 
     expect(props.canContributeSelectedCase).toBe(true);
+    expect(props.mounted).toBe(true);
     expect(props.currentUserPublicAlias).toBe("Fallback Alias");
     expect(props.contributionLeaderboard?.scope).toBe("site");
     expect(props.formatDateTime("2026-04-13", "N/A")).toBe(
@@ -214,6 +220,7 @@ describe("case-workspace side panel props", () => {
         selectedCompareModelVersionIds: [],
         selectedValidationModelVersionId: null,
         compareModelCandidates: [],
+        modelCatalogState: "idle",
         validationBusy: false,
         validationResult: null,
         validationArtifacts: {},
@@ -285,5 +292,104 @@ describe("case-workspace side panel props", () => {
       selectedSiteLabel: "Site A",
       draftCompletionCount: 2,
     });
+  });
+
+  it("builds analysis content and selected-case panel content independently", () => {
+    const analysisSectionProps = {
+      locale: "en",
+      token: "token",
+      selectedSiteId: "site-1",
+      mounted: true,
+      analysisEyebrow: "Validation",
+      analysisTitle: "Analysis",
+      analysisDescription: "Description",
+      imageCountLabel: "images",
+      commonLoading: "Loading",
+      commonNotAvailable: "N/A",
+      hasSelectedCase: true,
+      canRunRoiPreview: true,
+      canRunValidation: true,
+      canRunAiClinic: true,
+      selectedCaseImageCount: 2,
+      representativePreviewUrl: null,
+      selectedCompareModelVersionIds: [],
+      selectedValidationModelVersionId: null,
+      compareModelCandidates: [],
+      modelCatalogState: "idle",
+      validationBusy: false,
+      validationResult: null,
+      validationArtifacts: {},
+      modelCompareBusy: false,
+      modelCompareResult: null,
+      aiClinicBusy: false,
+      aiClinicExpandedBusy: false,
+      aiClinicResult: null,
+      aiClinicPreviewBusy: false,
+      hasAnySavedLesionBox: false,
+      roiPreviewBusy: false,
+      lesionPreviewBusy: false,
+      roiPreviewItems: [],
+      lesionPreviewItems: [],
+      pickLabel: vi.fn(),
+      translateOption: vi.fn(),
+      setToast: vi.fn(),
+      setSelectedCompareModelVersionIds: vi.fn(),
+      setSelectedValidationModelVersionId: vi.fn(),
+      onRunValidation: vi.fn(),
+      onRunModelCompare: vi.fn(),
+      onRunAiClinic: vi.fn(),
+      onExpandAiClinic: vi.fn(),
+      onRunRoiPreview: vi.fn(),
+      onRunLesionPreview: vi.fn(),
+      displayVisitReference: vi.fn(),
+      aiClinicTextUnavailableLabel: "Unavailable",
+    } as any;
+    const contributionSectionProps = {
+      locale: "en",
+      selectedCase: null,
+      completionState: null,
+      hospitalValidationCount: 0,
+      canRunValidation: true,
+      canContributeSelectedCase: false,
+      hasValidationResult: false,
+      researchRegistryEnabled: true,
+      researchRegistryUserEnrolled: true,
+      researchRegistryBusy: false,
+      contributionBusy: false,
+      contributionResult: null,
+      currentUserPublicAlias: null,
+      contributionLeaderboard: null,
+      historyBusy: false,
+      caseHistory: null,
+      notAvailableLabel: "N/A",
+      formatDateTime: vi.fn(),
+      onJoinResearchRegistry: vi.fn(),
+      onIncludeResearchCase: vi.fn(),
+      onExcludeResearchCase: vi.fn(),
+      onContributeCase: vi.fn(),
+    } as any;
+
+    const analysisSectionContent =
+      buildCaseWorkspaceAnalysisSectionContent(analysisSectionProps);
+    const selectedCasePanelContent =
+      buildCaseWorkspaceSelectedCasePanelContent(contributionSectionProps);
+    const reviewPanelProps = buildCaseWorkspaceReviewPanelProps({
+      locale: "en",
+      selectedCasePanelContent,
+      isAuthoringCanvas: true,
+      draftStatusLabel: "Autosaved",
+      selectedSiteLabel: "Site A",
+      draftCompletionCount: 2,
+      draftImagesCount: 3,
+      draftRepresentativeCount: 1,
+      draftCompletionPercent: 50,
+      draftPendingItems: [],
+    });
+
+    expect(analysisSectionContent).toBeTruthy();
+    expect(selectedCasePanelContent).toBeTruthy();
+    expect(reviewPanelProps.selectedCasePanelContent).toBe(
+      selectedCasePanelContent,
+    );
   });
 });

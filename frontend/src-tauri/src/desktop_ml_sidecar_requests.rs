@@ -1,3 +1,21 @@
+const ML_SIDECAR_HEALTHCHECK_TTL: Duration = Duration::from_millis(2500);
+
+fn mark_ml_sidecar_healthy(runtime: &mut MlSidecarRuntime) {
+    runtime.last_healthcheck_at = Some(std::time::Instant::now());
+    runtime.last_error = None;
+}
+
+fn clear_ml_sidecar_health(runtime: &mut MlSidecarRuntime) {
+    runtime.last_healthcheck_at = None;
+}
+
+fn ml_sidecar_healthcheck_is_fresh(runtime: &MlSidecarRuntime) -> bool {
+    runtime
+        .last_healthcheck_at
+        .map(|last_check| last_check.elapsed() <= ML_SIDECAR_HEALTHCHECK_TTL)
+        .unwrap_or(false)
+}
+
 fn call_ml_sidecar_json_unlocked(
     runtime: &mut MlSidecarRuntime,
     method: &str,
@@ -57,7 +75,13 @@ pub(super) fn get_ml_sidecar_status_internal() -> Result<MlSidecarStatus, String
         .map_err(|_| "Failed to access desktop ML sidecar state.".to_string())?;
     sync_ml_sidecar_runtime(&mut runtime);
     let healthy = if runtime.child.is_some() {
-        call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_ok()
+        if call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_ok() {
+            mark_ml_sidecar_healthy(&mut runtime);
+            true
+        } else {
+            clear_ml_sidecar_health(&mut runtime);
+            false
+        }
     } else {
         false
     };
@@ -74,10 +98,14 @@ pub(super) fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, Stri
         .map_err(|_| "Failed to access desktop ML sidecar state.".to_string())?;
     sync_ml_sidecar_runtime(&mut runtime);
     let mut needs_spawn = runtime.child.is_none();
-    if !needs_spawn && call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_err()
-    {
-        stop_ml_sidecar_runtime(&mut runtime);
-        needs_spawn = true;
+    if !needs_spawn && !ml_sidecar_healthcheck_is_fresh(&runtime) {
+        if call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null).is_err() {
+            stop_ml_sidecar_runtime(&mut runtime);
+            clear_ml_sidecar_health(&mut runtime);
+            needs_spawn = true;
+        } else {
+            mark_ml_sidecar_healthy(&mut runtime);
+        }
     }
     if needs_spawn {
         let _ = cleanup_registered_managed_processes("ml_sidecar");
@@ -90,13 +118,16 @@ pub(super) fn ensure_ml_sidecar_ready_internal() -> Result<MlSidecarStatus, Stri
         runtime.launch_command = Some(spawned.launch_command);
         runtime.stderr_log_path = Some(spawned.stderr_log_path);
         runtime.last_started_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+        clear_ml_sidecar_health(&mut runtime);
         runtime.last_error = None;
         runtime.launched_by_desktop = true;
         if let Err(error) = call_ml_sidecar_json_unlocked(&mut runtime, "ping", JsonValue::Null) {
             stop_ml_sidecar_runtime(&mut runtime);
+            clear_ml_sidecar_health(&mut runtime);
             runtime.last_error = Some(error.clone());
             return Err(error);
         }
+        mark_ml_sidecar_healthy(&mut runtime);
     } else {
         runtime.python_preflight = Some(python_preflight);
     }
@@ -119,27 +150,101 @@ pub(super) fn request_ml_sidecar_json(method: &str, params: JsonValue) -> Result
         .map_err(|_| "Failed to access desktop ML sidecar state.".to_string())?;
     sync_ml_sidecar_runtime(&mut runtime);
     match call_ml_sidecar_json_unlocked(&mut runtime, method, params) {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            mark_ml_sidecar_healthy(&mut runtime);
+            Ok(result)
+        }
         Err(error) => {
+            clear_ml_sidecar_health(&mut runtime);
             runtime.last_error = Some(error.clone());
             Err(error)
         }
     }
 }
 
+fn workflow_warmup_scheduled_state() -> &'static Mutex<bool> {
+    static WORKFLOW_WARMUP_SCHEDULED: OnceLock<Mutex<bool>> = OnceLock::new();
+    WORKFLOW_WARMUP_SCHEDULED.get_or_init(|| Mutex::new(false))
+}
+
+fn finish_workflow_warmup_schedule() {
+    let mut scheduled = workflow_warmup_scheduled_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *scheduled = false;
+}
+
 pub(super) fn schedule_ml_sidecar_workflow_warmup() {
     if !ml_sidecar_should_be_used() {
         return;
     }
+    let should_schedule = {
+        let mut scheduled = workflow_warmup_scheduled_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *scheduled {
+            false
+        } else {
+            *scheduled = true;
+            true
+        }
+    };
+    if !should_schedule {
+        return;
+    }
     std::thread::spawn(|| {
-        let mut runtime = match ml_sidecar_state().lock() {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        sync_ml_sidecar_runtime(&mut runtime);
-        if runtime.child.is_none() {
+        std::thread::sleep(Duration::from_millis(3500));
+        for _attempt in 0..3 {
+            let mut runtime = match ml_sidecar_state().try_lock() {
+                Ok(runtime) => runtime,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(1200));
+                    continue;
+                }
+                Err(_) => {
+                    finish_workflow_warmup_schedule();
+                    return;
+                }
+            };
+            sync_ml_sidecar_runtime(&mut runtime);
+            if runtime.child.is_none() {
+                finish_workflow_warmup_schedule();
+                return;
+            }
+            if call_ml_sidecar_json_unlocked(&mut runtime, "warm_workflow", JsonValue::Null).is_ok() {
+                mark_ml_sidecar_healthy(&mut runtime);
+            } else {
+                clear_ml_sidecar_health(&mut runtime);
+            }
+            drop(runtime);
+            finish_workflow_warmup_schedule();
             return;
         }
-        let _ = call_ml_sidecar_json_unlocked(&mut runtime, "warm_workflow", JsonValue::Null);
+        finish_workflow_warmup_schedule();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn healthcheck_cache_marks_runtime_as_fresh_after_success() {
+        let mut runtime = MlSidecarRuntime::default();
+        assert!(!ml_sidecar_healthcheck_is_fresh(&runtime));
+
+        mark_ml_sidecar_healthy(&mut runtime);
+
+        assert!(ml_sidecar_healthcheck_is_fresh(&runtime));
+    }
+
+    #[test]
+    fn healthcheck_cache_expires_after_ttl() {
+        let mut runtime = MlSidecarRuntime::default();
+        runtime.last_healthcheck_at = Some(
+            std::time::Instant::now() - ML_SIDECAR_HEALTHCHECK_TTL - Duration::from_millis(1),
+        );
+
+        assert!(!ml_sidecar_healthcheck_is_fresh(&runtime));
+    }
 }

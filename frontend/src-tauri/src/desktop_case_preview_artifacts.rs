@@ -31,8 +31,10 @@ pub(super) fn resolve_case_roi_preview_artifact_path(
     let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
     let artifact_path =
         roi_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    let resolved_path =
+        resolve_artifact_display_path(&site_id, &artifact_path, payload.preview_max_side)?;
     Ok(FilePathResponse {
-        path: artifact_path.to_string_lossy().to_string(),
+        path: resolved_path.to_string_lossy().to_string(),
     })
 }
 
@@ -69,7 +71,9 @@ pub(super) fn resolve_case_lesion_preview_artifact_path(
     let image = find_visit_image_record(&conn, &site_id, &patient_id, &visit_date, &image_id)?;
     let artifact_path =
         lesion_preview_artifact_path(&site_id, &image.image_path, &payload.artifact_kind)?;
+    let resolved_path =
+        resolve_artifact_display_path(&site_id, &artifact_path, payload.preview_max_side)?;
     Ok(FilePathResponse {
-        path: artifact_path.to_string_lossy().to_string(),
+        path: resolved_path.to_string_lossy().to_string(),
     })
 }

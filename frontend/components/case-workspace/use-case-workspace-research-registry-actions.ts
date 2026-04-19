@@ -7,6 +7,7 @@ import {
   type CaseSummaryRecord,
   updateCaseResearchRegistry,
 } from "../../lib/api";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 
 type ToastState = {
   tone: "success" | "error";
@@ -89,7 +90,11 @@ export function useCaseWorkspaceResearchRegistryActions({
         source,
       });
       applyResearchRegistryStatusToLocalCase(patientId, visitDate, result);
-      await onSiteDataChanged(selectedSiteId);
+      scheduleDeferredBrowserTask(() => {
+        void onSiteDataChanged(selectedSiteId).catch((nextError) => {
+          console.warn("Research registry include refresh failed", nextError);
+        });
+      }, 0);
       if (successMessage) {
         setToast({ tone: "success", message: successMessage });
       }
@@ -120,7 +125,11 @@ export function useCaseWorkspaceResearchRegistryActions({
         source,
       });
       applyResearchRegistryStatusToLocalCase(patientId, visitDate, result);
-      await onSiteDataChanged(selectedSiteId);
+      scheduleDeferredBrowserTask(() => {
+        void onSiteDataChanged(selectedSiteId).catch((nextError) => {
+          console.warn("Research registry exclude refresh failed", nextError);
+        });
+      }, 0);
       if (successMessage) {
         setToast({ tone: "success", message: successMessage });
       }

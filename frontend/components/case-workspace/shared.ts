@@ -83,6 +83,13 @@ export type CaseWorkspaceAiClinicRunOptions = {
   validationResult?: CaseValidationResponse | null;
 };
 
+export type SiteModelCatalogState =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "empty"
+  | "error";
+
 export type LocalePick = (locale: Locale, en: string, ko: string) => string;
 export type TranslateOption = (
   locale: Locale,

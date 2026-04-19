@@ -1,6 +1,16 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -14,6 +24,7 @@ import type {
 } from "../../lib/api";
 import { pick, translateOption, type Locale } from "../../lib/i18n";
 import { canUseDesktopLocalApiTransport, requestDesktopLocalApiJson } from "../../lib/desktop-local-api";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 
 type AiClinicSimilarCasePreview = AiClinicSimilarCaseRecord & {
   preview_url: string | null;
@@ -33,8 +44,13 @@ type ClusterNeighbor = {
   distance: number;
 };
 
-type ClusterPositionResult = {
+type ClusterPositionPayload = {
   html: string;
+  neighbors: ClusterNeighbor[];
+};
+
+type ClusterPositionResult = {
+  frame_url: string | null;
   neighbors: ClusterNeighbor[];
 };
 
@@ -252,18 +268,46 @@ function AiClinicResultInner({
     () => buildReadySummary(validationResult, modelCompareResult),
     [validationResult, modelCompareResult],
   );
-  const inferenceOnlyValidation =
-    String(validationResult?.summary.validation_mode || "")
-      .trim()
-      .toLowerCase() === "inference_only";
+  const isExpanded = result?.analysis_stage === "expanded";
+  const deferredExpandedResult = useDeferredValue(
+    result && isExpanded ? result : null,
+  );
+  const expandedResultReady =
+    deferredExpandedResult?.analysis_stage === "expanded";
+  const expandedDetailResult = expandedResultReady ? deferredExpandedResult : null;
 
   const [clusterResult, setClusterResult] = useState<ClusterPositionResult | null>(null);
+  const [clusterFrameReady, setClusterFrameReady] = useState(false);
   const [clusterLoading, setClusterLoading] = useState(false);
   const [clusterError, setClusterError] = useState<string | null>(null);
+  const [visibleRetrievedCaseCount, setVisibleRetrievedCaseCount] = useState(0);
   const clusterLoadedForRef = useRef<string | null>(null);
+  const clusterFrameUrlRef = useRef<string | null>(null);
   const similarPatientsSectionRef = useRef<HTMLDivElement | null>(null);
   const clusterSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollSignatureRef = useRef<string | null>(null);
+
+  const clearClusterFrameUrl = useCallback(() => {
+    const currentFrameUrl = clusterFrameUrlRef.current;
+    if (currentFrameUrl && currentFrameUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(currentFrameUrl);
+    }
+    clusterFrameUrlRef.current = null;
+  }, []);
+
+  useEffect(() => clearClusterFrameUrl, [clearClusterFrameUrl]);
+
+  useEffect(() => {
+    clusterLoadedForRef.current = null;
+    clearClusterFrameUrl();
+    setClusterFrameReady(false);
+    setClusterError(null);
+    setClusterResult(null);
+  }, [
+    clearClusterFrameUrl,
+    result?.query_case.patient_id,
+    result?.query_case.visit_date,
+  ]);
 
   const loadClusterPosition = useCallback(async (patientId: string, visitDate: string) => {
     if (!siteId || clusterLoading) return;
@@ -274,9 +318,9 @@ function AiClinicResultInner({
     try {
       const params = new URLSearchParams({ patient_id: patientId, visit_date: visitDate });
       const path = `/api/sites/${siteId}/cluster-position?${params.toString()}`;
-      let data: ClusterPositionResult;
+      let data: ClusterPositionPayload;
       if (canUseDesktopLocalApiTransport()) {
-        data = await requestDesktopLocalApiJson<ClusterPositionResult>(path, token, { method: "POST" });
+        data = await requestDesktopLocalApiJson<ClusterPositionPayload>(path, token, { method: "POST" });
       } else {
         const res = await fetch(path, {
           method: "POST",
@@ -286,16 +330,46 @@ function AiClinicResultInner({
           const err = await res.json().catch(() => ({})) as { detail?: string };
           throw new Error(err.detail ?? `Error: ${res.status}`);
         }
-        data = await res.json() as ClusterPositionResult;
+        data = await res.json() as ClusterPositionPayload;
       }
+      const nextFrameUrl = URL.createObjectURL(
+        new Blob([data.html], { type: "text/html;charset=utf-8" }),
+      );
+      clearClusterFrameUrl();
+      clusterFrameUrlRef.current = nextFrameUrl;
       clusterLoadedForRef.current = key;
-      setClusterResult(data);
+      startTransition(() => {
+        setClusterResult({
+          frame_url: nextFrameUrl,
+          neighbors: data.neighbors,
+        });
+      });
     } catch (err: unknown) {
       setClusterError(err instanceof Error ? err.message : String(err));
     } finally {
       setClusterLoading(false);
     }
   }, [siteId, token, clusterLoading]);
+
+  useEffect(() => {
+    if (!clusterResult?.frame_url || activeView !== "cluster") {
+      setClusterFrameReady(false);
+      return;
+    }
+    let cancelled = false;
+    const cancelDeferredMount = scheduleDeferredBrowserTask(() => {
+      if (cancelled) {
+        return;
+      }
+      startTransition(() => {
+        setClusterFrameReady(true);
+      });
+    }, 180);
+    return () => {
+      cancelled = true;
+      cancelDeferredMount();
+    };
+  }, [activeView, clusterResult?.frame_url]);
 
   useEffect(() => {
     if (!result) {
@@ -354,59 +428,253 @@ function AiClinicResultInner({
     siteId,
   ]);
 
-  if (!result) {
-    return (
-      <div className="grid gap-4">
-        <Message>
-          {pick(
-            locale,
-            'Step 3 is ready. First click "Run image retrieval". If you need more explanation after that, click "Load evidence & guidance".',
-            '3단계 준비가 끝났습니다. 먼저 "이미지 검색 실행"을 누르고, 추가 설명이 필요할 때만 "근거와 가이드 불러오기"를 누르세요.'
-          )}
-        </Message>
-        {readySummary ? (
-          <Section title={pick(locale, "Step 3 ready", "3단계 준비 상태")}>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <KpiCard
-                label={pick(locale, "Anchor label", "Anchor 라벨")}
-                value={
-                  readySummary.anchorLabel
-                    ? translateOption(locale, "cultureCategory", readySummary.anchorLabel)
-                    : notAvailableLabel
-                }
-              />
-              <KpiCard label={pick(locale, "Compared models", "비교 모델 수")} value={readySummary.successfulModelCount} />
-              <KpiCard
-                label={pick(locale, "Agreement", "일치 수")}
-                value={`${readySummary.agreementCount} / ${readySummary.successfulModelCount}`}
-              />
-              <KpiCard
-                label={pick(locale, "Anchor confidence", "Anchor confidence")}
-                value={formatProbability(readySummary.predictionProbability, notAvailableLabel)}
-              />
+  useEffect(() => {
+    const totalSimilarCases = result?.similar_cases.length ?? 0;
+    if (activeView !== "retrieval" || totalSimilarCases <= 0) {
+      setVisibleRetrievedCaseCount(0);
+      return;
+    }
+
+    setVisibleRetrievedCaseCount(1);
+    if (totalSimilarCases === 1) {
+      return;
+    }
+
+    let cancelled = false;
+    let revealedCount = 1;
+    let cancelDeferredReveal = () => undefined;
+
+    const revealNextCase = () => {
+      if (cancelled) {
+        return;
+      }
+      revealedCount += 1;
+      startTransition(() => {
+        setVisibleRetrievedCaseCount((current) =>
+          current >= revealedCount ? current : revealedCount,
+        );
+      });
+      if (revealedCount < totalSimilarCases) {
+        cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+      }
+    };
+
+    cancelDeferredReveal = scheduleDeferredBrowserTask(revealNextCase, 120);
+    return () => {
+      cancelled = true;
+      cancelDeferredReveal();
+    };
+  }, [
+    activeView,
+    result?.analysis_stage,
+    result?.query_case.patient_id,
+    result?.query_case.visit_date,
+    result?.similar_cases.length,
+  ]);
+
+  const visibleRetrievedCases = useMemo(
+    () => (result?.similar_cases ?? []).slice(0, visibleRetrievedCaseCount),
+    [result?.similar_cases, visibleRetrievedCaseCount],
+  );
+
+  const classification = result?.classification_context ?? null;
+  const queryCase = result?.query_case ?? null;
+  const narrativeUnavailable =
+    expandedDetailResult?.text_retrieval_mode === "unavailable";
+  const retrievedCaseCards = useMemo(
+    () =>
+      visibleRetrievedCases.map((item, index) => (
+        <Card
+          key={`${item.patient_id}-${item.visit_date}`}
+          as="article"
+          variant="nested"
+          className="grid min-w-0 gap-3 border border-border/80 p-4"
+          style={{ contentVisibility: "auto", containIntrinsicSize: "420px" }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="grid gap-1">
+              <strong className="text-sm font-semibold text-ink">
+                {pick(locale, `Case ${index + 1}`, `케이스 ${index + 1}`)}
+              </strong>
+              <span className="text-xs text-muted">
+                {displayVisitReference(item.visit_date)}
+              </span>
             </div>
-            <FieldGrid
-              items={[
-                { label: pick(locale, "Anchor model", "Anchor 모델"), value: readySummary.anchorModelName ?? notAvailableLabel },
-                { label: pick(locale, "Disagreement", "불일치 수"), value: String(readySummary.disagreementCount) },
-              ]}
-            />
-          </Section>
-        ) : null}
-      </div>
-    );
-  }
+            <Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>
+          </div>
+          {item.preview_url ? (
+            <Card as="div" variant="panel" className="overflow-hidden">
+              <img
+                src={resolvePreviewImageSrc(item.preview_url, token)}
+                alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
+                className="aspect-[4/3] w-full object-cover"
+                width={320}
+                height={240}
+                loading={index === 0 ? "eager" : "lazy"}
+                decoding="async"
+                fetchPriority={index === 0 ? "high" : "low"}
+              />
+            </Card>
+          ) : (
+            <Message>
+              {aiClinicPreviewBusy && item.representative_image_id
+                ? pick(locale, "Loading representative image...", "대표 이미지를 불러오는 중입니다.")
+                : pick(locale, "Representative image preview is unavailable.", "대표 이미지 미리보기를 불러올 수 없습니다.")}
+            </Message>
+          )}
+          <FieldGrid
+            columns={2}
+            items={[
+              { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
+              {
+                label: pick(locale, "Culture", "배양"),
+                value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
+              },
+              {
+                label: pick(locale, "View / status", "View / 상태"),
+                value: `${translateOption(locale, "view", item.representative_view ?? "white")} / ${translateOption(locale, "visitStatus", item.visit_status ?? "active")}`,
+              },
+              {
+                label: pick(locale, "Image quality", "이미지 품질"),
+                value: formatImageQualityScore(item.quality_score, notAvailableLabel),
+              },
+            ]}
+          />
+          {item.metadata_reranking?.alignment ? (
+            <Message>
+              {pick(locale, "Matched", "일치")}:{" "}
+              {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.matched_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+              {" · "}
+              {pick(locale, "Conflict", "충돌")}:{" "}
+              {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
+                ? (item.metadata_reranking.alignment.conflicted_fields ?? []).map(formatMetadataField).join(", ")
+                : notAvailableLabel}
+            </Message>
+          ) : null}
+        </Card>
+      )),
+    [
+      aiClinicPreviewBusy,
+      displayVisitReference,
+      formatImageQualityScore,
+      formatMetadataField,
+      formatSemanticScore,
+      locale,
+      notAvailableLabel,
+      token,
+      visibleRetrievedCases,
+    ],
+  );
+  const clusterNeighborCards = useMemo(
+    () =>
+      clusterResult?.neighbors.map((n, i) => (
+        <Card key={`${n.patient_id}-${n.visit_date}`} as="article" variant="panel" className="p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-semibold text-ink">
+              {pick(locale, `Neighbor ${i + 1}`, `이웃 ${i + 1}`)}
+            </span>
+            <span
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
+              style={{
+                background: n.category.includes("bact") ? "#dbeafe" : n.category.includes("fung") ? "#ffedd5" : "#f1f5f9",
+                color: n.category.includes("bact") ? "#1d4ed8" : n.category.includes("fung") ? "#c2410c" : "#475569",
+              }}
+            >
+              {translateOption(locale, "cultureCategory", n.category)}
+            </span>
+          </div>
+          <FieldGrid
+            items={[
+              { label: pick(locale, "Species", "균주"), value: n.species || notAvailableLabel },
+              {
+                label: pick(locale, "Sex / Age", "성별 / 나이"),
+                value: `${translateOption(locale, "sex", n.sex || "unknown")} / ${n.age || notAvailableLabel}`,
+              },
+              { label: pick(locale, "Visit", "방문일"), value: displayVisitReference(n.visit_date) },
+              { label: pick(locale, "Cosine distance", "코사인 거리"), value: n.distance.toFixed(4) },
+            ]}
+          />
+        </Card>
+      )) ?? null,
+    [clusterResult?.neighbors, displayVisitReference, locale, notAvailableLabel],
+  );
+  const textEvidenceCards = useMemo(
+    () =>
+      expandedDetailResult?.text_evidence.map((item, index) => (
+        <Card key={`${item.patient_id}-${item.visit_date}-text`} as="article" variant="panel" className="grid gap-3 p-4">
+          <SectionHeader
+            title={pick(locale, `Evidence ${index + 1}`, `근거 ${index + 1}`)}
+            titleAs="h4"
+            description={displayVisitReference(item.visit_date)}
+          />
+          <FieldGrid
+            items={[
+              { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
+              { label: pick(locale, "Similarity", "유사도"), value: formatSemanticScore(item.similarity, notAvailableLabel) },
+            ]}
+          />
+          <p className="m-0 whitespace-pre-wrap text-sm leading-6 text-muted">{compactText(item.text, aiClinicTextUnavailableLabel, 220)}</p>
+        </Card>
+      )) ?? null,
+    [
+      aiClinicTextUnavailableLabel,
+      displayVisitReference,
+      expandedDetailResult?.text_evidence,
+      formatSemanticScore,
+      locale,
+      notAvailableLabel,
+    ],
+  );
 
-  const isExpanded = result.analysis_stage === "expanded";
-  const classification = result.classification_context;
-  const queryCase = result.query_case;
-  const narrativeUnavailable = result.text_retrieval_mode === "unavailable";
-
-  return (
-    <div className="grid gap-4">
+  const differentialCards = useMemo(
+    () =>
+      expandedDetailResult?.differential?.differential.map((item, index) => (
+        <Card key={`diff-${item.label}`} as="article" variant="panel" className="grid gap-3 p-4">
+          <SectionHeader
+            title={`${index + 1}. ${translateOption(locale, "cultureCategory", item.label)}`}
+            titleAs="h4"
+            aside={<Badge>{item.confidence_band}</Badge>}
+          />
+          <FieldGrid
+            items={[
+              { label: pick(locale, "Score", "점수"), value: formatProbability(item.score, notAvailableLabel) },
+              { label: pick(locale, "Classifier", "분류기"), value: formatSemanticScore(item.component_scores.classifier, notAvailableLabel) },
+              { label: pick(locale, "Retrieval", "검색"), value: formatSemanticScore(item.component_scores.retrieval, notAvailableLabel) },
+              { label: pick(locale, "Text", "텍스트"), value: formatSemanticScore(item.component_scores.text, notAvailableLabel) },
+            ]}
+          />
+          {(item.supporting_evidence.length > 0 || item.conflicting_evidence.length > 0) ? (
+            <Message>
+              {pick(locale, "Support", "지지")}:{" "}
+              {item.supporting_evidence.length > 0 ? item.supporting_evidence.join(" / ") : notAvailableLabel}
+              {" · "}
+              {pick(locale, "Conflict", "상충")}:{" "}
+              {item.conflicting_evidence.length > 0 ? item.conflicting_evidence.join(" / ") : notAvailableLabel}
+            </Message>
+          ) : null}
+        </Card>
+      )) ?? null,
+    [
+      expandedDetailResult?.differential?.differential,
+      formatProbability,
+      formatSemanticScore,
+      locale,
+      notAvailableLabel,
+    ],
+  );
+  const overviewSectionContent = useMemo(() => {
+    if (!result || !queryCase) {
+      return null;
+    }
+    return (
       <Section
         title={pick(locale, "Image retrieval overview", "이미지 검색 개요")}
-        subtitle={result.ai_clinic_profile?.label ?? pick(locale, "DINOv2 retrieval", "DINOv2 retrieval")}
+        subtitle={
+          result.ai_clinic_profile?.label ??
+          pick(locale, "DINOv2 retrieval", "DINOv2 retrieval")
+        }
       >
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <KpiCard label={pick(locale, "retrieved cases", "검색 케이스")} value={result.similar_cases.length} />
@@ -514,6 +782,135 @@ function AiClinicResultInner({
           </div>
         ) : null}
       </Section>
+    );
+  }, [
+    classification?.model_version,
+    classification?.predicted_confidence,
+    classification?.predicted_label,
+    classification?.prediction_probability,
+    clusterLoading,
+    clusterResult,
+    displayVisitReference,
+    formatImageQualityScore,
+    formatProbability,
+    isExpanded,
+    loadClusterPosition,
+    locale,
+    notAvailableLabel,
+    queryCase,
+    readySummary,
+    result,
+    siteId,
+    validationResult?.model_version.version_name,
+  ]);
+  const readySummaryContent = useMemo(() => {
+    if (!readySummary) {
+      return null;
+    }
+    return (
+      <Section title={pick(locale, "Step 3 ready", "3단계 준비 상태")}>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label={pick(locale, "Anchor label", "Anchor 라벨")}
+            value={
+              readySummary.anchorLabel
+                ? translateOption(locale, "cultureCategory", readySummary.anchorLabel)
+                : notAvailableLabel
+            }
+          />
+          <KpiCard
+            label={pick(locale, "Compared models", "비교 모델 수")}
+            value={readySummary.successfulModelCount}
+          />
+          <KpiCard
+            label={pick(locale, "Agreement", "일치 수")}
+            value={`${readySummary.agreementCount} / ${readySummary.successfulModelCount}`}
+          />
+          <KpiCard
+            label={pick(locale, "Anchor confidence", "Anchor confidence")}
+            value={formatProbability(
+              readySummary.predictionProbability,
+              notAvailableLabel,
+            )}
+          />
+        </div>
+        <FieldGrid
+          items={[
+            {
+              label: pick(locale, "Anchor model", "Anchor 모델"),
+              value: readySummary.anchorModelName ?? notAvailableLabel,
+            },
+            {
+              label: pick(locale, "Disagreement", "불일치 수"),
+              value: String(readySummary.disagreementCount),
+            },
+          ]}
+        />
+      </Section>
+    );
+  }, [formatProbability, locale, notAvailableLabel, readySummary]);
+  const workflowRecommendationContent = useMemo(() => {
+    if (
+      activeView !== "retrieval" ||
+      !expandedDetailResult?.workflow_recommendation
+    ) {
+      return null;
+    }
+    return (
+      <div style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}>
+        <Section
+          title={pick(locale, "Workflow recommendation", "workflow recommendation")}
+          subtitle={workflowRecommendationSubtitle(locale, expandedDetailResult.workflow_recommendation)}
+        >
+          <Message>{expandedDetailResult.workflow_recommendation.summary}</Message>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="grid gap-3">
+              <strong className="text-sm font-semibold text-ink">
+                {pick(locale, "Recommended steps", "권장 단계")}
+              </strong>
+              <BulletList items={expandedDetailResult.workflow_recommendation.recommended_steps} />
+            </div>
+            <div className="grid gap-3">
+              <strong className="text-sm font-semibold text-ink">
+                {pick(locale, "Flags to review", "검토 플래그")}
+              </strong>
+              <BulletList items={expandedDetailResult.workflow_recommendation.flags_to_review} />
+            </div>
+          </div>
+          <FieldGrid
+            items={[
+              {
+                label: pick(locale, "Rationale", "근거"),
+                value: expandedDetailResult.workflow_recommendation.rationale,
+              },
+              {
+                label: pick(locale, "Uncertainty", "불확실성"),
+                value: expandedDetailResult.workflow_recommendation.uncertainty,
+              },
+            ]}
+          />
+        </Section>
+      </div>
+    );
+  }, [activeView, expandedDetailResult?.workflow_recommendation, locale]);
+  if (!result || !queryCase) {
+    return (
+      <div className="grid gap-4">
+        <Message>
+          {pick(
+            locale,
+            'Step 3 is ready. First click "Run image retrieval". If you need more explanation after that, click "Load evidence & guidance".',
+            '3단계 준비가 끝났습니다. 먼저 "이미지 검색 실행"을 누르고, 추가 설명이 필요할 때만 "근거와 가이드 불러오기"를 누르세요.'
+          )}
+        </Message>
+        {readySummaryContent}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4">
+      {overviewSectionContent}
 
       {siteId && (activeView === "cluster" || clusterLoading || clusterResult || clusterError) ? (
         <div ref={clusterSectionRef}>
@@ -550,48 +947,40 @@ function AiClinicResultInner({
             </div>
           ) : clusterResult ? (
             <div className="grid gap-4">
-              <Card variant="nested" className="overflow-hidden p-0">
-                <iframe
-                  srcDoc={clusterResult.html}
-                  title={pick(locale, "Embedding cluster position", "임베딩 클러스터 위치")}
-                  className="h-[540px] w-full border-0"
-                  sandbox="allow-scripts"
-                />
-              </Card>
+              {clusterFrameReady ? (
+                <Card
+                  variant="nested"
+                  className="overflow-hidden p-0"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "640px" }}
+                >
+                  <iframe
+                    src={clusterResult.frame_url ?? undefined}
+                    title={pick(locale, "Embedding cluster position", "임베딩 클러스터 위치")}
+                    className="h-[540px] w-full border-0"
+                    sandbox="allow-scripts"
+                    loading="lazy"
+                  />
+                </Card>
+              ) : (
+                <Card variant="nested" className="grid min-h-[540px] place-items-center p-6">
+                  <Message>
+                    {pick(
+                      locale,
+                      "Preparing 3D cluster view...",
+                      "3D 클러스터 뷰를 준비하는 중입니다.",
+                    )}
+                  </Message>
+                </Card>
+              )}
               {clusterResult.neighbors.length > 0 ? (
-                <div className="grid gap-3">
+                <div
+                  className="grid gap-3"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
+                >
                   <span className="text-sm font-semibold text-ink">
                     {pick(locale, "Nearest neighbors (no same-patient duplicates)", "최근접 방문 (동일 환자 제외)")}
                   </span>
-                  {clusterResult.neighbors.map((n, i) => (
-                    <Card key={`${n.patient_id}-${n.visit_date}`} as="article" variant="panel" className="p-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-sm font-semibold text-ink">
-                          {pick(locale, `Neighbor ${i + 1}`, `이웃 ${i + 1}`)}
-                        </span>
-                        <span
-                          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-                          style={{
-                            background: n.category.includes("bact") ? "#dbeafe" : n.category.includes("fung") ? "#ffedd5" : "#f1f5f9",
-                            color: n.category.includes("bact") ? "#1d4ed8" : n.category.includes("fung") ? "#c2410c" : "#475569",
-                          }}
-                        >
-                          {translateOption(locale, "cultureCategory", n.category)}
-                        </span>
-                      </div>
-                      <FieldGrid
-                        items={[
-                          { label: pick(locale, "Species", "균주"), value: n.species || notAvailableLabel },
-                          {
-                            label: pick(locale, "Sex / Age", "성별 / 나이"),
-                            value: `${translateOption(locale, "sex", n.sex || "unknown")} / ${n.age || notAvailableLabel}`,
-                          },
-                          { label: pick(locale, "Visit", "방문일"), value: displayVisitReference(n.visit_date) },
-                          { label: pick(locale, "Cosine distance", "코사인 거리"), value: n.distance.toFixed(4) },
-                        ]}
-                      />
-                    </Card>
-                  ))}
+                  {clusterNeighborCards}
                 </div>
               ) : null}
             </div>
@@ -601,7 +990,10 @@ function AiClinicResultInner({
       ) : null}
 
       {activeView === "retrieval" ? (
-        <div ref={similarPatientsSectionRef}>
+        <div
+          ref={similarPatientsSectionRef}
+          style={{ contentVisibility: "auto", containIntrinsicSize: "980px" }}
+        >
           <Section
             title={pick(locale, "Top retrieved cases", "상위 검색 케이스")}
             subtitle={pick(locale, `${result.similar_cases.length} ranked results`, `${result.similar_cases.length}개 순위 결과`)}
@@ -616,74 +1008,7 @@ function AiClinicResultInner({
               </Message>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-                {result.similar_cases.map((item, index) => (
-                  <Card
-                    key={`${item.patient_id}-${item.visit_date}`}
-                    as="article"
-                    variant="nested"
-                    className="grid min-w-0 gap-3 border border-border/80 p-4"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="grid gap-1">
-                        <strong className="text-sm font-semibold text-ink">
-                          {pick(locale, `Case ${index + 1}`, `케이스 ${index + 1}`)}
-                        </strong>
-                        <span className="text-xs text-muted">
-                          {displayVisitReference(item.visit_date)}
-                        </span>
-                      </div>
-                      <Badge>{`${pick(locale, "Similarity", "유사도")} ${formatSemanticScore(item.similarity, notAvailableLabel)}`}</Badge>
-                    </div>
-                    {item.preview_url ? (
-                      <Card as="div" variant="panel" className="overflow-hidden">
-                        <img
-                          src={resolvePreviewImageSrc(item.preview_url, token)}
-                          alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
-                          className="aspect-[4/3] w-full object-cover"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      </Card>
-                    ) : (
-                      <Message>
-                        {aiClinicPreviewBusy && item.representative_image_id
-                          ? pick(locale, "Loading representative image...", "대표 이미지를 불러오는 중입니다.")
-                          : pick(locale, "Representative image preview is unavailable.", "대표 이미지 미리보기를 불러올 수 없습니다.")}
-                      </Message>
-                    )}
-                    <FieldGrid
-                      columns={2}
-                      items={[
-                        { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
-                        {
-                          label: pick(locale, "Culture", "배양"),
-                          value: `${translateOption(locale, "cultureCategory", item.culture_category)} / ${item.culture_species || notAvailableLabel}`,
-                        },
-                        {
-                          label: pick(locale, "View / status", "View / 상태"),
-                          value: `${translateOption(locale, "view", item.representative_view ?? "white")} / ${translateOption(locale, "visitStatus", item.visit_status ?? "active")}`,
-                        },
-                        {
-                          label: pick(locale, "Image quality", "이미지 품질"),
-                          value: formatImageQualityScore(item.quality_score, notAvailableLabel),
-                        },
-                      ]}
-                    />
-                    {item.metadata_reranking?.alignment ? (
-                      <Message>
-                        {pick(locale, "Matched", "일치")}:{" "}
-                        {(item.metadata_reranking.alignment.matched_fields ?? []).length > 0
-                          ? (item.metadata_reranking.alignment.matched_fields ?? []).map(formatMetadataField).join(", ")
-                          : notAvailableLabel}
-                        {" · "}
-                        {pick(locale, "Conflict", "충돌")}:{" "}
-                        {(item.metadata_reranking.alignment.conflicted_fields ?? []).length > 0
-                          ? (item.metadata_reranking.alignment.conflicted_fields ?? []).map(formatMetadataField).join(", ")
-                          : notAvailableLabel}
-                      </Message>
-                    ) : null}
-                  </Card>
-                ))}
+                {retrievedCaseCards}
               </div>
             )}
           </Section>
@@ -691,110 +1016,59 @@ function AiClinicResultInner({
       ) : null}
 
       {activeView === "retrieval" && !isExpanded ? (
-        <Section title={pick(locale, "Optional evidence and guidance", "선택형 근거와 가이드")} subtitle={pick(locale, "Only when needed", "필요할 때만")}>
-          <Message>
-            {pick(
-              locale,
-              'Load this only when the similar-patient list alone is not enough and you want extra explanation or suggested next steps.',
-              '유사 환자 목록만으로 부족하고 추가 설명이나 다음 단계 제안이 필요할 때만 이 단계를 불러오세요.'
-            )}
-          </Message>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="ghost" onClick={onExpandAiClinic} disabled={!canExpandAiClinic || aiClinicExpandedBusy}>
-              {aiClinicExpandedBusy
-                ? pick(locale, "Loading evidence and guidance...", "근거와 가이드 불러오는 중...")
-                : pick(locale, "Load evidence & guidance", "근거와 가이드 불러오기")}
-            </Button>
-          </div>
-        </Section>
+        <div style={{ contentVisibility: "auto", containIntrinsicSize: "260px" }}>
+          <Section title={pick(locale, "Optional evidence and guidance", "선택형 근거와 가이드")} subtitle={pick(locale, "Only when needed", "필요할 때만")}>
+            <Message>
+              {pick(
+                locale,
+                'Load this only when the similar-patient list alone is not enough and you want extra explanation or suggested next steps.',
+                '유사 환자 목록만으로 부족하고 추가 설명이나 다음 단계 제안이 필요할 때만 이 단계를 불러오세요.'
+              )}
+            </Message>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="ghost" onClick={onExpandAiClinic} disabled={!canExpandAiClinic || aiClinicExpandedBusy}>
+                {aiClinicExpandedBusy
+                  ? pick(locale, "Loading evidence and guidance...", "근거와 가이드 불러오는 중...")
+                  : pick(locale, "Load evidence & guidance", "근거와 가이드 불러오기")}
+              </Button>
+            </div>
+          </Section>
+        </div>
+      ) : null}
+
+      {activeView === "retrieval" && isExpanded && !expandedDetailResult ? (
+        <Message>
+          {pick(
+            locale,
+            "Preparing expanded evidence and workflow guidance...",
+            "확장 근거와 워크플로 가이드를 정리하는 중입니다.",
+          )}
+        </Message>
       ) : null}
 
       {activeView === "retrieval" && narrativeUnavailable ? <Message>{aiClinicTextUnavailableLabel}</Message> : null}
 
-      {activeView === "retrieval" && result.text_evidence.length > 0 ? (
+      {activeView === "retrieval" && (expandedDetailResult?.text_evidence.length ?? 0) > 0 ? (
+        <div style={{ contentVisibility: "auto", containIntrinsicSize: "520px" }}>
         <Section title={pick(locale, "Retrieved text evidence", "검색된 텍스트 근거")}>
           <div className="grid gap-3 xl:grid-cols-2">
-            {result.text_evidence.map((item, index) => (
-              <Card key={`${item.patient_id}-${item.visit_date}-text`} as="article" variant="panel" className="grid gap-3 p-4">
-                <SectionHeader
-                  title={pick(locale, `Evidence ${index + 1}`, `근거 ${index + 1}`)}
-                  titleAs="h4"
-                  description={displayVisitReference(item.visit_date)}
-                />
-                <FieldGrid
-                  items={[
-                    { label: pick(locale, "Patient / code", "환자 / 코드"), value: item.local_case_code || item.chart_alias || item.patient_id },
-                    { label: pick(locale, "Similarity", "유사도"), value: formatSemanticScore(item.similarity, notAvailableLabel) },
-                  ]}
-                />
-                <p className="m-0 whitespace-pre-wrap text-sm leading-6 text-muted">{compactText(item.text, aiClinicTextUnavailableLabel, 220)}</p>
-              </Card>
-            ))}
+            {textEvidenceCards}
           </div>
         </Section>
+        </div>
       ) : null}
 
-      {activeView === "retrieval" && result.differential ? (
-        <Section title={pick(locale, "Differential ranking", "감별 진단 순위")} subtitle={result.differential.engine}>
+      {activeView === "retrieval" && expandedDetailResult?.differential ? (
+        <div style={{ contentVisibility: "auto", containIntrinsicSize: "420px" }}>
+        <Section title={pick(locale, "Differential ranking", "감별 진단 순위")} subtitle={expandedDetailResult.differential.engine}>
           <div className="grid gap-3 xl:grid-cols-3">
-            {result.differential.differential.map((item, index) => (
-              <Card key={`diff-${item.label}`} as="article" variant="panel" className="grid gap-3 p-4">
-                <SectionHeader
-                  title={`${index + 1}. ${translateOption(locale, "cultureCategory", item.label)}`}
-                  titleAs="h4"
-                  aside={<Badge>{item.confidence_band}</Badge>}
-                />
-                <FieldGrid
-                  items={[
-                    { label: pick(locale, "Score", "점수"), value: formatProbability(item.score, notAvailableLabel) },
-                    { label: pick(locale, "Classifier", "분류기"), value: formatSemanticScore(item.component_scores.classifier, notAvailableLabel) },
-                    { label: pick(locale, "Retrieval", "검색"), value: formatSemanticScore(item.component_scores.retrieval, notAvailableLabel) },
-                    { label: pick(locale, "Text", "텍스트"), value: formatSemanticScore(item.component_scores.text, notAvailableLabel) },
-                  ]}
-                />
-                {(item.supporting_evidence.length > 0 || item.conflicting_evidence.length > 0) ? (
-                  <Message>
-                    {pick(locale, "Support", "지지")}:{" "}
-                    {item.supporting_evidence.length > 0 ? item.supporting_evidence.join(" / ") : notAvailableLabel}
-                    {" · "}
-                    {pick(locale, "Conflict", "상충")}:{" "}
-                    {item.conflicting_evidence.length > 0 ? item.conflicting_evidence.join(" / ") : notAvailableLabel}
-                  </Message>
-                ) : null}
-              </Card>
-            ))}
+            {differentialCards}
           </div>
         </Section>
+        </div>
       ) : null}
 
-      {activeView === "retrieval" && result.workflow_recommendation ? (
-        <Section
-          title={pick(locale, "Workflow recommendation", "workflow recommendation")}
-          subtitle={workflowRecommendationSubtitle(locale, result.workflow_recommendation)}
-        >
-          <Message>{result.workflow_recommendation.summary}</Message>
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="grid gap-3">
-              <strong className="text-sm font-semibold text-ink">
-                {pick(locale, "Recommended steps", "권장 단계")}
-              </strong>
-              <BulletList items={result.workflow_recommendation.recommended_steps} />
-            </div>
-            <div className="grid gap-3">
-              <strong className="text-sm font-semibold text-ink">
-                {pick(locale, "Flags to review", "검토 플래그")}
-              </strong>
-              <BulletList items={result.workflow_recommendation.flags_to_review} />
-            </div>
-          </div>
-          <FieldGrid
-            items={[
-              { label: pick(locale, "Rationale", "근거"), value: result.workflow_recommendation.rationale },
-              { label: pick(locale, "Uncertainty", "불확실성"), value: result.workflow_recommendation.uncertainty },
-            ]}
-          />
-        </Section>
-      ) : null}
+      {workflowRecommendationContent}
     </div>
   );
 }

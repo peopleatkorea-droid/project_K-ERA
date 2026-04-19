@@ -48,7 +48,7 @@ export type FetchWorkspacePatientListPageOptions = {
 };
 
 const PATIENT_LIST_THUMBNAIL_MAX_SIDE = 160;
-const CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
+const CASE_IMAGE_PREVIEW_MAX_SIDE = 640;
 const workspacePatientListPageCache = new Map<string, PatientListPageResponse>();
 const workspacePatientListPagePromiseCache = new Map<string, Promise<PatientListPageResponse>>();
 

@@ -45,7 +45,9 @@ pub(super) fn resolve_validation_artifact_path(
         &visit_date,
         &payload.artifact_kind,
     )?;
+    let resolved_path =
+        resolve_artifact_display_path(&site_id, &artifact_path, payload.preview_max_side)?;
     Ok(FilePathResponse {
-        path: artifact_path.to_string_lossy().to_string(),
+        path: resolved_path.to_string_lossy().to_string(),
     })
 }

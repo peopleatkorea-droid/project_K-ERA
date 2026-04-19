@@ -1,6 +1,6 @@
 "use client";
 
-import { type RefObject } from "react";
+import { memo, type ReactNode, type RefObject } from "react";
 
 import { LocaleToggle, pick, type Locale } from "../../lib/i18n";
 import { type DesktopControlPlaneProbe } from "../../lib/desktop-control-plane-status";
@@ -21,16 +21,8 @@ import {
   workspaceUserBadgeClass,
 } from "../ui/workspace-patterns";
 
-export type CaseWorkspaceHeaderProps = {
-  locale: Locale;
+export type CaseWorkspaceHeaderAlertsProps = {
   localeTag: string;
-  title: string;
-  subtitle: string;
-  theme: "dark" | "light";
-  selectedSiteId: string | null;
-  controlPlaneStatus?: DesktopControlPlaneProbe | null;
-  controlPlaneStatusBusy?: boolean;
-  userRoleLabel: string | null;
   alertsPanelRef: RefObject<HTMLDivElement | null>;
   alertsPanelOpen: boolean;
   alerts: CaseWorkspaceToastLogEntry[];
@@ -43,6 +35,18 @@ export type CaseWorkspaceHeaderProps = {
   actionNeededLabel: string;
   onToggleAlerts: () => void;
   onClearAlerts: () => void;
+};
+
+export type CaseWorkspaceHeaderFrameProps = {
+  locale: Locale;
+  title: string;
+  subtitle: string;
+  theme: "dark" | "light";
+  selectedSiteId: string | null;
+  controlPlaneStatus?: DesktopControlPlaneProbe | null;
+  controlPlaneStatusBusy?: boolean;
+  userRoleLabel: string | null;
+  alertsControl?: ReactNode;
   onToggleTheme: () => void;
   onOpenHospitalAccessRequest?: () => void;
   onOpenOperations?: () => void;
@@ -51,9 +55,125 @@ export type CaseWorkspaceHeaderProps = {
   onLogout: () => void;
 };
 
-export function CaseWorkspaceHeader({
+export type CaseWorkspaceHeaderProps = CaseWorkspaceHeaderFrameProps &
+  CaseWorkspaceHeaderAlertsProps;
+
+export const CaseWorkspaceHeaderAlertsControl = memo(
+  function CaseWorkspaceHeaderAlertsControl({
+    localeTag,
+    alertsPanelRef,
+    alertsPanelOpen,
+    alerts,
+    recentAlertsLabel,
+    recentAlertsCopy,
+    alertsKeptLabel,
+    clearAlertsLabel,
+    noAlertsYetLabel,
+    savedLabel,
+    actionNeededLabel,
+    onToggleAlerts,
+    onClearAlerts,
+  }: CaseWorkspaceHeaderAlertsProps) {
+    return (
+      <div className="relative" ref={alertsPanelRef}>
+        <Button
+          type="button"
+          variant={alertsPanelOpen ? "primary" : "ghost"}
+          aria-haspopup="dialog"
+          aria-expanded={alertsPanelOpen}
+          onClick={onToggleAlerts}
+          trailingIcon={
+            alerts.length ? (
+              <span
+                aria-hidden="true"
+                className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[0.72rem] font-semibold ${
+                  alertsPanelOpen
+                    ? "border border-white/20 bg-white/16 text-[var(--accent-contrast)]"
+                    : "border border-border/70 bg-surface text-muted"
+                }`}
+              >
+                {alerts.length}
+              </span>
+            ) : null
+          }
+        >
+          {recentAlertsLabel}
+        </Button>
+        {alertsPanelOpen ? (
+          <Card
+            as="section"
+            variant="nested"
+            role="dialog"
+            aria-label={recentAlertsLabel}
+            className="absolute right-0 top-full z-40 mt-3 grid w-[min(420px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-4 border border-border/80 bg-surface p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="grid gap-1">
+                <strong className="text-sm font-semibold text-ink">
+                  {recentAlertsLabel}
+                </strong>
+                <p className="m-0 text-sm leading-6 text-muted">
+                  {recentAlertsCopy}
+                </p>
+              </div>
+              <div className="grid gap-2 justify-items-end">
+                <span
+                  className={docSiteBadgeClass}
+                >{`${alerts.length} ${alertsKeptLabel}`}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={onClearAlerts}
+                  disabled={alerts.length === 0}
+                >
+                  {clearAlertsLabel}
+                </Button>
+              </div>
+            </div>
+            {alerts.length ? (
+              <div className={railActivityListClass}>
+                {alerts.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`${railActivityItemClass} ${
+                      entry.tone === "error"
+                        ? "border-danger/25 bg-danger/6"
+                        : "border-emerald-300/35 bg-emerald-500/6"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <strong>
+                        {entry.tone === "success"
+                          ? savedLabel
+                          : actionNeededLabel}
+                      </strong>
+                      <span className="text-[0.72rem] text-muted">
+                        {new Date(entry.created_at).toLocaleTimeString(
+                          localeTag,
+                          {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          },
+                        )}
+                      </span>
+                    </div>
+                    <span>{entry.message}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={emptySurfaceClass}>{noAlertsYetLabel}</div>
+            )}
+          </Card>
+        ) : null}
+      </div>
+    );
+  },
+);
+
+export const CaseWorkspaceHeaderFrame = memo(function CaseWorkspaceHeaderFrame({
   locale,
-  localeTag,
   title,
   subtitle,
   theme,
@@ -61,25 +181,14 @@ export function CaseWorkspaceHeader({
   controlPlaneStatus,
   controlPlaneStatusBusy = false,
   userRoleLabel,
-  alertsPanelRef,
-  alertsPanelOpen,
-  alerts,
-  recentAlertsLabel,
-  recentAlertsCopy,
-  alertsKeptLabel,
-  clearAlertsLabel,
-  noAlertsYetLabel,
-  savedLabel,
-  actionNeededLabel,
-  onToggleAlerts,
-  onClearAlerts,
+  alertsControl,
   onToggleTheme,
   onOpenHospitalAccessRequest,
   onOpenOperations,
   onOpenDesktopSettings,
   onExportManifest,
   onLogout,
-}: CaseWorkspaceHeaderProps) {
+}: CaseWorkspaceHeaderFrameProps) {
   return (
     <header className={workspaceHeaderClass}>
       <div>
@@ -100,99 +209,7 @@ export function CaseWorkspaceHeader({
         {userRoleLabel ? (
           <span className={workspaceUserBadgeClass}>{userRoleLabel}</span>
         ) : null}
-        <div className="relative" ref={alertsPanelRef}>
-          <Button
-            type="button"
-            variant={alertsPanelOpen ? "primary" : "ghost"}
-            aria-haspopup="dialog"
-            aria-expanded={alertsPanelOpen}
-            onClick={onToggleAlerts}
-            trailingIcon={
-              alerts.length ? (
-                <span
-                  aria-hidden="true"
-                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[0.72rem] font-semibold ${
-                    alertsPanelOpen
-                      ? "border border-white/20 bg-white/16 text-[var(--accent-contrast)]"
-                      : "border border-border/70 bg-surface text-muted"
-                  }`}
-                >
-                  {alerts.length}
-                </span>
-              ) : null
-            }
-          >
-            {recentAlertsLabel}
-          </Button>
-          {alertsPanelOpen ? (
-            <Card
-              as="section"
-              variant="nested"
-              role="dialog"
-              aria-label={recentAlertsLabel}
-              className="absolute right-0 top-full z-40 mt-3 grid w-[min(420px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-4 border border-border/80 bg-surface p-4 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="grid gap-1">
-                  <strong className="text-sm font-semibold text-ink">
-                    {recentAlertsLabel}
-                  </strong>
-                  <p className="m-0 text-sm leading-6 text-muted">
-                    {recentAlertsCopy}
-                  </p>
-                </div>
-                <div className="grid gap-2 justify-items-end">
-                  <span
-                    className={docSiteBadgeClass}
-                  >{`${alerts.length} ${alertsKeptLabel}`}</span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={onClearAlerts}
-                    disabled={alerts.length === 0}
-                  >
-                    {clearAlertsLabel}
-                  </Button>
-                </div>
-              </div>
-              {alerts.length ? (
-                <div className={railActivityListClass}>
-                  {alerts.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className={`${railActivityItemClass} ${
-                        entry.tone === "error"
-                          ? "border-danger/25 bg-danger/6"
-                          : "border-emerald-300/35 bg-emerald-500/6"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <strong>
-                          {entry.tone === "success"
-                            ? savedLabel
-                            : actionNeededLabel}
-                        </strong>
-                        <span className="text-[0.72rem] text-muted">
-                          {new Date(entry.created_at).toLocaleTimeString(
-                            localeTag,
-                            {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            },
-                          )}
-                        </span>
-                      </div>
-                      <span>{entry.message}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className={emptySurfaceClass}>{noAlertsYetLabel}</div>
-              )}
-            </Card>
-          ) : null}
-        </div>
+        {alertsControl}
         <LocaleToggle />
         <Button variant="ghost" type="button" onClick={onToggleTheme}>
           {theme === "dark"
@@ -239,4 +256,46 @@ export function CaseWorkspaceHeader({
       </div>
     </header>
   );
+});
+
+function CaseWorkspaceHeaderInner({
+  localeTag,
+  alertsPanelRef,
+  alertsPanelOpen,
+  alerts,
+  recentAlertsLabel,
+  recentAlertsCopy,
+  alertsKeptLabel,
+  clearAlertsLabel,
+  noAlertsYetLabel,
+  savedLabel,
+  actionNeededLabel,
+  onToggleAlerts,
+  onClearAlerts,
+  ...frameProps
+}: CaseWorkspaceHeaderProps) {
+  return (
+    <CaseWorkspaceHeaderFrame
+      {...frameProps}
+      alertsControl={
+        <CaseWorkspaceHeaderAlertsControl
+          localeTag={localeTag}
+          alertsPanelRef={alertsPanelRef}
+          alertsPanelOpen={alertsPanelOpen}
+          alerts={alerts}
+          recentAlertsLabel={recentAlertsLabel}
+          recentAlertsCopy={recentAlertsCopy}
+          alertsKeptLabel={alertsKeptLabel}
+          clearAlertsLabel={clearAlertsLabel}
+          noAlertsYetLabel={noAlertsYetLabel}
+          savedLabel={savedLabel}
+          actionNeededLabel={actionNeededLabel}
+          onToggleAlerts={onToggleAlerts}
+          onClearAlerts={onClearAlerts}
+        />
+      }
+    />
+  );
 }
+
+export const CaseWorkspaceHeader = memo(CaseWorkspaceHeaderInner);

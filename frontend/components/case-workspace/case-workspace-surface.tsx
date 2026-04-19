@@ -1,45 +1,102 @@
 "use client";
 
-import type { ComponentProps } from "react";
+import { memo, type ComponentProps } from "react";
 
-import { CaseWorkspaceHeader, type CaseWorkspaceHeaderProps } from "./case-workspace-header";
+import {
+  CaseWorkspaceHeaderAlertsControl,
+  CaseWorkspaceHeaderFrame,
+  type CaseWorkspaceHeaderAlertsProps,
+  type CaseWorkspaceHeaderFrameProps,
+} from "./case-workspace-header";
 import { CaseWorkspaceLeftRail } from "./case-workspace-left-rail";
-import { CaseWorkspaceMainLayout } from "./case-workspace-main-content";
+import {
+  CaseWorkspaceMainPrimaryContent,
+  CaseWorkspaceSecondaryPanelSlot,
+} from "./case-workspace-main-content";
 import {
   CaseWorkspaceResearchRegistryModal,
   type CaseWorkspaceResearchRegistryModalProps,
 } from "./case-workspace-research-registry-modal";
-import { CaseWorkspaceShell } from "./case-workspace-shell";
+import {
+  CaseWorkspaceShell,
+  CaseWorkspaceToastOverlay,
+  type CaseWorkspaceToastOverlayProps,
+} from "./case-workspace-shell";
 
 export type CaseWorkspaceSurfaceProps = {
   shellProps: Omit<ComponentProps<typeof CaseWorkspaceShell>, "children">;
+  toastOverlayProps: CaseWorkspaceToastOverlayProps;
   leftRailProps: ComponentProps<typeof CaseWorkspaceLeftRail>;
   workspaceMainClass: string;
-  headerProps: CaseWorkspaceHeaderProps;
-  mainLayoutProps: ComponentProps<typeof CaseWorkspaceMainLayout>;
+  headerFrameProps: CaseWorkspaceHeaderFrameProps;
+  headerAlertsProps: CaseWorkspaceHeaderAlertsProps;
+  mainLayoutClass: string;
+  mainPrimaryContentProps: ComponentProps<typeof CaseWorkspaceMainPrimaryContent>;
+  secondaryPanelProps: ComponentProps<typeof CaseWorkspaceSecondaryPanelSlot>;
   researchRegistryModalProps: CaseWorkspaceResearchRegistryModalProps | null;
 };
 
-export function CaseWorkspaceSurface({
-  shellProps,
+const CaseWorkspaceSurfaceFrame = memo(function CaseWorkspaceSurfaceFrame({
   leftRailProps,
   workspaceMainClass,
-  headerProps,
-  mainLayoutProps,
+  headerFrameProps,
+  headerAlertsProps,
+  mainLayoutClass,
+  mainPrimaryContentProps,
+  secondaryPanelProps,
   researchRegistryModalProps,
-}: CaseWorkspaceSurfaceProps) {
+}: Omit<CaseWorkspaceSurfaceProps, "shellProps" | "toastOverlayProps">) {
   return (
-    <CaseWorkspaceShell {...shellProps}>
+    <>
       <CaseWorkspaceLeftRail {...leftRailProps} />
 
       <section className={workspaceMainClass}>
-        <CaseWorkspaceHeader {...headerProps} />
-        <CaseWorkspaceMainLayout {...mainLayoutProps} />
+        <CaseWorkspaceHeaderFrame
+          {...headerFrameProps}
+          alertsControl={
+            <CaseWorkspaceHeaderAlertsControl {...headerAlertsProps} />
+          }
+        />
+        <div className={mainLayoutClass}>
+          <CaseWorkspaceMainPrimaryContent {...mainPrimaryContentProps} />
+          <CaseWorkspaceSecondaryPanelSlot {...secondaryPanelProps} />
+        </div>
       </section>
 
       {researchRegistryModalProps ? (
         <CaseWorkspaceResearchRegistryModal {...researchRegistryModalProps} />
       ) : null}
+    </>
+  );
+});
+
+function CaseWorkspaceSurfaceInner({
+  shellProps,
+  toastOverlayProps,
+  leftRailProps,
+  workspaceMainClass,
+  headerFrameProps,
+  headerAlertsProps,
+  mainLayoutClass,
+  mainPrimaryContentProps,
+  secondaryPanelProps,
+  researchRegistryModalProps,
+}: CaseWorkspaceSurfaceProps) {
+  return (
+    <CaseWorkspaceShell {...shellProps}>
+      <CaseWorkspaceSurfaceFrame
+        leftRailProps={leftRailProps}
+        workspaceMainClass={workspaceMainClass}
+        headerFrameProps={headerFrameProps}
+        headerAlertsProps={headerAlertsProps}
+        mainLayoutClass={mainLayoutClass}
+        mainPrimaryContentProps={mainPrimaryContentProps}
+        secondaryPanelProps={secondaryPanelProps}
+        researchRegistryModalProps={researchRegistryModalProps}
+      />
+      <CaseWorkspaceToastOverlay {...toastOverlayProps} />
     </CaseWorkspaceShell>
   );
 }
+
+export const CaseWorkspaceSurface = memo(CaseWorkspaceSurfaceInner);

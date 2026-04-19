@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-04-19
+
+### Desktop case-workflow responsiveness pass
+
+- 저장 케이스 열기와 새 케이스 저장 뒤 다음 화면 진입을 가장 높은 우선순위로 두고, non-critical warm-up과 backfill을 case-open / save critical path 밖으로 계속 밀어냈습니다.
+- 앱 idle 구간에서만 staged background warm-up이 돌도록 정리했습니다. site model catalog, worker, ML backend는 사용자가 조작 중일 때가 아니라 idle 상태에서 순차적으로 preload합니다.
+- saved case open 경로는 patient-complete timeline을 유지하면서도, 방문 카드/썸네일을 staged reveal로 분산해 첫 화면 commit과 paint 부담을 줄였습니다.
+- 저장 케이스의 방문 타임라인은 여전히 현재 방문만으로 축소되지 않고, 저장 이미지가 있는 다른 방문 썸네일도 클릭 없이 계속 보이도록 유지했습니다.
+- shell, header, left rail, main content, review panel, analysis section을 memo 경계와 props 분리로 다시 잘라 background refresh / toast / alert 변화가 전체 케이스 화면을 흔들지 않게 했습니다.
+- site summary, activity, validation history, case history, patient list / rail refresh에는 request dedupe와 no-op state guard를 넣어 같은 데이터의 중복 fetch와 큰 list diff를 줄였습니다.
+
+### Saved-case preview and analysis rendering optimization
+
+- desktop validation / ROI / lesion artifact preview는 실제 표시 크기에 맞는 preview tier를 사용하도록 낮췄습니다. compact validation artifact는 `448px`, 일반 desktop artifact preview는 `560px`, saved-case preview는 `512px`, AI Clinic similar-case preview는 `256px / 224px` tier를 사용합니다.
+- 1단계 Image-level analysis의 검토 이미지는 첫 카드만 먼저 그리고 나머지 artifact는 idle 뒤에 순차적으로 mount되게 바꿨습니다. full artifact stack도 처음 2장만 먼저 보이고 남은 이미지는 단계적으로 붙습니다.
+- saved-case preview panel, patient timeline thumbnail grid, AI Clinic similar-case cards도 공용 staged reveal hook으로 바꿔 남은 카드가 한 번에 몰려 붙지 않게 했습니다.
+- ROI / lesion / overlay preview와 validation overlay는 viewport 근처에 왔을 때만 실제 decode와 canvas 렌더를 시작하도록 바꿔, below-fold 패널이 첫 진입에서 CPU를 같이 점유하지 않게 했습니다.
+- Step 1 / Step 2 / Step 3 결과 패널은 아래쪽 큰 블록과 card list를 메모화하고, below-fold 섹션에는 `content-visibility`와 deferred mount를 적용해 첫 paint 비용을 줄였습니다.
+
+### Analysis runtime and transport hardening
+
+- 저장 케이스 분석 흐름을 `1단계 Image-level analysis -> 2단계 Visit-level analysis -> 3단계 Image retrieval` 구조로 고정하고, 단계별 fallback profile이 site model catalog 지연과 분리되도록 정리했습니다.
+- validation 결과는 먼저 표시하고 artifact URL hydrate와 background refresh는 뒤로 보내, “분석은 끝났는데 화면이 늦게 갱신되는” 체감을 줄였습니다.
+- validation 뒤 `site refresh -> case history -> site activity -> completion hook`는 취소 가능하고 idle 뒤 순차 실행되도록 바꿔, 성공 직후 큰 background commit이 한 번에 몰리지 않게 했습니다.
+- desktop ML sidecar는 최근 정상 요청이 있으면 healthcheck cache를 재사용해 요청마다 추가 ping을 붙이지 않도록 바꿨고, warm workflow도 지연/중복방지/try-lock 재시도로 사용자의 첫 분석 클릭과 덜 충돌하게 했습니다.
+- desktop preview generation은 전역 단일 큐 워커로 직렬화해, preview warm-up이 새 스레드를 한꺼번에 많이 만들며 CPU를 잡는 경로를 줄였습니다.
+
+### Verification
+
+- `npm run desktop:build`
+- 타깃 `vitest` 회귀:
+  - 저장 케이스 오픈과 patient-complete timeline / thumbnail hydration
+  - staged artifact / preview / AI Clinic reveal
+  - viewport activation / background warm-up / shell props stability
+- `cargo test --manifest-path frontend/src-tauri/Cargo.toml healthcheck_cache -- --test-threads=1`
+
 ## 2026-04-16
 
 ### Saved-case analysis flow hardening and clinician-facing review hub

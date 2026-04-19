@@ -21,7 +21,10 @@ import {
   type MedsamArtifactStatusSummary,
 } from "../../lib/api";
 import { prefetchDesktopVisitImages } from "../../lib/desktop-transport";
-import { buildPatientListThumbMap } from "./case-workspace-records";
+import {
+  buildPatientListThumbMap,
+  samePatientListRows,
+} from "./case-workspace-records";
 import type { PatientListRow, PatientListThumbnail } from "./shared";
 
 const PATIENT_LIST_PAGE_SIZE = 25;
@@ -323,9 +326,18 @@ export function useCaseWorkspacePatientListArtifacts({
           return;
         }
         startTransition(() => {
-          setPatientListRows(response.items);
-          setPatientListTotalCount(response.total_count);
-          setPatientListTotalPages(Math.max(1, response.total_pages || 1));
+          setPatientListRows((current) =>
+            samePatientListRows(current, response.items)
+              ? current
+              : response.items,
+          );
+          setPatientListTotalCount((current) =>
+            current === response.total_count ? current : response.total_count,
+          );
+          setPatientListTotalPages((current) => {
+            const nextTotalPages = Math.max(1, response.total_pages || 1);
+            return current === nextTotalPages ? current : nextTotalPages;
+          });
           setPatientListPage((current) =>
             current === response.page ? current : response.page,
           );

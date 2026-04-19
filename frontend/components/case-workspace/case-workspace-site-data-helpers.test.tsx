@@ -10,6 +10,7 @@ import {
   hasSettledCaseImageCache,
   mergeCaseTimelineRecords,
   normalizeVisitMatchKey,
+  sameSavedImagePreviewLists,
   sortCaseTimelineRecords,
 } from "./case-workspace-site-data-helpers";
 import type { SavedImagePreview } from "./shared";
@@ -167,5 +168,36 @@ describe("case workspace site data helpers", () => {
     expect(hasSettledCaseImageCache(imageCase, [])).toBe(false);
     expect(hasSettledCaseImageCache(imageCase, cachedImages)).toBe(true);
     expect(hasSettledCaseImageCache(imageCase, undefined)).toBe(false);
+  });
+
+  it("compares saved image preview lists by visible render fields", () => {
+    const first = [
+      createSavedImagePreview({
+        image_id: "image_1",
+        patient_id: "P-001",
+        visit_date: "Initial",
+        preview_url: "/preview/image_1?v=1",
+      }),
+    ];
+    const second = [
+      createSavedImagePreview({
+        image_id: "image_1",
+        patient_id: "P-001",
+        visit_date: "Initial",
+        preview_url: "/preview/image_1?v=1",
+      }),
+    ];
+    const changed = [
+      createSavedImagePreview({
+        image_id: "image_1",
+        patient_id: "P-001",
+        visit_date: "Initial",
+        preview_url: "/preview/image_1?v=2",
+      }),
+    ];
+
+    expect(sameSavedImagePreviewLists(first, second)).toBe(true);
+    expect(sameSavedImagePreviewLists(first, changed)).toBe(false);
+    expect(sameSavedImagePreviewLists(first, undefined)).toBe(false);
   });
 });

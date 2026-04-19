@@ -11,7 +11,7 @@ import {
 import type { SavedImagePreview, NormalizedBox } from "./shared";
 import { isPositiveCultureStatus } from "./case-workspace-draft-helpers";
 
-const SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE = 960;
+const SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE = 640;
 const WORKSPACE_HISTORY_KEY = "__keraWorkspace";
 
 export type WorkspaceHistoryEntry = {

@@ -161,8 +161,19 @@ export async function fetchValidationArtifactUrl(
   visitDate: string,
   artifactKind: "gradcam" | "gradcam_cornea" | "gradcam_lesion" | "roi_crop" | "medsam_mask" | "lesion_crop" | "lesion_mask",
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
-  return fetchValidationArtifactUrlRuntime(siteId, validationId, patientId, visitDate, artifactKind, token);
+  return fetchValidationArtifactUrlRuntime(
+    siteId,
+    validationId,
+    patientId,
+    visitDate,
+    artifactKind,
+    token,
+    options,
+  );
 }
 
 export async function fetchCaseRoiPreviewArtifactBlob(
@@ -183,8 +194,19 @@ export async function fetchCaseRoiPreviewArtifactUrl(
   imageId: string,
   artifactKind: "roi_crop" | "medsam_mask",
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
-  return fetchCaseRoiPreviewArtifactUrlRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
+  return fetchCaseRoiPreviewArtifactUrlRuntime(
+    siteId,
+    patientId,
+    visitDate,
+    imageId,
+    artifactKind,
+    token,
+    options,
+  );
 }
 
 export async function fetchCaseLesionPreviewArtifactBlob(
@@ -205,6 +227,17 @@ export async function fetchCaseLesionPreviewArtifactUrl(
   imageId: string,
   artifactKind: "lesion_crop" | "lesion_mask",
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
-  return fetchCaseLesionPreviewArtifactUrlRuntime(siteId, patientId, visitDate, imageId, artifactKind, token);
+  return fetchCaseLesionPreviewArtifactUrlRuntime(
+    siteId,
+    patientId,
+    visitDate,
+    imageId,
+    artifactKind,
+    token,
+    options,
+  );
 }

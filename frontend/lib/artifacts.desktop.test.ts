@@ -133,4 +133,88 @@ describe("artifacts desktop routing", () => {
     );
     expect(result).toBe(desktopBlob);
   });
+
+  it("forwards a custom preview size for validation artifact URLs", async () => {
+    analysisRuntimeMocks.fetchAnalysisValidationArtifactUrl.mockResolvedValue(
+      "asset://validation-preview",
+    );
+
+    const mod = await import("./artifacts");
+    const result = await mod.fetchValidationArtifactUrl(
+      "39100103",
+      "validation_1",
+      "17452298",
+      "Initial",
+      "roi_crop",
+      "desktop-token",
+      { previewMaxSide: 448 },
+    );
+
+    expect(
+      analysisRuntimeMocks.fetchAnalysisValidationArtifactUrl,
+    ).toHaveBeenCalledWith(
+      "39100103",
+      "validation_1",
+      "17452298",
+      "Initial",
+      "roi_crop",
+      "desktop-token",
+      { previewMaxSide: 448 },
+    );
+    expect(result).toBe("asset://validation-preview");
+  });
+
+  it("forwards a custom preview size for ROI and lesion artifact URLs", async () => {
+    analysisRuntimeMocks.fetchAnalysisCaseRoiPreviewArtifactUrl.mockResolvedValue(
+      "asset://roi-preview",
+    );
+    analysisRuntimeMocks.fetchAnalysisCaseLesionPreviewArtifactUrl.mockResolvedValue(
+      "asset://lesion-preview",
+    );
+
+    const mod = await import("./artifacts");
+    const roiResult = await mod.fetchCaseRoiPreviewArtifactUrl(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "roi_crop",
+      "desktop-token",
+      { previewMaxSide: 512 },
+    );
+    const lesionResult = await mod.fetchCaseLesionPreviewArtifactUrl(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "lesion_crop",
+      "desktop-token",
+      { previewMaxSide: 512 },
+    );
+
+    expect(
+      analysisRuntimeMocks.fetchAnalysisCaseRoiPreviewArtifactUrl,
+    ).toHaveBeenCalledWith(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "roi_crop",
+      "desktop-token",
+      { previewMaxSide: 512 },
+    );
+    expect(
+      analysisRuntimeMocks.fetchAnalysisCaseLesionPreviewArtifactUrl,
+    ).toHaveBeenCalledWith(
+      "39100103",
+      "17452298",
+      "Initial",
+      "image_1",
+      "lesion_crop",
+      "desktop-token",
+      { previewMaxSide: 512 },
+    );
+    expect(roiResult).toBe("asset://roi-preview");
+    expect(lesionResult).toBe("asset://lesion-preview");
+  });
 });

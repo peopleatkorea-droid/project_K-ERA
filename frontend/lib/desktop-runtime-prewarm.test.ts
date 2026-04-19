@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const desktopIpcMocks = vi.hoisted(() => ({
   hasDesktopRuntime: vi.fn(() => false),
@@ -29,6 +29,11 @@ describe("desktop-runtime-prewarm", () => {
     vi.resetAllMocks();
     vi.resetModules();
     desktopIpcMocks.hasDesktopRuntime.mockReturnValue(false);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("dedupes concurrent worker prewarm calls", async () => {
@@ -69,13 +74,48 @@ describe("desktop-runtime-prewarm", () => {
     await Promise.all([first, second]);
   });
 
+  it("dedupes concurrent runtime prewarm calls and preserves worker-first order", async () => {
+    desktopIpcMocks.hasDesktopRuntime.mockReturnValue(true);
+    diagnosticsMocks.ensureDesktopLocalWorkerReady.mockResolvedValue(undefined);
+    sidecarMocks.ensureDesktopMlBackendReady.mockResolvedValue(undefined);
+
+    const mod = await import("./desktop-runtime-prewarm");
+    const first = mod.prewarmDesktopRuntime();
+    const second = mod.prewarmDesktopRuntime();
+
+    await Promise.all([first, second]);
+
+    expect(diagnosticsMocks.ensureDesktopLocalWorkerReady).toHaveBeenCalledTimes(1);
+    expect(sidecarMocks.ensureDesktopMlBackendReady).toHaveBeenCalledTimes(1);
+    expect(
+      diagnosticsMocks.ensureDesktopLocalWorkerReady.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      sidecarMocks.ensureDesktopMlBackendReady.mock.invocationCallOrder[0],
+    );
+  });
+
   it("stays idle outside desktop", async () => {
     const mod = await import("./desktop-runtime-prewarm");
 
     await mod.prewarmDesktopWorker();
     await mod.prewarmDesktopMlBackend();
+    await mod.prewarmDesktopRuntime();
 
     expect(diagnosticsMocks.ensureDesktopLocalWorkerReady).not.toHaveBeenCalled();
     expect(sidecarMocks.ensureDesktopMlBackendReady).not.toHaveBeenCalled();
+  });
+
+  it("waits for recent interaction cooldown before running deferred work", async () => {
+    const mod = await import("./desktop-runtime-prewarm");
+    const task = vi.fn();
+
+    mod.markDesktopInteraction();
+    mod.runAfterDesktopInteractionIdle(task, 2000);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(task).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(task).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,6 +2,7 @@
 
 import {
   type Dispatch,
+  memo,
   type ReactNode,
   useRef,
   type SetStateAction,
@@ -35,6 +36,7 @@ import type {
   LesionPreviewCard,
   LocalePick,
   RoiPreviewCard,
+  SiteModelCatalogState,
   TranslateOption,
 } from "./shared";
 import { ValidationArtifactStack } from "./validation-artifact-stack";
@@ -118,6 +120,7 @@ type AnalysisSectionProps = {
   selectedCompareModelVersionIds: string[];
   selectedValidationModelVersionId: string | null;
   compareModelCandidates: ModelVersionRecord[];
+  modelCatalogState: SiteModelCatalogState;
   validationBusy: boolean;
   validationResult: CaseValidationResponse | null;
   validationArtifacts: {
@@ -129,6 +132,7 @@ type AnalysisSectionProps = {
     lesion_crop?: string | null;
     lesion_mask?: string | null;
   };
+  validationArtifactsBusy?: boolean;
   modelCompareBusy: boolean;
   modelCompareResult: CaseValidationCompareResponse | null;
   aiClinicBusy: boolean;
@@ -161,7 +165,7 @@ type AnalysisSectionProps = {
   aiClinicTextUnavailableLabel: string;
 };
 
-export function CaseWorkspaceAnalysisSection({
+function CaseWorkspaceAnalysisSectionInner({
   locale,
   token,
   selectedSiteId,
@@ -181,9 +185,11 @@ export function CaseWorkspaceAnalysisSection({
   selectedCompareModelVersionIds,
   selectedValidationModelVersionId,
   compareModelCandidates,
+  modelCatalogState,
   validationBusy,
   validationResult,
   validationArtifacts,
+  validationArtifactsBusy = false,
   modelCompareBusy,
   modelCompareResult,
   aiClinicBusy,
@@ -236,7 +242,11 @@ export function CaseWorkspaceAnalysisSection({
       Object.values(validationResult.artifact_availability ?? {}).some(Boolean),
   );
   const validationArtifactEmptyMessage = useMemo(() => {
-    if (!validationResult || hasResolvedValidationArtifacts) {
+    if (
+      !validationResult ||
+      hasResolvedValidationArtifacts ||
+      validationArtifactsBusy
+    ) {
       return null;
     }
 
@@ -294,6 +304,7 @@ export function CaseWorkspaceAnalysisSection({
   }, [
     hasReportedValidationArtifacts,
     hasResolvedValidationArtifacts,
+    validationArtifactsBusy,
     locale,
     validationResult,
   ]);
@@ -353,14 +364,16 @@ export function CaseWorkspaceAnalysisSection({
         medsamMaskUrl={validationArtifacts.medsam_mask}
         lesionCropUrl={validationArtifacts.lesion_crop}
         lesionMaskUrl={validationArtifacts.lesion_mask}
-        emptyMessage={validationArtifactEmptyMessage}
+        emptyMessage={validationArtifactsBusy ? commonLoading : validationArtifactEmptyMessage}
         compact
       />
     ),
     [
       locale,
       representativePreviewUrl,
+      commonLoading,
       validationArtifactEmptyMessage,
+      validationArtifactsBusy,
       validationArtifacts.gradcam,
       validationArtifacts.gradcam_cornea,
       validationArtifacts.gradcam_lesion,
@@ -399,6 +412,7 @@ export function CaseWorkspaceAnalysisSection({
     [modelCompareResult],
   );
   const aiClinicSimilarCount = aiClinicResult?.similar_cases.length ?? 0;
+  const milFallbackReady = hasSelectedCase && canRunValidation;
 
   const scrollToReviewStep = useCallback((step: AnalysisReviewStep) => {
     const target =
@@ -643,15 +657,31 @@ export function CaseWorkspaceAnalysisSection({
           }
       : !compareCandidatesAvailable
         ? {
-            tone: validationResult ? ("ready" as const) : ("waiting" as const),
-            label: validationResult
-              ? pick(locale, "Ready to run", "실행 준비")
-              : pick(locale, "MIL catalog loading", "MIL 모델 불러오는 중"),
-            detail: pick(
-              locale,
-              "The prepared Efficient MIL fallback can already run even while the visible model catalog is still loading.",
-              "표시용 모델 목록이 아직 로드 중이어도 준비된 Efficient MIL fallback은 이미 실행할 수 있습니다.",
-            ),
+            tone: milFallbackReady ? ("ready" as const) : ("waiting" as const),
+            label:
+              modelCatalogState === "error"
+                ? pick(locale, "Catalog unavailable", "목록 불러오기 실패")
+                : milFallbackReady
+                  ? pick(locale, "Prepared fallback ready", "기본 경로 실행 가능")
+                  : pick(locale, "Recommended after Step 1", "1단계 후 권장"),
+            detail:
+              modelCatalogState === "error"
+                ? pick(
+                    locale,
+                    "The visible Step 2 model catalog did not finish loading, but the prepared Efficient MIL fallback can still run on this case.",
+                    "표시용 2단계 모델 목록을 끝까지 불러오지 못했지만, 준비된 Efficient MIL 기본 경로는 이 케이스에서 계속 실행할 수 있습니다.",
+                  )
+                : modelCatalogState === "empty"
+                  ? pick(
+                      locale,
+                      "No extra Step 2 compare models were advertised for this site, but the prepared Efficient MIL fallback is ready.",
+                      "이 사이트에는 추가 2단계 비교 모델이 표시되지 않았지만, 준비된 Efficient MIL 기본 경로는 이미 사용할 수 있습니다.",
+                    )
+                  : pick(
+                      locale,
+                      "The prepared Efficient MIL fallback is already runnable while the visible model catalog finishes loading in the background.",
+                      "표시용 모델 목록은 백그라운드에서 계속 불러오더라도, 준비된 Efficient MIL 기본 경로는 이미 실행할 수 있습니다.",
+                    ),
           }
         : !preferredVisitLevelMilModel &&
             selectedCompareModelVersionIds.length === 0
@@ -1013,6 +1043,7 @@ export function CaseWorkspaceAnalysisSection({
     handleShowJudgmentDetails,
     hasSelectedCase,
     locale,
+    modelCatalogState,
     modelCompareBusy,
     modelCompareResult,
     preferredVisitLevelMilModel,
@@ -1044,6 +1075,7 @@ export function CaseWorkspaceAnalysisSection({
         }
         artifactContent={artifactContent}
         modelCompareBusy={modelCompareBusy}
+        modelCatalogState={modelCatalogState}
         selectedCompareModelVersionIds={selectedCompareModelVersionIds}
         compareModelCandidates={compareModelCandidates}
         onToggleModelVersion={handleToggleModelVersion}
@@ -1059,6 +1091,7 @@ export function CaseWorkspaceAnalysisSection({
       compareModelCandidates,
       handleToggleModelVersion,
       locale,
+      modelCatalogState,
       modelCompareBusy,
       modelCompareResult,
       onRunModelCompare,
@@ -1096,6 +1129,7 @@ export function CaseWorkspaceAnalysisSection({
         }
         artifactContent={artifactContent}
         modelCompareBusy={modelCompareBusy}
+        modelCatalogState={modelCatalogState}
         selectedCompareModelVersionIds={selectedCompareModelVersionIds}
         compareModelCandidates={compareModelCandidates}
         onToggleModelVersion={handleToggleModelVersion}
@@ -1111,6 +1145,7 @@ export function CaseWorkspaceAnalysisSection({
       compareModelCandidates,
       handleToggleModelVersion,
       locale,
+      modelCatalogState,
       modelCompareBusy,
       modelCompareResult,
       onRunModelCompare,
@@ -1235,6 +1270,7 @@ export function CaseWorkspaceAnalysisSection({
                 size="sm"
                 variant="primary"
                 onClick={handleRunFullReviewFromHub}
+                aria-label={pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
                 disabled={
                   fullReviewBusy ||
                   validationBusy ||
@@ -1295,6 +1331,7 @@ export function CaseWorkspaceAnalysisSection({
 
 type ContributionSectionProps = {
   locale: Locale;
+  mounted: boolean;
   selectedCase: CaseSummaryRecord | null;
   completionState: CompletionState | null;
   hospitalValidationCount: number;
@@ -1318,8 +1355,9 @@ type ContributionSectionProps = {
   onContributeCase: () => void;
 };
 
-export function CaseWorkspaceContributionSection({
+function CaseWorkspaceContributionSectionInner({
   locale,
+  mounted,
   selectedCase,
   completionState,
   hospitalValidationCount,
@@ -1342,6 +1380,9 @@ export function CaseWorkspaceContributionSection({
   onExcludeResearchCase,
   onContributeCase,
 }: ContributionSectionProps) {
+  if (!mounted) {
+    return null;
+  }
   const selectedCompletion =
     selectedCase &&
     completionState &&
@@ -1392,3 +1433,11 @@ export function CaseWorkspaceContributionSection({
     />
   );
 }
+
+export const CaseWorkspaceAnalysisSection = memo(
+  CaseWorkspaceAnalysisSectionInner,
+);
+
+export const CaseWorkspaceContributionSection = memo(
+  CaseWorkspaceContributionSectionInner,
+);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { memo, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { searchAnalysisImagesByText, type ImageTextSearchResult } from "../../lib/analysis-runtime";
@@ -27,6 +27,7 @@ import {
   togglePillClass,
 } from "../ui/workspace-patterns";
 import type { LocalePick, PatientListRow, PatientListThumbnail, TranslateOption } from "./shared";
+import { samePatientListRows } from "./case-workspace-records";
 
 type PatientListBoardProps = {
   locale: Locale;
@@ -72,7 +73,7 @@ type PatientListBoardProps = {
 
 const VISIBLE_THUMBNAIL_COUNT = 3;
 
-export function PatientListBoard({
+function PatientListBoardComponent({
   locale,
   localeTag,
   commonNotAvailable,
@@ -664,3 +665,55 @@ export function PatientListBoard({
     </section>
   );
 }
+
+function samePatientListBoardProps(
+  previous: PatientListBoardProps,
+  next: PatientListBoardProps,
+) {
+  return (
+    previous.locale === next.locale &&
+    previous.localeTag === next.localeTag &&
+    previous.commonNotAvailable === next.commonNotAvailable &&
+    previous.siteId === next.siteId &&
+    previous.token === next.token &&
+    previous.selectedSiteLabel === next.selectedSiteLabel &&
+    previous.selectedPatientId === next.selectedPatientId &&
+    samePatientListRows(previous.patientListRows, next.patientListRows) &&
+    previous.patientListThumbsByPatient === next.patientListThumbsByPatient &&
+    previous.patientListTotalCount === next.patientListTotalCount &&
+    previous.patientListPage === next.patientListPage &&
+    previous.patientListTotalPages === next.patientListTotalPages &&
+    previous.caseSearch === next.caseSearch &&
+    previous.showOnlyMine === next.showOnlyMine &&
+    previous.casesLoading === next.casesLoading &&
+    previous.copyPatients === next.copyPatients &&
+    previous.copyAllRecords === next.copyAllRecords &&
+    previous.copyMyPatientsOnly === next.copyMyPatientsOnly &&
+    previous.copyLoadingSavedCases === next.copyLoadingSavedCases &&
+    previous.pick === next.pick &&
+    previous.translateOption === next.translateOption &&
+    previous.displayVisitReference === next.displayVisitReference &&
+    previous.formatDateTime === next.formatDateTime &&
+    previous.onSearchChange === next.onSearchChange &&
+    previous.onShowOnlyMineChange === next.onShowOnlyMineChange &&
+    previous.onPageChange === next.onPageChange &&
+    previous.onOpenSavedCase === next.onOpenSavedCase &&
+    previous.onOpenImageTextSearchResult === next.onOpenImageTextSearchResult &&
+    previous.onPrefetchCase === next.onPrefetchCase &&
+    previous.medsamArtifactActiveStatus === next.medsamArtifactActiveStatus &&
+    previous.medsamArtifactScope === next.medsamArtifactScope &&
+    previous.medsamArtifactItems === next.medsamArtifactItems &&
+    previous.medsamArtifactItemsBusy === next.medsamArtifactItemsBusy &&
+    previous.medsamArtifactPage === next.medsamArtifactPage &&
+    previous.medsamArtifactTotalCount === next.medsamArtifactTotalCount &&
+    previous.medsamArtifactTotalPages === next.medsamArtifactTotalPages &&
+    previous.onCloseMedsamArtifactBacklog === next.onCloseMedsamArtifactBacklog &&
+    previous.onMedsamArtifactScopeChange === next.onMedsamArtifactScopeChange &&
+    previous.onMedsamArtifactPageChange === next.onMedsamArtifactPageChange
+  );
+}
+
+export const PatientListBoard = memo(
+  PatientListBoardComponent,
+  samePatientListBoardProps,
+);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { startTransition, useCallback, useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import {
@@ -14,6 +14,7 @@ import {
   buildVisitImageCacheKey,
   hasSettledCaseImageCache,
   scheduleDeferredBrowserTask,
+  sameSavedImagePreviewLists,
 } from "./case-workspace-site-data-helpers";
 import type { SavedImagePreview } from "./shared";
 
@@ -49,7 +50,15 @@ type Args = {
     images: SavedImagePreview[],
   ) => void;
   markPatientVisitGalleryLoading: (caseId: string, loading: boolean) => void;
+  markPatientVisitGalleryLoadingBatch: (
+    caseIds: string[],
+    loading: boolean,
+  ) => void;
   markPatientVisitGalleryError: (caseId: string, failed: boolean) => void;
+  markPatientVisitGalleryErrorBatch: (
+    caseIds: string[],
+    failed: boolean,
+  ) => void;
   ensurePatientVisitImagesLoaded: (
     siteId: string,
     caseRecord: CaseSummaryRecord,
@@ -64,6 +73,9 @@ type Args = {
     signal?: AbortSignal,
   ) => Promise<Map<string, SavedImagePreview[]>>;
   commitCaseImages: (caseId: string, images: SavedImagePreview[]) => void;
+  commitPatientVisitGalleryBatch: (
+    entries: Record<string, SavedImagePreview[]>,
+  ) => void;
   selectedCaseImageCaseIdRef: MutableRefObject<string | null>;
   caseImageCacheRef: MutableRefObject<Map<string, SavedImagePreview[]>>;
   caseHistoryCacheRef: MutableRefObject<Map<string, CaseHistoryResponse>>;
@@ -98,15 +110,23 @@ export function useCaseWorkspaceSelectedCaseReview({
   setCaseHistory,
   replaceSelectedCaseImages,
   markPatientVisitGalleryLoading,
+  markPatientVisitGalleryLoadingBatch,
   markPatientVisitGalleryError,
+  markPatientVisitGalleryErrorBatch,
   ensurePatientVisitImagesLoaded,
   loadPatientImageRecords,
   commitCaseImages,
+  commitPatientVisitGalleryBatch,
   selectedCaseImageCaseIdRef,
   caseImageCacheRef,
   caseHistoryCacheRef,
 }: Args) {
+  const caseHistoryPromiseRef = useRef<
+    Map<string, Promise<CaseHistoryResponse | null>>
+  >(new Map());
+
   useEffect(() => {
+    caseHistoryPromiseRef.current.clear();
     replaceSelectedCaseImages(null, []);
     setPatientVisitGallery({});
     setPatientVisitGalleryLoadingCaseIds({});
@@ -134,12 +154,14 @@ export function useCaseWorkspaceSelectedCaseReview({
   ]);
 
   useEffect(() => {
-    setCaseHistory(null);
-    setPatientVisitGallery({});
-    setPatientVisitGalleryBusy(false);
     if (!selectedSiteId || !selectedCase) {
       selectedCaseImageCaseIdRef.current = null;
-      replaceSelectedCaseImages(null, []);
+      startTransition(() => {
+        setCaseHistory(null);
+        setPatientVisitGallery({});
+        setPatientVisitGalleryBusy(false);
+        replaceSelectedCaseImages(null, []);
+      });
       return;
     }
 
@@ -170,23 +192,25 @@ export function useCaseWorkspaceSelectedCaseReview({
           : [];
       }),
     ) as Record<string, SavedImagePreview[]>;
-    if (hasCachedSelectedCaseImages) {
-      selectedCaseImageCaseIdRef.current = currentCase.case_id;
-      replaceSelectedCaseImages(currentCase.case_id, cachedSelectedCaseImages);
-      setPatientVisitGallery(
-        Object.keys(cachedPatientVisitGallery).length > 0
-          ? cachedPatientVisitGallery
-          : { [currentCase.case_id]: cachedSelectedCaseImages },
-      );
-    } else {
-      selectedCaseImageCaseIdRef.current = currentCase.case_id;
-      replaceSelectedCaseImages(null, []);
-      setPatientVisitGallery(
-        Object.keys(cachedPatientVisitGallery).length > 0
-          ? cachedPatientVisitGallery
-          : { [currentCase.case_id]: [] },
-      );
-    }
+    const nextInitialGallery =
+      Object.keys(cachedPatientVisitGallery).length > 0
+        ? cachedPatientVisitGallery
+        : {
+            [currentCase.case_id]: hasCachedSelectedCaseImages
+              ? cachedSelectedCaseImages
+              : [],
+          };
+    selectedCaseImageCaseIdRef.current = currentCase.case_id;
+    startTransition(() => {
+      setCaseHistory(null);
+      setPatientVisitGalleryBusy(false);
+      if (hasCachedSelectedCaseImages) {
+        replaceSelectedCaseImages(currentCase.case_id, cachedSelectedCaseImages);
+      } else {
+        replaceSelectedCaseImages(null, []);
+      }
+      setPatientVisitGallery(nextInitialGallery);
+    });
 
     async function loadSelectedCaseImages(): Promise<void> {
       const selectedCaseNeedsLoading = !hasCachedSelectedCaseImages;
@@ -236,6 +260,15 @@ export function useCaseWorkspaceSelectedCaseReview({
             caseImageCacheRef.current.get(caseItem.case_id),
           ),
       );
+      const uncachedCaseIds = patientCases
+        .filter(
+          (caseItem) =>
+            !hasSettledCaseImageCache(
+              caseItem,
+              caseImageCacheRef.current.get(caseItem.case_id),
+            ),
+        )
+        .map((caseItem) => caseItem.case_id);
       setPatientVisitGalleryBusy(hasUncachedVisit);
       if (patientCases.length === 1) {
         if (!hasCachedSelectedCaseImages) {
@@ -249,17 +282,8 @@ export function useCaseWorkspaceSelectedCaseReview({
       }
 
       try {
-        patientCases.forEach((caseItem) => {
-          if (
-            !hasSettledCaseImageCache(
-              caseItem,
-              caseImageCacheRef.current.get(caseItem.case_id),
-            )
-          ) {
-            markPatientVisitGalleryError(caseItem.case_id, false);
-            markPatientVisitGalleryLoading(caseItem.case_id, true);
-          }
-        });
+        markPatientVisitGalleryErrorBatch(uncachedCaseIds, false);
+        markPatientVisitGalleryLoadingBatch(uncachedCaseIds, true);
         const imagesByVisit = await loadPatientImageRecords(
           currentSiteId,
           currentCase.patient_id,
@@ -268,31 +292,23 @@ export function useCaseWorkspaceSelectedCaseReview({
         if (cancelled) {
           return;
         }
+        const galleryEntries: Record<string, SavedImagePreview[]> = {};
         for (const caseItem of patientCases) {
-          const visitImages =
+          galleryEntries[caseItem.case_id] =
             imagesByVisit.get(
               buildVisitImageCacheKey(caseItem.patient_id, caseItem.visit_date),
             ) ?? [];
-          commitCaseImages(caseItem.case_id, visitImages);
-          markPatientVisitGalleryError(caseItem.case_id, false);
-          markPatientVisitGalleryLoading(caseItem.case_id, false);
         }
+        commitPatientVisitGalleryBatch(galleryEntries);
+        markPatientVisitGalleryErrorBatch(uncachedCaseIds, false);
+        markPatientVisitGalleryLoadingBatch(uncachedCaseIds, false);
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
         }
         if (!cancelled) {
-          patientCases.forEach((caseItem) => {
-            if (
-              !hasSettledCaseImageCache(
-                caseItem,
-                caseImageCacheRef.current.get(caseItem.case_id),
-              )
-            ) {
-              markPatientVisitGalleryError(caseItem.case_id, true);
-              markPatientVisitGalleryLoading(caseItem.case_id, false);
-            }
-          });
+          markPatientVisitGalleryErrorBatch(uncachedCaseIds, true);
+          markPatientVisitGalleryLoadingBatch(uncachedCaseIds, false);
           setToast({
             tone: "error",
             message: describeError(
@@ -377,7 +393,10 @@ export function useCaseWorkspaceSelectedCaseReview({
     describeError,
     ensurePatientVisitImagesLoaded,
     locale,
+    markPatientVisitGalleryErrorBatch,
+    markPatientVisitGalleryLoadingBatch,
     pick,
+    commitPatientVisitGalleryBatch,
     selectedCase,
     selectedPatientCases,
     selectedSiteId,
@@ -391,10 +410,17 @@ export function useCaseWorkspaceSelectedCaseReview({
       return;
     }
     caseImageCacheRef.current.set(selectedCase.case_id, selectedCaseImages);
-    setPatientVisitGallery((current) => ({
-      ...current,
-      [selectedCase.case_id]: selectedCaseImages,
-    }));
+    setPatientVisitGallery((current) =>
+      sameSavedImagePreviewLists(
+        current[selectedCase.case_id],
+        selectedCaseImages,
+      )
+        ? current
+        : {
+            ...current,
+            [selectedCase.case_id]: selectedCaseImages,
+          },
+    );
   }, [
     caseImageCacheRef,
     selectedCase,
@@ -411,24 +437,58 @@ export function useCaseWorkspaceSelectedCaseReview({
       options?: { forceRefresh?: boolean },
     ) => {
       const historyKey = buildCaseHistoryCacheKey(patientId, visitDate);
-      const cachedHistory = !options?.forceRefresh
-        ? caseHistoryCacheRef.current.get(historyKey)
-        : null;
+      const cachedHistory =
+        options?.forceRefresh === true
+          ? null
+          : caseHistoryCacheRef.current.get(historyKey);
       if (cachedHistory) {
         setCaseHistory(cachedHistory);
         return;
       }
+      const pendingHistory = caseHistoryPromiseRef.current.get(historyKey);
+      if (pendingHistory) {
+        setHistoryBusy(true);
+        try {
+          const nextHistory = await pendingHistory;
+          if (nextHistory) {
+            setCaseHistory(nextHistory);
+          }
+        } finally {
+          setHistoryBusy(false);
+        }
+        return;
+      }
       setHistoryBusy(true);
       try {
-        const nextHistory = await fetchCaseHistory(siteId, patientId, visitDate, token);
-        caseHistoryCacheRef.current.set(historyKey, nextHistory);
-        setCaseHistory(nextHistory);
+        const nextRequest = fetchCaseHistory(siteId, patientId, visitDate, token)
+          .then((nextHistory) => {
+            caseHistoryCacheRef.current.set(historyKey, nextHistory);
+            return nextHistory;
+          })
+          .catch((nextError) => {
+            setCaseHistory(null);
+            setToast({
+              tone: "error",
+              message: describeError(nextError, unableLoadCaseHistory),
+            });
+            return null;
+          })
+          .finally(() => {
+            caseHistoryPromiseRef.current.delete(historyKey);
+          });
+        caseHistoryPromiseRef.current.set(historyKey, nextRequest);
+        const nextHistory = await nextRequest;
+        if (nextHistory) {
+          setCaseHistory(nextHistory);
+        }
       } catch (nextError) {
-        setCaseHistory(null);
-        setToast({
-          tone: "error",
-          message: describeError(nextError, unableLoadCaseHistory),
-        });
+        if (!isAbortError(nextError)) {
+          setCaseHistory(null);
+          setToast({
+            tone: "error",
+            message: describeError(nextError, unableLoadCaseHistory),
+          });
+        }
       } finally {
         setHistoryBusy(false);
       }

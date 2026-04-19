@@ -29,3 +29,31 @@ export function withAiClinicSimilarCasePreviews(
     })),
   };
 }
+
+export function withAiClinicSimilarCasePreviewPatch(
+  result: AiClinicPreviewResponse,
+  previewByCaseKey: ReadonlyMap<string, string | null>,
+): AiClinicPreviewResponse {
+  if (previewByCaseKey.size === 0) {
+    return result;
+  }
+  let changed = false;
+  const nextCases = result.similar_cases.map((item) => {
+    const nextPreview = previewByCaseKey.get(aiClinicSimilarCaseKey(item));
+    if (nextPreview === undefined || nextPreview === item.preview_url) {
+      return item;
+    }
+    changed = true;
+    return {
+      ...item,
+      preview_url: nextPreview,
+    };
+  });
+  if (!changed) {
+    return result;
+  }
+  return {
+    ...result,
+    similar_cases: nextCases,
+  };
+}

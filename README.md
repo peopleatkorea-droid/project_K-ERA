@@ -56,30 +56,38 @@ K-ERA는 현재 아래 두 화면을 함께 쓰는 구조입니다.
 - 저장된 환자 목록 보기
 - 방문별 이미지 확인
 - 새 케이스 저장
-- 단일 케이스 AI 판정
-- 모델 간 합의 확인
-- 유사 환자 검색 / AI Clinic / 3D 클러스터 맵 검토
+- Image-level analysis
+- Visit-level analysis
+- Image retrieval / AI Clinic / 3D 클러스터 맵 검토
 - 연구 기여
 - 연구용 로컬 학습과 연합학습 참여
 
 ### 데스크톱 AI 분석 3단계
 
-1. **1단계 단일 케이스 판정**
-   - 이 케이스 하나를 기준 모델(anchor)로 판정합니다.
+1. **1단계 Image-level analysis**
+   - 대표 이미지를 기준으로 image-level 모델을 먼저 실행합니다.
    - 저장되는 핵심 결과는 `예측 라벨`, `신뢰도`, 그리고 선택한 모델이 지원하는 `Grad-CAM / crop artifact`입니다.
-2. **2단계 모델 간 합의 확인**
-   - 같은 방문을 여러 준비 완료 모델로 다시 돌려, 모델들이 같은 결론을 내리는지 확인합니다.
+2. **2단계 Visit-level analysis**
+   - 같은 방문 전체를 visit-level MIL 모델로 다시 돌려, 방문 단위 결론과 1단계 결과를 함께 검토합니다.
    - 운영 기본 흐름은 `visit-level MIL 판단 + image-level support 모델 + retrieval 보조 모델`을 함께 보는 구조입니다.
-3. **3단계 유사 환자 검토**
+3. **3단계 Image retrieval**
    - 먼저 `유사 환자 찾기`로 비슷한 방문을 불러오고,
    - 필요할 때만 `근거와 가이드 불러오기`로 narrative evidence와 workflow recommendation을 확장합니다.
    - 같은 단계에서 `3D 클러스터 맵`으로 현재 방문의 임베딩 위치도 확인할 수 있습니다.
 
 ### 분석 화면에서 알아둘 점
 
-- 이미지 기반 검토 아티팩트(`Grad-CAM`, crop)는 **선택한 기준 모델(anchor)** 이 지원해야 생성됩니다.
-- `모델 간 합의 확인`은 저장 판정용 기준 모델을 바꾸는 단계가 아니라, 같은 케이스에 대한 **추가 모델 의견**을 확인하는 단계입니다.
+- 이미지 기반 검토 아티팩트(`Grad-CAM`, crop)는 **1단계 image-level 모델** 이 지원해야 생성됩니다.
+- `2단계 Visit-level analysis`는 1단계 저장 판정을 덮어쓰는 단계가 아니라, 같은 방문에 대한 **추가 visit-level 의견**을 확인하는 단계입니다.
 - 승인된 site access가 있는 `researcher`, `site admin`, `admin` 계정은 데스크톱에서 위 3단계를 실행할 수 있습니다.
+
+### 데스크톱 반응성 원칙
+
+- 가장 중요한 경로는 `앱 시작 -> 저장 환자 목록 표시 -> 저장 케이스 열기 -> 환자 전체 타임라인과 기존 저장 이미지 썸네일 표시`입니다.
+- 저장 케이스를 열 때는 **현재 방문만이 아니라 환자 전체 방문 타임라인**을 유지하고, 저장된 이미지가 있는 방문의 썸네일도 클릭 없이 계속 보이도록 유지합니다.
+- 비필수 작업(`worker / ML backend prewarm`, similar-case 준비, vector/index backfill, secondary preview warm-up)은 case-open / save / next-screen critical path를 막지 않도록 idle/background 단계로 늦춥니다.
+- 1단계 검토 이미지, 저장 케이스 preview, 3단계 유사 환자 카드는 **첫 결과를 먼저 보여주고 나머지는 순차적으로 붙이는 staged hydration**을 사용합니다.
+- ROI / lesion / overlay 같은 무거운 preview는 viewport 근처에 왔을 때만 실제 decode와 canvas 렌더를 시작해, 화면 아래 큰 패널이 첫 진입 순간 CPU를 같이 잡지 않도록 합니다.
 
 ### 꼭 알아둘 점
 

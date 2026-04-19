@@ -30,6 +30,7 @@ describe("case-workspace review sections", () => {
         selectedCompareModelVersionIds={[]}
         selectedValidationModelVersionId={"model_eff_mil"}
         compareModelCandidates={[]}
+        modelCatalogState="idle"
         validationBusy={false}
         validationResult={null}
         validationArtifacts={{}}
@@ -142,6 +143,7 @@ describe("case-workspace review sections", () => {
         selectedCompareModelVersionIds={[]}
         selectedValidationModelVersionId={null}
         compareModelCandidates={[]}
+        modelCatalogState="idle"
         validationBusy={false}
         validationResult={null}
         validationArtifacts={{}}
@@ -269,6 +271,7 @@ describe("case-workspace review sections", () => {
         selectedCompareModelVersionIds={[]}
         selectedValidationModelVersionId={null}
         compareModelCandidates={[]}
+        modelCatalogState="idle"
         validationBusy={false}
         validationResult={null}
         validationArtifacts={{}}
@@ -344,6 +347,7 @@ describe("case-workspace review sections", () => {
         selectedCompareModelVersionIds={[]}
         selectedValidationModelVersionId={null}
         compareModelCandidates={[]}
+        modelCatalogState="idle"
         validationBusy={false}
         validationResult={{
           summary: {
@@ -413,5 +417,65 @@ describe("case-workspace review sections", () => {
         }),
       });
     });
+  });
+
+  it("shows Step 2 fallback as runnable instead of loading when the catalog is unavailable", () => {
+    render(
+      <CaseWorkspaceAnalysisSection
+        locale="en"
+        token="token"
+        selectedSiteId="SITE_A"
+        mounted
+        analysisEyebrow="Clinical AI review"
+        analysisTitle="Analysis"
+        analysisDescription="Description"
+        imageCountLabel="images"
+        commonLoading="Loading"
+        commonNotAvailable="N/A"
+        hasSelectedCase
+        canRunRoiPreview
+        canRunValidation
+        canRunAiClinic={false}
+        selectedCaseImageCount={3}
+        representativePreviewUrl={null}
+        selectedCompareModelVersionIds={[]}
+        selectedValidationModelVersionId={null}
+        compareModelCandidates={[]}
+        modelCatalogState="error"
+        validationBusy={false}
+        validationResult={null}
+        validationArtifacts={{}}
+        modelCompareBusy={false}
+        modelCompareResult={null}
+        aiClinicBusy={false}
+        aiClinicExpandedBusy={false}
+        aiClinicResult={null}
+        aiClinicPreviewBusy={false}
+        hasAnySavedLesionBox={false}
+        roiPreviewBusy={false}
+        lesionPreviewBusy={false}
+        roiPreviewItems={[]}
+        lesionPreviewItems={[]}
+        pickLabel={(_locale, en) => en}
+        translateOption={(_locale, _group, value) => value}
+        setToast={vi.fn()}
+        setSelectedCompareModelVersionIds={vi.fn()}
+        setSelectedValidationModelVersionId={vi.fn()}
+        onRunValidation={vi.fn()}
+        onRunModelCompare={vi.fn()}
+        onRunAiClinic={vi.fn()}
+        onExpandAiClinic={vi.fn()}
+        onRunRoiPreview={vi.fn()}
+        onRunLesionPreview={vi.fn()}
+        displayVisitReference={(visitReference) => visitReference}
+        aiClinicTextUnavailableLabel="Unavailable"
+      />,
+    );
+
+    expect(screen.getByText("Catalog unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("MIL catalog loading")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run visit-level analysis" }),
+    ).toBeEnabled();
   });
 });

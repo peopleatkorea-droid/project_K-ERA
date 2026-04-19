@@ -12,7 +12,9 @@ import {
   type CaseValidationResponse,
 } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
+import { runAfterDesktopInteractionIdle } from "../../lib/desktop-runtime-prewarm";
 import { waitForSiteJobSettlement } from "../../lib/site-job-runtime";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 import type {
   CaseWorkspaceCompletionState,
   CaseWorkspaceExecutionMode,
@@ -119,6 +121,32 @@ export function useCaseWorkspaceReviewActions({
   const [contributionBusy, setContributionBusy] = useState(false);
   const [researchRegistryBusy, setResearchRegistryBusy] = useState(false);
 
+  const scheduleSiteRefresh = useCallback(
+    (
+      siteId: string,
+      task: () => Promise<void> | Promise<unknown>,
+      label: string,
+      delayMs = 120,
+    ) => {
+      let cancelInteractionAwareRefresh = () => undefined;
+      const cancelDeferredRefresh = scheduleDeferredBrowserTask(() => {
+        cancelInteractionAwareRefresh = runAfterDesktopInteractionIdle(
+          () => {
+            void Promise.resolve(task()).catch((nextError) => {
+              console.warn(label, { siteId, error: nextError });
+            });
+          },
+          1800,
+        );
+      }, delayMs);
+      return () => {
+        cancelDeferredRefresh();
+        cancelInteractionAwareRefresh();
+      };
+    },
+    [],
+  );
+
   const handleRunSiteValidation = useCallback(async () => {
     if (!selectedSiteId) {
       setToast({ tone: "error", message: messages.selectSiteForValidation });
@@ -147,9 +175,15 @@ export function useCaseWorkspaceReviewActions({
       if (!result || !("summary" in result)) {
         throw new Error(messages.siteValidationFailed);
       }
-      await onSiteDataChanged(selectedSiteId);
-      await loadSiteActivity(selectedSiteId);
-      await loadSiteValidationRuns(selectedSiteId);
+      scheduleSiteRefresh(
+        selectedSiteId,
+        async () => {
+          await onSiteDataChanged(selectedSiteId);
+          await loadSiteActivity(selectedSiteId);
+          await loadSiteValidationRuns(selectedSiteId);
+        },
+        "Site validation background refresh failed",
+      );
       setToast({
         tone: "success",
         message: messages.siteValidationSaved(result.summary.validation_id),
@@ -170,6 +204,7 @@ export function useCaseWorkspaceReviewActions({
     messages.siteValidationFailed,
     messages.siteValidationSaved,
     onSiteDataChanged,
+    scheduleSiteRefresh,
     selectedSiteId,
     setSiteValidationBusy,
     setToast,
@@ -216,14 +251,6 @@ export function useCaseWorkspaceReviewActions({
         model_version_ids: requestedContributionModelIds,
       });
       setContributionResult(result);
-      await onSiteDataChanged(selectedSiteId);
-      await loadCaseHistory(
-        selectedSiteId,
-        selectedCase.patient_id,
-        selectedCase.visit_date,
-        { forceRefresh: true },
-      );
-      await loadSiteActivity(selectedSiteId);
       setCompletionState({
         kind: "contributed",
         patient_id: selectedCase.patient_id,
@@ -257,6 +284,20 @@ export function useCaseWorkspaceReviewActions({
                   selectedCase.visit_date,
                 ),
       });
+      scheduleSiteRefresh(
+        selectedSiteId,
+        async () => {
+          await onSiteDataChanged(selectedSiteId);
+          await loadCaseHistory(
+            selectedSiteId,
+            selectedCase.patient_id,
+            selectedCase.visit_date,
+            { forceRefresh: true },
+          );
+          await loadSiteActivity(selectedSiteId);
+        },
+        "Contribution background refresh failed",
+      );
     } catch (nextError) {
       setToast({
         tone: "error",
@@ -277,6 +318,7 @@ export function useCaseWorkspaceReviewActions({
     messages.selectSavedCaseForContribution,
     onSiteDataChanged,
     pick,
+    scheduleSiteRefresh,
     selectedCase,
     selectedCompareModelVersionIds,
     selectedSiteId,
@@ -295,7 +337,14 @@ export function useCaseWorkspaceReviewActions({
     setResearchRegistryBusy(true);
     try {
       await enrollResearchRegistry(selectedSiteId, token);
-      await onSiteDataChanged(selectedSiteId);
+      scheduleSiteRefresh(
+        selectedSiteId,
+        async () => {
+          await onSiteDataChanged(selectedSiteId);
+        },
+        "Research registry enrollment refresh failed",
+        0,
+      );
       setResearchRegistryModalOpen(false);
       setResearchRegistryExplanationConfirmed(false);
       setResearchRegistryUsageConsented(false);
@@ -334,6 +383,7 @@ export function useCaseWorkspaceReviewActions({
     pendingResearchRegistryAutoInclude,
     pick,
     researchRegistryJoinReady,
+    scheduleSiteRefresh,
     selectedCase,
     selectedSiteId,
     setToast,

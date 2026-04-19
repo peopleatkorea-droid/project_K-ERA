@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -21,6 +21,7 @@ import {
 } from "../ui/workspace-patterns";
 import { MaskOverlayPreview } from "./preview-media";
 import type { LesionPreviewCard, LocalePick, RoiPreviewCard, TranslateOption } from "./shared";
+import { useStagedRevealCount } from "./use-staged-reveal-count";
 
 type SavedCasePreviewPanelsProps = {
   locale: Locale;
@@ -53,9 +54,45 @@ function SavedCasePreviewPanelsInner({
   onRunRoiPreview,
   onRunLesionPreview,
 }: SavedCasePreviewPanelsProps) {
+  const roiPreviewSignature = useMemo(
+    () =>
+      roiPreviewItems
+        .map((item) => `${item.image_id ?? item.source_image_path}:roi`)
+        .join("|"),
+    [roiPreviewItems],
+  );
+  const lesionPreviewSignature = useMemo(
+    () =>
+      lesionPreviewItems
+        .map((item) => `${item.image_id ?? item.source_image_path}:lesion`)
+        .join("|"),
+    [lesionPreviewItems],
+  );
+  const visibleRoiPreviewCount = useStagedRevealCount({
+    totalCount: roiPreviewItems.length,
+    initialCount: 1,
+    resetKey: roiPreviewSignature,
+  });
+  const visibleLesionPreviewCount = useStagedRevealCount({
+    totalCount: lesionPreviewItems.length,
+    initialCount: 1,
+    resetKey: lesionPreviewSignature,
+  });
+  const visibleRoiPreviewItems = useMemo(
+    () => roiPreviewItems.slice(0, visibleRoiPreviewCount),
+    [roiPreviewItems, visibleRoiPreviewCount],
+  );
+  const visibleLesionPreviewItems = useMemo(
+    () => lesionPreviewItems.slice(0, visibleLesionPreviewCount),
+    [lesionPreviewItems, visibleLesionPreviewCount],
+  );
+
   return (
     <div className="grid gap-6 xl:grid-cols-2">
-      <section className={docSectionClass}>
+      <section
+        className={docSectionClass}
+        style={{ contentVisibility: "auto", containIntrinsicSize: "960px" }}
+      >
         <div className="grid gap-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className={docSectionLabelClass}>{pick(locale, "Cornea preview", "각막 crop 미리보기")}</div>
@@ -86,8 +123,14 @@ function SavedCasePreviewPanelsInner({
         ) : null}
         {roiPreviewItems.length > 0 ? (
           <div className={panelImageStackClass}>
-            {roiPreviewItems.map((item) => (
-              <Card as="article" variant="nested" key={`${item.image_id ?? item.source_image_path}:roi`} className={panelImageCardClass}>
+            {visibleRoiPreviewItems.map((item) => (
+              <Card
+                as="article"
+                variant="nested"
+                key={`${item.image_id ?? item.source_image_path}:roi`}
+                className={panelImageCardClass}
+                style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
+              >
                 <MetricGrid columns={3} className={previewItemMetricGridClass}>
                   <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
                   <MetricItem
@@ -139,7 +182,10 @@ function SavedCasePreviewPanelsInner({
         ) : null}
       </section>
 
-      <section className={docSectionClass}>
+      <section
+        className={docSectionClass}
+        style={{ contentVisibility: "auto", containIntrinsicSize: "960px" }}
+      >
         <div className="grid gap-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className={docSectionLabelClass}>{pick(locale, "Lesion preview", "병변 crop 미리보기")}</div>
@@ -174,8 +220,14 @@ function SavedCasePreviewPanelsInner({
         ) : null}
         {lesionPreviewItems.length > 0 ? (
           <div className={panelImageStackClass}>
-            {lesionPreviewItems.map((item) => (
-              <Card as="article" variant="nested" key={`${item.image_id ?? item.source_image_path}:lesion`} className={panelImageCardClass}>
+            {visibleLesionPreviewItems.map((item) => (
+              <Card
+                as="article"
+                variant="nested"
+                key={`${item.image_id ?? item.source_image_path}:lesion`}
+                className={panelImageCardClass}
+                style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
+              >
                 <MetricGrid columns={3} className={previewItemMetricGridClass}>
                   <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
                   <MetricItem

@@ -36,6 +36,8 @@ type ValidationArtifactKind =
   | "lesion_crop"
   | "lesion_mask";
 
+const DESKTOP_ARTIFACT_PREVIEW_MAX_SIDE = 560;
+
 function canUseDesktopAnalysisTransport() {
   return hasDesktopRuntime();
 }
@@ -440,6 +442,9 @@ export async function fetchAnalysisValidationArtifactUrl(
   visitDate: string,
   artifactKind: ValidationArtifactKind,
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
   if (canUseDesktopAnalysisTransport()) {
     const url = await resolveDesktopArtifactUrl("resolve_validation_artifact_path", {
@@ -448,6 +453,8 @@ export async function fetchAnalysisValidationArtifactUrl(
       patient_id: patientId,
       visit_date: visitDate,
       artifact_kind: artifactKind,
+      preview_max_side:
+        options.previewMaxSide ?? DESKTOP_ARTIFACT_PREVIEW_MAX_SIDE,
     });
     return appendArtifactVersion(url, `${validationId}:${artifactKind}`);
   }
@@ -502,6 +509,9 @@ export async function fetchAnalysisCaseRoiPreviewArtifactUrl(
   imageId: string,
   artifactKind: "roi_crop" | "medsam_mask",
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
   if (canUseDesktopAnalysisTransport()) {
     return resolveDesktopArtifactUrl("resolve_case_roi_preview_artifact_path", {
@@ -510,6 +520,8 @@ export async function fetchAnalysisCaseRoiPreviewArtifactUrl(
       visit_date: visitDate,
       image_id: imageId,
       artifact_kind: artifactKind,
+      preview_max_side:
+        options.previewMaxSide ?? DESKTOP_ARTIFACT_PREVIEW_MAX_SIDE,
     });
   }
   const blob = await fetchAnalysisCaseRoiPreviewArtifactBlob(siteId, patientId, visitDate, imageId, artifactKind, token);
@@ -556,17 +568,20 @@ export async function fetchAnalysisCaseLesionPreviewArtifactUrl(
   imageId: string,
   artifactKind: "lesion_crop" | "lesion_mask",
   token: string,
+  options: {
+    previewMaxSide?: number;
+  } = {},
 ) {
   if (canUseDesktopAnalysisTransport()) {
-    const blob = await fetchAnalysisCaseLesionPreviewArtifactBlob(
-      siteId,
-      patientId,
-      visitDate,
-      imageId,
-      artifactKind,
-      token,
-    );
-    return URL.createObjectURL(blob);
+    return resolveDesktopArtifactUrl("resolve_case_lesion_preview_artifact_path", {
+      site_id: siteId,
+      patient_id: patientId,
+      visit_date: visitDate,
+      image_id: imageId,
+      artifact_kind: artifactKind,
+      preview_max_side:
+        options.previewMaxSide ?? DESKTOP_ARTIFACT_PREVIEW_MAX_SIDE,
+    });
   }
   const blob = await fetchAnalysisCaseLesionPreviewArtifactBlob(siteId, patientId, visitDate, imageId, artifactKind, token);
   return URL.createObjectURL(blob);

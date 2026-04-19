@@ -15,6 +15,8 @@ import {
   selectUnresolvedRoiCropImages,
 } from "./case-workspace-preview-artifact-helpers";
 
+const SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE = 512;
+
 type ResolvedPreviewArtifactEntry = Awaited<
   ReturnType<typeof resolvePreviewArtifactEntries>
 >[number];
@@ -55,6 +57,7 @@ export async function resolveSavedImageRoiCropArtifacts(args: {
         image.image_id,
         "roi_crop",
         token,
+        { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
       ),
   });
 
@@ -129,6 +132,7 @@ export async function resolveSavedImageLesionCropArtifacts(args: {
         image.image_id,
         "lesion_crop",
         token,
+        { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
       ),
   });
 

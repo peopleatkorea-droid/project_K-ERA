@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 
 import type { CaseSummaryRecord, OrganismRecord } from "../../lib/api";
 import type { Locale } from "../../lib/i18n";
@@ -14,7 +14,11 @@ import {
   representativeImageTagClass,
   savedCaseActionButtonClass,
 } from "../ui/workspace-patterns";
+import {
+  sameSavedImagePreviewLists,
+} from "./case-workspace-site-data-helpers";
 import type { SavedImagePreview, TranslateOption } from "./shared";
+import { useStagedRevealCount } from "./use-staged-reveal-count";
 
 const savedCaseMintLabelClass =
   "inline-flex min-h-9 items-center rounded-[10px] border border-brand/18 bg-brand-soft/80 px-4 text-[0.76rem] font-semibold tracking-[-0.01em] text-brand dark:border-brand/20 dark:bg-brand-soft/75 dark:text-brand";
@@ -78,6 +82,13 @@ export type SavedCaseSidebarProps = {
   hasAnySavedLesionBox: boolean;
 };
 
+type PatientVisitImageGridProps = {
+  locale: Locale;
+  images: SavedImagePreview[];
+  translateOption: TranslateOption;
+  pick: SavedCaseOverviewProps["pick"];
+};
+
 function resolveVisitLabel(
   locale: Locale,
   visitReference: string,
@@ -91,7 +102,167 @@ function resolveVisitLabel(
   return displayVisitReference(locale, visitReference);
 }
 
-export function SavedCaseOverview({
+function sameCaseSummaryRecord(
+  left: CaseSummaryRecord,
+  right: CaseSummaryRecord,
+): boolean {
+  return (
+    left.case_id === right.case_id &&
+    left.patient_id === right.patient_id &&
+    left.visit_date === right.visit_date &&
+    left.local_case_code === right.local_case_code &&
+    left.age === right.age &&
+    left.sex === right.sex &&
+    left.visit_status === right.visit_status &&
+    left.culture_category === right.culture_category &&
+    left.culture_species === right.culture_species &&
+    left.latest_image_uploaded_at === right.latest_image_uploaded_at &&
+    left.created_at === right.created_at &&
+    left.image_count === right.image_count &&
+    left.representative_image_id === right.representative_image_id &&
+    left.representative_view === right.representative_view &&
+    left.is_initial_visit === right.is_initial_visit &&
+    left.additional_organisms.length === right.additional_organisms.length
+  );
+}
+
+function sameCaseSummaryRecordList(
+  left: CaseSummaryRecord[],
+  right: CaseSummaryRecord[],
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!sameCaseSummaryRecord(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameGalleryStateForCases(
+  caseRecords: CaseSummaryRecord[],
+  left: Record<string, SavedImagePreview[]>,
+  right: Record<string, SavedImagePreview[]>,
+): boolean {
+  for (const caseRecord of caseRecords) {
+    if (
+      !sameSavedImagePreviewLists(
+        left[caseRecord.case_id],
+        right[caseRecord.case_id],
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameBooleanStateForCases(
+  caseRecords: CaseSummaryRecord[],
+  left: Record<string, boolean>,
+  right: Record<string, boolean>,
+): boolean {
+  for (const caseRecord of caseRecords) {
+    if (Boolean(left[caseRecord.case_id]) !== Boolean(right[caseRecord.case_id])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function PatientVisitImageGridInner({
+  locale,
+  images,
+  translateOption,
+  pick,
+}: PatientVisitImageGridProps) {
+  const imageSignature = useMemo(
+    () =>
+      images
+        .map((image) =>
+          [
+            image.image_id,
+            image.preview_url ?? "",
+            image.is_representative ? "1" : "0",
+          ].join(":"),
+        )
+        .join("|"),
+    [images],
+  );
+  const visibleImageCount = useStagedRevealCount({
+    totalCount: images.length,
+    initialCount: 2,
+    resetKey: imageSignature,
+  });
+
+  const visibleImages = useMemo(() => {
+    if (visibleImageCount >= images.length) {
+      return images;
+    }
+    const visibleImageIds = new Set(
+      images.slice(0, visibleImageCount).map((image) => image.image_id),
+    );
+    for (const image of images) {
+      if (image.is_representative) {
+        visibleImageIds.add(image.image_id);
+      }
+    }
+    return images.filter((image) => visibleImageIds.has(image.image_id));
+  }, [images, visibleImageCount]);
+
+  return (
+    <div className="grid gap-x-3 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+      {visibleImages.map((image, index) => {
+        const prioritizeThumbnail = index === 0 || image.is_representative;
+        return (
+          <div key={`timeline-${image.image_id}`} className="grid gap-2.5">
+            {image.preview_url ? (
+              <div className="relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55">
+                <img
+                  src={image.preview_url}
+                  alt={image.image_id}
+                  className="block h-full w-full object-cover"
+                  loading={prioritizeThumbnail ? "eager" : "lazy"}
+                  fetchPriority={prioritizeThumbnail ? "high" : "low"}
+                  decoding="async"
+                  draggable={false}
+                  onDragStart={(event) => event.preventDefault()}
+                />
+              </div>
+            ) : (
+              <div className="grid aspect-square w-full place-items-center rounded-[18px] bg-surface-muted/55 text-sm text-muted">
+                {translateOption(locale, "view", image.view)}
+              </div>
+            )}
+            <div className="flex min-w-0 items-center gap-1.5 text-[0.84rem] leading-5 text-muted">
+              <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
+                {translateOption(locale, "view", image.view)}
+              </strong>
+              {image.is_representative ? (
+                <span className={`${representativeImageTagClass} shrink-0`}>
+                  {pick(locale, "Representative image", "대표 이미지")}
+                </span>
+              ) : (
+                <span className="shrink-0">
+                  · {pick(locale, "Supporting image", "보조 이미지")}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const PatientVisitImageGrid = memo(PatientVisitImageGridInner);
+
+function SavedCaseOverviewInner({
   locale,
   localeTag,
   commonLoading,
@@ -127,10 +298,38 @@ export function SavedCaseOverview({
     selectedCase.additional_organisms,
     2
   )}`;
+  const timelineSignature = useMemo(
+    () =>
+      [
+        selectedCase.case_id,
+        ...selectedPatientCases.map((caseItem) => caseItem.case_id),
+      ].join("|"),
+    [selectedCase.case_id, selectedPatientCases],
+  );
+  const visibleTimelineCaseCount = useStagedRevealCount({
+    totalCount: selectedPatientCases.length,
+    initialCount: 2,
+    resetKey: timelineSignature,
+  });
 
   useEffect(() => {
     autoRequestedVisitImagesRef.current.clear();
   }, [selectedCase.case_id]);
+
+  const visibleTimelineCases = useMemo(() => {
+    if (visibleTimelineCaseCount >= selectedPatientCases.length) {
+      return selectedPatientCases;
+    }
+    const visibleCaseIds = new Set(
+      selectedPatientCases
+        .slice(0, visibleTimelineCaseCount)
+        .map((caseItem) => caseItem.case_id),
+    );
+    visibleCaseIds.add(selectedCase.case_id);
+    return selectedPatientCases.filter((caseItem) =>
+      visibleCaseIds.has(caseItem.case_id),
+    );
+  }, [selectedCase.case_id, selectedPatientCases, visibleTimelineCaseCount]);
 
   useEffect(() => {
     // Protected UX: opening a saved case must hydrate visit thumbnails without requiring extra per-visit clicks.
@@ -219,7 +418,7 @@ export function SavedCaseOverview({
         ) : null}
         {selectedPatientCases.length > 0 ? (
           <div className={patientVisitGalleryStackClass}>
-            {selectedPatientCases.map((caseItem) => {
+            {visibleTimelineCases.map((caseItem) => {
               const visitImages = patientVisitGallery[caseItem.case_id];
               const hasLoadedVisitImages = Array.isArray(visitImages);
               const visibleVisitImages = visitImages ?? [];
@@ -245,6 +444,10 @@ export function SavedCaseOverview({
                   variant="nested"
                   key={`visit-gallery-${caseItem.case_id}`}
                   className={`${patientVisitGalleryCardClass(isCurrentVisit)} grid gap-3 p-3.5`}
+                  style={{
+                    contentVisibility: "auto",
+                    containIntrinsicSize: "420px",
+                  }}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2.5 md:flex-nowrap">
                     <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-[0.78rem] leading-5 text-muted md:flex-nowrap">
@@ -272,45 +475,12 @@ export function SavedCaseOverview({
                   </div>
 
                   {visibleVisitImages.length > 0 ? (
-                    <div className="grid gap-x-3 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-                      {visibleVisitImages.map((image) => {
-                        return (
-                          <div key={`timeline-${image.image_id}`} className="grid gap-2.5">
-                            {image.preview_url ? (
-                              <div className="relative aspect-square overflow-hidden rounded-[18px] bg-surface-muted/55">
-                                <img
-                                  src={image.preview_url}
-                                  alt={image.image_id}
-                                  className="block h-full w-full object-cover"
-                                  loading="lazy"
-                                  decoding="async"
-                                  draggable={false}
-                                  onDragStart={(event) => event.preventDefault()}
-                                />
-                              </div>
-                            ) : (
-                              <div className="grid aspect-square w-full place-items-center rounded-[18px] bg-surface-muted/55 text-sm text-muted">
-                                {translateOption(locale, "view", image.view)}
-                              </div>
-                            )}
-                            <div className="flex min-w-0 items-center gap-1.5 text-[0.84rem] leading-5 text-muted">
-                              <strong className="min-w-0 truncate font-semibold tracking-[-0.02em] text-ink">
-                                {translateOption(locale, "view", image.view)}
-                              </strong>
-                              {image.is_representative ? (
-                                <span className={`${representativeImageTagClass} shrink-0`}>
-                                  {pick(locale, "Representative image", "대표 이미지")}
-                                </span>
-                              ) : (
-                                <span className="shrink-0">
-                                  · {pick(locale, "Supporting image", "보조 이미지")}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <PatientVisitImageGrid
+                      locale={locale}
+                      images={visibleVisitImages}
+                      translateOption={translateOption}
+                      pick={pick}
+                    />
                   ) : (
                     <div className={emptySurfaceClass}>
                       {(isCurrentVisit && panelBusy) || visitImagesLoading || (patientVisitGalleryBusy && !hasLoadedVisitImages)
@@ -332,7 +502,50 @@ export function SavedCaseOverview({
   );
 }
 
-export function SavedCaseSidebar({
+function areSavedCaseOverviewPropsEqual(
+  previous: SavedCaseOverviewProps,
+  next: SavedCaseOverviewProps,
+): boolean {
+  return (
+    previous.locale === next.locale &&
+    previous.localeTag === next.localeTag &&
+    previous.commonLoading === next.commonLoading &&
+    previous.commonNotAvailable === next.commonNotAvailable &&
+    previous.panelBusy === next.panelBusy &&
+    previous.patientVisitGalleryBusy === next.patientVisitGalleryBusy &&
+    previous.editDraftBusy === next.editDraftBusy &&
+    previous.caseTitle === next.caseTitle &&
+    previous.isFavoriteCase(previous.selectedCase.case_id) ===
+      next.isFavoriteCase(next.selectedCase.case_id) &&
+    sameCaseSummaryRecord(previous.selectedCase, next.selectedCase) &&
+    sameCaseSummaryRecordList(
+      previous.selectedPatientCases,
+      next.selectedPatientCases,
+    ) &&
+    sameGalleryStateForCases(
+      next.selectedPatientCases,
+      previous.patientVisitGallery,
+      next.patientVisitGallery,
+    ) &&
+    sameBooleanStateForCases(
+      next.selectedPatientCases,
+      previous.patientVisitGalleryLoadingCaseIds,
+      next.patientVisitGalleryLoadingCaseIds,
+    ) &&
+    sameBooleanStateForCases(
+      next.selectedPatientCases,
+      previous.patientVisitGalleryErrorCaseIds,
+      next.patientVisitGalleryErrorCaseIds,
+    )
+  );
+}
+
+export const SavedCaseOverview = memo(
+  SavedCaseOverviewInner,
+  areSavedCaseOverviewPropsEqual,
+);
+
+function SavedCaseSidebarInner({
   locale,
   pick,
   selectedCaseImageCount,
@@ -382,3 +595,20 @@ export function SavedCaseSidebar({
     </aside>
   );
 }
+
+function areSavedCaseSidebarPropsEqual(
+  previous: SavedCaseSidebarProps,
+  next: SavedCaseSidebarProps,
+) {
+  return (
+    previous.locale === next.locale &&
+    previous.selectedCaseImageCount === next.selectedCaseImageCount &&
+    previous.hasRepresentativeImage === next.hasRepresentativeImage &&
+    previous.hasAnySavedLesionBox === next.hasAnySavedLesionBox
+  );
+}
+
+export const SavedCaseSidebar = memo(
+  SavedCaseSidebarInner,
+  areSavedCaseSidebarPropsEqual,
+);

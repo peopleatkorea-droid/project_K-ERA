@@ -33,6 +33,9 @@ import {
   resolveSavedImageRoiCropArtifacts,
 } from "./case-workspace-preview-artifact-runtime";
 
+const SAVED_CASE_PREVIEW_SOURCE_MAX_SIDE = 512;
+const SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE = 512;
+
 type ToastState = {
   tone: "success" | "error";
   message: string;
@@ -359,7 +362,7 @@ export function useCaseWorkspacePreviewArtifacts({
         items: previews,
         fetchSourcePreviewUrl: (imageId) =>
           fetchImagePreviewUrl(selectedSiteId, imageId, token, {
-            maxSide: 640,
+            maxSide: SAVED_CASE_PREVIEW_SOURCE_MAX_SIDE,
           }),
         fetchLesionCropUrl: (imageId) =>
           fetchCaseLesionPreviewArtifactUrl(
@@ -369,6 +372,7 @@ export function useCaseWorkspacePreviewArtifacts({
             imageId,
             "lesion_crop",
             token,
+            { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
           ),
         fetchLesionMaskUrl: (imageId) =>
           fetchCaseLesionPreviewArtifactUrl(
@@ -378,6 +382,7 @@ export function useCaseWorkspacePreviewArtifacts({
             imageId,
             "lesion_mask",
             token,
+            { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
           ),
       });
       lesionPreviewUrlsRef.current.push(...urls);
@@ -442,7 +447,7 @@ export function useCaseWorkspacePreviewArtifacts({
         items: previews,
         fetchSourcePreviewUrl: (imageId) =>
           fetchImagePreviewUrl(selectedSiteId, imageId, token, {
-            maxSide: 640,
+            maxSide: SAVED_CASE_PREVIEW_SOURCE_MAX_SIDE,
           }),
         fetchRoiCropUrl: (imageId) =>
           fetchCaseRoiPreviewArtifactUrl(
@@ -452,6 +457,7 @@ export function useCaseWorkspacePreviewArtifacts({
             imageId,
             "roi_crop",
             token,
+            { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
           ),
         fetchMedsamMaskUrl: (imageId) =>
           fetchCaseRoiPreviewArtifactUrl(
@@ -461,6 +467,7 @@ export function useCaseWorkspacePreviewArtifacts({
             imageId,
             "medsam_mask",
             token,
+            { previewMaxSide: SAVED_CASE_PREVIEW_ARTIFACT_MAX_SIDE },
           ),
       });
       roiPreviewUrlsRef.current.push(...urls);

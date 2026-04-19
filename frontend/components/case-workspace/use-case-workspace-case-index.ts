@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { startTransition, useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import { type CaseSummaryRecord, fetchCases } from "../../lib/api";
@@ -9,6 +9,7 @@ import {
   mergeCaseTimelineRecords,
   sortCaseTimelineRecords,
 } from "./case-workspace-site-data-helpers";
+import { sameCaseSummaryRecord, sameCaseSummaryRecordList } from "./case-workspace-records";
 
 type ToastState = {
   tone: "success" | "error";
@@ -117,14 +118,20 @@ export function useCaseWorkspaceCaseIndex({
         if (cancelled) {
           return;
         }
-        setCases(nextCases);
-        setSelectedCase((current) => {
-          if (!current) {
-            return null;
-          }
-          return (
-            nextCases.find((item) => item.case_id === current.case_id) ?? null
+        startTransition(() => {
+          setCases((current) =>
+            sameCaseSummaryRecordList(current, nextCases) ? current : nextCases,
           );
+          setSelectedCase((current) => {
+            if (!current) {
+              return null;
+            }
+            const nextSelectedCase =
+              nextCases.find((item) => item.case_id === current.case_id) ?? null;
+            return sameCaseSummaryRecord(current, nextSelectedCase)
+              ? current
+              : nextSelectedCase;
+          });
         });
       } catch (nextError) {
         if (isAbortError(nextError)) {
@@ -254,7 +261,13 @@ export function useCaseWorkspaceCaseIndex({
       patientCaseTimelineReadyRef.current.get(cacheKey) &&
       cachedTimeline.some((item) => item.case_id === currentCase.case_id)
     ) {
-      setSelectedPatientCases(cachedTimeline);
+      startTransition(() => {
+        setSelectedPatientCases((current) =>
+          sameCaseSummaryRecordList(current, cachedTimeline)
+            ? current
+            : cachedTimeline,
+        );
+      });
       syncSelectedCaseFromTimeline(cachedTimeline);
       return () => {
         cancelled = true;
@@ -270,10 +283,22 @@ export function useCaseWorkspaceCaseIndex({
       [currentCase],
     );
     if (optimisticTimeline.length > 0) {
-      setSelectedPatientCases(optimisticTimeline);
+      startTransition(() => {
+        setSelectedPatientCases((current) =>
+          sameCaseSummaryRecordList(current, optimisticTimeline)
+            ? current
+            : optimisticTimeline,
+        );
+      });
       syncSelectedCaseFromTimeline(optimisticTimeline);
     } else {
-      setSelectedPatientCases([currentCase]);
+      startTransition(() => {
+        setSelectedPatientCases((current) =>
+          sameCaseSummaryRecordList(current, [currentCase])
+            ? current
+            : [currentCase],
+        );
+      });
     }
 
     void loadPatientCaseTimeline(currentCase.patient_id)
@@ -281,7 +306,11 @@ export function useCaseWorkspaceCaseIndex({
         if (cancelled) {
           return;
         }
-        setSelectedPatientCases(timeline);
+        startTransition(() => {
+          setSelectedPatientCases((current) =>
+            sameCaseSummaryRecordList(current, timeline) ? current : timeline,
+          );
+        });
         syncSelectedCaseFromTimeline(timeline);
       })
       .catch((nextError) => {

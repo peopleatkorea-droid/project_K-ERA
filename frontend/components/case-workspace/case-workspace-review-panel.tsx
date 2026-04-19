@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 import { pick, type Locale } from "../../lib/i18n";
 import {
@@ -33,7 +33,22 @@ export type CaseWorkspaceReviewPanelProps = {
   draftPendingItems: string[];
 };
 
-export function CaseWorkspaceReviewPanel({
+function sameDraftPendingItems(left: string[], right: string[]) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function CaseWorkspaceReviewPanelInner({
   locale,
   selectedCasePanelContent,
   isAuthoringCanvas,
@@ -116,3 +131,26 @@ export function CaseWorkspaceReviewPanel({
     </aside>
   );
 }
+
+function areCaseWorkspaceReviewPanelPropsEqual(
+  previous: CaseWorkspaceReviewPanelProps,
+  next: CaseWorkspaceReviewPanelProps,
+) {
+  return (
+    previous.locale === next.locale &&
+    previous.selectedCasePanelContent === next.selectedCasePanelContent &&
+    previous.isAuthoringCanvas === next.isAuthoringCanvas &&
+    previous.draftStatusLabel === next.draftStatusLabel &&
+    previous.selectedSiteLabel === next.selectedSiteLabel &&
+    previous.draftCompletionCount === next.draftCompletionCount &&
+    previous.draftImagesCount === next.draftImagesCount &&
+    previous.draftRepresentativeCount === next.draftRepresentativeCount &&
+    previous.draftCompletionPercent === next.draftCompletionPercent &&
+    sameDraftPendingItems(previous.draftPendingItems, next.draftPendingItems)
+  );
+}
+
+export const CaseWorkspaceReviewPanel = memo(
+  CaseWorkspaceReviewPanelInner,
+  areCaseWorkspaceReviewPanelPropsEqual,
+);

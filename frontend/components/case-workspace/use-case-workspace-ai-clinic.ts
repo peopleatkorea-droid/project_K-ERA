@@ -11,8 +11,11 @@ import {
   type CaseValidationResponse,
 } from "../../lib/api";
 import {
+  aiClinicSimilarCaseKey,
+  withAiClinicSimilarCasePreviewPatch,
   withAiClinicSimilarCasePreviews,
 } from "./case-workspace-ai-clinic-helpers";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 import type {
   AiClinicPreviewResponse,
   CaseWorkspaceAiClinicRunOptions,
@@ -54,6 +57,15 @@ function revokeUrls(urls: string[]) {
   }
 }
 
+function waitForDeferredYield(timeoutMs = 90) {
+  return new Promise<void>((resolve) => {
+    const cancelDeferredYield = scheduleDeferredBrowserTask(() => {
+      resolve();
+    }, timeoutMs);
+    void cancelDeferredYield;
+  });
+}
+
 export function useCaseWorkspaceAiClinic({
   token,
   selectedSiteId,
@@ -67,6 +79,8 @@ export function useCaseWorkspaceAiClinic({
 }: Args) {
   const AI_CLINIC_DEFAULT_RETRIEVAL_BACKEND = "dinov2" as const;
   const AI_CLINIC_DEFAULT_RETRIEVAL_PROFILE = "dinov2_lesion_crop" as const;
+  const AI_CLINIC_PRIMARY_PREVIEW_MAX_SIDE = 256;
+  const AI_CLINIC_SECONDARY_PREVIEW_MAX_SIDE = 224;
   const [aiClinicBusy, setAiClinicBusy] = useState(false);
   const [aiClinicExpandedBusy, setAiClinicExpandedBusy] = useState(false);
   const [aiClinicPreviewBusy, setAiClinicPreviewBusy] = useState(false);
@@ -109,48 +123,52 @@ export function useCaseWorkspaceAiClinic({
       setAiClinicPreviewBusy(true);
       const nextUrls: string[] = [];
       try {
-        const resolvedCases = await Promise.all(
-          cases.map(async (item) => {
-            if (!item.representative_image_id || item.preview_url) {
-              return item;
-            }
-            try {
-              const previewUrl = await fetchImagePreviewUrl(
-                selectedSiteId,
-                item.representative_image_id,
-                token,
-                {
-                  maxSide: 384,
-                },
-              );
-              if (previewUrl) {
-                nextUrls.push(previewUrl);
+        const casesNeedingPreviewCount = casesNeedingPreview.length;
+        for (let index = 0; index < casesNeedingPreviewCount; index += 1) {
+          if (aiClinicPreviewRequestRef.current !== previewRequestId) {
+            revokeUrls(nextUrls);
+            return;
+          }
+          const item = casesNeedingPreview[index];
+          let previewUrl: string | null = null;
+          try {
+            previewUrl = await fetchImagePreviewUrl(
+              selectedSiteId,
+              item.representative_image_id!,
+              token,
+              {
+                maxSide:
+                  index === 0
+                    ? AI_CLINIC_PRIMARY_PREVIEW_MAX_SIDE
+                    : AI_CLINIC_SECONDARY_PREVIEW_MAX_SIDE,
+              },
+            );
+          } catch {
+            previewUrl = null;
+          }
+          if (previewUrl) {
+            nextUrls.push(previewUrl);
+          }
+          if (aiClinicPreviewRequestRef.current !== previewRequestId) {
+            revokeUrls(nextUrls);
+            return;
+          }
+          const previewPatch = new Map<string, string | null>([
+            [aiClinicSimilarCaseKey(item), previewUrl],
+          ]);
+          startTransition(() => {
+            setAiClinicResult((current) => {
+              if (!current) {
+                return current;
               }
-              return {
-                ...item,
-                preview_url: previewUrl,
-              };
-            } catch {
-              return {
-                ...item,
-                preview_url: null,
-              };
-            }
-          }),
-        );
-        if (aiClinicPreviewRequestRef.current !== previewRequestId) {
-          revokeUrls(nextUrls);
-          return;
+              return withAiClinicSimilarCasePreviewPatch(current, previewPatch);
+            });
+          });
+          if (index < casesNeedingPreviewCount - 1) {
+            await waitForDeferredYield();
+          }
         }
         aiClinicPreviewUrlsRef.current.push(...nextUrls);
-        startTransition(() => {
-          setAiClinicResult((current) => {
-            if (!current) {
-              return current;
-            }
-            return { ...current, similar_cases: resolvedCases };
-          });
-        });
       } finally {
         if (aiClinicPreviewRequestRef.current === previewRequestId) {
           setAiClinicPreviewBusy(false);

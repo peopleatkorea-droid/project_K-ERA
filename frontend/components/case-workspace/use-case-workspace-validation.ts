@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
 import {
@@ -13,8 +13,9 @@ import {
   type CaseValidationResponse,
   type ModelVersionRecord,
 } from "../../lib/api";
-import { convertDesktopFilePath, hasDesktopRuntime } from "../../lib/desktop-ipc";
 import type { Locale } from "../../lib/i18n";
+import { runAfterDesktopInteractionIdle } from "../../lib/desktop-runtime-prewarm";
+import { scheduleDeferredBrowserTask } from "./case-workspace-site-data-helpers";
 import type {
   CaseWorkspaceExecutionMode,
   CaseWorkspaceToastState,
@@ -27,6 +28,8 @@ import type {
   CaseWorkspaceValidationRunOptions,
   LocalePick,
 } from "./shared";
+
+const VALIDATION_ARTIFACT_PREVIEW_MAX_SIDE = 448;
 
 type ValidationCopy = {
   selectSavedCaseForValidation: string;
@@ -127,8 +130,17 @@ export function useCaseWorkspaceValidation({
     useState<CaseValidationCompareResponse | null>(null);
   const [validationArtifacts, setValidationArtifacts] =
     useState<CaseWorkspaceValidationArtifactPreviews>({});
+  const [validationArtifactsBusy, setValidationArtifactsBusy] =
+    useState(false);
 
   const validationArtifactUrlsRef = useRef<string[]>([]);
+  const validationArtifactRequestRef = useRef(0);
+  const latestValidationExecutionDeviceRef = useRef<string | undefined>(
+    undefined,
+  );
+  const validationBackgroundRefreshCleanupRef = useRef<() => void>(
+    () => undefined,
+  );
 
   const normalizeSelectedCompareModelVersionIds = useCallback(() => {
     return Array.from(
@@ -141,29 +153,46 @@ export function useCaseWorkspaceValidation({
   }, [selectedCompareModelVersionIds]);
 
   const clearValidationArtifacts = useCallback(() => {
+    validationArtifactRequestRef.current += 1;
     revokeUrls(validationArtifactUrlsRef.current);
     validationArtifactUrlsRef.current = [];
-    setValidationArtifacts({});
+    startTransition(() => {
+      setValidationArtifactsBusy(false);
+      setValidationArtifacts({});
+    });
+  }, []);
+  const cancelPendingValidationBackgroundRefresh = useCallback(() => {
+    validationBackgroundRefreshCleanupRef.current();
+    validationBackgroundRefreshCleanupRef.current = () => undefined;
   }, []);
 
   const resetValidationState = useCallback(() => {
+    cancelPendingValidationBackgroundRefresh();
     clearValidationArtifacts();
+    latestValidationExecutionDeviceRef.current = undefined;
     setValidationBusy(false);
     setValidationResult(null);
     setModelCompareBusy(false);
     setModelCompareResult(null);
-  }, [clearValidationArtifacts]);
+  }, [cancelPendingValidationBackgroundRefresh, clearValidationArtifacts]);
 
   useEffect(() => {
-    return () => revokeUrls(validationArtifactUrlsRef.current);
+    return () => {
+      revokeUrls(validationArtifactUrlsRef.current);
+      validationBackgroundRefreshCleanupRef.current();
+    };
   }, []);
 
-  async function resolveValidationArtifacts(
+  const resolveValidationArtifacts = useCallback(async (
     result: CaseValidationResponse,
     patientId: string,
     visitDate: string,
-  ): Promise<CaseWorkspaceValidationArtifactPreviews> {
+  ): Promise<{
+    artifacts: CaseWorkspaceValidationArtifactPreviews;
+    urls: string[];
+  }> => {
     const nextArtifacts: CaseWorkspaceValidationArtifactPreviews = {};
+    const nextUrls: string[] = [];
     const hasBranchAwareGradcam =
       result.artifact_availability.gradcam_cornea ||
       result.artifact_availability.gradcam_lesion;
@@ -176,86 +205,162 @@ export function useCaseWorkspaceValidation({
       "lesion_crop",
       "lesion_mask",
     ];
-    const prediction = result.case_prediction;
-    const artifactPathForKind = (
-      artifactKind: CaseWorkspaceValidationArtifactKind,
-    ) => {
-      if (!prediction) {
-        return null;
-      }
-      switch (artifactKind) {
-        case "gradcam":
-          return prediction.gradcam_path ?? null;
-        case "gradcam_cornea":
-          return prediction.gradcam_cornea_path ?? null;
-        case "gradcam_lesion":
-          return prediction.gradcam_lesion_path ?? null;
-        case "roi_crop":
-          return prediction.roi_crop_path ?? null;
-        case "medsam_mask":
-          return prediction.medsam_mask_path ?? null;
-        case "lesion_crop":
-          return prediction.lesion_crop_path ?? null;
-        case "lesion_mask":
-          return prediction.lesion_mask_path ?? null;
-      }
-    };
+    const availableArtifactKinds = artifactKinds.filter((artifactKind) => {
+      return artifactKind === "roi_crop"
+        ? result.artifact_availability.roi_crop
+        : artifactKind === "gradcam"
+          ? result.artifact_availability.gradcam
+          : artifactKind === "gradcam_cornea"
+            ? result.artifact_availability.gradcam_cornea
+            : artifactKind === "gradcam_lesion"
+              ? result.artifact_availability.gradcam_lesion
+              : artifactKind === "medsam_mask"
+                ? result.artifact_availability.medsam_mask
+                : artifactKind === "lesion_crop"
+                  ? result.artifact_availability.lesion_crop
+                  : result.artifact_availability.lesion_mask;
+    });
 
-    for (const artifactKind of artifactKinds) {
-      const isAvailable =
-        artifactKind === "roi_crop"
-          ? result.artifact_availability.roi_crop
-          : artifactKind === "gradcam"
-            ? result.artifact_availability.gradcam
-            : artifactKind === "gradcam_cornea"
-              ? result.artifact_availability.gradcam_cornea
-              : artifactKind === "gradcam_lesion"
-                ? result.artifact_availability.gradcam_lesion
-                : artifactKind === "medsam_mask"
-                  ? result.artifact_availability.medsam_mask
-                  : artifactKind === "lesion_crop"
-                    ? result.artifact_availability.lesion_crop
-                    : result.artifact_availability.lesion_mask;
-      if (!isAvailable) {
-        continue;
-      }
-      try {
-        const desktopArtifactPath =
-          hasDesktopRuntime() ? artifactPathForKind(artifactKind) : null;
-        if (desktopArtifactPath) {
-          const desktopUrl = await convertDesktopFilePath(desktopArtifactPath);
-          if (desktopUrl) {
-            nextArtifacts[artifactKind] = appendArtifactVersion(
-              desktopUrl,
+    const resolvedEntries = await Promise.all(
+      availableArtifactKinds.map(async (artifactKind) => {
+        try {
+          const url = await fetchValidationArtifactUrl(
+            selectedSiteId!,
+            result.summary.validation_id,
+            patientId,
+            visitDate,
+            artifactKind,
+            token,
+            { previewMaxSide: VALIDATION_ARTIFACT_PREVIEW_MAX_SIDE },
+          );
+          return [
+            artifactKind,
+            appendArtifactVersion(
+              url,
               result.summary.validation_id,
               artifactKind,
-            );
-            continue;
-          }
+            ),
+            url,
+          ] as const;
+        } catch {
+          return [artifactKind, null, null] as const;
         }
-        const url = await fetchValidationArtifactUrl(
-          selectedSiteId!,
-          result.summary.validation_id,
-          patientId,
-          visitDate,
-          artifactKind,
-          token,
-        );
-        if (url) {
-          validationArtifactUrlsRef.current.push(url);
-        }
-        nextArtifacts[artifactKind] = appendArtifactVersion(
-          url,
-          result.summary.validation_id,
-          artifactKind,
-        );
-      } catch {
-        nextArtifacts[artifactKind] = null;
+      }),
+    );
+
+    for (const [artifactKind, resolvedUrl, revokeUrl] of resolvedEntries) {
+      nextArtifacts[artifactKind] = resolvedUrl;
+      if (revokeUrl) {
+        nextUrls.push(revokeUrl);
       }
     }
 
-    return nextArtifacts;
-  }
+    return {
+      artifacts: nextArtifacts,
+      urls: nextUrls,
+    };
+  }, [selectedSiteId, token]);
+
+  const hydrateValidationArtifacts = useCallback(
+    async (
+      result: CaseValidationResponse,
+      patientId: string,
+      visitDate: string,
+      requestId: number,
+    ) => {
+      try {
+        const { artifacts, urls } = await resolveValidationArtifacts(
+          result,
+          patientId,
+          visitDate,
+        );
+        if (validationArtifactRequestRef.current !== requestId) {
+          revokeUrls(urls);
+          return;
+        }
+        validationArtifactUrlsRef.current = urls;
+        startTransition(() => {
+          setValidationArtifacts(artifacts);
+          setValidationArtifactsBusy(false);
+        });
+      } catch {
+        if (validationArtifactRequestRef.current !== requestId) {
+          return;
+        }
+        startTransition(() => {
+          setValidationArtifactsBusy(false);
+          setValidationArtifacts({});
+        });
+      }
+    },
+    [resolveValidationArtifacts],
+  );
+
+  const scheduleValidationBackgroundRefresh = useCallback(
+    (
+      siteId: string,
+      patientId: string,
+      visitDate: string,
+      result: CaseValidationResponse,
+      selectedCaseRecord: CaseSummaryRecord,
+    ) => {
+      const scheduleRefreshTask = (
+        task: () => Promise<void> | void,
+        delayMs: number,
+        warningLabel: string,
+      ) => {
+        let cancelInteractionAwareRefresh = () => undefined;
+        const cancelDeferredRefresh = scheduleDeferredBrowserTask(() => {
+          cancelInteractionAwareRefresh = runAfterDesktopInteractionIdle(
+            () => {
+              void Promise.resolve(task()).catch((nextError) => {
+                console.warn(warningLabel, nextError);
+              });
+            },
+            delayMs,
+          );
+        }, Math.max(120, delayMs - 1400));
+        return () => {
+          cancelDeferredRefresh();
+          cancelInteractionAwareRefresh();
+        };
+      };
+      const cancelSiteRefresh = scheduleRefreshTask(
+        () => onSiteDataChanged(siteId),
+        1800,
+        "Validation site refresh failed",
+      );
+      const cancelHistoryRefresh = scheduleRefreshTask(
+        () => loadCaseHistory(siteId, patientId, visitDate),
+        2400,
+        "Validation history refresh failed",
+      );
+      const cancelActivityRefresh = scheduleRefreshTask(
+        () => loadSiteActivity(siteId),
+        3000,
+        "Validation activity refresh failed",
+      );
+      const cancelCompletionHook = scheduleRefreshTask(
+        () =>
+          Promise.resolve(
+            onValidationCompleted?.({
+              siteId,
+              selectedCase: selectedCaseRecord,
+              result,
+            }),
+          ),
+        3600,
+        "Validation completion hook failed",
+      );
+      return () => {
+        cancelSiteRefresh();
+        cancelHistoryRefresh();
+        cancelActivityRefresh();
+        cancelCompletionHook();
+      };
+    },
+    [loadCaseHistory, loadSiteActivity, onSiteDataChanged, onValidationCompleted],
+  );
 
   async function runAnchorValidation(args: {
     patientId: string;
@@ -273,13 +378,27 @@ export function useCaseWorkspaceValidation({
         : undefined,
       selection_profile: args.selectionProfile,
     });
-    const nextArtifacts = await resolveValidationArtifacts(
-      result,
-      args.patientId,
-      args.visitDate,
-    );
-    setValidationArtifacts(nextArtifacts);
-    setValidationResult(result);
+    const hasReviewArtifacts = Object.values(
+      result.artifact_availability ?? {},
+    ).some(Boolean);
+    const requestId = validationArtifactRequestRef.current + 1;
+    validationArtifactRequestRef.current = requestId;
+    latestValidationExecutionDeviceRef.current = result.execution_device;
+    startTransition(() => {
+      setValidationResult(result);
+      setValidationArtifacts({});
+      setValidationArtifactsBusy(hasReviewArtifacts);
+    });
+    if (hasReviewArtifacts) {
+      scheduleDeferredBrowserTask(() => {
+        void hydrateValidationArtifacts(
+          result,
+          args.patientId,
+          args.visitDate,
+          requestId,
+        );
+      }, 40);
+    }
     return result;
   }
 
@@ -291,8 +410,19 @@ export function useCaseWorkspaceValidation({
       return null;
     }
 
+    const explicitModelVersionId =
+      String(options?.modelVersionId || "").trim() || null;
+    const normalizedSelectedValidationModelVersionId =
+      String(selectedValidationModelVersionId || "").trim() || null;
+    const shouldUsePreparedSelectionProfile =
+      Boolean(options?.selectionProfile) && !explicitModelVersionId;
     let availableModelVersions = siteModelVersions;
-    if (availableModelVersions.length === 0) {
+    const needsModelCatalogLoad =
+      availableModelVersions.length === 0 &&
+      !shouldUsePreparedSelectionProfile &&
+      !explicitModelVersionId &&
+      !normalizedSelectedValidationModelVersionId;
+    if (needsModelCatalogLoad) {
       try {
         availableModelVersions = await ensureSiteModelVersionsLoaded(
           selectedSiteId,
@@ -301,12 +431,6 @@ export function useCaseWorkspaceValidation({
         availableModelVersions = [];
       }
     }
-    const explicitModelVersionId =
-      String(options?.modelVersionId || "").trim() || null;
-    const normalizedSelectedValidationModelVersionId =
-      String(selectedValidationModelVersionId || "").trim() || null;
-    const shouldUsePreparedSelectionProfile =
-      Boolean(options?.selectionProfile) && !explicitModelVersionId;
     const requestedValidationModelVersionId = options?.ignoreSelectedModel
       ? explicitModelVersionId
       : explicitModelVersionId ||
@@ -320,6 +444,7 @@ export function useCaseWorkspaceValidation({
     );
 
     setValidationBusy(true);
+    cancelPendingValidationBackgroundRefresh();
     clearValidationArtifacts();
     setValidationResult(null);
     setModelCompareResult(null);
@@ -337,19 +462,15 @@ export function useCaseWorkspaceValidation({
         executionMode: previousExecutionMode,
       });
 
-      await onSiteDataChanged(selectedSiteId);
-      await loadCaseHistory(
+      onArtifactsChanged?.();
+      validationBackgroundRefreshCleanupRef.current =
+        scheduleValidationBackgroundRefresh(
         selectedSiteId,
         selectedCase.patient_id,
         selectedCase.visit_date,
-      );
-      await loadSiteActivity(selectedSiteId);
-      await onValidationCompleted?.({
-        siteId: selectedSiteId,
-        selectedCase,
         result,
-      });
-      onArtifactsChanged?.();
+        selectedCase,
+        );
       setToast({
         tone: "success",
         message: copy.validationSaved(
@@ -369,6 +490,7 @@ export function useCaseWorkspaceValidation({
       setModelCompareBusy(false);
     }
   }, [
+    cancelPendingValidationBackgroundRefresh,
     clearValidationArtifacts,
     copy,
     defaultValidationModelVersionSelection,
@@ -382,6 +504,7 @@ export function useCaseWorkspaceValidation({
     onSiteDataChanged,
     onValidationCompleted,
     pick,
+    scheduleValidationBackgroundRefresh,
     selectedCase,
     selectedSiteId,
     setContributionResult,
@@ -399,15 +522,6 @@ export function useCaseWorkspaceValidation({
         setToast({ tone: "error", message: copy.selectSavedCaseForValidation });
         return null;
       }
-      let availableModelVersions = siteModelVersions;
-      if (availableModelVersions.length === 0) {
-        try {
-          availableModelVersions =
-            await ensureSiteModelVersionsLoaded(selectedSiteId);
-        } catch {
-          availableModelVersions = [];
-        }
-      }
       const requestedModelVersionIds = Array.from(
         new Set(
           (
@@ -418,6 +532,22 @@ export function useCaseWorkspaceValidation({
             .filter((item) => item.length > 0),
         ),
       ).slice(0, maxCompareSelections);
+      let availableModelVersions = siteModelVersions;
+      const shouldSkipCatalogLoadForPreparedFallback =
+        availableModelVersions.length === 0 &&
+        requestedModelVersionIds.length === 0 &&
+        options?.preferPreparedMil === true;
+      if (
+        availableModelVersions.length === 0 &&
+        !shouldSkipCatalogLoadForPreparedFallback
+      ) {
+        try {
+          availableModelVersions =
+            await ensureSiteModelVersionsLoaded(selectedSiteId);
+        } catch {
+          availableModelVersions = [];
+        }
+      }
       const preparedMilVersionId =
         options?.preferPreparedMil === true
           ? preferredVisitLevelMilModelVersion(availableModelVersions)
@@ -459,10 +589,14 @@ export function useCaseWorkspaceValidation({
               : undefined,
           selection_profile: selectionProfile,
           execution_mode: executionModeFromDevice(
-            options?.executionDevice ?? validationResult?.execution_device,
+            options?.executionDevice ??
+              validationResult?.execution_device ??
+              latestValidationExecutionDeviceRef.current,
           ),
         });
-        setModelCompareResult(result);
+        startTransition(() => {
+          setModelCompareResult(result);
+        });
         setToast({
           tone: "success",
           message: pick(
@@ -513,6 +647,7 @@ export function useCaseWorkspaceValidation({
     modelCompareBusy,
     modelCompareResult,
     validationArtifacts,
+    validationArtifactsBusy,
     resetValidationState,
     handleRunValidation,
     handleRunModelCompare,

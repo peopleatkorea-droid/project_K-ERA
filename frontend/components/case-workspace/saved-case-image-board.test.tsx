@@ -248,4 +248,55 @@ describe("SavedCaseImageBoard", () => {
     expect(screen.getByAltText("image-4")).toHaveAttribute("src", "asset://image-4-roi-crop");
     expect(screen.queryByLabelText("Live MedSAM mask overlay")).not.toBeInTheDocument();
   });
+
+  it("prioritizes only the first card and the representative image", () => {
+    renderBoard({
+      selectedCaseImageCountHint: 3,
+      selectedCaseImages: [
+        {
+          image_id: "image-support",
+          visit_id: "visit-5",
+          patient_id: "patient-5",
+          visit_date: "Initial",
+          view: "white",
+          image_path: "C:/images/image-support.jpg",
+          is_representative: false,
+          content_url: "asset://image-support",
+          preview_url: "asset://image-support-preview",
+          uploaded_at: "2026-03-22T00:00:00Z",
+        },
+        {
+          image_id: "image-secondary",
+          visit_id: "visit-5",
+          patient_id: "patient-5",
+          visit_date: "Initial",
+          view: "white",
+          image_path: "C:/images/image-secondary.jpg",
+          is_representative: false,
+          content_url: "asset://image-secondary",
+          preview_url: "asset://image-secondary-preview",
+          uploaded_at: "2026-03-22T00:00:00Z",
+        },
+        {
+          image_id: "image-representative",
+          visit_id: "visit-5",
+          patient_id: "patient-5",
+          visit_date: "Initial",
+          view: "fluorescein",
+          image_path: "C:/images/image-representative.jpg",
+          is_representative: true,
+          content_url: "asset://image-representative",
+          preview_url: "asset://image-representative-preview",
+          uploaded_at: "2026-03-22T00:00:00Z",
+        },
+      ],
+    });
+
+    expect(screen.getByAltText("image-support")).toHaveAttribute("loading", "eager");
+    expect(screen.getByAltText("image-support")).toHaveAttribute("fetchpriority", "high");
+    expect(screen.getByAltText("image-secondary")).toHaveAttribute("loading", "lazy");
+    expect(screen.getByAltText("image-secondary")).toHaveAttribute("fetchpriority", "low");
+    expect(screen.getByAltText("image-representative")).toHaveAttribute("loading", "eager");
+    expect(screen.getByAltText("image-representative")).toHaveAttribute("fetchpriority", "high");
+  });
 });

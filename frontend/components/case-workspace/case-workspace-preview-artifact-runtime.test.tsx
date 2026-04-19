@@ -35,6 +35,7 @@ describe("case-workspace preview artifact runtime", () => {
         "image_1",
         "roi_crop",
         "token",
+        { previewMaxSide: 512 },
       );
       expect(result.entries).toEqual([["image_1", "/roi/image_1"]]);
       expect(result.urls).toEqual(["/roi/image_1"]);
@@ -75,6 +76,7 @@ describe("case-workspace preview artifact runtime", () => {
         "image_1",
         "lesion_crop",
         "token",
+        { previewMaxSide: 512 },
       );
       expect(result.entries).toEqual([["image_1", "/lesion/image_1"]]);
       expect(result.urls).toEqual(["/lesion/image_1"]);

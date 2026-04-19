@@ -22,11 +22,26 @@ fn preview_warm_state() -> &'static Mutex<HashSet<String>> {
     PREVIEW_WARM_STATE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn preview_warm_queue() -> &'static Mutex<std::collections::VecDeque<(String, WarmPreviewJob)>> {
+    static PREVIEW_WARM_QUEUE: OnceLock<Mutex<std::collections::VecDeque<(String, WarmPreviewJob)>>> =
+        OnceLock::new();
+    PREVIEW_WARM_QUEUE.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn preview_warm_worker_active() -> &'static Mutex<bool> {
+    static PREVIEW_WARM_WORKER_ACTIVE: OnceLock<Mutex<bool>> = OnceLock::new();
+    PREVIEW_WARM_WORKER_ACTIVE.get_or_init(|| Mutex::new(false))
+}
+
 fn preview_job_key(site_id: &str, image_id: &str, max_side: u32) -> String {
     format!("{site_id}::{image_id}::{max_side}")
 }
 
-fn ensure_preview(image_path: &Path, preview_path: &Path, max_side: u32) -> Result<(), String> {
+pub(super) fn ensure_preview(
+    image_path: &Path,
+    preview_path: &Path,
+    max_side: u32,
+) -> Result<(), String> {
     if preview_path.exists() {
         return Ok(());
     }
@@ -101,16 +116,74 @@ pub(super) fn queue_preview_generation_batch(jobs: Vec<WarmPreviewJob>) {
     if queued_jobs.is_empty() {
         return;
     }
-    std::thread::spawn(move || {
-        for (job_key, job) in queued_jobs {
-            if let Ok(preview_path) = preview_cache_path(&job.site_id, &job.image_id, job.max_side)
-            {
-                let _ = ensure_preview(&job.image_path, &preview_path, job.max_side);
-            }
-            let mut queued = preview_warm_state()
+
+    {
+        let mut queue = preview_warm_queue()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.extend(queued_jobs);
+    }
+
+    let should_spawn_worker = {
+        let mut worker_active = preview_warm_worker_active()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *worker_active {
+            false
+        } else {
+            *worker_active = true;
+            true
+        }
+    };
+    if !should_spawn_worker {
+        return;
+    }
+
+    std::thread::spawn(|| loop {
+        let next_job = {
+            let mut queue = preview_warm_queue()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            queued.remove(&job_key);
+            queue.pop_front()
+        };
+
+        let Some((job_key, job)) = next_job else {
+            let queue_is_empty = {
+                let queue = preview_warm_queue()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                queue.is_empty()
+            };
+            if queue_is_empty {
+                let mut worker_active = preview_warm_worker_active()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *worker_active = false;
+                return;
+            }
+            std::thread::yield_now();
+            continue;
+        };
+
+        if let Ok(preview_path) = preview_cache_path(&job.site_id, &job.image_id, job.max_side) {
+            let _ = ensure_preview(&job.image_path, &preview_path, job.max_side);
+        }
+        let mut queued = preview_warm_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queued.remove(&job_key);
+        drop(queued);
+
+        let has_more_work = {
+            let queue = preview_warm_queue()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            !queue.is_empty()
+        };
+        if has_more_work {
+            std::thread::sleep(Duration::from_millis(12));
+        } else {
+            std::thread::yield_now();
         }
     });
 }

@@ -7,6 +7,8 @@ import {
   buildPatientListThumbMap,
   caseTimestamp,
   patientMatchesListSearch,
+  sameCaseSummaryRecordList,
+  samePatientListRows,
   upsertCaseSummaryRecord,
   upsertPatientListRow,
   visitTimestamp,
@@ -222,6 +224,97 @@ describe("case workspace record helpers", () => {
     expect(buildPatientListThumbMap(rows)).toEqual({
       "P-001": rows[0].representative_thumbnails,
     });
+  });
+
+  it("treats equivalent case summary lists as unchanged", () => {
+    const firstList = [
+      createCase({
+        case_id: "case_1",
+        patient_id: "P-001",
+        visit_date: "Initial",
+      }),
+    ];
+    const secondList = [
+      createCase({
+        case_id: "case_1",
+        patient_id: "P-001",
+        visit_date: "Initial",
+      }),
+    ];
+
+    expect(sameCaseSummaryRecordList(firstList, secondList)).toBe(true);
+    expect(
+      sameCaseSummaryRecordList(firstList, [
+        createCase({
+          case_id: "case_1",
+          patient_id: "P-001",
+          visit_date: "Initial",
+          image_count: 3,
+        }),
+      ]),
+    ).toBe(false);
+  });
+
+  it("treats equivalent patient list rows as unchanged", () => {
+    const firstRows = [
+      {
+        patient_id: "P-001",
+        latest_case: createCase({
+          case_id: "case_1",
+          patient_id: "P-001",
+          visit_date: "Initial",
+        }),
+        case_count: 1,
+        organism_summary: "Pseudomonas",
+        representative_thumbnail_count: 1,
+        representative_thumbnails: [
+          {
+            case_id: "case_1",
+            image_id: "image_1",
+            view: "white",
+            preview_url: "/preview/image_1",
+            fallback_url: "/content/image_1",
+          },
+        ],
+      },
+    ];
+    const secondRows = [
+      {
+        patient_id: "P-001",
+        latest_case: createCase({
+          case_id: "case_1",
+          patient_id: "P-001",
+          visit_date: "Initial",
+        }),
+        case_count: 1,
+        organism_summary: "Pseudomonas",
+        representative_thumbnail_count: 1,
+        representative_thumbnails: [
+          {
+            case_id: "case_1",
+            image_id: "image_1",
+            view: "white",
+            preview_url: "/preview/image_1",
+            fallback_url: "/content/image_1",
+          },
+        ],
+      },
+    ];
+
+    expect(samePatientListRows(firstRows, secondRows)).toBe(true);
+    expect(
+      samePatientListRows(firstRows, [
+        {
+          ...secondRows[0],
+          representative_thumbnails: [
+            {
+              ...secondRows[0].representative_thumbnails[0],
+              preview_url: "/preview/image_2",
+            },
+          ],
+        },
+      ]),
+    ).toBe(false);
   });
 
   it("returns zero timestamps for invalid dates", () => {

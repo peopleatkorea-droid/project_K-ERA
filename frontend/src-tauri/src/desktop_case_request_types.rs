@@ -86,6 +86,7 @@ struct ValidationArtifactRequest {
     patient_id: String,
     visit_date: String,
     artifact_kind: String,
+    preview_max_side: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,5 +96,6 @@ struct CasePreviewArtifactRequest {
     visit_date: String,
     image_id: String,
     artifact_kind: String,
+    preview_max_side: Option<u32>,
 }
 

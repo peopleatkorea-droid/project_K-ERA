@@ -8,6 +8,7 @@ pub(super) struct MlSidecarRuntime {
     launch_command: Option<Vec<String>>,
     stderr_log_path: Option<String>,
     last_started_at: Option<String>,
+    last_healthcheck_at: Option<std::time::Instant>,
     last_error: Option<String>,
     launched_by_desktop: bool,
 }
@@ -24,6 +25,7 @@ impl Default for MlSidecarRuntime {
             launch_command: None,
             stderr_log_path: None,
             last_started_at: None,
+            last_healthcheck_at: None,
             last_error: None,
             launched_by_desktop: false,
         }
@@ -152,6 +154,7 @@ fn sync_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
         runtime.stdin = None;
         runtime.stdout = None;
         runtime.python_preflight = None;
+        runtime.last_healthcheck_at = None;
         let _ = unregister_managed_process(pid);
         runtime.launched_by_desktop = false;
         runtime.last_error = Some(error);
@@ -167,6 +170,7 @@ fn stop_ml_sidecar_runtime(runtime: &mut MlSidecarRuntime) {
     runtime.stdin = None;
     runtime.stdout = None;
     runtime.python_preflight = None;
+    runtime.last_healthcheck_at = None;
     runtime.launched_by_desktop = false;
 }
 
