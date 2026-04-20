@@ -19,6 +19,7 @@ from fastapi import (
 )
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
+from PIL import UnidentifiedImageError
 
 from kera_research.api.models import LesionBoxRequest, RepresentativeImageRequest
 from kera_research.api.routes.case_shared import (
@@ -560,6 +561,23 @@ def build_case_images_router(support: Any) -> APIRouter:
         image_path = Path(str(image.get("image_path") or ""))
         if not image_path.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found on disk.")
+        try:
+            generated_preview_path = site_store.ensure_image_preview(image, normalized_max_side)
+        except (OSError, UnidentifiedImageError, ValueError) as exc:
+            logger.warning(
+                "Image preview generation failed for %s/%s at %s px: %s",
+                site_id,
+                image_id,
+                normalized_max_side,
+                exc,
+            )
+        else:
+            return FileResponse(
+                path=generated_preview_path,
+                media_type="image/jpeg",
+                filename=generated_preview_path.name,
+                headers={"Cache-Control": "private, max-age=86400"},
+            )
         schedule_image_derivative_backfill(site_store, [image_id])
         media_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
         return FileResponse(

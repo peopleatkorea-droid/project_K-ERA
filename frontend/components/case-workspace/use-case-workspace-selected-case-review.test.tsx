@@ -48,6 +48,7 @@ describe("useCaseWorkspaceSelectedCaseReview", () => {
           error instanceof Error ? error.message : fallback,
         pick: (locale, en, ko) => (locale === "ko" ? ko : en),
         setToast: vi.fn(),
+        workspaceTimingLogs: false,
         setPatientVisitGallery: vi.fn(),
         setPatientVisitGalleryLoadingCaseIds: vi.fn(),
         setPatientVisitGalleryErrorCaseIds: vi.fn(),
@@ -67,6 +68,7 @@ describe("useCaseWorkspaceSelectedCaseReview", () => {
         selectedCaseImageCaseIdRef: { current: null },
         caseImageCacheRef: { current: new Map() },
         caseHistoryCacheRef: { current: new Map() },
+        caseOpenSlaSessionRef: { current: null },
       }),
     );
 

@@ -23,6 +23,12 @@ import {
   normalizeCultureStatus,
 } from "./case-workspace-draft-helpers";
 import { normalizeBox } from "./case-workspace-core-helpers";
+import { sameCaseSummaryRecordList } from "./case-workspace-records";
+import {
+  logCaseOpenTimelineReadySla,
+  startCaseOpenSlaSession,
+  type CaseOpenSlaSession,
+} from "./case-workspace-sla-logging";
 
 type DraftImage = {
   draft_id: string;
@@ -104,6 +110,7 @@ function normalizeDraftCultureFields(
 }
 
 type OpenSavedCaseArgs = {
+  selectedSiteId: string | null;
   caseRecord: CaseSummaryRecord;
   nextView?: "cases" | "patients";
   desktopFastMode: boolean;
@@ -111,6 +118,7 @@ type OpenSavedCaseArgs = {
   caseOpenStartedAtRef: MutableRefObject<number | null>;
   caseOpenCaseIdRef: MutableRefObject<string | null>;
   caseImagesLoggedCaseIdRef: MutableRefObject<string | null>;
+  caseOpenSlaSessionRef: MutableRefObject<CaseOpenSlaSession | null>;
   cases: CaseSummaryRecord[];
   setCases: Dispatch<SetStateAction<CaseSummaryRecord[]>>;
   setSelectedCase: Dispatch<SetStateAction<CaseSummaryRecord | null>>;
@@ -122,6 +130,10 @@ type OpenSavedCaseArgs = {
     patientId: string,
     fallbackCase?: CaseSummaryRecord | null,
   ) => CaseSummaryRecord[];
+  hydratePatientTimeline?: (
+    siteId: string,
+    patientId: string,
+  ) => Promise<CaseSummaryRecord[]>;
 };
 
 type StartFollowUpDraftArgs = {
@@ -189,6 +201,7 @@ type OpenImageTextSearchResultArgs = {
 };
 
 export function openSavedCase({
+  selectedSiteId,
   caseRecord,
   nextView = "cases",
   desktopFastMode,
@@ -196,6 +209,7 @@ export function openSavedCase({
   caseOpenStartedAtRef,
   caseOpenCaseIdRef,
   caseImagesLoggedCaseIdRef,
+  caseOpenSlaSessionRef,
   cases,
   setCases,
   setSelectedCase,
@@ -203,11 +217,28 @@ export function openSavedCase({
   setPanelOpen,
   setRailView,
   buildKnownPatientTimeline,
+  hydratePatientTimeline,
 }: OpenSavedCaseArgs) {
+  const caseOpenStartedAt = workspaceTimingLogs ? performance.now() : null;
+  const knownPatientTimeline = buildKnownPatientTimeline(
+    cases,
+    caseRecord.patient_id,
+    caseRecord,
+  );
   if (desktopFastMode) {
-    caseOpenStartedAtRef.current = performance.now();
+    const startedAt = performance.now();
+    caseOpenStartedAtRef.current = startedAt;
     caseOpenCaseIdRef.current = caseRecord.case_id;
     caseImagesLoggedCaseIdRef.current = null;
+    caseOpenSlaSessionRef.current =
+      workspaceTimingLogs && selectedSiteId
+        ? startCaseOpenSlaSession(
+            selectedSiteId,
+            caseRecord,
+            knownPatientTimeline.length,
+            startedAt,
+          )
+        : null;
     if (workspaceTimingLogs) {
       console.info("[kera-fast-path] case-open", {
         case_id: caseRecord.case_id,
@@ -223,12 +254,74 @@ export function openSavedCase({
     return [caseRecord, ...current];
   });
   setSelectedCase(caseRecord);
-  setSelectedPatientCases(
-    buildKnownPatientTimeline(cases, caseRecord.patient_id, caseRecord),
-  );
+  setSelectedPatientCases(knownPatientTimeline);
   setPanelOpen(true);
   setRailView(nextView);
   window.scrollTo({ top: 0, behavior: "auto" });
+  if (
+    !hydratePatientTimeline ||
+    !selectedSiteId ||
+    knownPatientTimeline.length > 1
+  ) {
+    if (desktopFastMode && workspaceTimingLogs) {
+      logCaseOpenTimelineReadySla(caseOpenSlaSessionRef, caseRecord.case_id, {
+        hydratedCases: knownPatientTimeline.length,
+        source: "seed",
+      });
+    }
+    return;
+  }
+  void hydratePatientTimeline(selectedSiteId, caseRecord.patient_id)
+    .then((timeline) => {
+      if (timeline.length === 0) {
+        return;
+      }
+      if (desktopFastMode && workspaceTimingLogs) {
+        logCaseOpenTimelineReadySla(caseOpenSlaSessionRef, caseRecord.case_id, {
+          hydratedCases: timeline.length,
+          source: "hydrate",
+        });
+      }
+      if (workspaceTimingLogs) {
+        const startedAt = caseOpenStartedAt ?? performance.now();
+        console.info("[kera-fast-path] case-open-patient-timeline-ready", {
+          case_id: caseRecord.case_id,
+          patient_id: caseRecord.patient_id,
+          seeded_cases: knownPatientTimeline.length,
+          hydrated_cases: timeline.length,
+          elapsed_ms: Math.round(performance.now() - startedAt),
+        });
+      }
+      setSelectedPatientCases((current) =>
+        sameCaseSummaryRecordList(current, timeline) ? current : timeline,
+      );
+      setSelectedCase((current) => {
+        if (!current) {
+          return current;
+        }
+        if (
+          current.case_id !== caseRecord.case_id &&
+          !(
+            current.patient_id === caseRecord.patient_id &&
+            current.visit_date === caseRecord.visit_date
+          )
+        ) {
+          return current;
+        }
+        return (
+          timeline.find((item) => item.case_id === current.case_id) ??
+          timeline.find(
+            (item) =>
+              item.patient_id === current.patient_id &&
+              item.visit_date === current.visit_date,
+          ) ??
+          current
+        );
+      });
+    })
+    .catch((nextError) => {
+      console.warn("Saved case patient timeline hydration failed", nextError);
+    });
 }
 
 export async function startFollowUpDraftFromSelectedCase({

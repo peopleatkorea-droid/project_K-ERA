@@ -30,12 +30,14 @@ type Args = {
   caseOpenStartedAtRef: OpenSavedCaseInput["caseOpenStartedAtRef"];
   caseOpenCaseIdRef: OpenSavedCaseInput["caseOpenCaseIdRef"];
   caseImagesLoggedCaseIdRef: OpenSavedCaseInput["caseImagesLoggedCaseIdRef"];
+  caseOpenSlaSessionRef: OpenSavedCaseInput["caseOpenSlaSessionRef"];
   setCases: OpenSavedCaseInput["setCases"];
   setSelectedCase: StartFollowUpDraftInput["setSelectedCase"];
   setSelectedPatientCases: OpenSavedCaseInput["setSelectedPatientCases"];
   setPanelOpen: StartFollowUpDraftInput["setPanelOpen"];
   setRailView: StartFollowUpDraftInput["setRailView"];
   buildKnownPatientTimeline: OpenSavedCaseInput["buildKnownPatientTimeline"];
+  hydratePatientTimeline: OpenSavedCaseInput["hydratePatientTimeline"];
   cultureSpecies: StartFollowUpDraftInput["cultureSpecies"];
   describeError: StartFollowUpDraftInput["describeError"];
   pick: StartFollowUpDraftInput["pick"];
@@ -77,12 +79,14 @@ export function useCaseWorkspaceSavedCaseActions({
   caseOpenStartedAtRef,
   caseOpenCaseIdRef,
   caseImagesLoggedCaseIdRef,
+  caseOpenSlaSessionRef,
   setCases,
   setSelectedCase,
   setSelectedPatientCases,
   setPanelOpen,
   setRailView,
   buildKnownPatientTimeline,
+  hydratePatientTimeline,
   cultureSpecies,
   describeError,
   pick,
@@ -111,6 +115,7 @@ export function useCaseWorkspaceSavedCaseActions({
       nextView: "cases" | "patients" = "cases",
     ) => {
       runOpenSavedCase({
+        selectedSiteId,
         caseRecord,
         nextView,
         desktopFastMode,
@@ -118,6 +123,7 @@ export function useCaseWorkspaceSavedCaseActions({
         caseOpenStartedAtRef,
         caseOpenCaseIdRef,
         caseImagesLoggedCaseIdRef,
+        caseOpenSlaSessionRef,
         cases,
         setCases,
         setSelectedCase,
@@ -125,20 +131,24 @@ export function useCaseWorkspaceSavedCaseActions({
         setPanelOpen,
         setRailView,
         buildKnownPatientTimeline,
+        hydratePatientTimeline,
       });
     },
     [
+      selectedSiteId,
       buildKnownPatientTimeline,
       caseImagesLoggedCaseIdRef,
       caseOpenCaseIdRef,
       caseOpenStartedAtRef,
       cases,
+      caseOpenSlaSessionRef,
       desktopFastMode,
       setCases,
       setPanelOpen,
       setRailView,
       setSelectedCase,
       setSelectedPatientCases,
+      hydratePatientTimeline,
       workspaceTimingLogs,
     ],
   );

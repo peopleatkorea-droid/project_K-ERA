@@ -25,6 +25,7 @@ import {
   buildPatientListThumbMap,
   samePatientListRows,
 } from "./case-workspace-records";
+import { logPatientListReadySla } from "./case-workspace-sla-logging";
 import type { PatientListRow, PatientListThumbnail } from "./shared";
 
 const PATIENT_LIST_PAGE_SIZE = 25;
@@ -354,6 +355,12 @@ export function useCaseWorkspacePatientListArtifacts({
             rows: response.items.length,
             total_count: response.total_count,
             elapsed_ms: Math.round(performance.now() - startedAt),
+          });
+          logPatientListReadySla({
+            siteId: currentSiteId,
+            rows: response.items.length,
+            totalCount: response.total_count,
+            startedAt,
           });
         }
         if (typeof window !== "undefined") {

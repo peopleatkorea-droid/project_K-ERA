@@ -2,6 +2,15 @@
 
 ## 2026-04-20
 
+### Case-workflow SLA instrumentation and cold-preview hardening
+
+- patient list ready / case-open timeline ready / case-open gallery ready를 한 세트의 `[kera-sla]` structured log로 정리하고, 저장 케이스 오픈 한 번을 같은 `request_id`로 추적할 수 있게 했습니다.
+- `case-open` summary 로그에 `seeded_cases`, `hydrated_cases`, `visit_count`, `uncached_visit_count`, `timeline_ready_elapsed_ms`, `gallery_ready_elapsed_ms`, `within_sla`를 같이 남겨 cold/warm 차이와 병목을 바로 비교할 수 있게 했습니다.
+- 저장 케이스 오픈은 optimistic seed로 즉시 열고, seeded timeline이 1건뿐일 때만 patient-scoped timeline hydration을 뒤에서 붙여 patient-complete timeline을 더 빨리 복구하도록 했습니다.
+- selected-case review 경로는 full patient gallery가 cache hit인지 fetch 완료인지까지 구분해 gallery-ready SLA를 남기도록 보강했습니다.
+- 웹 preview endpoint는 cold-cache miss에서 원본 이미지를 바로 보내기 전에 inline preview 생성을 먼저 시도하도록 바꿨습니다. preview 생성이 실패할 때만 기존 source fallback + derivative backfill queue 경로를 유지합니다.
+- preview HTTP test와 case-workspace stability/test hook도 새 동작에 맞게 정리했습니다.
+
 ### Saved-case 3-step clinician review cleanup
 
 - 저장 케이스 검토 화면을 `1단계 이미지 레벨 분석 -> 2단계 방문 단위 분석(MIL) -> 3단계 유사 증례/3D 맵` 흐름으로 다시 정리하고, 상단 `1-3 순차 분석 실행`을 기본 경로로 고정했습니다.
@@ -21,6 +30,9 @@
 
 ### Verification
 
+- `.\.venv\Scripts\python.exe -m pytest tests/test_api_http.py -k preview -q`
+- `npm --prefix frontend run test:run -- components/case-workspace.stability.test.tsx`
+- `npm --prefix frontend run test:run -- components/case-workspace/use-case-workspace-selected-case-review.test.tsx`
 - `uv run pytest tests/test_api_http.py -k "cluster_position"`
 - `npx vitest run components/case-workspace/ai-clinic-panel.test.tsx`
 - `npx vitest run components/case-workspace/ai-clinic-result.test.tsx`

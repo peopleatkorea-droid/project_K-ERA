@@ -82,6 +82,7 @@ import {
   organismSummaryLabel,
   visitPhaseCopy,
 } from "./case-workspace/case-workspace-draft-helpers";
+import type { CaseOpenSlaSession } from "./case-workspace/case-workspace-sla-logging";
 import { buildCaseWorkspaceChromeState } from "./case-workspace/case-workspace-chrome";
 import { buildCaseWorkspaceModeState } from "./case-workspace/case-workspace-mode-state";
 import { buildCaseWorkspaceSurfaceProps } from "./case-workspace/case-workspace-surface-props";
@@ -291,6 +292,7 @@ export function CaseWorkspace({
   const caseOpenStartedAtRef = useRef<number | null>(null);
   const caseOpenCaseIdRef = useRef<string | null>(null);
   const caseImagesLoggedCaseIdRef = useRef<string | null>(null);
+  const caseOpenSlaSessionRef = useRef<CaseOpenSlaSession | null>(null);
   const desktopFastMode = canUseDesktopTransport();
   const researchRegistryJoinReady =
     researchRegistryExplanationConfirmed && researchRegistryUsageConsented;
@@ -434,6 +436,7 @@ export function CaseWorkspace({
     loadSiteValidationRuns,
     ensureSiteValidationRunsLoaded,
     ensureSiteModelVersionsLoaded,
+    hydratePatientCaseTimeline,
   } = useCaseWorkspaceSiteData({
     caseImageCacheVersion,
     selectedSiteId,
@@ -450,6 +453,8 @@ export function CaseWorkspace({
     describeError,
     pick,
     setToast,
+    workspaceTimingLogs: CASE_WORKSPACE_TIMING_LOGS,
+    caseOpenSlaSessionRef,
   });
   useEffect(() => {
     if (!selectedSiteId) {
@@ -658,6 +663,7 @@ export function CaseWorkspace({
     caseOpenStartedAtRef.current = null;
     caseOpenCaseIdRef.current = null;
     caseImagesLoggedCaseIdRef.current = null;
+    caseOpenSlaSessionRef.current = null;
     if (!desktopFastMode || !selectedSiteId) {
       workspaceOpenedAtRef.current = null;
       return;
@@ -852,12 +858,14 @@ export function CaseWorkspace({
     caseOpenStartedAtRef,
     caseOpenCaseIdRef,
     caseImagesLoggedCaseIdRef,
+    caseOpenSlaSessionRef,
     setCases,
     setSelectedCase,
     setSelectedPatientCases,
     setPanelOpen,
     setRailView,
     buildKnownPatientTimeline,
+    hydratePatientTimeline: hydratePatientCaseTimeline,
     cultureSpecies: CASE_WORKSPACE_CULTURE_SPECIES,
     describeError,
     pick,

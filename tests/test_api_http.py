@@ -2645,7 +2645,7 @@ class ApiHttpTests(unittest.TestCase):
         )
         self.assertEqual(missing_response.status_code, 404, missing_response.text)
 
-    def test_image_preview_endpoint_serves_source_while_preview_backfill_queues_http(self):
+    def test_image_preview_endpoint_generates_preview_inline_on_cache_miss_http(self):
         admin_token = self._login("admin", "admin123")
         image_id = self._seed_case(admin_token, patient_id="HTTP-001", visit_date="Initial")
         preview_url = f"/api/sites/{self.site_id}/images/{image_id}/preview?max_side=384"
@@ -2653,23 +2653,15 @@ class ApiHttpTests(unittest.TestCase):
         preview_path.unlink(missing_ok=True)
 
         with patch("kera_research.api.routes.case_images.schedule_image_derivative_backfill") as backfill_mock:
-            with patch.object(
-                self.app_module.SiteStore,
-                "ensure_image_preview",
-                side_effect=AssertionError("preview endpoint should not generate previews inline on cache miss"),
-            ):
-                response = self.client.get(
-                    preview_url,
-                    headers={"Authorization": f"Bearer {admin_token}"},
-                )
+            response = self.client.get(
+                preview_url,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.headers["content-type"], "image/png")
-        self.assertFalse(preview_path.exists())
-        backfill_mock.assert_called_once()
-        scheduled_store, scheduled_ids = backfill_mock.call_args.args
-        self.assertEqual(str(scheduled_store.site_id), self.site_id)
-        self.assertEqual(scheduled_ids, [image_id])
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+        self.assertTrue(preview_path.exists())
+        backfill_mock.assert_not_called()
 
     def test_image_preview_batch_endpoint_prewarms_and_reports_preview_status_http(self):
         admin_token = self._login("admin", "admin123")

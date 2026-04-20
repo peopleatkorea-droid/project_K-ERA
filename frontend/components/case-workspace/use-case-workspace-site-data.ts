@@ -1,12 +1,19 @@
 ﻿"use client";
 
+import type { MutableRefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type CaseHistoryResponse,
   type CaseSummaryRecord,
+  fetchCases,
   type ModelVersionRecord,
 } from "../../lib/api";
+import {
+  buildPatientCaseTimelineCacheKey,
+  sortCaseTimelineRecords,
+} from "./case-workspace-site-data-helpers";
+import type { CaseOpenSlaSession } from "./case-workspace-sla-logging";
 import type { SavedImagePreview } from "./shared";
 import { useCaseWorkspaceCaseIndex } from "./use-case-workspace-case-index";
 import { useCaseWorkspaceImageCache } from "./use-case-workspace-image-cache";
@@ -36,6 +43,8 @@ type Args = {
   describeError: (error: unknown, fallback: string) => string;
   pick: (locale: "en" | "ko", en: string, ko: string) => string;
   setToast: (toast: ToastState) => void;
+  workspaceTimingLogs: boolean;
+  caseOpenSlaSessionRef: MutableRefObject<CaseOpenSlaSession | null>;
 };
 
 export function useCaseWorkspaceSiteData({
@@ -54,6 +63,8 @@ export function useCaseWorkspaceSiteData({
   describeError,
   pick,
   setToast,
+  workspaceTimingLogs,
+  caseOpenSlaSessionRef,
 }: Args) {
   const [cases, setCases] = useState<CaseSummaryRecord[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
@@ -172,6 +183,7 @@ export function useCaseWorkspaceSiteData({
     describeError,
     pick,
     setToast,
+    workspaceTimingLogs,
     setPatientVisitGallery,
     setPatientVisitGalleryLoadingCaseIds,
     setPatientVisitGalleryErrorCaseIds,
@@ -191,6 +203,7 @@ export function useCaseWorkspaceSiteData({
     selectedCaseImageCaseIdRef,
     caseImageCacheRef,
     caseHistoryCacheRef,
+    caseOpenSlaSessionRef,
   });
 
   useEffect(() => {
@@ -211,6 +224,49 @@ export function useCaseWorkspaceSiteData({
   useEffect(() => {
     clearPatientCaseTimelineCache();
   }, [showOnlyMine]);
+
+  const hydratePatientCaseTimeline = useCallback(
+    async (siteId: string, patientId: string) => {
+      const normalizedSiteId = String(siteId ?? "").trim();
+      const normalizedPatientId = String(patientId ?? "").trim();
+      if (!normalizedSiteId || !normalizedPatientId) {
+        return [];
+      }
+      const cacheKey = buildPatientCaseTimelineCacheKey(
+        normalizedSiteId,
+        showOnlyMine,
+        normalizedPatientId,
+      );
+      const cachedTimeline = patientCaseTimelineCacheRef.current.get(cacheKey);
+      if (
+        cachedTimeline &&
+        patientCaseTimelineReadyRef.current.get(cacheKey)
+      ) {
+        return cachedTimeline;
+      }
+      const pendingTimeline =
+        patientCaseTimelinePromiseCacheRef.current.get(cacheKey);
+      if (pendingTimeline) {
+        return pendingTimeline;
+      }
+      const nextRequest = fetchCases(normalizedSiteId, token, {
+        mine: showOnlyMine,
+        patientId: normalizedPatientId,
+      })
+        .then((items) => {
+          const timeline = sortCaseTimelineRecords(items);
+          patientCaseTimelineReadyRef.current.set(cacheKey, true);
+          patientCaseTimelineCacheRef.current.set(cacheKey, timeline);
+          return timeline;
+        })
+        .finally(() => {
+          patientCaseTimelinePromiseCacheRef.current.delete(cacheKey);
+        });
+      patientCaseTimelinePromiseCacheRef.current.set(cacheKey, nextRequest);
+      return nextRequest;
+    },
+    [showOnlyMine, token],
+  );
 
   useCaseWorkspaceCaseIndex({
     caseImageCacheVersion,
@@ -278,5 +334,6 @@ export function useCaseWorkspaceSiteData({
     ensureSiteActivityLoaded,
     ensureSiteValidationRunsLoaded,
     ensureSiteModelVersionsLoaded,
+    hydratePatientCaseTimeline,
   };
 }

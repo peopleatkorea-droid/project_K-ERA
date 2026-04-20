@@ -16,6 +16,10 @@ import {
   scheduleDeferredBrowserTask,
   sameSavedImagePreviewLists,
 } from "./case-workspace-site-data-helpers";
+import {
+  logCaseOpenGalleryReadySla,
+  type CaseOpenSlaSession,
+} from "./case-workspace-sla-logging";
 import type { SavedImagePreview } from "./shared";
 
 type ToastState = {
@@ -38,6 +42,7 @@ type Args = {
   describeError: (error: unknown, fallback: string) => string;
   pick: (locale: "en" | "ko", en: string, ko: string) => string;
   setToast: (toast: ToastState) => void;
+  workspaceTimingLogs: boolean;
   setPatientVisitGallery: Setter<Record<string, SavedImagePreview[]>>;
   setPatientVisitGalleryLoadingCaseIds: Setter<Record<string, boolean>>;
   setPatientVisitGalleryErrorCaseIds: Setter<Record<string, boolean>>;
@@ -79,6 +84,7 @@ type Args = {
   selectedCaseImageCaseIdRef: MutableRefObject<string | null>;
   caseImageCacheRef: MutableRefObject<Map<string, SavedImagePreview[]>>;
   caseHistoryCacheRef: MutableRefObject<Map<string, CaseHistoryResponse>>;
+  caseOpenSlaSessionRef: MutableRefObject<CaseOpenSlaSession | null>;
 };
 
 function isAbortError(error: unknown): boolean {
@@ -101,6 +107,7 @@ export function useCaseWorkspaceSelectedCaseReview({
   describeError,
   pick,
   setToast,
+  workspaceTimingLogs,
   setPatientVisitGallery,
   setPatientVisitGalleryLoadingCaseIds,
   setPatientVisitGalleryErrorCaseIds,
@@ -120,6 +127,7 @@ export function useCaseWorkspaceSelectedCaseReview({
   selectedCaseImageCaseIdRef,
   caseImageCacheRef,
   caseHistoryCacheRef,
+  caseOpenSlaSessionRef,
 }: Args) {
   const caseHistoryPromiseRef = useRef<
     Map<string, Promise<CaseHistoryResponse | null>>
@@ -200,6 +208,13 @@ export function useCaseWorkspaceSelectedCaseReview({
               ? cachedSelectedCaseImages
               : [],
           };
+    const uncachedVisitCount = patientCases.filter(
+      (caseItem) =>
+        !hasSettledCaseImageCache(
+          caseItem,
+          caseImageCacheRef.current.get(caseItem.case_id),
+        ),
+    ).length;
     selectedCaseImageCaseIdRef.current = currentCase.case_id;
     startTransition(() => {
       setCaseHistory(null);
@@ -211,6 +226,13 @@ export function useCaseWorkspaceSelectedCaseReview({
       }
       setPatientVisitGallery(nextInitialGallery);
     });
+    if (workspaceTimingLogs && uncachedVisitCount === 0) {
+      logCaseOpenGalleryReadySla(caseOpenSlaSessionRef, currentCase.case_id, {
+        visitCount: patientCases.length,
+        uncachedVisitCount: 0,
+        source: "cache",
+      });
+    }
 
     async function loadSelectedCaseImages(): Promise<void> {
       const selectedCaseNeedsLoading = !hasCachedSelectedCaseImages;
@@ -302,6 +324,13 @@ export function useCaseWorkspaceSelectedCaseReview({
         commitPatientVisitGalleryBatch(galleryEntries);
         markPatientVisitGalleryErrorBatch(uncachedCaseIds, false);
         markPatientVisitGalleryLoadingBatch(uncachedCaseIds, false);
+        if (workspaceTimingLogs) {
+          logCaseOpenGalleryReadySla(caseOpenSlaSessionRef, currentCase.case_id, {
+            visitCount: patientCases.length,
+            uncachedVisitCount: uncachedCaseIds.length,
+            source: "fetch",
+          });
+        }
       } catch (nextError) {
         if (isAbortError(nextError)) {
           return;
@@ -376,6 +405,13 @@ export function useCaseWorkspaceSelectedCaseReview({
       if (cancelled) {
         return;
       }
+      if (workspaceTimingLogs && patientCases.length === 1) {
+        logCaseOpenGalleryReadySla(caseOpenSlaSessionRef, currentCase.case_id, {
+          visitCount: 1,
+          uncachedVisitCount: hasCachedSelectedCaseImages ? 0 : 1,
+          source: hasCachedSelectedCaseImages ? "cache" : "fetch",
+        });
+      }
       if (!shouldLoadPatientTimelineImmediately) {
         void loadPatientCaseGallery();
       }
@@ -403,6 +439,7 @@ export function useCaseWorkspaceSelectedCaseReview({
     setToast,
     token,
     unableLoadCaseHistory,
+    workspaceTimingLogs,
   ]);
 
   useEffect(() => {
