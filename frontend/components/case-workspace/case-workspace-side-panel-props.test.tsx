@@ -127,9 +127,7 @@ describe("case-workspace side panel props", () => {
       "v2",
       "v1",
     ]);
-    expect(props.analysisTitle).toBe(
-      "Image-level analysis, visit-level analysis, and image retrieval",
-    );
+    expect(props.analysisTitle).toBe("Three-step analysis");
     expect(props.displayVisitReference("FU #1")).toBe("Visit FU #1");
     await props.onRunValidation();
     expect(runValidation).toHaveBeenCalledTimes(1);

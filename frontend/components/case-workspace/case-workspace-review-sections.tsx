@@ -4,6 +4,7 @@ import {
   type Dispatch,
   memo,
   type ReactNode,
+  useEffect,
   useRef,
   type SetStateAction,
   useCallback,
@@ -42,7 +43,10 @@ import type {
 import { ValidationArtifactStack } from "./validation-artifact-stack";
 import { ValidationPanel } from "./validation-panel";
 import { countDisplayedAiClinicSimilarCases } from "./case-workspace-ai-clinic-helpers";
-import { preferredVisitLevelMilModelVersion } from "./case-workspace-core-helpers";
+import {
+  preparedVisitLevelFallbackStatus,
+  preferredVisitLevelMilModelVersion,
+} from "./case-workspace-core-helpers";
 import {
   confidencePercent,
   confidenceTone,
@@ -57,6 +61,7 @@ import {
   docSectionHeadClass,
   docSectionLabelClass,
   docSiteBadgeClass,
+  emptySurfaceClass,
   panelStackClass,
 } from "../ui/workspace-patterns";
 import { SectionHeader } from "../ui/section-header";
@@ -238,6 +243,11 @@ function CaseWorkspaceAnalysisSectionInner({
       validationArtifacts.lesion_crop ||
       validationArtifacts.lesion_mask,
   );
+  const hasGradcamArtifacts = Boolean(
+    validationArtifacts.gradcam ||
+      validationArtifacts.gradcam_cornea ||
+      validationArtifacts.gradcam_lesion,
+  );
   const hasReportedValidationArtifacts = Boolean(
     validationResult &&
       Object.values(validationResult.artifact_availability ?? {}).some(Boolean),
@@ -387,6 +397,9 @@ function CaseWorkspaceAnalysisSectionInner({
 
   const [activeReviewStep, setActiveReviewStep] =
     useState<AnalysisReviewStep>("judgment");
+  const [hubActionStep, setHubActionStep] =
+    useState<AnalysisReviewStep | null>(null);
+  const [showSequentialResults, setShowSequentialResults] = useState(false);
   const [fullReviewBusy, setFullReviewBusy] = useState(false);
   const [fullReviewBusyStep, setFullReviewBusyStep] =
     useState<AnalysisReviewStep | null>(null);
@@ -414,8 +427,18 @@ function CaseWorkspaceAnalysisSectionInner({
   );
   const aiClinicSimilarCount = countDisplayedAiClinicSimilarCases(aiClinicResult);
   const milFallbackReady = hasSelectedCase && canRunValidation;
+  const visitLevelFallbackStatus = useMemo(
+    () =>
+      preparedVisitLevelFallbackStatus(locale, {
+        milFallbackReady,
+        modelCatalogState,
+      }),
+    [locale, milFallbackReady, modelCatalogState],
+  );
+  const pendingReviewScrollStepRef = useRef<AnalysisReviewStep | null>(null);
 
-  const scrollToReviewStep = useCallback((step: AnalysisReviewStep) => {
+  const requestScrollToReviewStep = useCallback((step: AnalysisReviewStep) => {
+    pendingReviewScrollStepRef.current = step;
     const target =
       step === "judgment"
         ? judgmentPanelRef.current
@@ -424,38 +447,65 @@ function CaseWorkspaceAnalysisSectionInner({
           : aiClinicPanelRef.current;
     if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
+      pendingReviewScrollStepRef.current = null;
     }
   }, []);
 
+  useEffect(() => {
+    if (pendingReviewScrollStepRef.current !== activeReviewStep) {
+      return;
+    }
+    const target =
+      activeReviewStep === "judgment"
+        ? judgmentPanelRef.current
+        : activeReviewStep === "agreement"
+          ? agreementPanelRef.current
+          : aiClinicPanelRef.current;
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      pendingReviewScrollStepRef.current = null;
+    }
+  }, [activeReviewStep]);
+
   const handleShowJudgmentDetails = useCallback(
     () => {
+      setShowSequentialResults(false);
       setActiveReviewStep("judgment");
-      scrollToReviewStep("judgment");
+      setHubActionStep("judgment");
+      requestScrollToReviewStep("judgment");
     },
-    [scrollToReviewStep],
+    [requestScrollToReviewStep],
   );
   const handleShowAgreementDetails = useCallback(
     () => {
+      setShowSequentialResults(false);
       setActiveReviewStep("agreement");
-      scrollToReviewStep("agreement");
+      setHubActionStep("agreement");
+      requestScrollToReviewStep("agreement");
     },
-    [scrollToReviewStep],
+    [requestScrollToReviewStep],
   );
   const handleShowAiClinicDetails = useCallback(
     () => {
+      setShowSequentialResults(false);
       setActiveReviewStep("ai_clinic");
-      scrollToReviewStep("ai_clinic");
+      setHubActionStep("ai_clinic");
+      requestScrollToReviewStep("ai_clinic");
     },
-    [scrollToReviewStep],
+    [requestScrollToReviewStep],
   );
   const handleRunValidationFromHub = useCallback(() => {
+    setShowSequentialResults(false);
     setActiveReviewStep("judgment");
+    setHubActionStep("judgment");
     return onRunValidation({
       selectionProfile: "single_case_review",
     });
   }, [onRunValidation]);
   const handleRunModelCompareFromHub = useCallback(() => {
+    setShowSequentialResults(false);
     setActiveReviewStep("agreement");
+    setHubActionStep("agreement");
     return onRunModelCompare({
       modelVersionIds: preferredVisitLevelMilModel?.version_id
         ? [preferredVisitLevelMilModel.version_id]
@@ -464,19 +514,23 @@ function CaseWorkspaceAnalysisSectionInner({
     });
   }, [onRunModelCompare, preferredVisitLevelMilModel?.version_id]);
   const handleRunAiClinicFromHub = useCallback(() => {
+    setShowSequentialResults(false);
     setActiveReviewStep("ai_clinic");
+    setHubActionStep("ai_clinic");
     setAiClinicPanelView("retrieval");
     return onRunAiClinic();
   }, [onRunAiClinic]);
   const handleExpandAiClinicFromHub = useCallback(() => {
+    setShowSequentialResults(false);
     setActiveReviewStep("ai_clinic");
+    setHubActionStep("ai_clinic");
     setAiClinicPanelView("retrieval");
     onExpandAiClinic();
   }, [onExpandAiClinic]);
   const handleSelectAiClinicRetrievalView = useCallback(() => {
     setActiveReviewStep("ai_clinic");
     setAiClinicPanelView("retrieval");
-    scrollToReviewStep("ai_clinic");
+    requestScrollToReviewStep("ai_clinic");
     if (!aiClinicResult && validationResult && canRunAiClinic && !aiClinicBusy) {
       void onRunAiClinic({ validationResult });
     }
@@ -485,13 +539,13 @@ function CaseWorkspaceAnalysisSectionInner({
     aiClinicResult,
     canRunAiClinic,
     onRunAiClinic,
-    scrollToReviewStep,
+    requestScrollToReviewStep,
     validationResult,
   ]);
   const handleSelectAiClinicClusterView = useCallback(() => {
     setActiveReviewStep("ai_clinic");
     setAiClinicPanelView("cluster");
-    scrollToReviewStep("ai_clinic");
+    requestScrollToReviewStep("ai_clinic");
     if (!aiClinicResult && validationResult && canRunAiClinic && !aiClinicBusy) {
       void onRunAiClinic({ validationResult });
     }
@@ -500,17 +554,18 @@ function CaseWorkspaceAnalysisSectionInner({
     aiClinicResult,
     canRunAiClinic,
     onRunAiClinic,
-    scrollToReviewStep,
+    requestScrollToReviewStep,
     validationResult,
   ]);
   const handleRunFullReviewFromHub = useCallback(async () => {
     if (fullReviewBusy) {
       return;
     }
+    setShowSequentialResults(true);
     setFullReviewBusy(true);
     try {
       setActiveReviewStep("judgment");
-      scrollToReviewStep("judgment");
+      requestScrollToReviewStep("judgment");
       setFullReviewBusyStep("judgment");
       const nextValidationResult = await onRunValidation({
         ignoreSelectedModel: true,
@@ -521,7 +576,7 @@ function CaseWorkspaceAnalysisSectionInner({
       }
 
       setActiveReviewStep("agreement");
-      scrollToReviewStep("agreement");
+      requestScrollToReviewStep("agreement");
       setFullReviewBusyStep("agreement");
       const nextModelCompareResult = await onRunModelCompare({
         modelVersionIds: preferredVisitLevelMilModel?.version_id
@@ -535,8 +590,8 @@ function CaseWorkspaceAnalysisSectionInner({
       }
 
       setActiveReviewStep("ai_clinic");
-      setAiClinicPanelView("retrieval");
-      scrollToReviewStep("ai_clinic");
+      setAiClinicPanelView("cluster");
+      requestScrollToReviewStep("ai_clinic");
       setFullReviewBusyStep("ai_clinic");
       await onRunAiClinic({
         validationResult: nextValidationResult,
@@ -551,13 +606,16 @@ function CaseWorkspaceAnalysisSectionInner({
     onRunModelCompare,
     onRunValidation,
     preferredVisitLevelMilModel?.version_id,
-    scrollToReviewStep,
+    requestScrollToReviewStep,
   ]);
 
   const analysisHubContent = useMemo(() => {
     const judgmentActionEnabled = hasSelectedCase && canRunValidation;
     const agreementActionEnabled = hasSelectedCase && canRunValidation;
     const aiClinicActionEnabled = canRunAiClinic;
+    const judgmentHubExpanded = hubActionStep === "judgment";
+    const agreementHubExpanded = hubActionStep === "agreement";
+    const aiClinicHubExpanded = hubActionStep === "ai_clinic";
     const executionBlockedDetail = pick(
       locale,
       "This account can open saved cases, but AI execution is disabled. Use a researcher, site admin, or admin account to run judgment and AI Clinic steps.",
@@ -596,8 +654,8 @@ function CaseWorkspaceAnalysisSectionInner({
               label: pick(locale, "Analysis ready", "분석 완료"),
               detail: pick(
                 locale,
-                `${validationResult.summary.predicted_label} · ${formatProbability(validationPredictedConfidence, commonNotAvailable)} · ${validationResult.summary.validation_id}`,
-                `${validationResult.summary.predicted_label} · ${formatProbability(validationPredictedConfidence, commonNotAvailable)} · ${validationResult.summary.validation_id}`,
+                `${validationResult.summary.predicted_label} · ${formatProbability(validationPredictedConfidence, commonNotAvailable)}`,
+                `${validationResult.summary.predicted_label} · ${formatProbability(validationPredictedConfidence, commonNotAvailable)}`,
               ),
             }
           : {
@@ -642,47 +700,25 @@ function CaseWorkspaceAnalysisSectionInner({
             label: pick(locale, "Visit-level ready", "방문 레벨 완료"),
             detail: pick(
               locale,
-              primarySuccessfulComparison?.summary?.validation_id
+              primarySuccessfulComparison?.summary
                 ? `${primarySuccessfulComparison.summary.predicted_label} · ${formatProbability(
                     primarySuccessfulComparison.summary.prediction_probability,
                     commonNotAvailable,
-                  )} · ${primarySuccessfulComparison.summary.validation_id}`
+                  )}`
                 : `${successfulCompareCount} model result(s) are ready to review.`,
-              primarySuccessfulComparison?.summary?.validation_id
+              primarySuccessfulComparison?.summary
                 ? `${primarySuccessfulComparison.summary.predicted_label} · ${formatProbability(
                     primarySuccessfulComparison.summary.prediction_probability,
                     commonNotAvailable,
-                  )} · ${primarySuccessfulComparison.summary.validation_id}`
+                  )}`
                 : `${successfulCompareCount}개 모델 결과를 확인할 수 있습니다.`,
             ),
           }
       : !compareCandidatesAvailable
         ? {
             tone: milFallbackReady ? ("ready" as const) : ("waiting" as const),
-            label:
-              modelCatalogState === "error"
-                ? pick(locale, "Catalog unavailable", "목록 불러오기 실패")
-                : milFallbackReady
-                  ? pick(locale, "Prepared fallback ready", "기본 경로 실행 가능")
-                  : pick(locale, "Recommended after Step 1", "1단계 후 권장"),
-            detail:
-              modelCatalogState === "error"
-                ? pick(
-                    locale,
-                    "The visible Step 2 model catalog did not finish loading, but the prepared Efficient MIL fallback can still run on this case.",
-                    "표시용 2단계 모델 목록을 끝까지 불러오지 못했지만, 준비된 Efficient MIL 기본 경로는 이 케이스에서 계속 실행할 수 있습니다.",
-                  )
-                : modelCatalogState === "empty"
-                  ? pick(
-                      locale,
-                      "No extra Step 2 compare models were advertised for this site, but the prepared Efficient MIL fallback is ready.",
-                      "이 사이트에는 추가 2단계 비교 모델이 표시되지 않았지만, 준비된 Efficient MIL 기본 경로는 이미 사용할 수 있습니다.",
-                    )
-                  : pick(
-                      locale,
-                      "The prepared Efficient MIL fallback is already runnable while the visible model catalog finishes loading in the background.",
-                      "표시용 모델 목록은 백그라운드에서 계속 불러오더라도, 준비된 Efficient MIL 기본 경로는 이미 실행할 수 있습니다.",
-                    ),
+            label: visitLevelFallbackStatus.label,
+            detail: visitLevelFallbackStatus.detail,
           }
         : !preferredVisitLevelMilModel &&
             selectedCompareModelVersionIds.length === 0
@@ -718,7 +754,7 @@ function CaseWorkspaceAnalysisSectionInner({
             detail: pick(
               locale,
               "Image retrieval starts after you open a saved case.",
-              "이미지 검색은 저장된 케이스를 연 뒤 시작할 수 있습니다.",
+              "이미지 retrieval은 저장된 케이스를 연 뒤 시작할 수 있습니다.",
             ),
         }
       : !canRunValidation
@@ -734,17 +770,17 @@ function CaseWorkspaceAnalysisSectionInner({
             detail: pick(
               locale,
               "Image retrieval uses the image-level analysis as its anchor.",
-              "이미지 검색은 이미지 레벨 분석을 기준으로 시작합니다.",
+              "이미지 retrieval은 이미지 레벨 분석을 기준으로 시작합니다.",
             ),
           }
         : aiClinicBusy
           ? {
               tone: "running" as const,
-              label: pick(locale, "Running retrieval", "검색 실행 중"),
+              label: pick(locale, "Running retrieval", "retrieval 실행 중"),
               detail: pick(
                 locale,
                 "Image retrieval and cluster preparation are running.",
-                "이미지 검색과 클러스터 준비를 진행하고 있습니다.",
+                "이미지 retrieval과 클러스터 준비를 진행하고 있습니다.",
               ),
             }
           : aiClinicExpandedBusy
@@ -770,45 +806,45 @@ function CaseWorkspaceAnalysisSectionInner({
               : aiClinicResult
                 ? {
                     tone: "complete" as const,
-                    label: pick(locale, "Retrieval ready", "검색 준비됨"),
+                    label: pick(locale, "Retrieval ready", "retrieval 준비됨"),
                     detail: pick(
                       locale,
-                      `${aiClinicSimilarCount} retrieved case(s) and the 3D cluster view are ready.`,
-                      `${aiClinicSimilarCount}개 검색 결과와 3D 클러스터 보기를 확인할 수 있습니다.`,
+                      `${aiClinicSimilarCount} similar case(s) are ready.`,
+                      `${aiClinicSimilarCount}개 유사 증례를 확인할 수 있습니다.`,
                     ),
                   }
                 : {
                     tone: "ready" as const,
-                    label: pick(locale, "Ready to search", "검색 준비"),
+                    label: pick(locale, "Ready to search", "retrieval 준비"),
                     detail: pick(
                       locale,
                       "Run image retrieval first, then load extra guidance only if needed.",
-                      "먼저 이미지 검색을 실행하고, 필요할 때만 추가 가이드를 불러오세요.",
+                      "먼저 이미지 retrieval을 실행하고, 필요할 때만 추가 가이드를 불러오세요.",
                     ),
                   };
 
     return (
-      <Card as="section" variant="panel" className="grid gap-4 p-5">
+      <Card as="section" variant="panel" className="grid gap-3 p-4">
         <SectionHeader
           className={docSectionHeadClass}
           eyebrow={
             <div className={docSectionLabelClass}>
-              {pick(locale, "What to click first", "먼저 무엇을 누를지")}
+              {pick(locale, "Individual steps", "개별 단계")}
             </div>
           }
-          title={pick(locale, "Recommended review order", "추천 검토 순서")}
+          title={pick(locale, "Open or rerun one step", "개별 단계 확인")}
           titleAs="h4"
           description={pick(
             locale,
-            "Use these three cards as the review hub. Progress, action buttons, and the currently opened step all stay here.",
-            "이 3개 카드를 검토 허브로 사용하세요. 진행 상태, 실행 버튼, 현재 열어둔 단계가 여기에서 바로 보입니다.",
+            'The top "Run steps 1-3" button is the default path. Use these cards only when you want to check or rerun a single step.',
+            '상단 "1-3 순차 분석 실행"이 기본 경로입니다. 아래 카드는 특정 단계만 확인하거나 다시 실행할 때만 사용하세요.',
           )}
         />
         <div className="grid gap-3 xl:grid-cols-3">
           <Card
             as="article"
             variant="nested"
-            className={`grid gap-3 p-4 ${
+            className={`grid gap-2.5 p-3.5 ${
               activeReviewStep === "judgment"
                 ? "border-brand/28 bg-[rgba(48,88,255,0.06)]"
                 : ""
@@ -817,6 +853,7 @@ function CaseWorkspaceAnalysisSectionInner({
             <button
               type="button"
               className="grid gap-3 rounded-[10px] p-1 text-left transition hover:bg-white/45 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.12)]"
+              aria-expanded={judgmentHubExpanded}
               onClick={handleShowJudgmentDetails}
             >
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -837,8 +874,8 @@ function CaseWorkspaceAnalysisSectionInner({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Save the image-level prediction, confidence, and compact review artifacts for this case.",
-                  "이 케이스의 이미지 레벨 예측, 신뢰도, 검토 아티팩트를 저장합니다.",
+                  "Save per-image predictions and review images.",
+                  "이미지별 예측과 검토 이미지를 저장합니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -850,32 +887,34 @@ function CaseWorkspaceAnalysisSectionInner({
                   {judgmentStatus.label}
                 </span>
               </div>
-              <p className="m-0 text-sm leading-6 text-muted">
-                {judgmentStatus.detail}
-              </p>
             </button>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                className="min-w-[11.5rem] justify-center"
-                onClick={handleRunValidationFromHub}
-                disabled={fullReviewBusy || validationBusy || !judgmentActionEnabled}
-              >
-                {validationBusy
-                  ? pick(locale, "Running...", "실행 중...")
-                  : !judgmentActionEnabled
-                    ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Run image-level analysis", "이미지 레벨 분석 실행")}
-              </Button>
-            </div>
+            {judgmentHubExpanded ? (
+              <div className="grid gap-2">
+                <p className="m-0 text-sm leading-6 text-muted">
+                  {judgmentStatus.detail}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="min-w-[11.5rem] justify-center"
+                  onClick={handleRunValidationFromHub}
+                  disabled={fullReviewBusy || validationBusy || !judgmentActionEnabled}
+                >
+                  {validationBusy
+                    ? pick(locale, "Running...", "실행 중...")
+                    : !judgmentActionEnabled
+                      ? pick(locale, "Execution unavailable", "실행 불가")
+                    : pick(locale, "Run image-level analysis", "이미지 레벨 분석 실행")}
+                </Button>
+              </div>
+            ) : null}
           </Card>
 
           <Card
             as="article"
             variant="nested"
-            className={`grid gap-3 p-4 ${
+            className={`grid gap-2.5 p-3.5 ${
               activeReviewStep === "agreement"
                 ? "border-brand/28 bg-[rgba(48,88,255,0.06)]"
                 : ""
@@ -884,6 +923,7 @@ function CaseWorkspaceAnalysisSectionInner({
             <button
               type="button"
               className="grid gap-3 rounded-[10px] p-1 text-left transition hover:bg-white/45 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.12)]"
+              aria-expanded={agreementHubExpanded}
               onClick={handleShowAgreementDetails}
             >
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -892,7 +932,7 @@ function CaseWorkspaceAnalysisSectionInner({
                     {pick(locale, "Step 2", "2단계")}
                   </div>
                   <strong className="text-base font-semibold text-ink">
-                    {pick(locale, "Visit-level analysis", "방문 레벨 분석")}
+                    {pick(locale, "Visit-level analysis (MIL)", "방문 단위 분석 (MIL)")}
                   </strong>
                 </div>
                 {activeReviewStep === "agreement" ? (
@@ -904,8 +944,8 @@ function CaseWorkspaceAnalysisSectionInner({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Run the prepared visit-level Efficient MIL pass on this case.",
-                  "준비된 visit-level Efficient MIL 분석을 이 케이스에서 실행합니다.",
+                  "Run visit-level Efficient MIL for this case.",
+                  "이 케이스의 방문 단위 Efficient MIL을 실행합니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -917,32 +957,34 @@ function CaseWorkspaceAnalysisSectionInner({
                   {agreementStatus.label}
                 </span>
               </div>
-              <p className="m-0 text-sm leading-6 text-muted">
-                {agreementStatus.detail}
-              </p>
             </button>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                className="min-w-[11.5rem] justify-center"
-                onClick={handleRunModelCompareFromHub}
-                disabled={fullReviewBusy || modelCompareBusy || !agreementActionEnabled}
-              >
-                {modelCompareBusy
-                  ? pick(locale, "Running MIL...", "MIL 실행 중...")
-                  : !agreementActionEnabled
-                    ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Run visit-level analysis", "방문 레벨 분석 실행")}
-              </Button>
-            </div>
+            {agreementHubExpanded ? (
+              <div className="grid gap-2">
+                <p className="m-0 text-sm leading-6 text-muted">
+                  {agreementStatus.detail}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="min-w-[11.5rem] justify-center"
+                  onClick={handleRunModelCompareFromHub}
+                  disabled={fullReviewBusy || modelCompareBusy || !agreementActionEnabled}
+                >
+                  {modelCompareBusy
+                    ? pick(locale, "Running MIL...", "MIL 실행 중...")
+                    : !agreementActionEnabled
+                      ? pick(locale, "Execution unavailable", "실행 불가")
+                    : pick(locale, "Run visit-level analysis", "방문 단위 분석 실행")}
+                </Button>
+              </div>
+            ) : null}
           </Card>
 
           <Card
             as="article"
             variant="nested"
-            className={`grid gap-3 p-4 ${
+            className={`grid gap-2.5 p-3.5 ${
               activeReviewStep === "ai_clinic"
                 ? "border-brand/28 bg-[rgba(48,88,255,0.06)]"
                 : ""
@@ -951,6 +993,7 @@ function CaseWorkspaceAnalysisSectionInner({
             <button
               type="button"
               className="grid gap-3 rounded-[10px] p-1 text-left transition hover:bg-white/45 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[rgba(48,88,255,0.12)]"
+              aria-expanded={aiClinicHubExpanded}
               onClick={handleShowAiClinicDetails}
             >
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -962,7 +1005,7 @@ function CaseWorkspaceAnalysisSectionInner({
                     {pick(
                       locale,
                       "Image retrieval",
-                      "이미지 검색",
+                      "이미지 retrieval",
                     )}
                   </strong>
                 </div>
@@ -975,8 +1018,8 @@ function CaseWorkspaceAnalysisSectionInner({
               <p className="m-0 text-sm leading-6 text-muted">
                 {pick(
                   locale,
-                  "Use DINOv2 retrieval to surface three similar cases first, then expand into evidence, guidance, and the 3D cluster map.",
-                  "DINOv2 retrieval로 유사 케이스 3개를 먼저 보여주고, 필요하면 근거, 가이드, 3D 클러스터 맵까지 이어서 봅니다.",
+                  "Retrieve three similar images, then load more evidence only if needed.",
+                  "유사 이미지 3개를 찾고, 필요하면 근거를 더 불러옵니다.",
                 )}
               </p>
               <div className="flex flex-wrap gap-2">
@@ -988,37 +1031,39 @@ function CaseWorkspaceAnalysisSectionInner({
                   {aiClinicStatus.label}
                 </span>
               </div>
-              <p className="m-0 text-sm leading-6 text-muted">
-                {aiClinicStatus.detail}
-              </p>
             </button>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                className="min-w-[11.5rem] justify-center"
-                onClick={handleRunAiClinicFromHub}
-                disabled={fullReviewBusy || aiClinicBusy || !aiClinicActionEnabled}
-              >
-                {aiClinicBusy
-                  ? pick(locale, "Searching...", "검색 중...")
-                  : !aiClinicActionEnabled
-                    ? pick(locale, "Execution unavailable", "실행 불가")
-                  : pick(locale, "Run image retrieval", "이미지 검색 실행")}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={handleExpandAiClinicFromHub}
-                disabled={fullReviewBusy || aiClinicExpandedBusy || !canExpandAiClinic}
-              >
-                {aiClinicExpandedBusy
-                  ? pick(locale, "Loading guidance...", "가이드 불러오는 중...")
-                  : pick(locale, "Load evidence & guidance", "근거와 가이드 불러오기")}
-              </Button>
-            </div>
+            {aiClinicHubExpanded ? (
+              <div className="grid gap-2">
+                <p className="m-0 text-sm leading-6 text-muted">
+                  {aiClinicStatus.detail}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="min-w-[11.5rem] justify-center"
+                  onClick={handleRunAiClinicFromHub}
+                  disabled={fullReviewBusy || aiClinicBusy || !aiClinicActionEnabled}
+                >
+                  {aiClinicBusy
+                    ? pick(locale, "Searching...", "retrieval 실행 중...")
+                    : !aiClinicActionEnabled
+                      ? pick(locale, "Execution unavailable", "실행 불가")
+                    : pick(locale, "Run image retrieval", "이미지 retrieval 실행")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleExpandAiClinicFromHub}
+                  disabled={fullReviewBusy || aiClinicExpandedBusy || !canExpandAiClinic}
+                >
+                  {aiClinicExpandedBusy
+                    ? pick(locale, "Loading guidance...", "가이드 불러오는 중...")
+                    : pick(locale, "Load evidence & guidance", "근거와 가이드 불러오기")}
+                </Button>
+              </div>
+            ) : null}
           </Card>
         </div>
       </Card>
@@ -1043,6 +1088,7 @@ function CaseWorkspaceAnalysisSectionInner({
     handleShowAgreementDetails,
     handleShowJudgmentDetails,
     hasSelectedCase,
+    hubActionStep,
     locale,
     modelCatalogState,
     modelCompareBusy,
@@ -1053,6 +1099,8 @@ function CaseWorkspaceAnalysisSectionInner({
     validationBusy,
     validationPredictedConfidence,
     validationResult,
+    visitLevelFallbackStatus.detail,
+    visitLevelFallbackStatus.label,
   ]);
 
   const judgmentPanelContent = useMemo(
@@ -1229,6 +1277,399 @@ function CaseWorkspaceAnalysisSectionInner({
       validationResult,
     ],
   );
+  const aiClinicClinicalPanelContent = useMemo(
+    () => (
+      <AiClinicPanel
+        locale={locale}
+        showStepActions={false}
+        clinicalMode
+        validationResult={validationResult}
+        activeView={aiClinicPanelView}
+        aiClinicBusy={aiClinicBusy}
+        aiClinicExpandedBusy={aiClinicExpandedBusy}
+        canRunAiClinic={canRunAiClinic}
+        canExpandAiClinic={canExpandAiClinic}
+        onRunAiClinic={onRunAiClinic}
+        onExpandAiClinic={onExpandAiClinic}
+        onSelectRetrievalView={handleSelectAiClinicRetrievalView}
+        onSelectClusterView={handleSelectAiClinicClusterView}
+      >
+        <AiClinicResult
+          locale={locale}
+          validationResult={validationResult}
+          modelCompareResult={modelCompareResult}
+          result={aiClinicResult}
+          clinicalMode
+          activeView={aiClinicPanelView}
+          aiClinicPreviewBusy={aiClinicPreviewBusy}
+          aiClinicExpandedBusy={aiClinicExpandedBusy}
+          canExpandAiClinic={canExpandAiClinic}
+          onExpandAiClinic={onExpandAiClinic}
+          notAvailableLabel={commonNotAvailable}
+          aiClinicTextUnavailableLabel={aiClinicTextUnavailableLabel}
+          displayVisitReference={displayVisitReference}
+          formatSemanticScore={formatSemanticScore}
+          formatImageQualityScore={formatImageQualityScore}
+          formatProbability={formatProbability}
+          formatMetadataField={formatMetadataField}
+          token={token}
+          siteId={selectedSiteId}
+        />
+      </AiClinicPanel>
+    ),
+    [
+      aiClinicBusy,
+      aiClinicExpandedBusy,
+      aiClinicPreviewBusy,
+      aiClinicResult,
+      aiClinicPanelView,
+      aiClinicTextUnavailableLabel,
+      canExpandAiClinic,
+      canRunAiClinic,
+      commonNotAvailable,
+      displayVisitReference,
+      formatMetadataField,
+      handleSelectAiClinicClusterView,
+      handleSelectAiClinicRetrievalView,
+      locale,
+      modelCompareResult,
+      onExpandAiClinic,
+      onRunAiClinic,
+      selectedSiteId,
+      token,
+      validationResult,
+    ],
+  );
+  const sequentialRetrievedCases = useMemo(() => {
+    const localCases = aiClinicResult?.local_similar_cases ?? aiClinicResult?.similar_cases ?? [];
+    const crossSiteCases = aiClinicResult?.cross_site_similar_cases ?? [];
+    return [...localCases, ...crossSiteCases].slice(0, 3);
+  }, [
+    aiClinicResult?.cross_site_similar_cases,
+    aiClinicResult?.local_similar_cases,
+    aiClinicResult?.similar_cases,
+  ]);
+  const sequentialJudgmentContent = useMemo(() => {
+    const predictedLabel = validationResult?.summary.predicted_label
+      ? translateOption(locale, "cultureCategory", validationResult.summary.predicted_label)
+      : commonNotAvailable;
+    const confidenceLabel = formatProbability(
+      validationPredictedConfidence,
+      commonNotAvailable,
+    );
+    return (
+      <Card as="section" variant="panel" className="grid gap-4 p-5">
+        <SectionHeader
+          className={docSectionHeadClass}
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Step 1", "1단계")}</div>}
+          title={pick(locale, "Image-level analysis", "이미지 레벨 분석")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Primary AI impression for the representative image.",
+            "대표 이미지 기준 AI 1차 판단입니다.",
+          )}
+        />
+        {validationResult ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Card as="div" variant="nested" className="grid gap-1.5 p-4">
+                <span className="text-[0.78rem] font-medium text-muted">
+                  {pick(locale, "AI impression", "AI 판단")}
+                </span>
+                <strong className="text-[1.1rem] font-semibold text-ink">
+                  {predictedLabel}
+                </strong>
+              </Card>
+              <Card as="div" variant="nested" className="grid gap-1.5 p-4">
+                <span className="text-[0.78rem] font-medium text-muted">
+                  {pick(locale, "Confidence", "신뢰도")}
+                </span>
+                <strong className="text-[1.1rem] font-semibold text-ink">
+                  {confidenceLabel}
+                </strong>
+              </Card>
+            </div>
+            <Card as="section" variant="nested" className="grid gap-4 p-4">
+              <SectionHeader
+                className={docSectionHeadClass}
+                title={pick(locale, "Grad-CAM and review images", "Grad-CAM과 검토 이미지")}
+                titleAs="h4"
+                description={pick(
+                  locale,
+                  "Review the representative image, ROI, and Grad-CAM together.",
+                  "대표 이미지, ROI, Grad-CAM을 함께 확인합니다.",
+                )}
+              />
+              {hasGradcamArtifacts ? (
+                artifactContent
+              ) : (
+                <div className={emptySurfaceClass}>
+                  {pick(
+                    locale,
+                    "Grad-CAM is missing in this result. Re-run Step 1 to generate it.",
+                    "이번 결과에는 Grad-CAM이 없습니다. 1단계를 다시 실행해 주세요.",
+                  )}
+                </div>
+              )}
+            </Card>
+          </>
+        ) : (
+          <div className={emptySurfaceClass}>
+            {validationBusy || fullReviewBusyStep === "judgment"
+              ? pick(
+                  locale,
+                  "Step 1 is running. The AI impression and Grad-CAM will appear here.",
+                  "1단계를 실행 중입니다. 완료되면 AI 판단과 Grad-CAM이 여기에 표시됩니다.",
+                )
+              : pick(
+                  locale,
+                  "Run the sequence to generate the primary AI impression and Grad-CAM.",
+                  "순차 분석을 실행하면 AI 판단과 Grad-CAM이 여기에 표시됩니다.",
+                )}
+          </div>
+        )}
+      </Card>
+    );
+  }, [
+    artifactContent,
+    commonNotAvailable,
+    formatProbability,
+    fullReviewBusyStep,
+    hasGradcamArtifacts,
+    locale,
+    translateOption,
+    validationBusy,
+    validationPredictedConfidence,
+    validationResult,
+  ]);
+  const sequentialAgreementContent = useMemo(() => {
+    const visitLevelLabel = primarySuccessfulComparison?.summary?.predicted_label
+      ? translateOption(locale, "cultureCategory", primarySuccessfulComparison.summary.predicted_label)
+      : commonNotAvailable;
+    const visitLevelConfidence = formatProbability(
+      primarySuccessfulComparison?.summary?.prediction_probability,
+      commonNotAvailable,
+    );
+    const agreementNote =
+      validationResult?.summary.predicted_label &&
+      primarySuccessfulComparison?.summary?.predicted_label
+        ? validationResult.summary.predicted_label ===
+          primarySuccessfulComparison.summary.predicted_label
+          ? pick(
+              locale,
+              "Step 1 and Step 2 point to the same organism pattern.",
+              "1단계와 2단계가 같은 균종 패턴을 가리킵니다.",
+            )
+          : pick(
+              locale,
+              "Step 1 and Step 2 do not point to the same organism pattern.",
+              "1단계와 2단계의 균종 패턴이 다릅니다.",
+            )
+        : pick(
+            locale,
+            "This is the visit-level summary across the case images.",
+            "케이스 전체 이미지를 종합한 방문 단위 판단입니다.",
+          );
+    return (
+      <Card as="section" variant="panel" className="grid gap-4 p-5">
+        <SectionHeader
+          className={docSectionHeadClass}
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Step 2", "2단계")}</div>}
+          title={pick(locale, "Visit-level summary", "방문 단위 종합 판단")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Overall impression from the whole visit.",
+            "방문 전체 이미지를 종합한 AI 판단입니다.",
+          )}
+        />
+        {modelCompareResult && primarySuccessfulComparison?.summary ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Card as="div" variant="nested" className="grid gap-1.5 p-4">
+                <span className="text-[0.78rem] font-medium text-muted">
+                  {pick(locale, "Visit-level impression", "방문 단위 판단")}
+                </span>
+                <strong className="text-[1.1rem] font-semibold text-ink">
+                  {visitLevelLabel}
+                </strong>
+              </Card>
+              <Card as="div" variant="nested" className="grid gap-1.5 p-4">
+                <span className="text-[0.78rem] font-medium text-muted">
+                  {pick(locale, "Confidence", "신뢰도")}
+                </span>
+                <strong className="text-[1.1rem] font-semibold text-ink">
+                  {visitLevelConfidence}
+                </strong>
+              </Card>
+            </div>
+            <div className="rounded-[16px] border border-border bg-surface-muted/45 px-4 py-3 text-sm leading-6 text-muted">
+              {agreementNote}
+            </div>
+          </>
+        ) : (
+          <div className={emptySurfaceClass}>
+            {modelCompareBusy || fullReviewBusyStep === "agreement"
+              ? pick(
+                  locale,
+                  "Step 2 is running. The visit-level summary will appear here.",
+                  "2단계를 실행 중입니다. 완료되면 방문 단위 종합 판단이 여기에 표시됩니다.",
+                )
+              : pick(
+                  locale,
+                  "Run the sequence to generate the visit-level summary.",
+                  "순차 분석을 실행하면 방문 단위 종합 판단이 여기에 표시됩니다.",
+                )}
+          </div>
+        )}
+      </Card>
+    );
+  }, [
+    commonNotAvailable,
+    formatProbability,
+    fullReviewBusyStep,
+    locale,
+    modelCompareBusy,
+    modelCompareResult,
+    primarySuccessfulComparison?.summary,
+    translateOption,
+    validationResult?.summary.predicted_label,
+  ]);
+  const sequentialAiClinicContent = useMemo(
+    () => (
+      <Card as="section" variant="panel" className="grid gap-4 p-5">
+        <SectionHeader
+          className={docSectionHeadClass}
+          eyebrow={<div className={docSectionLabelClass}>{pick(locale, "Step 3", "3단계")}</div>}
+          title={pick(locale, "Similar cases", "유사 증례")}
+          titleAs="h4"
+          description={pick(
+            locale,
+            "Representative similar cases for quick clinical comparison.",
+            "빠른 임상 비교를 위한 대표 유사 증례입니다.",
+          )}
+        />
+        {aiClinicResult ? (
+          sequentialRetrievedCases.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {sequentialRetrievedCases.map((item, index) => {
+                const sourceSite = String(
+                  item.source_site_display_name ||
+                    item.source_site_hospital_name ||
+                    "",
+                ).trim();
+                return (
+                  <Card
+                    key={`sequence-retrieval-${item.patient_id}-${item.visit_date}-${index}`}
+                    as="article"
+                    variant="nested"
+                    className="grid gap-3 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="grid gap-1">
+                        <strong className="text-sm font-semibold text-ink">
+                          {pick(locale, `Case ${index + 1}`, `증례 ${index + 1}`)}
+                        </strong>
+                        <span className="text-xs text-muted">
+                          {displayVisitReference(item.visit_date)}
+                        </span>
+                      </div>
+                      <span className="inline-flex min-h-8 items-center rounded-full border border-border bg-surface px-3 text-xs font-semibold text-ink">
+                        {pick(locale, "Similarity", "유사도")}{" "}
+                        {formatSemanticScore(item.similarity, commonNotAvailable)}
+                      </span>
+                    </div>
+                    {item.preview_url ? (
+                      <div className="overflow-hidden rounded-[16px] border border-border/70 bg-surface">
+                        <img
+                          src={item.preview_url}
+                          alt={pick(locale, `${item.patient_id} representative image`, `${item.patient_id} 대표 이미지`)}
+                          className="aspect-[4/3] w-full object-cover"
+                          loading={index === 0 ? "eager" : "lazy"}
+                          decoding="async"
+                        />
+                      </div>
+                    ) : null}
+                    <div className="grid gap-2 text-sm leading-6 text-muted">
+                      <div>
+                        <strong className="mr-2 text-ink">
+                          {pick(locale, "Culture", "배양")}
+                        </strong>
+                        {translateOption(locale, "cultureCategory", item.culture_category)}
+                        {item.culture_species ? ` / ${item.culture_species}` : ""}
+                      </div>
+                      <div>
+                        <strong className="mr-2 text-ink">
+                          {pick(locale, "View", "촬영")}
+                        </strong>
+                        {translateOption(locale, "view", item.representative_view ?? "white")}
+                      </div>
+                      {sourceSite ? (
+                        <div>
+                          <strong className="mr-2 text-ink">
+                            {pick(locale, "Source", "기관")}
+                          </strong>
+                          {sourceSite}
+                        </div>
+                      ) : null}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          ) : (
+            <div className={emptySurfaceClass}>
+              {pick(
+                locale,
+                "No similar case was returned for this run.",
+                "이번 실행에서는 표시할 유사 증례가 없었습니다.",
+              )}
+            </div>
+          )
+        ) : (
+          <div className={emptySurfaceClass}>
+            {aiClinicBusy || fullReviewBusyStep === "ai_clinic"
+              ? pick(
+                  locale,
+                  "Step 3 is running. Similar cases will appear here.",
+                  "3단계를 실행 중입니다. 완료되면 유사 증례가 여기에 표시됩니다.",
+                )
+              : pick(
+                  locale,
+                  "Run the sequence to retrieve similar cases.",
+                  "순차 분석을 실행하면 유사 증례가 여기에 표시됩니다.",
+                )}
+          </div>
+        )}
+      </Card>
+    ),
+    [
+      aiClinicBusy,
+      aiClinicResult,
+      commonNotAvailable,
+      displayVisitReference,
+      formatSemanticScore,
+      fullReviewBusyStep,
+      locale,
+      sequentialRetrievedCases,
+      translateOption,
+    ],
+  );
+  const activeReviewPanelContent = useMemo(() => {
+    if (activeReviewStep === "judgment") {
+      return judgmentPanelContent;
+    }
+    if (activeReviewStep === "agreement") {
+      return agreementPanelContent;
+    }
+    return aiClinicPanelContent;
+  }, [
+    activeReviewStep,
+    agreementPanelContent,
+    aiClinicPanelContent,
+    judgmentPanelContent,
+  ]);
 
   if (!mounted) {
     return null;
@@ -1236,6 +1677,93 @@ function CaseWorkspaceAnalysisSectionInner({
 
   return (
     <>
+      <section className={docSectionClass}>
+        <div className="grid gap-4 rounded-[22px] border border-border/70 bg-surface-muted/30 p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="grid min-w-0 gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className={docSectionLabelClass}>{analysisEyebrow}</div>
+              <span
+                className={docSiteBadgeClass}
+              >{`${selectedCaseImageCount} ${imageCountLabel}`}</span>
+            </div>
+            <h4 className="m-0 min-w-0 break-words text-[clamp(1.7rem,3vw,2.65rem)] font-semibold leading-[0.98] tracking-[-0.045em] text-ink [overflow-wrap:anywhere]">
+              {analysisTitle}
+            </h4>
+            <p className="m-0 max-w-3xl break-words text-sm leading-6 text-muted [overflow-wrap:anywhere]">
+              {analysisDescription}
+            </p>
+          </div>
+          <div className="grid gap-2 rounded-[18px] border border-border/70 bg-surface px-4 py-4 shadow-[0_10px_28px_rgba(15,23,42,0.04)] lg:min-w-[280px]">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className={docSectionLabelClass}>
+                {pick(locale, "Recommended", "권장")}
+              </span>
+              <span className="text-xs font-medium text-muted">
+                {pick(locale, "Default path", "기본 경로")}
+              </span>
+            </div>
+            <Button
+              type="button"
+              size="md"
+              variant="primary"
+              className="min-h-[3.5rem] rounded-[18px] px-6 text-base shadow-[0_20px_40px_rgba(48,88,255,0.24)]"
+              onClick={handleRunFullReviewFromHub}
+              aria-label={pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
+              disabled={
+                fullReviewBusy ||
+                validationBusy ||
+                modelCompareBusy ||
+                aiClinicBusy ||
+                aiClinicExpandedBusy ||
+                !(hasSelectedCase && canRunValidation)
+              }
+            >
+              {fullReviewBusy
+                ? fullReviewBusyStep === "judgment"
+                  ? pick(locale, "Running Step 1...", "1단계 실행 중...")
+                  : fullReviewBusyStep === "agreement"
+                    ? pick(locale, "Running Step 2...", "2단계 실행 중...")
+                    : pick(locale, "Running Step 3...", "3단계 실행 중...")
+                : pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
+            </Button>
+            <p className="m-0 text-sm leading-5 text-muted">
+              {pick(
+                locale,
+                "Runs Steps 1 -> 2 -> 3 automatically.",
+                "1 -> 2 -> 3 단계를 자동으로 실행합니다.",
+              )}
+            </p>
+          </div>
+        </div>
+        <div className={panelStackClass}>
+          {analysisHubContent}
+          {showSequentialResults ? (
+            <div className="grid gap-4 rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2">
+              <div ref={judgmentPanelRef}>{sequentialJudgmentContent}</div>
+              <div ref={agreementPanelRef}>{sequentialAgreementContent}</div>
+              <div ref={aiClinicPanelRef}>{aiClinicClinicalPanelContent}</div>
+            </div>
+          ) : (
+            <div
+              ref={
+                activeReviewStep === "judgment"
+                  ? judgmentPanelRef
+                  : activeReviewStep === "agreement"
+                    ? agreementPanelRef
+                    : aiClinicPanelRef
+              }
+              className={`grid gap-4 ${
+                activeReviewStep
+                  ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
+                  : ""
+              }`}
+            >
+              {activeReviewPanelContent}
+            </div>
+          )}
+        </div>
+      </section>
+
       <SavedCasePreviewPanels
         locale={locale}
         commonLoading={commonLoading}
@@ -1251,81 +1779,6 @@ function CaseWorkspaceAnalysisSectionInner({
         onRunRoiPreview={onRunRoiPreview}
         onRunLesionPreview={onRunLesionPreview}
       />
-
-      <section className={docSectionClass}>
-        <SectionHeader
-          className={docSectionHeadClass}
-          eyebrow={
-            <div className={docSectionLabelClass}>{analysisEyebrow}</div>
-          }
-          title={analysisTitle}
-          titleAs="h4"
-          description={analysisDescription}
-          aside={
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <span
-                className={docSiteBadgeClass}
-              >{`${selectedCaseImageCount} ${imageCountLabel}`}</span>
-              <Button
-                type="button"
-                size="sm"
-                variant="primary"
-                onClick={handleRunFullReviewFromHub}
-                aria-label={pick(locale, "Run steps 1-3", "1-3 순차 분석 실행")}
-                disabled={
-                  fullReviewBusy ||
-                  validationBusy ||
-                  modelCompareBusy ||
-                  aiClinicBusy ||
-                  aiClinicExpandedBusy ||
-                  !(hasSelectedCase && canRunValidation)
-                }
-              >
-                {fullReviewBusy
-                  ? fullReviewBusyStep === "judgment"
-                    ? pick(locale, "Running Step 1...", "1단계 실행 중...")
-                    : fullReviewBusyStep === "agreement"
-                      ? pick(locale, "Running Step 2...", "2단계 실행 중...")
-                      : pick(locale, "Running Step 3...", "3단계 실행 중...")
-                  : pick(locale, "Run analyses 1-3", "1-3 순차 분석 실행")}
-              </Button>
-            </div>
-          }
-        />
-        <div className={panelStackClass}>
-          {analysisHubContent}
-          <div
-            ref={judgmentPanelRef}
-            className={`grid gap-4 ${
-              activeReviewStep === "judgment"
-                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
-                : ""
-            }`}
-          >
-            {judgmentPanelContent}
-          </div>
-          <div
-            ref={agreementPanelRef}
-            className={`grid gap-4 ${
-              activeReviewStep === "agreement"
-                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
-                : ""
-            }`}
-          >
-            {agreementPanelContent}
-          </div>
-          <div
-            ref={aiClinicPanelRef}
-            className={`grid gap-4 ${
-              activeReviewStep === "ai_clinic"
-                ? "rounded-[28px] border border-brand/18 bg-brand-soft/20 p-2"
-                : ""
-            }`}
-          >
-            {aiClinicPanelContent}
-          </div>
-        </div>
-      </section>
     </>
   );
 }

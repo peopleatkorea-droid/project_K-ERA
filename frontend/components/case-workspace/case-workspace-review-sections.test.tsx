@@ -5,6 +5,17 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CaseWorkspaceAnalysisSection } from "./case-workspace-review-sections";
 
+function getHubCardButton(stepLabel: string, title: string): HTMLButtonElement {
+  const button = screen.getAllByRole("button").find(
+    (item) =>
+      item.getAttribute("aria-expanded") !== null &&
+      item.textContent?.includes(stepLabel) &&
+      item.textContent?.includes(title),
+  );
+  expect(button).toBeDefined();
+  return button as HTMLButtonElement;
+}
+
 describe("case-workspace review sections", () => {
   it("uses the prepared single-case review profile when Step 1 is run directly", async () => {
     const onRunValidation = vi.fn(async () => null);
@@ -61,6 +72,7 @@ describe("case-workspace review sections", () => {
       />,
     );
 
+    fireEvent.click(getHubCardButton("Step 1", "Image-level analysis"));
     fireEvent.click(screen.getByRole("button", { name: "Run image-level analysis" }));
 
     await waitFor(() => {
@@ -177,12 +189,27 @@ describe("case-workspace review sections", () => {
     expect(screen.getAllByText("Image-level analysis").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Image retrieval").length).toBeGreaterThan(0);
     expect(
+      screen.getByText("Runs Steps 1 -> 2 -> 3 automatically."),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText(
-        "Use this after Step 1. The prepared Efficient MIL visit-level pass is the default Step 2 path, and extra models are optional.",
+        'The top "Run steps 1-3" button is the default path. Use these cards only when you want to check or rerun a single step.',
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run image-level analysis" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run visit-level analysis" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run steps 1-3" }),
+    ).toHaveAttribute("data-size", "md");
+    expect(
+      screen.getByRole("button", { name: "Run steps 1-3" }),
+    ).toHaveAttribute("data-variant", "primary");
 
-    fireEvent.click(screen.getByRole("button", { name: "Run analyses 1-3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run steps 1-3" }));
 
     await waitFor(() => {
       expect(onRunValidation).toHaveBeenCalledTimes(1);
@@ -302,7 +329,7 @@ describe("case-workspace review sections", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Run analyses 1-3" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run steps 1-3" }));
 
     await waitFor(() => {
       expect(onRunValidation).toHaveBeenCalledTimes(1);
@@ -311,6 +338,76 @@ describe("case-workspace review sections", () => {
 
     expect(onRunAiClinic).not.toHaveBeenCalled();
     expect(callOrder).toEqual(["validation", "compare"]);
+  });
+
+  it("reveals only the clicked card action button", () => {
+    render(
+      <CaseWorkspaceAnalysisSection
+        locale="en"
+        token="token"
+        selectedSiteId="SITE_A"
+        mounted
+        analysisEyebrow="Clinical AI review"
+        analysisTitle="Analysis"
+        analysisDescription="Description"
+        imageCountLabel="images"
+        commonLoading="Loading"
+        commonNotAvailable="N/A"
+        hasSelectedCase
+        canRunRoiPreview
+        canRunValidation
+        canRunAiClinic={false}
+        selectedCaseImageCount={3}
+        representativePreviewUrl={null}
+        selectedCompareModelVersionIds={[]}
+        selectedValidationModelVersionId={null}
+        compareModelCandidates={[]}
+        modelCatalogState="idle"
+        validationBusy={false}
+        validationResult={null}
+        validationArtifacts={{}}
+        modelCompareBusy={false}
+        modelCompareResult={null}
+        aiClinicBusy={false}
+        aiClinicExpandedBusy={false}
+        aiClinicResult={null}
+        aiClinicPreviewBusy={false}
+        hasAnySavedLesionBox={false}
+        roiPreviewBusy={false}
+        lesionPreviewBusy={false}
+        roiPreviewItems={[]}
+        lesionPreviewItems={[]}
+        pickLabel={(_locale, en) => en}
+        translateOption={(_locale, _group, value) => value}
+        setToast={vi.fn()}
+        setSelectedCompareModelVersionIds={vi.fn()}
+        setSelectedValidationModelVersionId={vi.fn()}
+        onRunValidation={vi.fn()}
+        onRunModelCompare={vi.fn()}
+        onRunAiClinic={vi.fn()}
+        onExpandAiClinic={vi.fn()}
+        onRunRoiPreview={vi.fn()}
+        onRunLesionPreview={vi.fn()}
+        displayVisitReference={(visitReference) => visitReference}
+        aiClinicTextUnavailableLabel="Unavailable"
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Run image-level analysis" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run visit-level analysis" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(getHubCardButton("Step 2", "Visit-level analysis (MIL)"));
+
+    expect(
+      screen.queryByRole("button", { name: "Run image-level analysis" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Run visit-level analysis" }),
+    ).toHaveAttribute("data-variant", "ghost");
   });
 
   it("runs Step 3 retrieval when the cluster tab is selected without a prepared result", async () => {
@@ -406,6 +503,7 @@ describe("case-workspace review sections", () => {
       />,
     );
 
+    fireEvent.click(getHubCardButton("Step 3", "Image retrieval"));
     fireEvent.click(screen.getByRole("button", { name: "3D cluster map" }));
 
     await waitFor(() => {
@@ -419,7 +517,7 @@ describe("case-workspace review sections", () => {
     });
   });
 
-  it("shows Step 2 fallback as runnable instead of loading when the catalog is unavailable", () => {
+  it("keeps Step 2 fallback runnable when the compare-model catalog is unavailable", () => {
     render(
       <CaseWorkspaceAnalysisSection
         locale="en"
@@ -472,8 +570,14 @@ describe("case-workspace review sections", () => {
       />,
     );
 
-    expect(screen.getByText("Catalog unavailable")).toBeInTheDocument();
-    expect(screen.queryByText("MIL catalog loading")).not.toBeInTheDocument();
+    expect(screen.getByText("Prepared fallback ready")).toBeInTheDocument();
+    fireEvent.click(getHubCardButton("Step 2", "Visit-level analysis (MIL)"));
+    expect(
+      screen.getAllByText(
+        "The prepared Efficient MIL fallback is already runnable on this case. The visible Step 2 model catalog may still load in the background or be temporarily unavailable.",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("Catalog unavailable")).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Run visit-level analysis" }),
     ).toBeEnabled();

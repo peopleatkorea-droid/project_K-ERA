@@ -837,7 +837,7 @@ npm run dev:clean
 - [docs/tauri-packaged-runtime-layout.md](docs/tauri-packaged-runtime-layout.md) — 데스크탑 패키지 런타임 구조
 - [docs/desktop-installed-smoke.md](docs/desktop-installed-smoke.md) — 데스크탑 설치 후 smoke test 가이드
 - [docs/tauri-embedded-ui-plan.md](docs/tauri-embedded-ui-plan.md) — Tauri 임베디드 UI 설계 문서
-- [CHANGELOG.md](CHANGELOG.md)
+- [CHANGELOG.md](CHANGELOG.md) — 최신 항목: `2026-04-20 Saved-case 3-step clinician review cleanup`
 
 ---
 

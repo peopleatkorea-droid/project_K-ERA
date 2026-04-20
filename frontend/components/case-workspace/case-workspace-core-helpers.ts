@@ -8,7 +8,12 @@ import {
   type ModelVersionRecord,
   type SiteSummary,
 } from "../../lib/api";
-import type { SavedImagePreview, NormalizedBox } from "./shared";
+import { pick, type Locale } from "../../lib/i18n";
+import type {
+  SavedImagePreview,
+  NormalizedBox,
+  SiteModelCatalogState,
+} from "./shared";
 import { isPositiveCultureStatus } from "./case-workspace-draft-helpers";
 
 const SAVED_CASE_IMAGE_PREVIEW_MAX_SIDE = 640;
@@ -454,6 +459,60 @@ export function preferredVisitLevelMilModelVersion(
       String(modelVersion.architecture || "").trim().toLowerCase() ===
         "efficientnet_v2_s_mil" && Boolean(modelVersion.bag_level),
   ]);
+}
+
+export function preparedVisitLevelFallbackStatus(
+  locale: Locale,
+  options: {
+    milFallbackReady: boolean;
+    modelCatalogState: SiteModelCatalogState;
+  },
+): {
+  label: string;
+  detail: string;
+} {
+  const { milFallbackReady, modelCatalogState } = options;
+  if (milFallbackReady) {
+    return {
+      label: pick(locale, "Prepared fallback ready", "기본 경로 실행 가능"),
+      detail:
+        modelCatalogState === "empty"
+          ? pick(
+              locale,
+              "No extra Step 2 compare models were advertised for this site, but the prepared Efficient MIL fallback is already available.",
+              "이 사이트에는 추가 2단계 비교 모델이 표시되지 않았지만, 준비된 Efficient MIL 기본 경로는 이미 사용할 수 있습니다.",
+            )
+          : pick(
+              locale,
+              "The prepared Efficient MIL fallback is already runnable on this case. The visible Step 2 model catalog may still load in the background or be temporarily unavailable.",
+              "준비된 Efficient MIL 기본 경로는 이 케이스에서 이미 실행할 수 있습니다. 표시용 2단계 모델 목록은 백그라운드에서 계속 불러오거나 일시적으로 불러오지 못할 수 있습니다.",
+            ),
+    };
+  }
+  return {
+    label:
+      modelCatalogState === "error"
+        ? pick(locale, "Catalog unavailable", "목록 불러오기 실패")
+        : pick(locale, "Recommended after Step 1", "1단계 후 권장"),
+    detail:
+      modelCatalogState === "error"
+        ? pick(
+            locale,
+            "The visible Step 2 model catalog did not finish loading, but the prepared Efficient MIL fallback can still run on this case.",
+            "표시용 2단계 모델 목록을 끝까지 불러오지 못했지만, 준비된 Efficient MIL 기본 경로는 이 케이스에서 계속 실행할 수 있습니다.",
+          )
+        : modelCatalogState === "empty"
+          ? pick(
+              locale,
+              "No extra Step 2 compare models were advertised for this site, but the prepared Efficient MIL fallback is ready.",
+              "이 사이트에는 추가 2단계 비교 모델이 표시되지 않았지만, 준비된 Efficient MIL 기본 경로는 이미 사용할 수 있습니다.",
+            )
+          : pick(
+              locale,
+              "The prepared Efficient MIL fallback is already runnable while the visible model catalog finishes loading in the background.",
+              "표시용 모델 목록은 백그라운드에서 계속 불러오더라도, 준비된 Efficient MIL 기본 경로는 이미 실행할 수 있습니다.",
+            ),
+  };
 }
 
 export function defaultModelCompareSelection(

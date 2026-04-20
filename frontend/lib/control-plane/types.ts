@@ -136,6 +136,20 @@ export type ControlPlaneRetrievalCorpusSearchHit = ControlPlaneRetrievalCorpusEn
   source_site_hospital_name?: string | null;
 };
 
+export type ControlPlaneRetrievalCorpusUmapEntry = ControlPlaneRetrievalCorpusEntry & {
+  embedding: number[];
+  source_site_display_name?: string | null;
+  source_site_hospital_name?: string | null;
+};
+
+export type ControlPlaneRetrievalCorpusUmapPayload = {
+  profile: ControlPlaneRetrievalCorpusProfile;
+  entries: ControlPlaneRetrievalCorpusUmapEntry[];
+  entry_count: number;
+  site_count: number;
+  corpus_updated_at: string | null;
+};
+
 export type ControlPlaneOverview = {
   user_count: number;
   site_count: number;

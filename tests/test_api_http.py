@@ -4809,6 +4809,291 @@ class ApiHttpTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(len(payload["neighbors"]), 3)
         self.assertIn("plotly", payload["html"].lower())
+        self.assertEqual(payload["cluster_scope"], "site")
+
+    def test_cluster_position_prefers_global_umap_without_local_artifacts_http(self):
+        token = self._token_for_username("http_researcher")
+        patient_id = "HTTP-CLUSTER-GLOBAL-001"
+        visit_date = "Initial"
+        self._seed_case(token, patient_id=patient_id, visit_date=visit_date)
+        lazy_cp = self.app_module.get_control_plane()
+
+        import numpy as np
+        import kera_research.api.routes.site_overview as site_overview
+
+        class FakeWorkflow:
+            def __init__(self):
+                self.ai_clinic_workflow = self
+
+            def _normalize_retrieval_profile(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "label": "All-hospital retrieval",
+                }
+
+            def _case_metadata_snapshot(self, summary, case_records, quality_cache):
+                del summary, case_records, quality_cache
+                return {
+                    "representative_view": "white",
+                    "visit_status": "active",
+                }
+
+            def _resolve_query_dinov2_embedding(
+                self,
+                site_store,
+                *,
+                query_records,
+                execution_device,
+                retrieval_profile,
+            ):
+                del site_store, query_records, execution_device
+                return (
+                    np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+                    self._normalize_retrieval_profile(retrieval_profile),
+                    None,
+                )
+
+        with (
+            patch.object(lazy_cp, "remote_node_sync_enabled", return_value=True),
+            patch.object(self.app_module, "_get_workflow", return_value=FakeWorkflow()),
+            patch.object(
+                site_overview,
+                "_build_global_cluster_view_from_remote",
+                return_value=(
+                    {
+                        "html": "<html><body>plotly global map</body></html>",
+                        "neighbors": [
+                            {
+                                "patient_id": "remote_case_001",
+                                "visit_date": "Partner Site",
+                                "category": "fungal",
+                                "species": "Fusarium",
+                                "age": "",
+                                "sex": "",
+                                "distance": 0.0831,
+                                "source_site_display_name": "Partner Site",
+                                "representative_view": "white",
+                                "visit_status": "active",
+                            }
+                        ],
+                        "cluster_message": "Showing this visit on the all-hospital 3D map.",
+                        "cluster_scope": "global",
+                        "cluster_scope_label": "all_hospitals",
+                        "cluster_entry_count": 24,
+                        "cluster_site_count": 3,
+                    },
+                    None,
+                ),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/sites/{self.site_id}/cluster-position",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "patient_id": patient_id,
+                    "visit_date": visit_date,
+                    "retrieval_profile": "dinov2_lesion_crop",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["cluster_scope"], "global")
+        self.assertEqual(payload["cluster_site_count"], 3)
+        self.assertEqual(payload["cross_site_neighbors"], [])
+        self.assertIn("plotly", payload["html"].lower())
+
+    def test_cluster_position_global_umap_cache_reuses_cached_projection_http(self):
+        import numpy as np
+        import kera_research.api.routes.site_overview as site_overview
+
+        cache_dir = Path(self.tempdir.name) / "global_umap_cache"
+
+        class FakeRemoteControlPlane:
+            def __init__(self):
+                self.calls: list[dict[str, Any]] = []
+
+            def retrieval_corpus_umap_payload(
+                self,
+                *,
+                profile_id: str,
+                retrieval_signature: str,
+                metadata_only: bool = False,
+            ) -> dict[str, Any]:
+                self.calls.append(
+                    {
+                        "profile_id": profile_id,
+                        "retrieval_signature": retrieval_signature,
+                        "metadata_only": metadata_only,
+                    }
+                )
+                payload = {
+                    "profile": {"profile_id": profile_id},
+                    "entry_count": 4,
+                    "site_count": 2,
+                    "corpus_updated_at": "2026-04-20T00:00:00+00:00",
+                }
+                if metadata_only:
+                    return payload | {"entries": []}
+                return payload | {
+                    "entries": [
+                        {
+                            "case_reference_id": "CASE-001",
+                            "site_id": "SITE_A",
+                            "source_site_display_name": "Hospital A",
+                            "source_site_hospital_name": "Hospital A",
+                            "culture_category": "fungal",
+                            "culture_species": "Fusarium",
+                            "embedding": [1.0, 0.0, 0.0],
+                            "metadata_json": {
+                                "representative_view": "white",
+                                "visit_status": "active",
+                                "age": "62",
+                                "sex": "female",
+                            },
+                        },
+                        {
+                            "case_reference_id": "CASE-002",
+                            "site_id": "SITE_B",
+                            "source_site_display_name": "Hospital B",
+                            "source_site_hospital_name": "Hospital B",
+                            "culture_category": "bacterial",
+                            "culture_species": "Pseudomonas",
+                            "embedding": [0.95, 0.05, 0.0],
+                            "metadata_json": {
+                                "representative_view": "slit",
+                                "visit_status": "active",
+                                "age": "58",
+                                "sex": "male",
+                            },
+                        },
+                        {
+                            "case_reference_id": "CASE-003",
+                            "site_id": "SITE_B",
+                            "source_site_display_name": "Hospital B",
+                            "source_site_hospital_name": "Hospital B",
+                            "culture_category": "fungal",
+                            "culture_species": "Aspergillus",
+                            "embedding": [0.9, 0.1, 0.0],
+                            "metadata_json": {
+                                "representative_view": "white",
+                                "visit_status": "followup",
+                                "age": "70",
+                                "sex": "female",
+                            },
+                        },
+                        {
+                            "case_reference_id": "CASE-004",
+                            "site_id": "SITE_A",
+                            "source_site_display_name": "Hospital A",
+                            "source_site_hospital_name": "Hospital A",
+                            "culture_category": "fungal",
+                            "culture_species": "Candida",
+                            "embedding": [0.85, 0.15, 0.0],
+                            "metadata_json": {
+                                "representative_view": "fluo",
+                                "visit_status": "active",
+                                "age": "66",
+                                "sex": "female",
+                            },
+                        },
+                    ]
+                }
+
+        class FakeWorkflow:
+            def retrieval_signature(self, retrieval_profile="dinov2_lesion_crop"):
+                return {
+                    "profile_id": retrieval_profile,
+                    "retrieval_signature": "global-cache-signature-12345678",
+                }
+
+        class FakeControlPlane:
+            def __init__(self):
+                self.remote_control_plane = FakeRemoteControlPlane()
+
+            def remote_node_sync_enabled(self):
+                return True
+
+            def case_reference_id(self, site_id, patient_id, visit_date):
+                return f"{site_id}:{patient_id}:{visit_date}"
+
+        fake_cp = FakeControlPlane()
+
+        with patch.object(site_overview, "_GLOBAL_CLUSTER_CACHE_DIR", cache_dir):
+            first_payload, first_error = site_overview._build_global_cluster_view_from_remote(
+                fake_cp,
+                workflow=FakeWorkflow(),
+                site_id=self.site_id,
+                patient_id="HTTP-CACHE-001",
+                visit_date="Initial",
+                query_vec=np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+                retrieval_profile="dinov2_lesion_crop",
+            )
+            second_payload, second_error = site_overview._build_global_cluster_view_from_remote(
+                fake_cp,
+                workflow=FakeWorkflow(),
+                site_id=self.site_id,
+                patient_id="HTTP-CACHE-001",
+                visit_date="Initial",
+                query_vec=np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+                retrieval_profile="dinov2_lesion_crop",
+            )
+
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertIsNotNone(first_payload)
+        self.assertIsNotNone(second_payload)
+        self.assertEqual(first_payload["cluster_scope"], "global")
+        self.assertEqual(second_payload["cluster_scope"], "global")
+        self.assertTrue(any(cache_dir.glob("*.pkl")))
+        self.assertEqual(len(fake_cp.remote_control_plane.calls), 3)
+        self.assertEqual(
+            [item["metadata_only"] for item in fake_cp.remote_control_plane.calls],
+            [True, False, True],
+        )
+
+    def test_cluster_position_html_localizes_labels_and_hides_umap_axes_http(self):
+        import kera_research.api.routes.site_overview as site_overview
+
+        html = site_overview._build_cluster_position_html(
+            cluster_points=[
+                {
+                    "patient_id": "CASE-001",
+                    "visit_date": "Initial",
+                    "culture_category": "fungal",
+                    "culture_species": "Fusarium",
+                    "age": "62",
+                    "sex": "female",
+                    "coords_3d": [0.1, 0.2, 0.3],
+                    "source_site_display_name": "병원 A",
+                    "representative_view": "white",
+                    "visit_status": "active",
+                },
+                {
+                    "patient_id": "CASE-002",
+                    "visit_date": "Follow-up",
+                    "culture_category": "bacterial",
+                    "culture_species": "Pseudomonas",
+                    "age": "58",
+                    "sex": "male",
+                    "coords_3d": [0.3, 0.1, 0.2],
+                    "source_site_display_name": "병원 B",
+                    "representative_view": "slit",
+                    "visit_status": "followup",
+                },
+            ],
+            query_coords=[0.15, 0.18, 0.27],
+            query_patient_id="QUERY-001",
+            query_visit_date="Initial",
+            neighbor_patient_ids=["CASE-001"],
+            locale="ko",
+        )
+
+        self.assertIn("3D 유사 증례 맵".encode("unicode_escape").decode("ascii"), html)
+        self.assertIn("현재 방문".encode("unicode_escape").decode("ascii"), html)
+        self.assertIn("유사 증례 1".encode("unicode_escape").decode("ascii"), html)
+        self.assertIn("배양".encode("unicode_escape").decode("ascii"), html)
+        self.assertNotIn("UMAP-1", html)
 
     def test_cluster_position_includes_cross_site_references_when_remote_sync_is_enabled_http(self):
         token = self._token_for_username("http_researcher")
@@ -5021,6 +5306,7 @@ class ApiHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertIn("source frames", str(payload.get("cluster_message") or ""))
+        self.assertEqual(payload["cluster_scope"], "site")
         self.assertEqual(payload["cross_site_status"], "ready")
         self.assertEqual(payload["cross_site_retrieval_profile"], "dinov2_lesion_crop")
         self.assertEqual(len(payload["cross_site_neighbors"]), 1)

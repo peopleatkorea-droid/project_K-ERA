@@ -5,8 +5,10 @@ import type { Locale } from "../../lib/i18n";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { MetricGrid, MetricItem } from "../ui/metric-grid";
+import { SectionHeader } from "../ui/section-header";
 import {
   docSectionClass,
+  docSectionHeadClass,
   docSectionLabelClass,
   docSiteBadgeClass,
   panelImageCardClass,
@@ -88,16 +90,47 @@ function SavedCasePreviewPanelsInner({
   );
 
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
-      <section
-        className={docSectionClass}
-        style={{ contentVisibility: "auto", containIntrinsicSize: "960px" }}
-      >
-        <div className="grid gap-2.5">
+    <section
+      className={docSectionClass}
+      style={{ contentVisibility: "auto", containIntrinsicSize: "960px" }}
+    >
+      <SectionHeader
+        className={docSectionHeadClass}
+        eyebrow={
+          <div className={docSectionLabelClass}>
+            {pick(locale, "Optional previews", "보조 미리보기")}
+          </div>
+        }
+        title={pick(locale, "Mask and crop previews", "mask / crop 미리보기")}
+        titleAs="h4"
+        description={pick(
+          locale,
+          "Use these only when you need a quick source-to-mask-to-crop comparison.",
+          "원본, mask, crop을 빠르게 비교할 때만 사용합니다.",
+        )}
+      />
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card as="section" variant="nested" className="grid content-start gap-4 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className={docSectionLabelClass}>{pick(locale, "Cornea preview", "각막 crop 미리보기")}</div>
+            <div className="grid gap-1">
+              <div className={docSectionLabelClass}>
+                {pick(locale, "Cornea", "각막")}
+              </div>
+              <p className="m-0 text-sm leading-6 text-muted">
+                {pick(
+                  locale,
+                  "Compare the source image, cornea mask, and cornea crop.",
+                  "원본, 각막 mask, 각막 crop을 비교합니다.",
+                )}
+              </p>
+            </div>
             <div className={previewSectionActionsClass}>
-              <span className={docSiteBadgeClass}>{roiPreviewBusy ? commonLoading : `${roiPreviewItems.length} ${pick(locale, "results", "결과")}`}</span>
+              <span className={docSiteBadgeClass}>
+                {roiPreviewBusy
+                  ? commonLoading
+                  : `${roiPreviewItems.length} ${pick(locale, "results", "결과")}`}
+              </span>
               <Button
                 className={previewRunButtonClass}
                 type="button"
@@ -106,91 +139,111 @@ function SavedCasePreviewPanelsInner({
                 onClick={() => void onRunRoiPreview()}
                 disabled={roiPreviewBusy || !canRunRoiPreview}
               >
-                {roiPreviewBusy ? pick(locale, "Preparing...", "준비 중...") : pick(locale, "Preview cornea crop", "각막 crop 미리보기 실행")}
+                {roiPreviewBusy
+                  ? pick(locale, "Preparing...", "준비 중...")
+                  : pick(locale, "Run cornea preview", "각막 미리보기 실행")}
               </Button>
             </div>
           </div>
-          <h4 className="min-w-0 break-words text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
-            {pick(locale, "Source, cornea mask, and crop", "원본, 각막 mask, crop 비교")}
-          </h4>
-          <p className="m-0 max-w-3xl break-words text-sm leading-6 text-muted [overflow-wrap:anywhere]">
-            {pick(locale, "Generate ROI previews to compare the original image with the cornea segmentation and crop.", "원본 이미지와 각막 segmentation, crop 결과를 한 번에 비교하도록 ROI 미리보기를 생성합니다.")}
-          </p>
-        </div>
-        {!canRunRoiPreview ? <p>{pick(locale, "Viewer accounts can inspect images, but cornea preview remains disabled.", "뷰어 계정은 이미지를 볼 수 있지만 각막 preview는 실행할 수 없습니다.")}</p> : null}
-        {canRunRoiPreview && roiPreviewItems.length === 0 ? (
-          <p>{pick(locale, "Generate a preview to compare the saved source images with their cornea crops.", "저장된 원본 이미지와 각막 crop을 비교하려면 미리보기를 생성해 주세요.")}</p>
-        ) : null}
-        {roiPreviewItems.length > 0 ? (
-          <div className={panelImageStackClass}>
-            {visibleRoiPreviewItems.map((item) => (
-              <Card
-                as="article"
-                variant="nested"
-                key={`${item.image_id ?? item.source_image_path}:roi`}
-                className={panelImageCardClass}
-                style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
-              >
-                <MetricGrid columns={3} className={previewItemMetricGridClass}>
-                  <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
-                  <MetricItem
-                    value={item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
-                    label={pick(locale, "Role", "역할")}
-                  />
-                  <MetricItem value={item.backend} label={pick(locale, "Backend", "Backend")} />
-                </MetricGrid>
-                <div className={panelPreviewGridClass}>
-                  <div>
-                    {item.source_preview_url ? (
-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Source", "원본")}</strong>
+          {!canRunRoiPreview ? (
+            <p className="m-0 text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Viewer accounts can inspect images, but cornea preview is disabled.",
+                "뷰어 계정은 이미지를 볼 수 있지만 각막 미리보기는 실행할 수 없습니다.",
+              )}
+            </p>
+          ) : null}
+          {canRunRoiPreview && roiPreviewItems.length === 0 ? (
+            <p className="m-0 text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Run this only if you need to compare saved cornea crops.",
+                "저장된 각막 crop 비교가 필요할 때만 실행하세요.",
+              )}
+            </p>
+          ) : null}
+          {roiPreviewItems.length > 0 ? (
+            <div className={panelImageStackClass}>
+              {visibleRoiPreviewItems.map((item) => (
+                <Card
+                  as="article"
+                  variant="nested"
+                  key={`${item.image_id ?? item.source_image_path}:roi`}
+                  className={panelImageCardClass}
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
+                >
+                  <MetricGrid columns={3} className={previewItemMetricGridClass}>
+                    <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
+                    <MetricItem
+                      value={item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
+                      label={pick(locale, "Role", "역할")}
+                    />
+                    <MetricItem value={item.backend} label={pick(locale, "Backend", "Backend")} />
+                  </MetricGrid>
+                  <div className={panelPreviewGridClass}>
+                    <div>
+                      {item.source_preview_url ? (
+                        <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Source", "원본")}</strong>
+                      </div>
+                    </div>
+                    <div>
+                      {item.medsam_mask_url ? (
+                        <MaskOverlayPreview
+                          sourceUrl={item.source_preview_url}
+                          maskUrl={item.medsam_mask_url}
+                          alt={`${item.view} cornea mask overlay`}
+                          tint={[231, 211, 111]}
+                        />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Cornea mask unavailable", "각막 mask를 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Cornea mask", "각막 mask")}</strong>
+                      </div>
+                    </div>
+                    <div>
+                      {item.roi_crop_url ? (
+                        <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    {item.medsam_mask_url ? (
-                      <MaskOverlayPreview
-                        sourceUrl={item.source_preview_url}
-                        maskUrl={item.medsam_mask_url}
-                        alt={`${item.view} cornea mask overlay`}
-                        tint={[231, 211, 111]}
-                      />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Cornea mask unavailable", "각막 mask를 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Cornea mask", "각막 mask")}</strong>
-                    </div>
-                  </div>
-                  <div>
-                    {item.roi_crop_url ? (
-                      <img src={item.roi_crop_url} alt={`${item.view} cornea crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Cornea crop unavailable", "각막 crop을 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Cornea crop", "각막 crop")}</strong>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        ) : null}
-      </section>
+                </Card>
+              ))}
+            </div>
+          ) : null}
+        </Card>
 
-      <section
-        className={docSectionClass}
-        style={{ contentVisibility: "auto", containIntrinsicSize: "960px" }}
-      >
-        <div className="grid gap-2.5">
+        <Card as="section" variant="nested" className="grid content-start gap-4 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className={docSectionLabelClass}>{pick(locale, "Lesion preview", "병변 crop 미리보기")}</div>
+            <div className="grid gap-1">
+              <div className={docSectionLabelClass}>
+                {pick(locale, "Lesion", "병변")}
+              </div>
+              <p className="m-0 text-sm leading-6 text-muted">
+                {pick(
+                  locale,
+                  "Compare the source image, lesion mask, and lesion crop.",
+                  "원본, 병변 mask, 병변 crop을 비교합니다.",
+                )}
+              </p>
+            </div>
             <div className={previewSectionActionsClass}>
-              <span className={docSiteBadgeClass}>{lesionPreviewBusy ? commonLoading : `${lesionPreviewItems.length} ${pick(locale, "results", "결과")}`}</span>
+              <span className={docSiteBadgeClass}>
+                {lesionPreviewBusy
+                  ? commonLoading
+                  : `${lesionPreviewItems.length} ${pick(locale, "results", "결과")}`}
+              </span>
               <Button
                 className={previewRunButtonClass}
                 type="button"
@@ -199,86 +252,98 @@ function SavedCasePreviewPanelsInner({
                 onClick={() => void onRunLesionPreview()}
                 disabled={lesionPreviewBusy || selectedCaseImageCount === 0}
               >
-                {lesionPreviewBusy ? pick(locale, "Preparing...", "준비 중...") : pick(locale, "Preview lesion crop", "병변 crop 미리보기 실행")}
+                {lesionPreviewBusy
+                  ? pick(locale, "Preparing...", "준비 중...")
+                  : pick(locale, "Run lesion preview", "병변 미리보기 실행")}
               </Button>
             </div>
           </div>
-          <h4 className="min-w-0 break-words text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
-            {pick(locale, "Source, lesion mask, and crop", "원본, 병변 mask, crop 비교")}
-          </h4>
-          <p className="m-0 max-w-3xl break-words text-sm leading-6 text-muted [overflow-wrap:anywhere]">
-            {pick(locale, "Generate lesion previews to compare boxed images with their lesion-centered mask and crop.", "박스를 지정한 이미지와 병변 중심 mask, crop 결과를 한 번에 비교하도록 미리보기를 생성합니다.")}
-          </p>
-        </div>
-        {!selectedCaseImageCount ? <p>{pick(locale, "Select a saved case with uploaded images before running lesion preview.", "병변 crop 미리보기를 실행하려면 업로드 이미지가 있는 저장 케이스를 선택해 주세요.")}</p> : null}
-        {selectedCaseImageCount > 0 && lesionPreviewItems.length === 0 ? (
-          <p>
-            {hasAnySavedLesionBox
-              ? pick(locale, "Generate a preview to compare each boxed image with its lesion-centered crop.", "박스가 저장된 각 이미지와 병변 중심 crop을 비교하려면 미리보기를 생성해 주세요.")
-              : pick(locale, "Save at least one lesion box in the saved images section, then run preview.", "저장 이미지 섹션에서 lesion box를 하나 이상 저장한 뒤 미리보기를 실행해 주세요.")}
-          </p>
-        ) : null}
-        {lesionPreviewItems.length > 0 ? (
-          <div className={panelImageStackClass}>
-            {visibleLesionPreviewItems.map((item) => (
-              <Card
-                as="article"
-                variant="nested"
-                key={`${item.image_id ?? item.source_image_path}:lesion`}
-                className={panelImageCardClass}
-                style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
-              >
-                <MetricGrid columns={3} className={previewItemMetricGridClass}>
-                  <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
-                  <MetricItem
-                    value={item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
-                    label={pick(locale, "Role", "역할")}
-                  />
-                  <MetricItem value={item.backend} label={pick(locale, "Backend", "Backend")} />
-                </MetricGrid>
-                <div className={panelPreviewGridClass}>
-                  <div>
-                    {item.source_preview_url ? (
-                      <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Source", "원본")}</strong>
+          {!selectedCaseImageCount ? (
+            <p className="m-0 text-sm leading-6 text-muted">
+              {pick(
+                locale,
+                "Open a saved case with uploaded images before running lesion preview.",
+                "병변 미리보기를 실행하려면 업로드 이미지가 있는 저장 케이스를 선택해 주세요.",
+              )}
+            </p>
+          ) : null}
+          {selectedCaseImageCount > 0 && lesionPreviewItems.length === 0 ? (
+            <p className="m-0 text-sm leading-6 text-muted">
+              {hasAnySavedLesionBox
+                ? pick(
+                    locale,
+                    "Run this only if you need to compare saved lesion crops.",
+                    "저장된 병변 crop 비교가 필요할 때만 실행하세요.",
+                  )
+                : pick(
+                    locale,
+                    "Save at least one lesion box first, then run the preview.",
+                    "먼저 lesion box를 하나 이상 저장한 뒤 실행하세요.",
+                  )}
+            </p>
+          ) : null}
+          {lesionPreviewItems.length > 0 ? (
+            <div className={panelImageStackClass}>
+              {visibleLesionPreviewItems.map((item) => (
+                <Card
+                  as="article"
+                  variant="nested"
+                  key={`${item.image_id ?? item.source_image_path}:lesion`}
+                  className={panelImageCardClass}
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "360px" }}
+                >
+                  <MetricGrid columns={3} className={previewItemMetricGridClass}>
+                    <MetricItem value={translateOption(locale, "view", item.view)} label={pick(locale, "View", "뷰")} />
+                    <MetricItem
+                      value={item.is_representative ? pick(locale, "Representative", "대표 이미지") : pick(locale, "Supporting image", "보조 이미지")}
+                      label={pick(locale, "Role", "역할")}
+                    />
+                    <MetricItem value={item.backend} label={pick(locale, "Backend", "Backend")} />
+                  </MetricGrid>
+                  <div className={panelPreviewGridClass}>
+                    <div>
+                      {item.source_preview_url ? (
+                        <img src={item.source_preview_url} alt={`${item.view} source`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Source preview unavailable", "원본 미리보기를 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Source", "원본")}</strong>
+                      </div>
+                    </div>
+                    <div>
+                      {item.lesion_mask_url ? (
+                        <MaskOverlayPreview
+                          sourceUrl={item.source_preview_url}
+                          maskUrl={item.lesion_mask_url}
+                          alt={`${item.view} lesion mask overlay`}
+                          tint={[242, 164, 154]}
+                        />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Lesion mask unavailable", "병변 mask를 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Lesion mask", "병변 mask")}</strong>
+                      </div>
+                    </div>
+                    <div>
+                      {item.lesion_crop_url ? (
+                        <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
+                      ) : (
+                        <div className={panelImageFallbackClass}>{pick(locale, "Lesion crop unavailable", "병변 crop을 표시할 수 없습니다")}</div>
+                      )}
+                      <div className={panelImageCopyClass}>
+                        <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    {item.lesion_mask_url ? (
-                      <MaskOverlayPreview
-                        sourceUrl={item.source_preview_url}
-                        maskUrl={item.lesion_mask_url}
-                        alt={`${item.view} lesion mask overlay`}
-                        tint={[242, 164, 154]}
-                      />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Lesion mask unavailable", "병변 mask를 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Lesion mask", "병변 mask")}</strong>
-                    </div>
-                  </div>
-                  <div>
-                    {item.lesion_crop_url ? (
-                      <img src={item.lesion_crop_url} alt={`${item.view} lesion crop`} className={panelImagePreviewClass} loading="lazy" decoding="async" />
-                    ) : (
-                      <div className={panelImageFallbackClass}>{pick(locale, "Lesion crop unavailable", "병변 crop을 표시할 수 없습니다")}</div>
-                    )}
-                    <div className={panelImageCopyClass}>
-                      <strong>{pick(locale, "Lesion crop", "병변 crop")}</strong>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        ) : null}
-      </section>
-    </div>
+                </Card>
+              ))}
+            </div>
+          ) : null}
+        </Card>
+      </div>
+    </section>
   );
 }
 

@@ -27,6 +27,8 @@ import type {
   ControlPlaneRetrievalCorpusEntry,
   ControlPlaneRetrievalCorpusProfile,
   ControlPlaneRetrievalCorpusSearchHit,
+  ControlPlaneRetrievalCorpusUmapEntry,
+  ControlPlaneRetrievalCorpusUmapPayload,
   ControlPlaneSite,
   ControlPlaneSiteRole,
   ControlPlaneUser,
@@ -1737,6 +1739,120 @@ export async function searchRetrievalCorpusEntries(input: {
   }
   hits.sort((left, right) => right.similarity - left.similarity);
   return hits.slice(0, topK);
+}
+
+export async function buildRetrievalCorpusUmapPayload(input: {
+  profileId: string;
+  retrievalSignature: string;
+  metadataOnly?: boolean;
+}): Promise<ControlPlaneRetrievalCorpusUmapPayload> {
+  const sql = await controlPlaneSql();
+  const profileId = input.profileId.trim();
+  const retrievalSignature = input.retrievalSignature.trim();
+  const metadataOnly = Boolean(input.metadataOnly);
+  if (!profileId) {
+    throw new Error("profile_id is required for retrieval UMAP.");
+  }
+  if (!retrievalSignature) {
+    throw new Error("retrieval_signature is required for retrieval UMAP.");
+  }
+
+  const profileRows = await sql`
+    select
+      profile_id,
+      retrieval_signature,
+      metadata_json,
+      created_at,
+      updated_at
+    from retrieval_corpus_profiles
+    where profile_id = ${profileId}
+    limit 1
+  `;
+  const profile = profileRows[0] ? serializeRetrievalCorpusProfile(profileRows[0]) : null;
+  if (!profile) {
+    throw new Error(`Retrieval corpus profile ${profileId} was not found.`);
+  }
+  if (profile.retrieval_signature !== retrievalSignature) {
+    throw new Error(
+      `Retrieval signature mismatch for profile ${profileId}. Expected ${profile.retrieval_signature}, received ${retrievalSignature}.`,
+    );
+  }
+
+  if (metadataOnly) {
+    const summaryRows = await sql`
+      select
+        count(*)::int as entry_count,
+        count(distinct e.site_id)::int as site_count,
+        max(e.updated_at) as corpus_updated_at
+      from retrieval_corpus_entries e
+      where e.profile_id = ${profileId}
+        and e.retrieval_signature = ${retrievalSignature}
+    `;
+    const summary = summaryRows[0];
+    return {
+      profile,
+      entries: [],
+      entry_count: Number(rowValue<number | string | null>(summary, "entry_count") ?? 0),
+      site_count: Number(rowValue<number | string | null>(summary, "site_count") ?? 0),
+      corpus_updated_at: rowValue<string | Date | null>(summary, "corpus_updated_at")
+        ? new Date(rowValue<string | Date>(summary, "corpus_updated_at")).toISOString()
+        : null,
+    };
+  }
+
+  const rows = await sql`
+    select
+      e.entry_id,
+      e.site_id,
+      e.node_id,
+      e.profile_id,
+      e.retrieval_signature,
+      e.case_reference_id,
+      e.culture_category,
+      e.culture_species,
+      e.embedding_dim,
+      e.embedding_json,
+      e.thumbnail_url,
+      e.metadata_json,
+      e.created_at,
+      e.updated_at,
+      s.display_name as source_site_display_name,
+      s.hospital_name as source_site_hospital_name
+    from retrieval_corpus_entries e
+    left join sites s on s.site_id = e.site_id
+    where e.profile_id = ${profileId}
+      and e.retrieval_signature = ${retrievalSignature}
+    order by e.updated_at desc, e.entry_id asc
+  `;
+
+  const entries: ControlPlaneRetrievalCorpusUmapEntry[] = [];
+  const siteIds = new Set<string>();
+  let corpusUpdatedAt: string | null = null;
+  for (const row of rows) {
+    const entry = serializeRetrievalCorpusEntry(row);
+    if (entry.site_id) {
+      siteIds.add(entry.site_id);
+    }
+    const updatedAt = rowValue<string | Date | null>(row, "updated_at");
+    if (!corpusUpdatedAt && updatedAt) {
+      corpusUpdatedAt = new Date(updatedAt).toISOString();
+    }
+    const embedding = normalizeEmbedding(rowValue<unknown>(row, "embedding_json"));
+    entries.push({
+      ...entry,
+      embedding,
+      source_site_display_name: rowValue<string | null>(row, "source_site_display_name"),
+      source_site_hospital_name: rowValue<string | null>(row, "source_site_hospital_name"),
+    });
+  }
+
+  return {
+    profile,
+    entries,
+    entry_count: rows.length,
+    site_count: siteIds.size,
+    corpus_updated_at: corpusUpdatedAt,
+  };
 }
 
 export async function listModelUpdates(): Promise<ControlPlaneModelUpdate[]> {

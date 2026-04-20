@@ -8,6 +8,7 @@ export type SectionHeaderProps = {
   className?: string;
   eyebrow?: ReactNode;
   title: ReactNode;
+  titleAside?: ReactNode;
   description?: ReactNode;
   aside?: ReactNode;
   titleAs?: HeadingTag;
@@ -17,6 +18,7 @@ export function SectionHeader({
   className,
   eyebrow,
   title,
+  titleAside,
   description,
   aside,
   titleAs = "h3",
@@ -26,9 +28,16 @@ export function SectionHeader({
     <div className={cn("flex min-w-0 items-start justify-between gap-4 max-[900px]:flex-col", className)}>
       <div className="grid min-w-0 gap-2.5">
         {eyebrow ? <div className="w-fit">{eyebrow}</div> : null}
-        <TitleTag className="min-w-0 break-words text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
-          {title}
-        </TitleTag>
+        <div className="flex min-w-0 flex-wrap items-start gap-3 max-[900px]:flex-col max-[900px]:items-stretch">
+          <TitleTag className="min-w-0 flex-1 break-words text-[clamp(1.3rem,1.7vw,1.75rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink [overflow-wrap:anywhere]">
+            {title}
+          </TitleTag>
+          {titleAside ? (
+            <div className="max-w-full shrink-0 self-start max-[900px]:w-full">
+              {titleAside}
+            </div>
+          ) : null}
+        </div>
         {description ? (
           <p className="m-0 max-w-3xl break-words text-sm leading-6 text-muted [overflow-wrap:anywhere]">
             {description}

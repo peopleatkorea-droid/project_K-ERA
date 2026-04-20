@@ -46,6 +46,7 @@ _CLUSTER_VIZ_2D_ADVANCED_PNG = _CLUSTER_VIZ_DIR / "cluster_2d_advanced.png"
 _CLUSTER_REDUCER_3D_PKL = _CLUSTER_VIZ_DIR / "umap_reducer_3d.pkl"
 _CLUSTER_EMBEDDINGS_NPY = _CLUSTER_VIZ_DIR / "cluster_embeddings.npy"
 _CLUSTER_METADATA_JSON = _CLUSTER_VIZ_DIR / "cluster_metadata.json"
+_GLOBAL_CLUSTER_CACHE_DIR = _CLUSTER_VIZ_DIR / "_global_umap_cache"
 _DEFAULT_SSL_CHECKPOINT = (
     _REPO_ROOT / "artifacts" / "weekend_plans"
     / "transformer_weekend_plan_20260326_172929"
@@ -63,12 +64,18 @@ def _default_cluster_retrieval_profile(crop_mode: str) -> str:
     return "dinov2_full_frame"
 
 
+def _normalize_cluster_html_locale(locale: str | None) -> str:
+    normalized = str(locale or "").strip().lower()
+    return "ko" if normalized.startswith("ko") else "en"
+
+
 def _build_cluster_position_html(
     cluster_points: list[dict],
     query_coords: list[float],
     query_patient_id: str,
     query_visit_date: str,
     neighbor_patient_ids: list[str],
+    locale: str | None = None,
 ) -> str:
     """Generate a compact Plotly 3D HTML with the query visit highlighted and top neighbors marked."""
     import plotly.graph_objects as go
@@ -85,12 +92,87 @@ def _build_cluster_position_html(
         "fungal": "diamond", "fungus": "diamond",
         "acanthamoeba": "square", "mixed": "cross", "unknown": "circle-open",
     }
+    language = _normalize_cluster_html_locale(locale)
+    is_korean = language == "ko"
+    category_labels = {
+        "bacterial": "세균" if is_korean else "Bacterial",
+        "bacteria": "세균" if is_korean else "Bacterial",
+        "fungal": "진균" if is_korean else "Fungal",
+        "fungus": "진균" if is_korean else "Fungal",
+        "acanthamoeba": "가시아메바" if is_korean else "Acanthamoeba",
+        "mixed": "혼합" if is_korean else "Mixed",
+        "unknown": "미상" if is_korean else "Unknown",
+    }
+    view_labels = {
+        "white": "백색광" if is_korean else "White light",
+        "slit": "세극등" if is_korean else "Slit lamp",
+        "fluorescein": "형광염색" if is_korean else "Fluorescein",
+        "fluo": "형광염색" if is_korean else "Fluorescein",
+        "other": "기타" if is_korean else "Other",
+        "unknown": "미상" if is_korean else "Unknown",
+    }
+    visit_status_labels = {
+        "active": "활동성" if is_korean else "Active",
+        "followup": "추적 관찰" if is_korean else "Follow-up",
+        "resolved": "호전" if is_korean else "Resolved",
+        "unknown": "미상" if is_korean else "Unknown",
+    }
+    sex_labels = {
+        "male": "남성" if is_korean else "Male",
+        "female": "여성" if is_korean else "Female",
+        "unknown": "미상" if is_korean else "Unknown",
+    }
 
     def _c(cat: str) -> str:
         return COLORS.get(cat, COLORS["unknown"])
 
     def _s(cat: str) -> str:
         return SYMBOLS.get(cat, SYMBOLS["unknown"])
+
+    def _pick(en_text: str, ko_text: str) -> str:
+        return ko_text if is_korean else en_text
+
+    def _category_label(cat: str) -> str:
+        normalized = str(cat or "").strip().lower()
+        return category_labels.get(normalized, category_labels["unknown"])
+
+    def _view_label(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return view_labels.get(normalized, value or view_labels["unknown"])
+
+    def _visit_status_label(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return visit_status_labels.get(normalized, value or visit_status_labels["unknown"])
+
+    def _sex_label(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return sex_labels.get(normalized, value or sex_labels["unknown"])
+
+    def _hover_body(point: dict[str, Any]) -> str:
+        source_site = str(
+            point.get("source_site_display_name")
+            or point.get("source_site_hospital_name")
+            or ""
+        ).strip()
+        representative_view = str(point.get("representative_view") or "").strip()
+        visit_status = str(point.get("visit_status") or "").strip()
+        age = str(point.get("age") or "").strip()
+        sex = str(point.get("sex") or "").strip()
+        lines = [
+            f"{_pick('Culture', '배양')}: {_category_label(str(point.get('culture_category') or 'unknown'))} / {point.get('culture_species') or '—'}",
+            f"{_pick('Visit', '방문')}: {point['visit_date']}",
+        ]
+        if source_site:
+            lines.append(f"{_pick('Hospital', '병원')}: {source_site}")
+        if representative_view or visit_status:
+            lines.append(
+                f"{_pick('View/Status', '촬영/상태')}: {_view_label(representative_view) if representative_view else '—'} / {_visit_status_label(visit_status) if visit_status else '—'}"
+            )
+        elif age or sex:
+            lines.append(
+                f"{_pick('Age/Sex', '나이/성별')}: {age or '—'} / {_sex_label(sex) if sex else '—'}"
+            )
+        return "<br>".join(lines)
 
     neighbor_set = set(neighbor_patient_ids)
     cat_groups: dict[str, list[dict]] = defaultdict(list)
@@ -106,10 +188,7 @@ def _build_cluster_position_html(
     for cat in sorted(cat_groups):
         pts = cat_groups[cat]
         hover = [
-            f"<b>{p['patient_id']}</b><br>"
-            f"{p['culture_category'].capitalize()} / {p['culture_species'] or '—'}<br>"
-            f"Visit: {p['visit_date']}<br>"
-            f"Age/Sex: {p['age']} / {p['sex']}"
+            f"<b>{p['patient_id']}</b><br>{_hover_body(p)}"
             for p in pts
         ]
         traces.append(go.Scatter3d(
@@ -117,7 +196,7 @@ def _build_cluster_position_html(
             y=[p["coords_3d"][1] for p in pts],
             z=[p["coords_3d"][2] for p in pts],
             mode="markers",
-            name=cat.capitalize(),
+            name=_category_label(cat),
             marker=dict(size=5, color=_c(cat), symbol=_s(cat),
                         opacity=0.35, line=dict(width=0)),
             text=hover,
@@ -128,15 +207,12 @@ def _build_cluster_position_html(
         c3 = pt["coords_3d"]
         cat = pt["culture_category"]
         hover_txt = (
-            f"<b>Neighbor {rank}: {pt['patient_id']}</b><br>"
-            f"{cat.capitalize()} / {pt['culture_species'] or '—'}<br>"
-            f"Visit: {pt['visit_date']}<br>"
-            f"Age/Sex: {pt['age']} / {pt['sex']}"
+            f"<b>{_pick('Similar case', '유사 증례')} {rank}: {pt['patient_id']}</b><br>{_hover_body(pt)}"
         )
         traces.append(go.Scatter3d(
             x=[c3[0]], y=[c3[1]], z=[c3[2]],
             mode="markers",
-            name=f"Neighbor {rank}",
+            name=f"{_pick('Similar case', '유사 증례')} {rank}",
             marker=dict(size=11, color=_c(cat), symbol=_s(cat),
                         opacity=1.0, line=dict(width=2, color="white")),
             text=[hover_txt],
@@ -146,10 +222,10 @@ def _build_cluster_position_html(
     traces.append(go.Scatter3d(
         x=[query_coords[0]], y=[query_coords[1]], z=[query_coords[2]],
         mode="markers",
-        name=f"Current: {query_patient_id}",
+        name=f"{_pick('Current visit', '현재 방문')}: {query_patient_id}",
         marker=dict(size=16, color="#dc2626", symbol="diamond",
                     opacity=1.0, line=dict(width=2, color="white")),
-        text=[f"<b>Current visit</b><br>{query_patient_id}<br>{query_visit_date}"],
+        text=[f"<b>{_pick('Current visit', '현재 방문')}</b><br>{query_patient_id}<br>{query_visit_date}"],
         hovertemplate="%{text}<extra></extra>",
     ))
 
@@ -157,13 +233,13 @@ def _build_cluster_position_html(
     fig = go.Figure(data=traces)
     fig.update_layout(
         title=dict(
-            text=f"Cluster position — {query_patient_id} / {query_visit_date}",
+            text=f"{_pick('3D similar-case map', '3D 유사 증례 맵')} — {query_patient_id} / {query_visit_date}",
             x=0.5, xanchor="center", font=dict(size=13),
         ),
         scene=dict(
-            xaxis=dict(title="UMAP-1", **axis_style),
-            yaxis=dict(title="UMAP-2", **axis_style),
-            zaxis=dict(title="UMAP-3", **axis_style),
+            xaxis=dict(title="", showticklabels=False, zeroline=False, **axis_style),
+            yaxis=dict(title="", showticklabels=False, zeroline=False, **axis_style),
+            zaxis=dict(title="", showticklabels=False, zeroline=False, **axis_style),
             bgcolor="#f8fafc",
             camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
         ),
@@ -174,6 +250,313 @@ def _build_cluster_position_html(
         height=520,
     )
     return fig.to_html(full_html=True, include_plotlyjs=True)
+
+
+def _build_global_cluster_view_from_remote(
+    cp: Any,
+    *,
+    workflow: Any,
+    site_id: str,
+    patient_id: str,
+    visit_date: str,
+    query_vec: Any,
+    retrieval_profile: str,
+    locale: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not getattr(cp, "remote_node_sync_enabled", lambda: False)():
+        return None, None
+    remote_cp = getattr(cp, "remote_control_plane", None)
+    if remote_cp is None:
+        return None, None
+
+    try:
+        import pickle
+        import numpy as np
+        from umap import UMAP
+    except Exception as exc:
+        return None, f"All-hospital 3D UMAP is unavailable on this server. {exc}"
+
+    def _safe_cache_component(value: str, *, fallback: str) -> str:
+        normalized = "".join(
+            ch if ch.isalnum() or ch in {"-", "_"} else "_"
+            for ch in str(value or "").strip()
+        ).strip("_")
+        return normalized or fallback
+
+    def _cache_path(profile_id: str, retrieval_signature: str) -> Path:
+        return _GLOBAL_CLUSTER_CACHE_DIR / (
+            f"{_safe_cache_component(profile_id, fallback='profile')}"
+            f"_{_safe_cache_component(retrieval_signature[:24], fallback='signature')}.pkl"
+        )
+
+    def _load_cache(
+        *,
+        profile_id: str,
+        retrieval_signature: str,
+        corpus_updated_at: str | None,
+        entry_count: int,
+        site_count: int,
+    ) -> dict[str, Any] | None:
+        cache_file = _cache_path(profile_id, retrieval_signature)
+        if not cache_file.exists():
+            return None
+        try:
+            with cache_file.open("rb") as handle:
+                cache_doc = pickle.load(handle)
+        except Exception:
+            return None
+        if not isinstance(cache_doc, dict):
+            return None
+        if str(cache_doc.get("profile_id") or "") != profile_id:
+            return None
+        if str(cache_doc.get("retrieval_signature") or "") != retrieval_signature:
+            return None
+        if str(cache_doc.get("corpus_updated_at") or "") != str(corpus_updated_at or ""):
+            return None
+        if int(cache_doc.get("entry_count") or 0) != int(entry_count):
+            return None
+        if int(cache_doc.get("site_count") or 0) != int(site_count):
+            return None
+        return cache_doc
+
+    def _write_cache(
+        *,
+        profile_id: str,
+        retrieval_signature: str,
+        corpus_updated_at: str | None,
+        entry_count: int,
+        site_count: int,
+        reducer: Any,
+        embedding_matrix: Any,
+        cluster_points: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        cache_doc = {
+            "profile_id": profile_id,
+            "retrieval_signature": retrieval_signature,
+            "corpus_updated_at": corpus_updated_at,
+            "entry_count": int(entry_count),
+            "site_count": int(site_count),
+            "reducer": reducer,
+            "embedding_matrix": embedding_matrix,
+            "cluster_points": cluster_points,
+        }
+        try:
+            _GLOBAL_CLUSTER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file = _cache_path(profile_id, retrieval_signature)
+            tmp_file = cache_file.with_suffix(".tmp")
+            with tmp_file.open("wb") as handle:
+                pickle.dump(cache_doc, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp_file.replace(cache_file)
+        except Exception:
+            pass
+        return cache_doc
+
+    try:
+        signature_record = workflow.retrieval_signature(retrieval_profile)
+        profile_id = str(signature_record.get("profile_id") or retrieval_profile)
+        retrieval_signature = str(signature_record.get("retrieval_signature") or "")
+        status_payload = remote_cp.retrieval_corpus_umap_payload(
+            profile_id=profile_id,
+            retrieval_signature=retrieval_signature,
+            metadata_only=True,
+        )
+    except Exception as exc:
+        return None, f"All-hospital retrieval corpus is unavailable. {exc}"
+
+    entry_count = int(status_payload.get("entry_count") or 0)
+    site_count = int(status_payload.get("site_count") or 0)
+    corpus_updated_at = str(status_payload.get("corpus_updated_at") or "").strip() or None
+    if entry_count <= 0:
+        return None, "All-hospital retrieval corpus is empty."
+    if entry_count < 4:
+        return None, "All-hospital retrieval corpus has too few cases for a stable 3D UMAP."
+
+    query_array = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+    query_norm = float(np.linalg.norm(query_array))
+    if not np.isfinite(query_norm) or query_norm <= 1e-12:
+        return None, "All-hospital 3D UMAP query embedding is unavailable."
+    query_vec_normalized = (query_array / query_norm).astype(np.float32)
+
+    cache_doc = _load_cache(
+        profile_id=profile_id,
+        retrieval_signature=retrieval_signature,
+        corpus_updated_at=corpus_updated_at,
+        entry_count=entry_count,
+        site_count=site_count,
+    )
+
+    reducer = None
+    embedding_matrix = None
+    cluster_points: list[dict[str, Any]] = []
+    if cache_doc is not None:
+        try:
+            reducer = cache_doc.get("reducer")
+            embedding_matrix = np.asarray(cache_doc.get("embedding_matrix"), dtype=np.float32)
+            cluster_points = list(cache_doc.get("cluster_points") or [])
+            if (
+                reducer is None
+                or embedding_matrix.ndim != 2
+                or embedding_matrix.shape[0] != len(cluster_points)
+                or embedding_matrix.shape[1] != query_vec_normalized.size
+            ):
+                reducer = None
+                embedding_matrix = None
+                cluster_points = []
+        except Exception:
+            reducer = None
+            embedding_matrix = None
+            cluster_points = []
+
+    if reducer is None or embedding_matrix is None or not cluster_points:
+        try:
+            payload = remote_cp.retrieval_corpus_umap_payload(
+                profile_id=profile_id,
+                retrieval_signature=retrieval_signature,
+                metadata_only=False,
+            )
+        except Exception as exc:
+            return None, f"All-hospital retrieval corpus is unavailable. {exc}"
+        raw_entries = list(payload.get("entries") or [])
+        if not raw_entries:
+            return None, "All-hospital retrieval corpus is empty."
+
+        entries: list[dict[str, Any]] = []
+        for item in raw_entries:
+            embedding = np.asarray(item.get("embedding") or [], dtype=np.float32).reshape(-1)
+            if embedding.size != query_vec_normalized.size:
+                continue
+            emb_norm = float(np.linalg.norm(embedding))
+            if not np.isfinite(emb_norm) or emb_norm <= 1e-12:
+                continue
+            metadata = dict(item.get("metadata_json") or {})
+            entries.append(
+                {
+                    "case_reference_id": str(item.get("case_reference_id") or "").strip(),
+                    "source_site_display_name": str(item.get("source_site_display_name") or "").strip() or None,
+                    "source_site_hospital_name": str(item.get("source_site_hospital_name") or "").strip() or None,
+                    "culture_category": str(item.get("culture_category") or "").strip().lower() or "unknown",
+                    "culture_species": str(item.get("culture_species") or "").strip(),
+                    "metadata_json": metadata,
+                    "embedding": (embedding / emb_norm).astype(np.float32),
+                }
+            )
+        if len(entries) < 4:
+            return None, "All-hospital retrieval corpus has too few cases for a stable 3D UMAP."
+
+        embedding_matrix = np.stack([entry["embedding"] for entry in entries], axis=0)
+        n_neighbors = max(2, min(15, len(entries) - 1))
+        reducer = UMAP(
+            n_components=3,
+            n_neighbors=n_neighbors,
+            min_dist=0.1,
+            metric="cosine",
+            init="random",
+            random_state=42,
+            transform_seed=42,
+        )
+        try:
+            coords_3d = reducer.fit_transform(embedding_matrix)
+        except Exception as exc:
+            return None, f"All-hospital 3D UMAP projection failed. {exc}"
+
+        cluster_points = []
+        for index, entry in enumerate(entries):
+            metadata = dict(entry.get("metadata_json") or {})
+            cluster_points.append(
+                {
+                    "patient_id": str(entry.get("case_reference_id") or ""),
+                    "visit_date": str(
+                        entry.get("source_site_display_name")
+                        or entry.get("source_site_hospital_name")
+                        or metadata.get("visit_status")
+                        or "cross-site"
+                    ),
+                    "culture_category": str(entry.get("culture_category") or "unknown"),
+                    "culture_species": str(entry.get("culture_species") or ""),
+                    "age": str(metadata.get("age") or ""),
+                    "sex": str(metadata.get("sex") or ""),
+                    "coords_3d": coords_3d[index].tolist(),
+                    "source_site_display_name": entry.get("source_site_display_name"),
+                    "source_site_hospital_name": entry.get("source_site_hospital_name"),
+                    "representative_view": metadata.get("representative_view"),
+                    "visit_status": metadata.get("visit_status"),
+                }
+            )
+
+        cache_doc = _write_cache(
+            profile_id=profile_id,
+            retrieval_signature=retrieval_signature,
+            corpus_updated_at=corpus_updated_at,
+            entry_count=entry_count,
+            site_count=site_count,
+            reducer=reducer,
+            embedding_matrix=embedding_matrix.astype(np.float32),
+            cluster_points=cluster_points,
+        )
+        embedding_matrix = np.asarray(cache_doc.get("embedding_matrix"), dtype=np.float32)
+        cluster_points = list(cache_doc.get("cluster_points") or [])
+
+    try:
+        query_coords = reducer.transform(query_vec_normalized.reshape(1, -1))[0]
+    except Exception as exc:
+        return None, f"All-hospital 3D UMAP projection failed. {exc}"
+
+    query_case_reference_id = cp.case_reference_id(site_id, patient_id, visit_date)
+    sims: np.ndarray = embedding_matrix @ query_vec_normalized
+    sorted_indices = np.argsort(-sims)
+    neighbors: list[dict[str, Any]] = []
+    seen_case_reference_ids: set[str] = {query_case_reference_id}
+    for idx in sorted_indices.tolist():
+        entry = cluster_points[idx]
+        case_reference_id = str(entry.get("patient_id") or "").strip()
+        if not case_reference_id or case_reference_id in seen_case_reference_ids:
+            continue
+        seen_case_reference_ids.add(case_reference_id)
+        neighbors.append(
+            {
+                "patient_id": case_reference_id,
+                "visit_date": str(
+                    entry.get("source_site_display_name")
+                    or entry.get("source_site_hospital_name")
+                    or entry.get("visit_status")
+                    or "cross-site"
+                ),
+                "category": str(entry.get("culture_category") or "unknown"),
+                "species": str(entry.get("culture_species") or ""),
+                "age": str(entry.get("age") or ""),
+                "sex": str(entry.get("sex") or ""),
+                "distance": round(float(1.0 - float(sims[idx])), 4),
+                "source_site_display_name": entry.get("source_site_display_name"),
+                "source_site_hospital_name": entry.get("source_site_hospital_name"),
+                "representative_view": entry.get("representative_view"),
+                "visit_status": entry.get("visit_status"),
+            }
+        )
+        if len(neighbors) >= 3:
+            break
+    message = "Showing this visit on the all-hospital 3D map."
+    if corpus_updated_at:
+        message = f"{message} Updated {corpus_updated_at}."
+
+    return (
+        {
+            "html": _build_cluster_position_html(
+                cluster_points=cluster_points,
+                query_coords=query_coords.tolist(),
+                query_patient_id=patient_id,
+                query_visit_date=visit_date,
+                neighbor_patient_ids=[str(item.get('patient_id') or '') for item in neighbors],
+                locale=locale,
+            ),
+            "neighbors": neighbors,
+            "cluster_message": message,
+            "cluster_scope": "global",
+            "cluster_scope_label": "all_hospitals",
+            "cluster_entry_count": entry_count,
+            "cluster_site_count": site_count,
+        },
+        None,
+    )
 
 
 def build_site_overview_router(support: Any) -> APIRouter:
@@ -543,37 +926,41 @@ def build_site_overview_router(support: Any) -> APIRouter:
         patient_id: str,
         visit_date: str,
         retrieval_profile: str | None = None,
+        locale: str | None = None,
         cp=Depends(get_control_plane),
         user: dict[str, Any] = Depends(get_approved_user),
     ) -> dict[str, Any]:
         require_validation_permission(user)
         site_store = require_site_access(cp, user, site_id)
 
-        if not (
+        local_cluster_artifacts_available = (
             _CLUSTER_REDUCER_3D_PKL.exists()
             and _CLUSTER_EMBEDDINGS_NPY.exists()
             and _CLUSTER_METADATA_JSON.exists()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cluster artifacts not found. Generate the cluster visualization first.",
-            )
+        )
 
         import json
         import pickle
         import numpy as np
 
-        cluster_meta_doc: dict[str, Any] = json.loads(
-            _CLUSTER_METADATA_JSON.read_text(encoding="utf-8")
-        )
-        cluster_points: list[dict[str, Any]] = cluster_meta_doc["points"]
-        backbone: str = cluster_meta_doc.get("backbone", "official")
-        crop_mode: str = cluster_meta_doc.get("crop_mode", "full")
-        view_filter: str = cluster_meta_doc.get("view_filter", "all")
+        cluster_points: list[dict[str, Any]] = []
+        backbone = "official"
+        crop_mode = "full"
+        view_filter = "all"
+        umap_reducer = None
+        cluster_embeddings: np.ndarray | None = None
+        if local_cluster_artifacts_available:
+            cluster_meta_doc: dict[str, Any] = json.loads(
+                _CLUSTER_METADATA_JSON.read_text(encoding="utf-8")
+            )
+            cluster_points = cluster_meta_doc["points"]
+            backbone = cluster_meta_doc.get("backbone", "official")
+            crop_mode = cluster_meta_doc.get("crop_mode", "full")
+            view_filter = cluster_meta_doc.get("view_filter", "all")
 
-        with open(_CLUSTER_REDUCER_3D_PKL, "rb") as _f:
-            umap_reducer = pickle.load(_f)
-        cluster_embeddings: np.ndarray = np.load(str(_CLUSTER_EMBEDDINGS_NPY))
+            with open(_CLUSTER_REDUCER_3D_PKL, "rb") as _f:
+                umap_reducer = pickle.load(_f)
+            cluster_embeddings = np.load(str(_CLUSTER_EMBEDDINGS_NPY))
 
         try:
             manifest_records: list[dict[str, Any]] = site_store.generate_manifest().to_dict("records")
@@ -593,6 +980,113 @@ def build_site_overview_router(support: Any) -> APIRouter:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No images found for patient {patient_id} visit {visit_date}.",
+            )
+
+        normalized_retrieval_profile = (
+            str(retrieval_profile or "").strip()
+            or _default_cluster_retrieval_profile(crop_mode)
+        )
+
+        quality_cache: dict[str, dict[str, Any] | None] = {}
+        workflow = None
+        ai_clinic_workflow = None
+        query_summary = next(
+            (
+                dict(item)
+                for item in site_store.list_case_summaries(patient_id=patient_id)
+                if str(item.get("visit_date") or "") == visit_date
+            ),
+            {},
+        )
+        policy_state = site_store.case_research_policy_state(patient_id, visit_date)
+        policy_summary = dict(policy_state.get("case_summary") or {})
+        if policy_summary:
+            query_summary = {**query_summary, **policy_summary}
+
+        query_metadata: dict[str, Any] | None = None
+        query_retrieval_vec = None
+        resolved_profile_record: dict[str, Any] = {}
+        profile_warning: str | None = None
+        requested_retrieval_label: str | None = None
+        global_cluster_payload: dict[str, Any] | None = None
+        global_cluster_fallback_reason: str | None = None
+        if cp.remote_node_sync_enabled():
+            workflow = get_workflow(cp)
+            ai_clinic_workflow = workflow.ai_clinic_workflow
+            requested_retrieval_label = str(
+                ai_clinic_workflow._normalize_retrieval_profile(normalized_retrieval_profile).get("label") or ""
+            ).strip() or None
+            try:
+                query_metadata = workflow._case_metadata_snapshot(
+                    query_summary,
+                    case_records,
+                    quality_cache,
+                )
+                (
+                    query_retrieval_vec,
+                    resolved_profile_record,
+                    profile_warning,
+                ) = ai_clinic_workflow._resolve_query_dinov2_embedding(
+                    site_store,
+                    query_records=case_records,
+                    execution_device="auto",
+                    retrieval_profile=normalized_retrieval_profile,
+                )
+            except Exception as exc:
+                profile_warning = f"All-hospital retrieval is unavailable. {exc}"
+                resolved_profile_record = {}
+
+            if query_retrieval_vec is not None and workflow is not None:
+                global_cluster_payload, global_cluster_fallback_reason = _build_global_cluster_view_from_remote(
+                    cp,
+                    workflow=workflow,
+                    site_id=site_id,
+                    patient_id=patient_id,
+                    visit_date=visit_date,
+                    query_vec=query_retrieval_vec,
+                    retrieval_profile=str(
+                        resolved_profile_record.get("profile_id") or normalized_retrieval_profile
+                    ),
+                    locale=locale,
+                )
+                if global_cluster_payload is not None:
+                    return {
+                        **global_cluster_payload,
+                        "cross_site_neighbors": [],
+                        "cross_site_status": "ready",
+                        "cross_site_message": None,
+                        "cross_site_cache_used": False,
+                        "cross_site_cache_saved_at": None,
+                        "cross_site_corpus_status": None,
+                        "cross_site_opportunistic_sync": None,
+                        "cross_site_retrieval_profile": str(
+                            resolved_profile_record.get("profile_id") or normalized_retrieval_profile
+                        ),
+                        "cross_site_requested_retrieval_profile": normalized_retrieval_profile,
+                        "cross_site_requested_retrieval_label": requested_retrieval_label,
+                        "cross_site_effective_retrieval_profile": str(
+                            resolved_profile_record.get("profile_id") or normalized_retrieval_profile
+                        ),
+                        "cross_site_effective_retrieval_label": str(
+                            resolved_profile_record.get("label") or ""
+                        ).strip() or None,
+                        "cross_site_status_retrieval_profile": str(
+                            resolved_profile_record.get("profile_id") or normalized_retrieval_profile
+                        ),
+                        "cross_site_status_retrieval_label": str(
+                            resolved_profile_record.get("label") or ""
+                        ).strip() or None,
+                    }
+            elif profile_warning and global_cluster_fallback_reason is None:
+                global_cluster_fallback_reason = profile_warning
+
+        if not local_cluster_artifacts_available:
+            detail = "All-hospital 3D map is unavailable and same-site cluster artifacts were not found."
+            if global_cluster_fallback_reason:
+                detail = f"{detail} {global_cluster_fallback_reason}"
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
             )
 
         visit_records = list(case_records)
@@ -721,10 +1215,6 @@ def build_site_overview_router(support: Any) -> APIRouter:
             if len(neighbors) >= 3:
                 break
 
-        normalized_retrieval_profile = (
-            str(retrieval_profile or "").strip()
-            or _default_cluster_retrieval_profile(crop_mode)
-        )
         cross_site_neighbors: list[dict[str, Any]] = []
         cross_site_status = "disabled"
         cross_site_message: str | None = None
@@ -734,44 +1224,11 @@ def build_site_overview_router(support: Any) -> APIRouter:
         cross_site_corpus_status: dict[str, Any] | None = None
         cross_site_effective_retrieval_profile: str | None = None
         cross_site_effective_retrieval_label: str | None = None
-        cross_site_requested_retrieval_label: str | None = None
+        cross_site_requested_retrieval_label: str | None = requested_retrieval_label
         cross_site_status_retrieval_profile: str | None = None
         cross_site_status_retrieval_label: str | None = None
-        if cp.remote_node_sync_enabled():
-            quality_cache: dict[str, dict[str, Any] | None] = {}
-            query_summary = next(
-                (
-                    dict(item)
-                    for item in site_store.list_case_summaries(patient_id=patient_id)
-                    if str(item.get("visit_date") or "") == visit_date
-                ),
-                {},
-            )
-            policy_state = site_store.case_research_policy_state(patient_id, visit_date)
-            policy_summary = dict(policy_state.get("case_summary") or {})
-            if policy_summary:
-                query_summary = {**query_summary, **policy_summary}
-            workflow = get_workflow(cp)
-            ai_clinic_workflow = workflow.ai_clinic_workflow
-            cross_site_requested_retrieval_label = str(
-                ai_clinic_workflow._normalize_retrieval_profile(normalized_retrieval_profile).get("label") or ""
-            ).strip() or None
+        if cp.remote_node_sync_enabled() and workflow is not None and ai_clinic_workflow is not None:
             try:
-                query_metadata = workflow._case_metadata_snapshot(
-                    query_summary,
-                    case_records,
-                    quality_cache,
-                )
-                (
-                    query_retrieval_vec,
-                    resolved_profile_record,
-                    profile_warning,
-                ) = ai_clinic_workflow._resolve_query_dinov2_embedding(
-                    site_store,
-                    query_records=case_records,
-                    execution_device="auto",
-                    retrieval_profile=normalized_retrieval_profile,
-                )
                 if query_retrieval_vec is None:
                     cached_remote = ai_clinic_workflow._load_remote_retrieval_cache(
                         site_store,
@@ -804,13 +1261,16 @@ def build_site_overview_router(support: Any) -> APIRouter:
                         )
                 else:
                     try:
+                        resolved_profile_id = str(
+                            resolved_profile_record.get("profile_id") or normalized_retrieval_profile
+                        )
                         cross_site_neighbors = workflow.search_remote_retrieval_corpus(
                             site_store,
                             query_embedding=query_retrieval_vec,
-                            query_metadata=query_metadata,
+                            query_metadata=query_metadata or {},
                             patient_id=patient_id,
                             visit_date=visit_date,
-                            retrieval_profile=str(resolved_profile_record.get("profile_id") or normalized_retrieval_profile),
+                            retrieval_profile=resolved_profile_id,
                             top_k=3,
                         )
                         ai_clinic_workflow._save_remote_retrieval_cache(
@@ -818,7 +1278,7 @@ def build_site_overview_router(support: Any) -> APIRouter:
                             patient_id=patient_id,
                             visit_date=visit_date,
                             requested_profile_id=normalized_retrieval_profile,
-                            used_profile_id=str(resolved_profile_record.get("profile_id") or normalized_retrieval_profile),
+                            used_profile_id=resolved_profile_id,
                             candidates=cross_site_neighbors,
                         )
                     except Exception as exc:
@@ -904,17 +1364,31 @@ def build_site_overview_router(support: Any) -> APIRouter:
         else:
             cross_site_message = "Cross-site retrieval corpus sync is not configured."
 
+        if global_cluster_fallback_reason:
+            fallback_message = (
+                "All-hospital 3D map is unavailable right now, so this view is showing the current site's 3D map."
+            )
+            if cluster_message:
+                cluster_message = f"{fallback_message} {cluster_message}"
+            else:
+                cluster_message = fallback_message
+
         html = _build_cluster_position_html(
             cluster_points=cluster_points,
             query_coords=query_coords_3d.tolist(),
             query_patient_id=patient_id,
             query_visit_date=visit_date,
             neighbor_patient_ids=[n["patient_id"] for n in neighbors],
+            locale=locale,
         )
         return {
             "html": html,
             "neighbors": neighbors,
             "cluster_message": cluster_message,
+            "cluster_scope": "site",
+            "cluster_scope_label": "current_site",
+            "cluster_entry_count": None,
+            "cluster_site_count": 1,
             "cross_site_neighbors": cross_site_neighbors,
             "cross_site_status": cross_site_status,
             "cross_site_message": cross_site_message,

@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-04-20
+
+### Saved-case 3-step clinician review cleanup
+
+- 저장 케이스 검토 화면을 `1단계 이미지 레벨 분석 -> 2단계 방문 단위 분석(MIL) -> 3단계 유사 증례/3D 맵` 흐름으로 다시 정리하고, 상단 `1-3 순차 분석 실행`을 기본 경로로 고정했습니다.
+- 추천 검토 순서 허브는 개별 단계 확인용으로만 남기고, 순차 실행 뒤에는 1단계, 2단계, 3단계 결과가 한 화면에서 이어서 보이도록 정리했습니다.
+- 보조 ROI/crop 미리보기는 분석 허브보다 뒤로 내리고, 설명/버튼 문구도 임상의가 바로 이해할 수 있는 한국어 중심으로 줄였습니다.
+- 1단계 결과는 `AI 판단 + Grad-CAM` 중심으로 정리했고, Grad-CAM이 없는 경우도 기술 설명 대신 다시 실행하면 된다는 문장으로 바꿨습니다.
+- 2단계는 방문 전체 이미지를 종합한 판단으로 요약하고, 1단계와의 일치/불일치만 빠르게 읽히도록 다듬었습니다.
+
+### Step 3 all-hospital 3D UMAP and clinician-facing display
+
+- `cluster-position` API가 현재 병원 로컬 아티팩트보다 먼저 `모든 병원 데이터를 포함한 3D UMAP`을 시도하고, 실패할 때만 현재 병원 3D 맵으로 fallback 하도록 바꿨습니다.
+- 중앙 retrieval corpus에서 UMAP용 payload를 내려주는 경로를 추가했고, `metadata_only` 집계와 로컬 cache를 붙여 같은 corpus 상태에서는 전역 3D UMAP을 재계산하지 않도록 정리했습니다.
+- Step 3 임상 모드에서는 `유사 증례`, `3D 맵`, `대표 유사 증례`, `가능한 진단`, `추천 다음 단계`만 남기고, retrieval corpus sync / component score / anchor 같은 공학적 표시를 숨겼습니다.
+- 3D 맵 iframe 자체도 locale-aware로 바꿨습니다. 제목, hover, 범례는 임상형 문구로 정리했고 `UMAP-1/2/3` 축 표시는 숨겼습니다.
+- 임상 모드 retrieval 화면은 `원내 / 다른 병원`을 따로 나누지 않고 하나의 `유사 증례` 섹션으로 합쳤고, 카드 안에서만 병원 정보를 보여주도록 바꿨습니다.
+- 3D 맵 화면 아래에는 대표 유사 증례를 바로 같이 보여주고, locale이 바뀌면 3D 맵도 다시 요청해 iframe 문구가 언어에 맞게 갱신되도록 했습니다.
+
+### Verification
+
+- `uv run pytest tests/test_api_http.py -k "cluster_position"`
+- `npx vitest run components/case-workspace/ai-clinic-panel.test.tsx`
+- `npx vitest run components/case-workspace/ai-clinic-result.test.tsx`
+- `npx vitest run components/case-workspace/case-workspace-review-sections.test.tsx`
+- `npx vitest run components/case-workspace/case-workspace-side-panel-props.test.tsx`
+- `npx vitest run components/case-workspace/saved-case-preview-panels.test.tsx`
+- `npx vitest run components/home-page.integration.test.tsx`
+- `npx vitest run lib/control-plane/store.test.ts`
+
 ## 2026-04-19
 
 ### Desktop case-workflow responsiveness pass

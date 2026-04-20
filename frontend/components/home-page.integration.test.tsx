@@ -75,17 +75,20 @@ vi.mock("./ui/section-header", () => ({
   SectionHeader: ({
     eyebrow,
     title,
+    titleAside,
     description,
     aside,
   }: {
     eyebrow?: React.ReactNode;
     title?: React.ReactNode;
+    titleAside?: React.ReactNode;
     description?: React.ReactNode;
     aside?: React.ReactNode;
   }) => (
     <div>
       {eyebrow}
       {title}
+      {titleAside}
       {description}
       {aside}
     </div>

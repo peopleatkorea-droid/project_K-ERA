@@ -289,6 +289,26 @@ class RemoteControlPlaneClient:
         )
         return [dict(item) for item in payload] if isinstance(payload, list) else []
 
+    def retrieval_corpus_umap_payload(
+        self,
+        *,
+        profile_id: str,
+        retrieval_signature: str,
+        metadata_only: bool = False,
+    ) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "/nodes/retrieval-corpus/umap",
+            json_body={
+                "profile_id": profile_id,
+                "retrieval_signature": retrieval_signature,
+                "metadata_only": bool(metadata_only),
+            },
+            headers=self._node_headers(),
+            timeout_seconds=max(self.timeout_seconds, 120.0),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def relay_ai_clinic(
         self,
         *,

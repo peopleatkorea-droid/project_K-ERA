@@ -27,6 +27,7 @@ import type {
   SiteModelCatalogState,
   CaseWorkspaceValidationRunOptions,
 } from "./shared";
+import { preparedVisitLevelFallbackStatus } from "./case-workspace-core-helpers";
 
 type Props = {
   locale: Locale;
@@ -366,6 +367,10 @@ function ValidationPanelInner({
     ? pick(locale, "Unavailable for inference-only analysis", "추론 전용 분석에서는 제공되지 않음")
     : pick(locale, "Pending or unrecorded", "미확정 또는 미기록");
   const compareCandidatesAvailable = compareModelCandidates.length > 0;
+  const visitLevelFallbackStatus = preparedVisitLevelFallbackStatus(locale, {
+    milFallbackReady: hasSelectedCase && canRunValidation,
+    modelCatalogState,
+  });
   const normalizedSelectedValidationModelVersionId =
     String(selectedValidationModelVersionId || "").trim() || null;
   const selectedValidationModel =
@@ -1646,12 +1651,12 @@ function ValidationPanelInner({
               {pick(locale, "Step 2", "2단계")}
             </div>
           }
-          title={pick(locale, "Visit-level analysis", "방문 레벨 분석")}
+          title={pick(locale, "Visit-level analysis (MIL)", "방문 단위 분석 (MIL)")}
           titleAs="h4"
           description={pick(
             locale,
-            "Use this after Step 1. The prepared Efficient MIL visit-level pass is the default Step 2 path, and extra models are optional.",
-            "1단계 이후에 사용합니다. 준비된 Efficient MIL 방문 레벨 분석이 기본 2단계 경로이고, 추가 모델은 선택 사항입니다.",
+            "Use this after Step 1. Step 2 runs visit-level Efficient MIL on the case.",
+            "1단계 이후에 사용합니다. 2단계에서 케이스 기준 방문 단위 Efficient MIL을 실행합니다.",
           )}
           aside={
             showStepActions ? (
@@ -1665,7 +1670,7 @@ function ValidationPanelInner({
               >
                 {modelCompareBusy
                   ? pick(locale, "Running Step 2...", "2단계 실행 중...")
-                  : pick(locale, "Run visit-level analysis", "방문 레벨 분석 실행")}
+                  : pick(locale, "Run visit-level analysis", "방문 단위 분석 실행")}
               </Button>
             ) : undefined
           }
@@ -1728,33 +1733,17 @@ function ValidationPanelInner({
         {!modelCompareResult ? (
           <div className={emptySurfaceClass}>
             {!compareCandidatesAvailable
-              ? modelCatalogState === "error"
-                ? pick(
-                    locale,
-                    "The visible Step 2 model catalog did not finish loading, but the prepared Efficient MIL fallback can still run on this case.",
-                    "표시용 2단계 모델 목록을 끝까지 불러오지 못했지만, 준비된 Efficient MIL 기본 경로는 이 케이스에서 계속 실행할 수 있습니다.",
-                  )
-                : modelCatalogState === "empty"
-                  ? pick(
-                      locale,
-                      "No extra Step 2 compare models were advertised for this site, but the prepared Efficient MIL fallback is already available.",
-                      "이 사이트에는 추가 2단계 비교 모델이 표시되지 않았지만, 준비된 Efficient MIL 기본 경로는 이미 사용할 수 있습니다.",
-                    )
-                  : pick(
-                      locale,
-                      "The visible Step 2 model list is still loading in the background, but the prepared Efficient MIL fallback is already runnable.",
-                      "표시용 2단계 모델 목록은 백그라운드에서 계속 불러오더라도, 준비된 Efficient MIL 기본 경로는 이미 실행할 수 있습니다.",
-                    )
+              ? visitLevelFallbackStatus.detail
               : selectedCompareModelVersionIds.length > 0
-              ? pick(
+                ? pick(
                   locale,
                   `${selectedCompareModelVersionIds.length} model(s) selected. Click "Run visit-level analysis" to execute the prepared MIL path or your advanced comparison set on this case.`,
-                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "방문 레벨 분석 실행"을 눌러 준비된 MIL 경로 또는 고급 비교 세트를 이 케이스에서 실행하세요.`,
+                  `${selectedCompareModelVersionIds.length}개 모델이 선택되었습니다. "방문 단위 분석 실행"을 눌러 준비된 MIL 경로 또는 고급 비교 세트를 이 케이스에서 실행하세요.`,
                 )
               : pick(
                   locale,
                   'Select one or more models below, then click "Run visit-level analysis". The default recommendation is the prepared Efficient MIL model.',
-                  '아래에서 모델을 하나 이상 고른 뒤 "방문 레벨 분석 실행"을 누르세요. 기본 권장 경로는 준비된 Efficient MIL 모델입니다.',
+                  '아래에서 모델을 하나 이상 고른 뒤 "방문 단위 분석 실행"을 누르세요. 기본 권장 경로는 준비된 Efficient MIL 모델입니다.',
                 )}
           </div>
         ) : null}
